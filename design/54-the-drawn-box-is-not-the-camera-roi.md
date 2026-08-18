@@ -1,0 +1,236 @@
+# The drawn box is not the camera ROI
+
+## Problem
+
+On the Nikon, 2026-08-18 (`20260818_134324_111650_microclaw_history.jsonl`),
+brightfield autofocus failed three times in a row and the metric was right to
+refuse each time:
+
+| sweep | range | contrast | verdict |
+|---|---|---|---|
+| line 24 | 8 µm | 0.007 | flat, Z not moved |
+| line 30 | 40 µm | 0.018 | flat, Z not moved |
+
+`MIN_CONTRAST` is 0.15. Widening the window 5× moved the number by nothing,
+because the window was never the problem. The operator then focused by hand and
+asked whether the metric had changed (line 32): `focus_metric` went 25990 →
+26590, **~2%**, still inside the flat band, while the thumbnail was visibly,
+unambiguously in focus.
+
+The frame explains it. `structure_coverage = 0.0006` — the sharp cell edges are
+0.06% of 1024×1024. Tenengrad is a mean squared gradient over the whole frame,
+so ~600 sharp pixels are averaged into ~10⁶ flat ones. **The metric was correct
+and the field was in focus at the same time.**
+
+The operator's own fix was the right one. They drew a rectangle around the cell
+with the ImageJ rectangle tool and asked to autofocus over just that region
+(line 38). Microclaw could not do it, and told them so twice:
+
+- `get_roi()` returned the full sensor, because the drawn rectangle is a display
+  overlay and does not re-crop the camera.
+- "There's no microclaw tool that reads your drawn overlay's coordinates" — true.
+- The two offered routes both required the operator to type four numbers or push
+  the crop to the camera by hand.
+
+Both statements were accurate. The implied conclusion — that cropping the sensor
+is the only way to narrow the metric — is not. Two separable gaps:
+
+1. **We cannot read the box.** The coordinates exist, in the JVM we are already
+   connected to, and MM's own ROI button reads them the same way.
+2. **We cannot use a region without cropping the camera.** This one is a
+   surfacing gap only: the seam already exists and is unexposed.
+
+The blast radius is wider than one session. `_flat_reason`
+(`autofocus.py:138`) and the `run_autofocus` schema description
+(`tools_schema.py:839`) both advise the operator to autofocus on the **full
+frame rather than a small ROI** — the exact opposite of the fix for this failure
+mode, printed three times into a session where whole-frame dilution was the
+cause.
+
+## Decision
+
+**Read the drawn box; compute the metric over it in software; leave the camera
+alone.** Two changes, no new module, no new tool.
+
+### 1. `region` on the tools that measure focus
+
+`sweep_autofocus` already takes `metric_fn` (`autofocus.py:101`) and
+`coarse_then_fine_autofocus` / `single_sweep_autofocus` already thread it
+through (`:171`, `:247`). The whole computation is a numpy slice of the array
+`snap_to_numpy` already returns:
+
+```python
+metric_fn = lambda img: tenengrad(img[y:y + h, x:x + w])
+```
+
+So `run_autofocus` and `snap_and_analyze` grow one optional argument,
+`region: [x, y, w, h] | "drawn"`, and nothing else is built. `"drawn"` resolves
+via §2 at call time; the literal box is for a caller that already knows it.
+
+Three things move with it, and none are optional:
+
+- **`_run_autofocus_passes` (`tools.py:4062`) is the single entry** used by the
+  live run *and* by `_emit_autofocus` (`tools.py:133`). `region` reaches both or
+  the exported script silently sweeps the full frame while the live run swept
+  the cell — 43j's lesson about an argument the tool accepts never arriving in
+  the emitted program.
+- **`_metric_stamp` (`tools.py:3619`) must carry the region.** It stamps
+  `metric_valid_for` with the camera `roi`, which is now insufficient: two
+  sweeps at one camera ROI and different regions produce incomparable numbers
+  with an identical stamp. A region metric is comparable only among frames
+  sharing the region.
+- **`_flat_reason` and the schema description must stop recommending the full
+  frame.** Both should name region-restriction as the first remedy when
+  `structure_coverage` is small, because that is what the evidence says.
+
+### 2. Reading the box: `ij.WindowManager`, the route MM's own button takes
+
+The rectangle is an `ij.gui.Roi` on the display's `ImagePlus`. MM's ROI toolbar
+button gets it exactly this way — `WindowManager.getCurrentImage().getRoi()` —
+which is why the tool operates on that window at all.
+
+The plumbing is already here:
+
+- `controller._new_static_java_class` (`controller.py:63`) is the design/12
+  workaround that makes static `JavaClass` dispatch work. Every static goes
+  through it or pyjavaz's one-key cache hands back another class's statics.
+- `_imagej_window_ids` (`controller.py:470`) and `_describe_imagej_windows`
+  (`controller.py:481`) already call `WindowManager.get_id_list()` /
+  `get_image(id)` and read `ImagePlus` instance methods over the bridge.
+
+So the read is `imp.get_roi()` → `roi.get_bounds()` → a `java.awt.Rectangle`.
+
+**`Rectangle.x/y/width/height` are public fields, so camelCase and no parens.**
+The snake_case form returns wrong data without erroring (`sp.numAxes`, design/32
+Block 4). A non-rectangular selection still has bounds; take them rather than
+refusing.
+
+**Coordinates need no conversion for a software crop.** ImageJ ROI coordinates
+are in displayed-image pixels, which is the frame `snap_to_numpy` returns.
+Canvas zoom does not enter — magnification is a canvas property, the `Roi` is
+stored in image coordinates. This is *only* true while the camera ROI and
+binning are unchanged since the box was drawn, which §3 is about.
+
+### 3. What is not yet known, and why the probe exists
+
+**Whether MM 2.0's snap/live display is visible to `ij.WindowManager` at all.**
+That display is not a plain `ImageWindow`; it is MM's own `DisplayController`
+with an ImageJ bridge putting a proxy `ImagePlus` behind it. `getCurrentImage()`
+is the likelier route than the ID list, and the ID list may not contain it.
+`design/54-display-roi-probe.py` answers this over the bridge, at zero exposure,
+before any of §1 or §2 is written.
+
+If the probe says the display is unreachable from `WindowManager`, §1 still
+ships — a literal `region` is independently useful and is most of the value —
+and `"drawn"` refuses by name with the reason.
+
+## Refusals this must keep
+
+- **Stale box.** A box drawn before a camera-ROI or binning change lands
+  somewhere meaningless. Re-read at use time, validate against the current frame
+  shape, and refuse rather than clamp: a silently clamped region is a metric
+  measured over the wrong pixels, which is the defect this document exists to
+  remove.
+- **No selection.** `getRoi()` returns null when nothing is drawn. That is a
+  refusal with an instruction, not an error.
+- **Empty or degenerate region.** A 1-pixel box has no gradient; it must refuse
+  before the sweep, not produce a flat curve after 30 exposures.
+
+## What this does not buy
+
+**A software crop still exposes the whole sensor.** Same dose, same readout
+time, no speedup — only the metric narrows. A real camera ROI is faster and
+lower-dose, and remains the right choice for a long acquisition. The software
+region is the right *default* for focusing because it disturbs no camera setting
+the operator's session owns and needs no `authorize_path(ctrl, "camera-roi")`.
+
+**It does not fix brightfield.** Restricting the region removes the dilution,
+which is this session's cause. It does not touch the harder property: a thin
+transparent object has *minimum* contrast at focus, with Becke lines maximal
+either side, so a brightfield through-focus curve can be genuinely bimodal
+around the plane the operator calls focus. Measure a region-restricted curve as
+an observation-only sweep on a real brightfield field before letting it drive Z.
+That is a separate question and this document does not answer it.
+
+---
+
+# Coordinator checklist
+
+This design owns its own blocks; it is **not** part of
+`design/35-usability-and-pfs-checklist.md`. The **process** is
+`CLAUDE.md` §"The block workflow" and that file is authoritative — if anything
+below disagrees with it, `CLAUDE.md` wins and this gets fixed.
+
+Three blocks. **54a and 54b are independent and can run in parallel**: 54b is
+the literal-region work, which is most of the value and does not depend on what
+the probe finds. Only 54c is gated on 54a's answer.
+
+## 54a — run the probe (no implementation)
+
+`design/54-display-roi-probe.py` is written; this block is ship-and-run. There
+is nothing to delegate.
+
+- **Gate (Nikon).** R0–R4 with an image on screen and a rectangle drawn on it.
+  Zero exposure. `--snap` for R5 is optional and costs one brightfield frame.
+- **Scored from the artifact**, not the verdict: R2 FAIL with no image on screen
+  is not evidence, and the probe's own summary says so. R3's field-vs-method
+  disagreement gets reported however the rest scored.
+- **Outcome:** R2/R3/R4 PASS → 54c is buildable as §2 describes. R2 FAIL → 54c
+  becomes "`region="drawn"` refuses by name" and shrinks to a few lines.
+
+## 54b — `region=[x, y, w, h]`
+
+§1. Delegated to an implementer in its own worktree; the coordinator writes the
+runner prompt to the scratchpad and **offers to start it rather than spawning
+it**.
+
+Scope, all of it:
+
+- `region` on `run_autofocus` and `snap_and_analyze`, threaded through
+  `_run_autofocus_passes` as `metric_fn`. No new tool, no new module — both
+  tools are already decorated, so the undecorated-tool register does not grow.
+- `_emit_autofocus` carries `region`. **An exported script that sweeps the full
+  frame while the live run swept the cell is the defect**, and it compiles
+  cleanly, so the test execs the emitted source rather than parsing it.
+- `_metric_stamp` carries the region.
+- `_flat_reason` and the `run_autofocus` schema description stop recommending
+  the full frame.
+- Refusals from §"Refusals this must keep": stale box, empty region, degenerate
+  region. Each refuses; none clamps.
+
+Acceptance evidence, and step 3 applies to all of it — **a test written after
+the code is not evidence until it has been watched failing on the pre-fix tree,
+for the stated reason.** The fake is the thing to distrust first.
+
+- **Gate (Nikon), the failing session re-run.** Same field, same brightfield,
+  same flaky TIZDrive. `run_autofocus` with a literal region around the cell,
+  against the full-frame sweep as control. The criterion is `contrast` crossing
+  `MIN_CONTRAST` and a peak that is `peak_interior`, at a Z the operator agrees
+  is focus — not merely "converged: true".
+- **Gate (export).** A run first, then `export_session_script` — a fresh session
+  emits a 13-line stub. The emitted script is exec'd, not just compiled.
+
+Two things about how these steps get written, both learned the expensive way:
+**name the mechanism, not the outcome** (an outcome-shaped step gets satisfied
+by a better route and the thing under test never fires), and **ship no
+placeholder inside a literal command** — a grep with `<x>` in it runs verbatim,
+matches nothing, and "passes".
+
+## 54c — `region="drawn"`
+
+§2, gated on 54a. Reads the box through `ij.WindowManager` via
+`controller._new_static_java_class`, resolved at call time, validated against
+the current frame, refusing rather than clamping.
+
+- **Gate (Nikon).** Operator draws a box, calls `run_autofocus(region="drawn")`,
+  and the numbers agree with 54b's literal-region run over the same box. Then
+  the stale-box limb: change binning or the camera ROI after drawing, and
+  confirm the refusal fires **and names the box it rejected**.
+
+## Run ledger
+
+| Block | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
+|---|---|---|---|---|---|---|---|
+| 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | | | |
+| 54b | — | | | | | | |
+| 54c | 54a | | | | | | |
