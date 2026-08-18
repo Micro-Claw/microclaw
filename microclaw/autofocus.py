@@ -146,7 +146,7 @@ def _flat_reason(
 ) -> str:
     return (
         f"{which} focus metric is flat (contrast {contrast:.2f} < "
-        f"{min_contrast}) — the sweep saw noise, not a focus peak. Z was NOT "
+        f"{min_contrast:.2f}) — the sweep saw noise, not a focus peak. Z was NOT "
         f"moved (restored to {entry_z:.3f} µm). Increase signal (laser power / "
         f"exposure), restrict the metric region around structure when the field "
         f"is mostly background, or focus manually."

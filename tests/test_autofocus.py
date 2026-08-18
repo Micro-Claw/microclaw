@@ -127,10 +127,16 @@ class TestCurveContrast:
         assert autofocus.contrast_threshold(2048 * 2048) == MIN_CONTRAST
 
     def test_flat_reason_reports_the_threshold_that_was_compared(self):
-        threshold = autofocus.contrast_threshold(32 * 32)
+        # The 54b gate's own box. A power-of-two region divides N_REF exactly
+        # and hides this; a real drawn box does not.
+        threshold = autofocus.contrast_threshold(160 * 244)
         reason = autofocus._flat_reason("Sweep", 0.12, threshold, 50.0)
-        reported = float(reason.split(" < ", 1)[1].split(")", 1)[0])
-        assert reported == threshold
+        printed = reason.split(" < ", 1)[1].split(")", 1)[0]
+        assert float(printed) == pytest.approx(threshold, abs=0.005)
+        # A biologist reads this at the microscope. The contrast beside it is
+        # formatted to two decimals; an unrounded float here printed
+        # "contrast 0.04 < 0.7773852769717593" on the 54b gate's own numbers.
+        assert len(printed.split(".")[1]) <= 2, printed
 
 
 class TestCoarseThenFine:
