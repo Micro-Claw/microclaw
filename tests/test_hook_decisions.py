@@ -91,6 +91,8 @@ def test_named_stage_settle_miss_spends_budget_updates_last_known_and_fails(monk
     assert adapter._log[-1]["event"] == "named_stage_write_failure"
     assert adapter._log[-1]["decision"] == "failed"
     assert adapter._log[-1]["last_known_um"] == 201.1
+    assert adapter._log[-1]["measured_um"] == 201.1
+    assert adapter._log[-1]["within_tolerance"] is False
 
 
 @pytest.mark.parametrize("as_batch", [False, True])
