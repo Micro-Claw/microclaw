@@ -3860,6 +3860,16 @@ def snap_and_analyze(
         return {"error": error}
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
+    # Checked twice, against two different frames. The check above reads the
+    # camera, so a bad box costs no exposure; this one reads the array that
+    # actually came back, because a second client can change binning or the ROI
+    # in between and numpy slicing TRUNCATES rather than raising — the same
+    # reason _run_autofocus_passes re-checks inside its metric_fn per frame.
+    validated, error = _validate_metric_region(
+        validated, image.shape[1], image.shape[0]
+    )
+    if error:
+        return {"error": error}
     if validated is not None:
         x, y, w, h = validated
         image = image[y:y + h, x:x + w]

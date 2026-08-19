@@ -1158,6 +1158,36 @@ class TestSnapAndAnalyze:
         )
         assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
 
+    def test_region_is_rechecked_against_the_frame_that_came_back(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The pre-snap check reads the camera; the crop lands on the array.
+
+        Those are two different frames whenever a second client changes binning
+        or the ROI in between — and the user owns the session, so that is
+        ordinary. A bare slice truncates instead of raising, so the metric came
+        back measured over 24x24 pixels while metric_valid_for still named the
+        40x40 box that was asked for: the silently clamped region design/54
+        exists to remove, with the stamp asserting it had not happened.
+        run_autofocus re-checks per frame for exactly this reason
+        (_run_autofocus_passes' metric_fn); the snap path must too.
+        """
+        frame = np.tile(np.arange(64, dtype=np.uint16), (64, 1))
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: frame
+        )
+        # The fixture's camera reports 1024x1024, so this box passes the
+        # pre-snap check and cannot survive the crop.
+        mock_ctrl.drawn_region.return_value = [40, 40, 40, 40]
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region="drawn"
+        )
+
+        assert "[40, 40, 40, 40]" in result["error"]
+        assert "[64, 64]" in result["error"]
+        assert "metric_valid_for" not in result
+
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
             analysis=AnalysisConstraints(min_snr=999.0)
