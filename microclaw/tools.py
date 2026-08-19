@@ -3719,6 +3719,19 @@ def _validate_metric_region(
     """Validate a software metric crop without changing or clamping it."""
     if region is None:
         return None, None
+    if isinstance(region, str):
+        # A literal region the model quoted. The Nikon 54c gate measured four
+        # consecutive `"[726, 591, 174, 171]"` calls, three of them after the
+        # operator asked for an array, all refused as malformed — the capability
+        # 54b shipped was unreachable through the agent. A faithful JSON array
+        # of four integers says exactly one thing however it is quoted; parse
+        # it, and let everything else fall through to the refusals below.
+        try:
+            parsed = json.loads(region)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            region = parsed
     if not isinstance(region, list) or len(region) != 4:
         return None, (
             f"Malformed region {region!r}: expected four integer values "

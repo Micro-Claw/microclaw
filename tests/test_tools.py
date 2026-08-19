@@ -1158,6 +1158,50 @@ class TestSnapAndAnalyze:
         )
         assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
 
+    def test_region_arrives_as_a_json_string_from_the_model(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """A literal region the model stringified is still a literal region.
+
+        Measured on the Nikon, 2026-08-19 (54c gate Step 3): the agent sent
+        `"region": "[726, 591, 174, 171]"` four times in a row -- three of them
+        after the operator explicitly asked for an array -- and every call was
+        refused as malformed. 54b's schema declared `type: "array"` and the same
+        literal call worked on three earlier trips; 54c replaced it with a
+        `oneOf` carrying no top-level type, and the model started quoting.
+
+        The schema is fixed alongside this, but the schema is a request, not a
+        guarantee: a faithful JSON array of four integers is unambiguous however
+        it arrives, so parse it. Anything else still refuses.
+        """
+        image = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: image
+        )
+        mock_ctrl.core.get_image_width.return_value = 64
+        mock_ctrl.core.get_image_height.return_value = 64
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region="[2, 4, 4, 4]"
+        )
+
+        assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
+        assert result["mean_intensity"] == pytest.approx(
+            image[4:8, 2:6].mean(), abs=0.05
+        )
+
+    @pytest.mark.parametrize("region", [
+        "[2, 4, 4]", "[2, 4, 4, 4, 4]", "[2.5, 4, 4, 4]", "2, 4, 4, 4",
+        "not a region", "[]",
+    ])
+    def test_a_string_that_is_not_four_integers_still_refuses(
+        self, mock_ctrl, unconstrained_guard, region
+    ):
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region=region
+        )
+        assert "error" in result
+
     def test_region_is_rechecked_against_the_frame_that_came_back(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):

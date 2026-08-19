@@ -767,15 +767,20 @@ TOOLS: list[dict[str, Any]] = [
                     "default": True,
                 },
                 "region": {
-                    "oneOf": [
-                        {"type": "array", "items": {"type": "integer"},
-                         "minItems": 4, "maxItems": 4},
-                        {"const": "drawn"},
-                    ],
+                    # Both types at the top level, with the array shape kept.
+                    # A oneOf with no top-level "type" made the model quote the
+                    # array -- four refused calls on the Nikon, 2026-08-19.
+                    "type": ["array", "string"],
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
                     "description": (
-                        "Optional software analysis region [x, y, w, h] in "
-                        "current frame pixels; 'drawn' reads the current Preview selection. "
-                        "All statistics use this region."
+                        "Optional software analysis region. Either an ARRAY of "
+                        "four integers [x, y, w, h] in current frame pixels — "
+                        "unquoted, e.g. [726, 591, 174, 171] — or the string "
+                        "\"drawn\", which reads the rectangle currently drawn on "
+                        "the Micro-Manager Preview window. All statistics use "
+                        "this region."
                     ),
                 },
             },
@@ -894,14 +899,19 @@ TOOLS: list[dict[str, Any]] = [
                     "default": False,
                 },
                 "region": {
-                    "oneOf": [
-                        {"type": "array", "items": {"type": "integer"},
-                         "minItems": 4, "maxItems": 4},
-                        {"const": "drawn"},
-                    ],
+                    # Both types at the top level, with the array shape kept.
+                    # A oneOf with no top-level "type" made the model quote the
+                    # array -- four refused calls on the Nikon, 2026-08-19.
+                    "type": ["array", "string"],
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
                     "description": (
-                        "Optional software focus-metric region [x, y, w, h] "
-                        "in current frame pixels; 'drawn' reads the current Preview selection."
+                        "Optional software focus-metric region. Either an ARRAY "
+                        "of four integers [x, y, w, h] in current frame pixels — "
+                        "unquoted, e.g. [726, 591, 174, 171] — or the string "
+                        "\"drawn\", which reads the rectangle currently drawn on "
+                        "the Micro-Manager Preview window."
                     ),
                 },
             },
