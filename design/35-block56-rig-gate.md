@@ -21,14 +21,14 @@ succeed.
 ## Commands
 
 ```powershell
-git merge-base --is-ancestor 56d657d HEAD
+git merge-base --is-ancestor b549884 HEAD
 $LASTEXITCODE
 ```
 
 Expected output: `0`.
 
 ```powershell
-python -m pytest -q tests/test_tools.py tests/test_controller.py tests/test_session_script_export.py > block56-tests.txt 2>&1
+python -m pytest -q tests/test_tools.py tests/test_controller.py tests/test_hook_decisions.py tests/test_session_script_export.py > block56-tests.txt 2>&1
 $LASTEXITCODE
 ```
 
@@ -46,18 +46,45 @@ by no more than 0.5 µm.
 
 ## Verbatim agent prompt: named-stage hard-limit miss
 
+This limb requires M2 or M5. The demo stages deterministically achieve every
+valid target, so the demo rig cannot supply a real target miss and is not an
+acceptable fallback for this limb.
+
 > Call `list_stages`. Choose one single-axis stage whose safety profile permits
 > motion and whose current position can be read. Call `get_stage_position` for
 > it. Call `move_named_stage` on that exact device with `absolute=true` and a
 > target 1.0 µm beyond a known mechanical travel limit but still inside the
 > configured safety bound. Report the complete failure. Then call
 > `get_stage_position` independently and report it. Do not substitute
-> `move_stage_z` or a property write. If no such safe target exists, report that
-> this limb is not runnable; do not move another mechanism.
+> `move_stage_z` or a property write. If no such safe target exists on this rig,
+> stop the gate and route it to the other physical rig; do not substitute the
+> demo device or another mechanism.
 
 Expected numbers when runnable: `tolerance_um` is `0.5`, `within_tolerance` is
 `false`, and independent position differs from `measured_um` by no more than
 0.5 µm.
+
+## Verbatim agent prompt: approved hook named-stage path
+
+> Save and register a fixed-run hook named `block56_stage_observer`. Its
+> `analyze_frame(image, metadata)` must return a `HookResult` with an empty
+> measurement dictionary and no hardware actions; the acquisition plan, not
+> the hook result, will supply the moves. Show the source before saving it.
+
+> Call `get_stage_position` for `TIRF Stage`. Then call `run_timelapse` for two
+> frames with `interval_s=1`, no channel, `exposure_ms=10`, saving to
+> `block56_hook`,
+> and hook strategy `block56_stage_observer`. Supply a `hook_action_plan` whose
+> frame-zero `MoveNamedStage` target is the measured entry position and whose
+> frame-one target is entry position plus 1.0 µm. Approve a
+> `named_stage_envelope` on `TIRF Stage` from entry position through entry plus
+> 1.0 µm, with `max_writes=2` and `restore="leave"`. Report the run result and
+> read its hook log. Do not issue parent-side `move_named_stage` calls for these
+> two moves.
+
+Expected numbers: exactly two accepted `MoveNamedStage` records; each has
+`tolerance_um: 0.5`, `within_tolerance: true`, and `measured_um` within 0.5 µm
+of `requested_um`. The second accepted record has `hook_event_index: 1`.
 
 ## Verbatim agent prompt: export and execute this session
 
