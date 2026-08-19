@@ -533,6 +533,37 @@ is called. A fake that arrives instantly cannot fail the way the Nikon does.
 - A test that execs the emitted source and drives it against that same fake.
 - The envelope print asserted on the emitted source, not just its compilation.
 
+### 54e outcome — implemented 2026-08-19
+
+`9d4a37e` + coordinator review fix `2cdb336`. Suite **1921 passed, 99 skipped,
+2020 collected**. All three of the implementer's pre-fix failures were
+reproduced independently before acceptance.
+
+The review finding, and why it matters more than its size: `final_z_um` became
+the measured settled position while `_flat_reason` and `_edge_reason` kept
+printing the requested entry Z, so **one result object carried two different
+numbers for the same physical quantity and the prose one was the invented
+one** — this block's own defect, reintroduced on the path with the most human
+readers. Fixed; the exporter inlines both helpers with `inspect.getsource`, so
+the standalone script inherits the correction without an emitter change.
+
+**Two consequences the re-gate must absorb.**
+
+- **Criterion 3 changes from equality to tolerance.** `entry_z_um` is a single
+  unsettled read; `final_z_um` is now a settled measurement. They will differ by
+  real settle error on any real stage, and `moved: false` will legitimately
+  accompany two different numbers. The check is
+  `abs(entry_z_um - final_z_um) <= 0.5` (block 56's `STAGE_MOVE_TOLERANCE_UM`),
+  **not** equality. The old equality criterion would now fail a correct run.
+- **A sweep is slower and can now fail outright.** Each plane costs at least
+  three extra `get_position` round trips and ≥0.1 s. On the Nikon, where block 56
+  measured a successful move still busy at 0.89 s, a 20-plane coarse+fine sweep
+  gains roughly 18 s. And a plane that never settles raises `StageMoveError`
+  after 10 s where the old path silently returned a contaminated curve — which is
+  the point, but it means the documented intermittent `TIZDrive` serial timeout
+  can now surface as a failed autofocus. The re-gate needs a limb for it, and the
+  runbook must stop treating a TIZDrive timeout as purely a rig fault to re-run.
+
 ## 54c — `region="drawn"`
 
 §2, **unblocked by 54a's PASS**. Reads the box at call time, validates it
@@ -555,7 +586,7 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 | 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **round 1 PASS Nikon 2026-08-18**; **round 2 PASS Nikon 2026-08-19** — region echo, ROI unchanged, refusal verbatim, export clean | **held** — merges with 54d | |
 | 54c | 54a | | | | | | | *(`region="drawn"` — unblocked by 54a, not started, deliberately after 54b/54d)*
 | 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **NOT TESTED, Nikon 2026-08-19** — threshold maths and `_metric_pixel_count` verified, but Step 5 never cropped the camera and Step 6's cropped re-run was not run, so both hardware limbs are unmeasured | **held** — merges with 54b | |
-| 54e | 54bd gate | `design54/display-roi` | — | — | settle autofocus Z on a measured arrival; print the emitted envelope. Assigned 2026-08-19 | **held** — merges with 54b/54d | |
+| 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336` | **awaiting** — re-gate with 54b/54d | **held** — merges with 54b/54d | |
 
 ## Resuming this block cold
 
