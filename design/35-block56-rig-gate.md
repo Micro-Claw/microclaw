@@ -21,7 +21,7 @@ succeed.
 ## Commands
 
 ```powershell
-git merge-base --is-ancestor b549884 HEAD
+git merge-base --is-ancestor 108b19f HEAD
 $LASTEXITCODE
 ```
 
@@ -85,6 +85,35 @@ Expected numbers when runnable: `tolerance_um` is `0.5`, `within_tolerance` is
 Expected numbers: exactly two accepted `MoveNamedStage` records; each has
 `tolerance_um: 0.5`, `within_tolerance: true`, and `measured_um` within 0.5 µm
 of `requested_um`. The second accepted record has `hook_event_index: 1`.
+
+## Verbatim agent prompt: the restoration path settles too
+
+This block changed what a restoration failure *is*: a restore that lands outside
+tolerance now raises where a 1.1 µm miss previously returned `restored: true`.
+The limb above runs `restore="leave"` and never exercises that. Restoration is
+also the one area block 52c had to reopen, so it gets its own limb rather than
+being inferred from the unit tests.
+
+> Call `get_stage_position` for `TIRF Stage` and record it. Run the same
+> `run_timelapse` as the previous limb — two frames, `interval_s=1`, no channel,
+> `exposure_ms=10`, saving to `block56_restore`, hook strategy
+> `block56_stage_observer` — but approve the `named_stage_envelope` with
+> `restore="entry"` and `max_writes=3`, and give the `hook_action_plan` a single
+> frame-zero `MoveNamedStage` to entry position plus 1.0 µm. Report the run
+> result, the restoration block of the result, and the hook log. Then call
+> `get_stage_position` for `TIRF Stage` independently and report it.
+
+Expected numbers: the restoration block reports `policy: "entry"`,
+`restored: true`, and an `entry_um` equal to the position recorded before the
+run. The independently read position is within 0.5 µm of `entry_um`. The hook
+log carries a third accepted `MoveNamedStage` record, the restoration move, with
+`within_tolerance: true`.
+
+**If restoration instead reports a failure**, that is a real result and not a
+runbook defect: record the reported `measured_um`, `requested_um` and
+`last_device_status`, read the axis independently, and report it. A stage whose
+restore settles outside 0.5 µm is exactly the finding this block is looking for,
+and it decides whether the tolerance is right.
 
 ## Verbatim agent prompt: export and execute this session
 
