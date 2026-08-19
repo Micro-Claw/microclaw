@@ -680,17 +680,65 @@ the standalone script inherits the correction without an emitter change.
 
 ## 54c — `region="drawn"`
 
-§2, **unblocked by 54a's PASS**. Reads the box at call time, validates it
-against the current frame, refuses rather than clamps. Per §3a: MM's
+§2, **unblocked by 54a's PASS**, and **scoped as ergonomics**: it makes 54b's
+capability cheaper to reach, not more effective. See the measured-outcome note
+under §"Decision" — no claim that it improves focus may be made in its schema
+text, its runbook, or its gate criteria. Reads the box at call time, validates
+it against the current frame, refuses rather than clamps. Per §3a: MM's
 `studio.live().get_display().get_image_plus()` is the primary route and
 `ij.WindowManager.getCurrentImage()` (through
 `controller._new_static_java_class`) the fallback; any ID read from
 `getIDList()` is reinterpreted as signed int32 before use.
 
+Scope, all of it, read against `main` **after 54b/54d/54e merged** rather than
+against §1 as it was written:
+
+- **`"drawn"` resolves to a literal `[x, y, w, h]` at the tool boundary**, before
+  `_validate_metric_region` (`tools.py:3704`), which then runs unchanged. No
+  second validator, no second crop path: nothing downstream ever sees the string.
+- **The reader belongs on the controller**, beside `_imagej_window_ids`
+  (`controller.py:579`) — it is bridge plumbing, not analysis. One method, both
+  routes, and it dedupes by ID if it ever reports a choice (54a's probe counted
+  one window twice).
+- **The emitters must emit the resolved box, never the string.**
+  `_emit_snap_and_analyze` (`tools.py:131`) and `_emit_autofocus` (`:158`) both
+  read `region` from the *requested* params today, and `x, y, w, h = "drawn"`
+  raises a bare `ValueError` — which is not `CannotEmit`, so it takes the whole
+  session's export down, not one step. Read the resolved region from the
+  recorded result instead, the way `set_channel` reads its recorded effects:
+  `run_autofocus` echoes `payload["region"]`, `snap_and_analyze` carries it in
+  `metric_valid_for.region`. A standalone script has no display and no box; the
+  literal is the only thing it can carry.
+- **Both `region` schemas** (`tools_schema.py:769`, `:894`) are `type: "array"`
+  today, so `"drawn"` is not expressible at all. Widen both, in one clause each.
+- **Refusals** from §"Refusals this must keep", each naming the box it rejected:
+  no display reachable, no selection drawn, stale box (frame shape changed since
+  it was drawn), degenerate box. The last two are already
+  `_validate_metric_region`'s messages once the box is a literal; the first two
+  are new, and each is a refusal with an instruction, not an error.
+
+Acceptance evidence — **step 3 applies: a test written after the code is not
+evidence until it has been watched failing on the pre-fix tree, for the stated
+reason.** The fake to distrust first here is a fake `ImagePlus` whose box always
+fits the frame; 54b's export tests all used a region that fit, and that is
+exactly what hid the missing crop guard.
+
+- A test that execs the emitted source for a `region="drawn"` run and proves it
+  crops the *resolved literal*.
+- A test that a session recording a `"drawn"` run exports at all — the
+  `ValueError` above is a whole-session failure, so it must be gated as one.
+
 - **Gate (Nikon).** Operator draws a box, calls `run_autofocus(region="drawn")`,
-  and the numbers agree with 54b's literal-region run over the same box. Then
-  the stale-box limb: change binning or the camera ROI after drawing, and
-  confirm the refusal fires **and names the box it rejected**.
+  then re-runs with that same box passed literally — read back from the payload's
+  echoed `region`, not retyped — and the two agree. Then the stale-box limb:
+  change binning or the camera ROI after drawing, and confirm the refusal fires
+  **and names the box it rejected**. `design/54-roi-precondition.py` turns that
+  camera-ROI change into a command that exits nonzero until it is true; trip 2 of
+  the 54bde gate skipped both limbs that depended on a camera crop described in
+  prose beside the step. **A GUI precondition needs a command, not a sentence.**
+- **Gate (export).** A `"drawn"` run first, then `export_session_script`, then
+  exec the emitted file — a fresh session emits a 13-line stub, and a script
+  that compiles is not a script that runs.
 
 ## Run ledger
 
@@ -698,7 +746,7 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
 | 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on three Nikon trips** (2026-08-18, 2026-08-19 ×2). Dilution hypothesis **not supported** on two independent boxes | `3be1037` 2026-08-19 | **done** |
-| 54c | 54a | | | | | | | *(`region="drawn"` — unblocked by 54a, not started, deliberately after 54b/54d)*
+| 54c | 54a | `design54/drawn-region` | `edfaa10` | | | | | *(`region="drawn"` — assigned 2026-08-19, after 54b/54d/54e merged)*
 | 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **PASS Nikon 2026-08-19 (2nd trip)** — 32×32 sensor scored 0.411, **2.7× over the old 0.15 constant**, and refused; emitted script refused identically | `3be1037` 2026-08-19 | **done** |
 | 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336`, flake fix `1dce909` | **PASS Nikon 2026-08-19** — max requested-vs-measured Z 0.050 µm; reason prose agrees with `final_z_um` on the rig. Mid-move hypothesis **not supported** | `3be1037` 2026-08-19 | **done** |
 
@@ -707,13 +755,15 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 Everything needed is on `origin/design54/display-roi`. **This block is not in
 `design/35`** — it owns its checklist above.
 
-State as of 2026-08-19:
+State as of 2026-08-19, after the merge:
 
-- **54a, 54b, 54d and 54e all pass their gates.** The branch is **ready to merge**
-  and has not been merged. `main` is already merged *into* it.
-- **54c not started**, and is next once this lands.
-- Suite: **1921 passed, 99 skipped, 2020 collected** (macOS, and Windows once
-  `1dce909` fixed the two poll-counting fakes).
+- **54a, 54b, 54d and 54e passed their gates and are merged** — `3be1037` for the
+  code, `edfaa10` for the closeout and the post-merge design gate. `origin/main`
+  carries both; `design54/display-roi` is deleted.
+- **54c is the only open block.** Assigned 2026-08-19 on `design54/drawn-region`
+  from `edfaa10`, scoped as ergonomics per §"Decision".
+- Suite at `edfaa10`: **1921 passed, 99 skipped, 2020 collected** (macOS, and
+  Windows once `1dce909` fixed the two poll-counting fakes).
 
 What this block established, and what it did not:
 
