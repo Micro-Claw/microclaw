@@ -6873,3 +6873,49 @@ aborting correctly. The emitter fix therefore has no rig evidence — the fault
 cannot be provoked on demand — and rests on four executing export tests that
 fault a move mid-acquisition, for both emitters, with the restoration itself both
 succeeding and failing.
+
+## Track B — the Nikon PFS track (closed 2026-08-18, **6a dropped unmerged**)
+
+**The track closed on the operator working, not on a gate passing.** The
+coordinator got on the Nikon first-hand and PFS engaged, disengaged and took an
+offset move inside a microclaw session, under the operator's **hand-declared**
+`safety_config.yml`. Track B existed because a remote operator could not work at
+all; they can, so the premise is spent. Blocks 6, 7a, 7b and 8 were never
+started and close unbuilt. Nothing merged from this track, ever.
+
+**A branch parked on a rig rots into unmergeable, and thirteen days was enough.**
+Block 6a was implemented, reviewed through two returned rounds, and pushed on
+2026-08-05 — 506 insertions across ten files. By the time the rig answered it was
+**808 commits behind `main`**, and 140 of those lines edited
+`microclaw/first_launch.py`, which `7edd76a` had **deleted** and replaced with
+`setup_tools.py`. Merging was never on the table; the only options were dropping
+it or re-implementing it, and re-implementing is a new block. **The cost of a
+remote-rig park is not the waiting, it is that the tree moves underneath the
+branch** — a park longer than a few days should either land the rig-independent
+half on `main` immediately or expect to rewrite it.
+
+**Closing a track is not closing its findings, and the two get conflated.** Five
+of these blocks' defects are generic and were still live on `main` at `afe3cad`:
+`move_stage_z` returns the requested Z rather than the reached one, and
+`move_named_stage` reports a missed target as a success — **both affect every
+rig**, and the second nearly had an agent sweep a focus curve against an axis
+that had not moved. Plus the EMU-only `get_focus_lock_state`, the swallowed
+unassigned `Core.Focus`, and an `absolute-position` declaration reaching no
+travel bound on any stage outside `named_stages`. Each was **re-verified against
+`main` before the branch was deleted**, and each register row carries its
+evidence inline **because the branch that held it is gone**. A register row that
+says "see the branch" is worthless the day the branch is deleted.
+
+**Line numbers inherited from a parked branch are not facts.** 6a's item text
+cited a dozen `file.py:NNN` pointers written 808 commits earlier; on re-check,
+`controller.py:552` had become `:812`, `agent.py:149` `:159`, and the
+`safety.py`/`authorization.py` pairs had moved entirely. They were re-located by
+symbol before being carried, and the two that could not be verified — a claim
+about what a *deleted* module's generated comment said — are **marked unverified
+in the register rather than restated as fact**.
+
+**What was deliberately not deleted.** `port-to-jpype-acqj` (18 commits ahead;
+the reverted jPype/AcqJ port exists nowhere else), `florian/setup-claude-workflow`
+(one docs commit), `origin/ollama` (0 ahead of `main` — dead but harmless), and
+`design54/display-roi`, which is **active and awaiting a Nikon gate of its own**.
+That gate is not Track B and did not close with it.
