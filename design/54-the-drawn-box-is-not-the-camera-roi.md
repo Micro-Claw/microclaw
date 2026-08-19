@@ -801,18 +801,31 @@ exactly what hid the missing crop guard.
 
 ## Resuming this block cold
 
-Everything needed is on `origin/design54/display-roi`. **This block is not in
+Everything needed is on `origin/design54/drawn-region`. **This block is not in
 `design/35`** — it owns its checklist above.
 
-State as of 2026-08-19, after the merge:
+State as of 2026-08-19, end of day:
 
 - **54a, 54b, 54d and 54e passed their gates and are merged** — `3be1037` for the
   code, `edfaa10` for the closeout and the post-merge design gate. `origin/main`
   carries both; `design54/display-roi` is deleted.
-- **54c is the only open block.** Assigned 2026-08-19 on `design54/drawn-region`
-  from `edfaa10`, scoped as ergonomics per §"Decision".
-- Suite at `edfaa10`: **1921 passed, 99 skipped, 2020 collected** (macOS, and
-  Windows once `1dce909` fixed the two poll-counting fakes).
+- **54c is implemented, gated once, and awaiting a re-gate.** Branch
+  `origin/design54/drawn-region`, tip `6c706eb`, started from `edfaa10`. Nothing
+  is uncommitted or unpushed; no worktrees are open. Scoped as **ergonomics**
+  per §"Decision" — it makes 54b's capability cheaper to reach and is not a
+  focus fix.
+- **What the 2026-08-19 gate settled and what it did not** is §"54c gate results"
+  above. The reader passed on the rig; **Step 3 failed** on a schema the model
+  would not emit, fixed in `42e08b8`, and **Step 4d produced no evidence**.
+- **The re-gate is short**: Step 3, Step 4d, and a Step 6 re-export. Every other
+  limb already has its evidence and does not need re-running. The runbook is
+  `design/54-block54c-rig-gate.md` **on this branch**, pinned to `42e08b8`.
+- Suite at `6c706eb`: **1945 passed, 99 skipped** (macOS). Reference points:
+  1921/99 at `edfaa10`, 1936/99 at `f02c316`. On Windows the pass/skip split
+  differs and the **collected** total is what must agree — 2035 at `f02c316`,
+  measured on the Nikon.
+- Rig evidence from the first trip is in `54c-nikon/` in the evidence archive:
+  history JSONL, both probe runs, the emitted script and its standalone output.
 
 What this block established, and what it did not:
 
