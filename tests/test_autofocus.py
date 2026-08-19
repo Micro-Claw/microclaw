@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock
 import microclaw.autofocus as autofocus
+from microclaw.controller import StageMoveError
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
@@ -12,6 +13,13 @@ from microclaw.autofocus import (
     sweep_autofocus,
     sweep_plane_count,
 )
+
+
+@pytest.fixture(autouse=True)
+def fast_stage_settle(monkeypatch):
+    """Keep unit fakes fast while preserving repeated measured read-backs."""
+    monkeypatch.setattr("microclaw.controller.STAGE_MOVE_POLL_S", 0)
+    monkeypatch.setattr("microclaw.controller.STAGE_MOVE_STABILITY_WINDOW_S", 0)
 
 
 def test_planned_plane_count_uses_sweep_arithmetic_and_worst_case_fine_pass():
@@ -38,7 +46,7 @@ def make_ctrl_with_focus_at(best_z: float, width: int = 64, flat: bool = False):
     core.get_focus_device.return_value = "DStage"
     current_z = [50.0]
     core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
-    core.get_position.side_effect = lambda: current_z[0]
+    core.get_position.side_effect = lambda *_args: current_z[0]
 
     def get_tagged_image():
         z = current_z[0]
@@ -65,6 +73,67 @@ def make_ctrl_with_focus_at(best_z: float, width: int = 64, flat: bool = False):
 
 
 class TestSweep:
+    def test_sweep_snaps_only_after_delayed_stage_arrival(self, monkeypatch):
+        class DelayedCore:
+            def __init__(self):
+                self.position = 50.0
+                self.target = 50.0
+                self.polls = 0
+
+            def get_focus_device(self): return "Z"
+            def set_position(self, z):
+                self.target = float(z)
+                self.polls = 0
+            def wait_for_device(self, _device): pass
+            def device_busy(self, _device): return self.polls < 2
+            def get_position(self, _device=None):
+                self.polls += 1
+                if self.polls > 2:
+                    self.position = self.target
+                return self.position
+
+        core = DelayedCore()
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(autofocus, "snap_to_numpy", lambda _ctrl: np.array([[core.position]]))
+        result = sweep_autofocus(
+            ctrl, 49.0, 51.0, 1.0, settle_ms=0,
+            metric_fn=lambda image: float(image[0, 0]), move_to_best=False,
+        )
+
+        assert result.metric_values == [49.0, 50.0, 51.0]
+        assert result.measured_z_positions == [49.0, 50.0, 51.0]
+
+    def test_mid_sweep_error_restores_without_masking_failed_restore(self, monkeypatch):
+        ctrl = MagicMock()
+        ctrl.core.get_position.return_value = 50.0
+        original = StageMoveError({
+            "requested_um": 49.0, "measured_um": 48.0, "tolerance_um": 0.5,
+            "within_tolerance": False, "elapsed_s": 10.0,
+            "last_device_status": "busy",
+        })
+        restore = StageMoveError({
+            "requested_um": 50.0, "measured_um": 48.0, "tolerance_um": 0.5,
+            "within_tolerance": False, "elapsed_s": 10.0,
+            "last_device_status": "idle",
+        })
+        calls = []
+
+        def fail_then_restore(_ctrl, target, *args, **kwargs):
+            calls.append(target)
+            if len(calls) == 1:
+                raise original
+            raise restore
+
+        monkeypatch.setattr(autofocus, "sweep_autofocus", fail_then_restore)
+        monkeypatch.setattr(autofocus, "_restore", fail_then_restore)
+
+        with pytest.raises(StageMoveError) as caught:
+            single_sweep_autofocus(ctrl, 2.0, 1.0, settle_ms=0)
+
+        assert caught.value is original
+        assert calls == [49.0, 50.0]
+        assert any("restore" in note.lower() and str(restore) in note
+                   for note in caught.value.__notes__)
     def test_sweep_finds_correct_z(self):
         ctrl = make_ctrl_with_focus_at(52.0)
         result = sweep_autofocus(ctrl, 45.0, 55.0, 1.0, settle_ms=0)
@@ -222,7 +291,7 @@ def make_rig_like_ctrl(best_z: float, um_per_sigma: float = 0.6, width: int = 16
     core.get_focus_device.return_value = "DStage"
     current_z = [50.0]
     core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
-    core.get_position.side_effect = lambda: current_z[0]
+    core.get_position.side_effect = lambda *_args: current_z[0]
 
     def get_tagged_image():
         defocus = abs(current_z[0] - best_z) / um_per_sigma

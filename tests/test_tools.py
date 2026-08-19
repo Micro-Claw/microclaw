@@ -1220,6 +1220,7 @@ _FAKE_SWEEP = SweepResult(
     metric_values=[0.1, 0.9, 0.1],
     best_z_um=50.0,
     peak_interior=True,
+    measured_z_positions=[49.0, 50.0, 51.0],
 )
 
 _FAKE_AF_RESULT = AutofocusResult(
@@ -1262,7 +1263,9 @@ class TestRunAutofocus:
         mock_ctrl.core.get_image_width.return_value = size
         mock_ctrl.core.get_image_height.return_value = size
         current_z = [50.0]
-        mock_ctrl.core.get_position.side_effect = lambda: current_z[0]
+        mock_ctrl.core.get_position.side_effect = lambda *_args: current_z[0]
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_POLL_S", 0)
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_STABILITY_WINDOW_S", 0)
         mock_ctrl.core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
         frame_iter = iter(frames)
         monkeypatch.setattr(
@@ -1306,7 +1309,9 @@ class TestRunAutofocus:
         mock_ctrl.core.get_image_width.return_value = size
         mock_ctrl.core.get_image_height.return_value = size
         current_z = [50.0]
-        mock_ctrl.core.get_position.side_effect = lambda: current_z[0]
+        mock_ctrl.core.get_position.side_effect = lambda *_args: current_z[0]
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_POLL_S", 0)
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_STABILITY_WINDOW_S", 0)
         mock_ctrl.core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
         frame_iter = iter(frames)
         monkeypatch.setattr(
@@ -1335,6 +1340,9 @@ class TestRunAutofocus:
             current_z[0] = float(z)
 
         mock_ctrl.core.set_position.side_effect = set_position
+        mock_ctrl.core.get_position.side_effect = lambda *_args: current_z[0]
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_POLL_S", 0)
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_STABILITY_WINDOW_S", 0)
         checker = (np.indices((16, 16)).sum(axis=0) % 2).astype(np.float64)
         background = np.tile(np.arange(64) % 2, (64, 1)).astype(np.float64) * 30
 
@@ -1426,6 +1434,7 @@ class TestRunAutofocus:
             metric_values=[0.0031234, 0.0245678, 0.0009876],
             best_z_um=50.0,
             peak_interior=True,
+            measured_z_positions=[49.0, 50.0, 51.0],
         )
         monkeypatch.setattr(
             "microclaw.tools.coarse_then_fine_autofocus",
@@ -1447,7 +1456,8 @@ class TestRunAutofocus:
         assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
         assert result["fine"]["peak_interior"] is True
         assert set(result["coarse"]) == {
-            "z_positions", "metric_curve", "best_z_um", "peak_interior", "contrast"
+            "z_positions", "measured_z_positions", "metric_curve", "best_z_um",
+            "peak_interior", "contrast"
         }
         assert "region" not in result
 
@@ -1508,7 +1518,8 @@ class TestRunAutofocus:
 
     def test_nonconverged_payload_says_stage_not_moved(self, mock_ctrl, unconstrained_guard, monkeypatch):
         flat = AutofocusResult(
-            coarse=SweepResult([45.0, 50.0, 55.0], [1.0, 1.1, 1.05], 55.0, False),
+            coarse=SweepResult([45.0, 50.0, 55.0], [1.0, 1.1, 1.05], 55.0, False,
+                               [45.0, 50.0, 55.0]),
             fine=None, entry_z_um=50.0, final_z_um=50.0,
             converged=False, moved=False, reason="Coarse focus metric is flat",
         )

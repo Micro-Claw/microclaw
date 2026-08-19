@@ -184,10 +184,11 @@ def test_emitted_autofocus_actually_crops_the_metric_frames(tmp_path, monkeypatc
     frames[1][:4, :4] = np.indices((4, 4)).sum(axis=0) % 2 * 100
 
     class FakeCore:
-        def __init__(self): self._index = 0
-        def get_position(self): return 50.0
+        def __init__(self): self._index, self.position = 0, 50.0
+        def get_position(self, _device=None): return self.position
         def get_focus_device(self): return "Z"
-        def set_position(self, _z): pass
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
         def wait_for_device(self, _device): pass
         def snap_image(self): pass
         def get_bytes_per_pixel(self): return 2
@@ -212,6 +213,68 @@ def test_emitted_autofocus_actually_crops_the_metric_frames(tmp_path, monkeypatc
     assert curve[1] == pytest.approx(cropped_metric)
 
 
+def test_emitted_autofocus_settles_delayed_stage_and_prints_envelope(
+    tmp_path, monkeypatch, capsys
+):
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 2, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+    })])
+
+    assert source.count("def settle_stage_move") == 1
+    assert "AUTOFOCUS ENVELOPE" in source
+    assert "min_contrast" in source
+    assert "AUTOFOCUS OUTCOME" in source
+
+    class DelayedCore:
+        last = None
+
+        def __init__(self):
+            type(self).last = self
+            self.position = 50.0
+            self.target = 50.0
+            self.polls = 0
+            self.snapped_at = []
+        def get_image_width(self): return 1
+        def get_image_height(self): return 1
+        def get_focus_device(self): return "Z"
+        def set_position(self, z):
+            self.target = float(z)
+            self.polls = 0
+        def wait_for_device(self, _device): pass
+        def device_busy(self, _device): return self.polls < 2
+        def get_position(self, _device=None):
+            self.polls += 1
+            if self.polls > 2:
+                self.position = self.target + 0.2
+            return self.position
+        def snap_image(self): self.snapped_at.append(self.position)
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            frame = np.array([[int(self.position)]], dtype=np.uint16)
+            return SimpleNamespace(pix=frame, tags={"Width": 1, "Height": 1})
+
+    monkeypatch.setattr("pycromanager.Core", DelayedCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": DelayedCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    assert DelayedCore.last.snapped_at == [49.2, 50.2, 51.2]
+    assert namespace["autofocus_result"].coarse.measured_z_positions == [49.2, 50.2, 51.2]
+    assert namespace["autofocus_result"].final_z_um == 50.2
+    output = capsys.readouterr().out
+    assert "AUTOFOCUS ENVELOPE" in output
+    assert "49.0" in output and "51.0" in output
+    assert "region: None" in output
+    assert "min_contrast:" in output
+    assert "AUTOFOCUS OUTCOME" in output
+    assert "moved: False" in output
+    assert "measured final Z: 50.2" in output
+
+
 def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
     tmp_path, monkeypatch
 ):
@@ -229,7 +292,8 @@ def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
         def __init__(self):
             self._index = 0
             self.position = 50.0
-        def get_position(self): return self.position
+        def get_position(self, _device=None): return self.position
+        def device_busy(self, _device): return False
         def get_focus_device(self): return "Z"
         def set_position(self, z): self.position = float(z)
         def wait_for_device(self, _device): pass
@@ -1311,8 +1375,9 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
             self.moves = []
 
         def get_focus_device(self): return "Z"
-        def get_position(self): return self.z
+        def get_position(self, _device=None): return self.z
         def set_position(self, z): self.z = float(z)
+        def device_busy(self, _device): return False
         def set_xy_position(self, x, y): self.moves.append((x, y))
         def wait_for_device(self, _device): pass
         def snap_image(self): self.snaps += 1
@@ -2039,7 +2104,7 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
         def check_z(self, _z): pass
         def check_xy(self, _x, _y): pass
     ctrl = SimpleNamespace(core=SimpleNamespace(get_position=lambda: 10.0))
-    sweep = autofocus.SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    sweep = autofocus.SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     real_autofocus_passes = tools._run_autofocus_passes
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: autofocus.AutofocusResult(
         sweep, None, 10, 10, True, False, None
@@ -2875,9 +2940,11 @@ def test_emitted_crop_refuses_a_frame_the_region_does_not_fit(tmp_path, monkeypa
     frame = np.zeros((8, 8), dtype=np.uint16)          # smaller than the region
 
     class FakeCore:
-        def get_position(self): return 50.0
+        def __init__(self): self.position = 50.0
+        def get_position(self, _device=None): return self.position
         def get_focus_device(self): return "Z"
-        def set_position(self, _z): pass
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
         def wait_for_device(self, _device): pass
         def snap_image(self): pass
         def get_bytes_per_pixel(self): return 2
@@ -2950,7 +3017,8 @@ def test_emitted_regionless_run_scales_its_guard_to_the_live_frame(
 
     class FakeCore:
         def __init__(self): self.z, self._i = 50.0, 0
-        def get_position(self): return self.z
+        def get_position(self, _device=None): return self.z
+        def device_busy(self, _device): return False
         def get_focus_device(self): return "Z"
         def set_position(self, z): self.z = float(z)
         def wait_for_device(self, _device): pass

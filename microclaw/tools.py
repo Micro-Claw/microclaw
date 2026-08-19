@@ -156,11 +156,25 @@ def _emit_autofocus(params: RecordedParams) -> str:
     method = params.get("method", signature.parameters["method"].default)
     settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
     region = params.get("region", signature.parameters["region"].default)
-    return (
+    z_range = params["z_range_um"]
+    z_step = params["z_step_um"]
+    return "\n".join([
+        "_autofocus_entry_z = float(core.get_position())",
+        f"_autofocus_lo = _autofocus_entry_z - {z_range!r} / 2",
+        f"_autofocus_hi = _autofocus_entry_z + {z_range!r} / 2",
+        f"_autofocus_region = {region!r}",
+        "_autofocus_min_contrast = contrast_threshold("
+        "_metric_pixel_count(mm, _autofocus_region))",
+        "print('AUTOFOCUS ENVELOPE')",
+        "print(f'Sweep Z: {_autofocus_lo} to {_autofocus_hi} um; region: '",
+        "      f'{_autofocus_region!r}; min_contrast: {_autofocus_min_contrast}')",
         "autofocus_result = _run_autofocus_passes("
-        f"mm, {params['z_range_um']!r}, {params['z_step_um']!r}, "
-        f"{method!r}, {settle!r}, {region!r})"
-    )
+        f"mm, {z_range!r}, {z_step!r}, {method!r}, {settle!r}, "
+        f"{region!r})",
+        "print('AUTOFOCUS OUTCOME')",
+        "print(f'moved: {autofocus_result.moved}; measured final Z: '",
+        "      f'{autofocus_result.final_z_um}')",
+    ])
 
 
 def _emit_go_to_position(params: RecordedParams) -> str:
@@ -1449,7 +1463,8 @@ def export_session_script(
     # The adaptive runner source already carries the settlement contract, so
     # gate on its absence to keep exactly one definition in every script.
     stage_moves = not adaptive_used and (
-        "settle_stage_move(" in body_text or "stage_move_dispatch_failure(" in body_text
+        autofocus_used or "settle_stage_move(" in body_text
+        or "stage_move_dispatch_failure(" in body_text
     )
     lines = [
         "from __future__ import annotations",
@@ -4245,6 +4260,9 @@ def _sweep_payload(sweep, min_contrast: float | None = None) -> dict | None:
         return None
     payload = {
         "z_positions": [round(z, 3) for z in sweep.z_positions],
+        "measured_z_positions": [
+            round(z, 3) for z in sweep.measured_z_positions
+        ],
         "metric_curve": [_round_sig(v) for v in sweep.metric_values],
         "best_z_um": round(sweep.best_z_um, 3),
         "peak_interior": sweep.peak_interior,

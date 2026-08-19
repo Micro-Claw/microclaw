@@ -6,6 +6,9 @@ from typing import Callable, Optional
 import numpy as np
 
 from microclaw.image_analysis import snap_to_numpy, tenengrad
+from microclaw.controller import (
+    StageMoveError, settle_stage_move, stage_move_dispatch_failure,
+)
 
 
 @dataclass
@@ -17,6 +20,7 @@ class SweepResult:
     metric_values: list[float]
     best_z_um: float
     peak_interior: bool
+    measured_z_positions: list[float]
 
 
 @dataclass
@@ -114,31 +118,52 @@ def sweep_autofocus(
     n = sweep_plane_count(z_start_um, z_end_um, z_step_um)
     z_positions = [float(z) for z in np.linspace(z_start_um, z_end_um, n)]
     metric_values = []
+    measured_z_positions = []
 
     for z in z_positions:
-        ctrl.core.set_position(z)
-        ctrl.core.wait_for_device(focus_device)
+        try:
+            ctrl.core.set_position(z)
+        except Exception as exc:
+            raise stage_move_dispatch_failure(
+                ctrl.core, focus_device, z, exc
+            ) from exc
+        settled = settle_stage_move(ctrl.core, focus_device, z)
+        measured_z_positions.append(float(settled["measured_um"]))
         if settle_ms > 0:
             time.sleep(settle_ms / 1000.0)
         metric_values.append(metric_fn(snap_to_numpy(ctrl)))
 
     best_idx = int(np.argmax(metric_values))
-    best_z = z_positions[best_idx]
+    best_z = measured_z_positions[best_idx]
     if move_to_best:
-        ctrl.core.set_position(best_z)
-        ctrl.core.wait_for_device(focus_device)
+        try:
+            ctrl.core.set_position(best_z)
+        except Exception as exc:
+            raise stage_move_dispatch_failure(
+                ctrl.core, focus_device, best_z, exc
+            ) from exc
+        best_z = float(settle_stage_move(
+            ctrl.core, focus_device, best_z
+        )["measured_um"])
 
     return SweepResult(
         z_positions=z_positions,
         metric_values=metric_values,
         best_z_um=best_z,
         peak_interior=0 < best_idx < len(z_positions) - 1,
+        measured_z_positions=measured_z_positions,
     )
 
 
-def _restore(ctrl, z: float) -> None:
-    ctrl.core.set_position(z)
-    ctrl.core.wait_for_device(ctrl.core.get_focus_device())
+def _restore(ctrl, z: float) -> dict:
+    focus_device = ctrl.core.get_focus_device()
+    try:
+        ctrl.core.set_position(z)
+    except Exception as exc:
+        raise stage_move_dispatch_failure(
+            ctrl.core, focus_device, z, exc
+        ) from exc
+    return settle_stage_move(ctrl.core, focus_device, z)
 
 
 def _flat_reason(
@@ -204,46 +229,64 @@ def coarse_then_fine_autofocus(
     lo_bound = entry_z - z_range_um / 2
     hi_bound = entry_z + z_range_um / 2
 
-    coarse = sweep_autofocus(
-        ctrl, lo_bound, hi_bound, coarse_step_um, settle_ms,
-        metric_fn=metric_fn, move_to_best=False,
-    )
+    try:
+        coarse = sweep_autofocus(
+            ctrl, lo_bound, hi_bound, coarse_step_um, settle_ms,
+            metric_fn=metric_fn, move_to_best=False,
+        )
+    except StageMoveError as move_exc:
+        try:
+            _restore(ctrl, entry_z)
+        except Exception as restore_exc:
+            move_exc.add_note(f"Autofocus restore also failed: {restore_exc}")
+        raise
     coarse_contrast = curve_contrast(coarse.metric_values)
     if coarse_contrast < min_contrast:
-        _restore(ctrl, entry_z)
+        restored = _restore(ctrl, entry_z)
         return AutofocusResult(
-            coarse=coarse, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
+            coarse=coarse, fine=None, entry_z_um=entry_z,
+            final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
             reason=_flat_reason("Coarse", coarse_contrast, min_contrast, entry_z),
         )
 
     lo = max(coarse.best_z_um - coarse_step_um, lo_bound)
     hi = min(coarse.best_z_um + coarse_step_um, hi_bound)
-    fine = sweep_autofocus(
-        ctrl, lo, hi, fine_step_um, settle_ms,
-        metric_fn=metric_fn, move_to_best=False,
-    )
+    try:
+        fine = sweep_autofocus(
+            ctrl, lo, hi, fine_step_um, settle_ms,
+            metric_fn=metric_fn, move_to_best=False,
+        )
+    except StageMoveError as move_exc:
+        try:
+            _restore(ctrl, entry_z)
+        except Exception as restore_exc:
+            move_exc.add_note(f"Autofocus restore also failed: {restore_exc}")
+        raise
     fine_contrast = curve_contrast(fine.metric_values)
     if fine_contrast < min_contrast:
-        _restore(ctrl, entry_z)
+        restored = _restore(ctrl, entry_z)
         return AutofocusResult(
-            coarse=coarse, fine=fine, entry_z_um=entry_z, final_z_um=entry_z,
+            coarse=coarse, fine=fine, entry_z_um=entry_z,
+            final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
             reason=_flat_reason("Fine", fine_contrast, min_contrast, entry_z),
         )
 
     if not fine.peak_interior:
-        _restore(ctrl, entry_z)
+        restored = _restore(ctrl, entry_z)
         return AutofocusResult(
-            coarse=coarse, fine=fine, entry_z_um=entry_z, final_z_um=entry_z,
+            coarse=coarse, fine=fine, entry_z_um=entry_z,
+            final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
             reason=_edge_reason("Fine", fine, entry_z),
         )
 
-    _restore(ctrl, fine.best_z_um)
+    settled = _restore(ctrl, fine.best_z_um)
     return AutofocusResult(
         coarse=coarse, fine=fine, entry_z_um=entry_z,
-        final_z_um=fine.best_z_um, converged=True, moved=True, reason=None,
+        final_z_um=float(settled["measured_um"]), converged=True, moved=True,
+        reason=None,
     )
 
 
@@ -262,27 +305,37 @@ def single_sweep_autofocus(
     pinned at a sweep boundary (design/28 F1).
     """
     entry_z = float(ctrl.core.get_position())
-    sweep = sweep_autofocus(
-        ctrl, entry_z - z_range_um / 2, entry_z + z_range_um / 2, z_step_um,
-        settle_ms, metric_fn=metric_fn, move_to_best=False,
-    )
+    try:
+        sweep = sweep_autofocus(
+            ctrl, entry_z - z_range_um / 2, entry_z + z_range_um / 2, z_step_um,
+            settle_ms, metric_fn=metric_fn, move_to_best=False,
+        )
+    except StageMoveError as move_exc:
+        try:
+            _restore(ctrl, entry_z)
+        except Exception as restore_exc:
+            move_exc.add_note(f"Autofocus restore also failed: {restore_exc}")
+        raise
     contrast = curve_contrast(sweep.metric_values)
     if contrast < min_contrast:
-        _restore(ctrl, entry_z)
+        restored = _restore(ctrl, entry_z)
         return AutofocusResult(
-            coarse=sweep, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
+            coarse=sweep, fine=None, entry_z_um=entry_z,
+            final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
             reason=_flat_reason("Sweep", contrast, min_contrast, entry_z),
         )
     if not sweep.peak_interior:
-        _restore(ctrl, entry_z)
+        restored = _restore(ctrl, entry_z)
         return AutofocusResult(
-            coarse=sweep, fine=None, entry_z_um=entry_z, final_z_um=entry_z,
+            coarse=sweep, fine=None, entry_z_um=entry_z,
+            final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
             reason=_edge_reason("Sweep", sweep, entry_z),
         )
-    _restore(ctrl, sweep.best_z_um)
+    settled = _restore(ctrl, sweep.best_z_um)
     return AutofocusResult(
         coarse=sweep, fine=None, entry_z_um=entry_z,
-        final_z_um=sweep.best_z_um, converged=True, moved=True, reason=None,
+        final_z_um=float(settled["measured_um"]), converged=True, moved=True,
+        reason=None,
     )
