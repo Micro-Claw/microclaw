@@ -134,6 +134,43 @@ class TestSweep:
         assert calls == [49.0, 50.0]
         assert any("restore" in note.lower() and str(restore) in note
                    for note in caught.value.__notes__)
+    def test_refusal_prose_reports_the_measured_restore_not_the_request(self):
+        """The reason string is what a microscopist reads; it must not fabricate.
+
+        final_z_um became the measured settled position, but _flat_reason and
+        _edge_reason kept printing the requested entry Z, so one result object
+        carried two different numbers for the same physical quantity and the
+        prose one was the invented one -- the defect this block exists to
+        remove, reintroduced on the path with the most human readers.
+        """
+        class OffsetCore:
+            """Arrives 0.2 um past target: inside tolerance, not at the request."""
+            def __init__(self): self.position, self.target, self.polls = 50.0, 50.0, 0
+            def get_focus_device(self): return "Z"
+            def set_position(self, z): self.target, self.polls = float(z), 0
+            def wait_for_device(self, _device): pass
+            def device_busy(self, _device): return self.polls < 2
+            def get_position(self, _device=None):
+                self.polls += 1
+                if self.polls > 2:
+                    self.position = self.target + 0.2
+                return self.position
+
+        core = OffsetCore()
+        ctrl = MagicMock(core=core)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(autofocus, "snap_to_numpy",
+                       lambda _ctrl: np.array([[core.position]]))
+            flat = autofocus.single_sweep_autofocus(
+                ctrl, 2.0, 1.0, settle_ms=0,
+                metric_fn=lambda image: float(image[0, 0]),
+            )
+
+        assert flat.moved is False
+        assert flat.final_z_um == 50.2
+        assert f"{flat.final_z_um:.3f}" in flat.reason
+        assert "50.000" not in flat.reason
+
     def test_sweep_finds_correct_z(self):
         ctrl = make_ctrl_with_focus_at(52.0)
         result = sweep_autofocus(ctrl, 45.0, 55.0, 1.0, settle_ms=0)

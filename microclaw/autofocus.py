@@ -167,18 +167,21 @@ def _restore(ctrl, z: float) -> dict:
 
 
 def _flat_reason(
-    which: str, contrast: float, min_contrast: float, entry_z: float
+    which: str, contrast: float, min_contrast: float, restored_z: float
 ) -> str:
+    # restored_z is the MEASURED settled position, never the requested one: this
+    # string is the part a microscopist actually reads, and it must not disagree
+    # with final_z_um in the same result.
     return (
         f"{which} focus metric is flat (contrast {contrast:.2f} < "
         f"{min_contrast:.2f}) — the sweep saw noise, not a focus peak. Z was NOT "
-        f"moved (restored to {entry_z:.3f} µm). Increase signal (laser power / "
+        f"moved (restored to {restored_z:.3f} µm). Increase signal (laser power / "
         f"exposure), restrict the metric region around structure when the field "
         f"is mostly background, or focus manually."
     )
 
 
-def _edge_reason(which: str, sweep: SweepResult, entry_z: float) -> str:
+def _edge_reason(which: str, sweep: SweepResult, restored_z: float) -> str:
     """Mirror of _flat_reason for a peak pinned at a sweep boundary (design/28 F1).
 
     A boundary argmax can mean that focus is outside the window, but can also
@@ -189,7 +192,7 @@ def _edge_reason(which: str, sweep: SweepResult, entry_z: float) -> str:
         f"{which} focus peak is at the edge of the searched Z range "
         f"(best {sweep.best_z_um:.3f} µm sits at a sweep boundary), so there is "
         f"no interior focus maximum and this is NOT convergence. Z was NOT "
-        f"moved (restored to {entry_z:.3f} µm). Focus may be outside the window, "
+        f"moved (restored to {restored_z:.3f} µm). Focus may be outside the window, "
         f"or the curve may be noise-dominated/non-unimodal; inspect the curve "
         f"and signal before widening or retrying."
     )
@@ -247,7 +250,8 @@ def coarse_then_fine_autofocus(
             coarse=coarse, fine=None, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_flat_reason("Coarse", coarse_contrast, min_contrast, entry_z),
+            reason=_flat_reason("Coarse", coarse_contrast, min_contrast,
+                                float(restored["measured_um"])),
         )
 
     lo = max(coarse.best_z_um - coarse_step_um, lo_bound)
@@ -270,7 +274,8 @@ def coarse_then_fine_autofocus(
             coarse=coarse, fine=fine, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_flat_reason("Fine", fine_contrast, min_contrast, entry_z),
+            reason=_flat_reason("Fine", fine_contrast, min_contrast,
+                                float(restored["measured_um"])),
         )
 
     if not fine.peak_interior:
@@ -279,7 +284,7 @@ def coarse_then_fine_autofocus(
             coarse=coarse, fine=fine, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_edge_reason("Fine", fine, entry_z),
+            reason=_edge_reason("Fine", fine, float(restored["measured_um"])),
         )
 
     settled = _restore(ctrl, fine.best_z_um)
@@ -323,7 +328,8 @@ def single_sweep_autofocus(
             coarse=sweep, fine=None, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_flat_reason("Sweep", contrast, min_contrast, entry_z),
+            reason=_flat_reason("Sweep", contrast, min_contrast,
+                                float(restored["measured_um"])),
         )
     if not sweep.peak_interior:
         restored = _restore(ctrl, entry_z)
@@ -331,7 +337,7 @@ def single_sweep_autofocus(
             coarse=sweep, fine=None, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_edge_reason("Sweep", sweep, entry_z),
+            reason=_edge_reason("Sweep", sweep, float(restored["measured_um"])),
         )
     settled = _restore(ctrl, sweep.best_z_um)
     return AutofocusResult(
