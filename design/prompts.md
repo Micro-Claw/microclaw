@@ -6873,3 +6873,122 @@ aborting correctly. The emitter fix therefore has no rig evidence — the fault
 cannot be provoked on demand — and rests on four executing export tests that
 fault a move mid-acquisition, for both emitters, with the restoration itself both
 succeeding and failing.
+
+## Track B — the Nikon PFS track (closed 2026-08-18, **6a dropped unmerged**)
+
+**The track closed on the operator working, not on a gate passing.** The
+coordinator got on the Nikon first-hand and PFS engaged, disengaged and took an
+offset move inside a microclaw session, under the operator's **hand-declared**
+`safety_config.yml`. Track B existed because a remote operator could not work at
+all; they can, so the premise is spent. Blocks 6, 7a, 7b and 8 were never
+started and close unbuilt. Nothing merged from this track, ever.
+
+**A branch parked on a rig rots into unmergeable, and thirteen days was enough.**
+Block 6a was implemented, reviewed through two returned rounds, and pushed on
+2026-08-05 — 506 insertions across ten files. By the time the rig answered it was
+**808 commits behind `main`**, and 140 of those lines edited
+`microclaw/first_launch.py`, which `7edd76a` had **deleted** and replaced with
+`setup_tools.py`. Merging was never on the table; the only options were dropping
+it or re-implementing it, and re-implementing is a new block. **The cost of a
+remote-rig park is not the waiting, it is that the tree moves underneath the
+branch** — a park longer than a few days should either land the rig-independent
+half on `main` immediately or expect to rewrite it.
+
+**Closing a track is not closing its findings, and the two get conflated.** Five
+of these blocks' defects are generic and were still live on `main` at `afe3cad`:
+`move_stage_z` returns the requested Z rather than the reached one, and
+`move_named_stage` reports a missed target as a success — **both affect every
+rig**, and the second nearly had an agent sweep a focus curve against an axis
+that had not moved. Plus the EMU-only `get_focus_lock_state`, the swallowed
+unassigned `Core.Focus`, and an `absolute-position` declaration reaching no
+travel bound on any stage outside `named_stages`. Each was **re-verified against
+`main` before the branch was deleted**, and each register row carries its
+evidence inline **because the branch that held it is gone**. A register row that
+says "see the branch" is worthless the day the branch is deleted.
+
+**Line numbers inherited from a parked branch are not facts.** 6a's item text
+cited a dozen `file.py:NNN` pointers written 808 commits earlier; on re-check,
+`controller.py:552` had become `:812`, `agent.py:149` `:159`, and the
+`safety.py`/`authorization.py` pairs had moved entirely. They were re-located by
+symbol before being carried, and the two that could not be verified — a claim
+about what a *deleted* module's generated comment said — are **marked unverified
+in the register rather than restated as fact**.
+
+**What was deliberately not deleted.** `port-to-jpype-acqj` (18 commits ahead;
+the reverted jPype/AcqJ port exists nowhere else), `florian/setup-claude-workflow`
+(one docs commit), `origin/ollama` (0 ahead of `main` — dead but harmless), and
+`design54/display-roi`, which is **active and awaiting a Nikon gate of its own**.
+That gate is not Track B and did not close with it.
+
+## Block 56 — a move must report where it reached (merged 2026-08-19, `c8f1801`)
+
+**Promoted from the register, gated on the Nikon, and the gate refuted the
+coordinator twice.** The block itself is small and clean: `move_stage_z`,
+`set_z`, `move_named_stage` and `UntrustedHookAdapter._apply_named_stage` now
+share one measured-settlement contract. What is worth carrying is how the
+evidence went.
+
+**The coordinator guessed a mechanism twice and was wrong twice, and both
+guesses cost a rig limb.** The register said `move_named_stage` reported a miss
+as success, evidenced by an 11:40 session returning `requested 5 / achieved
+27.85`. From that the coordinator inferred **a mechanical floor at 27.85** and
+wrote a gate limb around commanding a sub-floor target. The rig reached 0.0
+exactly. The second inference was **a servo override** — PFS holding the axis
+against a commanded write — and a PFS-armed limb was written for it. The rig
+moved the offset to 21.0 under an active lock, exactly. **Neither mechanism
+existed.** The actual defect was a **premature read-back**: the old path read the
+device once, immediately after `wait_for_device`, on an axis that takes ~0.9 s
+and reports busy throughout, so the read returned the pre-move position.
+
+The general lesson: **a recorded symptom is not a recorded mechanism.** Two
+numbers in a history (`requested 5`, `achieved 27.85`) constrain the mechanism far
+less than they appear to, and a gate limb built on the inferred mechanism tests
+the inference rather than the fix. Where the mechanism is not measured, prefer a
+limb that demonstrates the fix **positively** over one that tries to reproduce a
+failure whose cause is a guess.
+
+**The strongest evidence was in a field nobody thought to check.** The successful
+move returned `last_device_status: "busy"` with `elapsed_s: 0.89` — about
+eighteen polls. That single reading proves the settle loop out-waited a device
+that was still moving, which is the entire mechanism under test, and it proves it
+better than a manufactured failure would have. It was recorded only because the
+contract was designed to carry the device status alongside the measurement.
+
+**The missed-move criterion was recorded as unreproducible rather than claimed.**
+Nothing on that rig leaves an axis short of a reachable, in-bounds target. Two
+attempts, two clean successes. The miss is covered by unit tests whose fakes
+reproduce both observed shapes — including `Busy()` clearing before motion starts
+— and the checklist says so plainly instead of implying rig coverage that does
+not exist.
+
+**Review found a defect the block was not looking for.** Round 1 was accepted in
+substance; the review then found a **third** stage-motion implementation,
+`_apply_named_stage`, still reporting a missed target as success in the path
+design/52 uses to move hardware unattended from an approved hook. Folding it in
+was a coordinator ruling, and it carried an export hazard: `UntrustedHookAdapter`
+is inlined verbatim by `inspect.getsource`, so calling a new helper from it would
+have `NameError`d every emitted adaptive script — the block-13/41b defect exactly.
+The existing free-name guard covered it, and the implementer was asked to *prove*
+that by removing the inline rather than assume it.
+
+**Two coordinator corrections after round 2, both small, both real.** A non-finite
+read stopped being diagnosed when the fold removed an explicit `isfinite` check,
+so NaN reached a result dict and `json.dumps` wrote bare `NaN` into the history
+JSONL. And the settlement contract was emitted once **per move call** — three
+moves, three copies of the constants, the class and both functions — where it is
+a shared helper like `_analysis_source` and belongs in the preamble.
+
+**The implementer was right and the checklist was wrong**, which is worth saying
+because it happened twice. `autofocus.py` and `hooks.py` are **not** callers of
+these functions; they move Z with bare `core.set_position` and still have no
+settle check at all. The coordinator's spec had carried that framing over from
+block 6's text, where those paths were listed as needing *lock*-awareness, not as
+callers.
+
+**Two findings that are not this block's**, both now register rows:
+`get_focus_lock_state` answered `"No EMU configuration — cannot read a focus
+lock"` on a rig whose hardware lock was working and **blocked the gate**, forcing
+a raw `TIPFSStatus.State` write; and a gate step asking for the configured
+`named_stages` bound **did not run at all**, because no tool reports the bounds
+microclaw is enforcing. The second is the same shape as a placeholder that cannot
+run — a written step that silently produces nothing.

@@ -355,7 +355,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "move_stage_z",
         "description": (
             "Move the Z (focus) stage. With absolute=true (default), move to the "
-            "given position. With absolute=false, move relative to current position."
+            "given position. With absolute=false, move relative to current position. "
+            "Success reports the measured settled position; a target miss raises a "
+            "typed StageMoveError with the same measured fields."
         ),
         "input_schema": {
             "type": "object",
@@ -399,8 +401,8 @@ TOOLS: list[dict[str, Any]] = [
             "steering axis that is not the core focus device). Guarded by the "
             "per-device named_stages limits in the safety config — a stage with "
             "no entry there cannot be moved (fail-closed); tell the user to add "
-            "one if refused. Returns requested vs achieved position and the "
-            "settling error."
+            "one if refused. Success reports the measured settled position; a "
+            "target miss raises a typed StageMoveError with the same measured fields."
         ),
         "input_schema": {
             "type": "object",

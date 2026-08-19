@@ -5,12 +5,121 @@ import logging
 import math
 from pathlib import Path
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from pycromanager import Core, Studio
 
 
 logger = logging.getLogger(__name__)
+
+
+# Generic policy defaults. Rig profiles do not describe per-axis repeatability;
+# their origins and rationale are frozen in design/35-block56-rig-gate.md.
+STAGE_MOVE_TOLERANCE_UM = 0.5
+STAGE_MOVE_TIMEOUT_S = 10.0
+STAGE_MOVE_POLL_S = 0.05
+STAGE_MOVE_REQUIRED_SAMPLES = 3
+STAGE_MOVE_STABILITY_WINDOW_S = 0.1
+
+
+class StageMoveError(RuntimeError):
+    """A stage failed to demonstrate that it reached and settled at its target."""
+
+    def __init__(self, result: dict):
+        self.result = result
+        super().__init__(
+            "Stage move did not reach target within tolerance: "
+            f"requested {result['requested_um']} um, measured "
+            f"{result['measured_um']} um after {result['elapsed_s']} s "
+            f"({result['last_device_status']})."
+        )
+
+
+def stage_move_dispatch_failure(core, device: str, target_um: float,
+                                exc: Exception) -> StageMoveError:
+    """Translate a driver refusal into the same measured move-failure contract."""
+    try:
+        measured = round(float(core.get_position(device)), 4)
+    except Exception:
+        measured = None
+    try:
+        device_state = "busy" if bool(core.device_busy(device)) else "idle"
+    except Exception:
+        device_state = "unavailable"
+    return StageMoveError({
+        "requested_um": round(target_um, 4),
+        "measured_um": measured,
+        "tolerance_um": STAGE_MOVE_TOLERANCE_UM,
+        "within_tolerance": False,
+        "elapsed_s": 0.0,
+        "last_device_status": (
+            f"dispatch_error: {type(exc).__name__}: {exc}; {device_state}"
+        ),
+    })
+
+
+def settle_stage_move(core, device: str, target_um: float) -> dict:
+    """Read until a single-axis stage is both near its target and stable."""
+    started = time.monotonic()
+    in_tolerance: list[tuple[float, float]] = []
+    measured: float | None = None
+    status = "unknown"
+    while True:
+        now = time.monotonic()
+        try:
+            status = "busy" if bool(core.device_busy(device)) else "idle"
+        except Exception as exc:  # status is evidence, never the success gate
+            status = f"unavailable: {type(exc).__name__}"
+        try:
+            measured = float(core.get_position(device))
+            # A non-finite read is a failed read, not a position. Reached via
+            # the same handler so there is one policy: NaN never survives into
+            # a result dict, where json.dumps would write it as bare `NaN` and
+            # any strict reader of the history would reject the line.
+            if not math.isfinite(measured):
+                raise ValueError(f"non-finite position {measured!r}")
+        except Exception as exc:
+            in_tolerance.clear()
+            status = f"{status}; position_read_error: {type(exc).__name__}: {exc}"
+            if now - started >= STAGE_MOVE_TIMEOUT_S:
+                raise StageMoveError({
+                    "requested_um": round(target_um, 4),
+                    "measured_um": None,
+                    "tolerance_um": STAGE_MOVE_TOLERANCE_UM,
+                    "within_tolerance": False,
+                    "elapsed_s": round(now - started, 3),
+                    "last_device_status": status,
+                }) from exc
+            time.sleep(STAGE_MOVE_POLL_S)
+            continue
+        if abs(measured - target_um) <= STAGE_MOVE_TOLERANCE_UM:
+            in_tolerance.append((now, measured))
+            if len(in_tolerance) > STAGE_MOVE_REQUIRED_SAMPLES:
+                in_tolerance.pop(0)
+            if (len(in_tolerance) == STAGE_MOVE_REQUIRED_SAMPLES and
+                    now - in_tolerance[0][0] >= STAGE_MOVE_STABILITY_WINDOW_S):
+                return {
+                    "requested_um": round(target_um, 4),
+                    "measured_um": round(measured, 4),
+                    "tolerance_um": STAGE_MOVE_TOLERANCE_UM,
+                    "within_tolerance": True,
+                    "elapsed_s": round(now - started, 3),
+                    "last_device_status": status,
+                }
+        else:
+            in_tolerance.clear()
+        if now - started >= STAGE_MOVE_TIMEOUT_S:
+            result = {
+                "requested_um": round(target_um, 4),
+                "measured_um": round(measured, 4),
+                "tolerance_um": STAGE_MOVE_TOLERANCE_UM,
+                "within_tolerance": False,
+                "elapsed_s": round(now - started, 3),
+                "last_device_status": status,
+            }
+            raise StageMoveError(result)
+        time.sleep(STAGE_MOVE_POLL_S)
 
 if TYPE_CHECKING:
     from microclaw.safety import SafetyGuard
@@ -809,12 +918,16 @@ class MicroscopeController:
         self._core.set_xy_position(x_um, y_um)
         self._core.wait_for_device(self._core.get_xy_stage_device())
 
-    def set_z(self, z_um: float) -> None:
+    def set_z(self, z_um: float) -> dict:
         """Guarded focus write — the single seam every Z move should use."""
         if self._guard is not None:
             self._guard.check_z(z_um)
-        self._core.set_position(z_um)
-        self._core.wait_for_device(self._core.get_focus_device())
+        device = self._core.get_focus_device()
+        try:
+            self._core.set_position(z_um)
+        except Exception as exc:
+            raise stage_move_dispatch_failure(self._core, device, z_um, exc) from exc
+        return settle_stage_move(self._core, device, z_um)
 
     def go_to_position(self, label: str) -> None:
         """Move stage to a named position.

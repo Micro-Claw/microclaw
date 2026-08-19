@@ -39,7 +39,10 @@ from microclaw.controller import (
     PositionListConflict,
     PositionProjection,
     dataset_stack_files,
+    settle_stage_move,
+    stage_move_dispatch_failure,
 )
+from microclaw import controller as move_controller
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
     MAX_SATURATED_FRACTION_FOR_COVERAGE,
@@ -707,7 +710,7 @@ def _adaptive_runner_source() -> str:
         hook_decisions.EmitArtifact,
         hook_decisions.DiscardFrame, hook_decisions.HookResult,
     )
-    parts = [f"__version__ = {__version__!r}\n"]
+    parts = [f"__version__ = {__version__!r}\n", _stage_move_contract_source()]
     parts.extend(inspect.getsource(item) for item in decision_items)
     parts.extend([
         "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueSurvey | "
@@ -1443,6 +1446,11 @@ def export_session_script(
     # keeps nested/composite emitters from having to duplicate a tool-name or
     # recorded-result predicate here when they start using a shared helper.
     channel_writes = adaptive_used or "_verify_property(" in body_text
+    # The adaptive runner source already carries the settlement contract, so
+    # gate on its absence to keep exactly one definition in every script.
+    stage_moves = not adaptive_used and (
+        "settle_stage_move(" in body_text or "stage_move_dispatch_failure(" in body_text
+    )
     lines = [
         "from __future__ import annotations",
         *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
@@ -1460,6 +1468,7 @@ def export_session_script(
           if analysis_used else []),
         *(["", _portable_log_path_source().rstrip()] if adaptive_used else []),
         *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),
+        *(["", _stage_move_contract_source().rstrip()] if stage_moves else []),
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
@@ -2131,10 +2140,48 @@ def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return result
 
 
-@emits(lambda p: (
-    f"core.set_position({p['z_um']!r})" if p.get("absolute", True)
-    else f"core.set_relative_position({p['z_um']!r})"
-))
+def _emit_stage_settle(device_expr: str, target: float) -> str:
+    return f"settle_stage_move(core, {device_expr}, {target!r})"
+
+
+def _emit_stage_dispatch(set_line: str, device_expr: str, target: float) -> str:
+    return "\n".join([
+        "try:",
+        f"    {set_line}",
+        "except Exception as _move_exc:",
+        f"    raise stage_move_dispatch_failure(core, {device_expr}, {target!r}, _move_exc) from _move_exc",
+    ])
+
+
+def _stage_move_contract_source() -> str:
+    constants = "\n".join([
+        f"STAGE_MOVE_TOLERANCE_UM = {move_controller.STAGE_MOVE_TOLERANCE_UM!r}",
+        f"STAGE_MOVE_TIMEOUT_S = {move_controller.STAGE_MOVE_TIMEOUT_S!r}",
+        f"STAGE_MOVE_POLL_S = {move_controller.STAGE_MOVE_POLL_S!r}",
+        f"STAGE_MOVE_REQUIRED_SAMPLES = {move_controller.STAGE_MOVE_REQUIRED_SAMPLES!r}",
+        f"STAGE_MOVE_STABILITY_WINDOW_S = {move_controller.STAGE_MOVE_STABILITY_WINDOW_S!r}",
+    ])
+    return "\n".join([
+        constants,
+        inspect.getsource(move_controller.StageMoveError),
+        inspect.getsource(move_controller.stage_move_dispatch_failure),
+        inspect.getsource(move_controller.settle_stage_move),
+    ])
+
+
+def _emit_move_stage_z(params: RecordedParams) -> str:
+    target = params.result.get("requested_um")
+    if target is None and params.get("absolute", True):
+        target = params.get("z_um")
+    if target is None:
+        raise CannotEmit("the focus-stage move recorded no resolved target")
+    return "\n".join([
+        _emit_stage_dispatch(f"core.set_position({target!r})", "core.get_focus_device()", target),
+        _emit_stage_settle("core.get_focus_device()", target),
+    ])
+
+
+@emits(_emit_move_stage_z)
 def move_stage_z(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2149,13 +2196,15 @@ def move_stage_z(
 
     guard.check_z(target_z)
 
-    if absolute:
-        ctrl.core.set_position(target_z)
-    else:
-        ctrl.core.set_relative_position(z_um)
-
-    _wait(ctrl, ctrl.core.get_focus_device())
-    return {"z_um": round(target_z, 3), "status": "Moved."}
+    device = ctrl.core.get_focus_device()
+    try:
+        if absolute:
+            ctrl.core.set_position(target_z)
+        else:
+            ctrl.core.set_relative_position(z_um)
+    except Exception as exc:
+        raise stage_move_dispatch_failure(ctrl.core, device, target_z, exc) from exc
+    return settle_stage_move(ctrl.core, device, target_z)
 
 
 # --- Named stages (design/14 §6) ---
@@ -2230,8 +2279,11 @@ def _emit_move_named_stage(params: RecordedParams) -> str:
     if "device" not in result or "requested_um" not in result:
         raise CannotEmit("the named-stage move recorded no resolved target")
     return "\n".join([
-        f"core.set_position({result['device']!r}, {result['requested_um']!r})",
-        f"core.wait_for_device({result['device']!r})",
+        _emit_stage_dispatch(
+            f"core.set_position({result['device']!r}, {result['requested_um']!r})",
+            repr(result["device"]), result["requested_um"],
+        ),
+        _emit_stage_settle(repr(result["device"]), result["requested_um"]),
     ])
 
 
@@ -2248,15 +2300,12 @@ def move_named_stage(
     current = float(ctrl.core.get_position(device))
     target = um if absolute else current + um
     guard.check_named_stage(device, target)
-    ctrl.core.set_position(device, target)
-    ctrl.core.wait_for_device(device)
-    achieved = float(ctrl.core.get_position(device))
-    return {
-        "device": device,
-        "requested_um": round(target, 4),
-        "achieved_um": round(achieved, 4),
-        "error_um": round(achieved - target, 4),
-    }
+    try:
+        ctrl.core.set_position(device, target)
+    except Exception as exc:
+        raise stage_move_dispatch_failure(ctrl.core, device, target, exc) from exc
+    result = settle_stage_move(ctrl.core, device, target)
+    return {"device": device, **result}
 
 
 # --- Channel / Config ---

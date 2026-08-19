@@ -1,5 +1,16 @@
 # design/40 — PFS works; the authorization map and our rig model were the problem
 
+> **CLOSED 2026-08-18 — Track B closed with it. Do not implement from this
+> document.** The coordinator got on the Nikon and PFS engages, disengages and
+> takes an offset move from inside a microclaw session, under the operator's
+> hand-declared `safety_config.yml`. Blocks 6, 7a, 7b and 8 are closed unbuilt;
+> 6a is dropped unmerged and its branch deleted. **The five defects this document
+> found that are *not* Nikon-specific are still live on `main`** and are tracked
+> in `design/35-usability-and-pfs-checklist.md` under "The five that outlived
+> Track B" — start there, not here. What stays valid below is the measured
+> session evidence: the engage loop, the four lock heights, the refuted premises,
+> and the cross-rig regression bar.
+
 Source: five Nikon Ti sessions run 2026-08-05 by the remote operator, in
 `~/Documents/Documents - Beyonce/Projects/Micro-Claw/pfs_fix/` — histories
 `20260805_{111502,114053,131030,131837,134358}_*_microclaw_history.jsonl`, the
@@ -13,6 +24,27 @@ open questions than the kit was designed to. This note records what they
 establish, what they refute, and how Track B is rescoped as a result.
 
 ---
+
+## Measured later: the offset is writable under an active lock
+
+Block 56's gate, 2026-08-19, with PFS armed and `TIPFSStatus.Status` reading
+`Locked in focus`: `move_named_stage` moved `TIPFSOffset` from 1.0 to 21.0 and
+**reached it exactly** (`within_tolerance: true`, independently re-read at 21.0).
+So on this rig a commanded offset write is **honoured while the servo holds**, not
+overridden — which is the documented way to move the focal plane under PFS, and
+it is now measured rather than assumed.
+
+Two corrections follow, both to inferences drawn from the 11:40 session:
+
+- **27.85 µm is not a mechanical floor.** With PFS off, `TIPFSOffset` was
+  commanded to 0.0 — the configured minimum — and reached 0.0 exactly.
+- **The servo does not override a commanded write.** It drives the offset when
+  nothing else does (27.85 → 183.55 on lock), which is a different statement.
+
+What 11:40 actually was: a **premature read-back**. The axis takes ~0.9 s to
+settle and reports busy throughout; the old code read it once, immediately after
+`wait_for_device`, and got the pre-move position. **Probe 0 remains unanswered** —
+this moved the *offset* under lock, not the focus drive.
 
 ## PFS engages under pure software control
 

@@ -129,7 +129,7 @@ Image analysis:
 - If the image appears blurry, suggest run_autofocus to the user — do not call it automatically unless the user has explicitly asked you to.
 - Never over-interpret a single image; recommend re-imaging or a wider survey if you are uncertain.
 - Before any image-guided navigation ("find a cell", "centre the feature", beam steering), run calibrate_stage_to_camera once — it measures pixel size, rotation, and both axis flips in ~4 snaps. Never infer stage axis directions by nudging and comparing thumbnails.
-- move_stage_xy and move_named_stage report requested vs achieved positions; flag any error_um above ~1 µm to the user instead of ignoring it.
+- move_stage_xy reports requested vs achieved positions; move_named_stage and move_stage_z fail unless measured motion settles within their declared tolerance.
 
 Position lists:
 - mark_position stores a position in microclaw's list and mirrors it into MM's PositionList, so it appears in the MM GUI's Position List Manager. Use it after the biologist has navigated to a site of interest.

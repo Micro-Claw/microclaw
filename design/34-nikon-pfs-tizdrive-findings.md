@@ -9,6 +9,21 @@
 > signature did not reproduce; the live defect is a missed target reported as
 > success). Still open exactly as written: probe 0's question at §194 — no
 > session has moved Z with PFS armed. It now gates nothing.
+>
+> **CLOSED 2026-08-18 with Track B.** PFS works from a microclaw session under a
+> hand-declared safety config; no further Nikon evidence is being sought and
+> probes 0–4 are retired unrun. The generic, non-Nikon defects this line of work
+> found are tracked in `design/35-usability-and-pfs-checklist.md` under "The five
+> that outlived Track B". This document is history.
+>
+> **§246–250's staleness table is superseded twice over** (block 56, merged
+> 2026-08-19). It recorded three offset moves each returning the *previous*
+> target; that signature never reproduced. What reproduced was a missed target
+> reported as a success — and the rig then showed *that* was a **premature
+> read-back**, not a refusal: the old path read the device once, immediately
+> after `wait_for_device`, on an axis that takes ~0.9 s and reports busy
+> throughout, so the read landed before the move finished. Block 56 replaced the
+> single read with a poll until measured is within tolerance of target.
 
 ## Scope
 
