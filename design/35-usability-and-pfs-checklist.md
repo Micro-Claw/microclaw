@@ -13,7 +13,7 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-18 close of Track B`** —
+> **The live state note is `### State at the 2026-08-19 assignment of block 56`** —
 > find it *by that heading*, not by position; it sits behind several superseded
 > notes that look just like it. It is the only section that describes the
 > repository as it is now.
@@ -402,11 +402,86 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-18 close of Track B — read this before assigning anything
+### State at the 2026-08-19 assignment of block 56 — read this before assigning anything
 
-**This is the live note. It supersedes every other State-at note in this
-section**, all of which are kept only for their round history. Position is not
-recency — read the heading, not the order.
+**This is the live note.** It supersedes every other State-at note in this
+section. Position is not recency — read the heading, not the order.
+
+**Block 56 is implemented, reviewed through two returned rounds, corrected by the
+coordinator, pushed, and awaiting its rig gate on the Nikon.** Nothing else is in
+flight. If you are picking this up cold with gate results in hand, everything you
+need is below and on the branch.
+
+- **Branch**: `design35/measured-move-reporting`, on `origin`, tip `5029afe` at
+  this writing. Start commit `5b2bcf8`. **Worktree `../microclaw-56` is still
+  live** — the block is open, so it is deliberately not removed.
+- **Runbook**: `design/35-block56-rig-gate.md` **on that branch**, not on `main`.
+  Pinned `git merge-base --is-ancestor 108b19f HEAD`.
+- **Suite**: 1899 passed / 99 skipped / 3 warnings, coordinator-measured in the
+  worktree (1897 at the end of round 2, plus the coordinator's two tests).
+
+**What the block does.** `move_stage_z`, `MicroscopeController.set_z`,
+`move_named_stage` and `UntrustedHookAdapter._apply_named_stage` now share one
+measured-settlement contract: success reports `requested_um`, `measured_um`,
+`tolerance_um`, `within_tolerance`, `elapsed_s`, `last_device_status`; a miss or
+timeout raises a typed `StageMoveError` carrying the same fields. Policy is
+0.5 µm tolerance, 10 s timeout, 50 ms polling, three consecutive in-tolerance
+samples spanning ≥100 ms.
+
+**Review history, so it is not re-litigated.** Round 1 fixed the two tool entry
+points. Round 2 was the coordinator's ruling to fold in
+`_apply_named_stage` — the review found a **third** stage-motion implementation
+still reporting a missed target as success, in the path design/52 uses to move
+hardware unattended from an approved hook. Two coordinator corrections followed
+(`108b19f`): a non-finite read was no longer diagnosed and put bare `NaN` into
+the history JSONL, and the settlement contract was emitted once per move call.
+Every test in both rounds was watched failing first, by the implementer and
+re-verified by the coordinator against the pre-fix tree.
+
+**The implementer was right and the checklist was wrong about callers.**
+`autofocus.py` and `hooks.py` move Z with bare `ctrl.core.set_position` and are
+**not** callers of these functions. Block 56's section says so now. **Those paths
+still have no settle check at all** — that is a live gap, not an oversight, and
+it is register work if anyone wants it.
+
+**How to score the gate — do not score it from the verdict.**
+
+- The **open question is the 0.5 µm tolerance**, which is a software policy, not
+  a hardware fact. Two limbs probe it: the hard-limit miss and the restoration
+  limb. If either shows a real stage settling outside 0.5 µm in ordinary use,
+  that is a tolerance decision for the operator, not a defect to fix.
+- The **miss limb states its own negative results.** If the configured
+  `named_stages` bound does not reach below the mechanical floor, or refuses the
+  target outright, that is a recorded outcome and the limb is not runnable on
+  that config. Do not treat it as a runbook defect, and do not go looking for
+  another mechanism to move.
+- **Compare numbers that should agree**: every limb reads the axis independently
+  after the move, and that reading must sit within 0.5 µm of the reported
+  `measured_um`. A restoration reporting `restored: true` whose independent
+  read disagrees with `entry_um` is the 52a shape and is the thing to look for.
+- The export limb must **run**, not merely compile.
+
+**Two Nikon preconditions are in the runbook and both would otherwise waste the
+trip**: PFS disengaged, because the servo drives `TIPFSOffset` on its own (a lock
+at 2500 pulled it 27.85 → 183.55); and `Core.Focus` assigned, which has cost that
+rig two sessions and is still undiagnosed on `main`.
+
+**Why the Nikon.** Not a fallback — the defect was measured there. At 11:40 on
+2026-08-05 `move_named_stage` on `TIPFSOffset` returned `requested 5 /
+achieved 27.85` as a success (design/40 `:115`). The demo machine cannot run the
+miss limb: its simulated stages achieve every valid target, so a miss there would
+be manufactured.
+
+**After the gate**: score from the artifacts, fix sized to the finding (step 7),
+re-test, then merge, push `main`, delete the branch locally and on `origin`,
+remove `../microclaw-56`, write the coordination notes into `design/prompts.md`,
+close the ledger row, and run the post-merge design gate the block names.
+
+### State at the 2026-08-18 close of Track B — SUPERSEDED, kept for the round history
+
+**Superseded by the 2026-08-19 note above, which is the live one.** Everything
+this note says about Track B's closure still holds — nothing since has reopened
+it — but it is no longer the picture of what is in flight.
 
 **Track B is closed. The Nikon is done.** The coordinator got on the system on
 2026-08-18 and **PFS engages, disengages and takes an offset move from inside a
@@ -778,9 +853,9 @@ branch open.** One worktree besides this one: `../microclaw-6a`, idle at `4994f3
 > merged after it was written. The live note is the 43n close above; find it by
 > its heading, not by position in this file.
 
-**This is the live note. It supersedes every other State-at note in this
-section**, all of which are kept only for their round history. Position is not
-recency — read the heading, not the order.
+~~**This is the live note.**~~ **It is not — this note is superseded; see the
+heading.** The claim is left struck rather than deleted because a reader who
+lands here by search must be able to see it was retracted.
 
 Verify against the repository rather than against any hash here. What held at
 this note's writing: `git log --oneline origin/main..main` empty, working tree
@@ -1311,9 +1386,9 @@ branch open.** One worktree besides this one: `../microclaw-6a`, idle at
 > machine, with its calibration done offline. The live note is above it.
 
 
-**This is the live note. It supersedes every other State-at note in this
-section**, all of which are kept only for their round history. Position is not
-recency here — read the heading, not the order.
+~~**This is the live note.**~~ **It is not — this note is superseded; see the
+heading.** The claim is left struck rather than deleted because a reader who
+lands here by search must be able to see it was retracted.
 
 Written at `a004fb0`, with coordinator commits after it expected, so **verify
 against the repository rather than against that hash.** What should hold:
