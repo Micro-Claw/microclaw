@@ -169,10 +169,190 @@ def test_autofocus_emitter_passes_recorded_inputs_without_rederiving(tmp_path):
     emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
     assert (
         "autofocus_result = _run_autofocus_passes("
-        "mm, 20, 0.5, 'coarse_then_fine', 50)"
+        "mm, 20, 0.5, 'coarse_then_fine', 50, None)"
     ) in emitted_call
     assert "max(" not in emitted_call
     assert inspect.getsource(tools._run_autofocus_passes) in source
+
+
+def test_emitted_autofocus_actually_crops_the_metric_frames(tmp_path, monkeypatch):
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 2, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+        "region": [0, 0, 4, 4],
+    })])
+    frames = [np.zeros((8, 8), dtype=np.uint16) for _ in range(3)]
+    frames[1][:4, :4] = np.indices((4, 4)).sum(axis=0) % 2 * 100
+
+    class FakeCore:
+        def __init__(self): self._index, self.position = 0, 50.0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            frame = frames[min(self._index, 2)]
+            self._index += 1
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    curve = namespace["autofocus_result"].coarse.metric_values
+    cropped_metric = image_analysis.tenengrad(frames[1][:4, :4])
+    full_metric = image_analysis.tenengrad(frames[1])
+    assert cropped_metric != full_metric
+    assert curve[1] == pytest.approx(cropped_metric)
+
+
+def test_emitted_autofocus_settles_delayed_stage_and_prints_envelope(
+    tmp_path, monkeypatch, capsys
+):
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 2, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+    })])
+
+    assert source.count("def settle_stage_move") == 1
+    assert "AUTOFOCUS ENVELOPE" in source
+    assert "min_contrast" in source
+    assert "AUTOFOCUS OUTCOME" in source
+
+    class DelayedCore:
+        last = None
+
+        def __init__(self):
+            type(self).last = self
+            self.position = 50.0
+            self.target = 50.0
+            self.polls = 0
+            self.snapped_at = []
+        def get_image_width(self): return 1
+        def get_image_height(self): return 1
+        def get_focus_device(self): return "Z"
+        def set_position(self, z):
+            self.target = float(z)
+            self.polls = 0
+        def wait_for_device(self, _device): pass
+        def device_busy(self, _device): return self.polls < 2
+        def get_position(self, _device=None):
+            self.polls += 1
+            if self.polls > 2:
+                self.position = self.target + 0.2
+            return self.position
+        def snap_image(self): self.snapped_at.append(self.position)
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            frame = np.array([[int(self.position)]], dtype=np.uint16)
+            return SimpleNamespace(pix=frame, tags={"Width": 1, "Height": 1})
+
+    monkeypatch.setattr("pycromanager.Core", DelayedCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": DelayedCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    assert DelayedCore.last.snapped_at == [49.2, 50.2, 51.2]
+    assert namespace["autofocus_result"].coarse.measured_z_positions == [49.2, 50.2, 51.2]
+    assert namespace["autofocus_result"].final_z_um == 50.2
+    output = capsys.readouterr().out
+    assert "AUTOFOCUS ENVELOPE" in output
+    assert "49.0" in output and "51.0" in output
+    assert "region: None" in output
+    assert "min_contrast:" in output
+    assert "AUTOFOCUS OUTCOME" in output
+    assert "moved: False" in output
+    assert "measured final Z: 50.2" in output
+
+
+def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
+    tmp_path, monkeypatch
+):
+    size = 20
+    rng = np.random.default_rng(73)
+    frames = [
+        np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+        for _ in range(5)
+    ]
+    assert autofocus.curve_contrast(
+        [image_analysis.tenengrad(frame) for frame in frames]
+    ) > autofocus.MIN_CONTRAST
+
+    class FakeCore:
+        def __init__(self):
+            self._index = 0
+            self.position = 50.0
+        def get_position(self, _device=None): return self.position
+        def device_busy(self, _device): return False
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            frame = frames[self._index]
+            self._index += 1
+            return SimpleNamespace(pix=frame, tags={"Width": size, "Height": size})
+
+    live_core = FakeCore()
+    live = tools._run_autofocus_passes(
+        SimpleNamespace(core=live_core), 4, 1, "sweep", 0,
+        [0, 0, size, size],
+    )
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+        "region": [0, 0, size, size],
+    })])
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+    emitted = namespace["autofocus_result"]
+
+    assert live.converged is False
+    assert emitted.converged is False
+    assert live.moved == emitted.moved == False
+    assert live.reason == emitted.reason
+
+
+def test_emitted_snap_analysis_actually_crops_every_statistic(tmp_path, monkeypatch):
+    _, _, source = export(tmp_path, [call(
+        "snap_and_analyze", {"region": [2, 1, 3, 4]}
+    )])
+    frame = np.zeros((8, 8), dtype=np.uint16)
+    frame[1:5, 2:5] = 40
+
+    class FakeCore:
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    assert namespace["stats"].mean_intensity == 40.0
+    assert namespace["stats"].min_intensity == 40.0
 
 
 def test_inlined_analysis_constant_comes_from_module(tmp_path):
@@ -1195,13 +1375,18 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
             self.moves = []
 
         def get_focus_device(self): return "Z"
-        def get_position(self): return self.z
+        def get_position(self, _device=None): return self.z
         def set_position(self, z): self.z = float(z)
+        def device_busy(self, _device): return False
         def set_xy_position(self, x, y): self.moves.append((x, y))
         def wait_for_device(self, _device): pass
         def snap_image(self): self.snaps += 1
         def get_bytes_per_pixel(self): return 2
         def get_number_of_components(self): return 1
+        # The emitted script scales the flat-curve guard by the live frame's
+        # pixel count, so a fake Core must answer these the way a real one does.
+        def get_image_width(self): return 2
+        def get_image_height(self): return 2
         def get_tagged_image(self):
             image = np.array([[0, 10], [10, 0]], dtype=np.uint16)
             return SimpleNamespace(pix=image, tags={"Width": 2, "Height": 2})
@@ -1919,7 +2104,7 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
         def check_z(self, _z): pass
         def check_xy(self, _x, _y): pass
     ctrl = SimpleNamespace(core=SimpleNamespace(get_position=lambda: 10.0))
-    sweep = autofocus.SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    sweep = autofocus.SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     real_autofocus_passes = tools._run_autofocus_passes
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: autofocus.AutofocusResult(
         sweep, None, 10, 10, True, False, None
@@ -2735,3 +2920,127 @@ def test_emitted_script_states_its_envelope_and_never_blocks_on_stdin(
     # whole disclosure now.
     assert ("approved {_property_bound}" in source
             or "approved interval" in source)
+
+
+def test_emitted_crop_refuses_a_frame_the_region_does_not_fit(tmp_path, monkeypatch):
+    """The live tools refuse an out-of-frame region; the exported script must too.
+
+    numpy slicing TRUNCATES rather than raising, so an emitted crop with no
+    bounds check measures the metric over whatever pixels happen to exist and
+    reports the number as if nothing were wrong. `_validate_metric_region` lives
+    in `run_autofocus`/`snap_and_analyze`, neither of which is emitted, so the
+    standalone script carries no check of its own unless the inlined code has
+    one. A rig whose camera ROI is smaller than it was when the session ran is
+    exactly the case design/54 refuses.
+    """
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 2, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+        "region": [0, 0, 16, 16],
+    })])
+    frame = np.zeros((8, 8), dtype=np.uint16)          # smaller than the region
+
+    class FakeCore:
+        def __init__(self): self.position = 50.0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    with pytest.raises(RuntimeError) as excinfo:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert "[0, 0, 16, 16]" in str(excinfo.value)
+    assert "[8, 8]" in str(excinfo.value)
+
+
+def test_emitted_snap_crop_refuses_a_frame_the_region_does_not_fit(
+    tmp_path, monkeypatch
+):
+    """Same guarantee on the snap path, whose emitted crop is a bare slice."""
+    _, _, source = export(tmp_path, [call(
+        "snap_and_analyze", {"region": [4, 4, 16, 16]}
+    )])
+    frame = np.zeros((8, 8), dtype=np.uint16)
+
+    class FakeCore:
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    with pytest.raises(RuntimeError) as excinfo:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert "[4, 4, 16, 16]" in str(excinfo.value)
+    assert "[8, 8]" in str(excinfo.value)
+
+
+def test_emitted_regionless_run_scales_its_guard_to_the_live_frame(
+    tmp_path, monkeypatch
+):
+    """The standalone script must refuse noise on a cropped sensor too.
+
+    A regionless sweep on a small camera ROI averages the metric over as few
+    pixels as a small software region does. The threshold is derived at runtime
+    from the frame the script actually finds, not baked in at export, so the
+    same script is correct on a rig whose ROI differs from the session's.
+    """
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
+    })])
+    size = 20
+    rng = np.random.default_rng(73)
+    frames = [
+        np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+        for _ in range(5)
+    ]
+    # The fixture must be noise that WOULD have converged, or this proves nothing.
+    metrics = [image_analysis.tenengrad(f) for f in frames]
+    assert autofocus.curve_contrast(metrics) > autofocus.MIN_CONTRAST
+
+    class FakeCore:
+        def __init__(self): self.z, self._i = 50.0, 0
+        def get_position(self, _device=None): return self.z
+        def device_busy(self, _device): return False
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.z = float(z)
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_image_width(self): return size
+        def get_image_height(self): return size
+        def get_tagged_image(self):
+            frame = frames[min(self._i, len(frames) - 1)]
+            self._i += 1
+            return SimpleNamespace(pix=frame, tags={"Width": size, "Height": size})
+
+    core = FakeCore()
+    monkeypatch.setattr("pycromanager.Core", lambda *a, **k: core)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": lambda *a, **k: core,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    assert namespace["autofocus_result"].converged is False
+    assert namespace["autofocus_result"].moved is False
+    assert core.z == 50.0

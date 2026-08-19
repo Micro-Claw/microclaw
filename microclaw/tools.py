@@ -25,10 +25,12 @@ from pycromanager import Acquisition, multi_d_acquisition_events
 from ndstorage import Dataset
 
 from microclaw.autofocus import (
+    MIN_CONTRAST,
     AutofocusResult,
     coarse_then_fine_plane_count,
     coarse_then_fine_autofocus,
     curve_contrast,
+    contrast_threshold,
     single_sweep_autofocus,
     sweep_plane_count,
 )
@@ -127,9 +129,25 @@ def _emit_snap_and_analyze(params: RecordedParams) -> str:
             "UNCALIBRATED_MIN_SNR_FALLBACK"
         ]).UNCALIBRATED_MIN_SNR_FALLBACK,
     )
+    region = params.get("region")
+    crop = ""
+    if region is not None:
+        x, y, w, h = region
+        # The guard travels with the crop for the same reason the autofocus
+        # closure carries one: a bare slice truncates silently on a frame the
+        # region does not fit, and the standalone script has no validator.
+        crop = (
+            f"if image.shape[0] < {y + h} or image.shape[1] < {x + w}:\n"
+            f"    raise RuntimeError(\n"
+            f"        f\"Region {region} does not fit frame \"\n"
+            f"        f\"[{{image.shape[1]}}, {{image.shape[0]}}].\"\n"
+            f"    )\n"
+            f"image = image[{y}:{y + h}, {x}:{x + w}]\n"
+        )
     return (
         "image = snap_to_numpy(mm)\n"
-        f"stats = compute_stats(image, min_snr={min_snr!r})"
+        + crop
+        + f"stats = compute_stats(image, min_snr={min_snr!r})"
     )
 
 
@@ -137,11 +155,26 @@ def _emit_autofocus(params: RecordedParams) -> str:
     signature = inspect.signature(run_autofocus)
     method = params.get("method", signature.parameters["method"].default)
     settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
-    return (
+    region = params.get("region", signature.parameters["region"].default)
+    z_range = params["z_range_um"]
+    z_step = params["z_step_um"]
+    return "\n".join([
+        "_autofocus_entry_z = float(core.get_position())",
+        f"_autofocus_lo = _autofocus_entry_z - {z_range!r} / 2",
+        f"_autofocus_hi = _autofocus_entry_z + {z_range!r} / 2",
+        f"_autofocus_region = {region!r}",
+        "_autofocus_min_contrast = contrast_threshold("
+        "_metric_pixel_count(mm, _autofocus_region))",
+        "print('AUTOFOCUS ENVELOPE')",
+        "print(f'Sweep Z: {_autofocus_lo} to {_autofocus_hi} um; region: '",
+        "      f'{_autofocus_region!r}; min_contrast: {_autofocus_min_contrast}')",
         "autofocus_result = _run_autofocus_passes("
-        f"mm, {params['z_range_um']!r}, {params['z_step_um']!r}, "
-        f"{method!r}, {settle!r})"
-    )
+        f"mm, {z_range!r}, {z_step!r}, {method!r}, {settle!r}, "
+        f"{region!r})",
+        "print('AUTOFOCUS OUTCOME')",
+        "print(f'moved: {autofocus_result.moved}; measured final Z: '",
+        "      f'{autofocus_result.final_z_um}')",
+    ])
 
 
 def _emit_go_to_position(params: RecordedParams) -> str:
@@ -548,16 +581,18 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             inspect.getsource(autofocus.SweepResult),
             inspect.getsource(autofocus.AutofocusResult),
             f"MIN_CONTRAST = {autofocus.MIN_CONTRAST!r}\n",
+            f"N_REF = {autofocus.N_REF!r}\n",
         ])
         for fn in (
             autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
-            autofocus.curve_contrast,
+            autofocus.curve_contrast, autofocus.contrast_threshold,
             autofocus.sweep_autofocus, autofocus._restore,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,
             autofocus.single_sweep_autofocus,
         ):
             parts.append(inspect.getsource(fn))
+        parts.append(inspect.getsource(_metric_pixel_count))
         parts.append(inspect.getsource(_run_autofocus_passes))
     return "\n".join(parts)
 
@@ -1428,7 +1463,8 @@ def export_session_script(
     # The adaptive runner source already carries the settlement contract, so
     # gate on its absence to keep exactly one definition in every script.
     stage_moves = not adaptive_used and (
-        "settle_stage_move(" in body_text or "stage_move_dispatch_failure(" in body_text
+        autofocus_used or "settle_stage_move(" in body_text
+        or "stage_move_dispatch_failure(" in body_text
     )
     lines = [
         "from __future__ import annotations",
@@ -3665,12 +3701,46 @@ def run_analysis_on_saved_dataset(
 
 # --- Image capture with analysis ---
 
-def _metric_stamp(ctrl: MicroscopeController) -> dict:
+def _validate_metric_region(
+    region: list[int] | None, frame_width: int, frame_height: int
+) -> tuple[list[int] | None, str | None]:
+    """Validate a software metric crop without changing or clamping it."""
+    if region is None:
+        return None, None
+    if not isinstance(region, list) or len(region) != 4:
+        return None, (
+            f"Malformed region {region!r}: expected four integer values "
+            "[x, y, w, h]."
+        )
+    if any(type(value) is not int for value in region):
+        return None, (
+            f"Malformed region {region!r}: expected four integer values "
+            "[x, y, w, h]."
+        )
+    x, y, width, height = region
+    if x < 0 or y < 0 or width < 0 or height < 0:
+        return None, f"Malformed region {region!r}: values must not be negative."
+    if width <= 1 or height <= 1:
+        return None, (
+            f"Degenerate region {region!r}: width and height must both be greater "
+            "than 1 pixel."
+        )
+    if x + width > frame_width or y + height > frame_height:
+        return None, (
+            f"Region {region!r} does not fit frame "
+            f"[{frame_width}, {frame_height}]."
+        )
+    return list(region), None
+
+
+def _metric_stamp(
+    ctrl: MicroscopeController, region: list[int] | None = None
+) -> dict:
     """The settings a focus metric is only comparable within (design/14 §10).
 
     Split from _focus_metric_payload so a multi-tile result can carry one stamp
-    over many metrics: every tile of a grid shares the ROI, exposure and binning,
-    so repeating the block per tile would be N copies of one fact.
+    over many metrics: every tile of a grid shares the ROI, exposure, binning and
+    software region, so repeating the block per tile would be N copies of one fact.
     """
     try:
         roi = ctrl.core.get_roi()
@@ -3696,6 +3766,7 @@ def _metric_stamp(ctrl: MicroscopeController) -> dict:
             "roi": roi_list,
             "exposure_ms": exposure_ms,
             "binning": binning,
+            "region": region,
         },
     }
 
@@ -3710,6 +3781,7 @@ def _focus_metric_payload(
     stats: ImageStats,
     min_snr: float,
     min_snr_source: str,
+    region: list[int] | None = None,
 ) -> dict:
     """Focus metric stamped with the settings it is only comparable within, and
     with the SNR gate that says whether it is a measurement at all (design/25).
@@ -3736,7 +3808,7 @@ def _focus_metric_payload(
         "snr_invalid_reason": stats.snr_invalid_reason,
         "min_snr": min_snr,
         "min_snr_source": min_snr_source,
-        **_metric_stamp(ctrl),
+        **_metric_stamp(ctrl, region),
     }
     if not stats.snr_valid:
         payload["warning"] = stats.snr_invalid_reason
@@ -3752,6 +3824,7 @@ def snap_and_analyze(
     return_thumbnail: bool = False,
     thumbnail_size: int = 512,
     display: bool = True,
+    region: list[int] | None = None,
 ) -> list | dict:
     """Snap an image, display it in the MM viewer, and return numerical stats.
 
@@ -3763,6 +3836,12 @@ def snap_and_analyze(
     """
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
+    validated, error = _validate_metric_region(region, image.shape[1], image.shape[0])
+    if error:
+        return {"error": error}
+    if validated is not None:
+        x, y, w, h = validated
+        image = image[y:y + h, x:x + w]
     min_snr, min_snr_source = _analysis_gate(guard)
     stats = compute_stats(image, min_snr=min_snr)
     text_payload: dict[str, Any] = {
@@ -3773,7 +3852,9 @@ def snap_and_analyze(
         # their image was on screen. Now it reports whether MM actually has a
         # Preview window open (which snap_to_numpy_displayed has just repainted).
         "displayed_in_mm_viewer": bool(display) and preview_window_open(ctrl),
-        **_focus_metric_payload(ctrl, stats, min_snr, min_snr_source),
+        **_focus_metric_payload(
+            ctrl, stats, min_snr, min_snr_source, validated
+        ),
         "mean_intensity": round(stats.mean_intensity, 1),
         "min_intensity": round(stats.min_intensity, 1),
         "max_intensity": round(stats.max_intensity, 1),
@@ -4108,18 +4189,56 @@ def center_feature(
 
 # --- Autofocus (Form A — standalone) ---
 
+def _metric_pixel_count(ctrl, region: list[int] | None) -> int:
+    """Pixels the focus metric is averaged over — the region, or the live frame.
+
+    The flat-curve guard scales with this, and it must not care HOW the frame
+    got small. A camera ROI cropped to 32x32 in Micro-Manager averages the
+    metric over exactly as few pixels as a 32x32 software region, and reaches
+    the same noise floor; reading the live frame rather than assuming a
+    reference size is what makes both routes refuse.
+    """
+    if region is not None:
+        return int(region[2]) * int(region[3])
+    return int(ctrl.core.get_image_width()) * int(ctrl.core.get_image_height())
+
+
 def _run_autofocus_passes(
     ctrl: MicroscopeController,
     z_range_um: float,
     z_step_um: float,
     method: str,
     settle_ms: int,
+    region: list[int] | None = None,
 ) -> AutofocusResult:
+    metric_fn = tenengrad
+    min_contrast = contrast_threshold(_metric_pixel_count(ctrl, region))
+    if region is not None:
+        x, y, width, height = region
+
+        def metric_fn(image):
+            # Re-checked per frame rather than once before the sweep, because
+            # numpy slicing TRUNCATES instead of raising: a frame smaller than
+            # the region would score the metric over whatever pixels exist and
+            # report it as if nothing were wrong. This function is inlined into
+            # the exported script, which carries no other check —
+            # _validate_metric_region lives in run_autofocus, and run_autofocus
+            # is not emitted.
+            if image.shape[0] < y + height or image.shape[1] < x + width:
+                raise RuntimeError(
+                    f"Region {[x, y, width, height]} does not fit frame "
+                    f"[{image.shape[1]}, {image.shape[0]}]."
+                )
+            return tenengrad(image[y:y + height, x:x + width])
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
             ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
+            metric_fn=metric_fn, min_contrast=min_contrast,
         )
-    return single_sweep_autofocus(ctrl, z_range_um, z_step_um, settle_ms)
+    return single_sweep_autofocus(
+        ctrl, z_range_um, z_step_um, settle_ms, metric_fn=metric_fn,
+        min_contrast=min_contrast,
+    )
 
 
 def _round_sig(value: float, sig: int = 4) -> float:
@@ -4136,16 +4255,22 @@ def _round_sig(value: float, sig: int = 4) -> float:
     return float(f"%.{sig}g" % value)
 
 
-def _sweep_payload(sweep) -> dict | None:
+def _sweep_payload(sweep, min_contrast: float | None = None) -> dict | None:
     if sweep is None:
         return None
-    return {
+    payload = {
         "z_positions": [round(z, 3) for z in sweep.z_positions],
+        "measured_z_positions": [
+            round(z, 3) for z in sweep.measured_z_positions
+        ],
         "metric_curve": [_round_sig(v) for v in sweep.metric_values],
         "best_z_um": round(sweep.best_z_um, 3),
         "peak_interior": sweep.peak_interior,
         "contrast": round(curve_contrast(sweep.metric_values), 3),
     }
+    if min_contrast is not None:
+        payload["min_contrast"] = round(min_contrast, 3)
+    return payload
 
 
 @emits(_emit_autofocus)
@@ -4157,6 +4282,7 @@ def run_autofocus(
     method: str = "coarse_then_fine",
     settle_ms: int = 50,
     return_thumbnail: bool = True,
+    region: list[int] | None = None,
 ) -> list | dict:
     """Sweep Z to find the sharpest focal plane.
 
@@ -4174,6 +4300,14 @@ def run_autofocus(
     The sweep is headless: live view is paused for its duration and left off
     afterwards, and the viewer does not show the sweep as it happens.
     """
+    validated, error = _validate_metric_region(
+        region,
+        int(ctrl.core.get_image_width()),
+        int(ctrl.core.get_image_height()),
+    )
+    if error:
+        return {"error": error}
+
     entry_z = ctrl.core.get_position()
     guard.check_z(entry_z - z_range_um / 2)
     guard.check_z(entry_z + z_range_um / 2)
@@ -4193,7 +4327,19 @@ def run_autofocus(
         }
 
     with _pause_live(ctrl, restore=False) as live_state:
-        result = _run_autofocus_passes(ctrl, z_range_um, z_step_um, method, settle_ms)
+        result = _run_autofocus_passes(
+            ctrl, z_range_um, z_step_um, method, settle_ms, validated
+        )
+
+    # The same number the sweep compared against, from the same helper — the
+    # payload and the refusal must not be able to disagree. Reported only when
+    # it is not the default, so an ordinary full-frame payload keeps its shape;
+    # absent means MIN_CONTRAST, the same convention `region` uses.
+    applied_min_contrast = contrast_threshold(
+        _metric_pixel_count(ctrl, validated)
+    )
+    if applied_min_contrast == MIN_CONTRAST:
+        applied_min_contrast = None
 
     payload: dict[str, Any] = {
         "converged": result.converged,
@@ -4203,14 +4349,20 @@ def run_autofocus(
         "final_z_um": round(result.final_z_um, 3),
         "z_range_um": z_range_um,
         # BOTH passes — the caller can see which one chose the plane.
-        "coarse": _sweep_payload(result.coarse),
-        "fine": _sweep_payload(result.fine),
+        "coarse": _sweep_payload(result.coarse, applied_min_contrast),
+        "fine": _sweep_payload(result.fine, applied_min_contrast),
         "warning": (
             "Peak focus was at the edge of the sweep range; consider widening z_range_um."
             if result.converged and not result.coarse.peak_interior
             else None
         ),
     }
+    # Present only when a region was used, so a regionless payload keeps its
+    # shape. Every number above — both metric curves, contrast, and
+    # focus_metric_at_final below — is measured over these pixels, and
+    # run_autofocus carries no metric_valid_for block to say so otherwise.
+    if validated is not None:
+        payload["region"] = validated
     live_report = _live_restore_report(live_state)
     if live_report:
         payload["live_view_restore"] = live_report
@@ -4227,7 +4379,11 @@ def run_autofocus(
 
     with _pause_live(ctrl, restore=False):
         image = snap_to_numpy(ctrl)
-    payload["focus_metric_at_final"] = _round_sig(tenengrad(image))
+    metric_image = image
+    if validated is not None:
+        x, y, w, h = validated
+        metric_image = image[y:y + h, x:x + w]
+    payload["focus_metric_at_final"] = _round_sig(tenengrad(metric_image))
     return image_content(payload, image)
 
 

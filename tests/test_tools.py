@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from microclaw import tools
-from microclaw.autofocus import AutofocusResult, SweepResult
+from microclaw.autofocus import AutofocusResult, SweepResult, curve_contrast
 from microclaw.safety import (
     AnalysisConstraints, IlluminationConstraints, IlluminationProperty,
     NamedStageLimits, SafetyConstraints, SafetyGuard, SafetyViolation,
@@ -243,7 +243,9 @@ class TestMoveStageZ:
             move_stage_z(mock_ctrl, default_guard, z_um=200.0, absolute=False)
 
     def test_relative_in_range(self, mock_ctrl, default_guard):
-        mock_ctrl.core.get_position.side_effect = [50.0, 60.0, 60.0, 60.0]
+        # Unbounded on purpose: a counted list asserts how many times the settle
+        # loop polls, which is wall-clock dependent and differs by platform.
+        mock_ctrl.core.get_position.side_effect = _positions(50.0, 60.0)
         result = move_stage_z(mock_ctrl, default_guard, z_um=10.0, absolute=False)
         mock_ctrl.core.set_relative_position.assert_called_once_with(10.0)
         assert result["measured_um"] == 60.0
@@ -514,7 +516,7 @@ class TestNamedStages:
     def test_move_reports_requested_vs_achieved(self, stage_ctrl, stage_guard):
         from microclaw.tools import move_named_stage
         # Settling error is real on this rig and was previously invisible.
-        stage_ctrl.core.get_position.side_effect = [100.0, 200.0, 200.0, 200.0]
+        stage_ctrl.core.get_position.side_effect = _positions(100.0, 200.0)
         result = move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=200.0)
         stage_ctrl.core.set_position.assert_called_once_with("TIRF Stage", 200.0)
         stage_ctrl.core.device_busy.assert_called_with("TIRF Stage")
@@ -1111,10 +1113,31 @@ class TestSnapAndAnalyze:
         result = snap_and_analyze(mock_ctrl, unconstrained_guard)
         # "_gated": focus_metric now travels with focus_metric_valid + snr (design/25).
         assert result["focus_metric_kind"] == "tenengrad_gated"
-        assert set(result["metric_valid_for"]) == {"roi", "exposure_ms", "binning"}
+        assert set(result["metric_valid_for"]) == {
+            "roi", "exposure_ms", "binning", "region"
+        }
+        assert result["metric_valid_for"]["region"] is None
         for metric in ("signal_coverage", "structure_coverage",
                        "signal_concentration"):
             assert result[metric] == round(result[metric], 6)
+
+    def test_region_applies_to_every_statistic_and_metric_stamp(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        image = np.full((16, 16), 10, dtype=np.uint16)
+        image[4:8, 2:6] = np.arange(16, dtype=np.uint16).reshape(4, 4) + 100
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: image
+        )
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region=[2, 4, 4, 4]
+        )
+
+        assert result["mean_intensity"] == pytest.approx(107.5)
+        assert result["min_intensity"] == 100.0
+        assert result["max_intensity"] == 115.0
+        assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
 
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
@@ -1194,11 +1217,29 @@ class TestSnapAndAnalyze:
         assert result["min_intensity"] != result["mean_intensity"]
 
 
+def _positions(before, after):
+    """One pre-move read, then the settled position for as long as it is asked.
+
+    A fixed list here counts the settle loop's polls, and that count is wall
+    clock dependent: settle_stage_move wants STAGE_MOVE_REQUIRED_SAMPLES
+    in-tolerance reads spanning STAGE_MOVE_STABILITY_WINDOW_S, so a list sized
+    to the minimum passes wherever sleep overshoots and StopIterations wherever
+    it does not. test_move_reports_requested_vs_achieved failed exactly that way
+    on the Nikon's Windows/Python 3.12 run (block 54bde gate, 2026-08-19) while
+    green on macOS. The behaviour under test is what gets reported, never how
+    many times it looked.
+    """
+    from itertools import chain, repeat
+    values = chain([before], repeat(after))
+    return lambda *_args, **_kwargs: next(values)
+
+
 _FAKE_SWEEP = SweepResult(
     z_positions=[49.0, 50.0, 51.0],
     metric_values=[0.1, 0.9, 0.1],
     best_z_um=50.0,
     peak_interior=True,
+    measured_z_positions=[49.0, 50.0, 51.0],
 )
 
 _FAKE_AF_RESULT = AutofocusResult(
@@ -1225,6 +1266,147 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_small_region_pure_noise_does_not_converge_or_move(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        size = 20
+        rng = np.random.default_rng(73)
+        frames = [
+            np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+            for _ in range(5)
+        ]
+        metrics = [tools.tenengrad(frame) for frame in frames]
+        assert curve_contrast(metrics) > 0.15
+        assert 0 < int(np.argmax(metrics)) < len(metrics) - 1
+
+        mock_ctrl.core.get_image_width.return_value = size
+        mock_ctrl.core.get_image_height.return_value = size
+        current_z = [50.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_args: current_z[0]
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_POLL_S", 0)
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_STABILITY_WINDOW_S", 0)
+        mock_ctrl.core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
+        frame_iter = iter(frames)
+        monkeypatch.setattr(
+            "microclaw.autofocus.snap_to_numpy", lambda _ctrl: next(frame_iter)
+        )
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=4.0, z_step_um=1.0,
+            method="sweep", settle_ms=0, return_thumbnail=False,
+            region=[0, 0, size, size],
+        )
+
+        assert current_z[0] == 50.0
+        assert result["converged"] is False
+        assert result["moved"] is False
+        assert result["final_z_um"] == 50.0
+        assert result["coarse"]["min_contrast"] > result["coarse"]["contrast"]
+
+    def test_small_camera_roi_pure_noise_does_not_converge_or_move(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The guard must not care HOW the metric frame got small.
+
+        A cropped camera ROI averages the metric over just as few pixels as a
+        software region does, so it reaches the same noise floor. Passing N_REF
+        for the regionless case kept the threshold at 0.15 however small the
+        sensor frame was, and a 32x32 crop converged on pure noise 43% of the
+        time — the same defect as a small region, reached by MM's own ROI
+        button instead.
+        """
+        size = 20
+        rng = np.random.default_rng(73)
+        frames = [
+            np.clip(rng.normal(1000, 25, (size, size)), 0, 65535).astype(np.uint16)
+            for _ in range(5)
+        ]
+        metrics = [tools.tenengrad(frame) for frame in frames]
+        assert curve_contrast(metrics) > 0.15
+        assert 0 < int(np.argmax(metrics)) < len(metrics) - 1
+
+        mock_ctrl.core.get_image_width.return_value = size
+        mock_ctrl.core.get_image_height.return_value = size
+        current_z = [50.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_args: current_z[0]
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_POLL_S", 0)
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_STABILITY_WINDOW_S", 0)
+        mock_ctrl.core.set_position.side_effect = lambda z: current_z.__setitem__(0, z)
+        frame_iter = iter(frames)
+        monkeypatch.setattr(
+            "microclaw.autofocus.snap_to_numpy", lambda _ctrl: next(frame_iter)
+        )
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=4.0, z_step_um=1.0,
+            method="sweep", settle_ms=0, return_thumbnail=False,
+        )                                          # NO region — the crop is the camera's
+
+        assert current_z[0] == 50.0
+        assert result["converged"] is False
+        assert result["moved"] is False
+        assert result["final_z_um"] == 50.0
+        assert result["coarse"]["min_contrast"] > result["coarse"]["contrast"]
+
+    def test_region_curve_has_more_contrast_than_diluted_full_frame(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        mock_ctrl.core.get_image_width.return_value = 64
+        mock_ctrl.core.get_image_height.return_value = 64
+        current_z = [50.0]
+
+        def set_position(z):
+            current_z[0] = float(z)
+
+        mock_ctrl.core.set_position.side_effect = set_position
+        mock_ctrl.core.get_position.side_effect = lambda *_args: current_z[0]
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_POLL_S", 0)
+        monkeypatch.setattr("microclaw.controller.STAGE_MOVE_STABILITY_WINDOW_S", 0)
+        checker = (np.indices((16, 16)).sum(axis=0) % 2).astype(np.float64)
+        background = np.tile(np.arange(64) % 2, (64, 1)).astype(np.float64) * 30
+
+        def frame(_ctrl):
+            image = background.copy()
+            amplitude = {49.0: 10, 50.0: 100, 51.0: 10}[current_z[0]]
+            image[:16, :16] = checker * amplitude
+            return image
+
+        monkeypatch.setattr("microclaw.autofocus.snap_to_numpy", frame)
+        common = dict(
+            z_range_um=2.0, z_step_um=1.0, method="sweep", settle_ms=0,
+            return_thumbnail=False,
+        )
+        full = run_autofocus(mock_ctrl, unconstrained_guard, **common)
+        region = run_autofocus(
+            mock_ctrl, unconstrained_guard, region=[0, 0, 16, 16], **common
+        )
+
+        assert region["coarse"]["contrast"] > full["coarse"]["contrast"]
+
+    @pytest.mark.parametrize("region, expected", [
+        ([1, 2, 3], "[1, 2, 3]"),
+        ([1, 2, 3.5, 4], "3.5"),
+        ([-1, 2, 3, 4], "-1"),
+        ([1, 2, 1, 4], "[1, 2, 1, 4]"),
+        ([60, 2, 8, 4], "[64, 32]"),
+    ])
+    def test_invalid_region_refuses_before_the_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, region, expected
+    ):
+        mock_ctrl.core.get_image_width.return_value = 64
+        mock_ctrl.core.get_image_height.return_value = 32
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", sweep)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            region=region,
+        )
+
+        assert "error" in result
+        assert repr(region) in result["error"] or expected in result["error"]
+        assert expected in result["error"]
+        sweep.assert_not_called()
     def test_z_boundary_check_below(self, mock_ctrl, default_guard):
         # current Z=5, range=20 → sweep goes to -5 which is below z_min=0
         mock_ctrl.core.get_position.return_value = 5.0
@@ -1271,6 +1453,7 @@ class TestRunAutofocus:
             metric_values=[0.0031234, 0.0245678, 0.0009876],
             best_z_um=50.0,
             peak_interior=True,
+            measured_z_positions=[49.0, 50.0, 51.0],
         )
         monkeypatch.setattr(
             "microclaw.tools.coarse_then_fine_autofocus",
@@ -1291,6 +1474,11 @@ class TestRunAutofocus:
         assert result["entry_z_um"] == 50.0
         assert result["coarse"]["metric_curve"] == [0.1, 0.9, 0.1]
         assert result["fine"]["peak_interior"] is True
+        assert set(result["coarse"]) == {
+            "z_positions", "measured_z_positions", "metric_curve", "best_z_um",
+            "peak_interior", "contrast"
+        }
+        assert "region" not in result
 
     def test_live_paused_across_the_sweep_and_left_off(
         self, mock_ctrl, unconstrained_guard, monkeypatch
@@ -1349,7 +1537,8 @@ class TestRunAutofocus:
 
     def test_nonconverged_payload_says_stage_not_moved(self, mock_ctrl, unconstrained_guard, monkeypatch):
         flat = AutofocusResult(
-            coarse=SweepResult([45.0, 50.0, 55.0], [1.0, 1.1, 1.05], 55.0, False),
+            coarse=SweepResult([45.0, 50.0, 55.0], [1.0, 1.1, 1.05], 55.0, False,
+                               [45.0, 50.0, 55.0]),
             fine=None, entry_z_um=50.0, final_z_um=50.0,
             converged=False, moved=False, reason="Coarse focus metric is flat",
         )

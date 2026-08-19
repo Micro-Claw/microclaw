@@ -546,7 +546,7 @@ def test_refocus_requeues_one_second_look_and_then_refuses_same_tile(tmp_path, m
             seen.append(metadata["microclaw_refocused"])
             return HookResult({}, (RequestAutofocus(),))
 
-    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
         sweep, None, 10, 10, True, False, None
     ))
@@ -571,7 +571,7 @@ def test_actions_after_refocus_are_counted_and_refused_not_dropped(tmp_path, mon
         def analyze_frame(self, _image, _metadata):
             return HookResult({}, (RequestAutofocus(), ContinueSurvey()))
 
-    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
         sweep, None, 10, 10, True, False, None
     ))
@@ -617,7 +617,7 @@ def test_converged_refocus_plane_is_adopted_by_later_timelapse_tiles(
                 else RequestAutofocus(),
             ))
 
-    sweep = SweepResult([9, 10, 11], [1, 2, 3], 12, True)
+    sweep = SweepResult([9, 10, 11], [1, 2, 3], 12, True, [9, 10, 11])
     def focus(*_args):
         core.z = 12.0
         return AutofocusResult(sweep, None, 10, 12, True, True, None)
@@ -682,7 +682,7 @@ def test_nonconverging_refocus_is_recorded_without_requeue_or_retry(tmp_path, mo
         def analyze_frame(self, _image, _metadata):
             return HookResult({}, (RequestAutofocus(),))
 
-    sweep = SweepResult([9, 10, 11], [1, 1, 1], 9, False)
+    sweep = SweepResult([9, 10, 11], [1, 1, 1], 9, False, [9, 10, 11])
     calls = []
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: (
         calls.append(a) or AutofocusResult(sweep, None, 10, 10, False, False, "flat")
@@ -1378,7 +1378,7 @@ def test_refocus_axis_is_dense_so_first_looks_stay_enumerable(tmp_path, monkeypa
             return HookResult({}, () if metadata["microclaw_refocused"]
                               else (RequestAutofocus(),))
 
-    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
         sweep, None, 10, 10, True, False, None
     ))
@@ -1440,7 +1440,7 @@ def test_a_finished_plan_is_reported_as_finished_not_as_a_dose_cap(tmp_path, mon
                 return HookResult({}, (RequestAutofocus(),))
             return HookResult({}, (ContinueSurvey(),))
 
-    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True)
+    sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
         sweep, None, 10, 10, True, False, None
     ))
