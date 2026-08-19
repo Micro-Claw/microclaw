@@ -52,6 +52,20 @@ cause.
 **Read the drawn box; compute the metric over it in software; leave the camera
 alone.** Two changes, no new module, no new tool.
 
+> **Measured outcome, 2026-08-19 — read this before building on the premise.**
+> The decision below shipped and works. **Its rationale did not survive the
+> rig.** Restricting the metric region did *not* improve the scale-aware focus
+> score on this field, on two trips with two different boxes (§"54b+54d+54e gate
+> results"). The dilution described above is real and the arithmetic is right;
+> what is unproven is that removing it makes this field focusable. Treat
+> `region` as a capability whose value is still unmeasured, and **54c as
+> ergonomics** — a cheaper way to reach the same capability — not as a fix for
+> the failure this document opens with.
+>
+> What the work did prove is elsewhere and was not planned: a metric averaged
+> over few pixels needs a threshold scaled to that pixel count, or a small frame
+> converges on noise and drives the focus stage (§54d).
+
 ### 1. `region` on the tools that measure focus
 
 `sweep_autofocus` already takes `metric_fn` (`autofocus.py:101`) and
@@ -683,10 +697,10 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 | Block | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
-| 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on three Nikon trips** (2026-08-18, 2026-08-19 ×2). Dilution hypothesis **not supported** on two independent boxes | ready | |
+| 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on three Nikon trips** (2026-08-18, 2026-08-19 ×2). Dilution hypothesis **not supported** on two independent boxes | `3be1037` 2026-08-19 | **done** |
 | 54c | 54a | | | | | | | *(`region="drawn"` — unblocked by 54a, not started, deliberately after 54b/54d)*
-| 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **PASS Nikon 2026-08-19 (2nd trip)** — 32×32 sensor scored 0.411, **2.7× over the old 0.15 constant**, and refused; emitted script refused identically | ready | |
-| 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336`, flake fix `1dce909` | **PASS Nikon 2026-08-19** — max requested-vs-measured Z 0.050 µm; reason prose agrees with `final_z_um` on the rig. Mid-move hypothesis **not supported** | ready | |
+| 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **PASS Nikon 2026-08-19 (2nd trip)** — 32×32 sensor scored 0.411, **2.7× over the old 0.15 constant**, and refused; emitted script refused identically | `3be1037` 2026-08-19 | **done** |
+| 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336`, flake fix `1dce909` | **PASS Nikon 2026-08-19** — max requested-vs-measured Z 0.050 µm; reason prose agrees with `final_z_um` on the rig. Mid-move hypothesis **not supported** | `3be1037` 2026-08-19 | **done** |
 
 ## Resuming this block cold
 

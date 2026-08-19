@@ -278,10 +278,15 @@ fake.
 - **A device that is not busy is not a device that arrived.** `wait_for_device`
   returning, or `device_busy` reading false, says nothing about whether an axis
   reached the position you asked for — a stage that has not started moving yet is
-  also not busy. Block 56 (merged 2026-08-19) made every single-axis move poll
+  also not busy. Block 56 (merged 2026-08-19) made the single-axis move tools poll
   until the **measured** position is within tolerance **of the target** and
   stable, or raise a typed `StageMoveError`; success carries `measured_um`, never
-  the requested value. On the Nikon a successful move reported
+  the requested value. **It did not reach every Z-moving path**, which is a
+  standing trap: `autofocus.py` was folded in later by design/54 block 54e
+  (merged 2026-08-19), and `hooks.py`'s focus-recovery jog, the tile path's
+  per-position Z and `_emit_go_to_position` still move with a bare
+  `core.set_position`. Before adding a Z move, check which of these it is.
+  On the Nikon a successful move reported
   `last_device_status: "busy"` after 0.89 s and ~18 polls — the loop out-waited a
   device that was still moving, which is exactly the point. The defect this
   replaced was a **premature read-back**: one immediate read after
