@@ -767,14 +767,16 @@ TOOLS: list[dict[str, Any]] = [
                     "default": True,
                 },
                 "region": {
-                    "type": "array",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "integer"},
+                         "minItems": 4, "maxItems": 4},
+                        {"const": "drawn"},
+                    ],
                     "description": (
                         "Optional software analysis region [x, y, w, h] in "
-                        "current frame pixels. All statistics use this region."
+                        "current frame pixels; 'drawn' reads the current Preview selection. "
+                        "All statistics use this region."
                     ),
-                    "items": {"type": "integer"},
-                    "minItems": 4,
-                    "maxItems": 4,
                 },
             },
             "required": [],
@@ -892,14 +894,15 @@ TOOLS: list[dict[str, Any]] = [
                     "default": False,
                 },
                 "region": {
-                    "type": "array",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "integer"},
+                         "minItems": 4, "maxItems": 4},
+                        {"const": "drawn"},
+                    ],
                     "description": (
                         "Optional software focus-metric region [x, y, w, h] "
-                        "in current frame pixels."
+                        "in current frame pixels; 'drawn' reads the current Preview selection."
                     ),
-                    "items": {"type": "integer"},
-                    "minItems": 4,
-                    "maxItems": 4,
                 },
             },
             "required": ["z_range_um", "z_step_um"],

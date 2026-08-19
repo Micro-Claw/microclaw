@@ -587,6 +587,40 @@ class MicroscopeController:
         ids = get_ids() if get_ids is not None else None
         return set() if ids is None else {int(i) for i in ids}
 
+    def drawn_region(self) -> list[int]:
+        """Read the current Preview selection's bounding rectangle."""
+        image = None
+        try:
+            display = self._studio.live().get_display()
+            if display is not None:
+                image = display.get_image_plus()
+        except Exception:
+            image = None
+        if image is None:
+            try:
+                wm = _new_static_java_class(self._port, "ij.WindowManager")
+                get_current = getattr(wm, "get_current_image", None) or getattr(
+                    wm, "getCurrentImage", None
+                )
+                image = get_current() if get_current is not None else None
+            except Exception:
+                image = None
+        if image is None:
+            raise ValueError(
+                "Region 'drawn' cannot be read because no Preview display is "
+                "reachable. Open Preview, draw a selection, and try again."
+            )
+        roi = image.get_roi()
+        if roi is None:
+            raise ValueError(
+                "Region 'drawn' has no selection. Draw a selection on the "
+                "Preview window and try again."
+            )
+        bounds = roi.get_bounds()
+        return [
+            int(bounds.x), int(bounds.y), int(bounds.width), int(bounds.height)
+        ]
+
     def _describe_imagej_windows(self, ids: set[int]) -> list[dict]:
         wm = _new_static_java_class(self._port, "ij.WindowManager")
         get_image = getattr(wm, "get_image", None) or getattr(wm, "getImage", None)

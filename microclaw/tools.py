@@ -130,6 +130,12 @@ def _emit_snap_and_analyze(params: RecordedParams) -> str:
         ]).UNCALIBRATED_MIN_SNR_FALLBACK,
     )
     region = params.get("region")
+    if region == "drawn":
+        region = (params.result.get("metric_valid_for") or {}).get("region")
+        if region is None:
+            raise CannotEmit(
+                "the recorded drawn-region call has no resolved region"
+            )
     crop = ""
     if region is not None:
         x, y, w, h = region
@@ -156,6 +162,12 @@ def _emit_autofocus(params: RecordedParams) -> str:
     method = params.get("method", signature.parameters["method"].default)
     settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
     region = params.get("region", signature.parameters["region"].default)
+    if region == "drawn":
+        region = params.result.get("region")
+        if region is None:
+            raise CannotEmit(
+                "the recorded drawn-region call has no resolved region"
+            )
     z_range = params["z_range_um"]
     z_step = params["z_step_um"]
     return "\n".join([
@@ -3824,7 +3836,7 @@ def snap_and_analyze(
     return_thumbnail: bool = False,
     thumbnail_size: int = 512,
     display: bool = True,
-    region: list[int] | None = None,
+    region: list[int] | str | None = None,
 ) -> list | dict:
     """Snap an image, display it in the MM viewer, and return numerical stats.
 
@@ -3834,11 +3846,20 @@ def snap_and_analyze(
     otherwise (design/14 §7). display=False keeps the snap headless.
     Live view is paused around the snap either way (V1: never probe by calling).
     """
-    with _pause_live(ctrl) as live_state:
-        image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
-    validated, error = _validate_metric_region(region, image.shape[1], image.shape[0])
+    if region == "drawn":
+        try:
+            region = ctrl.drawn_region()
+        except ValueError as exc:
+            return {"error": str(exc)}
+    validated, error = _validate_metric_region(
+        region,
+        int(ctrl.core.get_image_width()),
+        int(ctrl.core.get_image_height()),
+    )
     if error:
         return {"error": error}
+    with _pause_live(ctrl) as live_state:
+        image = snap_to_numpy_displayed(ctrl) if display else snap_to_numpy(ctrl)
     if validated is not None:
         x, y, w, h = validated
         image = image[y:y + h, x:x + w]
@@ -4282,7 +4303,7 @@ def run_autofocus(
     method: str = "coarse_then_fine",
     settle_ms: int = 50,
     return_thumbnail: bool = True,
-    region: list[int] | None = None,
+    region: list[int] | str | None = None,
 ) -> list | dict:
     """Sweep Z to find the sharpest focal plane.
 
@@ -4300,6 +4321,11 @@ def run_autofocus(
     The sweep is headless: live view is paused for its duration and left off
     afterwards, and the viewer does not show the sweep as it happens.
     """
+    if region == "drawn":
+        try:
+            region = ctrl.drawn_region()
+        except ValueError as exc:
+            return {"error": str(exc)}
     validated, error = _validate_metric_region(
         region,
         int(ctrl.core.get_image_width()),

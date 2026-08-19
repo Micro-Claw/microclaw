@@ -1139,6 +1139,25 @@ class TestSnapAndAnalyze:
         assert result["max_intensity"] == 115.0
         assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
 
+    def test_drawn_region_resolves_once_and_payload_echoes_literal(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        image = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: image
+        )
+        mock_ctrl.drawn_region.return_value = [2, 4, 4, 4]
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region="drawn"
+        )
+
+        mock_ctrl.drawn_region.assert_called_once_with()
+        assert result["mean_intensity"] == pytest.approx(
+            image[4:8, 2:6].mean()
+        )
+        assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
+
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
             analysis=AnalysisConstraints(min_snr=999.0)
@@ -1266,6 +1285,75 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_drawn_region_resolves_once_and_sets_scaled_threshold(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        _patch_autofocus(monkeypatch)
+        mock_ctrl.drawn_region.return_value = [2, 3, 8, 4]
+        counts = []
+        real_threshold = tools.contrast_threshold
+        monkeypatch.setattr(
+            tools, "contrast_threshold",
+            lambda count: counts.append(count) or real_threshold(count),
+        )
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            return_thumbnail=False, region="drawn",
+        )
+
+        mock_ctrl.drawn_region.assert_called_once_with()
+        assert result["region"] == [2, 3, 8, 4]
+        assert counts and set(counts) == {32}
+
+    @pytest.mark.parametrize(
+        "box, frame, message_bits",
+        [
+            ([60, 2, 8, 4], (64, 32), ("[60, 2, 8, 4]", "[64, 32]")),
+            ([2, 3, 1, 4], (64, 32), ("[2, 3, 1, 4]", "greater than 1")),
+        ],
+    )
+    def test_drawn_stale_or_degenerate_box_refuses_before_exposure(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, box, frame, message_bits
+    ):
+        mock_ctrl.drawn_region.return_value = box
+        mock_ctrl.core.get_image_width.return_value = frame[0]
+        mock_ctrl.core.get_image_height.return_value = frame[1]
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", sweep)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            return_thumbnail=False, region="drawn",
+        )
+
+        assert all(bit in result["error"] for bit in message_bits)
+        sweep.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "message", [
+            "Region 'drawn' cannot be read because no Preview display is reachable. "
+            "Open Preview, draw a selection, and try again.",
+            "Region 'drawn' has no selection. Draw a selection on the Preview "
+            "window and try again.",
+        ],
+    )
+    def test_drawn_reader_refusal_is_returned_before_exposure(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, message
+    ):
+        mock_ctrl.drawn_region.side_effect = ValueError(message)
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", sweep)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            return_thumbnail=False, region="drawn",
+        )
+
+        assert result == {"error": message}
+        assert "drawn" in result["error"]
+        sweep.assert_not_called()
+
     def test_small_region_pure_noise_does_not_converge_or_move(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):

@@ -15,6 +15,7 @@ from microclaw.controller import (
     StageMoveError,
     settle_stage_move,
 )
+from microclaw import controller as controller_module
 from microclaw.safety import (
     SafetyConstraints,
     SafetyGuard,
@@ -34,6 +35,53 @@ def make_controller(guard=None):
     ctrl._guard = guard
     ctrl._positions = []
     return ctrl
+
+
+class TestDrawnRegion:
+    def test_reads_preview_imageplus_rectangle_fields(self):
+        ctrl = make_controller()
+        bounds = MagicMock(x=3, y=5, width=17, height=19)
+        roi = MagicMock()
+        roi.get_bounds.return_value = bounds
+        image = MagicMock()
+        image.get_roi.return_value = roi
+        ctrl._studio.live().get_display().get_image_plus.return_value = image
+
+        assert ctrl.drawn_region() == [3, 5, 17, 19]
+
+    def test_falls_back_to_current_image_through_static_bridge(self, monkeypatch):
+        ctrl = make_controller()
+        ctrl._studio.live().get_display.return_value = None
+        bounds = MagicMock(x=7, y=11, width=13, height=23)
+        image = MagicMock()
+        image.get_roi.return_value.get_bounds.return_value = bounds
+        window_manager = MagicMock()
+        window_manager.get_current_image.return_value = image
+        static = MagicMock(return_value=window_manager)
+        monkeypatch.setattr(controller_module, "_new_static_java_class", static)
+
+        assert ctrl.drawn_region() == [7, 11, 13, 23]
+        static.assert_called_once_with(4827, "ij.WindowManager")
+
+    @pytest.mark.parametrize("case", ["display", "selection"])
+    def test_refuses_missing_preview_state_with_instruction(self, monkeypatch, case):
+        ctrl = make_controller()
+        image = MagicMock()
+        if case == "display":
+            ctrl._studio.live().get_display.return_value = None
+            wm = MagicMock()
+            wm.get_current_image.return_value = None
+            monkeypatch.setattr(
+                controller_module, "_new_static_java_class", lambda *_: wm
+            )
+        else:
+            ctrl._studio.live().get_display().get_image_plus.return_value = image
+            image.get_roi.return_value = None
+
+        with pytest.raises(ValueError) as excinfo:
+            ctrl.drawn_region()
+        assert "drawn" in str(excinfo.value)
+        assert "draw" in str(excinfo.value).lower()
 
 
 def bounded_guard():

@@ -213,6 +213,83 @@ def test_emitted_autofocus_actually_crops_the_metric_frames(tmp_path, monkeypatc
     assert curve[1] == pytest.approx(cropped_metric)
 
 
+def test_session_with_drawn_run_and_ordinary_step_exports_resolved_box(tmp_path):
+    records = [call("clear_roi", {})]
+    records += completed_call(
+        "run_autofocus",
+        {"z_range_um": 2, "z_step_um": 1, "region": "drawn"},
+        {"region": [1, 2, 3, 4]},
+    )
+
+    _, result, source = export(tmp_path, records)
+
+    assert result["emitted_calls"] == 2
+    assert "core.clear_roi()" in source
+    assert "_autofocus_region = [1, 2, 3, 4]" in source
+    assert "'drawn'" not in source
+
+
+@pytest.mark.parametrize(
+    "name,result", [
+        ("run_autofocus", {}),
+        ("snap_and_analyze", {}),
+    ],
+)
+def test_drawn_call_without_recorded_box_raises_cannot_emit(
+    tmp_path, name, result
+):
+    params = ({"z_range_um": 2, "z_step_um": 1, "region": "drawn"}
+              if name == "run_autofocus" else {"region": "drawn"})
+    with pytest.raises(tools.CannotEmit, match="no resolved region"):
+        getattr(tools, name)._microclaw_emitter(
+            tools.RecordedParams(params, result)
+        )
+
+
+def test_emitted_drawn_autofocus_execs_and_crops_resolved_literal(
+    tmp_path, monkeypatch
+):
+    resolved = [2, 1, 4, 4]
+    records = completed_call(
+        "run_autofocus",
+        {"z_range_um": 2, "z_step_um": 1, "method": "sweep",
+         "settle_ms": 0, "region": "drawn"},
+        {"region": resolved},
+    )
+    _, _, source = export(tmp_path, records)
+    frames = [np.zeros((8, 8), dtype=np.uint16) for _ in range(3)]
+    frames[1][1:5, 2:6] = np.indices((4, 4)).sum(axis=0) % 2 * 100
+
+    class FakeCore:
+        def __init__(self): self._index, self.position = 0, 50.0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def snap_image(self): pass
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_tagged_image(self):
+            frame = frames[min(self._index, 2)]
+            self._index += 1
+            return SimpleNamespace(pix=frame, tags={"Width": 8, "Height": 8})
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    curve = namespace["autofocus_result"].coarse.metric_values
+    assert curve[1] == pytest.approx(
+        image_analysis.tenengrad(frames[1][1:5, 2:6])
+    )
+    assert curve[1] != image_analysis.tenengrad(frames[1])
+
+
 def test_emitted_autofocus_settles_delayed_stage_and_prints_envelope(
     tmp_path, monkeypatch, capsys
 ):
