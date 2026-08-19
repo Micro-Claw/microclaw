@@ -1768,6 +1768,26 @@ Two habits that follow from it, both of which caught real defects: replay the
 interview change, and read the tool-call history JSONL rather than the
 assistant's narration when judging whether a guard fired.
 
+**Block 56's Nikon evidence, 2026-08-19**, is in two folders under that same
+path — **name the folder in the ledger or it is not findable**, which is why
+these are written down here:
+
+- `block56-nikon/` — trip 1. History JSONL, `block56-tests.txt` (551 passed,
+  UTF-16 from the PowerShell redirect — decode before parsing), the 128 KB
+  `block56-export.py` and its output, two hook logs, and the `block56_hook` /
+  `block56_restore` / `timelapse_*` datasets. **Also `safety_config.yaml`**,
+  copied by hand because no tool reports the bounds — that copy is the only
+  record of what the rig was enforcing.
+- `block56-round2/` — trip 2, the PFS-armed limb. History JSONL, a 6 KB
+  `block56-export.py`, and a **0-byte** `block56-export.txt`. The empty file is
+  a clean run, not a failure: that session recorded no acquisition, so the script
+  prints nothing. **A standalone script with no acquisition gives the operator no
+  positive confirmation that it ran at all** — worth knowing before reading an
+  empty log as a defect.
+
+The hook logs are **JSON arrays, not JSONL**, unlike the session histories beside
+them. `json.load`, not a line loop.
+
 ### Run ledger
 
 | Block | Track | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
@@ -8421,8 +8441,8 @@ schedule them or record a reason at block 12.
 | Rig-profile values PFS needs (capture range, safe step, timeouts, versions) | design/34 `:223`–`:234` | **(no block)** — Block 7a would have collected them as the bounded search ran; **Track B closed 2026-08-18** and 7a was never built. The "approach position" it asked for stays refuted (design/40). Uncollected |
 | Whether MM Studio / NikonTI exposes a PFS-preserving jog | design/34 `:219`–`:221` | **Moot** — microclaw engaged PFS in software four times on 2026-08-05; the KB claim that only the GUI can was wrong |
 | Continuous-focus / PFS coordination not modelled | design/34, design/40 | **(no block)** — Blocks 6a/7a/7b **closed 2026-08-18** with Track B, 6a dropped unmerged and the others unbuilt. Still unmodelled; see the three PFS rows under "Still open" |
-| `move_stage_z` never measures the position it reports | design/34 `:110`–`:120` | **Block 56** (assigned 2026-08-19) — Block 6 closed unbuilt 2026-08-18, promoted from the register |
-| `move_named_stage` reports a missed target as success | design/40; design/34 `:236`–`:274` describes a signature that did **not** reproduce | **Block 56** (assigned 2026-08-19) — Block 6 closed unbuilt 2026-08-18, promoted from the register |
+| `move_stage_z` never measures the position it reports | design/34 `:110`–`:120` | **Block 56** — **MERGED `c8f1801` 2026-08-19**; promoted from the register after Block 6 closed unbuilt |
+| `move_named_stage` reports a missed target as success | design/40; design/34 `:236`–`:274` describes a signature that did **not** reproduce | **Block 56** — **MERGED `c8f1801` 2026-08-19**; the rig then showed the cause was a premature read-back, not the shape this row assumed |
 | Nikon operator's install may no longer start after the tightening blocks | this session | **Block 0b** |
 | Exclusions made PFS unusable; setup over-excludes stage-position properties | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; must be re-scoped against `setup_tools.py`, since `first_launch.py` no longer exists. See "Still open" |
 | Unassigned `Core.Focus` surfaces as a raw Java exception | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; still live on `main`. See "Still open" |

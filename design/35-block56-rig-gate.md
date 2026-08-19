@@ -9,12 +9,38 @@ block fixes was *measured there*. At 11:40 on 2026-08-05 `move_named_stage` on
 already declared under `named_stages` in that rig's config (design/40 `:271`).
 The named-stage limbs below reproduce that exact call.
 
-**Gate status after 2026-08-19: four limbs PASS, one is owed.** The focus move,
-the hook path, the restoration path and the export all passed with agreeing
-independent reads, and the rig suite reported 551 passed. **The missed-move
-criterion has no evidence yet** — see the retired hard-limit limb and the
-servo-override limb that replaces it. Run the servo-override limb, then re-run
-the export limb so the session being exported contains it.
+> **GATE COMPLETE — block 56 merged `c8f1801` on 2026-08-19. This document is a
+> record of what was run, not a plan. Do not re-run it.**
+
+**Final gate status: five limbs run, all passed, and the missed-move criterion is
+recorded as unreproducible on this hardware.** The focus move, the hook path, the
+restoration path and the export all passed with agreeing independent reads, and
+the rig suite reported 551 passed.
+
+**Neither of the two limbs written to produce a missed move could produce one**,
+and that is the honest outcome rather than a gap to fill later:
+
+- **Hard-limit limb** — `TIPFSOffset` commanded to 0.0, its configured minimum,
+  **reached 0.0 exactly**. There is no mechanical floor inside the bound.
+- **Servo-override limb** — with PFS armed and `Locked in focus`, `TIPFSOffset`
+  commanded from 1.0 to 21.0 **reached 21.0 exactly** (independently re-read).
+  So the offset is writable under an active lock and the servo does not override
+  a commanded write.
+
+**What the gate proved instead, positively.** The successful move returned
+`last_device_status: "busy"` with `elapsed_s: 0.89` — about eighteen polls. The
+settle loop out-waited a device that was **still reporting busy**, which is the
+entire mechanism under test. It also explains the original defect: the old path
+read the device once, immediately after `wait_for_device`, so on an axis that
+takes ~0.9 s the read landed before the move finished and returned the pre-move
+position. **A premature read-back — not a floor, and not a servo override.**
+
+**Two findings that are not this block's**, both now carried as register rows in
+the checklist: `get_focus_lock_state` answered *"No EMU configuration — cannot
+read a focus lock"* on a rig whose hardware lock was working and **blocked this
+gate**, forcing a raw `TIPFSStatus.State` write; and the step asking for the
+configured `named_stages` bound **did not run at all**, because no tool reports
+the bounds microclaw is enforcing.
 
 **The demo machine cannot run the miss limb** — its simulated stages
 deterministically achieve every valid target, so a "miss" there would be
@@ -101,7 +127,7 @@ by no more than 0.5 µm.
 > configured bound allows (`min_um: 0.0`), and **reached 0.0 exactly**
 > (`within_tolerance: true`, independent read 0.0). There is no mechanical floor
 > inside the configured bound on this axis, so this limb cannot produce a miss
-> and is retired. The miss evidence is owed by the servo-override limb below.
+> and is retired. The servo-override limb below was written to replace it and could not produce a miss either; see the gate status at the top.
 >
 > **One step in it could not run at all**: it asked the agent to report the
 > configured `named_stages` bound from the active safety config, and **no tool
@@ -186,7 +212,7 @@ runbook defect: record the reported `measured_um`, `requested_um` and
 restore settles outside 0.5 µm is exactly the finding this block is looking for,
 and it decides whether the tolerance is right.
 
-## Verbatim agent prompt: the servo-override miss — **PFS ARMED, run this last**
+## Verbatim agent prompt: the servo-override miss — **RUN 2026-08-19, negative result: the move succeeded under lock**
 
 **Why this limb exists.** The 2026-08-19 gate could not produce a missed move:
 `TIPFSOffset` was commanded to 0.0, the lowest its configured bound allows, and
@@ -240,7 +266,7 @@ happens, finish the remaining steps, and stop:
 - **PFS will not lock.** Report the state readings and stop; this limb is not
   runnable today.
 
-## Verbatim agent prompt: export and execute this session — **PASS 2026-08-19, re-run after the limb above**
+## Verbatim agent prompt: export and execute this session — **PASS 2026-08-19, run twice**
 
 > Export the current session with `export_session_script` to
 > `block56-export.py`. Do not start a fresh session. Report the export result.
