@@ -519,6 +519,55 @@ which is the number that catches a skipped test file, and said only "exit code 0
 about the rest. A failure count is the thing a reader's eye must land on. Any
 future Step 0 asserts the pass/fail line explicitly.
 
+## 54c gate results — Nikon, 2026-08-19 (`54c-nikon/`)
+
+Suite 1911 passed / 124 skipped — **2035 collected, equal to the macOS
+reference**, zero failures. The reader works: `region="drawn"` resolved to
+`[726, 591, 174, 171]`, exactly the box the zero-exposure probe had read
+(R2/R3/R4 PASS), with `coarse.min_contrast` **0.89** — 54d's scaling applied to
+the resolved 29,754 px, not to the full frame — and the camera ROI unchanged at
+1024×1024. Three of the four refusals fired with their own message: no
+selection, no display, and the stale box as
+`Region [99, 108, 855, 840] does not fit frame [512, 512]`, naming both the box
+and the frame it no longer fitted. `snap_and_analyze` echoed its box twice.
+
+### The literal region became unreachable, and the unit tests could not see it
+
+**Step 3 failed.** The agent sent `"region": "[726, 591, 174, 171]"` — the array
+as a quoted string — four times, three of them after the operator asked for an
+array in plain words. Every call was refused as malformed, correctly.
+
+54b shipped `region` as `type: "array"` and the literal form worked on three
+Nikon trips. 54c replaced it with `oneOf: [{type: array}, {const: "drawn"}]`,
+which carries **no top-level `type`**, and the model began quoting the array.
+The capability was gone from the agent's reach while the suite stayed green,
+because every test calls the function with a real Python list: **a unit test
+cannot measure what a schema does to a model.** Fixed in `42e08b8` — both
+schemas declare `type: ["array", "string"]`, and a JSON array of four integers
+is parsed however it is quoted, while anything that is not four integers still
+refuses.
+
+This is the third time in design/54 that a capability's own delivery broke the
+one before it: 54b's region created 54d's noise-floor defect, 54c's snap-path
+reordering created a truncating crop, and 54c's schema made 54b's literal region
+uncallable. **The block after a capability is where that capability breaks.**
+
+### Two limbs produced no evidence, and one criterion was wrong
+
+- **4d (the fallback must not read a focused non-Preview window) was NOT
+  TESTED.** Both `snap_and_analyze` calls returned `[186, 216, 96, 84]` and
+  nothing in the evidence shows a second ImageJ window was ever open, so there
+  was no wrong box available to read. The re-gate makes the probe the
+  instrument: it reads through `getCurrentImage()`, the focus-following route,
+  so its box must be the *other* window's before the limb starts.
+- **The export step's `drawn`-count criterion was wrong.** It required zero
+  occurrences in the emitted script; the run produced two, both inside
+  `# SKIPPED` comments quoting refusal text verbatim, which is correct output.
+  The command now excludes comment lines. A criterion that fails on correct
+  behaviour is as useless as one that passes on broken behaviour.
+- The standalone exit code was never captured — only the redirected output was
+  saved. The command now appends it to the file.
+
 ## Refusals this must keep
 
 - **Stale box.** A box drawn before a camera-ROI or binning change lands
@@ -746,7 +795,7 @@ exactly what hid the missing crop guard.
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
 | 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on three Nikon trips** (2026-08-18, 2026-08-19 ×2). Dilution hypothesis **not supported** on two independent boxes | `3be1037` 2026-08-19 | **done** |
-| 54c | 54a | `design54/drawn-region` | `edfaa10` | `2c28c12` + coordinator fix `f02c316`; runbook `design/54-block54c-rig-gate.md` pins `f02c316` | awaiting Nikon gate | | | *(`region="drawn"` — assigned 2026-08-19. Review found one defect: 54c moved `snap_and_analyze`'s validation ahead of the exposure but also changed its reference from the returned array to `core.get_image_width/height`, so a box could be checked against one frame and cropped on another — measured reporting a 40×40 box while metering 24×24 pixels. Fixed in `f02c316`; the snap path now checks against both frames.)*
+| 54c | 54a | `design54/drawn-region` | `edfaa10` | `2c28c12` + coordinator fixes `f02c316`, `42e08b8`; runbook pins `42e08b8` | **Nikon 2026-08-19 — reader PASS, three refusals PASS; Step 3 FAILED (schema), 4d NOT TESTED.** Re-gate owed | | | *(`region="drawn"` — assigned 2026-08-19. Review found one defect: 54c moved `snap_and_analyze`'s validation ahead of the exposure but also changed its reference from the returned array to `core.get_image_width/height`, so a box could be checked against one frame and cropped on another — measured reporting a 40×40 box while metering 24×24 pixels. Fixed in `f02c316`; the snap path now checks against both frames.)*
 | 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **PASS Nikon 2026-08-19 (2nd trip)** — 32×32 sensor scored 0.411, **2.7× over the old 0.15 constant**, and refused; emitted script refused identically | `3be1037` 2026-08-19 | **done** |
 | 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336`, flake fix `1dce909` | **PASS Nikon 2026-08-19** — max requested-vs-measured Z 0.050 µm; reason prose agrees with `final_z_um` on the rig. Mid-move hypothesis **not supported** | `3be1037` 2026-08-19 | **done** |
 

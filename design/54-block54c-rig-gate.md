@@ -1,6 +1,6 @@
 # Block 54c rig gate — `region="drawn"` reads the box the operator drew
 
-Implementation ancestor: `f02c316`
+Implementation ancestor: `42e08b8`
 
 Run every step on the **Nikon**, from this branch, on a brightfield field whose
 sharp structure is a small fraction of the frame. PowerShell, from the checkout.
@@ -29,14 +29,14 @@ Three rig facts that shape the run:
 ## Step 0 — pin the implementation and run the suite
 
 ```powershell
-git merge-base --is-ancestor f02c316 HEAD
+git merge-base --is-ancestor 42e08b8 HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q 2>&1 | Out-File -Encoding utf8 block54c-pytest.txt
 Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
 Get-Content block54c-pytest.txt | Select-String -Pattern "passed|failed|error"
 ```
 
-Expected: both printed exit codes **0**, and a summary line reading **`1936
+Expected: both printed exit codes **0**, and a summary line reading **`1945
 passed, 99 skipped`** (macOS reference at `f02c316`; Windows skips more, so the
 skip count may differ). **The number to look at is `failed`. Any nonzero failure
 count stops the gate** — the last trip ran with a red suite because its Step 0
@@ -105,6 +105,16 @@ bracketed words with the ECHOED BOX from Step 2:
 
 Pasted unedited this fails with a malformed-region refusal naming `ECHO_X`. That
 is the intended loud failure; fix the numbers and re-run, it costs no exposure.
+
+**This step failed on 2026-08-19 and is the reason for this re-gate.** The agent
+sent `"region": "[726, 591, 174, 171]"` — the array as a quoted string — four
+times, three of them after the operator asked for an array in plain words, and
+every call was refused as malformed. The schema then carried a `oneOf` with no
+top-level `type`. It now declares `type: ["array", "string"]`, and a stringified
+array is parsed rather than refused, so **both** the array and the quoted form
+must now work. Report the raw `region` value the agent sent, exactly as it
+appears in the transcript, alongside the payload's `region` echo — this step is
+measuring what the model emits, and only a live session can measure that.
 
 Required:
 
@@ -195,13 +205,31 @@ Re-open Preview and draw a **small** box in it. Then open any saved TIFF in
 ImageJ (`File ▸ Open`), draw a **clearly different, larger** box on *that*
 window, and leave that window focused.
 
+The probe reads through `WindowManager.getCurrentImage()` — the *fallback*
+route, the one that follows focus — so it is the instrument for this limb:
+
+```powershell
+python design\54-display-roi-probe.py 2>&1 | Out-File -Encoding utf8 out54c-twowindows.txt
+Get-Content out54c-twowindows.txt | Select-String -Pattern "DRAWN BOX|windows matching"
+```
+
+**The probe's `DRAWN BOX` must be the OTHER window's box**, not Preview's. If it
+reports Preview's box, focus did not move and the limb has not started — click
+the other window and re-run. **Write the probe's box down.** Then:
+
 > Call `snap_and_analyze(region="drawn")` exactly once. Report
 > `metric_valid_for.region` and `mean_intensity`.
 
-Expected: `metric_valid_for.region` is **Preview's small box**, not the other
-window's. MM's own `studio.live().get_display()` route names the Preview
-specifically and must win over window focus. Reading the other window's box is a
-gate failure — report both boxes if it happens.
+Expected: `metric_valid_for.region` is **Preview's small box**, and it
+**differs from the box the probe just reported**. MM's own
+`studio.live().get_display()` route names the Preview specifically and must win
+over window focus; the probe following focus to the wrong window is what makes
+this a real test rather than a coincidence. Two boxes that happen to be equal
+prove nothing — redraw one of them so they cannot be confused.
+
+This limb was **NOT TESTED** on 2026-08-19: both `snap_and_analyze` calls
+returned `[186, 216, 96, 84]` and nothing in the evidence shows a second window
+was ever open, so there was no wrong box available to read.
 
 **Close the extra window before continuing.**
 
@@ -243,19 +271,23 @@ python design\54-roi-precondition.py --expect full
 Write-Host "precondition exit code (expected 0):" $LASTEXITCODE
 Write-Host "--- counts ---"
 Write-Host "resolved region literals (expected 2 or more):" @(Select-String -Path $Script -Pattern "_autofocus_region = \[").Count
-Write-Host "the string drawn (expected 0):" @(Select-String -Path $Script -Pattern "drawn").Count
+Write-Host "the string drawn OUTSIDE comments (expected 0):" @(Select-String -Path $Script -Pattern "drawn" | Where-Object { $_.Line -notmatch "^\s*#" }).Count
 Write-Host "bounds guards (expected 1 or more):" @(Select-String -Path $Script -Pattern "does not fit frame").Count
 Write-Host "pixel-count helper (expected 1):" @(Select-String -Path $Script -Pattern "def _metric_pixel_count").Count
 Write-Host "settle contract (expected 1):" @(Select-String -Path $Script -Pattern "def settle_stage_move").Count
 Write-Host "envelope prints (expected 2 or more):" @(Select-String -Path $Script -Pattern "AUTOFOCUS ENVELOPE").Count
 python $Script 2>&1 | Out-File -Encoding utf8 block54c-standalone.txt
 Write-Host "standalone exit code (expected 0):" $LASTEXITCODE
+Add-Content block54c-standalone.txt "standalone exit code: $LASTEXITCODE"
 Get-Content block54c-standalone.txt
 ```
 
-Expected: **`the string drawn` is 0.** A standalone script has no display and no
-box; if `"drawn"` survives into the emitted source the script is not standalone,
-whatever its exit code. Each `_autofocus_region = [...]` must carry a real
+Expected: **`the string drawn OUTSIDE comments` is 0.** A standalone script has
+no display and no box; if `"drawn"` survives into emitted *code* the script is
+not standalone, whatever its exit code. It legitimately appears inside
+`# SKIPPED` comments, which quote the refusal text verbatim — the 2026-08-19 run
+had two, and the previous version of this command counted them and would have
+failed the step for it. Each `_autofocus_region = [...]` must carry a real
 rectangle — Step 2's resolved box and Step 3's literal one, which are the same
 four numbers reached by two different routes.
 
