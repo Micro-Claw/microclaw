@@ -24,6 +24,7 @@ from microclaw.tools import (
     get_device_property_info,
     get_exposure,
     get_full_device_state,
+    get_dna_paint_documentation,
     get_hook_documentation,
     get_pixel_size,
     get_position_list,
@@ -4429,6 +4430,81 @@ class TestGetDevicePropertyInfo:
         )
         assert result["type"] in {"Undef", "String", "Float", "Integer", "Unknown"}
         assert "0x" not in result["type"]
+
+
+class TestGetDnaPaintDocumentation:
+    """The deep DNA-PAINT reference behind get_smlm_documentation's summary."""
+
+    def test_returns_the_packaged_protocol(self, mock_ctrl, unconstrained_guard):
+        result = get_dna_paint_documentation(mock_ctrl, unconstrained_guard)
+        doc = result["documentation"]
+        assert isinstance(doc, str)
+        # Read through importlib.resources from package data, so this also
+        # proves the .md is reachable the way an installed wheel reaches it.
+        assert doc.startswith("# DNA-PAINT Experiment Protocol")
+
+    def test_covers_the_whole_protocol(self, mock_ctrl, unconstrained_guard):
+        doc = get_dna_paint_documentation(mock_ctrl, unconstrained_guard)["documentation"]
+        for term in (
+            # kinetics — the part that lets a parameter be derived, not quoted
+            "τ_b = 1/k_off", "k_on", "Imager/docking strand design",
+            # buffers and the scavenger
+            "Buffer B+", "PCA", "Trolox",
+            # imaging
+            "Imaging parameters", "kW/cm²", "TIRF",
+            # the bench half the user asked to keep
+            "Design & fold DNA origami", "Purify", "Immobilization on glass",
+            # and the exit to external software
+            "Picasso: Localize",
+        ):
+            assert term in doc, f"protocol lost its {term!r} content"
+
+    def test_is_registered_and_emits_nothing(self):
+        assert tools.TOOL_REGISTRY["get_dna_paint_documentation"] is (
+            get_dna_paint_documentation
+        )
+        # An undecorated tool plants a raise RuntimeError in every exported
+        # script that recorded it; a documentation read emits nothing.
+        assert get_dna_paint_documentation._microclaw_emits_nothing is True
+
+    def test_carries_no_rig_identity(self, mock_ctrl, unconstrained_guard):
+        """Rig facts belong in gate docs and rig profiles, never in microclaw/.
+
+        The source document was written for one stand and named it throughout —
+        its 2 W laser, its EMCCD model, its focus system. Those became
+        capability statements when it moved into the package. Only the cited
+        reference instrument survives, inside the citation that carries it.
+        """
+        doc = get_dna_paint_documentation(mock_ctrl, unconstrained_guard)["documentation"]
+        for rig_fact in ("Nikon Ti1", "iXON", "2 W", "MPI"):
+            assert rig_fact not in doc, f"rig identity {rig_fact!r} in a packaged doc"
+
+
+class TestSmlmAndDnaPaintDocsAgree:
+    """Two documents cover DNA-PAINT; the summary must not contradict the depth.
+
+    Before this change SMLM_REFERENCE recommended 0.1-1 nM imager in
+    PBS + 500 mM NaCl while the protocol says 100 pM-10 nM starting near 5 nM in
+    a Mg-based buffer — a 5x disagreement on the most consequential knob in the
+    technique, in two tool results the same session can read minutes apart.
+    """
+
+    def test_smlm_reference_routes_to_the_deep_protocol(self):
+        from microclaw.smlm_docs import SMLM_REFERENCE
+        assert SMLM_REFERENCE.count("get_dna_paint_documentation") >= 2
+
+    def test_smlm_reference_no_longer_carries_the_superseded_figures(self):
+        from microclaw.smlm_docs import SMLM_REFERENCE
+        for superseded in ("0.1–1 nM", "PBS + 500 mM NaCl"):
+            assert superseded not in SMLM_REFERENCE, (
+                f"{superseded!r} is the figure the protocol supersedes"
+            )
+
+    def test_both_documents_state_the_same_starting_frame_count(self):
+        from microclaw.smlm_docs import SMLM_REFERENCE
+        from microclaw.dna_paint_docs import load_reference
+        assert "7,500" in SMLM_REFERENCE
+        assert "7,500" in load_reference()
 
 
 class TestGetHookDocumentation:

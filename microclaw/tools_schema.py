@@ -1805,6 +1805,26 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_dna_paint_documentation",
+        "description": (
+            "Return the full DNA-PAINT protocol: binding kinetics (bright/dark times, "
+            "imager concentration, duplex length), imager and docking strand design, "
+            "buffer and oxygen-scavenger recipes, imaging parameters (exposure, frame "
+            "count, power density, TIRF, camera settings), the bench procedure from "
+            "origami folding through immobilization to acquisition, and the Picasso "
+            "reconstruction pointer. "
+            "get_smlm_documentation is the default reference for any SMLM session "
+            "including DNA-PAINT; call this one when that summary is not enough — "
+            "choosing an imager concentration or exposure from kinetics, preparing "
+            "buffers, or working through the sample prep. Its values supersede the "
+            "DNA-PAINT figures in get_smlm_documentation. "
+            "The parameters are the published protocol's, measured on its reference "
+            "instrument: confirm them against the user's rig and imager stock rather "
+            "than applying them unasked."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "check_emu_installed",
         "description": (
             "Detect whether EMU and/or htSMLM are installed by scanning the Micro-Manager "
