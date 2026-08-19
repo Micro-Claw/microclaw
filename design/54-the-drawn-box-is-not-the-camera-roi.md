@@ -405,6 +405,106 @@ reads as a pass while carrying nothing but the exit code.
 same unsettled-move shape, on a tool with its own gate history. Recorded here so
 it is not lost; it is not fixed under 54.
 
+## 54b+54d+54e gate results — Nikon, 2026-08-19 (`block54bde-nikon/`)
+
+**Every limb ran, including the two the previous trip skipped. 54d's central
+claim is proven on hardware. The block is ready to merge.** One suite failure
+and one over-confident criterion are recorded below; neither is a product defect.
+
+### 54d proven: a 32×32 sensor refuses, and the old code would not have
+
+Step 5, camera cropped to `x=435 y=391 32×32` (the precondition command printed
+it, so the premise is evidenced rather than assumed):
+
+| | |
+|---|---|
+| `coarse.contrast` | **0.411** |
+| `coarse.min_contrast` | **4.800** — present, and exactly what the precondition predicted |
+| verdict | `converged: false`, `moved: false` |
+| `entry_z_um` / `final_z_um` | 2709.85 / 2709.825 — 0.025 µm apart, inside tolerance |
+
+**0.411 exceeds the pre-54d constant threshold of 0.15 by 2.7×.** Under the old
+code this exact run — pure noise on a 1024-pixel frame — converges and drives the
+focus drive. That is the guard defeat measured synthetically in §"small regions
+defeat the guard", reproduced on real hardware and caught by the scaled
+threshold. It is the result the block was held for.
+
+The emitted script refused the same way at the same crop:
+`RuntimeError: Region [402, 384, 58, 68] does not fit frame [32, 32].`
+
+### Step 6: every count matched, both standalone runs happened
+
+4 autofocus calls, 4 envelope prints, exactly one `settle_stage_move`, one
+`_metric_pixel_count`, one `# SKIPPED`, zero `set_roi`. Full-frame run: clean,
+non-empty, four envelope/outcome pairs. Cropped run: nonzero exit with the
+refusal above. The 0-byte-output failure mode of the previous trip is gone —
+54e's envelope is what closed it.
+
+### The dilution hypothesis is not supported, on a second independent trip
+
+| | |
+|---|---|
+| `C_full_1 / 0.15` | 0.273 |
+| `C_full_2 / 0.15` | 0.460 |
+| `C_region / 2.446` | **0.085** |
+
+Region score is below **both** controls — 5.4× below the better one — with a
+different box (`[402, 384, 58, 68]`, 3944 px) from the last trip's. Two trips,
+two boxes, same answer. **Restricting the metric region does not help on this
+field**, and design/54 §1 ships as a capability whose value is unproven on this
+rig rather than as the fix for this failure mode.
+
+The region does consistently produce a better-*shaped* curve — `peak_interior`
+was true for the region and false for both full-frame controls, as it was last
+trip. That is not the criterion and does not rescue the score, but it is twice
+observed and worth keeping.
+
+The control spread persists: 0.041 and 0.069 from the same call on the same
+field, **1.68×** (last trip 2.22×). Measuring the control twice is now permanent.
+
+### The mid-move hypothesis is not supported — and Step 7 was the wrong instrument
+
+Largest requested-vs-measured Z difference across all four sweeps: **0.050 µm**,
+against a 0.5 µm tolerance.
+
+**Step 7's stated inference — that small differences mean "the old path was
+probably fine" — does not follow, and the runbook was wrong to offer it.**
+`measured_z_positions` is read *after* the settle loop has waited, so it can only
+ever show that settling works. It cannot say where the axis was under the old
+50 ms wait, because that observation no longer exists to be made.
+
+The hypothesis is nonetheless answered, from a different quantity: **the contrast
+spread survived the fix.** Two controls on provably-settled frames still differ
+1.68×. If mid-move sampling had been the cause, the spread should have collapsed;
+it did not. So the spread is photon and camera noise on a low-contrast
+brightfield field, not Z uncertainty — and `sweep_autofocus`'s old 50 ms wait was
+probably adequate *on this axis*, though that remains an inference.
+
+54e is still right to keep: it makes `final_z_um` a measurement rather than a
+claim, and the reason prose now agrees with it (`restored to 2709.825 µm`
+alongside `final_z_um: 2709.825`, verified on the rig).
+
+### One suite failure, in a fake, on Windows only
+
+Step 0 returned **1 failed, 1895 passed, 124 skipped** — 2020 collected, so the
+collected total agreed and the gate proceeded. It should not have.
+
+`test_move_reports_requested_vs_achieved` supplied `get_position` from a
+four-element list sized to `settle_stage_move`'s *minimum* poll count, so it
+passed wherever `sleep` overshot the 0.1 s stability window in three polls and
+`StopIteration`ed wherever it did not. Windows/Python 3.12 did not. The product
+code was never involved. `test_relative_in_range` carries the same shape and
+passed on that run by luck. Both fixed in `1dce909`; verified timing-independent
+by forcing `STAGE_MOVE_REQUIRED_SAMPLES` to 4, 8 and 50.
+
+**A fake that counts how many times the code looks is not a test of what the code
+reports** — the same lesson as block 52a, in a new place.
+
+**And Step 0 needs a louder criterion.** It emphasised the *collected* total,
+which is the number that catches a skipped test file, and said only "exit code 0"
+about the rest. A failure count is the thing a reader's eye must land on. Any
+future Step 0 asserts the pass/fail line explicitly.
+
 ## Refusals this must keep
 
 - **Stale box.** A box drawn before a camera-ROI or binning change lands
@@ -583,10 +683,10 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 | Block | Depends on | Branch | Start commit | Implementation commit | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
-| 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **round 1 PASS Nikon 2026-08-18**; **round 2 PASS Nikon 2026-08-19** — region echo, ROI unchanged, refusal verbatim, export clean | **held** — merges with 54d | |
+| 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on three Nikon trips** (2026-08-18, 2026-08-19 ×2). Dilution hypothesis **not supported** on two independent boxes | ready | |
 | 54c | 54a | | | | | | | *(`region="drawn"` — unblocked by 54a, not started, deliberately after 54b/54d)*
-| 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **NOT TESTED, Nikon 2026-08-19** — threshold maths and `_metric_pixel_count` verified, but Step 5 never cropped the camera and Step 6's cropped re-run was not run, so both hardware limbs are unmeasured | **held** — merges with 54b | |
-| 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336` | **awaiting** — re-gate with 54b/54d | **held** — merges with 54b/54d | |
+| 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **PASS Nikon 2026-08-19 (2nd trip)** — 32×32 sensor scored 0.411, **2.7× over the old 0.15 constant**, and refused; emitted script refused identically | ready | |
+| 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336`, flake fix `1dce909` | **PASS Nikon 2026-08-19** — max requested-vs-measured Z 0.050 µm; reason prose agrees with `final_z_um` on the rig. Mid-move hypothesis **not supported** | ready | |
 
 ## Resuming this block cold
 
@@ -595,38 +695,30 @@ Everything needed is on `origin/design54/display-roi`. **This block is not in
 
 State as of 2026-08-19:
 
-- **54a** closed. **54b passed its gate twice. 54d is NOT TESTED** — its two
-  hardware limbs did not run on the 2026-08-19 trip. **54c not started.**
-- **`main` is merged into this branch.** Blocks 52a–c, 55 and 56 landed while
-  54b/54d were held. The merge is textually clean and the suite is green, but it
-  leaves `run_autofocus` as the only Z-moving tool that does not honour block
-  56's measured-arrival contract. See §"54b+54d gate results".
-- **54e is assigned** and is a prerequisite for the re-gate: settle autofocus's
-  three Z moves on a measured arrival, report where the axis actually was, and
-  give the emitted script an envelope print. Until it lands, a re-gate cannot
-  distinguish a diluted metric from a metric sampled mid-move.
-- The rig gate is **`design/54-block54bde-rig-gate.md`**, pinned `2cdb336`
-  (the 54bd runbook is deleted). Its camera crops are now enforced by
-  `design/54-roi-precondition.py`, which exits nonzero until the ROI is what the
-  step needs — the skipped-precondition failure cannot repeat silently. It also
-  prints the expected `min_contrast`, computed from design/54's formula rather
-  than read back from microclaw, so no arithmetic in the runbook needs editing.
-  Step 2 runs the control **twice** and Step 7 reads requested-vs-measured Z out
-  of the payloads.
-- Suite on the merged tree: **1917 passed, 99 skipped, 2016 collected** (macOS).
+- **54a, 54b, 54d and 54e all pass their gates.** The branch is **ready to merge**
+  and has not been merged. `main` is already merged *into* it.
+- **54c not started**, and is next once this lands.
+- Suite: **1921 passed, 99 skipped, 2020 collected** (macOS, and Windows once
+  `1dce909` fixed the two poll-counting fakes).
 
-The four numbers to score a future gate from are unchanged, plus a fifth:
+What this block established, and what it did not:
 
-1. `coarse.min_contrast` against `0.15 × √(1048576 / (w × h))`.
-2. The two `contrast / min_contrast` scores. **Raw contrasts are not comparable
-   across region sizes.**
-3. Step 5's `entry_z_um` against `final_z_um` — and now against the *measured*
-   settled position, which must be reported.
-4. The export's `_metric_pixel_count` count.
-5. **The full-frame control, measured at least twice in the same session.** The
-   2026-08-19 trip returned 0.144 and 0.065 from identical calls; a criterion
-   resting on one control reading is not measuring the field.
+- **Established.** A metric averaged over few pixels needs a threshold that
+  scales with the pixel count, whatever made the frame small. A 32×32 sensor
+  scoring 0.411 on noise — 2.7× the old constant — was refused instead of
+  driving the focus drive.
+- **Not established.** That restricting the metric region *helps focus this
+  field*. Two trips, two boxes, region score below both controls each time. The
+  literal `region` argument ships as a capability, not as the fix for the
+  brightfield failure that opened this document. **54c inherits an unproven
+  premise**: `region="drawn"` makes the same capability easier to reach, and
+  should be scoped as ergonomics rather than as a focus improvement.
 
-**Merge order stands: 54b, 54d and 54e land together**, so nothing reaches a rig
-with the flat-curve guard weakened or the sweep unsettled. Then 54c is next and
-is unblocked.
+Three things a future gate should carry forward:
+
+1. **Measure any control twice.** Same call, same field, 2.22× then 1.68×.
+2. **Never compare raw `contrast` across region sizes.** Compare
+   `contrast / min_contrast`.
+3. **Assert the pass/fail line, not just the collected total.** This gate ran
+   with a red suite because Step 0 emphasised `collected`.
+
