@@ -243,7 +243,9 @@ class TestMoveStageZ:
             move_stage_z(mock_ctrl, default_guard, z_um=200.0, absolute=False)
 
     def test_relative_in_range(self, mock_ctrl, default_guard):
-        mock_ctrl.core.get_position.side_effect = [50.0, 60.0, 60.0, 60.0]
+        # Unbounded on purpose: a counted list asserts how many times the settle
+        # loop polls, which is wall-clock dependent and differs by platform.
+        mock_ctrl.core.get_position.side_effect = _positions(50.0, 60.0)
         result = move_stage_z(mock_ctrl, default_guard, z_um=10.0, absolute=False)
         mock_ctrl.core.set_relative_position.assert_called_once_with(10.0)
         assert result["measured_um"] == 60.0
@@ -514,7 +516,7 @@ class TestNamedStages:
     def test_move_reports_requested_vs_achieved(self, stage_ctrl, stage_guard):
         from microclaw.tools import move_named_stage
         # Settling error is real on this rig and was previously invisible.
-        stage_ctrl.core.get_position.side_effect = [100.0, 200.0, 200.0, 200.0]
+        stage_ctrl.core.get_position.side_effect = _positions(100.0, 200.0)
         result = move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=200.0)
         stage_ctrl.core.set_position.assert_called_once_with("TIRF Stage", 200.0)
         stage_ctrl.core.device_busy.assert_called_with("TIRF Stage")
@@ -1213,6 +1215,23 @@ class TestSnapAndAnalyze:
         assert result["min_intensity"] == 142.0
         assert result["max_intensity"] == 1182.0
         assert result["min_intensity"] != result["mean_intensity"]
+
+
+def _positions(before, after):
+    """One pre-move read, then the settled position for as long as it is asked.
+
+    A fixed list here counts the settle loop's polls, and that count is wall
+    clock dependent: settle_stage_move wants STAGE_MOVE_REQUIRED_SAMPLES
+    in-tolerance reads spanning STAGE_MOVE_STABILITY_WINDOW_S, so a list sized
+    to the minimum passes wherever sleep overshoots and StopIterations wherever
+    it does not. test_move_reports_requested_vs_achieved failed exactly that way
+    on the Nikon's Windows/Python 3.12 run (block 54bde gate, 2026-08-19) while
+    green on macOS. The behaviour under test is what gets reported, never how
+    many times it looked.
+    """
+    from itertools import chain, repeat
+    values = chain([before], repeat(after))
+    return lambda *_args, **_kwargs: next(values)
 
 
 _FAKE_SWEEP = SweepResult(
