@@ -2135,6 +2135,32 @@ def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
     assert "settle_stage_move" in _undefined_emitted_names(broken)
 
 
+def test_stage_move_contract_is_defined_once_however_many_moves(tmp_path):
+    """The settlement helpers are preamble helpers, not per-call boilerplate.
+
+    Emitting the contract inside each move emitter put a fresh copy of the
+    constants, the exception class and both functions in front of every move; a
+    25-tile session emits a wall of identical blocks. `_analysis_source` and
+    `_adaptive_runner_source` are already inlined once from a body predicate --
+    the comment at the assembly site says that is exactly why the predicate is
+    computed from the rendered body.
+    """
+    _, _, source = export(tmp_path, [
+        call("move_stage_z", {"z_um": 100.0, "absolute": True}),
+        call("move_stage_z", {"z_um": 120.0, "absolute": True}),
+        *completed_call(
+            "move_named_stage", {"device": "TIRF Stage", "um": 5.0},
+            {"device": "TIRF Stage", "requested_um": 5.0, "measured_um": 5.0,
+             "tolerance_um": 0.5, "within_tolerance": True,
+             "elapsed_s": 0.1, "last_device_status": "idle"},
+        ),
+    ])
+    assert source.count("def settle_stage_move") == 1
+    assert source.count("class StageMoveError") == 1
+    assert source.count("STAGE_MOVE_TOLERANCE_UM = ") == 1
+    assert not _undefined_emitted_names(source)
+
+
 def test_emitted_stage_settle_uses_live_policy_constants(tmp_path, monkeypatch):
     monkeypatch.setattr(controller, "STAGE_MOVE_TOLERANCE_UM", 0.321)
     monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 7.654)

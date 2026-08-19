@@ -84,6 +84,28 @@ class TestGuardedSeam:
         assert result["measured_um"] == 100.0
         assert result["within_tolerance"] is True
 
+    def test_settle_non_finite_position_is_a_read_fault_not_a_nan_result(self, monkeypatch):
+        """A device that reads NaN must be diagnosed, and must never put NaN in a result.
+
+        Round 1's `_apply_named_stage` raised ValueError("non-finite achieved
+        position") immediately; folding it into settle_stage_move dropped that,
+        so a non-finite read fell through the tolerance comparison (which is
+        False for NaN), cleared the samples, and timed out reporting
+        `measured_um: nan`. json.dumps writes that as bare `NaN`, which is
+        invalid strict JSON in the history file.
+        """
+        import json
+        from microclaw import controller
+        core = MagicMock()
+        core.get_position.return_value = float("nan")
+        core.device_busy.return_value = False
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0, raising=False)
+        with pytest.raises(controller.StageMoveError) as caught:
+            controller.settle_stage_move(core, "S", 100.0)
+        assert caught.value.result["measured_um"] is None
+        assert "non-finite" in caught.value.result["last_device_status"]
+        assert "NaN" not in json.dumps(caught.value.result)
+
     def test_settle_permanent_position_read_fault_is_typed_timeout(self, monkeypatch):
         from microclaw import controller
         core = MagicMock()

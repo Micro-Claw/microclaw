@@ -1425,6 +1425,11 @@ def export_session_script(
     # keeps nested/composite emitters from having to duplicate a tool-name or
     # recorded-result predicate here when they start using a shared helper.
     channel_writes = adaptive_used or "_verify_property(" in body_text
+    # The adaptive runner source already carries the settlement contract, so
+    # gate on its absence to keep exactly one definition in every script.
+    stage_moves = not adaptive_used and (
+        "settle_stage_move(" in body_text or "stage_move_dispatch_failure(" in body_text
+    )
     lines = [
         "from __future__ import annotations",
         *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
@@ -1442,6 +1447,7 @@ def export_session_script(
           if analysis_used else []),
         *(["", _portable_log_path_source().rstrip()] if adaptive_used else []),
         *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),
+        *(["", _stage_move_contract_source().rstrip()] if stage_moves else []),
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
@@ -2149,7 +2155,6 @@ def _emit_move_stage_z(params: RecordedParams) -> str:
     if target is None:
         raise CannotEmit("the focus-stage move recorded no resolved target")
     return "\n".join([
-        _stage_move_contract_source(),
         _emit_stage_dispatch(f"core.set_position({target!r})", "core.get_focus_device()", target),
         _emit_stage_settle("core.get_focus_device()", target),
     ])
@@ -2253,7 +2258,6 @@ def _emit_move_named_stage(params: RecordedParams) -> str:
     if "device" not in result or "requested_um" not in result:
         raise CannotEmit("the named-stage move recorded no resolved target")
     return "\n".join([
-        _stage_move_contract_source(),
         _emit_stage_dispatch(
             f"core.set_position({result['device']!r}, {result['requested_um']!r})",
             repr(result["device"]), result["requested_um"],

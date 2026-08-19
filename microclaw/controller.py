@@ -73,6 +73,12 @@ def settle_stage_move(core, device: str, target_um: float) -> dict:
             status = f"unavailable: {type(exc).__name__}"
         try:
             measured = float(core.get_position(device))
+            # A non-finite read is a failed read, not a position. Reached via
+            # the same handler so there is one policy: NaN never survives into
+            # a result dict, where json.dumps would write it as bare `NaN` and
+            # any strict reader of the history would reject the line.
+            if not math.isfinite(measured):
+                raise ValueError(f"non-finite position {measured!r}")
         except Exception as exc:
             in_tolerance.clear()
             status = f"{status}; position_read_error: {type(exc).__name__}: {exc}"
