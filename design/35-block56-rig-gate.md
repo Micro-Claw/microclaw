@@ -1,5 +1,44 @@
 # Block 56 rig gate — measured move reporting
 
+## Which rig, and the one precondition
+
+**Run this on the Nikon.** It is not a second-choice venue: the defect this
+block fixes was *measured there*. At 11:40 on 2026-08-05 `move_named_stage` on
+`TIPFSOffset` returned `{"requested_um": 5, "achieved_um": 27.85,
+"error_um": 22.85}` **as a success** (design/40 `:115`), and `TIPFSOffset` is
+already declared under `named_stages` in that rig's config (design/40 `:271`).
+The named-stage limbs below reproduce that exact call.
+
+**The demo machine cannot run the miss limb** — its simulated stages
+deterministically achieve every valid target, so a "miss" there would be
+manufactured, not observed. On M2 or M5 the same limbs run against that rig's
+own named stage and its own known floor; substitute the device and keep
+everything else.
+
+> ### Precondition: PFS must be disengaged for every limb below
+>
+> **This is not optional and it is Nikon-specific.** When PFS is locked the
+> servo drives `TIPFSOffset` **on its own** — at 11:40 a lock at 2500 pulled it
+> from 27.85 to 183.55 with no command (design/40 `:52`). A settle check
+> measures whether the axis reached and held a commanded target; an armed servo
+> moving it independently makes every measurement below meaningless.
+>
+> Before starting, call `get_focus_lock_state` and report it. If a lock is
+> engaged, call `set_focus_lock(enabled=false)` and report the result, then
+> re-read the state and confirm it is disengaged. Record both readings. Leave
+> PFS disengaged until the gate is finished.
+>
+> ### Precondition: confirm `Core.Focus` is assigned
+>
+> Also Nikon-specific, and cheap insurance. Two sessions on this rig were lost
+> to an unassigned `Core.Focus`, which surfaces as `z_stage: "unavailable"` from
+> `get_system_state` and as a raw Java exception from every Z-facing tool — it
+> is still undiagnosed on `main` (register, "The five that outlived Track B").
+> Call `get_system_state` and confirm it reports a real focus device. If it
+> reports `unavailable`, assign the focus role in Micro-Manager before starting;
+> otherwise the first limb below fails for a reason that has nothing to do with
+> this block.
+
 ## Frozen contract
 
 All single-axis moves return `requested_um`, `measured_um`, `tolerance_um`,
@@ -46,23 +85,32 @@ by no more than 0.5 µm.
 
 ## Verbatim agent prompt: named-stage hard-limit miss
 
-This limb requires M2 or M5. The demo stages deterministically achieve every
-valid target, so the demo rig cannot supply a real target miss and is not an
-acceptable fallback for this limb.
+This is the 11:40 reproduction. It needs a target that is **below the axis's
+mechanical floor and still inside the configured `named_stages` bound** — the
+combination that produced the original defect.
 
-> Call `list_stages`. Choose one single-axis stage whose safety profile permits
-> motion and whose current position can be read. Call `get_stage_position` for
-> it. Call `move_named_stage` on that exact device with `absolute=true` and a
-> target 1.0 µm beyond a known mechanical travel limit but still inside the
-> configured safety bound. Report the complete failure. Then call
-> `get_stage_position` independently and report it. Do not substitute
-> `move_stage_z` or a property write. If no such safe target exists on this rig,
-> stop the gate and route it to the other physical rig; do not substitute the
-> demo device or another mechanism.
+> Call `get_stage_position` for `TIPFSOffset` and report it. Report the
+> configured `named_stages` bound for `TIPFSOffset` from the active safety
+> config. Then call `move_named_stage` on `TIPFSOffset` with `absolute=true`
+> and `um` set to the **lowest value that bound permits**. Report the complete
+> result or the complete failure, whichever occurs. Then call
+> `get_stage_position` for `TIPFSOffset` again and report it. Do not substitute
+> `move_stage_z`, a property write, or another device.
 
-Expected numbers when runnable: `tolerance_um` is `0.5`, `within_tolerance` is
-`false`, and independent position differs from `measured_um` by no more than
-0.5 µm.
+Expected when the bound permits a sub-floor target: a `StageMoveError` whose
+result carries `tolerance_um: 0.5`, `within_tolerance: false`, and a
+`measured_um` at the mechanical floor — the 11:40 session floored at **27.85
+µm** — with the independently read position within 0.5 µm of `measured_um`.
+
+**Two other outcomes are valid results, not runbook failures.** Record whichever
+happens and stop the limb:
+
+- **The axis reaches the target within tolerance.** The configured minimum is at
+  or above the floor on this config, so no miss is available. Report the
+  configured bound and the achieved position; the limb is not runnable here.
+- **`check_named_stage` refuses before dispatch.** The bound excludes the target
+  entirely. Report the refusal text verbatim — that is a guard working, and it
+  is not the settlement contract under test.
 
 ## Verbatim agent prompt: approved hook named-stage path
 
@@ -71,13 +119,13 @@ Expected numbers when runnable: `tolerance_um` is `0.5`, `within_tolerance` is
 > measurement dictionary and no hardware actions; the acquisition plan, not
 > the hook result, will supply the moves. Show the source before saving it.
 
-> Call `get_stage_position` for `TIRF Stage`. Then call `run_timelapse` for two
+> Call `get_stage_position` for `TIPFSOffset`. Then call `run_timelapse` for two
 > frames with `interval_s=1`, no channel, `exposure_ms=10`, saving to
 > `block56_hook`,
 > and hook strategy `block56_stage_observer`. Supply a `hook_action_plan` whose
 > frame-zero `MoveNamedStage` target is the measured entry position and whose
 > frame-one target is entry position plus 1.0 µm. Approve a
-> `named_stage_envelope` on `TIRF Stage` from entry position through entry plus
+> `named_stage_envelope` on `TIPFSOffset` from entry position through entry plus
 > 1.0 µm, with `max_writes=2` and `restore="leave"`. Report the run result and
 > read its hook log. Do not issue parent-side `move_named_stage` calls for these
 > two moves.
@@ -94,14 +142,14 @@ The limb above runs `restore="leave"` and never exercises that. Restoration is
 also the one area block 52c had to reopen, so it gets its own limb rather than
 being inferred from the unit tests.
 
-> Call `get_stage_position` for `TIRF Stage` and record it. Run the same
+> Call `get_stage_position` for `TIPFSOffset` and record it. Run the same
 > `run_timelapse` as the previous limb — two frames, `interval_s=1`, no channel,
 > `exposure_ms=10`, saving to `block56_restore`, hook strategy
 > `block56_stage_observer` — but approve the `named_stage_envelope` with
 > `restore="entry"` and `max_writes=3`, and give the `hook_action_plan` a single
 > frame-zero `MoveNamedStage` to entry position plus 1.0 µm. Report the run
 > result, the restoration block of the result, and the hook log. Then call
-> `get_stage_position` for `TIRF Stage` independently and report it.
+> `get_stage_position` for `TIPFSOffset` independently and report it.
 
 Expected numbers: the restoration block reports `policy: "entry"`,
 `restored: true`, and an `entry_um` equal to the position recorded before the
