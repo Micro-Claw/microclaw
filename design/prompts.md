@@ -6992,3 +6992,69 @@ a raw `TIPFSStatus.State` write; and a gate step asking for the configured
 `named_stages` bound **did not run at all**, because no tool reports the bounds
 microclaw is enforcing. The second is the same shape as a placeholder that cannot
 run — a written step that silently produces nothing.
+
+## design/54 — the drawn box is not the camera ROI (blocks 54a/54b/54d/54e, merged 2026-08-19, `3be1037`)
+
+**Four blocks, four Nikon trips, and the headline finding is a negative one.**
+design/54 opened because a brightfield session failed to focus while the field
+was visibly in focus: tenengrad is a mean over pixels, the sharp structure was
+0.06% of the frame, and the metric was correct and useless at the same time. The
+proposed fix was to restrict the metric to a drawn box. **Two trips with two
+different boxes say that does not help on this rig** — region score 0.085 against
+full-frame controls of 0.273 and 0.460, having been 0.048 against 0.100 the trip
+before. The capability shipped; the premise did not survive. **54c inherits an
+unproven premise and is now scoped as ergonomics, not as a focus improvement.**
+
+**The block that mattered was the one nobody planned.** 54b made region size a
+user-facing knob, and `curve_contrast`'s noise floor scales as 1/√N while
+`MIN_CONTRAST` was a constant 0.15 — so a small enough region converges on pure
+noise and moves the focus drive (92% of the time at 20×20, measured
+synthetically). That is a *worse* defect than the one 54b was fixing, found by
+scoring the gate rather than reading its verdict, and it forced 54d and a rule
+that 54b would not merge alone. On the rig a 32×32 sensor scored **0.411** on
+noise — 2.7× the old constant — and refused. **A capability can create the defect
+it was written to avoid, one block downstream.**
+
+**Three gates, three different ways a step can produce no evidence.** Trip 1
+passed every limb and its criterion was invalid — it compared raw `contrast`
+across region sizes, a quantity that inflates 5.7× on noise alone when the box
+shrinks. Trip 2 skipped both of 54d's hardware limbs while reporting a pass: the
+camera crop they depended on was described in prose *beside* the step instead of
+inside it, so nothing in the typed prompt could fail when it was never made. Trip
+3 ran with a **red suite** because Step 0 emphasised the *collected* total, which
+catches a skipped file, and said only "exit code 0" about everything else.
+**Assert the pass/fail line.**
+
+The fix for trip 2 generalises: `design/54-roi-precondition.py` turns each
+camera-ROI premise into a command that exits nonzero until the ROI is what the
+step needs, and prints the expected `min_contrast` computed from the design's own
+formula rather than read back from microclaw — so the number being checked is not
+produced by the code under test, and the runbook carries no arithmetic to edit.
+**A GUI precondition needs a command, not a sentence.**
+
+**54e closed a gap block 56's notes had already written down.** Those notes
+record that `autofocus.py` moves Z with bare `core.set_position` and has no settle
+check; merging `main` into this branch made `run_autofocus` the last Z-moving tool
+ignoring the measured-arrival contract. The coordinator's review then caught
+`final_z_um` becoming a measurement while `_flat_reason` kept printing the
+request — **one result object, two numbers for the same quantity, and the prose
+one, which is what a microscopist reads, was the invented one.**
+
+**The hypothesis that justified 54e was wrong, and the instrument written to test
+it was also wrong.** The theory was that sweeps snapped 50 ms after
+`wait_for_device` while block 56 had measured this axis still busy at 0.89 s, so
+every plane might be exposed mid-move. Max requested-vs-measured Z came back at
+0.050 µm. Worse, the gate step could never have answered it:
+`measured_z_positions` is read *after* the settle loop waits, so it can only show
+that settling works, never where the axis was under the old wait. The answer came
+from a quantity nobody designed as evidence — **the control spread survived the
+fix** (2.22× → 1.68× on provably settled frames), so it is camera noise, not Z
+uncertainty. 54e is still right on its own terms: a reported position is now a
+measurement rather than a claim.
+
+**Two fakes counted polls instead of testing behaviour.** The Windows failure was
+`get_position` fed from a four-element list sized to `settle_stage_move`'s
+*minimum* poll count — green wherever `sleep` overshot the stability window in
+three polls, `StopIteration` where it did not. A sibling test had the same shape
+and passed by luck. Block 52a's lesson in a new place: **a fake that encodes how
+many times the code looks is not a test of what the code reports.**

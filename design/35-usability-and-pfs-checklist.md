@@ -440,8 +440,16 @@ re-verified by the coordinator against the pre-fix tree.
 **The implementer was right and the checklist was wrong about callers.**
 `autofocus.py` and `hooks.py` move Z with bare `ctrl.core.set_position` and are
 **not** callers of these functions. Block 56's section says so now. **Those paths
-still have no settle check at all** — that is a live gap, not an oversight, and
-it is register work if anyone wants it.
+had no settle check at all** — a live gap, not an oversight.
+
+**Half of it is closed: `autofocus.py` was folded in by design/54 block 54e**
+(merged 2026-08-19, `3be1037`). Its three Z moves — sweep plane, move-to-best and
+`_restore` — now call `settle_stage_move`, `final_z_um` reports the measured
+settled position rather than the request, and the emitted standalone script
+inlines the same contract. Max requested-vs-measured Z on the Nikon was 0.050 µm.
+**Still open: `hooks.py`'s focus-recovery jog, the tile path's per-position Z, and
+`_emit_go_to_position`'s bare `core.set_position`** — the last emits an unsettled
+move into every exported script that recorded a `go_to_position`.
 
 **What the gate established, and the two things it refuted.**
 
@@ -9275,12 +9283,15 @@ Two smaller Track B remnants, recorded so they are not re-discovered:
   The original finding was that the sweep runs inside
   `post_hardware_hook_fn`, outside the event plan, so `_authorize_acquisition`
   never sees it; `_plan_protocol_repetitions` (`tools.py:2217`) counts only
-  `_build_acquisition_events` frames. `sweep_autofocus` (`autofocus.py:76`) snaps
+  `_build_acquisition_events` frames. `sweep_autofocus` snaps
   once per plane at `n = round(span/z_step)+1`, and `AutofocusHook` runs a coarse
   then a fine pass. At M5 G2's settings that is tens of exposures per position
   against a reservation covering one. The shared plane-count helper and hook-
   aware plan now reserve and account those exposures for every runner using the
-  reviewed autofocus hook, not only the deprecated tool.
+  reviewed autofocus hook, not only the deprecated tool. (Since design/54
+  block 54e each plane also settles on a measured arrival, so a sweep is
+  slower — order 0.1 s per plane, more on a slow axis — but the exposure
+  count is unchanged.)
 
 - **design/38 F12 — a property write can report failure after it has succeeded.**
   On M5 G7.a, `set_device_property` on `All: 3. TTL Enable` raised
