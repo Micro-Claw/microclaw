@@ -26,10 +26,13 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Track F are all closed** — verified 2026-08-19 against the run ledger, which
 > carries a merge commit for every one of their blocks.
 >
-> **Trust the ledger over the `[x]` markers.** Several closed blocks never got
-> ticked — blocks 1, 2 and 41a all have merge commits (`20b92e2`, `a1b7579`,
-> `1fb284d`) and unmarked headings. An unticked heading in this file is not
-> evidence that anything is open.
+> **Trust the ledger over the `[x]` markers, and read the whole row.** Several
+> closed blocks never got ticked — blocks 1, 2, 41a and 43n all have merge
+> commits (`20b92e2`, `a1b7579`, `1fb284d`, `e03830d`). An unticked heading is
+> not evidence that anything is open. **Nor is an empty merge column**: 43n's
+> merge hash is written inside its implementation cell, so a mechanical scan of
+> that column reports it open when it is not. The only genuinely open rows are
+> Track C's 9, 10 and 11, which are parked on an `.ilp` that does not exist.
 >
 > **Work has continued outside this file** — `design/48` through `design/55` each
 > own their own checklist and ledger. This file is not a picture of the
@@ -7713,7 +7716,7 @@ plus explicit result fields, so a deferred hit is distinguishable from an
 immediate revisit and a zero-hit run does not read as a failure; and hit-time Z
 capture, without which every hit is imaged at whatever Z the last refocus left.
 
-## 43n. Implement `acquire_on_hit` — the two-channel search/acquire runner
+## 43n. [x] Implement `acquire_on_hit` — the two-channel search/acquire runner — **MERGED `e03830d` 2026-08-12**
 
 Branch: `design43/acquire-on-hit` — **not created; assign first**
 
