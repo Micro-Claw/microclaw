@@ -2309,10 +2309,41 @@ def test_move_named_stage_emits_its_resolved_absolute_target(tmp_path):
          "achieved_um": 1461.2, "error_um": 1.2},
     ))
     assert "core.set_position('TIRF Stage', 1460.0)" in source
-    assert "core.wait_for_device('TIRF Stage')" in source
+    assert "core.device_busy('TIRF Stage')" in source
+    assert "core.get_position('TIRF Stage')" in source
     assert "-40.0" not in source
     assert "# NOT EMITTED" not in source
-    assert "raise RuntimeError" not in source
+    assert "'within_tolerance': False" in source
+
+
+def test_emitted_named_stage_move_runs_success_and_failure_paths(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "move_named_stage",
+        {"device": "TIRF Stage", "um": 5.0, "absolute": True},
+        {"device": "TIRF Stage", "requested_um": 5.0,
+         "measured_um": 5.0, "tolerance_um": 0.5,
+         "within_tolerance": True},
+    ))
+    runnable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+
+    class FakeCore:
+        measured = 5.0
+        def set_position(self, _device, _target): pass
+        def device_busy(self, _device): return False
+        def get_position(self, _device): return self.measured
+
+    exec(compile(runnable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+    })
+
+    FakeCore.measured = 27.85
+    fast_failure = runnable.replace(">= 10.0", ">= 0.0")
+    with pytest.raises(RuntimeError, match="within_tolerance.*False"):
+        exec(compile(fast_failure, "routine.py", "exec"), {
+            "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        })
 
 
 @pytest.mark.parametrize(("label", "result"), [

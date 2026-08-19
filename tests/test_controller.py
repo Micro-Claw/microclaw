@@ -51,8 +51,24 @@ class TestGuardedSeam:
 
     def test_set_z_in_range_moves(self):
         ctrl = make_controller(guard=bounded_guard())
-        ctrl.set_z(100.0)
+        ctrl._core.get_position.return_value = 100.0
+        result = ctrl.set_z(100.0)
         ctrl._core.set_position.assert_called_once_with(100.0)
+        assert result["measured_um"] == 100.0
+        assert result["within_tolerance"] is True
+
+    def test_set_z_timeout_carries_measurement_elapsed_and_status(self, monkeypatch):
+        from microclaw import controller
+        ctrl = make_controller(guard=bounded_guard())
+        ctrl._core.get_position.return_value = 90.0
+        ctrl._core.device_busy.return_value = True
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0, raising=False)
+        with pytest.raises(RuntimeError) as caught:
+            ctrl.set_z(100.0)
+        assert type(caught.value).__name__ == "StageMoveError"
+        assert caught.value.result["measured_um"] == 90.0
+        assert caught.value.result["elapsed_s"] >= 0
+        assert caught.value.result["last_device_status"] == "busy"
 
     def test_set_xy_guarded(self):
         ctrl = make_controller(guard=bounded_guard())
@@ -62,6 +78,7 @@ class TestGuardedSeam:
 
     def test_no_guard_does_not_block(self):
         ctrl = make_controller(guard=None)
+        ctrl._core.get_position.return_value = 999.0
         ctrl.set_z(999.0)  # no guard → no check
         ctrl._core.set_position.assert_called_once_with(999.0)
 
@@ -83,6 +100,7 @@ class TestGoToPositionZOnly:
     def test_z_only_skips_xy(self):
         ctrl = make_controller()
         ctrl._positions = [{"name": "Zonly", "z_um": 42.0}]
+        ctrl._core.get_position.return_value = 42.0
         ctrl.go_to_position("Zonly")
         ctrl._core.set_xy_position.assert_not_called()
         ctrl._core.set_position.assert_called_once_with(42.0)
@@ -90,6 +108,7 @@ class TestGoToPositionZOnly:
     def test_xy_and_z_both_set(self):
         ctrl = make_controller()
         ctrl._positions = [{"name": "P", "x_um": 1.0, "y_um": 2.0, "z_um": 3.0}]
+        ctrl._core.get_position.return_value = 3.0
         ctrl.go_to_position("P")
         ctrl._core.set_xy_position.assert_called_once_with(1.0, 2.0)
         ctrl._core.set_position.assert_called_once_with(3.0)

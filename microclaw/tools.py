@@ -37,6 +37,8 @@ from microclaw.controller import (
     PositionListConflict,
     PositionProjection,
     dataset_stack_files,
+    settle_stage_move,
+    stage_move_dispatch_failure,
 )
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
@@ -2110,10 +2112,52 @@ def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return result
 
 
-@emits(lambda p: (
-    f"core.set_position({p['z_um']!r})" if p.get("absolute", True)
-    else f"core.set_relative_position({p['z_um']!r})"
-))
+def _emit_stage_settle(device_expr: str, target: float) -> str:
+    return "\n".join([
+        "import time",
+        f"_move_target = {target!r}",
+        "_move_started = time.monotonic()",
+        "_move_samples = []",
+        "while True:",
+        "    _move_now = time.monotonic()",
+        f"    _move_status = 'busy' if core.device_busy({device_expr}) else 'idle'",
+        f"    _move_measured = float(core.get_position({device_expr}))",
+        "    if abs(_move_measured - _move_target) <= 0.5:",
+        "        _move_samples = (_move_samples + [(_move_now, _move_measured)])[-3:]",
+        "        if len(_move_samples) == 3 and _move_now - _move_samples[0][0] >= 0.1:",
+        "            break",
+        "    else:",
+        "        _move_samples = []",
+        "    if _move_now - _move_started >= 10.0:",
+        "        raise RuntimeError({'requested_um': _move_target, 'measured_um': _move_measured, 'tolerance_um': 0.5, 'within_tolerance': False, 'elapsed_s': round(_move_now - _move_started, 3), 'last_device_status': _move_status})",
+        "    time.sleep(0.05)",
+    ])
+
+
+def _emit_stage_dispatch(set_line: str, device_expr: str, target: float) -> str:
+    return "\n".join([
+        "try:",
+        f"    {set_line}",
+        "except Exception as _move_exc:",
+        f"    _move_measured = float(core.get_position({device_expr}))",
+        f"    _move_status = 'busy' if core.device_busy({device_expr}) else 'idle'",
+        f"    raise RuntimeError({{'requested_um': {target!r}, 'measured_um': _move_measured, 'tolerance_um': 0.5, 'within_tolerance': False, 'elapsed_s': 0.0, 'last_device_status': 'dispatch_error: ' + type(_move_exc).__name__ + '; ' + _move_status}}) from _move_exc",
+    ])
+
+
+def _emit_move_stage_z(params: RecordedParams) -> str:
+    target = params.result.get("requested_um")
+    if target is None and params.get("absolute", True):
+        target = params.get("z_um")
+    if target is None:
+        raise CannotEmit("the focus-stage move recorded no resolved target")
+    return "\n".join([
+        _emit_stage_dispatch(f"core.set_position({target!r})", "core.get_focus_device()", target),
+        _emit_stage_settle("core.get_focus_device()", target),
+    ])
+
+
+@emits(_emit_move_stage_z)
 def move_stage_z(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2128,13 +2172,15 @@ def move_stage_z(
 
     guard.check_z(target_z)
 
-    if absolute:
-        ctrl.core.set_position(target_z)
-    else:
-        ctrl.core.set_relative_position(z_um)
-
-    _wait(ctrl, ctrl.core.get_focus_device())
-    return {"z_um": round(target_z, 3), "status": "Moved."}
+    device = ctrl.core.get_focus_device()
+    try:
+        if absolute:
+            ctrl.core.set_position(target_z)
+        else:
+            ctrl.core.set_relative_position(z_um)
+    except Exception as exc:
+        raise stage_move_dispatch_failure(ctrl.core, device, target_z, exc) from exc
+    return settle_stage_move(ctrl.core, device, target_z)
 
 
 # --- Named stages (design/14 §6) ---
@@ -2209,8 +2255,11 @@ def _emit_move_named_stage(params: RecordedParams) -> str:
     if "device" not in result or "requested_um" not in result:
         raise CannotEmit("the named-stage move recorded no resolved target")
     return "\n".join([
-        f"core.set_position({result['device']!r}, {result['requested_um']!r})",
-        f"core.wait_for_device({result['device']!r})",
+        _emit_stage_dispatch(
+            f"core.set_position({result['device']!r}, {result['requested_um']!r})",
+            repr(result["device"]), result["requested_um"],
+        ),
+        _emit_stage_settle(repr(result["device"]), result["requested_um"]),
     ])
 
 
@@ -2227,15 +2276,12 @@ def move_named_stage(
     current = float(ctrl.core.get_position(device))
     target = um if absolute else current + um
     guard.check_named_stage(device, target)
-    ctrl.core.set_position(device, target)
-    ctrl.core.wait_for_device(device)
-    achieved = float(ctrl.core.get_position(device))
-    return {
-        "device": device,
-        "requested_um": round(target, 4),
-        "achieved_um": round(achieved, 4),
-        "error_um": round(achieved - target, 4),
-    }
+    try:
+        ctrl.core.set_position(device, target)
+    except Exception as exc:
+        raise stage_move_dispatch_failure(ctrl.core, device, target, exc) from exc
+    result = settle_stage_move(ctrl.core, device, target)
+    return {"device": device, **result}
 
 
 # --- Channel / Config ---

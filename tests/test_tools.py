@@ -207,10 +207,27 @@ class TestSetExposure:
 
 
 class TestMoveStageZ:
+    def test_idle_before_motion_never_passes_at_old_position(self, default_guard, monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_focus_device.return_value = "DStage"
+        core.get_position.return_value = 50.0
+        core.device_busy.return_value = False
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0, raising=False)
+        with pytest.raises(RuntimeError) as caught:
+            move_stage_z(ctrl, default_guard, z_um=100.0)
+        assert type(caught.value).__name__ == "StageMoveError"
+        assert caught.value.result["measured_um"] == 50.0
+        assert caught.value.result["within_tolerance"] is False
+
     def test_absolute_in_range(self, mock_ctrl, default_guard):
+        mock_ctrl.core.get_position.return_value = 100.0
         result = move_stage_z(mock_ctrl, default_guard, z_um=100.0, absolute=True)
         mock_ctrl.core.set_position.assert_called_once_with(100.0)
-        assert result["z_um"] == 100.0
+        assert result["requested_um"] == 100.0
+        assert result["measured_um"] == 100.0
+        assert result["within_tolerance"] is True
 
     def test_absolute_below_min(self, mock_ctrl, default_guard):
         with pytest.raises(SafetyViolation, match="0"):
@@ -226,9 +243,10 @@ class TestMoveStageZ:
             move_stage_z(mock_ctrl, default_guard, z_um=200.0, absolute=False)
 
     def test_relative_in_range(self, mock_ctrl, default_guard):
+        mock_ctrl.core.get_position.side_effect = [50.0, 60.0, 60.0, 60.0]
         result = move_stage_z(mock_ctrl, default_guard, z_um=10.0, absolute=False)
         mock_ctrl.core.set_relative_position.assert_called_once_with(10.0)
-        assert result["z_um"] == 60.0  # 50.0 (fixture) + 10.0
+        assert result["measured_um"] == 60.0
 
     def test_get_z_position(self, mock_ctrl, unconstrained_guard):
         result = get_z_position(mock_ctrl, unconstrained_guard)
@@ -496,13 +514,38 @@ class TestNamedStages:
     def test_move_reports_requested_vs_achieved(self, stage_ctrl, stage_guard):
         from microclaw.tools import move_named_stage
         # Settling error is real on this rig and was previously invisible.
-        stage_ctrl.core.get_position.side_effect = [100.0, 201.1]  # before, after
+        stage_ctrl.core.get_position.side_effect = [100.0, 200.0, 200.0, 200.0]
         result = move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=200.0)
         stage_ctrl.core.set_position.assert_called_once_with("TIRF Stage", 200.0)
-        stage_ctrl.core.wait_for_device.assert_called_with("TIRF Stage")
+        stage_ctrl.core.device_busy.assert_called_with("TIRF Stage")
         assert result["requested_um"] == 200.0
-        assert result["achieved_um"] == 201.1
-        assert result["error_um"] == pytest.approx(1.1)
+        assert result["measured_um"] == 200.0
+        assert result["within_tolerance"] is True
+
+    def test_hard_floor_is_typed_failure(self, stage_ctrl, stage_guard, monkeypatch):
+        from microclaw import controller
+        from microclaw.tools import move_named_stage
+        stage_ctrl.core.get_position.return_value = 27.85
+        stage_ctrl.core.device_busy.return_value = False
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0, raising=False)
+        with pytest.raises(RuntimeError) as caught:
+            move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=5.0)
+        assert type(caught.value).__name__ == "StageMoveError"
+        assert caught.value.result["requested_um"] == 5.0
+        assert caught.value.result["measured_um"] == 27.85
+        assert caught.value.result["within_tolerance"] is False
+        assert "elapsed_s" in caught.value.result
+        assert caught.value.result["last_device_status"] == "idle"
+
+    def test_driver_hard_limit_exception_is_measured_typed_failure(self, stage_ctrl, stage_guard):
+        from microclaw.tools import move_named_stage
+        stage_ctrl.core.get_position.return_value = 27.85
+        stage_ctrl.core.set_position.side_effect = RuntimeError("device limit")
+        with pytest.raises(RuntimeError) as caught:
+            move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=5.0)
+        assert type(caught.value).__name__ == "StageMoveError"
+        assert caught.value.result["measured_um"] == 27.85
+        assert caught.value.result["last_device_status"].startswith("dispatch_error")
 
     def test_relative_move_resolves_absolute_before_check(self, stage_ctrl, stage_guard):
         from microclaw.tools import move_named_stage
