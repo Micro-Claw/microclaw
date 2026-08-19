@@ -1756,7 +1756,7 @@ assistant's narration when judging whether a guard fired.
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
 | 12 | Closeout | prior applicable blocks | — | | | **required** | n/a | |
 | 39 | Out-of-band | — | `design-39-emu-names` (deleted) | `0016c54` | `7450f5e` + `a7ac7d5` (coordinator review) + runbook `483c620` + `6adef62` | M5 G1–G4 + demo G5 all **PASS** 2026-08-05 (`39-emu-m5`, `39-emu-demo`); **`6adef62` landed post-gate and is ungated** | `c987f65` | **done** — design/39 §"What shipped, and what the gate measured" |
-| 56 | Register promotion | none — any rig | `design35/measured-move-reporting` | `9f8de84` | | **required, any rig** — a missed target must report as a failure; demo or M2 is enough | | |
+| 56 | Register promotion | none — any rig | `design35/measured-move-reporting` | `5b2bcf8` | | **required, any rig** — a missed target must report as a failure; demo or M2 is enough | | |
 
 **Out-of-band rows.** design/36, design/37, design/38 and the composition block
 all ran the full block workflow without a ledger row, because they grew out of
