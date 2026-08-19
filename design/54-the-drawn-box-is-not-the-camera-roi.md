@@ -704,16 +704,28 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 
 ## Resuming this block cold
 
-Everything needed is on `origin/design54/display-roi`. **This block is not in
-`design/35`** — it owns its checklist above.
+**This block is not in `design/35`** — it owns its checklist above.
 
 State as of 2026-08-19:
 
-- **54a, 54b, 54d and 54e all pass their gates.** The branch is **ready to merge**
-  and has not been merged. `main` is already merged *into* it.
-- **54c not started**, and is next once this lands.
-- Suite: **1921 passed, 99 skipped, 2020 collected** (macOS, and Windows once
-  `1dce909` fixed the two poll-counting fakes).
+- **54a, 54b, 54d and 54e passed their gates and are merged** — `3be1037` for the
+  code, `edfaa10` for the closeout and the post-merge design gate. `main` carries
+  both, and `design54/display-roi` is deleted.
+- **54c is live on `origin/design54/drawn-region`.** It is implemented, gated
+  once on the Nikon, and awaiting a short re-gate.
+- **Read that branch's copy of this file, not this one, for 54c's current
+  state.** The branch carries the gate results, the run ledger, and the runbook
+  (`design/54-block54c-rig-gate.md`); none of them are on `main` until the block
+  merges. This paragraph is deliberately the only 54c status on `main`, so the
+  two copies cannot drift into disagreeing.
+
+  ```
+  git fetch origin && git checkout design54/drawn-region
+  ```
+
+- Suite at `edfaa10`: **1921 passed, 99 skipped, 2020 collected** (macOS, and
+  Windows once `1dce909` fixed the two poll-counting fakes). The branch has moved
+  past this; its own copy carries the current numbers.
 
 What this block established, and what it did not:
 
