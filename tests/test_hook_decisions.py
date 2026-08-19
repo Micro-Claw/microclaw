@@ -44,9 +44,9 @@ def test_move_named_stage_parses_typed_and_exact_dict_forms():
         parse_action({"kind": "MoveNamedStage", "position_um": 12.5, "device": "stage"})
 
 
-def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes():
+def test_named_stage_plan_dispatch_records_in_tolerance_result_and_keeps_index_out_of_axes():
     core = MagicMock()
-    core.get_position.return_value = 21299
+    core.get_position.return_value = 21294.3
     guard = MagicMock()
     adapter = UntrustedHookAdapter(object())
     adapter.configure_named_stage(
@@ -61,13 +61,36 @@ def test_named_stage_plan_dispatch_records_overshoot_and_keeps_index_out_of_axes
     returned = adapter.pre_hardware_hook_fn(event)
     guard.check_named_stage.assert_called_once_with("fixture-stage", 21294.0)
     core.set_position.assert_called_once_with("fixture-stage", 21294.0)
-    core.wait_for_device.assert_called_once_with("fixture-stage")
-    assert returned["named_stage_achieved_um"] == 21299
+    core.device_busy.assert_called_with("fixture-stage")
+    assert returned["named_stage_achieved_um"] == 21294.3
     assert "hook_event_index" not in returned["axes"]
-    assert adapter._log[-1]["achieved_um"] == 21299
+    assert adapter._log[-1]["achieved_um"] == 21294.3
     assert {key: adapter._log[-1][key] for key in ("position", "x_um", "y_um")} == {
         "position": "p7", "x_um": 1.25, "y_um": -2.5,
     }
+
+
+def test_named_stage_settle_miss_spends_budget_updates_last_known_and_fails(monkeypatch):
+    from microclaw import controller
+    from microclaw.controller import StageMoveError
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.return_value = 201.1
+    core.device_busy.return_value = False
+    monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=0,
+        max_um=300, max_writes=1, initial_value=100, restore="leave",
+        action_plan=_axes_plan(({}, (MoveNamedStage(200),))),
+    )
+    with pytest.raises(RuntimeError, match="named-stage move failed") as caught:
+        adapter.pre_hardware_hook_fn({"axes": {}})
+    assert isinstance(caught.value.__cause__, StageMoveError)
+    assert adapter._named_stage_context["remaining"] == 0
+    assert adapter._named_stage_context["last_known"] == 201.1
+    assert adapter._log[-1]["event"] == "named_stage_write_failure"
+    assert adapter._log[-1]["decision"] == "failed"
+    assert adapter._log[-1]["last_known_um"] == 201.1
 
 
 @pytest.mark.parametrize("as_batch", [False, True])
@@ -154,7 +177,12 @@ def test_analysis_move_cannot_replace_next_frames_preinstalled_move():
             return HookResult({}, (MoveNamedStage(99),))
 
     core, guard = MagicMock(), MagicMock()
-    core.get_position.side_effect = [10, 20]
+    position = 5.0
+    def set_position(_device, target):
+        nonlocal position
+        position = target
+    core.set_position.side_effect = set_position
+    core.get_position.side_effect = lambda _device: position
     adapter = UntrustedHookAdapter(Hook())
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=0, max_um=100,
@@ -190,6 +218,7 @@ def test_missing_or_consumed_plan_axes_aborts_before_move_or_exposure(
     )
     first_pass_writes = 0
     if consume_first:
+        core.get_position.return_value = 42
         adapter.pre_hardware_hook_fn({"axes": {"time": 0}})
         first_pass_writes = core.set_position.call_count
         assert first_pass_writes == 1
@@ -201,7 +230,7 @@ def test_missing_or_consumed_plan_axes_aborts_before_move_or_exposure(
 
 def test_named_stage_entry_restoration_uses_same_guard_move_wait_readback():
     core, guard = MagicMock(), MagicMock()
-    core.get_position.side_effect = [12, 15]
+    core.get_position.return_value = 12
     adapter = UntrustedHookAdapter(object())
     adapter.configure_named_stage(
         core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
@@ -210,7 +239,7 @@ def test_named_stage_entry_restoration_uses_same_guard_move_wait_readback():
     report = adapter.restore_named_stage()
     guard.check_named_stage.assert_called_once_with("fixture-stage", 12.0)
     core.set_position.assert_called_once_with("fixture-stage", 12.0)
-    core.wait_for_device.assert_called_once_with("fixture-stage")
+    core.device_busy.assert_called_with("fixture-stage")
     assert report == {"policy": "entry", "entry_um": 12,
                       "last_known_um": 12.0, "restored": True}
 

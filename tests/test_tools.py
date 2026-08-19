@@ -538,14 +538,25 @@ class TestNamedStages:
         assert caught.value.result["last_device_status"] == "idle"
 
     def test_driver_hard_limit_exception_is_measured_typed_failure(self, stage_ctrl, stage_guard):
+        from microclaw.controller import StageMoveError
         from microclaw.tools import move_named_stage
         stage_ctrl.core.get_position.return_value = 27.85
         stage_ctrl.core.set_position.side_effect = RuntimeError("device limit")
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(StageMoveError) as caught:
             move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=5.0)
-        assert type(caught.value).__name__ == "StageMoveError"
         assert caught.value.result["measured_um"] == 27.85
         assert caught.value.result["last_device_status"].startswith("dispatch_error")
+
+    def test_real_1_1_um_settling_miss_is_typed_failure(self, stage_ctrl, stage_guard, monkeypatch):
+        from microclaw import controller
+        from microclaw.controller import StageMoveError
+        from microclaw.tools import move_named_stage
+        # Settling error is real on this rig and was previously invisible.
+        stage_ctrl.core.get_position.side_effect = [100.0, 201.1]
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+        with pytest.raises(StageMoveError) as caught:
+            move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=200.0)
+        assert caught.value.result["measured_um"] == 201.1
 
     def test_relative_move_resolves_absolute_before_check(self, stage_ctrl, stage_guard):
         from microclaw.tools import move_named_stage

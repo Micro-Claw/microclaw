@@ -256,7 +256,12 @@ def test_fixed_plan_survives_queued_engine_closed_key_round_trip(
 ):
     """Exercise the same closed event-key boundary as AcqEng before callbacks."""
     ctrl = MagicMock()
-    ctrl.core.get_position.side_effect = positions
+    position = positions[0]
+    def set_position(_device, target):
+        nonlocal position
+        position = target
+    ctrl.core.set_position.side_effect = set_position
+    ctrl.core.get_position.side_effect = lambda _device: position
     hook = UntrustedHookAdapter(object())
     monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
     monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)

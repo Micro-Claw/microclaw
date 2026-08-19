@@ -19,6 +19,10 @@ from typing import Any
 
 import numpy as np
 
+from microclaw.controller import (
+    StageMoveError, settle_stage_move, stage_move_dispatch_failure,
+)
+
 
 @dataclass(frozen=True)
 class MoveStage:
@@ -548,12 +552,17 @@ class UntrustedHookAdapter:
         # The budget counts attempted dispatches, including writes that raise.
         ctx["remaining"] -= 1
         try:
-            ctx["core"].set_position(ctx["device"], target)
-            ctx["core"].wait_for_device(ctx["device"])
-            achieved = float(ctx["core"].get_position(ctx["device"]))
-            if not math.isfinite(achieved):
-                raise ValueError(f"non-finite achieved position {achieved!r}")
+            try:
+                ctx["core"].set_position(ctx["device"], target)
+            except Exception as exc:
+                raise stage_move_dispatch_failure(
+                    ctx["core"], ctx["device"], target, exc,
+                ) from exc
+            result = settle_stage_move(ctx["core"], ctx["device"], target)
+            achieved = result["measured_um"]
         except Exception as exc:
+            if isinstance(exc, StageMoveError) and exc.result["measured_um"] is not None:
+                ctx["last_known"] = exc.result["measured_um"]
             self._record_event(
                 event, event="named_stage_write_failure",
                 hook_event_index=index, action=self._action_record(action),

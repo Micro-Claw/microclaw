@@ -40,6 +40,7 @@ from microclaw.controller import (
     settle_stage_move,
     stage_move_dispatch_failure,
 )
+from microclaw import controller as move_controller
 from microclaw.errors import hint_for_error, humanize_java_error
 from microclaw.image_analysis import (
     MAX_SATURATED_FRACTION_FOR_COVERAGE,
@@ -688,7 +689,7 @@ def _adaptive_runner_source() -> str:
         hook_decisions.EmitArtifact,
         hook_decisions.DiscardFrame, hook_decisions.HookResult,
     )
-    parts = [f"__version__ = {__version__!r}\n"]
+    parts = [f"__version__ = {__version__!r}\n", _stage_move_contract_source()]
     parts.extend(inspect.getsource(item) for item in decision_items)
     parts.extend([
         "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueSurvey | "
@@ -2113,25 +2114,7 @@ def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 def _emit_stage_settle(device_expr: str, target: float) -> str:
-    return "\n".join([
-        "import time",
-        f"_move_target = {target!r}",
-        "_move_started = time.monotonic()",
-        "_move_samples = []",
-        "while True:",
-        "    _move_now = time.monotonic()",
-        f"    _move_status = 'busy' if core.device_busy({device_expr}) else 'idle'",
-        f"    _move_measured = float(core.get_position({device_expr}))",
-        "    if abs(_move_measured - _move_target) <= 0.5:",
-        "        _move_samples = (_move_samples + [(_move_now, _move_measured)])[-3:]",
-        "        if len(_move_samples) == 3 and _move_now - _move_samples[0][0] >= 0.1:",
-        "            break",
-        "    else:",
-        "        _move_samples = []",
-        "    if _move_now - _move_started >= 10.0:",
-        "        raise RuntimeError({'requested_um': _move_target, 'measured_um': _move_measured, 'tolerance_um': 0.5, 'within_tolerance': False, 'elapsed_s': round(_move_now - _move_started, 3), 'last_device_status': _move_status})",
-        "    time.sleep(0.05)",
-    ])
+    return f"settle_stage_move(core, {device_expr}, {target!r})"
 
 
 def _emit_stage_dispatch(set_line: str, device_expr: str, target: float) -> str:
@@ -2139,9 +2122,23 @@ def _emit_stage_dispatch(set_line: str, device_expr: str, target: float) -> str:
         "try:",
         f"    {set_line}",
         "except Exception as _move_exc:",
-        f"    _move_measured = float(core.get_position({device_expr}))",
-        f"    _move_status = 'busy' if core.device_busy({device_expr}) else 'idle'",
-        f"    raise RuntimeError({{'requested_um': {target!r}, 'measured_um': _move_measured, 'tolerance_um': 0.5, 'within_tolerance': False, 'elapsed_s': 0.0, 'last_device_status': 'dispatch_error: ' + type(_move_exc).__name__ + '; ' + _move_status}}) from _move_exc",
+        f"    raise stage_move_dispatch_failure(core, {device_expr}, {target!r}, _move_exc) from _move_exc",
+    ])
+
+
+def _stage_move_contract_source() -> str:
+    constants = "\n".join([
+        f"STAGE_MOVE_TOLERANCE_UM = {move_controller.STAGE_MOVE_TOLERANCE_UM!r}",
+        f"STAGE_MOVE_TIMEOUT_S = {move_controller.STAGE_MOVE_TIMEOUT_S!r}",
+        f"STAGE_MOVE_POLL_S = {move_controller.STAGE_MOVE_POLL_S!r}",
+        f"STAGE_MOVE_REQUIRED_SAMPLES = {move_controller.STAGE_MOVE_REQUIRED_SAMPLES!r}",
+        f"STAGE_MOVE_STABILITY_WINDOW_S = {move_controller.STAGE_MOVE_STABILITY_WINDOW_S!r}",
+    ])
+    return "\n".join([
+        constants,
+        inspect.getsource(move_controller.StageMoveError),
+        inspect.getsource(move_controller.stage_move_dispatch_failure),
+        inspect.getsource(move_controller.settle_stage_move),
     ])
 
 
@@ -2152,6 +2149,7 @@ def _emit_move_stage_z(params: RecordedParams) -> str:
     if target is None:
         raise CannotEmit("the focus-stage move recorded no resolved target")
     return "\n".join([
+        _stage_move_contract_source(),
         _emit_stage_dispatch(f"core.set_position({target!r})", "core.get_focus_device()", target),
         _emit_stage_settle("core.get_focus_device()", target),
     ])
@@ -2255,6 +2253,7 @@ def _emit_move_named_stage(params: RecordedParams) -> str:
     if "device" not in result or "requested_um" not in result:
         raise CannotEmit("the named-stage move recorded no resolved target")
     return "\n".join([
+        _stage_move_contract_source(),
         _emit_stage_dispatch(
             f"core.set_position({result['device']!r}, {result['requested_um']!r})",
             repr(result["device"]), result["requested_um"],

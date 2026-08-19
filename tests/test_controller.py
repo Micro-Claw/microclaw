@@ -12,6 +12,8 @@ from microclaw.controller import (
     MicroscopeController,
     PositionListConflict,
     PositionProjection,
+    StageMoveError,
+    settle_stage_move,
 )
 from microclaw.safety import (
     SafetyConstraints,
@@ -69,6 +71,29 @@ class TestGuardedSeam:
         assert caught.value.result["measured_um"] == 90.0
         assert caught.value.result["elapsed_s"] >= 0
         assert caught.value.result["last_device_status"] == "busy"
+
+    def test_settle_recovers_after_transient_position_read_fault(self, monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_position.side_effect = [RuntimeError("serial frame lost"), 100.0, 100.0]
+        core.device_busy.return_value = False
+        monkeypatch.setattr(controller, "STAGE_MOVE_REQUIRED_SAMPLES", 2)
+        monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
+        monkeypatch.setattr(controller, "STAGE_MOVE_POLL_S", 0.0)
+        result = settle_stage_move(core, "DStage", 100.0)
+        assert result["measured_um"] == 100.0
+        assert result["within_tolerance"] is True
+
+    def test_settle_permanent_position_read_fault_is_typed_timeout(self, monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_position.side_effect = RuntimeError("Serial command failed\njava stack")
+        core.device_busy.return_value = False
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+        with pytest.raises(StageMoveError) as caught:
+            settle_stage_move(core, "DStage", 100.0)
+        assert caught.value.result["measured_um"] is None
+        assert "Serial command failed" in caught.value.result["last_device_status"]
 
     def test_set_xy_guarded(self):
         ctrl = make_controller(guard=bounded_guard())
