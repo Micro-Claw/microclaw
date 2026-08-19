@@ -7,7 +7,35 @@ item it left unfinished is carried forward here (see "Carried-forward register"
 at the end). When the two disagree about what is next, this file wins. When
 either disagrees with a *design*, stop and reconcile the design first.
 
-## Why the order changed
+> ## START HERE — this file is 9,000 lines and its opening is history
+>
+> **Do not plan from the next two sections.** "Why the order changed" and "The
+> Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
+> finished. Every track they set up has since closed or parked.
+>
+> **The live state note is `### State at the 2026-08-18 close of Track B`** —
+> find it *by that heading*, not by position; it sits behind several superseded
+> notes that look just like it. It is the only section that describes the
+> repository as it is now.
+>
+> **What is assigned right now:** block 56, measured move reporting
+> (`design35/measured-move-reporting`). Everything else is a choice, not a
+> continuation — Track C is parked on an `.ilp` that does not exist, design/54 is
+> awaiting a Nikon gate, design/55 is written and not started, and the rest of
+> the open register is unscheduled. **Track A, Track B, Track D, Track E and
+> Track F are all closed** — verified 2026-08-19 against the run ledger, which
+> carries a merge commit for every one of their blocks.
+>
+> **Trust the ledger over the `[x]` markers.** Several closed blocks never got
+> ticked — blocks 1, 2 and 41a all have merge commits (`20b92e2`, `a1b7579`,
+> `1fb284d`) and unmarked headings. An unticked heading in this file is not
+> evidence that anything is open.
+>
+> **Work has continued outside this file** — `design/48` through `design/55` each
+> own their own checklist and ledger. This file is not a picture of the
+> repository and has not been since 2026-08-13.
+
+## Why the order changed — **HISTORY (2026-07-30), not a plan**
 
 The previous checklist ordered work by safety-foundation dependency. That was
 right for building the guarantees and it is why they hold. But the cumulative
@@ -21,7 +49,8 @@ tightened the gate widened the gap between "microclaw is installed" and
 
 So the reordering principle is now: **shortest path to an operator producing a
 working config on their own rig**, then the Nikon blocker, then the deferred
-feature blocks.
+feature blocks. **(All three are spent: Track A closed 2026-08-04, Track B
+closed 2026-08-18, and the deferred feature blocks are Track C, parked.)**
 
 Three things follow from that:
 
@@ -32,8 +61,9 @@ Three things follow from that:
 2. **Three small blocks land before it**, because each is either a Phase 5
    prerequisite or an input a Phase 5 implementer would otherwise get wrong.
    None of them is large.
-3. **The Nikon PFS work (design/34) is a separate track** whose first step costs
-   nothing and can start today. It is sequenced so that the one probe that could
+3. ~~**The Nikon PFS work (design/34) is a separate track** whose first step costs
+   nothing and can start today.~~ **CLOSED 2026-08-18 — PFS works; see Track B.**
+   The original text is kept because its lesson is the durable part: It is sequenced so that the one probe that could
    dissolve most of the design runs before any of it is built.
    **That sequencing did not work** (2026-08-05): the probe was authored,
    shipped, and never run, because a remote operator with less coding experience
@@ -44,13 +74,20 @@ Three things follow from that:
    script.**
 
 Blocks 11 and 12 stay where they are in the order — after the usability and
-Nikon tracks — not because they matter less, but because they each need
+Nikon tracks, **both of which have since closed** — not because they matter less, but because they each need
 something microclaw does not currently make easy: an operator running a real
 workflow on a real rig. That is exactly what the usability track restores.
 
-## The Nikon rig is remote, and its operator is not an implementer
+## The Nikon rig is remote, and its operator is not an implementer — **HISTORY, constraint retired 2026-08-18**
 
-This is a hard constraint on the whole Nikon track, not a detail.
+> **This is no longer a constraint on anything.** Track B closed on 2026-08-18
+> when the coordinator got on the Nikon first-hand and PFS worked. Nothing below
+> gates any current or future block, and no shipment is in flight. Kept because
+> the remote-evidence lesson it produced is durable and cost five sessions to
+> learn: **ask a remote operator for their rig's normal work, not for a script**
+> (`design/40-pfs-five-sessions.md`). The rest is a record of a closed round.
+
+This was a hard constraint on the whole Nikon track, not a detail.
 
 The Nikon is run by a different person, far away, with substantially less coding
 experience. They cannot implement blocks 6–8, cannot judge whether a probe result
@@ -1719,6 +1756,7 @@ assistant's narration when judging whether a guard fired.
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
 | 12 | Closeout | prior applicable blocks | — | | | **required** | n/a | |
 | 39 | Out-of-band | — | `design-39-emu-names` (deleted) | `0016c54` | `7450f5e` + `a7ac7d5` (coordinator review) + runbook `483c620` + `6adef62` | M5 G1–G4 + demo G5 all **PASS** 2026-08-05 (`39-emu-m5`, `39-emu-demo`); **`6adef62` landed post-gate and is ungated** | `c987f65` | **done** — design/39 §"What shipped, and what the gate measured" |
+| 56 | Register promotion | none — any rig | `design35/measured-move-reporting` | `9f8de84` | | **required, any rig** — a missed target must report as a failure; demo or M2 is enough | | |
 
 **Out-of-band rows.** design/36, design/37, design/38 and the composition block
 all ran the full block workflow without a ledger row, because they grew out of
@@ -7956,6 +7994,133 @@ Post-merge design gate:
 
 ---
 
+# Block 56 — [ ] a move must report where it reached — **ASSIGNED 2026-08-19**
+
+Branch: `design35/measured-move-reporting`. Start commit: recorded in the ledger.
+**Promoted from the carried-forward register**, where it sat as two of "The five
+that outlived Track B". Same promotion path as block 47.
+
+## Why this and why now
+
+Two defects, both live on `main`, both affecting **every rig**, both about the
+same thing: a move reports the number it was *given* rather than the number the
+hardware *reached*.
+
+- `move_stage_z` (`tools.py:2137`) returns `{"z_um": round(target_z, 3),
+  "status": "Moved."}` after `_wait`, having never read the device.
+  `MicroscopeController.set_z` (`controller.py:812`) has the same shape.
+- `move_named_stage` (`tools.py:2233`) *does* read back, and returns
+  `requested_um` / `achieved_um` / `error_um` — **as an ordinary success**, with
+  no tolerance gate.
+
+They were block 6's, which closed unbuilt when Track B closed. **Block 6's
+section above drafts the result contract and is required reading** — it is the
+best statement of what a fix owes, and it names the trap.
+
+**The measured evidence, Nikon 2026-08-05.** Commanded 2490, the servo settled at
+2532. Commanded 2900, settled at 2912. And the one that matters most: at 11:40
+`move_named_stage` returned `{"requested_um": 5, "achieved_um": 27.85,
+"error_um": 22.85}` **as a success**, and the agent came within one tool call of
+sweeping a focus curve against an axis that had not moved. This is not a Nikon
+fact — a servo that settles somewhere other than where it was sent is ordinary.
+
+**The trap, stated once so it is not rediscovered: a stability-only check passes
+immediately at the old position.** "Wait until the device stops moving" is
+satisfied by a device that never started. The gate must be
+tolerance-*of-target*, and stability is an additional condition, not the
+condition.
+
+## Items
+
+- [ ] `move_stage_z` returns the **measured** Z, read from the device after the
+      move settles — never the requested target.
+- [ ] Apply the same rule to `MicroscopeController.set_z` (`controller.py:812`).
+- [ ] **A move whose measured position misses its target beyond tolerance is a
+      typed failure, not a success carrying an error field.** This is the whole
+      point of the block; `move_named_stage` already has the read-back and still
+      reports the miss as success.
+- [ ] **Freeze the result contract before coding.** Success reports at least
+      `requested_um`, `measured_um`, `tolerance_um` and `within_tolerance: true`.
+      A miss or a timeout is a **typed failure** carrying the same measured
+      fields, the elapsed time, and the last device status. State the tolerance
+      source, the timeout, the polling interval, the required consecutive
+      in-tolerance samples and the stability window in the design reconciliation.
+      **None may be an unexplained magic constant** — a number with no stated
+      origin is a review finding, not a default.
+- [ ] Poll until the measured position is within tolerance **of the target** and
+      stable, or until timeout.
+- [ ] Image acquisition and focus scoring must not begin until the settling check
+      succeeds.
+- [ ] **Keep the two tools' contracts identical.** They are the same operation on
+      different addressing schemes; two shapes here is the defect
+      `CLAUDE.md` §"Fold into what exists" names. If one of them cannot carry a
+      field, say why in the reconciliation rather than diverging quietly.
+- [ ] **Decide and state what a `_v2`-style tolerance means for a stage with no
+      declared precision.** A rig profile does not carry per-axis repeatability,
+      so the default cannot be derived from the config; whatever it is, it is a
+      stated policy with a reason, not a constant.
+
+## Tests — write the failing test first, and watch it fail
+
+**A test written after the code is not evidence until you have watched it fail**
+(`CLAUDE.md` step 3). Both shapes below were observed on hardware; both must be
+covered by a fake that reproduces them, and **a fake that encodes the assumption
+is not a test of it** — block 52a spent three rig trips on that exact mistake.
+
+- [ ] A fake whose `Busy()` clears **before motion starts**, proving the
+      stability-only check passes and the target-tolerance check does not. This
+      is the trap above, as a test.
+- [ ] A fake that stops short of its target at a hard mechanical floor, proving
+      that is reported as a **failure**, not as a success with a large
+      `error_um`. This is the 11:40 session, as a test.
+- [ ] A timeout case: the device never reaches tolerance, and the typed failure
+      carries the measured fields, elapsed time and last status.
+- [ ] The success path on all three of `move_stage_z`, `set_z` and
+      `move_named_stage`.
+- [ ] **Every caller of these three is checked.** A tool that begins raising a
+      typed failure where it used to return a dict changes behaviour for anything
+      that calls it — the hook paths, the tile/grid path, autofocus. Enumerate
+      the callers in the reconciliation and say what each now does.
+
+## Export
+
+- [ ] **This block touches tools that are already decorated** — check, do not
+      assume. If a changed result shape reaches an `@emits` renderer, the emitted
+      script must still compile *and run*: `CLAUDE.md` §"An exported script that
+      compiles is not an exported script that works". If a new tool appears,
+      decorate it.
+- [ ] The emitted script's move must behave like the live one, including on the
+      failure path.
+
+## Rig gate
+
+**Any rig — this is deliberately not a Nikon block.** The demo config or M2 is
+enough; a stage that misses its target is the whole requirement.
+
+- [ ] A commanded move whose measured result differs from the request is reported
+      as a **failure**, not a clean success, and the reported numbers agree with
+      what the device says when read independently afterwards.
+- [ ] An ordinary in-tolerance move still reports success and is unchanged in
+      feel — this block must not make normal motion noisy or slow.
+- [ ] A move against a hard limit reports the typed failure with the measured
+      position, not a raw bridge exception.
+- [ ] Export the session's script and run it; the same move reports the same way.
+
+## Post-merge design gate
+
+- [ ] Record the settling contract and the read-back rule wherever the tool
+      contracts are documented. **State plainly that reviewed bounds are not
+      proof that an asynchronous device achieved or settled at its target** —
+      that is the sentence Track B's block 6 was written to produce and it
+      outlived the track.
+- [ ] Correct `design/34` `:246`–`:250`, whose table describes a staleness
+      signature that **did not reproduce**; the live defect is a mismatch
+      reported as success.
+- [ ] Tick the two register rows under "The five that outlived Track B" and say
+      which three remain.
+
+---
+
 # Track C — the deferred feature blocks (9–11) and closeout (12)
 
 Carried from the previous checklist substantially unchanged; the item text there
@@ -8188,8 +8353,8 @@ schedule them or record a reason at block 12.
 | Rig-profile values PFS needs (capture range, safe step, timeouts, versions) | design/34 `:223`–`:234` | **(no block)** — Block 7a would have collected them as the bounded search ran; **Track B closed 2026-08-18** and 7a was never built. The "approach position" it asked for stays refuted (design/40). Uncollected |
 | Whether MM Studio / NikonTI exposes a PFS-preserving jog | design/34 `:219`–`:221` | **Moot** — microclaw engaged PFS in software four times on 2026-08-05; the KB claim that only the GUI can was wrong |
 | Continuous-focus / PFS coordination not modelled | design/34, design/40 | **(no block)** — Blocks 6a/7a/7b **closed 2026-08-18** with Track B, 6a dropped unmerged and the others unbuilt. Still unmodelled; see the three PFS rows under "Still open" |
-| `move_stage_z` never measures the position it reports | design/34 `:110`–`:120` | **(no block)** — Block 6 **closed unbuilt 2026-08-18**; defect still live on `main` (`tools.py:2137`). See "Still open" |
-| `move_named_stage` reports a missed target as success | design/40; design/34 `:236`–`:274` describes a signature that did **not** reproduce | **(no block)** — Block 6 **closed unbuilt 2026-08-18**; defect still live on `main` (`tools.py:2233`). See "Still open" |
+| `move_stage_z` never measures the position it reports | design/34 `:110`–`:120` | **Block 56** (assigned 2026-08-19) — Block 6 closed unbuilt 2026-08-18, promoted from the register |
+| `move_named_stage` reports a missed target as success | design/40; design/34 `:236`–`:274` describes a signature that did **not** reproduce | **Block 56** (assigned 2026-08-19) — Block 6 closed unbuilt 2026-08-18, promoted from the register |
 | Nikon operator's install may no longer start after the tightening blocks | this session | **Block 0b** |
 | Exclusions made PFS unusable; setup over-excludes stage-position properties | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; must be re-scoped against `setup_tools.py`, since `first_launch.py` no longer exists. See "Still open" |
 | Unassigned `Core.Focus` surfaces as a raw Java exception | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; still live on `main`. See "Still open" |
@@ -8214,9 +8379,11 @@ work.** Every one of them was verified still live on `main` at `afe3cad` on the
 day the track closed, and each carries its evidence inline **because the branch
 that held it is deleted** — do not go looking for `design34/focus-system-authorization`.
 They are listed together only by provenance; they are five independent items and
-none blocks another.
+none blocks another. **Two of the five are now block 56** (assigned 2026-08-19);
+the remaining three are unscheduled.
 
-- **`move_stage_z` reports the position it asked for, not the one it reached.**
+- **[ASSIGNED — block 56] `move_stage_z` reports the position it asked for, not
+  the one it reached.**
   `tools.py:2137` returns `{"z_um": round(target_z, 3), "status": "Moved."}` after
   `_wait`, with no read of the device. Measured on the Nikon 2026-08-05: commanded
   2490, the servo settled at 2532; commanded 2900, settled at 2912. **Every rig is
@@ -8227,7 +8394,8 @@ none blocks another.
   measured fields — and states the trap: **a stability-only check passes
   immediately at the old position**, so the gate has to be tolerance-of-target.
   Read that section before writing the fix.
-- **`move_named_stage` reports a missed target as a success.** `tools.py:2233`
+- **[ASSIGNED — block 56] `move_named_stage` reports a missed target as a
+  success.** `tools.py:2233`
   reads back and returns `error_um`, then returns it as an ordinary result. At
   11:40 on 2026-08-05 it returned `{"requested_um": 5, "achieved_um": 27.85,
   "error_um": 22.85}` as a success and the agent came within one tool call of
