@@ -252,11 +252,12 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — three contracts we got wrong
+## The pycro-manager acquisition engine — four contracts we got wrong
 
-All three were found on a rig by block 52a, each after a full green suite, and
-each because a test fake encoded our assumption instead of the engine's
-behaviour. Check code against these before writing the fake.
+The first three were found on a rig by block 52a, the fourth by block 56 — each
+after a full green suite, and each because a test fake encoded our assumption
+instead of the hardware's behaviour. Check code against these before writing the
+fake.
 
 - **A hook callback receives an event *or a list of events*.** When the engine
   hardware-sequences (an `interval_s=0` timelapse is exactly that shape), it
@@ -274,6 +275,20 @@ behaviour. Check code against these before writing the fake.
   identity the engine must preserve, because the dataset is indexed by it — and
   never by a value you injected. Do not put a unique-per-event value *in* `axes`
   either: NDTiff readers enumerate the Cartesian product of axis values.
+- **A device that is not busy is not a device that arrived.** `wait_for_device`
+  returning, or `device_busy` reading false, says nothing about whether an axis
+  reached the position you asked for — a stage that has not started moving yet is
+  also not busy. Block 56 (merged 2026-08-19) made every single-axis move poll
+  until the **measured** position is within tolerance **of the target** and
+  stable, or raise a typed `StageMoveError`; success carries `measured_um`, never
+  the requested value. On the Nikon a successful move reported
+  `last_device_status: "busy"` after 0.89 s and ~18 polls — the loop out-waited a
+  device that was still moving, which is exactly the point. The defect this
+  replaced was a **premature read-back**: one immediate read after
+  `wait_for_device` returned the pre-move position, and a 22.85 µm miss was
+  reported as a success. **Reviewed bounds are not proof that an asynchronous
+  device achieved or settled at its target**, and neither is a busy flag.
+
 - **`acquire()` only submits.** It returns an `AcquisitionFuture`; completion is
   awaited in `Acquisition.__exit__` (`mark_finished()` then `await_completion()`).
   Anything that must happen after the last frame — restoration, a final

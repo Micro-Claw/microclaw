@@ -25,6 +25,27 @@ establish, what they refute, and how Track B is rescoped as a result.
 
 ---
 
+## Measured later: the offset is writable under an active lock
+
+Block 56's gate, 2026-08-19, with PFS armed and `TIPFSStatus.Status` reading
+`Locked in focus`: `move_named_stage` moved `TIPFSOffset` from 1.0 to 21.0 and
+**reached it exactly** (`within_tolerance: true`, independently re-read at 21.0).
+So on this rig a commanded offset write is **honoured while the servo holds**, not
+overridden — which is the documented way to move the focal plane under PFS, and
+it is now measured rather than assumed.
+
+Two corrections follow, both to inferences drawn from the 11:40 session:
+
+- **27.85 µm is not a mechanical floor.** With PFS off, `TIPFSOffset` was
+  commanded to 0.0 — the configured minimum — and reached 0.0 exactly.
+- **The servo does not override a commanded write.** It drives the offset when
+  nothing else does (27.85 → 183.55 on lock), which is a different statement.
+
+What 11:40 actually was: a **premature read-back**. The axis takes ~0.9 s to
+settle and reports busy throughout; the old code read it once, immediately after
+`wait_for_device`, and got the pre-move position. **Probe 0 remains unanswered** —
+this moved the *offset* under lock, not the focus drive.
+
 ## PFS engages under pure software control
 
 Four locks, no GUI and no coarse focus wheel:

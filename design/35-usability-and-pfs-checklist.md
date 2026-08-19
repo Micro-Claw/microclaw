@@ -13,13 +13,13 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-19 assignment of block 56`** —
+> **The live state note is `### State at the 2026-08-19 close of block 56`** —
 > find it *by that heading*, not by position; it sits behind several superseded
 > notes that look just like it. It is the only section that describes the
 > repository as it is now.
 >
-> **What is assigned right now:** block 56, measured move reporting
-> (`design35/measured-move-reporting`). Everything else is a choice, not a
+> **Nothing is assigned right now.** Block 56 merged 2026-08-19 (`c8f1801`) and
+> its branch and worktree are gone. What is next is a choice, not a
 > continuation — Track C is parked on an `.ilp` that does not exist, design/54 is
 > awaiting a Nikon gate, design/55 is written and not started, and the rest of
 > the open register is unscheduled. **Track A, Track B, Track D, Track E and
@@ -402,23 +402,19 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-19 assignment of block 56 — read this before assigning anything
+### State at the 2026-08-19 close of block 56 — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
 
-**Block 56 is implemented, reviewed through two returned rounds, corrected by the
-coordinator, pushed, and awaiting its rig gate on the Nikon.** Nothing else is in
-flight. If you are picking this up cold with gate results in hand, everything you
-need is below and on the branch.
+**Block 56 is MERGED (`c8f1801`) and fully closed.** Branch and worktree deleted,
+ledger row closed, design gate run. **Nothing is in flight and nothing is
+awaiting a rig.** `main` measures **1899 passed / 99 skipped / 3 warnings**,
+coordinator-measured on the merge commit.
 
-- **Branch**: `design35/measured-move-reporting`, on `origin`, tip `5029afe` at
-  this writing. Start commit `5b2bcf8`. **Worktree `../microclaw-56` is still
-  live** — the block is open, so it is deliberately not removed.
-- **Runbook**: `design/35-block56-rig-gate.md` **on that branch**, not on `main`.
-  Pinned `git merge-base --is-ancestor 108b19f HEAD`.
-- **Suite**: 1899 passed / 99 skipped / 3 warnings, coordinator-measured in the
-  worktree (1897 at the end of round 2, plus the coordinator's two tests).
+- **The runbook is on `main` now**, at `design/35-block56-rig-gate.md`, carrying
+  its own per-limb PASS marks and the retired limb's negative result. It is the
+  record of what was actually run.
 
 **What the block does.** `move_stage_z`, `MicroscopeController.set_z`,
 `move_named_stage` and `UntrustedHookAdapter._apply_named_stage` now share one
@@ -444,38 +440,35 @@ re-verified by the coordinator against the pre-fix tree.
 still have no settle check at all** — that is a live gap, not an oversight, and
 it is register work if anyone wants it.
 
-**How to score the gate — do not score it from the verdict.**
+**What the gate established, and the two things it refuted.**
 
-- The **open question is the 0.5 µm tolerance**, which is a software policy, not
-  a hardware fact. Two limbs probe it: the hard-limit miss and the restoration
-  limb. If either shows a real stage settling outside 0.5 µm in ordinary use,
-  that is a tolerance decision for the operator, not a defect to fix.
-- The **miss limb states its own negative results.** If the configured
-  `named_stages` bound does not reach below the mechanical floor, or refuses the
-  target outright, that is a recorded outcome and the limb is not runnable on
-  that config. Do not treat it as a runbook defect, and do not go looking for
-  another mechanism to move.
-- **Compare numbers that should agree**: every limb reads the axis independently
-  after the move, and that reading must sit within 0.5 µm of the reported
-  `measured_um`. A restoration reporting `restored: true` whose independent
-  read disagrees with `entry_um` is the 52a shape and is the thing to look for.
-- The export limb must **run**, not merely compile.
-
-**Two Nikon preconditions are in the runbook and both would otherwise waste the
-trip**: PFS disengaged, because the servo drives `TIPFSOffset` on its own (a lock
-at 2500 pulled it 27.85 → 183.55); and `Core.Focus` assigned, which has cost that
-rig two sessions and is still undiagnosed on `main`.
-
-**Why the Nikon.** Not a fallback — the defect was measured there. At 11:40 on
-2026-08-05 `move_named_stage` on `TIPFSOffset` returned `requested 5 /
-achieved 27.85` as a success (design/40 `:115`). The demo machine cannot run the
-miss limb: its simulated stages achieve every valid target, so a miss there would
-be manufactured.
-
-**After the gate**: score from the artifacts, fix sized to the finding (step 7),
-re-test, then merge, push `main`, delete the branch locally and on `origin`,
-remove `../microclaw-56`, write the coordination notes into `design/prompts.md`,
-close the ledger row, and run the post-merge design gate the block names.
+- **The mechanism is proven positively, in a field nobody would think to read.**
+  `move_named_stage` returned `within_tolerance: true` with
+  `last_device_status: "busy"` and `elapsed_s: 0.89` — about eighteen polls. The
+  settle loop out-waited a device that was **still reporting busy**, which is the
+  whole design: busy/idle is evidence, tolerance-of-target is the gate.
+- **The original defect was a premature read-back.** The old path was
+  `set_position → wait_for_device → get_position`, one immediate read. On an axis
+  that takes ~0.9 s and reports busy throughout, that read lands before the move
+  finishes and returns the pre-move position — requested 5, read back 27.85,
+  reported success. **Not a mechanical floor and not a servo override.** The
+  coordinator guessed both, wrote a gate limb around each, and the rig refuted
+  both in turn. The lesson is in `design/prompts.md`.
+- **The missed-move criterion has no rig evidence and is recorded that way.** Two
+  attempts: `TIPFSOffset` commanded to 0.0, its configured minimum, reached 0.0
+  exactly; and commanded to settled+20 µm with **PFS armed and locked**, reached
+  it exactly — so PFS offset writes are honoured under lock on this rig. Nothing
+  on this hardware leaves an axis short of a reachable, in-bounds target. The
+  miss is covered by unit tests whose fakes reproduce both observed shapes,
+  including `Busy()` clearing before motion starts, which is what 11:40 was.
+- **`get_focus_lock_state` blocked the gate.** On a rig with a working hardware
+  focus lock it answered `"No EMU configuration — cannot read a focus lock"`, and
+  `set_focus_lock` errored likewise; the agent armed PFS with a raw
+  `TIPFSStatus.State` write instead. That is a register row, now with rig
+  evidence behind it.
+- **Nothing reports the active safety bounds.** A gate step asked for the
+  configured `named_stages` bound and simply did not run, because no tool exposes
+  it; the bound was read from `safety_config.yaml` by hand. New register row.
 
 ### State at the 2026-08-18 close of Track B — SUPERSEDED, kept for the round history
 
@@ -1831,7 +1824,7 @@ assistant's narration when judging whether a guard fired.
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
 | 12 | Closeout | prior applicable blocks | — | | | **required** | n/a | |
 | 39 | Out-of-band | — | `design-39-emu-names` (deleted) | `0016c54` | `7450f5e` + `a7ac7d5` (coordinator review) + runbook `483c620` + `6adef62` | M5 G1–G4 + demo G5 all **PASS** 2026-08-05 (`39-emu-m5`, `39-emu-demo`); **`6adef62` landed post-gate and is ungated** | `c987f65` | **done** — design/39 §"What shipped, and what the gate measured" |
-| 56 | Register promotion | none — any rig | `design35/measured-move-reporting` | `5b2bcf8` | `56d657d` + `4546ae2`/`b549884` (round 2) + `108b19f` (coordinator fix); runbook `fb6f4d4`/`cb5b34c`/`794bb27` pinned `108b19f` | **pushed 2026-08-19, routed to the Nikon** — the miss limb reproduces the 11:40 defect on its own rig (`move_named_stage` on `TIPFSOffset`, requested 5 → achieved 27.85, design/40 `:115`); PFS must be disengaged and `Core.Focus` assigned. M2/M5 run the same limbs with their own named stage; the demo cannot (simulated stages achieve every valid target) | | |
+| 56 | Register promotion | none — any rig | `design35/measured-move-reporting` (deleted) | `5b2bcf8` | `56d657d` + `4546ae2`/`b549884` (round 2) + `108b19f` (coordinator fix); runbook `fb6f4d4`/`cb5b34c`/`794bb27`/`5029afe`/`4b64411` | **Nikon, two trips 2026-08-19 — 4 limbs PASS, rig suite 551 passed**; missed-move criterion recorded **unreproducible on this hardware**, evidenced instead by `last_device_status: "busy"` on a successful 0.89 s move | `c8f1801` | done 2026-08-19 |
 
 **Out-of-band rows.** design/36, design/37, design/38 and the composition block
 all ran the full block workflow without a ledger row, because they grew out of
@@ -8069,7 +8062,7 @@ Post-merge design gate:
 
 ---
 
-# Block 56 — [ ] a move must report where it reached — **ASSIGNED 2026-08-19**
+# Block 56 — [x] a move must report where it reached — **MERGED 2026-08-19** (`c8f1801`)
 
 Branch: `design35/measured-move-reporting`. Start commit: recorded in the ledger.
 **Promoted from the carried-forward register**, where it sat as two of "The five
@@ -8454,11 +8447,13 @@ work.** Every one of them was verified still live on `main` at `afe3cad` on the
 day the track closed, and each carries its evidence inline **because the branch
 that held it is deleted** — do not go looking for `design34/focus-system-authorization`.
 They are listed together only by provenance; they are five independent items and
-none blocks another. **Two of the five are now block 56** (assigned 2026-08-19);
-the remaining three are unscheduled.
+none blocks another. **Two of the five were block 56, merged 2026-08-19**; the
+remaining **three** are unscheduled: the EMU-only `get_focus_lock_state`, the
+swallowed unassigned `Core.Focus`, and the `absolute-position` declaration hole.
+The first of those was observed blocking block 56's own gate.
 
-- **[ASSIGNED — block 56] `move_stage_z` reports the position it asked for, not
-  the one it reached.**
+- ~~**`move_stage_z` reports the position it asked for, not the one it reached.**~~
+  **CLOSED — block 56, merged `c8f1801` 2026-08-19.**
   `tools.py:2137` returns `{"z_um": round(target_z, 3), "status": "Moved."}` after
   `_wait`, with no read of the device. Measured on the Nikon 2026-08-05: commanded
   2490, the servo settled at 2532; commanded 2900, settled at 2912. **Every rig is
@@ -8469,15 +8464,24 @@ the remaining three are unscheduled.
   measured fields — and states the trap: **a stability-only check passes
   immediately at the old position**, so the gate has to be tolerance-of-target.
   Read that section before writing the fix.
-- **[ASSIGNED — block 56] `move_named_stage` reports a missed target as a
-  success.** `tools.py:2233`
+- ~~**`move_named_stage` reports a missed target as a success.**~~ **CLOSED —
+  block 56, merged `c8f1801` 2026-08-19.** The rig then showed the cause was a
+  **premature read-back**, not the refusal-shaped thing this row assumed; see the
+  block's section. `tools.py:2233`
   reads back and returns `error_um`, then returns it as an ordinary result. At
   11:40 on 2026-08-05 it returned `{"requested_um": 5, "achieved_um": 27.85,
   "error_um": 22.85}` as a success and the agent came within one tool call of
   sweeping a focus curve against an axis that had not moved. This is worse than
   the staleness signature design/34 predicted, which **did not reproduce**. Same
   contract as the row above; settle the two together.
-- **`get_focus_lock_state` answers a false negative on any non-EMU rig.**
+- **`get_focus_lock_state` answers a false negative on any non-EMU rig — now
+  observed blocking a gate, not just read out of the source.** On the Nikon,
+  2026-08-19, it returned `"No EMU configuration — cannot read a focus lock"` on a
+  rig whose hardware focus lock was working, and `set_focus_lock(enabled=true)`
+  errored the same way; the agent had to arm PFS with a raw
+  `TIPFSStatus.State = "On"` write and confirm the lock by reading
+  `TIPFSStatus.Status`. **This is the highest-value of the three remaining rows**:
+  it is small, it is generic, and it has now cost rig time.
   `tools.py:7623` returns `{"engaged": None, "reason": "No EMU configuration —
   cannot read a focus lock."}` whenever no EMU map is present — on a rig with a
   working hardware focus lock, that answer is false, and `agent.py:159` sends the
@@ -8516,6 +8520,17 @@ the remaining three are unscheduled.
   pair contradicted what setup's own generated comment said; the refusal was
   judged right and setup wrong. **That one is unverified here** — it was a claim
   about a deleted module, and nobody has re-checked what `setup_tools.py` writes.
+
+- **Nothing reports the bounds microclaw is enforcing.** Found 2026-08-19 during
+  block 56's Nikon gate, and it is not that block's. A gate step asked the agent
+  to report the configured `named_stages` bound for `TIPFSOffset`; **no call for
+  it appears anywhere in the session**, because no tool exposes safety-config
+  limits. The operator read `safety_config.yaml` by hand. Today the only way to
+  learn a bound is to **provoke a refusal** and read the limit out of the error
+  text, which means discovering your own configuration by tripping over it. This
+  is a usability row, not a safety one — the bounds are enforced correctly — but
+  it also silently voided a written gate step, which is the same shape as a
+  placeholder that cannot run.
 
 Two smaller Track B remnants, recorded so they are not re-discovered:
 

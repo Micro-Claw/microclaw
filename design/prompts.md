@@ -6919,3 +6919,76 @@ the reverted jPype/AcqJ port exists nowhere else), `florian/setup-claude-workflo
 (one docs commit), `origin/ollama` (0 ahead of `main` — dead but harmless), and
 `design54/display-roi`, which is **active and awaiting a Nikon gate of its own**.
 That gate is not Track B and did not close with it.
+
+## Block 56 — a move must report where it reached (merged 2026-08-19, `c8f1801`)
+
+**Promoted from the register, gated on the Nikon, and the gate refuted the
+coordinator twice.** The block itself is small and clean: `move_stage_z`,
+`set_z`, `move_named_stage` and `UntrustedHookAdapter._apply_named_stage` now
+share one measured-settlement contract. What is worth carrying is how the
+evidence went.
+
+**The coordinator guessed a mechanism twice and was wrong twice, and both
+guesses cost a rig limb.** The register said `move_named_stage` reported a miss
+as success, evidenced by an 11:40 session returning `requested 5 / achieved
+27.85`. From that the coordinator inferred **a mechanical floor at 27.85** and
+wrote a gate limb around commanding a sub-floor target. The rig reached 0.0
+exactly. The second inference was **a servo override** — PFS holding the axis
+against a commanded write — and a PFS-armed limb was written for it. The rig
+moved the offset to 21.0 under an active lock, exactly. **Neither mechanism
+existed.** The actual defect was a **premature read-back**: the old path read the
+device once, immediately after `wait_for_device`, on an axis that takes ~0.9 s
+and reports busy throughout, so the read returned the pre-move position.
+
+The general lesson: **a recorded symptom is not a recorded mechanism.** Two
+numbers in a history (`requested 5`, `achieved 27.85`) constrain the mechanism far
+less than they appear to, and a gate limb built on the inferred mechanism tests
+the inference rather than the fix. Where the mechanism is not measured, prefer a
+limb that demonstrates the fix **positively** over one that tries to reproduce a
+failure whose cause is a guess.
+
+**The strongest evidence was in a field nobody thought to check.** The successful
+move returned `last_device_status: "busy"` with `elapsed_s: 0.89` — about
+eighteen polls. That single reading proves the settle loop out-waited a device
+that was still moving, which is the entire mechanism under test, and it proves it
+better than a manufactured failure would have. It was recorded only because the
+contract was designed to carry the device status alongside the measurement.
+
+**The missed-move criterion was recorded as unreproducible rather than claimed.**
+Nothing on that rig leaves an axis short of a reachable, in-bounds target. Two
+attempts, two clean successes. The miss is covered by unit tests whose fakes
+reproduce both observed shapes — including `Busy()` clearing before motion starts
+— and the checklist says so plainly instead of implying rig coverage that does
+not exist.
+
+**Review found a defect the block was not looking for.** Round 1 was accepted in
+substance; the review then found a **third** stage-motion implementation,
+`_apply_named_stage`, still reporting a missed target as success in the path
+design/52 uses to move hardware unattended from an approved hook. Folding it in
+was a coordinator ruling, and it carried an export hazard: `UntrustedHookAdapter`
+is inlined verbatim by `inspect.getsource`, so calling a new helper from it would
+have `NameError`d every emitted adaptive script — the block-13/41b defect exactly.
+The existing free-name guard covered it, and the implementer was asked to *prove*
+that by removing the inline rather than assume it.
+
+**Two coordinator corrections after round 2, both small, both real.** A non-finite
+read stopped being diagnosed when the fold removed an explicit `isfinite` check,
+so NaN reached a result dict and `json.dumps` wrote bare `NaN` into the history
+JSONL. And the settlement contract was emitted once **per move call** — three
+moves, three copies of the constants, the class and both functions — where it is
+a shared helper like `_analysis_source` and belongs in the preamble.
+
+**The implementer was right and the checklist was wrong**, which is worth saying
+because it happened twice. `autofocus.py` and `hooks.py` are **not** callers of
+these functions; they move Z with bare `core.set_position` and still have no
+settle check at all. The coordinator's spec had carried that framing over from
+block 6's text, where those paths were listed as needing *lock*-awareness, not as
+callers.
+
+**Two findings that are not this block's**, both now register rows:
+`get_focus_lock_state` answered `"No EMU configuration — cannot read a focus
+lock"` on a rig whose hardware lock was working and **blocked the gate**, forcing
+a raw `TIPFSStatus.State` write; and a gate step asking for the configured
+`named_stages` bound **did not run at all**, because no tool reports the bounds
+microclaw is enforcing. The second is the same shape as a placeholder that cannot
+run — a written step that silently produces nothing.
