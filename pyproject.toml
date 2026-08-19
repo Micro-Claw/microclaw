@@ -53,4 +53,5 @@ microclaw = [
     "transcript.js",
     "favicon.ico",
     "safety_config.example.yaml",
+    "dna_paint_protocol.md",
 ]

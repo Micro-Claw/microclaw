@@ -1,5 +1,14 @@
 # DNA-PAINT Experiment Protocol — DNA Origami (in vitro), Singleplex
 
+Returned by `get_dna_paint_documentation`. `get_smlm_documentation` is the
+general SMLM reference and covers DNA-PAINT at planning depth; this document is
+the depth behind it — kinetics, buffers, strand design, and the full bench
+procedure. Where the two differ, **this document is the accurate one**.
+
+Parameter values below are the published protocol's, measured on the reference
+instrument in [Schnitzbauer2017]. They are starting points to confirm against
+the user's own rig, sample and imager stock — never settings to apply unasked.
+
 ## Sources
 
 Compiled from two reference papers, cited throughout as:
@@ -14,14 +23,6 @@ Compiled from two reference papers, cited throughout as:
   *Nat Rev Methods Primers.* 2021;1:39.
   [doi:10.1038/s43586-021-00038-x](https://doi.org/10.1038/s43586-021-00038-x) — broader SMLM primer covering kinetics and general
   experimental considerations.
-
-## A note on repo conventions
-
-I checked whether this repo already has an established place for experiment documentation
-before creating this file. It doesn't: `design/` is a sequential log of *software engineering*
-design decisions, spikes and session findings for the Microclaw codebase itself
-(`design/01`…`design/32`), not wet-lab protocols. `docs/experiments/dna-paint/` is a new
-location and doesn't collide with any existing convention, so nothing needed to move.
 
 ---
 
@@ -38,24 +39,25 @@ Decided for this first run:
   into the imager solution at least 1 h before imaging to improve dye photostability and photon
   yield [Schnitzbauer2017]. Full ultra-resolution settings (Box 2: 350 ms exposure, 80,000
   frames, ~4.5 kW/cm², drift-marker origami) are not adopted here — just the buffer.
-- **Microscope**: Nikon Ti1 with a TIRF arm and Perfect Focus System, Andor iXON EMCCD camera,
-  561 nm laser (2 W, sourced from MPI). This closely matches the reference setup in
-  [Schnitzbauer2017, EQUIPMENT] (Nikon Ti-Eclipse + Perfect Focus System; Andor iXon Ultra
-  DU-897 EMCCD), so its camera/focus recommendations transfer directly — see
-  [§5](#5-imaging-parameters).
+- **Microscope**: any inverted stand with TIRF (or HILO) illumination, a hardware focus
+  lock, a low-noise camera (EMCCD or sCMOS) and an excitation line matching the imager dye.
+  The reference setup in [Schnitzbauer2017, EQUIPMENT] is a Nikon Ti-Eclipse + Perfect Focus
+  System with an Andor iXon Ultra DU-897 EMCCD; its camera/focus recommendations transfer to
+  a comparably equipped rig — see [§5](#5-imaging-parameters). **Ask the user what they have
+  rather than assuming this one**, and call `get_system_state` to see what is configured.
 - **Reagents**: all reagents for the experiment are already on hand, so the antibody-labeling
   and cell-culture reagent lists from the source paper are omitted below.
 
-**Assumption to confirm**: since 561 nm is your excitation line, this protocol defaults to the
+**Assumption to confirm**: for a 561 nm excitation line, this protocol defaults to the
 paper's 561 nm-compatible reference handle — imager `CTAGATGTAT` labeled with **Cy3B**,
-docking strand `TTATACATCTA` (the "P1" handle) [Schnitzbauer2017, MATERIALS]. If your origami
+docking strand `TTATACATCTA` (the "P1" handle) [Schnitzbauer2017, MATERIALS]. If the user's origami
 structures/imager stock use a different sequence or dye, swap it in — nothing else in this
 protocol depends on the specific sequence, only on duplex length and dye/laser match
 (see [§4](#4-imagerdocking-strand-design)).
 
 **Assumption to confirm**: this protocol includes the full design→fold→purify workflow
-(§6.A–B) in case you're starting from unfolded staples. If you already have folded, purified
-origami on hand, skip straight to [§6.C](#c-immobilization-on-glass).
+(§6.A–B) for a start from unfolded staples. With folded, purified origami already on hand,
+skip straight to [§6.C](#c-immobilization-on-glass).
 
 ---
 
@@ -123,13 +125,14 @@ from the source paper are not needed here and are omitted).
   irritation — avoid breathing dust/fumes [Schnitzbauer2017, REAGENTS cautions].
 
 ### Equipment
-- Nikon Ti1 inverted microscope, TIRF arm, Perfect Focus System.
-- Andor iXON EMCCD camera.
-- 561 nm laser (2 W source) — a laser power meter + microscopy-slide thermal power sensor to
-  calibrate actual power **density at the sample plane**, since the rated laser output is not
-  the relevant number (see [§5](#5-imaging-parameters)) [Schnitzbauer2017, EQUIPMENT SETUP].
+- Inverted microscope with TIRF (or HILO) illumination and a hardware focus lock.
+- Low-noise camera — EMCCD or back-illuminated sCMOS.
+- Excitation laser matching the imager dye (561 nm for Cy3B). A laser power meter +
+  microscopy-slide thermal power sensor to calibrate actual power **density at the sample
+  plane**, since rated laser output is not the relevant number (see
+  [§5](#5-imaging-parameters)) [Schnitzbauer2017, EQUIPMENT SETUP].
 - Micro-Manager acquisition software [Schnitzbauer2017] — driven through Microclaw/pycro-manager
-  in our case.
+  here.
 - Picasso (jungmannlab.org / github.com/jungmannlab/picasso) for origami design, localization,
   rendering and drift correction [Schnitzbauer2017].
 - Thermocycler (for annealing), gel chamber + power supply + blue-light transilluminator +
@@ -178,8 +181,8 @@ combinations in silico before committing microscope time [Schnitzbauer2017, Box 
   **8–10 nucleotides** [Schnitzbauer2017]. Here, the docking strand is a staple extension on
   the origami; the imager strand carries the dye and diffuses freely until it transiently
   binds.
-- **Default handle for this protocol** (561 nm / Cy3B match — confirm against your actual
-  stock, see [§0](#0-this-experiments-scope)):
+- **Default handle for this protocol** (561 nm / Cy3B match — confirm against the user's
+  actual stock, see [§0](#0-this-experiments-scope)):
   - Docking (staple extension): `TTATACATCTA`
   - Imager: `CTAGATGTAT` labeled with **Cy3B**, excited at 561 nm
   [Schnitzbauer2017, MATERIALS; this is the same P1 sequence used for the calibration
@@ -202,9 +205,10 @@ combinations in silico before committing microscope time [Schnitzbauer2017, Box 
 
 ## 5. Imaging parameters
 
-Tailored to the Nikon Ti1/TIRF/Perfect Focus + Andor iXON + 561 nm setup, which matches the
-paper's own reference instrument closely enough that its recommendations transfer directly
-[Schnitzbauer2017, EQUIPMENT].
+The published values, measured on the paper's reference instrument
+[Schnitzbauer2017, EQUIPMENT]. They transfer to a comparably equipped rig — TIRF, hardware
+focus lock, low-noise camera — and each is a starting point to confirm, not a setting to
+apply unasked.
 
 | Parameter | Recommendation | Source |
 |---|---|---|
@@ -213,11 +217,11 @@ paper's own reference instrument closely enough that its recommendations transfe
 | Frame count | Start at 7,500; typical full datasets 10,000–100,000+ depending on desired sampling | [Schnitzbauer2017, Step 46] |
 | Pre-focus laser power density | ~0.25 kW/cm² at the sample plane | [Schnitzbauer2017, Step 41] |
 | Imaging laser power density | ~2.5–6 kW/cm² at the sample plane (561 nm/Cy3B reference range: 1–6 kW/cm²); raise until bright time (τ_b) starts to *decrease* — that's imager bleaching while bound, and is the practical ceiling | [Schnitzbauer2017, Step 43; Table 1 troubleshooting] |
-| **Power density calibration** | Your laser is rated 2 W, but **power density at the sample is what matters, not rated output** — measure it directly with the microscopy-slide thermal power sensor before picking a % laser power setting. 2 W gives plenty of headroom, so expect to run at a small fraction of full power. | [Schnitzbauer2017, EQUIPMENT SETUP, "Power density calibration"] |
-| Illumination mode | TIRF (you have the arm) — best background suppression for surface-immobilized origami | [Schnitzbauer2017, Step 44] |
-| Focus | Use the Perfect Focus System for prefocus/lock — the paper explicitly recommends this exact hardware | [Schnitzbauer2017, Step 42, CRITICAL STEP] |
-| Camera settings | Output amplifier: Conventional; ROI: Full Image; Frame Transfer: On; PixelType: 16-bit; ReadMode: Image; shutters: Open; readout mode = lowest-noise frequency whose readout time doesn't exceed the exposure time | [Schnitzbauer2017, Steps 39, 45] |
-| Photon conversion (for `Picasso: Localize`) | EM Gain, Baseline, Sensitivity, Quantum Efficiency set per your Andor iXON's actual specs — set EM Gain = 1 if using conventional (non-EM) amplification | [Schnitzbauer2017, Step 54] |
+| **Power density calibration** | **Power density at the sample plane is what matters, not rated laser output** — measure it directly with a microscopy-slide thermal power sensor before picking a % laser power setting. A watt-class source runs at a small fraction of full power for this, so a % setting carried over from another experiment is not evidence of anything. | [Schnitzbauer2017, EQUIPMENT SETUP, "Power density calibration"] |
+| Illumination mode | TIRF where available — best background suppression for surface-immobilized origami; HILO otherwise | [Schnitzbauer2017, Step 44] |
+| Focus | Engage the hardware focus lock for prefocus and for the run (`set_focus_lock`) — the paper explicitly recommends a hardware lock over software refocusing | [Schnitzbauer2017, Step 42, CRITICAL STEP] |
+| Camera settings | EMCCD reference values: Output amplifier: Conventional; ROI: Full Image; Frame Transfer: On; PixelType: 16-bit; ReadMode: Image; shutters: Open; readout mode = lowest-noise frequency whose readout time doesn't exceed the exposure time. On an sCMOS, the equivalent choice is the lowest-noise readout mode that sustains the frame rate | [Schnitzbauer2017, Steps 39, 45] |
+| Photon conversion (for `Picasso: Localize`) | EM Gain, Baseline, Sensitivity, Quantum Efficiency set per the camera's actual specs — set EM Gain = 1 when using conventional (non-EM) amplification | [Schnitzbauer2017, Step 54] |
 | Equilibration before acquiring | 5–15 min on the microscope before starting, to let thermal/mechanical drift settle | [Schnitzbauer2017, Table 1 troubleshooting] |
 
 ---
@@ -268,30 +272,37 @@ paper's own reference instrument closely enough that its recommendations transfe
 
 ### D. Data acquisition
 
-[Schnitzbauer2017, Steps 34–48], mapped to the Nikon Ti1/Andor iXON/561 nm setup:
+[Schnitzbauer2017, Steps 34–48], with the microclaw call for each step where there is one:
 
 1. Mount the sample; raise the objective until immersion oil contacts the coverslip
    (Step 34).
-2. Launch Micro-Manager (via Microclaw), select the Andor iXON camera configuration
-   (Step 36).
+2. With Micro-Manager running, confirm the configured camera and channel with
+   `get_system_state` (Step 36).
 3. Set exposure ≈ 300 ms and the camera parameters from [§5](#5-imaging-parameters)
-   (Steps 37, 39).
+   (Steps 37, 39). Exposure travels with the acquisition call — `run_timelapse(exposure_ms=300)`
+   — rather than being set separately.
 4. Go live, autostretch contrast — confirm you see background noise only (Step 40).
-5. Open the 561 nm shutter at low power (~0.25 kW/cm² at the sample — calibrate against the
-   power meter, not the laser dial) and focus, engaging the Perfect Focus System
-   (Steps 41–42).
+5. Open the excitation shutter at low power (~0.25 kW/cm² at the sample — calibrate against
+   the power meter, not the laser dial) and focus, then engage the hardware focus lock
+   (`run_autofocus`, then `set_focus_lock(enabled=true)`) (Steps 41–42).
 6. Raise power to imaging density (~2.5–6 kW/cm²); you should now see individual blinking,
    diffraction-limited spots (Step 43).
 7. Adjust the TIRF incident angle for best SNR (Step 44).
 8. Set EMCCD readout mode for lowest noise consistent with the exposure time (Step 45).
-9. Configure the acquisition: frame count (start 7,500), interval = 0 ms, order = Time,
-   enable save-to-disk (Steps 46–47).
+9. Acquire with `run_timelapse(n_frames=7500, interval_s=0, exposure_ms=300)` — `interval_s=0`
+   is back-to-back frames, and the dataset is saved to disk by the acquisition itself
+   (Steps 46–47). **`interval_s=0` lets the engine hardware-sequence the time axis, which
+   means a per-frame hook action cannot run between exposures**; a hook that needs one
+   requires a nonzero interval, and microclaw refuses the combination rather than silently
+   dropping the action.
 10. Let the sample equilibrate 5–15 min, then acquire (Step 48).
 
 ### E. Reconstruction (pointer)
 
 Full detail in [Schnitzbauer2017, Steps 50–60]; summary:
 
+0. Export the raw stack for the localization software with `export_dataset_as_tiff`.
+   Microclaw does not fit localizations; everything below runs outside it.
 1. `Picasso: Localize` — identify and fit single-molecule spots (box side ≈ 6σ_PSF + 1; set a
    minimum net-gradient threshold; set the camera's photon-conversion parameters from
    [§5](#5-imaging-parameters)) (Steps 50–55).

@@ -66,10 +66,23 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 - Fluorophore: transiently binding dye (e.g., Cy3B for PAINT; short imager
   strands for DNA-PAINT). No photoswitching buffer needed.
 - ON-state lifetime (τb) and OFF-state lifetime (τd) are set by dye/DNA
-  concentration and strand length, not laser power.
-- Typical frame counts: 10,000–100,000+, acquisition can continue until
-  sufficient sampling is achieved.
+  concentration and strand length, not laser power. Both are calculable:
+    - τb = 1/k_off, set by duplex length — a 9-bp duplex gives τb ≈ 500 ms, and
+      each added base pair raises τb by roughly 10× (each removed one lowers it
+      by roughly 10×). Match the camera exposure to τb.
+    - τd = 1/(c_imager · k_on), with k_on ≈ 10⁶ M⁻¹s⁻¹ typical. At 10 nM,
+      τd ≈ 100 s; a site is visited at least once with ~98% probability after
+      t ≈ 4·τd, but useful images need multiple events per site (~33 min).
+- Typical frame counts: start 7,500; full datasets 10,000–100,000+, acquisition
+  can continue until sufficient sampling is achieved.
+- Imager concentration is the most consequential knob and it cuts both ways: too
+  low under-samples the structure, too high raises unbound-imager background AND
+  causes cross-talk localizations — two nearby sites bound at once, fitted as one
+  false spot between them.
 - Ask the user: imager strand concentration and identity, docking-strand target.
+- **Call get_dna_paint_documentation for the full protocol** — buffer recipes,
+  the oxygen-scavenging system, strand design, sample prep, and the acquisition
+  procedure. Its numbers supersede the DNA-PAINT figures in this document.
 
 ---
 
@@ -81,7 +94,9 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
     - Slow STORM regime: 100 ms.
     - Regular STORM regime: 30 ms.
 - For PALM fluorescent proteins: 30–100 ms.
-- For DNA-PAINT: 100–500 ms (longer τb allows more photons per event).
+- For DNA-PAINT: match τb — ~300 ms for the common 9-bp imager/docking duplex
+  (τb ≈ 500 ms); 100–500 ms across usual duplex lengths. Longer τb allows more
+  photons per event. See get_dna_paint_documentation.
 - Use: run_timelapse(exposure_ms=<value>, ...)
 
 ### Frame interval
@@ -95,7 +110,7 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
     - Regular STORM regime: ~40,000 frames.
     - Minimum for a small structure (e.g., centriole): ≥10,000 frames.
 - PALM: 5,000–20,000 frames.
-- DNA-PAINT: 10,000–100,000 frames; more is better.
+- DNA-PAINT: start at 7,500 frames; full datasets 10,000–100,000+, more is better.
 - If the user is unsure, start with 20,000 frames and check density.
 - Use: run_timelapse(n_frames=<value>, ...)
 
@@ -339,10 +354,13 @@ Photonics "GATTA-PAINT" series), and provide absolute distance calibration:
   ≤ 5 nm for DNA-PAINT with Cy3B or ATTO 655 imager strands).
 - **Calibration**: measure the centre-to-centre distance between two sites and
   compare to the design value to detect x/y pixel-size errors.
-- **Imager strand concentration**: 0.1–1 nM in imaging buffer (PBS + 500 mM NaCl
-  or equivalent high-salt buffer); lower concentration reduces background but
+- **Imager strand concentration**: 100 pM–10 nM, starting around 5 nM for a
+  12-site structure, in a Mg-based imaging buffer (5 mM Tris-HCl, 10 mM MgCl₂,
+  1 mM EDTA, 0.05% Tween 20, pH 8.0) with the PCA/PCD/Trolox oxygen-scavenging
+  system mixed in ≥1 h before imaging. Lower concentration reduces background but
   increases τdark (time between binding events). Optimise for a τb / τdark ratio
-  that keeps <10% of sites occupied simultaneously.
+  that keeps <10% of sites occupied simultaneously. Recipes and the rationale are
+  in get_dna_paint_documentation.
 - Origami passivation: BSA (1 mg/mL) + Pluronic F-127 (0.05%) in the imaging
   buffer reduces non-specific imager binding to the coverslip.
 - TIRF illumination is strongly preferred to minimise background from free imager
@@ -370,6 +388,7 @@ Photonics "GATTA-PAINT" series), and provide absolute distance calibration:
 ## Key questions to ask the user before starting
 
 1. Which SMLM technique? (dSTORM / PALM / PAINT / DNA-PAINT)
+   For DNA-PAINT, call get_dna_paint_documentation before planning parameters.
 2. Which fluorophore and labelling strategy?
 3. Is the photoswitching buffer / imaging medium in place? (for dSTORM)
 4. Which excitation channel and laser power will be used?

@@ -7562,6 +7562,20 @@ def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> di
 
 
 @emits_nothing
+def get_dna_paint_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    """The DNA-PAINT protocol in full, behind get_smlm_documentation's summary.
+
+    Two documents cover DNA-PAINT and they are not peers: SMLM_REFERENCE plans
+    any SMLM session including this one, and this is the depth behind it —
+    binding kinetics, buffer recipes, strand design, and the bench procedure
+    from folding to reconstruction. Where a number appears in both, this one is
+    the accurate one and SMLM_REFERENCE says so where it quotes it.
+    """
+    from microclaw.dna_paint_docs import load_reference
+    return {"documentation": load_reference()}
+
+
+@emits_nothing
 def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     from microclaw.emu_manager import (
         find_mm_app_dir, find_plugin_jars, read_emu_config, _emu_config_path,
@@ -8293,6 +8307,7 @@ TOOL_REGISTRY = {
     "list_mm_plugins": list_mm_plugins,
     "get_hook_documentation": get_hook_documentation,
     "get_smlm_documentation": get_smlm_documentation,
+    "get_dna_paint_documentation": get_dna_paint_documentation,
     "check_emu_installed": check_emu_installed,
     "get_htsmlm_documentation": get_htsmlm_documentation,
     "get_emu_configuration": get_emu_configuration,
