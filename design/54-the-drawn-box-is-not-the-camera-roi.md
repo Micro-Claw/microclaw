@@ -605,10 +605,14 @@ State as of 2026-08-19:
   three Z moves on a measured arrival, report where the axis actually was, and
   give the emitted script an envelope print. Until it lands, a re-gate cannot
   distinguish a diluted metric from a metric sampled mid-move.
-- The rig gate is `design/54-block54bd-rig-gate.md`. **Its Steps 5 and 6 must be
-  rewritten before the next trip** — the camera crop has to be a literal
-  precondition that halts, not prose, and the cropped standalone re-run needs a
-  command that fails loudly if skipped.
+- The rig gate is **`design/54-block54bde-rig-gate.md`**, pinned `2cdb336`
+  (the 54bd runbook is deleted). Its camera crops are now enforced by
+  `design/54-roi-precondition.py`, which exits nonzero until the ROI is what the
+  step needs — the skipped-precondition failure cannot repeat silently. It also
+  prints the expected `min_contrast`, computed from design/54's formula rather
+  than read back from microclaw, so no arithmetic in the runbook needs editing.
+  Step 2 runs the control **twice** and Step 7 reads requested-vs-measured Z out
+  of the payloads.
 - Suite on the merged tree: **1917 passed, 99 skipped, 2016 collected** (macOS).
 
 The four numbers to score a future gate from are unchanged, plus a fifth:
