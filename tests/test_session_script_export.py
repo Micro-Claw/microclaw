@@ -10,7 +10,7 @@ import pytest
 
 import numpy as np
 
-from microclaw import autofocus, image_analysis, tools
+from microclaw import autofocus, controller, image_analysis, tools
 from microclaw.tools_schema import TOOLS
 
 
@@ -2131,6 +2131,46 @@ def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
     broken = survey_source.replace(inspect.getsource(tools.SurveyProgress), "")
     assert "SurveyProgress" in _undefined_emitted_names(broken)
 
+    broken = survey_source.replace(inspect.getsource(controller.settle_stage_move), "")
+    assert "settle_stage_move" in _undefined_emitted_names(broken)
+
+
+def test_stage_move_contract_is_defined_once_however_many_moves(tmp_path):
+    """The settlement helpers are preamble helpers, not per-call boilerplate.
+
+    Emitting the contract inside each move emitter put a fresh copy of the
+    constants, the exception class and both functions in front of every move; a
+    25-tile session emits a wall of identical blocks. `_analysis_source` and
+    `_adaptive_runner_source` are already inlined once from a body predicate --
+    the comment at the assembly site says that is exactly why the predicate is
+    computed from the rendered body.
+    """
+    _, _, source = export(tmp_path, [
+        call("move_stage_z", {"z_um": 100.0, "absolute": True}),
+        call("move_stage_z", {"z_um": 120.0, "absolute": True}),
+        *completed_call(
+            "move_named_stage", {"device": "TIRF Stage", "um": 5.0},
+            {"device": "TIRF Stage", "requested_um": 5.0, "measured_um": 5.0,
+             "tolerance_um": 0.5, "within_tolerance": True,
+             "elapsed_s": 0.1, "last_device_status": "idle"},
+        ),
+    ])
+    assert source.count("def settle_stage_move") == 1
+    assert source.count("class StageMoveError") == 1
+    assert source.count("STAGE_MOVE_TOLERANCE_UM = ") == 1
+    assert not _undefined_emitted_names(source)
+
+
+def test_emitted_stage_settle_uses_live_policy_constants(tmp_path, monkeypatch):
+    monkeypatch.setattr(controller, "STAGE_MOVE_TOLERANCE_UM", 0.321)
+    monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 7.654)
+    _, _, source = export(tmp_path, completed_call(
+        "move_named_stage", {"device": "TIRF Stage", "um": 5.0},
+        {"device": "TIRF Stage", "requested_um": 5.0, "measured_um": 5.0},
+    ))
+    assert "0.321" in source
+    assert "7.654" in source
+
 
 def test_a_session_that_writes_its_own_hook_still_exports_a_runnable_script(
     tmp_path, monkeypatch
@@ -2309,10 +2349,42 @@ def test_move_named_stage_emits_its_resolved_absolute_target(tmp_path):
          "achieved_um": 1461.2, "error_um": 1.2},
     ))
     assert "core.set_position('TIRF Stage', 1460.0)" in source
-    assert "core.wait_for_device('TIRF Stage')" in source
+    assert "settle_stage_move(core, 'TIRF Stage', 1460.0)" in source
     assert "-40.0" not in source
     assert "# NOT EMITTED" not in source
-    assert "raise RuntimeError" not in source
+    assert '"within_tolerance": False' in source
+
+
+def test_emitted_named_stage_move_runs_success_and_failure_paths(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "move_named_stage",
+        {"device": "TIRF Stage", "um": 5.0, "absolute": True},
+        {"device": "TIRF Stage", "requested_um": 5.0,
+         "measured_um": 5.0, "tolerance_um": 0.5,
+         "within_tolerance": True},
+    ))
+    runnable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+
+    class FakeCore:
+        measured = 5.0
+        def set_position(self, _device, _target): pass
+        def device_busy(self, _device): return False
+        def get_position(self, _device): return self.measured
+
+    exec(compile(runnable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+    })
+
+    FakeCore.measured = 27.85
+    fast_failure = runnable.replace("STAGE_MOVE_TIMEOUT_S = 10.0", "STAGE_MOVE_TIMEOUT_S = 0.0")
+    with pytest.raises(RuntimeError) as caught:
+        exec(compile(fast_failure, "routine.py", "exec"), {
+            "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        })
+    assert type(caught.value).__name__ == "StageMoveError"
+    assert caught.value.result["within_tolerance"] is False
 
 
 @pytest.mark.parametrize(("label", "result"), [

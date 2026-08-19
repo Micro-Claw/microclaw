@@ -12,6 +12,8 @@ from microclaw.controller import (
     MicroscopeController,
     PositionListConflict,
     PositionProjection,
+    StageMoveError,
+    settle_stage_move,
 )
 from microclaw.safety import (
     SafetyConstraints,
@@ -51,8 +53,69 @@ class TestGuardedSeam:
 
     def test_set_z_in_range_moves(self):
         ctrl = make_controller(guard=bounded_guard())
-        ctrl.set_z(100.0)
+        ctrl._core.get_position.return_value = 100.0
+        result = ctrl.set_z(100.0)
         ctrl._core.set_position.assert_called_once_with(100.0)
+        assert result["measured_um"] == 100.0
+        assert result["within_tolerance"] is True
+
+    def test_set_z_timeout_carries_measurement_elapsed_and_status(self, monkeypatch):
+        from microclaw import controller
+        ctrl = make_controller(guard=bounded_guard())
+        ctrl._core.get_position.return_value = 90.0
+        ctrl._core.device_busy.return_value = True
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0, raising=False)
+        with pytest.raises(RuntimeError) as caught:
+            ctrl.set_z(100.0)
+        assert type(caught.value).__name__ == "StageMoveError"
+        assert caught.value.result["measured_um"] == 90.0
+        assert caught.value.result["elapsed_s"] >= 0
+        assert caught.value.result["last_device_status"] == "busy"
+
+    def test_settle_recovers_after_transient_position_read_fault(self, monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_position.side_effect = [RuntimeError("serial frame lost"), 100.0, 100.0]
+        core.device_busy.return_value = False
+        monkeypatch.setattr(controller, "STAGE_MOVE_REQUIRED_SAMPLES", 2)
+        monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
+        monkeypatch.setattr(controller, "STAGE_MOVE_POLL_S", 0.0)
+        result = settle_stage_move(core, "DStage", 100.0)
+        assert result["measured_um"] == 100.0
+        assert result["within_tolerance"] is True
+
+    def test_settle_non_finite_position_is_a_read_fault_not_a_nan_result(self, monkeypatch):
+        """A device that reads NaN must be diagnosed, and must never put NaN in a result.
+
+        Round 1's `_apply_named_stage` raised ValueError("non-finite achieved
+        position") immediately; folding it into settle_stage_move dropped that,
+        so a non-finite read fell through the tolerance comparison (which is
+        False for NaN), cleared the samples, and timed out reporting
+        `measured_um: nan`. json.dumps writes that as bare `NaN`, which is
+        invalid strict JSON in the history file.
+        """
+        import json
+        from microclaw import controller
+        core = MagicMock()
+        core.get_position.return_value = float("nan")
+        core.device_busy.return_value = False
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0, raising=False)
+        with pytest.raises(controller.StageMoveError) as caught:
+            controller.settle_stage_move(core, "S", 100.0)
+        assert caught.value.result["measured_um"] is None
+        assert "non-finite" in caught.value.result["last_device_status"]
+        assert "NaN" not in json.dumps(caught.value.result)
+
+    def test_settle_permanent_position_read_fault_is_typed_timeout(self, monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_position.side_effect = RuntimeError("Serial command failed\njava stack")
+        core.device_busy.return_value = False
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+        with pytest.raises(StageMoveError) as caught:
+            settle_stage_move(core, "DStage", 100.0)
+        assert caught.value.result["measured_um"] is None
+        assert "Serial command failed" in caught.value.result["last_device_status"]
 
     def test_set_xy_guarded(self):
         ctrl = make_controller(guard=bounded_guard())
@@ -62,6 +125,7 @@ class TestGuardedSeam:
 
     def test_no_guard_does_not_block(self):
         ctrl = make_controller(guard=None)
+        ctrl._core.get_position.return_value = 999.0
         ctrl.set_z(999.0)  # no guard → no check
         ctrl._core.set_position.assert_called_once_with(999.0)
 
@@ -83,6 +147,7 @@ class TestGoToPositionZOnly:
     def test_z_only_skips_xy(self):
         ctrl = make_controller()
         ctrl._positions = [{"name": "Zonly", "z_um": 42.0}]
+        ctrl._core.get_position.return_value = 42.0
         ctrl.go_to_position("Zonly")
         ctrl._core.set_xy_position.assert_not_called()
         ctrl._core.set_position.assert_called_once_with(42.0)
@@ -90,6 +155,7 @@ class TestGoToPositionZOnly:
     def test_xy_and_z_both_set(self):
         ctrl = make_controller()
         ctrl._positions = [{"name": "P", "x_um": 1.0, "y_um": 2.0, "z_um": 3.0}]
+        ctrl._core.get_position.return_value = 3.0
         ctrl.go_to_position("P")
         ctrl._core.set_xy_position.assert_called_once_with(1.0, 2.0)
         ctrl._core.set_position.assert_called_once_with(3.0)

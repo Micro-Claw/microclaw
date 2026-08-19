@@ -19,6 +19,10 @@ from typing import Any
 
 import numpy as np
 
+from microclaw.controller import (
+    StageMoveError, settle_stage_move, stage_move_dispatch_failure,
+)
+
 
 @dataclass(frozen=True)
 class MoveStage:
@@ -548,28 +552,40 @@ class UntrustedHookAdapter:
         # The budget counts attempted dispatches, including writes that raise.
         ctx["remaining"] -= 1
         try:
-            ctx["core"].set_position(ctx["device"], target)
-            ctx["core"].wait_for_device(ctx["device"])
-            achieved = float(ctx["core"].get_position(ctx["device"]))
-            if not math.isfinite(achieved):
-                raise ValueError(f"non-finite achieved position {achieved!r}")
+            try:
+                ctx["core"].set_position(ctx["device"], target)
+            except Exception as exc:
+                raise stage_move_dispatch_failure(
+                    ctx["core"], ctx["device"], target, exc,
+                ) from exc
+            result = settle_stage_move(ctx["core"], ctx["device"], target)
+            achieved = result["measured_um"]
         except Exception as exc:
+            failure_result = exc.result if isinstance(exc, StageMoveError) else {}
+            if isinstance(exc, StageMoveError) and exc.result["measured_um"] is not None:
+                ctx["last_known"] = exc.result["measured_um"]
             self._record_event(
                 event, event="named_stage_write_failure",
                 hook_event_index=index, action=self._action_record(action),
                 decision="failed", reason=f"parent stage move failed: {exc}",
                 last_known_um=ctx["last_known"], restoration=restoration,
+                **failure_result,
             )
             raise RuntimeError(f"named-stage move failed: {exc}") from exc
         ctx["last_known"] = achieved
         event["named_stage_device"] = ctx["device"]
         event["named_stage_requested_um"] = target
         event["named_stage_achieved_um"] = achieved
+        event["named_stage_measured_um"] = achieved
+        event["named_stage_tolerance_um"] = result["tolerance_um"]
+        event["named_stage_within_tolerance"] = result["within_tolerance"]
         event["named_stage_error_um"] = achieved - target
         self._accept_event(
             event, action, "named-stage move passed envelope and SafetyGuard",
             hook_event_index=index, device=ctx["device"], requested_um=target,
             achieved_um=achieved, error_um=achieved - target,
+            measured_um=achieved, tolerance_um=result["tolerance_um"],
+            within_tolerance=result["within_tolerance"],
             restoration=restoration,
         )
 
