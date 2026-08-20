@@ -1284,6 +1284,30 @@ def _write_text_output(path: str, text: str, *, overwrite: bool) -> None:
 
 
 @emits_nothing
+def get_current_datetime(
+    ctrl: MicroscopeController,
+    guard: SafetyGuard | None,
+) -> dict:
+    """Report the machine's current local date and time.
+
+    The model has no clock of its own, so anything date-stamped — a dataset
+    name, a folder, a note in the knowledge base — otherwise gets a guessed
+    date. `compact` matches the stamp the history files already use, so it is
+    the one to reach for when naming a directory.
+    """
+    now = datetime.now().astimezone()
+    return {
+        "local_iso": now.isoformat(timespec="seconds"),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "compact": now.strftime("%Y%m%d_%H%M%S"),
+        "timezone": now.tzname(),
+        "utc_offset": now.strftime("%z"),
+        "utc_iso": now.astimezone(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+@emits_nothing
 def write_text_file(
     ctrl: MicroscopeController,
     guard: SafetyGuard | None,
@@ -8323,6 +8347,7 @@ TOOL_REGISTRY = {
     "get_mda_settings": get_mda_settings,
     "run_mda": run_mda,
     "export_session_script": export_session_script,
+    "get_current_datetime": get_current_datetime,
     "write_text_file": write_text_file,
     "save_knowledge": save_knowledge,
     "get_knowledge": get_knowledge,

@@ -1,7 +1,9 @@
 import json
 import math
 import os
+import re
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
@@ -170,6 +172,41 @@ class TestLiveViewReadiness:
         assert "error" in result
         assert "not running" in result["error"]
         assert "started" not in result.get("status", "").lower()
+
+
+class TestGetCurrentDatetime:
+    def test_every_field_renders_one_reading_of_the_clock(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # Frozen, because the interesting failure is a field derived from a
+        # *second* now() call: against the live clock that only disagrees when
+        # the test happens to straddle a tick.
+        fixed = datetime(2026, 8, 20, 17, 26, 32, tzinfo=timezone(timedelta(hours=2)))
+
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed if tz is None else fixed.astimezone(tz)
+
+        monkeypatch.setattr(tools, "datetime", FrozenDatetime)
+        result = tools.get_current_datetime(mock_ctrl, unconstrained_guard)
+        assert result["local_iso"] == "2026-08-20T17:26:32+02:00"
+        assert result["date"] == "2026-08-20"
+        assert result["time"] == "17:26:32"
+        assert result["compact"] == "20260820_172632"
+        assert result["utc_offset"] == "+0200"
+        assert result["utc_iso"] == "2026-08-20T15:26:32+00:00"
+
+    def test_compact_is_filename_safe(self, mock_ctrl, unconstrained_guard):
+        # This is the field the description tells the model to put in a folder
+        # name, so a colon or a space in it is the defect.
+        compact = tools.get_current_datetime(mock_ctrl, unconstrained_guard)["compact"]
+        assert re.fullmatch(r"\d{8}_\d{6}", compact)
+
+    def test_is_aware_and_carries_its_offset(self, mock_ctrl, unconstrained_guard):
+        result = tools.get_current_datetime(mock_ctrl, unconstrained_guard)
+        assert datetime.fromisoformat(result["local_iso"]).tzinfo is not None
+        assert re.fullmatch(r"[+-]\d{4}", result["utc_offset"])
 
 
 class TestGetPixelSize:

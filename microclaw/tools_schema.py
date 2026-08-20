@@ -170,6 +170,19 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_current_datetime",
+        "description": (
+            "Return the machine's current local date and time. You have no clock "
+            "of your own, so call this before date-stamping anything — a dataset "
+            "or folder name, a saved note — instead of guessing the date. Returns "
+            "'date' (2026-08-20), 'time' (14:32:05), 'compact' (20260820_143205, "
+            "the stamp Microclaw's own history files use and the one to put in a "
+            "directory name), the full local and UTC ISO timestamps, and the "
+            "timezone."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "write_text_file",
         "description": (
             "Write supplied text to a confirmed workspace path without overwriting "
