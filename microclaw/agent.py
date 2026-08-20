@@ -365,6 +365,8 @@ SYSTEM_PROMPT = (
     "- If a piece of hardware differs significantly in state from what is in the knowledge base, e.g. a "
     "stage focuses at a different plane, or a strategy differs significantly, immediately update the "
     "knowledge base to this new state so it can be remembered in the next session."
+    "- If you perform a new strategy during an imaging session, offer to save it to the knowledge base. "
+    "- Save early and often, you can always update things throughout the session."
     "\n"
     "Hook-based adaptive acquisition:\n"
     "- For conditional two-channel work (search in one channel, acquire only detected "
