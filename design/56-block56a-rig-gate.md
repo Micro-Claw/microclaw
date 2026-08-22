@@ -23,7 +23,7 @@ cd $HOME\Code\microclaw
 git fetch origin
 git checkout design56/probe
 git pull
-git merge-base --is-ancestor 79068b0 HEAD
+git merge-base --is-ancestor 137d92b HEAD
 if ($LASTEXITCODE -eq 0) { Write-Output "IMPLEMENTATION PRESENT" } else { Write-Output "WRONG TREE - STOP" }
 pip install -e .
 python -m pytest -q > suite.txt 2>&1
@@ -60,6 +60,12 @@ Paste verbatim:
 
 > Call get_device_property_info for device TIPFSStatus property Status and show
 > me the allowed values exactly as the device reports them.
+
+`Status` is **read-only and enumerates nothing** on this adapter —
+`allowed_values` comes back `null`. That is expected and is no longer an error:
+supplying `in_focus_values` is what declares the reading categorical. A rig
+session on 2026-08-22 also observed **`Focus lock failed`**, which is not in
+design/40's table; note any value you see that is not in design/56's.
 
 **Record the exact strings.** Every later step uses
 `"Within range of focus search"` and `"Locked in focus"`. If this rig spells
@@ -191,10 +197,17 @@ planes either way.
 > z_step_um 1, method "sweep", and probe set to device TIPFSStatus, property
 > Status, in_focus_values ["Within range of focus search", "Locked in focus"].
 
-**Required:** it **refuses** naming the window it excluded — the message must
-contain the numbers **2270** and **2330** — and moves nothing. This is the
-result the 2026-08-22 session was owed and never got: "not here" as a finding
-rather than a search that trails off.
+**Required:** it **refuses**, the message contains the numbers **2270** and
+**2330**, and it moves nothing. This is the result the 2026-08-22 session was
+owed and never got: "not here" as a finding rather than a search that trails
+off.
+
+Either of two refusals is correct here and both name the window. If every plane
+reads `Out of focus search range` you get the **constant-reading** refusal; if
+the readings vary you get the **no-plane-in-range** one. **Record which.** What
+would be wrong is a refusal that names no window, or one that blames the
+hardware — a window that misses the band is the likelier cause and the cheaper
+one to fix.
 
 ## Step 9 — a mistyped value must fail before the stage moves
 
@@ -219,9 +232,11 @@ Have the operator **swing the PFS dichroic out** (the physical control), so
 > Status, in_focus_values ["Within range of focus search", "Locked in focus"].
 
 **Required:** the refusal cites the **constant reading** and quotes
-`Dichroic mirror not inserted`. It must **not** say the focus is outside the
-window — that message would send a session hunting a focus problem that is
-really a turret problem.
+`Dichroic mirror not inserted` **verbatim**. That quoted value is the only thing
+separating this from Step 8 — both are constant-reading refusals and both offer
+the same two causes, because from inside the sweep they are genuinely the same
+observation. The quoted value is what tells the operator which one they have,
+so if it is missing or paraphrased, that is the finding.
 
 Put the dichroic back before continuing.
 

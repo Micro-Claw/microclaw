@@ -1,4 +1,6 @@
 import numpy as np
+import time
+
 import pytest
 from unittest.mock import MagicMock
 import microclaw.autofocus as autofocus
@@ -89,6 +91,38 @@ def test_band_admit_calls_identical_out_of_range_reading_constant():
     reason = autofocus._band_admit(["blind"] * 5, {"in"}, 1.0, 0.0, 4.0)
     assert "constant reading 'blind'" in reason
     assert "No plane" not in reason
+    # A window that simply misses the band ALSO reads constant, and on this rig
+    # that is the common case: the 2026-08-22 session searched two windows that
+    # never contained the answer. Asserting a blind sensor there sends the
+    # operator to the turret instead of widening the window, which is the
+    # cheaper check and the likelier cause.
+    assert "0.0" in reason and "4.0" in reason
+    assert "does not reach the band" in reason
+    assert "Widen the window before suspecting the hardware" in reason
+
+
+def test_a_slow_bridge_read_is_not_an_unstable_reading():
+    """A constant, correct value must settle however slow the round trip is.
+
+    Measured on this branch before the fix: the deadline was armed BEFORE the
+    first read, so read latency was charged against the stability window and a
+    healthy device reading one constant value was reported unsettled once the
+    round trip passed ~30 ms. An unsettled plane refuses the whole sweep, so a
+    busy bridge made the tool refuse for no reason.
+    """
+    class SlowCore:
+        def __init__(self, rtt_s):
+            self.rtt = rtt_s
+        def get_property(self, _device, _prop):
+            time.sleep(self.rtt)
+            return "Locked in focus"
+
+    for rtt in (0.001, 0.03, 0.06, 0.1):
+        value, settled = autofocus._stable_read(
+            SlowCore(rtt), "TIPFSStatus", "Status", dwell_s=0.0
+        )
+        assert value == "Locked in focus"
+        assert settled is True, f"constant reading reported unsettled at {rtt}s"
 
 
 def test_split_band_offers_the_lagging_sensor_cause_not_only_two_surfaces():

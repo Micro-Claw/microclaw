@@ -95,8 +95,12 @@ def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
     start, length = longest_true_run(flags)
     if len(set(readings)) == 1 and readings and not flags[0]:
         return (
-            f"Every plane returned the constant reading {readings[0]!r}; the "
-            "focus sensor may be unable to evaluate focus."
+            f"Every plane between {lo_um} and {hi_um} um returned the constant "
+            f"reading {readings[0]!r} ({len(readings)} planes, {step_um} um "
+            f"step), and none of {sorted(in_focus_values)} was seen. Either "
+            "this window does not reach the band at all, or the sensor cannot "
+            "evaluate focus here — an optical element out of the path reads "
+            "constant too. Widen the window before suspecting the hardware."
         )
     if length == 0:
         return (
@@ -141,9 +145,22 @@ def _stable_read(core, device, prop, dwell_s, samples=3, poll_s=None,
     if dwell_s:
         time.sleep(dwell_s)
     poll_s = min(float(poll_s), min_stable_s / max(samples - 1, 1))
-    deadline = time.monotonic() + max(min_stable_s * 2, poll_s * samples)
+    started = time.monotonic()
     last = str(core.get_property(device, prop))
+    read_cost = time.monotonic() - started
     first_equal_at = time.monotonic()
+    # The budget starts AFTER the first read and is sized for the reads it has
+    # to contain. A slow bridge round trip is not evidence that the value moved:
+    # arming the deadline before the first read made read latency eat the
+    # stability window, and a constant, correct reading was then reported
+    # UNSETTLED once the round trip passed ~30 ms -- which refuses the whole
+    # sweep. This is block 56's lesson in the other direction: a slow read is
+    # not an unstable reading, just as a device that is not busy has not
+    # necessarily arrived. Raising settle_ms widens this too, which is the knob
+    # the operator already has.
+    deadline = first_equal_at + max(
+        min_stable_s * 2, poll_s * samples, dwell_s, read_cost * (samples + 2)
+    )
     count = 1
     while time.monotonic() < deadline:
         now = time.monotonic()
