@@ -233,41 +233,170 @@ class TestOperatorEstablishedStatePrompt:
         assert "that carries out what was asked" in rule
 
     def test_a_restart_does_not_license_shuttering_their_excitation(self):
-        assert "A microclaw restart is software-only and by itself is neither" in SYSTEM_PROMPT
+        # The old wording ("...and by itself is neither") was an anaphor pointing
+        # back across an intervening sentence to two triggers, one of which was
+        # later deleted; it survives here stated positively instead.
+        assert (
+            "Closing or restarting MicroClaw is software-only: it is not physical "
+            "interaction and not a reason to change anything"
+        ) in SYSTEM_PROMPT
         assert "offer to restore it afterward" in SYSTEM_PROMPT
+        # Operator ruling: microclaw writes nothing to MM on any exit path. A
+        # prompt that tells the agent to shutter on close reverses that, and it
+        # is unactionable anyway — microclaw is usually killed without notice.
+        assert "MicroClaw writes nothing to the microscope on the way out" in SYSTEM_PROMPT
+        assert "Shutter the camera when MicroClaw closes" not in SYSTEM_PROMPT
 
     def test_eye_safety_still_triggers_on_the_operators_word(self):
         # The rule must not require verifying that an interaction is real: the
         # operator's word is the only evidence available, and the failure mode
         # here is NOT shuttering. Phrase-matching ("I will now ...") is what
         # misfired and is gone; taking their word for it is not.
-        assert "Shutter the excitation before manual or physical interaction with the rig" in SYSTEM_PROMPT
-        assert "take their word for it, do not wait to verify it" in SYSTEM_PROMPT
-        assert "do not look for a particular phrase" in SYSTEM_PROMPT
+        assert "Before physical interaction with the microscope" in SYSTEM_PROMPT
+        assert "Their word that they are about to touch it is enough on its own" in SYSTEM_PROMPT
+        # What must stop is whatever is putting light on the SAMPLE. On a
+        # camera-triggered rig that is the running camera, not the laser enable.
+        assert "stop what is putting light on the sample" in SYSTEM_PROMPT
 
     def test_laser_entry_state_is_named_explicitly(self):
         rule = next(
             line for line in SYSTEM_PROMPT.splitlines()
             if "At the end of a task involving lasers" in line
         )
-        assert "what microclaw turned on, microclaw turns off" in rule
+        assert "what MicroClaw turned on, MicroClaw turns off" in rule
         assert "what it found on, it leaves on" in rule
 
 
 class TestLiveDoseAndTiffPrompt:
     def test_live_view_is_not_started_just_for_agent_visibility(self):
         assert "so the user can see what you are doing" not in SYSTEM_PROMPT
-        assert "Live view is for the operator's eyes, not yours" in SYSTEM_PROMPT
+        assert "Live view is for the microscopist's eyes, not yours" in SYSTEM_PROMPT
         assert "(a focus sweep, a navigation)" not in SYSTEM_PROMPT
-        assert "worth watching (a navigation)" in SYSTEM_PROMPT
+        assert "worth watching (e.g. searching for a cell)" in SYSTEM_PROMPT
         assert "camera_triggers_lasers: true" in SYSTEM_PROMPT
-        assert "never leave it running after an acquisition finishes" in SYSTEM_PROMPT
+        assert "Never leave live view running after an acquisition finishes" in SYSTEM_PROMPT
 
-    def test_export_rule_names_when_not_to_convert(self):
-        assert '"so you can open it in Fiji" is never a reason to export' in SYSTEM_PROMPT
-        assert "once, and not again for the same dataset" in SYSTEM_PROMPT
-        assert "requires a single-file TIFF" in SYSTEM_PROMPT
+    def test_datasets_are_opened_not_converted(self):
+        """The export_dataset_as_tiff guidance was removed DELIBERATELY.
+
+        NDTiff writes plain TIFFs that any TIFF reader opens, so offering a
+        conversion implies a problem that does not exist. The tool still exists
+        in tools.py for the cases a user names; the prompt no longer volunteers
+        it. Do not restore the ThunderSTORM/SMAP/Picasso/DECODE bullet from git
+        history — what replaced it is the rule asserted here.
+        """
+        assert "open the file — do not convert " in SYSTEM_PROMPT
         assert "channels as planes rather than reconstructing named channel axes" in SYSTEM_PROMPT
+        assert "export_dataset_as_tiff" not in SYSTEM_PROMPT
+
+
+class TestLaserCleanupPrompt:
+    """MicroClaw cleans up after itself, and only after itself.
+
+    The rule this replaced was "shutter the excitation whenever the camera is
+    not running", which is unconditional and therefore reaches the operator's
+    own laser — an operator aligning with their 640 on and the camera off
+    satisfies it, which is the design/37 F3 incident verbatim. The replacement
+    splits on WHO turned it on, and carries two exceptions the old rule had no
+    room for.
+    """
+
+    def test_a_laser_you_enabled_is_yours_to_turn_off(self):
+        assert "A laser you enabled is yours to turn off" in SYSTEM_PROMPT
+        assert "Excitation the operator had on when you arrived is theirs" in SYSTEM_PROMPT
+        # The unconditional form must not come back: it contradicts both the
+        # yours/theirs split here and "never restore, tidy, or 'make safe'".
+        assert "Shutter the excitation whenever the camera is not running" not in SYSTEM_PROMPT
+
+    def test_camera_triggered_rigs_do_not_cycle_the_laser(self):
+        # On a camera-triggered rig the camera gates emission, so a laser left
+        # on between exposures is not reaching the sample and switching it per
+        # snap buys nothing. This must stay scoped to the profile key — on every
+        # other rig the laser really is on and really must be turned off.
+        rule = next(
+            line for line in SYSTEM_PROMPT.splitlines()
+            if "A laser you enabled is yours to turn off" in line
+        )
+        assert "`camera_triggers_lasers: true`" in rule
+        assert "a laser left on between exposures is not incident on the sample" in rule
+        assert "rather than cycling it yourself" in rule
+
+    def test_a_snap_sequence_keeps_the_laser_on_until_it_ends(self):
+        # Laser startup dominates a step-and-snap loop, so the laser stays on
+        # across the sequence...
+        rule = next(
+            line for line in SYSTEM_PROMPT.splitlines()
+            if "A laser you enabled is yours to turn off" in line
+        )
+        assert "a focus sweep, stepping the stage and calling `snap_and_analyze`" in rule
+        assert "leave it on for the whole sequence" in rule
+        assert "laser startup is slow enough to dominate the loop" in rule
+        # ...and the licence must never outlive the sequence that earned it.
+        assert "turn it off once the sequence is finished" in rule
+
+
+class TestVerifyBeforeAssertingPrompt:
+    def test_hardware_claims_are_re_verified_not_recalled(self):
+        assert (
+            "Before making any assertions about hardware states, call "
+            "get_system_state to verify"
+        ) in SYSTEM_PROMPT
+        # The two cases where memory is least trustworthy are named, because a
+        # bare "verify" rule gets satisfied by a reading from twenty turns ago.
+        assert "been a long time since the last interaction" in SYSTEM_PROMPT
+        assert "says something that disagrees with your memory" in SYSTEM_PROMPT
+
+    def test_a_blank_frame_is_not_automatically_the_laser(self):
+        # Guards the reflex of re-enabling illumination as the first response to
+        # a dark frame, when the cause is at least as often optical or postional.
+        assert "a blank or empty frame may not result from the laser" in SYSTEM_PROMPT
+        assert "improperly set filter" in SYSTEM_PROMPT
+        assert "wrong part of the sample" in SYSTEM_PROMPT
+        assert "objective out of focus" in SYSTEM_PROMPT
+
+
+class TestNikonPfsPrompt:
+    """Rig facts, so they are pinned as text rather than trusted to survive.
+
+    The whole section rendered as a single line until the literals were fixed,
+    which is exactly the kind of loss no other test could see.
+    """
+
+    def test_pfs_status_reads_regardless_of_whether_the_lock_is_engaged(self):
+        assert "TIPFSStatus-Status tells you if you are focusing" in SYSTEM_PROMPT
+        assert "regardless of whether or not the PFS is on" in SYSTEM_PROMPT
+
+    def test_a_lock_found_too_high_is_diagnosed_by_moving_xy(self):
+        # A PFS can lock on a coverslip the objective has pushed up at an angle;
+        # the tell is that the lock drops after a small lateral move.
+        assert "pushed the coverslip up at an angle" in SYSTEM_PROMPT
+        assert "jog the stage a little bit" in SYSTEM_PROMPT
+        assert "see if the PFS stays on" in SYSTEM_PROMPT
+
+    def test_offset_range_is_given_per_immersion_medium(self):
+        assert "PFS offset range is around 10 micrometers for oil immersion" in SYSTEM_PROMPT
+        assert "20 micrometers for water immersion" in SYSTEM_PROMPT
+        assert "100 micrometers or more for dry" in SYSTEM_PROMPT
+        assert "decrease with increasing numerical aperture" in SYSTEM_PROMPT
+
+
+class TestKnowledgeBaseUpkeepPrompt:
+    def test_a_correction_is_offered_to_the_knowledge_base(self):
+        assert (
+            "If a user corrects a mistake, offer to remember the behavior and the "
+            "fix in the knowledge base"
+        ) in SYSTEM_PROMPT
+
+    def test_stale_stored_state_is_updated_not_just_noticed(self):
+        assert "differs significantly in state from what is in the knowledge base" in SYSTEM_PROMPT
+        assert "immediately update the knowledge base to this new state" in SYSTEM_PROMPT
+
+    def test_a_new_strategy_is_offered_to_the_knowledge_base(self):
+        assert (
+            "If you perform a new strategy during an imaging session, offer to save "
+            "it to the knowledge base"
+        ) in SYSTEM_PROMPT
+        assert "Save early and often" in SYSTEM_PROMPT
 
 
 class TestZStackThenExportPrompt:
