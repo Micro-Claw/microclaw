@@ -7058,3 +7058,51 @@ measurement rather than a claim.
 three polls, `StopIteration` where it did not. A sibling test had the same shape
 and passed by luck. Block 52a's lesson in a new place: **a fake that encodes how
 many times the code looks is not a test of what the code reports.**
+
+## design/54 block 54c — `region="drawn"` (merged 2026-08-22, without its re-gate)
+
+**A schema change made a working capability uncallable, and no unit test could
+see it.** 54b shipped `region` as `type: "array"` and the literal form worked on
+three Nikon trips. 54c added the `"drawn"` string by replacing that with
+`oneOf: [{type: array}, {const: "drawn"}]` — **no top-level `type`** — and the
+model started sending `"[726, 591, 174, 171]"`, the array as a quoted string,
+four times, three of them after the operator asked for an array in plain words.
+Every call was correctly refused as malformed, and the capability was simply gone
+from the agent's reach while the suite stayed green. It stayed green because
+**every test calls the function with a real Python list**, which is precisely the
+input the defect does not touch: a unit test cannot measure what a schema does to
+a model. Both schemas now declare `type: ["array", "string"]` and parse a JSON
+array however it is quoted.
+
+**This is the third time in design/54 that delivering a capability broke the one
+before it** — 54b's region created 54d's noise-floor defect, 54c's snap-path
+reordering created a truncating crop that reported a 40×40 box while metering
+24×24 pixels, and 54c's schema made 54b's literal region uncallable. *The block
+after a capability is where that capability breaks.*
+
+**A limb with no wrong answer available is not a test.** Step 4d asked that the
+window fallback not read a focused non-Preview window; both `snap_and_analyze`
+calls returned the right box, but nothing in the evidence shows a second ImageJ
+window was ever open, so there was no wrong box to read. Recorded NOT TESTED, not
+passed. The same trip's export criterion required zero occurrences of `drawn` in
+the emitted script and got two — both inside `# SKIPPED` comments quoting refusal
+text verbatim, which is correct output. **A criterion that fails on correct
+behaviour is as useless as one that passes on broken behaviour.**
+
+**The block merged with three limbs unmeasured, deliberately.** Steps 3, 4d and 6
+are owed on the Nikon. The reader — the point of the block — passed, the two
+fixes the trip exposed are in, and holding a merged-clean branch open for a short
+trip was judged to cost more than carrying the debt in writing. What made that
+affordable is that the debt is *written down in three places that a cold session
+reaches from `main` alone*: §"Owed rig evidence" in the design doc, the ledger
+row, and a banner at the top of the runbook — **and the runbook was merged to
+`main` with the code** rather than dying with the branch. A rig-gate runbook
+normally lives only on its block's branch; when a block merges owing evidence,
+that convention has to be broken or the instructions for the owed run vanish.
+
+**The merge also inherited a red suite that was not the block's.** Five
+`tests/test_agent.py` failures arrived on `main` from the agent-prompt edits in
+`03f7098`..`5c4b858` — prompt text changed, assertions did not follow. Step 0 of
+the re-gate now names them explicitly and stops on a sixth, because "any nonzero
+failure count stops the gate" against a knowingly-red `main` is an instruction
+that would halt the trip on arrival.

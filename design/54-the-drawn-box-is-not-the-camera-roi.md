@@ -519,6 +519,91 @@ which is the number that catches a skipped test file, and said only "exit code 0
 about the rest. A failure count is the thing a reader's eye must land on. Any
 future Step 0 asserts the pass/fail line explicitly.
 
+## 54c gate results — Nikon, 2026-08-19 (`54c-nikon/`)
+
+Suite 1911 passed / 124 skipped — **2035 collected, equal to the macOS
+reference**, zero failures. The reader works: `region="drawn"` resolved to
+`[726, 591, 174, 171]`, exactly the box the zero-exposure probe had read
+(R2/R3/R4 PASS), with `coarse.min_contrast` **0.89** — 54d's scaling applied to
+the resolved 29,754 px, not to the full frame — and the camera ROI unchanged at
+1024×1024. Three of the four refusals fired with their own message: no
+selection, no display, and the stale box as
+`Region [99, 108, 855, 840] does not fit frame [512, 512]`, naming both the box
+and the frame it no longer fitted. `snap_and_analyze` echoed its box twice.
+
+### The literal region became unreachable, and the unit tests could not see it
+
+**Step 3 failed.** The agent sent `"region": "[726, 591, 174, 171]"` — the array
+as a quoted string — four times, three of them after the operator asked for an
+array in plain words. Every call was refused as malformed, correctly.
+
+54b shipped `region` as `type: "array"` and the literal form worked on three
+Nikon trips. 54c replaced it with `oneOf: [{type: array}, {const: "drawn"}]`,
+which carries **no top-level `type`**, and the model began quoting the array.
+The capability was gone from the agent's reach while the suite stayed green,
+because every test calls the function with a real Python list: **a unit test
+cannot measure what a schema does to a model.** Fixed in `42e08b8` — both
+schemas declare `type: ["array", "string"]`, and a JSON array of four integers
+is parsed however it is quoted, while anything that is not four integers still
+refuses.
+
+This is the third time in design/54 that a capability's own delivery broke the
+one before it: 54b's region created 54d's noise-floor defect, 54c's snap-path
+reordering created a truncating crop, and 54c's schema made 54b's literal region
+uncallable. **The block after a capability is where that capability breaks.**
+
+### Two limbs produced no evidence, and one criterion was wrong
+
+- **4d (the fallback must not read a focused non-Preview window) was NOT
+  TESTED.** Both `snap_and_analyze` calls returned `[186, 216, 96, 84]` and
+  nothing in the evidence shows a second ImageJ window was ever open, so there
+  was no wrong box available to read. The re-gate makes the probe the
+  instrument: it reads through `getCurrentImage()`, the focus-following route,
+  so its box must be the *other* window's before the limb starts.
+- **The export step's `drawn`-count criterion was wrong.** It required zero
+  occurrences in the emitted script; the run produced two, both inside
+  `# SKIPPED` comments quoting refusal text verbatim, which is correct output.
+  The command now excludes comment lines. A criterion that fails on correct
+  behaviour is as useless as one that passes on broken behaviour.
+- The standalone exit code was never captured — only the redirected output was
+  saved. The command now appends it to the file.
+
+## Owed rig evidence — 54c merged without its re-gate (operator decision, 2026-08-22)
+
+54c is on `main` with **three limbs still unmeasured**. This was a deliberate
+call: the reader — the whole point of the block — passed on the rig, the two
+coordinator fixes it exposed are in, and holding a merged-clean branch open for a
+short trip costs more than carrying the debt in writing. **The block is closed;
+the evidence is not.** Nothing below is a known defect. Each is a thing this
+document is not entitled to claim works.
+
+The runbook `design/54-block54c-rig-gate.md` came to `main` with the merge, so
+the re-gate has its instructions without the branch. Run **Steps 0, 3, 4d and
+6**; every other limb has its evidence in §"54c gate results" and must not be
+re-run for the sake of it. Re-pin Step 0 to whatever `main` is at the time.
+
+1. **Step 3 — the literal region has never been in front of a model since the
+   fix.** The 2026-08-19 trip refused four calls because 54c's `oneOf` schema
+   carried no top-level `type` and the model quoted the array. `42e08b8` declares
+   `type: ["array", "string"]` on both schemas and parses a JSON array however it
+   is quoted. **The suite cannot close this**: every test calls the function with
+   a real Python list, which is exactly the input the defect did not affect. Only
+   a model emitting the argument measures it.
+2. **Step 4d — the wrong-window fallback is still NOT TESTED.** No second ImageJ
+   window was open on the trip, so no wrong box existed to read. The re-gate
+   makes the zero-exposure probe the instrument — it reads through
+   `getCurrentImage()`, the focus-following route — and requires the *other*
+   window focused before the limb starts.
+3. **Step 6 — the export limb has never run with a correct criterion.** The first
+   trip's command counted `drawn` inside `# SKIPPED` comments, where it correctly
+   appears, and failed on correct output; the standalone exit code was not
+   captured at all. Both are fixed in the runbook and neither corrected command
+   has been run.
+
+Unchanged by this merge: 54c is **ergonomics, not a focus fix**. §"What this
+block established" still holds — restricting the metric region was not shown to
+improve focus on this field, on either box, on any trip.
+
 ## Refusals this must keep
 
 - **Stale box.** A box drawn before a camera-ROI or binning change lands
@@ -680,17 +765,65 @@ the standalone script inherits the correction without an emitter change.
 
 ## 54c — `region="drawn"`
 
-§2, **unblocked by 54a's PASS**. Reads the box at call time, validates it
-against the current frame, refuses rather than clamps. Per §3a: MM's
+§2, **unblocked by 54a's PASS**, and **scoped as ergonomics**: it makes 54b's
+capability cheaper to reach, not more effective. See the measured-outcome note
+under §"Decision" — no claim that it improves focus may be made in its schema
+text, its runbook, or its gate criteria. Reads the box at call time, validates
+it against the current frame, refuses rather than clamps. Per §3a: MM's
 `studio.live().get_display().get_image_plus()` is the primary route and
 `ij.WindowManager.getCurrentImage()` (through
 `controller._new_static_java_class`) the fallback; any ID read from
 `getIDList()` is reinterpreted as signed int32 before use.
 
+Scope, all of it, read against `main` **after 54b/54d/54e merged** rather than
+against §1 as it was written:
+
+- **`"drawn"` resolves to a literal `[x, y, w, h]` at the tool boundary**, before
+  `_validate_metric_region` (`tools.py:3704`), which then runs unchanged. No
+  second validator, no second crop path: nothing downstream ever sees the string.
+- **The reader belongs on the controller**, beside `_imagej_window_ids`
+  (`controller.py:579`) — it is bridge plumbing, not analysis. One method, both
+  routes, and it dedupes by ID if it ever reports a choice (54a's probe counted
+  one window twice).
+- **The emitters must emit the resolved box, never the string.**
+  `_emit_snap_and_analyze` (`tools.py:131`) and `_emit_autofocus` (`:158`) both
+  read `region` from the *requested* params today, and `x, y, w, h = "drawn"`
+  raises a bare `ValueError` — which is not `CannotEmit`, so it takes the whole
+  session's export down, not one step. Read the resolved region from the
+  recorded result instead, the way `set_channel` reads its recorded effects:
+  `run_autofocus` echoes `payload["region"]`, `snap_and_analyze` carries it in
+  `metric_valid_for.region`. A standalone script has no display and no box; the
+  literal is the only thing it can carry.
+- **Both `region` schemas** (`tools_schema.py:769`, `:894`) are `type: "array"`
+  today, so `"drawn"` is not expressible at all. Widen both, in one clause each.
+- **Refusals** from §"Refusals this must keep", each naming the box it rejected:
+  no display reachable, no selection drawn, stale box (frame shape changed since
+  it was drawn), degenerate box. The last two are already
+  `_validate_metric_region`'s messages once the box is a literal; the first two
+  are new, and each is a refusal with an instruction, not an error.
+
+Acceptance evidence — **step 3 applies: a test written after the code is not
+evidence until it has been watched failing on the pre-fix tree, for the stated
+reason.** The fake to distrust first here is a fake `ImagePlus` whose box always
+fits the frame; 54b's export tests all used a region that fit, and that is
+exactly what hid the missing crop guard.
+
+- A test that execs the emitted source for a `region="drawn"` run and proves it
+  crops the *resolved literal*.
+- A test that a session recording a `"drawn"` run exports at all — the
+  `ValueError` above is a whole-session failure, so it must be gated as one.
+
 - **Gate (Nikon).** Operator draws a box, calls `run_autofocus(region="drawn")`,
-  and the numbers agree with 54b's literal-region run over the same box. Then
-  the stale-box limb: change binning or the camera ROI after drawing, and
-  confirm the refusal fires **and names the box it rejected**.
+  then re-runs with that same box passed literally — read back from the payload's
+  echoed `region`, not retyped — and the two agree. Then the stale-box limb:
+  change binning or the camera ROI after drawing, and confirm the refusal fires
+  **and names the box it rejected**. `design/54-roi-precondition.py` turns that
+  camera-ROI change into a command that exits nonzero until it is true; trip 2 of
+  the 54bde gate skipped both limbs that depended on a camera crop described in
+  prose beside the step. **A GUI precondition needs a command, not a sentence.**
+- **Gate (export).** A `"drawn"` run first, then `export_session_script`, then
+  exec the emitted file — a fresh session emits a 13-line stub, and a script
+  that compiles is not a script that runs.
 
 ## Run ledger
 
@@ -698,34 +831,36 @@ against the current frame, refuses rather than clamps. Per §3a: MM's
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
 | 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on three Nikon trips** (2026-08-18, 2026-08-19 ×2). Dilution hypothesis **not supported** on two independent boxes | `3be1037` 2026-08-19 | **done** |
-| 54c | 54a | | | | | | | *(`region="drawn"` — unblocked by 54a, not started, deliberately after 54b/54d)*
+| 54c | 54a | `design54/drawn-region` | `edfaa10` | `2c28c12` + coordinator fixes `f02c316`, `42e08b8`; runbook pins `42e08b8` | **Nikon 2026-08-19 — reader PASS, three refusals PASS; Step 3 FAILED (schema, fixed in `42e08b8`), 4d NOT TESTED, Step 6 criterion wrong.** Merged 2026-08-22 **without the re-gate**, by operator decision — §"Owed rig evidence" names the three limbs still owed | `MERGECOMMIT` 2026-08-22 | **merged, evidence owed** | *(`region="drawn"` — assigned 2026-08-19. Review found one defect: 54c moved `snap_and_analyze`'s validation ahead of the exposure but also changed its reference from the returned array to `core.get_image_width/height`, so a box could be checked against one frame and cropped on another — measured reporting a 40×40 box while metering 24×24 pixels. Fixed in `f02c316`; the snap path now checks against both frames.)*
 | 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **PASS Nikon 2026-08-19 (2nd trip)** — 32×32 sensor scored 0.411, **2.7× over the old 0.15 constant**, and refused; emitted script refused identically | `3be1037` 2026-08-19 | **done** |
 | 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336`, flake fix `1dce909` | **PASS Nikon 2026-08-19** — max requested-vs-measured Z 0.050 µm; reason prose agrees with `final_z_um` on the rig. Mid-move hypothesis **not supported** | `3be1037` 2026-08-19 | **done** |
 
 ## Resuming this block cold
 
-**This block is not in `design/35`** — it owns its checklist above.
+Everything needed is on `main`. **This block is not in `design/35`** — it owns
+its checklist above.
 
-State as of 2026-08-19:
+State as of 2026-08-22:
 
-- **54a, 54b, 54d and 54e passed their gates and are merged** — `3be1037` for the
-  code, `edfaa10` for the closeout and the post-merge design gate. `main` carries
-  both, and `design54/display-roi` is deleted.
-- **54c is live on `origin/design54/drawn-region`.** It is implemented, gated
-  once on the Nikon, and awaiting a short re-gate.
-- **Read that branch's copy of this file, not this one, for 54c's current
-  state.** The branch carries the gate results, the run ledger, and the runbook
-  (`design/54-block54c-rig-gate.md`); none of them are on `main` until the block
-  merges. This paragraph is deliberately the only 54c status on `main`, so the
-  two copies cannot drift into disagreeing.
-
-  ```
-  git fetch origin && git checkout design54/drawn-region
-  ```
-
-- Suite at `edfaa10`: **1921 passed, 99 skipped, 2020 collected** (macOS, and
-  Windows once `1dce909` fixed the two poll-counting fakes). The branch has moved
-  past this; its own copy carries the current numbers.
+- **All five blocks are merged and every branch is deleted.** 54a, 54b, 54d and
+  54e passed their gates — `3be1037` for the code, `edfaa10` for the closeout and
+  the post-merge design gate. **54c merged 2026-08-22 without its re-gate**, by
+  operator decision.
+- **54c owes three limbs of rig evidence** — Step 3, Step 4d and Step 6. They are
+  named, with why each is unmeasurable off-rig, in §"Owed rig evidence" above.
+  Nothing there is a known defect.
+- **The runbook came to `main` with the merge**: `design/54-block54c-rig-gate.md`,
+  pinned to `42e08b8`. Re-pin Step 0 before running it.
+- Scoped as **ergonomics** per §"Decision" — `region="drawn"` makes 54b's
+  capability cheaper to reach and is not a focus fix.
+- Suite at the merge: **1952 passed, 99 skipped** (macOS). Reference points:
+  1921/99 at `edfaa10`, 1936/99 at `f02c316`, 1945/99 at `6c706eb`. On Windows
+  the pass/skip split differs and the **collected** total is what must agree —
+  2035 at `f02c316`, measured on the Nikon. **Five `tests/test_agent.py` failures
+  arrived on `main` from the agent-prompt edits in `03f7098`..`5c4b858` and are
+  not this block's**; they were already red before the merge.
+- Rig evidence from the one 54c trip is in `54c-nikon/` in the evidence archive:
+  history JSONL, both probe runs, the emitted script and its standalone output.
 
 What this block established, and what it did not:
 

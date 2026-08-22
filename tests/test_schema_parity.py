@@ -101,3 +101,27 @@ def test_mosaic_and_multiposition_descriptions_agree_on_dataset_shape():
     assert "single dataset with a `position` axis" in multipos
     assert "Without hook_strategy" in multipos and "CANNOT" in multipos
     assert "one dataset per position" in autofocus and "CANNOT" in autofocus
+
+
+@pytest.mark.parametrize("name", ["snap_and_analyze", "run_autofocus"])
+def test_region_declares_both_forms_at_the_top_level(name):
+    """`region` takes an array or the string "drawn", and the model must see both.
+
+    54c first expressed this as `oneOf: [{type: array}, {const: "drawn"}]`,
+    which carries no top-level "type". On the Nikon (2026-08-19) the model then
+    sent the array as a quoted string four calls running, three of them after
+    the operator asked for an array in plain words, and every one was refused as
+    malformed -- 54b's literal-region capability was unreachable through the
+    agent while its unit tests, which call the function with a real list, stayed
+    green. Only a schema shape a model honours makes the tool callable.
+    """
+    schema = _SCHEMA_BY_NAME[name]["input_schema"]["properties"]["region"]
+    assert schema["type"] == ["array", "string"]
+    assert "oneOf" not in schema and "anyOf" not in schema
+    # The array shape survives for the literal form.
+    assert schema["items"] == {"type": "integer"}
+    assert schema["minItems"] == schema["maxItems"] == 4
+    # And the description names both forms, since the type alone cannot say
+    # which strings are legal.
+    assert "drawn" in schema["description"]
+    assert "ARRAY" in schema["description"]

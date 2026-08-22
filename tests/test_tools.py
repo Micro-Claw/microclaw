@@ -1177,6 +1177,99 @@ class TestSnapAndAnalyze:
         assert result["max_intensity"] == 115.0
         assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
 
+    def test_drawn_region_resolves_once_and_payload_echoes_literal(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        image = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: image
+        )
+        mock_ctrl.drawn_region.return_value = [2, 4, 4, 4]
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region="drawn"
+        )
+
+        mock_ctrl.drawn_region.assert_called_once_with()
+        assert result["mean_intensity"] == pytest.approx(
+            image[4:8, 2:6].mean()
+        )
+        assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
+
+    def test_region_arrives_as_a_json_string_from_the_model(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """A literal region the model stringified is still a literal region.
+
+        Measured on the Nikon, 2026-08-19 (54c gate Step 3): the agent sent
+        `"region": "[726, 591, 174, 171]"` four times in a row -- three of them
+        after the operator explicitly asked for an array -- and every call was
+        refused as malformed. 54b's schema declared `type: "array"` and the same
+        literal call worked on three earlier trips; 54c replaced it with a
+        `oneOf` carrying no top-level type, and the model started quoting.
+
+        The schema is fixed alongside this, but the schema is a request, not a
+        guarantee: a faithful JSON array of four integers is unambiguous however
+        it arrives, so parse it. Anything else still refuses.
+        """
+        image = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: image
+        )
+        mock_ctrl.core.get_image_width.return_value = 64
+        mock_ctrl.core.get_image_height.return_value = 64
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region="[2, 4, 4, 4]"
+        )
+
+        assert result["metric_valid_for"]["region"] == [2, 4, 4, 4]
+        assert result["mean_intensity"] == pytest.approx(
+            image[4:8, 2:6].mean(), abs=0.05
+        )
+
+    @pytest.mark.parametrize("region", [
+        "[2, 4, 4]", "[2, 4, 4, 4, 4]", "[2.5, 4, 4, 4]", "2, 4, 4, 4",
+        "not a region", "[]",
+    ])
+    def test_a_string_that_is_not_four_integers_still_refuses(
+        self, mock_ctrl, unconstrained_guard, region
+    ):
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region=region
+        )
+        assert "error" in result
+
+    def test_region_is_rechecked_against_the_frame_that_came_back(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The pre-snap check reads the camera; the crop lands on the array.
+
+        Those are two different frames whenever a second client changes binning
+        or the ROI in between — and the user owns the session, so that is
+        ordinary. A bare slice truncates instead of raising, so the metric came
+        back measured over 24x24 pixels while metric_valid_for still named the
+        40x40 box that was asked for: the silently clamped region design/54
+        exists to remove, with the stamp asserting it had not happened.
+        run_autofocus re-checks per frame for exactly this reason
+        (_run_autofocus_passes' metric_fn); the snap path must too.
+        """
+        frame = np.tile(np.arange(64, dtype=np.uint16), (64, 1))
+        monkeypatch.setattr(
+            "microclaw.tools.snap_to_numpy_displayed", lambda ctrl: frame
+        )
+        # The fixture's camera reports 1024x1024, so this box passes the
+        # pre-snap check and cannot survive the crop.
+        mock_ctrl.drawn_region.return_value = [40, 40, 40, 40]
+
+        result = snap_and_analyze(
+            mock_ctrl, unconstrained_guard, region="drawn"
+        )
+
+        assert "[40, 40, 40, 40]" in result["error"]
+        assert "[64, 64]" in result["error"]
+        assert "metric_valid_for" not in result
+
     def test_metric_gate_comes_from_rig_config(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
             analysis=AnalysisConstraints(min_snr=999.0)
@@ -1304,6 +1397,75 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_drawn_region_resolves_once_and_sets_scaled_threshold(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        _patch_autofocus(monkeypatch)
+        mock_ctrl.drawn_region.return_value = [2, 3, 8, 4]
+        counts = []
+        real_threshold = tools.contrast_threshold
+        monkeypatch.setattr(
+            tools, "contrast_threshold",
+            lambda count: counts.append(count) or real_threshold(count),
+        )
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            return_thumbnail=False, region="drawn",
+        )
+
+        mock_ctrl.drawn_region.assert_called_once_with()
+        assert result["region"] == [2, 3, 8, 4]
+        assert counts and set(counts) == {32}
+
+    @pytest.mark.parametrize(
+        "box, frame, message_bits",
+        [
+            ([60, 2, 8, 4], (64, 32), ("[60, 2, 8, 4]", "[64, 32]")),
+            ([2, 3, 1, 4], (64, 32), ("[2, 3, 1, 4]", "greater than 1")),
+        ],
+    )
+    def test_drawn_stale_or_degenerate_box_refuses_before_exposure(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, box, frame, message_bits
+    ):
+        mock_ctrl.drawn_region.return_value = box
+        mock_ctrl.core.get_image_width.return_value = frame[0]
+        mock_ctrl.core.get_image_height.return_value = frame[1]
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", sweep)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            return_thumbnail=False, region="drawn",
+        )
+
+        assert all(bit in result["error"] for bit in message_bits)
+        sweep.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "message", [
+            "Region 'drawn' cannot be read because no Preview display is reachable. "
+            "Open Preview, draw a selection, and try again.",
+            "Region 'drawn' has no selection. Draw a selection on the Preview "
+            "window and try again.",
+        ],
+    )
+    def test_drawn_reader_refusal_is_returned_before_exposure(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, message
+    ):
+        mock_ctrl.drawn_region.side_effect = ValueError(message)
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.single_sweep_autofocus", sweep)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 2.0, 1.0, method="sweep",
+            return_thumbnail=False, region="drawn",
+        )
+
+        assert result == {"error": message}
+        assert "drawn" in result["error"]
+        sweep.assert_not_called()
+
     def test_small_region_pure_noise_does_not_converge_or_move(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
