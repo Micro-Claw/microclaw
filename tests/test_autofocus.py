@@ -6,6 +6,7 @@ from microclaw.controller import StageMoveError
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
+    SweepResult,
     coarse_then_fine_plane_count,
     curve_contrast,
     coarse_then_fine_autofocus,
@@ -13,6 +14,94 @@ from microclaw.autofocus import (
     sweep_autofocus,
     sweep_plane_count,
 )
+
+
+def test_image_probe_refactor_characterizes_whole_autofocus_result(monkeypatch):
+    """Main's plane choice is pinned; only P1's refusal prose may change."""
+    ctrl = MagicMock()
+    ctrl.core.get_focus_device.return_value = "Z"
+    position = [50.0]
+    ctrl.core.get_position.side_effect = lambda *_args: position[0]
+    ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
+    ctrl.core.device_busy.return_value = False
+    ctrl.core.wait_for_device.return_value = None
+    values = {49.0: 5.0, 50.0: 4.0, 51.0: 3.0}
+    monkeypatch.setattr(autofocus, "snap_to_numpy",
+                        lambda _ctrl: np.array([[values[position[0]]]]))
+
+    actual = single_sweep_autofocus(
+        ctrl, 2.0, 1.0, settle_ms=0,
+        metric_fn=lambda image: float(image[0, 0]), min_contrast=0.15,
+    )
+    sweep = SweepResult(
+        [49.0, 50.0, 51.0], [5.0, 4.0, 3.0], 49.0, False,
+        [49.0, 50.0, 51.0],
+    )
+    expected = autofocus.AutofocusResult(
+        sweep, None, 50.0, 50.0, False, False,
+        "Sweep focus peak is at the edge of the searched Z range (best 49.000 µm "
+        "sits at a sweep boundary), so there is no interior focus maximum and "
+        "this is NOT convergence. The reported best_z_um is the argmax of a "
+        "curve that failed its gate, not a focus estimate to move to. Z was NOT "
+        "moved (restored to 50.000 µm). Focus may be outside the window, or the "
+        "curve may be noise-dominated/non-unimodal; inspect the curve and signal "
+        "before widening or retrying.",
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize("readings, expected", [
+    (["out", "blind", "out"], "No plane"),
+    (["out", "in", "in", "out"], "not a band"),
+    (["in", "in", "in", "out", "in", "in", "in"], "not contiguous"),
+])
+def test_band_admit_refuses_each_invalid_band(readings, expected):
+    reason = autofocus._band_admit(
+        readings, {"in"}, 1.0, 0.0, len(readings) - 1.0
+    )
+    assert expected in reason
+
+
+def test_band_admit_calls_identical_out_of_range_reading_constant():
+    reason = autofocus._band_admit(["blind"] * 5, {"in"}, 1.0, 0.0, 4.0)
+    assert "constant reading 'blind'" in reason
+    assert "No plane" not in reason
+
+
+def test_lagging_property_read_is_unsettled_and_sweep_cannot_converge(monkeypatch):
+    class LaggingCore:
+        def __init__(self):
+            self.position = 50.0
+            self.previous = "out"
+        def get_focus_device(self): return "Z"
+        def get_position(self, _device=None): return self.position
+        def set_position(self, z):
+            self.position = float(z)
+        def wait_for_device(self, _device): pass
+        def device_busy(self, _device): return False
+        def get_property(self, _device, _prop):
+            # Never settles: the adapter alternates its previous-plane state
+            # with the current evaluation throughout this plane's dwell.
+            self.previous = "in" if self.previous == "out" else "out"
+            return self.previous
+
+    core = LaggingCore()
+    ctrl = MagicMock(core=core)
+    probe = autofocus.FocusProbe(
+        read=lambda: autofocus._stable_read(
+            core, "lock", "status", 0.002, samples=3, poll_s=0
+        ),
+        choose=lambda values: 1,
+        admit=lambda values: None,
+        exposures_per_plane=0,
+        describe="lagging status",
+        in_focus_values=frozenset({"in"}),
+    )
+    result = single_sweep_autofocus(ctrl, 2.0, 1.0, settle_ms=0, probe=probe)
+    assert result.converged is False
+    assert result.moved is False
+    assert result.coarse.unsettled_indices == [0, 1, 2]
+    assert "unsettled sweep cannot converge" in result.reason
 
 
 @pytest.fixture(autouse=True)

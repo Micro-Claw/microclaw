@@ -365,6 +365,8 @@ class TestNikonPfsPrompt:
     def test_pfs_status_reads_regardless_of_whether_the_lock_is_engaged(self):
         assert "TIPFSStatus-Status tells you if you are focusing" in SYSTEM_PROMPT
         assert "regardless of whether or not the PFS is on" in SYSTEM_PROMPT
+        assert "use run_autofocus with its property probe" in SYSTEM_PROMPT
+        assert "Just move the Z stage and check this property" not in SYSTEM_PROMPT
 
     def test_a_lock_found_too_high_is_diagnosed_by_moving_xy(self):
         # A PFS can lock on a coverslip the objective has pushed up at an angle;

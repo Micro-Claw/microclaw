@@ -1397,6 +1397,61 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_quoted_json_probe_is_schema_reachable_and_runs_zero_exposure_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools_schema import TOOLS
+        schema = next(tool for tool in TOOLS if tool["name"] == "run_autofocus")
+        probe_schema = schema["input_schema"]["properties"]["probe"]
+        assert probe_schema["type"] == "object"
+        assert probe_schema["required"] == ["device", "property"]
+
+        position = [51.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_args: position[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = ["out", "in"]
+        mock_ctrl.core.get_property.side_effect = lambda *_args: (
+            "in" if 50.0 <= position[0] <= 52.0 else "out"
+        )
+        monkeypatch.setattr("microclaw.autofocus.STAGE_MOVE_POLL_S", 0)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            settle_ms=5, return_thumbnail=True,
+            probe='{"device":"lock","property":"status","in_focus_values":["in"]}',
+        )
+
+        assert result["converged"] is True
+        assert result["final_z_um"] == 51.0
+        assert result["coarse"]["readings"] == ["out", "in", "in", "in", "out"]
+        assert result["coarse"]["in_range"] == [False, True, True, True, False]
+        assert "metric_curve" not in result["coarse"]
+        assert result["exposures_spent"] == 0
+        assert "suppressed" in result["thumbnail_suppressed"]
+        mock_ctrl.core.snap_image.assert_not_called()
+
+    @pytest.mark.parametrize("allowed, values, message", [
+        (["out", "in"], None, "Name which"),
+        (["out", "in"], ["typo"], "never reports"),
+        ([], ["in"], "enumerates no values"),
+    ])
+    def test_property_probe_value_errors_are_tool_payloads_before_motion(
+        self, mock_ctrl, unconstrained_guard, allowed, values, message
+    ):
+        mock_ctrl.core.get_allowed_property_values.return_value = allowed
+        spec = {"device": "lock", "property": "status"}
+        if values is not None:
+            spec["in_focus_values"] = values
+        mock_ctrl.core.set_position.reset_mock()
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            return_thumbnail=False, probe=spec,
+        )
+
+        assert message in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
     def test_drawn_region_resolves_once_and_sets_scaled_threshold(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
@@ -2841,6 +2896,27 @@ class TestFocusLock:
         result = get_focus_lock_state(mock_ctrl, unconstrained_guard)
         assert result["engaged"] is None
         assert "reason" in result
+
+    def test_non_emu_autofocus_device_reports_lock_and_blocks_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "HardwareAF"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = True
+        state = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+        assert state == {
+            "engaged": True,
+            "property": "continuous focus device HardwareAF",
+            "device": "HardwareAF",
+        }
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", sweep)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0
+        )
+        assert "Focus lock is engaged" in result["error"]
+        sweep.assert_not_called()
 
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import set_focus_lock

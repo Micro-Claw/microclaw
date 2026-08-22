@@ -352,6 +352,52 @@ def test_emitted_autofocus_settles_delayed_stage_and_prints_envelope(
     assert "measured final Z: 50.2" in output
 
 
+def test_emitted_property_probe_defines_and_drives_every_helper(
+    tmp_path, monkeypatch, capsys
+):
+    spec = {"device": "lock", "property": "status",
+            "in_focus_values": ["in"]}
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep",
+        "settle_ms": 30, "probe": spec,
+    })])
+    for name in ("FocusProbe", "image_probe", "property_probe",
+                 "longest_true_run", "_band_admit", "_stable_read"):
+        assert f"{'class' if name == 'FocusProbe' else 'def'} {name}" in source
+    assert "MIN_BAND_PLANES = 3" in source
+
+    class FakeCore:
+        last = None
+        def __init__(self):
+            type(self).last = self
+            self.position = 51.0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def get_allowed_property_values(self, _device, _prop):
+            return ["out", "in"]
+        def get_property(self, _device, _prop):
+            return "in" if 50.0 <= self.position <= 52.0 else "out"
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    result = namespace["autofocus_result"]
+    assert result.converged is True
+    assert result.final_z_um == 51.0
+    assert result.coarse.metric_values == ["out", "in", "in", "in", "out"]
+    output = capsys.readouterr().out
+    assert "criterion: centre of lock.status in-range band" in output
+    assert "in_focus_values: ['in']" in output
+
+
 def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
     tmp_path, monkeypatch
 ):

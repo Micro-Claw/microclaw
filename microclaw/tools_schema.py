@@ -864,6 +864,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_autofocus",
         "description": (
             "Run a software autofocus sweep to find the sharpest Z plane. "
+            "A probe reads a device property at each plane instead of the camera; "
+            "use it when the rig has a hardware focus lock. Without it the sweep "
+            "maximises image sharpness, which finds the sharpest plane, not "
+            "necessarily the sample plane. method='sweep' is right with a probe: "
+            "the coarse pass exists to save exposures and property reads spend none. "
             "Sweeps Z from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
             "in z_step_um steps. Returns BOTH passes (coarse chooses the plane, fine "
             "refines it) with their metric curves and contrast, plus converged/moved/"
@@ -908,8 +913,8 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "return_thumbnail": {
                     "type": "boolean",
-                    "description": "Include a thumbnail of the focused image (default false). Only set to True if absolutely necessary.",
-                    "default": False,
+                    "description": "Include a thumbnail of the focused image (default true). It is automatically suppressed for a zero-exposure property probe.",
+                    "default": True,
                 },
                 "region": {
                     # Both types at the top level, with the array shape kept.
@@ -926,6 +931,30 @@ TOOLS: list[dict[str, Any]] = [
                         "\"drawn\", which reads the rectangle currently drawn on "
                         "the Micro-Manager Preview window."
                     ),
+                },
+                "probe": {
+                    "type": "object",
+                    "description": (
+                        "Optional. Read a device property at each plane instead of "
+                        "measuring image sharpness. Use this for a hardware focus "
+                        "lock that reports its capture range. Costs no exposures; "
+                        "omit for ordinary image-based autofocus."
+                    ),
+                    "properties": {
+                        "device": {"type": "string", "description": "Device label."},
+                        "property": {"type": "string", "description": "Property read at each plane."},
+                        "in_focus_values": {
+                            "type": "array", "items": {"type": "string"},
+                            "minItems": 1,
+                            "description": (
+                                "For an enumerated property, values that mean in "
+                                "range. Copy allowed values exactly; unknown values "
+                                "are refused before any Z move. Omit only for a "
+                                "numeric property, which is maximised."
+                            ),
+                        },
+                    },
+                    "required": ["device", "property"],
                 },
             },
             "required": ["z_range_um", "z_step_um"],
@@ -1945,17 +1974,19 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_focus_lock_state",
         "description": (
             "Read whether the hardware focus lock (external sensor / QPD) is engaged, "
-            "resolved through the EMU map, plus the current QPD readings. A sharp "
+            "using the generic Micro-Manager autofocus device, or the EMU map when "
+            "one exists, plus current QPD readings where available. A sharp "
             "image is NOT evidence that the lock is engaged — always answer the SMLM "
             "checklist's focus-lock item with this tool. Returns engaged=null on rigs "
-            "with no focus-lock property."
+            "with no configured or readable focus-lock device."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "set_focus_lock",
         "description": (
-            "Engage or disengage the hardware focus lock. Disengage before running a "
+            "Engage or disengage the hardware focus lock through Micro-Manager's "
+            "configured autofocus device (or the EMU map when present). Disengage before running a "
             "software autofocus sweep (which would otherwise fight the servo loop), "
             "and re-engage afterwards — run_autofocus refuses to run while it is on."
         ),

@@ -1,13 +1,14 @@
 from __future__ import annotations
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
 
 from microclaw.image_analysis import snap_to_numpy, tenengrad
 from microclaw.controller import (
-    StageMoveError, settle_stage_move, stage_move_dispatch_failure,
+    STAGE_MOVE_POLL_S, StageMoveError, settle_stage_move,
+    stage_move_dispatch_failure,
 )
 
 
@@ -17,10 +18,23 @@ class SweepResult:
     it says nothing about whether a real peak exists (see contrast)."""
 
     z_positions: list[float]
-    metric_values: list[float]
+    metric_values: list[float | str]
     best_z_um: float
     peak_interior: bool
     measured_z_positions: list[float]
+    unsettled_indices: list[int] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class FocusProbe:
+    """One reading per plane, plus how a curve selects and admits a plane."""
+
+    read: Callable[[], float | str | tuple[float | str, bool]]
+    choose: Callable[[list], int]
+    admit: Callable[[list], Optional[str]]
+    exposures_per_plane: int
+    describe: str
+    in_focus_values: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -49,6 +63,149 @@ class AutofocusResult:
 # tune upward only against real curves.
 MIN_CONTRAST = 0.15
 N_REF = 1024 * 1024
+MIN_BAND_PLANES = 3
+
+
+def longest_true_run(flags) -> tuple[int, int]:
+    """Return (start, length) of the longest contiguous true run."""
+    best_start = best_length = start = length = 0
+    for index, flag in enumerate(flags):
+        if flag:
+            if length == 0:
+                start = index
+            length += 1
+            if length > best_length:
+                best_start, best_length = start, length
+        else:
+            length = 0
+    return best_start, best_length
+
+
+def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
+    flags = [reading in in_focus_values for reading in readings]
+    start, length = longest_true_run(flags)
+    if len(set(readings)) == 1 and readings and not flags[0]:
+        return (
+            f"Every plane returned the constant reading {readings[0]!r}; the "
+            "focus sensor may be unable to evaluate focus."
+        )
+    if length == 0:
+        return (
+            f"No plane between {lo_um} and {hi_um} um read one of "
+            f"{sorted(in_focus_values)} ({len(readings)} planes, {step_um} um "
+            "step). The focus is outside this window, or the step is coarser "
+            "than the lock's capture range. This sweep costs no exposures — "
+            "widen it or halve the step."
+        )
+    if length < MIN_BAND_PLANES:
+        return (
+            f"Only {length} of {len(readings)} planes read in-range, which is "
+            f"not a band. Either the {step_um} um step is comparable to this "
+            "lock's capture range, or the reading is intermittent. Re-run with "
+            "a smaller step around the hit."
+        )
+    if sum(flags) > length:
+        return (
+            f"The in-range planes are not contiguous ({sum(flags)} in range, "
+            f"longest run {length}). Separated bands are not one focal plane. "
+        )
+    return None
+
+
+def _stable_read(core, device, prop, dwell_s, samples=3, poll_s=None):
+    """Return (last value, settled) after consecutive equal property reads."""
+    if poll_s is None:
+        poll_s = STAGE_MOVE_POLL_S
+    dwell_s = max(float(dwell_s), 0.0)
+    # A camera-tuned 50 ms dwell with the stage poll's 50 ms cadence would
+    # permit only two reads. Distribute the requested samples within the
+    # caller's dwell while retaining the stage cadence as an upper bound.
+    poll_s = min(float(poll_s), dwell_s / samples) if dwell_s else 0.0
+    deadline = time.monotonic() + dwell_s
+    last = str(core.get_property(device, prop))
+    count = 1
+    while count < samples and time.monotonic() < deadline:
+        if poll_s > 0:
+            time.sleep(min(poll_s, max(deadline - time.monotonic(), 0.0)))
+        value = str(core.get_property(device, prop))
+        if value == last:
+            count += 1
+        else:
+            last, count = value, 1
+    return last, count >= samples
+
+
+def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
+    del region
+    def read():
+        return metric_fn(snap_to_numpy(ctrl))
+    def choose(readings):
+        return int(np.argmax(readings))
+    def admit(readings):
+        contrast = curve_contrast(readings)
+        if contrast < min_contrast:
+            return (
+                f"focus metric is flat (contrast {contrast:.2f} < "
+                f"{min_contrast:.2f}) — the sweep saw noise, not a focus peak."
+            )
+        return None
+    return FocusProbe(
+        read=read, choose=choose, admit=admit,
+        exposures_per_plane=1,
+        describe="max Tenengrad image sharpness",
+    )
+
+
+def property_probe(core, device, prop, in_focus_values=None, *,
+                   step_um=1.0, lo_um=0.0, hi_um=0.0,
+                   dwell_s=0.05) -> FocusProbe:
+    allowed = [str(value) for value in core.get_allowed_property_values(device, prop)]
+    values = [str(value) for value in (in_focus_values or [])]
+    if allowed:
+        if not values:
+            raise ValueError(
+                f"{device}.{prop} reports one of {sorted(allowed)}. Name which "
+                "of those mean in-focus (in_focus_values)."
+            )
+        unknown = sorted(set(values) - set(allowed))
+        if unknown:
+            raise ValueError(
+                f"{device}.{prop} never reports {unknown}; it reports one of "
+                f"{sorted(allowed)}."
+            )
+        admitted = frozenset(values)
+        def read():
+            return _stable_read(core, device, prop, dwell_s)
+        def choose(readings):
+            start, length = longest_true_run(
+                [reading in admitted for reading in readings]
+            )
+            return start + length // 2
+        def admit(readings):
+            return _band_admit(readings, admitted, step_um, lo_um, hi_um)
+        return FocusProbe(
+            read=read, choose=choose, admit=admit,
+            exposures_per_plane=0,
+            describe=f"centre of {device}.{prop} in-range band",
+            in_focus_values=admitted,
+        )
+    if values:
+        raise ValueError(
+            f"{device}.{prop} enumerates no values, so it is read as a number "
+            "and maximised; in_focus_values does not apply."
+        )
+    def read_number():
+        return float(core.get_property(device, prop))
+    def choose_number(readings):
+        return int(np.argmax(readings))
+    def admit_number(readings):
+        del readings
+        return None
+    return FocusProbe(
+        read=read_number, choose=choose_number, admit=admit_number,
+        exposures_per_plane=0,
+        describe=f"maximum numeric {device}.{prop}",
+    )
 
 
 def contrast_threshold(n_pixels: int) -> float:
@@ -110,6 +267,7 @@ def sweep_autofocus(
     settle_ms: int = 50,
     metric_fn: Callable[[np.ndarray], float] = tenengrad,
     move_to_best: bool = True,
+    probe: FocusProbe | None = None,
 ) -> SweepResult:
     """Sweep Z and measure the focus metric; move to best Z only if move_to_best."""
     focus_device = ctrl.core.get_focus_device()
@@ -117,8 +275,11 @@ def sweep_autofocus(
     # duplicate the endpoint.
     n = sweep_plane_count(z_start_um, z_end_um, z_step_um)
     z_positions = [float(z) for z in np.linspace(z_start_um, z_end_um, n)]
+    if probe is None:
+        probe = image_probe(ctrl, metric_fn, None, MIN_CONTRAST)
     metric_values = []
     measured_z_positions = []
+    unsettled_indices = []
 
     for z in z_positions:
         try:
@@ -129,11 +290,16 @@ def sweep_autofocus(
             ) from exc
         settled = settle_stage_move(ctrl.core, focus_device, z)
         measured_z_positions.append(float(settled["measured_um"]))
-        if settle_ms > 0:
+        if settle_ms > 0 and probe.exposures_per_plane:
             time.sleep(settle_ms / 1000.0)
-        metric_values.append(metric_fn(snap_to_numpy(ctrl)))
+        reading = probe.read()
+        if isinstance(reading, tuple):
+            reading, stable = reading
+            if not stable:
+                unsettled_indices.append(len(metric_values))
+        metric_values.append(reading)
 
-    best_idx = int(np.argmax(metric_values))
+    best_idx = probe.choose(metric_values)
     best_z = measured_z_positions[best_idx]
     if move_to_best:
         try:
@@ -152,6 +318,7 @@ def sweep_autofocus(
         best_z_um=best_z,
         peak_interior=0 < best_idx < len(z_positions) - 1,
         measured_z_positions=measured_z_positions,
+        unsettled_indices=unsettled_indices,
     )
 
 
@@ -175,7 +342,9 @@ def _flat_reason(
     return (
         f"{which} focus metric is flat (contrast {contrast:.2f} < "
         f"{min_contrast:.2f}) — the sweep saw noise, not a focus peak. Z was NOT "
-        f"moved (restored to {restored_z:.3f} µm). Increase signal (laser power / "
+        f"moved (restored to {restored_z:.3f} µm). The reported best_z_um is "
+        "the argmax of a curve that failed its gate, not a focus estimate to "
+        "move to. Increase signal (laser power / "
         f"exposure), restrict the metric region around structure when the field "
         f"is mostly background, or focus manually."
     )
@@ -191,7 +360,9 @@ def _edge_reason(which: str, sweep: SweepResult, restored_z: float) -> str:
     return (
         f"{which} focus peak is at the edge of the searched Z range "
         f"(best {sweep.best_z_um:.3f} µm sits at a sweep boundary), so there is "
-        f"no interior focus maximum and this is NOT convergence. Z was NOT "
+        f"no interior focus maximum and this is NOT convergence. The reported "
+        "best_z_um is the argmax of a curve that failed its gate, not a focus "
+        "estimate to move to. Z was NOT "
         f"moved (restored to {restored_z:.3f} µm). Focus may be outside the window, "
         f"or the curve may be noise-dominated/non-unimodal; inspect the curve "
         f"and signal before widening or retrying."
@@ -206,6 +377,7 @@ def coarse_then_fine_autofocus(
     settle_ms: int = 50,
     metric_fn: Callable[[np.ndarray], float] = tenengrad,
     min_contrast: float = MIN_CONTRAST,
+    probe: FocusProbe | None = None,
 ) -> AutofocusResult:
     """Two-pass autofocus that reports BOTH passes and restores Z on a flat curve.
 
@@ -229,13 +401,14 @@ def coarse_then_fine_autofocus(
     autofocus does not guess a metric from one frame.
     """
     entry_z = float(ctrl.core.get_position())
+    active_probe = probe or image_probe(ctrl, metric_fn, None, min_contrast)
     lo_bound = entry_z - z_range_um / 2
     hi_bound = entry_z + z_range_um / 2
 
     try:
         coarse = sweep_autofocus(
             ctrl, lo_bound, hi_bound, coarse_step_um, settle_ms,
-            metric_fn=metric_fn, move_to_best=False,
+            metric_fn=metric_fn, move_to_best=False, probe=active_probe,
         )
     except StageMoveError as move_exc:
         try:
@@ -243,15 +416,23 @@ def coarse_then_fine_autofocus(
         except Exception as restore_exc:
             move_exc.add_note(f"Autofocus restore also failed: {restore_exc}")
         raise
-    coarse_contrast = curve_contrast(coarse.metric_values)
-    if coarse_contrast < min_contrast:
+    coarse_contrast = (curve_contrast(coarse.metric_values)
+                       if active_probe.exposures_per_plane else None)
+    cause = active_probe.admit(coarse.metric_values)
+    if coarse.unsettled_indices:
+        cause = (f"{len(coarse.unsettled_indices)} plane readings did not settle; "
+                 "an unsettled sweep cannot converge.")
+    if cause:
         restored = _restore(ctrl, entry_z)
         return AutofocusResult(
             coarse=coarse, fine=None, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_flat_reason("Coarse", coarse_contrast, min_contrast,
-                                float(restored["measured_um"])),
+            reason=(_flat_reason("Coarse", coarse_contrast, min_contrast,
+                                 float(restored["measured_um"]))
+                    if active_probe.exposures_per_plane else
+                    f"Coarse {cause} Z was NOT moved (restored to "
+                    f"{float(restored['measured_um']):.3f} µm)."),
         )
 
     lo = max(coarse.best_z_um - coarse_step_um, lo_bound)
@@ -259,7 +440,7 @@ def coarse_then_fine_autofocus(
     try:
         fine = sweep_autofocus(
             ctrl, lo, hi, fine_step_um, settle_ms,
-            metric_fn=metric_fn, move_to_best=False,
+            metric_fn=metric_fn, move_to_best=False, probe=active_probe,
         )
     except StageMoveError as move_exc:
         try:
@@ -267,15 +448,23 @@ def coarse_then_fine_autofocus(
         except Exception as restore_exc:
             move_exc.add_note(f"Autofocus restore also failed: {restore_exc}")
         raise
-    fine_contrast = curve_contrast(fine.metric_values)
-    if fine_contrast < min_contrast:
+    fine_contrast = (curve_contrast(fine.metric_values)
+                     if active_probe.exposures_per_plane else None)
+    cause = active_probe.admit(fine.metric_values)
+    if fine.unsettled_indices:
+        cause = (f"{len(fine.unsettled_indices)} plane readings did not settle; "
+                 "an unsettled sweep cannot converge.")
+    if cause:
         restored = _restore(ctrl, entry_z)
         return AutofocusResult(
             coarse=coarse, fine=fine, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_flat_reason("Fine", fine_contrast, min_contrast,
-                                float(restored["measured_um"])),
+            reason=(_flat_reason("Fine", fine_contrast, min_contrast,
+                                 float(restored["measured_um"]))
+                    if active_probe.exposures_per_plane else
+                    f"Fine {cause} Z was NOT moved (restored to "
+                    f"{float(restored['measured_um']):.3f} µm)."),
         )
 
     if not fine.peak_interior:
@@ -302,6 +491,7 @@ def single_sweep_autofocus(
     settle_ms: int = 50,
     metric_fn: Callable[[np.ndarray], float] = tenengrad,
     min_contrast: float = MIN_CONTRAST,
+    probe: FocusProbe | None = None,
 ) -> AutofocusResult:
     """One-pass autofocus with the same contrast gate and result shape as
     coarse_then_fine_autofocus (the single pass is reported as `coarse`).
@@ -310,10 +500,12 @@ def single_sweep_autofocus(
     pinned at a sweep boundary (design/28 F1).
     """
     entry_z = float(ctrl.core.get_position())
+    active_probe = probe or image_probe(ctrl, metric_fn, None, min_contrast)
     try:
         sweep = sweep_autofocus(
             ctrl, entry_z - z_range_um / 2, entry_z + z_range_um / 2, z_step_um,
             settle_ms, metric_fn=metric_fn, move_to_best=False,
+            probe=active_probe,
         )
     except StageMoveError as move_exc:
         try:
@@ -321,15 +513,23 @@ def single_sweep_autofocus(
         except Exception as restore_exc:
             move_exc.add_note(f"Autofocus restore also failed: {restore_exc}")
         raise
-    contrast = curve_contrast(sweep.metric_values)
-    if contrast < min_contrast:
+    contrast = (curve_contrast(sweep.metric_values)
+                if active_probe.exposures_per_plane else None)
+    cause = active_probe.admit(sweep.metric_values)
+    if sweep.unsettled_indices:
+        cause = (f"{len(sweep.unsettled_indices)} plane readings did not settle; "
+                 "an unsettled sweep cannot converge.")
+    if cause:
         restored = _restore(ctrl, entry_z)
         return AutofocusResult(
             coarse=sweep, fine=None, entry_z_um=entry_z,
             final_z_um=float(restored["measured_um"]),
             converged=False, moved=False,
-            reason=_flat_reason("Sweep", contrast, min_contrast,
-                                float(restored["measured_um"])),
+            reason=(_flat_reason("Sweep", contrast, min_contrast,
+                                 float(restored["measured_um"]))
+                    if active_probe.exposures_per_plane else
+                    f"Sweep {cause} Z was NOT moved (restored to "
+                    f"{float(restored['measured_um']):.3f} µm)."),
         )
     if not sweep.peak_interior:
         restored = _restore(ctrl, entry_z)
