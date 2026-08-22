@@ -1410,6 +1410,18 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_stop_when_found_with_numeric_probe_refuses_before_motion(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            probe={"device": "PFS", "property": "Offset",
+                   "stop_when_found": True},
+        )
+        assert "stop_when_found" in result["error"]
+        assert "numeric" in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
     def test_property_probe_refuses_default_coarse_then_fine_before_motion(
         self, mock_ctrl, unconstrained_guard
     ):
@@ -1461,9 +1473,12 @@ class TestRunAutofocus:
         )
 
         assert result["converged"] is True
-        assert result["final_z_um"] == 51.0
-        assert result["coarse"]["readings"] == ["out", "in", "in", "in", "out"]
-        assert result["coarse"]["in_range"] == [False, True, True, True, False]
+        assert result["final_z_um"] == 50.0
+        assert result["coarse"]["readings"] == ["out", "in"]
+        assert result["coarse"]["in_range"] == [False, True]
+        assert result["stopped_early"] is True
+        assert result["planes_read"] == 2
+        assert result["planes_planned"] == 5
         assert "metric_curve" not in result["coarse"]
         assert result["exposures_spent"] == 0
         assert result["property_dwell_ms"] >= 200

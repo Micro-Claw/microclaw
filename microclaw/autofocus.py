@@ -23,6 +23,9 @@ class SweepResult:
     peak_interior: bool
     measured_z_positions: list[float]
     unsettled_indices: list[int] = field(default_factory=list)
+    stopped_early: bool = field(default=False, compare=False)
+    planes_planned: int = field(default=0, compare=False)
+    target_found: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class FocusProbe:
     exposures_per_plane: int
     describe: str
     in_focus_values: frozenset[str] = frozenset()
+    stop_when_found: bool = False
 
 
 @dataclass
@@ -199,7 +203,7 @@ def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
 
 def property_probe(core, device, prop, in_focus_values=None, *,
                    step_um=1.0, lo_um=0.0, hi_um=0.0,
-                   dwell_s=0.05) -> FocusProbe:
+                   dwell_s=0.05, stop_when_found=True) -> FocusProbe:
     allowed = _strings(core.get_allowed_property_values(device, prop))
     values = [str(value) for value in (in_focus_values or [])]
     if allowed and not values:
@@ -219,6 +223,12 @@ def property_probe(core, device, prop, in_focus_values=None, *,
         def read():
             return _stable_read(core, device, prop, dwell_s)
         def choose(readings):
+            if stop_when_found:
+                return next(
+                    (index for index, reading in enumerate(readings)
+                     if reading in admitted),
+                    0,
+                )
             start, length = longest_true_run(
                 [reading in admitted for reading in readings]
             )
@@ -228,8 +238,13 @@ def property_probe(core, device, prop, in_focus_values=None, *,
         return FocusProbe(
             read=read, choose=choose, admit=admit,
             exposures_per_plane=0,
-            describe=f"centre of {device}.{prop} in-range band",
+            describe=(
+                f"first {device}.{prop} in-range plane"
+                if stop_when_found else
+                f"centre of {device}.{prop} in-range band"
+            ),
             in_focus_values=admitted,
+            stop_when_found=stop_when_found,
         )
     def read_number():
         return float(core.get_property(device, prop))
@@ -330,11 +345,15 @@ def sweep_autofocus(
         if settle_ms > 0 and probe.exposures_per_plane:
             time.sleep(settle_ms / 1000.0)
         reading = probe.read()
+        stable = True
         if isinstance(reading, tuple):
             reading, stable = reading
             if not stable:
                 unsettled_indices.append(len(metric_values))
         metric_values.append(reading)
+        if (probe.stop_when_found and stable and
+                reading in probe.in_focus_values):
+            break
 
     best_idx = probe.choose(metric_values)
     best_z = measured_z_positions[best_idx]
@@ -350,12 +369,16 @@ def sweep_autofocus(
         )["measured_um"])
 
     return SweepResult(
-        z_positions=z_positions,
+        z_positions=z_positions[:len(metric_values)],
         metric_values=metric_values,
         best_z_um=best_z,
         peak_interior=0 < best_idx < len(z_positions) - 1,
         measured_z_positions=measured_z_positions,
         unsettled_indices=unsettled_indices,
+        stopped_early=len(metric_values) < n,
+        planes_planned=n,
+        target_found=(probe.stop_when_found and
+                      metric_values[best_idx] in probe.in_focus_values),
     )
 
 
@@ -566,6 +589,8 @@ def single_sweep_autofocus(
     contrast = (curve_contrast(sweep.metric_values)
                 if active_probe.exposures_per_plane else None)
     cause = active_probe.admit(sweep.metric_values)
+    if sweep.target_found:
+        cause = None
     if sweep.unsettled_indices:
         cause = (f"{len(sweep.unsettled_indices)} plane readings did not settle; "
                  "an unsettled sweep cannot converge.")
@@ -582,6 +607,12 @@ def single_sweep_autofocus(
                         f"Sweep {cause[0].lower() + cause[1:]}",
                         float(restored["measured_um"]),
                     )),
+        )
+    if sweep.target_found:
+        return AutofocusResult(
+            coarse=sweep, fine=None, entry_z_um=entry_z,
+            final_z_um=sweep.best_z_um, converged=True, moved=True,
+            reason=None,
         )
     if not sweep.peak_interior:
         restored = _restore(ctrl, entry_z)

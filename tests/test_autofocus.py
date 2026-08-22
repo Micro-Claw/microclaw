@@ -179,7 +179,7 @@ def test_time_lagging_property_read_waits_for_current_plane(monkeypatch):
     )
     result = single_sweep_autofocus(ctrl, 4.0, 1.0, settle_ms=0, probe=probe)
     assert result.converged is True
-    assert result.coarse.metric_values == ["out", "in", "in", "in", "out"]
+    assert result.coarse.metric_values == ["out", "in"]
     assert result.coarse.unsettled_indices == []
 
 
@@ -195,6 +195,107 @@ def test_in_focus_values_declare_non_enumerating_property_categorical():
     )
     assert probe.in_focus_values == frozenset({"Within range of focus search"})
     assert probe.exposures_per_plane == 0
+
+
+def test_categorical_probe_stops_at_first_in_range_plane(monkeypatch):
+    positions = [100.0]
+    property_reads = []
+
+    class Core:
+        def get_focus_device(self): return "Z"
+        def get_position(self, _device=None): return positions[0]
+        def set_position(self, z): positions.__setitem__(0, float(z))
+        def wait_for_device(self, _device): pass
+        def device_busy(self, _device): return False
+        def get_allowed_property_values(self, _device, _prop):
+            return StrVector([])
+        def get_property(self, _device, _prop):
+            property_reads.append(positions[0])
+            return "in" if positions[0] >= 8.0 else "out"
+
+    core = Core()
+    monkeypatch.setattr(
+        autofocus, "_stable_read",
+        lambda core, device, prop, dwell_s: (core.get_property(device, prop), True),
+    )
+    probe = autofocus.property_probe(
+        core, "lock", "status", ["in"], step_um=1.0,
+        lo_um=0.0, hi_um=200.0, dwell_s=0,
+    )
+    result = single_sweep_autofocus(
+        MagicMock(core=core), 200.0, 1.0, settle_ms=0, probe=probe,
+    )
+
+    assert property_reads == list(range(9))
+    assert positions[0] == 8.0
+    assert result.converged is True
+    assert result.coarse.stopped_early is True
+    assert len(result.coarse.metric_values) == 9
+    assert result.coarse.planes_planned == 201
+
+
+def test_categorical_probe_false_preserves_full_band_centre(monkeypatch):
+    positions = [100.0]
+
+    class Core:
+        def get_focus_device(self): return "Z"
+        def get_position(self, _device=None): return positions[0]
+        def set_position(self, z): positions.__setitem__(0, float(z))
+        def wait_for_device(self, _device): pass
+        def device_busy(self, _device): return False
+        def get_allowed_property_values(self, _device, _prop): return StrVector([])
+        def get_property(self, _device, _prop):
+            return "in" if 8.0 <= positions[0] <= 36.0 else "out"
+
+    core = Core()
+    monkeypatch.setattr(
+        autofocus, "_stable_read",
+        lambda core, device, prop, dwell_s: (core.get_property(device, prop), True),
+    )
+    probe = autofocus.property_probe(
+        core, "lock", "status", ["in"], step_um=1.0,
+        lo_um=0.0, hi_um=200.0, dwell_s=0, stop_when_found=False,
+    )
+    result = single_sweep_autofocus(
+        MagicMock(core=core), 200.0, 1.0, settle_ms=0, probe=probe,
+    )
+
+    assert len(result.coarse.metric_values) == 201
+    assert result.coarse.best_z_um == 22.0
+    assert result.final_z_um == 22.0
+    assert result.reason is None
+    assert result.coarse.stopped_early is False
+
+
+def test_stop_when_found_exhaustion_keeps_constant_reading_refusal(monkeypatch):
+    positions = [2.0]
+
+    class Core:
+        def get_focus_device(self): return "Z"
+        def get_position(self, _device=None): return positions[0]
+        def set_position(self, z): positions.__setitem__(0, float(z))
+        def wait_for_device(self, _device): pass
+        def device_busy(self, _device): return False
+        def get_allowed_property_values(self, _device, _prop): return StrVector([])
+        def get_property(self, _device, _prop): return "blind"
+
+    core = Core()
+    monkeypatch.setattr(
+        autofocus, "_stable_read",
+        lambda core, device, prop, dwell_s: (core.get_property(device, prop), True),
+    )
+    probe = autofocus.property_probe(
+        core, "lock", "status", ["in"], step_um=1.0,
+        lo_um=0.0, hi_um=4.0, dwell_s=0,
+    )
+    result = single_sweep_autofocus(
+        MagicMock(core=core), 4.0, 1.0, settle_ms=0, probe=probe,
+    )
+
+    assert result.converged is False
+    assert "constant reading 'blind'" in result.reason
+    assert result.coarse.stopped_early is False
+    assert result.coarse.planes_planned == 5
 
 
 def test_band_touching_either_window_edge_is_not_bracketed():

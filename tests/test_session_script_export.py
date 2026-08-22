@@ -397,11 +397,12 @@ def test_emitted_property_probe_defines_and_drives_every_helper(
 
     result = namespace["autofocus_result"]
     assert result.converged is True
-    assert result.final_z_um == 51.0
-    assert result.coarse.metric_values == ["out", "in", "in", "in", "out"]
+    assert result.final_z_um == 50.0
+    assert result.coarse.metric_values == ["out", "in"]
     output = capsys.readouterr().out
-    assert "criterion: centre of lock.status in-range band" in output
+    assert "criterion: first lock.status in-range plane" in output
     assert "in_focus_values: ['in']" in output
+    assert "stopping_rule: first in-focus plane" in output
 
 
 def test_emitted_numeric_property_prints_the_probe_description(tmp_path):
@@ -413,6 +414,70 @@ def test_emitted_numeric_property_prints_the_probe_description(tmp_path):
     assert "property_probe(" in emitted_call
     assert "_autofocus_probe.describe" in emitted_call
     assert "centre of PFS.Offset in-range band" not in emitted_call
+
+
+def test_emitted_property_probe_early_exit_matches_live_read_count(
+    tmp_path, monkeypatch
+):
+    spec = {"device": "lock", "property": "status",
+            "in_focus_values": ["in"]}
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 200, "z_step_um": 1, "method": "sweep",
+        "settle_ms": 0, "probe": spec,
+    })])
+
+    class StrVector:
+        def __init__(self, values): self._values = list(values)
+        def size(self): return len(self._values)
+        def get(self, index): return self._values[index]
+
+    class FakeCore:
+        last = None
+        def __init__(self):
+            type(self).last = self
+            self.position = 100.0
+            self.property_reads = 0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def get_allowed_property_values(self, _device, _prop): return StrVector([])
+        def get_property(self, _device, _prop):
+            self.property_reads += 1
+            return "in" if self.position >= 8.0 else "out"
+
+    monkeypatch.setattr(autofocus, "PROPERTY_PROBE_MIN_DWELL_S", 0.0)
+    monkeypatch.setattr(autofocus, "PROPERTY_READ_MIN_STABLE_S", 0.0)
+    monkeypatch.setattr(tools, "PROPERTY_PROBE_MIN_DWELL_S", 0.0)
+    live_core = FakeCore()
+    live_result = tools._run_autofocus_passes(
+        SimpleNamespace(core=live_core), 200, 1, "sweep", 0,
+        probe_device="lock", probe_property="status",
+        in_focus_values=["in"], stop_when_found=True,
+    )
+    live_property_reads = live_core.property_reads
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    runnable = runnable.replace(
+        "PROPERTY_PROBE_MIN_DWELL_S = 0.5", "PROPERTY_PROBE_MIN_DWELL_S = 0.0"
+    ).replace(
+        "PROPERTY_READ_MIN_STABLE_S = 0.1", "PROPERTY_READ_MIN_STABLE_S = 0.0"
+    )
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    result = namespace["autofocus_result"]
+    assert result.converged is True
+    assert result.coarse.stopped_early is True
+    assert len(result.coarse.metric_values) == 9
+    assert FakeCore.last.position == 8.0
+    assert FakeCore.last.property_reads == live_property_reads
+    assert len(live_result.coarse.metric_values) == 9
 
 
 def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(

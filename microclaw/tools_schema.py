@@ -899,7 +899,11 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "z_step_um": {
                     "type": "number",
-                    "description": "Step size in µm for the fine sweep.",
+                    "description": (
+                        "Z step in µm. Size it to the capture range you expect: "
+                        "a step that is too fine costs time, while one that is "
+                        "too coarse can step over the band entirely."
+                    ),
                 },
                 "method": {
                     "type": "string",
@@ -951,6 +955,17 @@ TOOLS: list[dict[str, Any]] = [
                                 "range. Copy allowed values exactly; unknown values "
                                 "are refused before any Z move. Omit only for a "
                                 "numeric property, which is maximised."
+                            ),
+                        },
+                        "stop_when_found": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "For a categorical probe, stop at the first stable "
+                                "in_focus_values reading and leave Z there (default "
+                                "true). Set false to sweep the complete window, "
+                                "validate the band shape, and move to its centre. "
+                                "Not valid for a numeric probe."
                             ),
                         },
                     },
