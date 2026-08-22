@@ -44,23 +44,30 @@ Write-Host "pytest exit code:" $LASTEXITCODE
 Get-Content block54c-pytest.txt | Select-String -Pattern "passed|failed|error"
 ```
 
-Expected: the ancestor check prints **0**, and a summary line reading **`1952
+Expected: the ancestor check prints **0**, and a summary line of roughly **`1952
 passed, 99 skipped`** (macOS reference at the 2026-08-22 merge; Windows skips
-more, so the skip count may differ).
+more, so the skip count differs, and the passed count moves with ordinary work).
+**Neither number is the criterion.** The criterion is the failure list.
 
-**The number to look at is `failed`, and at the merge it was not zero.** Five
-`tests/test_agent.py` failures came to `main` with the agent-prompt edits in
-`03f7098`..`5c4b858` — prompt text changed and the assertions did not follow.
-They are unrelated to 54c. Either fix them before this trip, or confirm the
-failure list is **exactly** those five:
+**The number to look at is `failed`, and at the merge it was not zero.**
+`tests/test_agent.py` failures came to `main` with the agent-prompt edits from
+`03f7098` onward — prompt text changed and the assertions did not follow. The
+prompt was still being edited when 54c merged, so **the count is expected to
+drift and is deliberately not pinned here.** They are unrelated to 54c.
+
+Print the failure list and read it:
 
 ```powershell
 Get-Content block54c-pytest.txt | Select-String -Pattern "^FAILED"
+Write-Host "--- failures NOT in test_agent.py (expected: none) ---"
+Get-Content block54c-pytest.txt | Select-String -Pattern "^FAILED" | Where-Object { $_ -notmatch "test_agent\.py" }
 ```
 
-**Any failure outside `tests/test_agent.py`, or a sixth failure, stops the
-gate** — an earlier trip ran with a red suite because its Step 0 emphasised the
-collected total instead of the failure line.
+**Every line must name `tests/test_agent.py`.** The second command must print
+nothing under its header. **One failure in any other file stops the gate** — an
+earlier trip ran with a red suite because its Step 0 emphasised the collected
+total instead of the failure line. If the prompt assertions have been fixed by
+the time you run this, the whole list is empty and that is the better outcome.
 
 ## Step 1 — draw a box, and confirm the bridge can read it
 

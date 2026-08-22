@@ -7101,8 +7101,17 @@ normally lives only on its block's branch; when a block merges owing evidence,
 that convention has to be broken or the instructions for the owed run vanish.
 
 **The merge also inherited a red suite that was not the block's.** Five
-`tests/test_agent.py` failures arrived on `main` from the agent-prompt edits in
-`03f7098`..`5c4b858` — prompt text changed, assertions did not follow. Step 0 of
-the re-gate now names them explicitly and stops on a sixth, because "any nonzero
-failure count stops the gate" against a knowingly-red `main` is an instruction
-that would halt the trip on arrival.
+`tests/test_agent.py` failures arrived on `main` from the agent-prompt edits
+starting at `03f7098` — prompt text changed, assertions did not follow. "Any
+nonzero failure count stops the gate" against a knowingly-red `main` is an
+instruction that would halt the trip on arrival, so Step 0 had to account for
+them. The first attempt pinned the number — *exactly these five, a sixth stops
+the gate* — **which was wrong for a reason worth keeping: the prompt was still
+being actively edited, so the count was guaranteed to drift and the runbook would
+halt a Nikon trip over an assertion nobody had gotten to yet.** The criterion is
+now the failure's *location*, not its count: every failure must name
+`tests/test_agent.py`, and a second command prints the failures that do not, so
+the check has an explicit empty result rather than an eyeball over a list.
+**When you must gate against a known-broken baseline, pin the shape of the
+breakage, never its size** — a count is a measurement of work in progress, and a
+criterion built on one expires without telling you.

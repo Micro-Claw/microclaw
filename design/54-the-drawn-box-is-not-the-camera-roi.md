@@ -856,9 +856,13 @@ State as of 2026-08-22:
 - Suite at the merge: **1952 passed, 99 skipped** (macOS). Reference points:
   1921/99 at `edfaa10`, 1936/99 at `f02c316`, 1945/99 at `6c706eb`. On Windows
   the pass/skip split differs and the **collected** total is what must agree —
-  2035 at `f02c316`, measured on the Nikon. **Five `tests/test_agent.py` failures
-  arrived on `main` from the agent-prompt edits in `03f7098`..`5c4b858` and are
-  not this block's**; they were already red before the merge.
+  2035 at `f02c316`, measured on the Nikon.
+- **`main` was knowingly red at the merge, and not for this block's reasons.**
+  `tests/test_agent.py` failures arrived from the agent-prompt edits starting at
+  `03f7098`: prompt text changed and the assertions did not follow. **The prompt
+  was still being edited, so the count is expected to move** — five at the merge.
+  The durable criterion, and the one Step 0 of the re-gate uses, is that **every
+  failure names `tests/test_agent.py`**; one anywhere else is a real finding.
 - Rig evidence from the one 54c trip is in `54c-nikon/` in the evidence archive:
   history JSONL, both probe runs, the emitted script and its standalone output.
 
