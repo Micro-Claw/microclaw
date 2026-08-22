@@ -568,6 +568,42 @@ uncallable. **The block after a capability is where that capability breaks.**
 - The standalone exit code was never captured — only the redirected output was
   saved. The command now appends it to the file.
 
+## Owed rig evidence — 54c merged without its re-gate (operator decision, 2026-08-22)
+
+54c is on `main` with **three limbs still unmeasured**. This was a deliberate
+call: the reader — the whole point of the block — passed on the rig, the two
+coordinator fixes it exposed are in, and holding a merged-clean branch open for a
+short trip costs more than carrying the debt in writing. **The block is closed;
+the evidence is not.** Nothing below is a known defect. Each is a thing this
+document is not entitled to claim works.
+
+The runbook `design/54-block54c-rig-gate.md` came to `main` with the merge, so
+the re-gate has its instructions without the branch. Run **Steps 0, 3, 4d and
+6**; every other limb has its evidence in §"54c gate results" and must not be
+re-run for the sake of it. Re-pin Step 0 to whatever `main` is at the time.
+
+1. **Step 3 — the literal region has never been in front of a model since the
+   fix.** The 2026-08-19 trip refused four calls because 54c's `oneOf` schema
+   carried no top-level `type` and the model quoted the array. `42e08b8` declares
+   `type: ["array", "string"]` on both schemas and parses a JSON array however it
+   is quoted. **The suite cannot close this**: every test calls the function with
+   a real Python list, which is exactly the input the defect did not affect. Only
+   a model emitting the argument measures it.
+2. **Step 4d — the wrong-window fallback is still NOT TESTED.** No second ImageJ
+   window was open on the trip, so no wrong box existed to read. The re-gate
+   makes the zero-exposure probe the instrument — it reads through
+   `getCurrentImage()`, the focus-following route — and requires the *other*
+   window focused before the limb starts.
+3. **Step 6 — the export limb has never run with a correct criterion.** The first
+   trip's command counted `drawn` inside `# SKIPPED` comments, where it correctly
+   appears, and failed on correct output; the standalone exit code was not
+   captured at all. Both are fixed in the runbook and neither corrected command
+   has been run.
+
+Unchanged by this merge: 54c is **ergonomics, not a focus fix**. §"What this
+block established" still holds — restricting the metric region was not shown to
+improve focus on this field, on either box, on any trip.
+
 ## Refusals this must keep
 
 - **Stale box.** A box drawn before a camera-ROI or binning change lands
@@ -795,36 +831,35 @@ exactly what hid the missing crop guard.
 |---|---|---|---|---|---|---|---|
 | 54a | — | `design54/display-roi` | `3db1b88` | probe **is** the deliverable | **PASS** Nikon 2026-08-18 — R1–R4, R5 skipped; F1 (sign-extended ID, untested fallback) and F2 (prefer MM's DisplayWindow route) folded into §3a | n/a — design-only | **done** — §3a |
 | 54b | — | `design54/display-roi` | `9505d01` | `f2ffd26` + review `e144759` | **PASS on three Nikon trips** (2026-08-18, 2026-08-19 ×2). Dilution hypothesis **not supported** on two independent boxes | `3be1037` 2026-08-19 | **done** |
-| 54c | 54a | `design54/drawn-region` | `edfaa10` | `2c28c12` + coordinator fixes `f02c316`, `42e08b8`; runbook pins `42e08b8` | **Nikon 2026-08-19 — reader PASS, three refusals PASS; Step 3 FAILED (schema), 4d NOT TESTED.** Re-gate owed | | | *(`region="drawn"` — assigned 2026-08-19. Review found one defect: 54c moved `snap_and_analyze`'s validation ahead of the exposure but also changed its reference from the returned array to `core.get_image_width/height`, so a box could be checked against one frame and cropped on another — measured reporting a 40×40 box while metering 24×24 pixels. Fixed in `f02c316`; the snap path now checks against both frames.)*
+| 54c | 54a | `design54/drawn-region` | `edfaa10` | `2c28c12` + coordinator fixes `f02c316`, `42e08b8`; runbook pins `42e08b8` | **Nikon 2026-08-19 — reader PASS, three refusals PASS; Step 3 FAILED (schema, fixed in `42e08b8`), 4d NOT TESTED, Step 6 criterion wrong.** Merged 2026-08-22 **without the re-gate**, by operator decision — §"Owed rig evidence" names the three limbs still owed | `MERGECOMMIT` 2026-08-22 | **merged, evidence owed** | *(`region="drawn"` — assigned 2026-08-19. Review found one defect: 54c moved `snap_and_analyze`'s validation ahead of the exposure but also changed its reference from the returned array to `core.get_image_width/height`, so a box could be checked against one frame and cropped on another — measured reporting a 40×40 box while metering 24×24 pixels. Fixed in `f02c316`; the snap path now checks against both frames.)*
 | 54d | 54b gate | `design54/display-roi` | `9d1becf` | `cd72548`+`381589e`, review `c0f6323`+`5ed5fef` | **PASS Nikon 2026-08-19 (2nd trip)** — 32×32 sensor scored 0.411, **2.7× over the old 0.15 constant**, and refused; emitted script refused identically | `3be1037` 2026-08-19 | **done** |
 | 54e | 54bd gate | `design54/display-roi` | `e4863af` | `9d4a37e` + review `2cdb336`, flake fix `1dce909` | **PASS Nikon 2026-08-19** — max requested-vs-measured Z 0.050 µm; reason prose agrees with `final_z_um` on the rig. Mid-move hypothesis **not supported** | `3be1037` 2026-08-19 | **done** |
 
 ## Resuming this block cold
 
-Everything needed is on `origin/design54/drawn-region`. **This block is not in
-`design/35`** — it owns its checklist above.
+Everything needed is on `main`. **This block is not in `design/35`** — it owns
+its checklist above.
 
-State as of 2026-08-19, end of day:
+State as of 2026-08-22:
 
-- **54a, 54b, 54d and 54e passed their gates and are merged** — `3be1037` for the
-  code, `edfaa10` for the closeout and the post-merge design gate. `origin/main`
-  carries both; `design54/display-roi` is deleted.
-- **54c is implemented, gated once, and awaiting a re-gate.** Branch
-  `origin/design54/drawn-region`, tip `6c706eb`, started from `edfaa10`. Nothing
-  is uncommitted or unpushed; no worktrees are open. Scoped as **ergonomics**
-  per §"Decision" — it makes 54b's capability cheaper to reach and is not a
-  focus fix.
-- **What the 2026-08-19 gate settled and what it did not** is §"54c gate results"
-  above. The reader passed on the rig; **Step 3 failed** on a schema the model
-  would not emit, fixed in `42e08b8`, and **Step 4d produced no evidence**.
-- **The re-gate is short**: Step 3, Step 4d, and a Step 6 re-export. Every other
-  limb already has its evidence and does not need re-running. The runbook is
-  `design/54-block54c-rig-gate.md` **on this branch**, pinned to `42e08b8`.
-- Suite at `6c706eb`: **1945 passed, 99 skipped** (macOS). Reference points:
-  1921/99 at `edfaa10`, 1936/99 at `f02c316`. On Windows the pass/skip split
-  differs and the **collected** total is what must agree — 2035 at `f02c316`,
-  measured on the Nikon.
-- Rig evidence from the first trip is in `54c-nikon/` in the evidence archive:
+- **All five blocks are merged and every branch is deleted.** 54a, 54b, 54d and
+  54e passed their gates — `3be1037` for the code, `edfaa10` for the closeout and
+  the post-merge design gate. **54c merged 2026-08-22 without its re-gate**, by
+  operator decision.
+- **54c owes three limbs of rig evidence** — Step 3, Step 4d and Step 6. They are
+  named, with why each is unmeasurable off-rig, in §"Owed rig evidence" above.
+  Nothing there is a known defect.
+- **The runbook came to `main` with the merge**: `design/54-block54c-rig-gate.md`,
+  pinned to `42e08b8`. Re-pin Step 0 before running it.
+- Scoped as **ergonomics** per §"Decision" — `region="drawn"` makes 54b's
+  capability cheaper to reach and is not a focus fix.
+- Suite at the merge: **1952 passed, 99 skipped** (macOS). Reference points:
+  1921/99 at `edfaa10`, 1936/99 at `f02c316`, 1945/99 at `6c706eb`. On Windows
+  the pass/skip split differs and the **collected** total is what must agree —
+  2035 at `f02c316`, measured on the Nikon. **Five `tests/test_agent.py` failures
+  arrived on `main` from the agent-prompt edits in `03f7098`..`5c4b858` and are
+  not this block's**; they were already red before the merge.
+- Rig evidence from the one 54c trip is in `54c-nikon/` in the evidence archive:
   history JSONL, both probe runs, the emitted script and its standalone output.
 
 What this block established, and what it did not:

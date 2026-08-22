@@ -2,7 +2,15 @@
 
 Implementation ancestor: `42e08b8`
 
-Run every step on the **Nikon**, from this branch, on a brightfield field whose
+> **This is a re-gate, and it is owed.** 54c merged to `main` on 2026-08-22
+> *without* it, by operator decision. The 2026-08-19 trip passed the reader and
+> three of the four refusals; **Steps 3, 4d and 6 have no valid evidence** and are
+> the only steps that need running — see §"Owed rig evidence" in
+> `design/54-the-drawn-box-is-not-the-camera-roi.md`. Run Step 0 first and re-pin
+> it to whatever `main` is at the time; the code now lives on `main`, not on a
+> branch. Do not re-run the other steps for the sake of it.
+
+Run every step on the **Nikon**, from `main`, on a brightfield field whose
 sharp structure is a small fraction of the frame. PowerShell, from the checkout.
 
 Save every `.txt` this produces, the emitted script, and the complete Microclaw
@@ -32,15 +40,27 @@ Three rig facts that shape the run:
 git merge-base --is-ancestor 42e08b8 HEAD
 Write-Host "implementation ancestor exit code (expected 0):" $LASTEXITCODE
 python -m pytest -q 2>&1 | Out-File -Encoding utf8 block54c-pytest.txt
-Write-Host "pytest exit code (expected 0):" $LASTEXITCODE
+Write-Host "pytest exit code:" $LASTEXITCODE
 Get-Content block54c-pytest.txt | Select-String -Pattern "passed|failed|error"
 ```
 
-Expected: both printed exit codes **0**, and a summary line reading **`1945
-passed, 99 skipped`** (macOS reference at `f02c316`; Windows skips more, so the
-skip count may differ). **The number to look at is `failed`. Any nonzero failure
-count stops the gate** — the last trip ran with a red suite because its Step 0
-emphasised the collected total.
+Expected: the ancestor check prints **0**, and a summary line reading **`1952
+passed, 99 skipped`** (macOS reference at the 2026-08-22 merge; Windows skips
+more, so the skip count may differ).
+
+**The number to look at is `failed`, and at the merge it was not zero.** Five
+`tests/test_agent.py` failures came to `main` with the agent-prompt edits in
+`03f7098`..`5c4b858` — prompt text changed and the assertions did not follow.
+They are unrelated to 54c. Either fix them before this trip, or confirm the
+failure list is **exactly** those five:
+
+```powershell
+Get-Content block54c-pytest.txt | Select-String -Pattern "^FAILED"
+```
+
+**Any failure outside `tests/test_agent.py`, or a sixth failure, stops the
+gate** — an earlier trip ran with a red suite because its Step 0 emphasised the
+collected total instead of the failure line.
 
 ## Step 1 — draw a box, and confirm the bridge can read it
 
