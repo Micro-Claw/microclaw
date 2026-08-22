@@ -634,7 +634,7 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             f"{autofocus.PROPERTY_READ_MIN_STABLE_S!r}\n",
         ])
         for fn in (
-            autofocus.longest_true_run, autofocus._band_admit,
+            autofocus.longest_true_run, autofocus._strings, autofocus._band_admit,
             autofocus._stable_read, autofocus.image_probe,
             autofocus.property_probe,
             autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,

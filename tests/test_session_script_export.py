@@ -355,13 +355,19 @@ def test_emitted_autofocus_settles_delayed_stage_and_prints_envelope(
 def test_emitted_property_probe_defines_and_drives_every_helper(
     tmp_path, monkeypatch, capsys
 ):
+    class StrVector:
+        """Bridge-shaped string vector: deliberately not Python-iterable."""
+        def __init__(self, values): self._values = list(values)
+        def size(self): return len(self._values)
+        def get(self, index): return self._values[index]
+
     spec = {"device": "lock", "property": "status",
             "in_focus_values": ["in"]}
     _, _, source = export(tmp_path, [call("run_autofocus", {
         "z_range_um": 4, "z_step_um": 1, "method": "sweep",
         "settle_ms": 30, "probe": spec,
     })])
-    for name in ("FocusProbe", "image_probe", "property_probe",
+    for name in ("FocusProbe", "image_probe", "property_probe", "_strings",
                  "longest_true_run", "_band_admit", "_stable_read"):
         assert f"{'class' if name == 'FocusProbe' else 'def'} {name}" in source
     assert "MIN_BAND_PLANES = 3" in source
@@ -377,7 +383,7 @@ def test_emitted_property_probe_defines_and_drives_every_helper(
         def device_busy(self, _device): return False
         def wait_for_device(self, _device): pass
         def get_allowed_property_values(self, _device, _prop):
-            return ["out", "in"]
+            return StrVector(["out", "in"])
         def get_property(self, _device, _prop):
             return "in" if 50.0 <= self.position <= 52.0 else "out"
 

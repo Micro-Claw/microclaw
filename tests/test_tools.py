@@ -55,6 +55,19 @@ from microclaw.tools import (
 )
 
 
+class StrVector:
+    """Bridge-shaped string vector: deliberately not Python-iterable."""
+
+    def __init__(self, values):
+        self._values = list(values)
+
+    def size(self):
+        return len(self._values)
+
+    def get(self, index):
+        return self._values[index]
+
+
 class TestLiveView:
     def test_start_live_view(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.studio.live().is_live_mode_on.return_value = True
@@ -1436,7 +1449,7 @@ class TestRunAutofocus:
         mock_ctrl.core.get_position.side_effect = lambda *_args: position[0]
         mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
         mock_ctrl.core.device_busy.return_value = False
-        mock_ctrl.core.get_allowed_property_values.return_value = ["out", "in"]
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector(["out", "in"])
         mock_ctrl.core.get_property.side_effect = lambda *_args: (
             "in" if 50.0 <= position[0] <= 52.0 else "out"
         )
@@ -1473,12 +1486,11 @@ class TestRunAutofocus:
     @pytest.mark.parametrize("allowed, values, message", [
         (["out", "in"], None, "Name which"),
         (["out", "in"], ["typo"], "never reports"),
-        ([], ["in"], "enumerates no values"),
     ])
     def test_property_probe_value_errors_are_tool_payloads_before_motion(
         self, mock_ctrl, unconstrained_guard, allowed, values, message
     ):
-        mock_ctrl.core.get_allowed_property_values.return_value = allowed
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector(allowed)
         spec = {"device": "lock", "property": "status"}
         if values is not None:
             spec["in_focus_values"] = values

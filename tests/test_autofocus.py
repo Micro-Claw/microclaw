@@ -16,6 +16,19 @@ from microclaw.autofocus import (
 )
 
 
+class StrVector:
+    """Bridge-shaped string vector: deliberately not Python-iterable."""
+
+    def __init__(self, values):
+        self._values = list(values)
+
+    def size(self):
+        return len(self._values)
+
+    def get(self, index):
+        return self._values[index]
+
+
 def test_image_probe_refactor_characterizes_whole_autofocus_result(monkeypatch):
     """Main's plane choice is pinned; only P1's refusal prose may change."""
     ctrl = MagicMock()
@@ -60,6 +73,16 @@ def test_band_admit_refuses_each_invalid_band(readings, expected):
         readings, {"in"}, 1.0, 0.0, len(readings) - 1.0
     )
     assert expected in reason
+
+
+def test_band_admit_no_plane_lists_distinct_observed_values():
+    reason = autofocus._band_admit(
+        ["Out of focus search range", "Within range of focus search"],
+        {"Within focus search range"}, 5.0, 0.0, 5.0,
+    )
+    assert "observed" in reason
+    assert "Out of focus search range" in reason
+    assert "Within range of focus search" in reason
 
 
 def test_band_admit_calls_identical_out_of_range_reading_constant():
@@ -107,7 +130,8 @@ def test_time_lagging_property_read_waits_for_current_plane(monkeypatch):
             self.moved_at = clock[0]
         def wait_for_device(self, _device): pass
         def device_busy(self, _device): return False
-        def get_allowed_property_values(self, _device, _prop): return ["out", "in"]
+        def get_allowed_property_values(self, _device, _prop):
+            return StrVector(["out", "in"])
         def get_property(self, _device, _prop):
             observed = (self.previous_position
                         if clock[0] - self.moved_at < 0.2 else self.position)
@@ -123,6 +147,20 @@ def test_time_lagging_property_read_waits_for_current_plane(monkeypatch):
     assert result.converged is True
     assert result.coarse.metric_values == ["out", "in", "in", "in", "out"]
     assert result.coarse.unsettled_indices == []
+
+
+def test_in_focus_values_declare_non_enumerating_property_categorical():
+    class Core:
+        def get_allowed_property_values(self, _device, _prop):
+            return StrVector([])
+        def get_property(self, _device, _prop):
+            return "Within range of focus search"
+
+    probe = autofocus.property_probe(
+        Core(), "TIPFSStatus", "Status", ["Within range of focus search"]
+    )
+    assert probe.in_focus_values == frozenset({"Within range of focus search"})
+    assert probe.exposures_per_plane == 0
 
 
 def test_band_touching_either_window_edge_is_not_bracketed():

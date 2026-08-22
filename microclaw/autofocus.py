@@ -83,6 +83,13 @@ def longest_true_run(flags) -> tuple[int, int]:
     return best_start, best_length
 
 
+def _strings(values) -> list[str]:
+    """Read either a bridge StrVector or an ordinary Python iterable."""
+    if hasattr(values, "size") and hasattr(values, "get"):
+        return [str(values.get(index)) for index in range(values.size())]
+    return [str(value) for value in values]
+
+
 def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
     flags = [reading in in_focus_values for reading in readings]
     start, length = longest_true_run(flags)
@@ -95,7 +102,8 @@ def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
         return (
             f"No plane between {lo_um} and {hi_um} um read one of "
             f"{sorted(in_focus_values)} ({len(readings)} planes, {step_um} um "
-            "step). The focus is outside this window, or the step is coarser "
+            f"step); observed {sorted(set(readings))}. The focus is outside "
+            "this window, or the step is coarser "
             "than the lock's capture range. This sweep costs no exposures — "
             "widen it or halve the step."
         )
@@ -175,20 +183,21 @@ def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
 def property_probe(core, device, prop, in_focus_values=None, *,
                    step_um=1.0, lo_um=0.0, hi_um=0.0,
                    dwell_s=0.05) -> FocusProbe:
-    allowed = [str(value) for value in core.get_allowed_property_values(device, prop)]
+    allowed = _strings(core.get_allowed_property_values(device, prop))
     values = [str(value) for value in (in_focus_values or [])]
-    if allowed:
-        if not values:
-            raise ValueError(
-                f"{device}.{prop} reports one of {sorted(allowed)}. Name which "
-                "of those mean in-focus (in_focus_values)."
-            )
-        unknown = sorted(set(values) - set(allowed))
-        if unknown:
-            raise ValueError(
-                f"{device}.{prop} never reports {unknown}; it reports one of "
-                f"{sorted(allowed)}."
-            )
+    if allowed and not values:
+        raise ValueError(
+            f"{device}.{prop} reports one of {sorted(allowed)}. Name which "
+            "of those mean in-focus (in_focus_values)."
+        )
+    if values:
+        if allowed:
+            unknown = sorted(set(values) - set(allowed))
+            if unknown:
+                raise ValueError(
+                    f"{device}.{prop} never reports {unknown}; it reports one of "
+                    f"{sorted(allowed)}."
+                )
         admitted = frozenset(values)
         def read():
             return _stable_read(core, device, prop, dwell_s)
@@ -204,11 +213,6 @@ def property_probe(core, device, prop, in_focus_values=None, *,
             exposures_per_plane=0,
             describe=f"centre of {device}.{prop} in-range band",
             in_focus_values=admitted,
-        )
-    if values:
-        raise ValueError(
-            f"{device}.{prop} enumerates no values, so it is read as a number "
-            "and maximised; in_focus_values does not apply."
         )
     def read_number():
         return float(core.get_property(device, prop))

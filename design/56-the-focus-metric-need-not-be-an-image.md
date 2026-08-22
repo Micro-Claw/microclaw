@@ -74,6 +74,7 @@ not holding. The complete observed value set:
 | `Dichroic mirror not inserted` | PFS blind; first read of the session |
 | `Out of focus search range` | every one of the eight search planes |
 | `Within range of focus search` | lines 225, 241 — lock dropped after a tile survey, Z parked at 2375.4; re-arming immediately gave `Locked in focus` |
+| `Focus lock failed` | Nikon session 2026-08-22 |
 | `Focusing` | transient, ~1 s after `State=On` |
 | `Locked in focus` | held |
 
@@ -285,35 +286,31 @@ best focus.** They coincide only if the range is symmetric about focus, and the
 session measured that it is not quite: locked Z ~2373.7, best offset 165.4 out
 of a 0–1000 range. This call finds range; the offset finds focus.
 
-### 3. `property_probe` asks the device, not the model, what kind of reading it is
+### 3. `in_focus_values` declares a categorical reading
 
 ```python
 def property_probe(core, device, prop, in_focus_values=None) -> FocusProbe:
     allowed = _strings(core.get_allowed_property_values(device, prop))
-    if allowed:                                    # the device enumerates
-        if not in_focus_values:
-            raise ValueError(
-                f"{device}.{prop} reports one of {sorted(allowed)}. Name which "
-                f"of those mean in-focus (in_focus_values)."
-            )
-        unknown = sorted(set(in_focus_values) - set(allowed))
+    if allowed and not in_focus_values:
+        raise ValueError(
+            f"{device}.{prop} reports one of {sorted(allowed)}. Name which "
+            f"of those mean in-focus (in_focus_values)."
+        )
+    if in_focus_values:
+        unknown = sorted(set(in_focus_values) - set(allowed)) if allowed else []
         if unknown:
             raise ValueError(
                 f"{device}.{prop} never reports {unknown}; it reports one of "
                 f"{sorted(allowed)}."
             )
-    elif in_focus_values:
-        raise ValueError(
-            f"{device}.{prop} enumerates no values, so it is read as a number "
-            f"and maximised; in_focus_values does not apply."
-        )
     ...
 ```
 
-A mistyped `in_focus_values` would otherwise produce zero in-range planes —
-which reads **identically to "the focus is not in this window"**, and the
-documented response to that is to search higher, toward a loaded oil coverslip.
-A string typo must fail before the first move.
+`in_focus_values` is the caller's declaration that the property is categorical.
+A non-empty device enumeration validates that declaration before the first move;
+an empty enumeration does not turn a string-valued status into a numeric probe.
+When enumeration is absent, the no-plane refusal lists the distinct observed
+values so a mistyped declaration is self-correcting after one sweep.
 
 **And the sweep must refuse on a precondition reading before it starts.** The
 session's very first `Status` was `Dichroic mirror not inserted`: PFS was blind.
