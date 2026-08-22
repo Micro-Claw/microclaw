@@ -1397,6 +1397,32 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_property_probe_refuses_default_coarse_then_fine_before_motion(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 90.0, 1.0,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"]},
+        )
+        assert "method='sweep'" in result["error"]
+        assert "spends no exposures" in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
+    @pytest.mark.parametrize("region", [[10, 10, 64, 64], "drawn"])
+    def test_property_probe_refuses_metric_region_instead_of_ignoring_it(
+        self, mock_ctrl, unconstrained_guard, region
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            region=region,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"]},
+        )
+        assert "property" in result["error"] and "region does not apply" in result["error"]
+        mock_ctrl.drawn_region.assert_not_called()
+        mock_ctrl.core.set_position.assert_not_called()
+
     def test_quoted_json_probe_is_schema_reachable_and_runs_zero_exposure_sweep(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
@@ -1427,8 +1453,22 @@ class TestRunAutofocus:
         assert result["coarse"]["in_range"] == [False, True, True, True, False]
         assert "metric_curve" not in result["coarse"]
         assert result["exposures_spent"] == 0
+        assert result["property_dwell_ms"] >= 200
         assert "suppressed" in result["thumbnail_suppressed"]
         mock_ctrl.core.snap_image.assert_not_called()
+
+    def test_image_exposures_spent_includes_final_metric_thumbnail_snap(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 10.0, 1.0, return_thumbnail=True
+        )
+        payload = json.loads(result[0]["text"])
+        swept = len(_FAKE_AF_RESULT.coarse.z_positions) + len(
+            _FAKE_AF_RESULT.fine.z_positions
+        )
+        assert payload["exposures_spent"] == swept + 1
 
     @pytest.mark.parametrize("allowed, values, message", [
         (["out", "in"], None, "Name which"),
@@ -1471,6 +1511,7 @@ class TestRunAutofocus:
 
         mock_ctrl.drawn_region.assert_called_once_with()
         assert result["region"] == [2, 3, 8, 4]
+        assert result["criterion"] == "max tenengrad over [2, 3, 8, 4]"
         assert counts and set(counts) == {32}
 
     @pytest.mark.parametrize(

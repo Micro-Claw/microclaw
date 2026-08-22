@@ -64,6 +64,8 @@ class AutofocusResult:
 MIN_CONTRAST = 0.15
 N_REF = 1024 * 1024
 MIN_BAND_PLANES = 3
+PROPERTY_PROBE_MIN_DWELL_S = 0.5
+PROPERTY_READ_MIN_STABLE_S = 0.1
 
 
 def longest_true_run(flags) -> tuple[int, int]:
@@ -109,22 +111,31 @@ def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
             f"The in-range planes are not contiguous ({sum(flags)} in range, "
             f"longest run {length}). Separated bands are not one focal plane. "
         )
+    if start == 0 or start + length == len(flags):
+        return (
+            "The in-range band touches a sweep boundary, so the band is not "
+            "bracketed and its centre is not known. Widen the window and retry."
+        )
     return None
 
 
-def _stable_read(core, device, prop, dwell_s, samples=3, poll_s=None):
-    """Return (last value, settled) after consecutive equal property reads."""
+def _stable_read(core, device, prop, dwell_s, samples=3, poll_s=None,
+                 min_stable_s=PROPERTY_READ_MIN_STABLE_S):
+    """Return a value only after dwell plus a time-spanning stable sample run."""
     if poll_s is None:
         poll_s = STAGE_MOVE_POLL_S
     dwell_s = max(float(dwell_s), 0.0)
-    # A camera-tuned 50 ms dwell with the stage poll's 50 ms cadence would
-    # permit only two reads. Distribute the requested samples within the
-    # caller's dwell while retaining the stage cadence as an upper bound.
-    poll_s = min(float(poll_s), dwell_s / samples) if dwell_s else 0.0
-    deadline = time.monotonic() + dwell_s
+    if dwell_s:
+        time.sleep(dwell_s)
+    poll_s = min(float(poll_s), min_stable_s / max(samples - 1, 1))
+    deadline = time.monotonic() + max(min_stable_s * 2, poll_s * samples)
     last = str(core.get_property(device, prop))
+    first_equal_at = time.monotonic()
     count = 1
-    while count < samples and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if count >= samples and now - first_equal_at >= min_stable_s:
+            return last, True
         if poll_s > 0:
             time.sleep(min(poll_s, max(deadline - time.monotonic(), 0.0)))
         value = str(core.get_property(device, prop))
@@ -132,11 +143,11 @@ def _stable_read(core, device, prop, dwell_s, samples=3, poll_s=None):
             count += 1
         else:
             last, count = value, 1
-    return last, count >= samples
+            first_equal_at = time.monotonic()
+    return last, False
 
 
 def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
-    del region
     def read():
         return metric_fn(snap_to_numpy(ctrl))
     def choose(readings):
@@ -152,7 +163,7 @@ def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
     return FocusProbe(
         read=read, choose=choose, admit=admit,
         exposures_per_plane=1,
-        describe="max Tenengrad image sharpness",
+        describe=f"max tenengrad over {region or 'full frame'}",
     )
 
 
@@ -339,14 +350,22 @@ def _flat_reason(
     # restored_z is the MEASURED settled position, never the requested one: this
     # string is the part a microscopist actually reads, and it must not disagree
     # with final_z_um in the same result.
-    return (
+    return _refusal(
         f"{which} focus metric is flat (contrast {contrast:.2f} < "
-        f"{min_contrast:.2f}) — the sweep saw noise, not a focus peak. Z was NOT "
-        f"moved (restored to {restored_z:.3f} µm). The reported best_z_um is "
+        f"{min_contrast:.2f}) — the sweep saw noise, not a focus peak.",
+        restored_z,
+        " The reported best_z_um is "
         "the argmax of a curve that failed its gate, not a focus estimate to "
         "move to. Increase signal (laser power / "
         f"exposure), restrict the metric region around structure when the field "
-        f"is mostly background, or focus manually."
+        f"is mostly background, or focus manually.",
+    )
+
+
+def _refusal(prefix: str, restored_z: float, suffix: str = "") -> str:
+    """Compose every autofocus refusal with one measured-restore sentence."""
+    return (
+        f"{prefix} Z was NOT moved (restored to {restored_z:.3f} µm).{suffix}"
     )
 
 
@@ -357,15 +376,16 @@ def _edge_reason(which: str, sweep: SweepResult, restored_z: float) -> str:
     come from a U-shaped or noise-dominated curve. It is insufficient evidence
     for convergence in every case, so do not diagnose a specific cause here.
     """
-    return (
+    return _refusal(
         f"{which} focus peak is at the edge of the searched Z range "
         f"(best {sweep.best_z_um:.3f} µm sits at a sweep boundary), so there is "
         f"no interior focus maximum and this is NOT convergence. The reported "
         "best_z_um is the argmax of a curve that failed its gate, not a focus "
-        "estimate to move to. Z was NOT "
-        f"moved (restored to {restored_z:.3f} µm). Focus may be outside the window, "
+        "estimate to move to.",
+        restored_z,
+        " Focus may be outside the window, "
         f"or the curve may be noise-dominated/non-unimodal; inspect the curve "
-        f"and signal before widening or retrying."
+        f"and signal before widening or retrying.",
     )
 
 
@@ -431,8 +451,10 @@ def coarse_then_fine_autofocus(
             reason=(_flat_reason("Coarse", coarse_contrast, min_contrast,
                                  float(restored["measured_um"]))
                     if active_probe.exposures_per_plane else
-                    f"Coarse {cause} Z was NOT moved (restored to "
-                    f"{float(restored['measured_um']):.3f} µm)."),
+                    _refusal(
+                        f"Coarse {cause[0].lower() + cause[1:]}",
+                        float(restored["measured_um"]),
+                    )),
         )
 
     lo = max(coarse.best_z_um - coarse_step_um, lo_bound)
@@ -463,8 +485,10 @@ def coarse_then_fine_autofocus(
             reason=(_flat_reason("Fine", fine_contrast, min_contrast,
                                  float(restored["measured_um"]))
                     if active_probe.exposures_per_plane else
-                    f"Fine {cause} Z was NOT moved (restored to "
-                    f"{float(restored['measured_um']):.3f} µm)."),
+                    _refusal(
+                        f"Fine {cause[0].lower() + cause[1:]}",
+                        float(restored["measured_um"]),
+                    )),
         )
 
     if not fine.peak_interior:
@@ -528,8 +552,10 @@ def single_sweep_autofocus(
             reason=(_flat_reason("Sweep", contrast, min_contrast,
                                  float(restored["measured_um"]))
                     if active_probe.exposures_per_plane else
-                    f"Sweep {cause} Z was NOT moved (restored to "
-                    f"{float(restored['measured_um']):.3f} µm)."),
+                    _refusal(
+                        f"Sweep {cause[0].lower() + cause[1:]}",
+                        float(restored["measured_um"]),
+                    )),
         )
     if not sweep.peak_interior:
         restored = _restore(ctrl, entry_z)

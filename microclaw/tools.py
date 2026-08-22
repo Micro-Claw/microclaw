@@ -26,6 +26,7 @@ from ndstorage import Dataset
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
+    PROPERTY_PROBE_MIN_DWELL_S,
     AutofocusResult,
     FocusProbe,
     coarse_then_fine_plane_count,
@@ -184,11 +185,15 @@ def _emit_autofocus(params: RecordedParams) -> str:
             "_autofocus_entry_z = float(core.get_position())",
             f"_autofocus_lo = _autofocus_entry_z - {z_range!r} / 2",
             f"_autofocus_hi = _autofocus_entry_z + {z_range!r} / 2",
-            f"_autofocus_criterion = {'centre of ' + device + '.' + prop + ' in-range band'!r}",
             f"_autofocus_in_focus_values = {values!r}",
+            "_autofocus_probe = property_probe(",
+            f"    core, {device!r}, {prop!r}, {values!r},",
+            f"    step_um={z_step!r}, lo_um=_autofocus_lo, hi_um=_autofocus_hi,",
+            f"    dwell_s=max({settle!r} / 1000.0, PROPERTY_PROBE_MIN_DWELL_S),",
+            ")",
             "print('AUTOFOCUS ENVELOPE')",
             "print(f'Sweep Z: {_autofocus_lo} to {_autofocus_hi} um; '",
-            f"      f'step: {z_step!r} um; criterion: {{_autofocus_criterion}}; '",
+            f"      f'step: {z_step!r} um; criterion: {{_autofocus_probe.describe}}; '",
             "      f'in_focus_values: {_autofocus_in_focus_values!r}')",
             "autofocus_result = _run_autofocus_passes("
             f"mm, {z_range!r}, {z_step!r}, {method!r}, {settle!r}, None, "
@@ -623,6 +628,10 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             f"MIN_CONTRAST = {autofocus.MIN_CONTRAST!r}\n",
             f"N_REF = {autofocus.N_REF!r}\n",
             f"MIN_BAND_PLANES = {autofocus.MIN_BAND_PLANES!r}\n",
+            "PROPERTY_PROBE_MIN_DWELL_S = "
+            f"{autofocus.PROPERTY_PROBE_MIN_DWELL_S!r}\n",
+            "PROPERTY_READ_MIN_STABLE_S = "
+            f"{autofocus.PROPERTY_READ_MIN_STABLE_S!r}\n",
         ])
         for fn in (
             autofocus.longest_true_run, autofocus._band_admit,
@@ -631,6 +640,7 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
             autofocus.curve_contrast, autofocus.contrast_threshold,
             autofocus.sweep_autofocus, autofocus._restore,
+            autofocus._refusal,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,
             autofocus.single_sweep_autofocus,
@@ -4348,8 +4358,10 @@ def _run_autofocus_passes(
             step_um=z_step_um,
             lo_um=entry_z - z_range_um / 2,
             hi_um=entry_z + z_range_um / 2,
-            dwell_s=settle_ms / 1000.0,
+            dwell_s=max(settle_ms / 1000.0, PROPERTY_PROBE_MIN_DWELL_S),
         )
+    else:
+        probe = image_probe(ctrl, metric_fn, region, min_contrast)
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
             ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
@@ -4441,6 +4453,21 @@ def run_autofocus(
                                    not values or
                                    any(not isinstance(v, str) for v in values)):
             return {"error": "Malformed probe: in_focus_values must be a non-empty array of strings."}
+        if method == "coarse_then_fine":
+            return {
+                "error": (
+                    "A property probe requires method='sweep'. The coarse pass "
+                    "exists to save exposures, and a property read spends no "
+                    "exposures; its coarser step can skip the capture band."
+                )
+            }
+        if region is not None:
+            return {
+                "error": (
+                    "A probe reads a device property, so a focus-metric region "
+                    "does not apply. Omit region or omit probe."
+                )
+            }
     if region == "drawn":
         try:
             region = ctrl.drawn_region()
@@ -4494,7 +4521,7 @@ def run_autofocus(
                 probe.get("in_focus_values"), step_um=z_step_um,
                 lo_um=entry_z - z_range_um / 2,
                 hi_um=entry_z + z_range_um / 2,
-                dwell_s=settle_ms / 1000.0,
+                dwell_s=max(settle_ms / 1000.0, PROPERTY_PROBE_MIN_DWELL_S),
             )
         except ValueError as exc:
             return {"error": str(exc)}
@@ -4520,14 +4547,20 @@ def run_autofocus(
             else None
         ),
     }
-    criterion = (active_probe.describe if active_probe else
-                 f"max Tenengrad image sharpness over {validated or 'full frame'}")
+    if active_probe is None:
+        active_probe = image_probe(
+            ctrl, tenengrad, validated, applied_min_contrast or MIN_CONTRAST
+        )
+    criterion = active_probe.describe
     exposures_per_plane = active_probe.exposures_per_plane if active_probe else 1
     payload["criterion"] = criterion
     payload["exposures_spent"] = exposures_per_plane * sum(
         len(s.z_positions) for s in (result.coarse, result.fine) if s is not None
     )
     if exposures_per_plane == 0:
+        payload["property_dwell_ms"] = round(
+            max(settle_ms / 1000.0, PROPERTY_PROBE_MIN_DWELL_S) * 1000
+        )
         payload["convergence_means"] = "criterion satisfied; not proof the sample is in focus"
         payload["thumbnail_suppressed"] = (
             "Property-probe autofocus spends zero exposures; focus_metric_at_final "
@@ -4552,6 +4585,8 @@ def run_autofocus(
 
     if not return_thumbnail or exposures_per_plane == 0:
         return payload
+
+    payload["exposures_spent"] += 1
 
     with _pause_live(ctrl, restore=False):
         image = snap_to_numpy(ctrl)

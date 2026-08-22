@@ -68,40 +68,52 @@ def test_band_admit_calls_identical_out_of_range_reading_constant():
     assert "No plane" not in reason
 
 
-def test_lagging_property_read_is_unsettled_and_sweep_cannot_converge(monkeypatch):
+def test_time_lagging_property_read_waits_for_current_plane(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(autofocus.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        autofocus.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+
     class LaggingCore:
         def __init__(self):
-            self.position = 50.0
-            self.previous = "out"
+            self.position = 51.0
+            self.previous_position = 51.0
+            self.moved_at = 0.0
         def get_focus_device(self): return "Z"
         def get_position(self, _device=None): return self.position
         def set_position(self, z):
+            self.previous_position = self.position
             self.position = float(z)
+            self.moved_at = clock[0]
         def wait_for_device(self, _device): pass
         def device_busy(self, _device): return False
+        def get_allowed_property_values(self, _device, _prop): return ["out", "in"]
         def get_property(self, _device, _prop):
-            # Never settles: the adapter alternates its previous-plane state
-            # with the current evaluation throughout this plane's dwell.
-            self.previous = "in" if self.previous == "out" else "out"
-            return self.previous
+            observed = (self.previous_position
+                        if clock[0] - self.moved_at < 0.2 else self.position)
+            return "in" if 50.0 <= observed <= 52.0 else "out"
 
     core = LaggingCore()
     ctrl = MagicMock(core=core)
-    probe = autofocus.FocusProbe(
-        read=lambda: autofocus._stable_read(
-            core, "lock", "status", 0.002, samples=3, poll_s=0
-        ),
-        choose=lambda values: 1,
-        admit=lambda values: None,
-        exposures_per_plane=0,
-        describe="lagging status",
-        in_focus_values=frozenset({"in"}),
+    probe = autofocus.property_probe(
+        core, "lock", "status", ["in"], step_um=1.0,
+        lo_um=49.0, hi_um=53.0, dwell_s=0.2,
     )
-    result = single_sweep_autofocus(ctrl, 2.0, 1.0, settle_ms=0, probe=probe)
-    assert result.converged is False
-    assert result.moved is False
-    assert result.coarse.unsettled_indices == [0, 1, 2]
-    assert "unsettled sweep cannot converge" in result.reason
+    result = single_sweep_autofocus(ctrl, 4.0, 1.0, settle_ms=0, probe=probe)
+    assert result.converged is True
+    assert result.coarse.metric_values == ["out", "in", "in", "in", "out"]
+    assert result.coarse.unsettled_indices == []
+
+
+def test_band_touching_either_window_edge_is_not_bracketed():
+    for readings in (["in", "in", "in", "out"],
+                     ["out", "in", "in", "in"],
+                     ["in", "in", "in", "in"]):
+        reason = autofocus._band_admit(
+            readings, {"in"}, 1.0, 0.0, len(readings) - 1.0
+        )
+        assert "not bracketed" in reason
 
 
 @pytest.fixture(autouse=True)

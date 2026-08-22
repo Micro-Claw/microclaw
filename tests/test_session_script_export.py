@@ -398,6 +398,17 @@ def test_emitted_property_probe_defines_and_drives_every_helper(
     assert "in_focus_values: ['in']" in output
 
 
+def test_emitted_numeric_property_prints_the_probe_description(tmp_path):
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep",
+        "probe": {"device": "PFS", "property": "Offset"},
+    })])
+    emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
+    assert "property_probe(" in emitted_call
+    assert "_autofocus_probe.describe" in emitted_call
+    assert "centre of PFS.Offset in-range band" not in emitted_call
+
+
 def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
     tmp_path, monkeypatch
 ):
