@@ -13,16 +13,16 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-19 close of block 56`** —
-> find it *by that heading*, not by position; it sits behind several superseded
-> notes that look just like it. It is the only section that describes the
-> repository as it is now.
+> **The live state note is `### State at the 2026-08-22 assignment of design/56
+> block 56a`** — find it *by that heading*, not by position; it sits behind
+> several superseded notes that look just like it. It is the only section that
+> describes the repository as it is now.
 >
-> **Nothing is assigned right now.** Block 56 merged 2026-08-19 (`c8f1801`) and
-> its branch and worktree are gone. What is next is a choice, not a
-> continuation — Track C is parked on an `.ilp` that does not exist, design/54 is
-> awaiting a Nikon gate, design/55 is written and not started, and the rest of
-> the open register is unscheduled. **Track A, Track B, Track D, Track E and
+> **`design/56` block 56a is assigned** (2026-08-22, branch `design56/probe`) —
+> its own doc and ledger are authoritative for it, not this file. Everything
+> else is still a choice, not a continuation — Track C is parked on an `.ilp`
+> that does not exist, design/54 is awaiting a Nikon gate, design/55 is written
+> and not started, and the rest of the open register is unscheduled. **Track A, Track B, Track D, Track E and
 > Track F are all closed** — verified 2026-08-19 against the run ledger, which
 > carries a merge commit for every one of their blocks.
 >
@@ -405,10 +405,53 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-19 close of block 56 — read this before assigning anything
+### State at the 2026-08-22 assignment of design/56 block 56a — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
+
+**`design/56` owns its own checklist and ledger**, like design/48 through
+design/55. This file does not track its blocks; it points at it. The doc is
+`design/56-the-focus-metric-need-not-be-an-image.md`, one block, **56a**.
+
+- **Assigned 2026-08-22** on branch `design56/probe`, from `main` at `3158546`.
+  Nothing merged yet, no rig gate run yet.
+- **Baseline, coordinator-measured on `3158546`: 1968 passed / 99 skipped / 3
+  warnings.** `main` is green again — the five `tests/test_agent.py` failures
+  the block-56 note below had to gate around were fixed by `d116298`. Do not
+  carry that workaround forward.
+- **`design/55` remains written and unstarted.** design/56's own closing note
+  asks that the two be sequenced rather than assumed conflict-free: 55 touches
+  `microclaw/tools.py`'s acquisition preamble and hook capabilities, 56a touches
+  its autofocus region. Different regions of the same files, so whichever lands
+  second rebases.
+
+**What 56a is, in one line:** `run_autofocus` gains an optional `probe` that
+reads a device property at each plane instead of the camera, so a rig with a
+hardware focus lock can find the lock's capture band at zero exposures. Two
+generic defects on `main` are preconditions of it and are worth knowing about
+independently of whether 56a ever runs:
+
+1. `run_autofocus`'s refusals hand back `best_z_um`, and on 2026-08-22 the model
+   read it out of four consecutive refusals and moved there itself — routing
+   around a fail-closed gate to the wrong plane.
+2. `get_focus_lock_state` / `set_focus_lock` are **EMU-only**. On a Nikon they
+   answer `{"engaged": None}`, which is falsy, so `run_autofocus`'s
+   armed-servo refusal has never fired on the one rig whose whole workflow is a
+   focus lock. This is the register row block 56's gate opened, now with a
+   design behind it.
+
+**`design/40`'s "lock is binary, nothing to hill-climb" is superseded** by the
+2026-08-22 Nikon session: `TIPFSStatus.Status` is a three-level ordinal and
+`Within range of focus search` is readable while the lock is *not* holding. Do
+not quote that finding forward.
+
+### State at the 2026-08-19 close of block 56 — SUPERSEDED, kept for the round history
+
+**Not the live note.** Superseded by `### State at the 2026-08-22 assignment of
+design/56 block 56a` above, which is where a cold session starts. Everything
+below this line was true at the 2026-08-19 close and is kept as the record of
+what block 56 established.
 
 **Block 56 is MERGED (`c8f1801`) and fully closed.** Branch and worktree deleted,
 ledger row closed, design gate run. **Nothing is in flight and nothing is

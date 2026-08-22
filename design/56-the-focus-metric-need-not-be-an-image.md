@@ -593,9 +593,14 @@ supersedes.
 
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 56a | — | — | — | — | — | — |
+| 56a | `design56/probe` | `3158546` | assigned 2026-08-22 | — | — | — |
 
-Not started. `design/55` is written and unstarted and touches
+**Baseline on the start commit, coordinator-measured:** 1968 passed / 99 skipped
+/ 3 warnings. `main` is green — the five `tests/test_agent.py` failures that
+design/35's block-56 note worked around were fixed on `main` by `d116298`, so
+this block has no known-broken baseline to gate around.
+
+56a assigned. `design/55` is written and unstarted and touches
 `microclaw/tools.py` and `tests/test_session_script_export.py` in different
 regions (the acquisition preamble and hook capabilities, not autofocus);
 sequence rather than assume no conflict.
