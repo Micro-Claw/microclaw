@@ -109,7 +109,12 @@ def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
     if sum(flags) > length:
         return (
             f"The in-range planes are not contiguous ({sum(flags)} in range, "
-            f"longest run {length}). Separated bands are not one focal plane. "
+            f"longest run {length}), so this is not one focal plane. Two causes "
+            "look identical here: the window really does cross two reflecting "
+            "surfaces, or the sensor is slower than the per-plane dwell and the "
+            "stray planes are it still reporting an earlier one. Compare "
+            "property_dwell_ms against this device's own settling time, and "
+            "re-run with a larger settle_ms to tell them apart."
         )
     if start == 0 or start + length == len(flags):
         return (

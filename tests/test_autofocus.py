@@ -68,6 +68,25 @@ def test_band_admit_calls_identical_out_of_range_reading_constant():
     assert "No plane" not in reason
 
 
+def test_split_band_offers_the_lagging_sensor_cause_not_only_two_surfaces():
+    """A sweep that outruns its sensor is indistinguishable from two surfaces.
+
+    Verified against a fake whose status trails the stage: at a lag longer than
+    the per-plane dwell the stray in-range planes sit at the START of the sweep
+    and are the sensor still reporting the pre-sweep plane. The reading is
+    identical to a genuine coverslip-and-sample pair, so this refusal must not
+    assert the physical cause -- it must name both and say which measurement
+    separates them.
+    """
+    reason = autofocus._band_admit(
+        ["in", "in", "in", "out", "in", "in", "in"], {"in"}, 1.0, 0.0, 6.0
+    )
+    assert "not contiguous" in reason
+    assert "two reflecting surfaces" in reason
+    assert "property_dwell_ms" in reason and "settle_ms" in reason
+    assert not reason.endswith(" ")
+
+
 def test_time_lagging_property_read_waits_for_current_plane(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(autofocus.time, "monotonic", lambda: clock[0])
