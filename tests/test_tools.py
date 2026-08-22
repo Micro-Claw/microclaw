@@ -1498,6 +1498,41 @@ class TestRunAutofocus:
         )
         assert payload["exposures_spent"] == swept + 1
 
+    def test_early_stop_payload_never_contradicts_its_own_table(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """peak_interior must not claim "interior" about the last row read.
+
+        An early-stopped sweep stops because it found the target, so the chosen
+        plane is always the final row of the returned table. peak_interior was
+        computed against the PLANNED plane count, so the payload reported True
+        while its own z_positions said the plane sat at the end -- a field
+        disagreeing with the table beside it, which is how block 52a's defect
+        was found.
+        """
+        position = [51.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_a: position[0]
+        mock_ctrl.core.set_position.side_effect = (
+            lambda z: position.__setitem__(0, float(z))
+        )
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = []
+        mock_ctrl.core.get_property.side_effect = lambda *_a: (
+            "in" if position[0] >= 53.0 else "out"
+        )
+        monkeypatch.setattr("microclaw.autofocus.STAGE_MOVE_POLL_S", 0)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 20.0, 1.0, method="sweep",
+            settle_ms=5, return_thumbnail=False,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"]},
+        )
+        coarse = result["coarse"]
+        assert coarse["stopped_early"] is True
+        assert coarse["planes_read"] < coarse["planes_planned"]
+        assert "peak_interior" not in coarse
+        assert "peak_interior does not apply" in coarse["stopping_rule"]
+
     @pytest.mark.parametrize("allowed, values, message", [
         (["out", "in"], None, "Name which"),
         (["out", "in"], ["typo"], "never reports"),

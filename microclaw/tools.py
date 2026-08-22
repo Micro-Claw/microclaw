@@ -4402,8 +4402,19 @@ def _sweep_payload(sweep, min_contrast: float | None = None,
             round(z, 3) for z in sweep.measured_z_positions
         ],
         "best_z_um": round(sweep.best_z_um, 3),
-        "peak_interior": sweep.peak_interior,
     }
+    # peak_interior answers "is the chosen plane away from a sweep boundary",
+    # which only means anything about a curve that was swept to its end. An
+    # early-stopped sweep stops BECAUSE it found the target, so the chosen plane
+    # is always the last row of the table it returns: reporting True contradicts
+    # the table, and reporting False would read as design/28 F1's edge-peak
+    # failure. Omit it and say the stopping rule instead.
+    if getattr(sweep, "stopped_early", False):
+        payload["stopping_rule"] = (
+            "stopped at the first in-focus plane; peak_interior does not apply"
+        )
+    else:
+        payload["peak_interior"] = sweep.peak_interior
     if probe is not None and probe.exposures_per_plane == 0 and probe.in_focus_values:
         payload["readings"] = list(sweep.metric_values)
         payload["in_range"] = [value in probe.in_focus_values
