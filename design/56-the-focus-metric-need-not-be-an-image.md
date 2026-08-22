@@ -459,6 +459,75 @@ Device label, property name and value list are literals, so **no `CannotEmit`**.
 The emitted envelope print carries the window, the step, the criterion and the
 `in_focus_values` it compares against.
 
+### 8. Stop when the band is found — the sweep's job is to reach the lock, not to map it
+
+**Measured, Nikon 2026-08-22 evening** (`pfs-nikon-design56-3/`,
+`20260822_231154_352122_microclaw_history.jsonl`). The probe worked: the fourth
+sweep found the band and locked. What it cost:
+
+| sweep | planes | window | result |
+| --- | --- | --- | --- |
+| 1 | 101 | 0.4–100.4 | no band |
+| 2 | 101 | 100.7–200.7 | no band |
+| 3 | 201 | 2149.8–2349.8 | no band |
+| 4 | 201 | 2350.9–2550.9 | band **2358.9–2387.9**, converged, locked |
+
+**604 planes. About six minutes of dwell alone**, before stage settling. And the
+sweep that succeeded **read its first in-range plane at index 9 of 201** — then
+swept 192 more planes to compute a band centre it did not need.
+
+Two measurements refute assumptions in the sections above:
+
+- **The capture band is ~29 µm on this objective**, not the ~10 µm the Problem
+  section reasons from. Thirty consecutive in-range planes at 1 µm. Every
+  argument here that treats a 5 µm step as necessarily too coarse is calibrated
+  to the wrong number; the step that is "too coarse" is a property of the rig
+  and must be *measured*, never carried in `microclaw/`.
+- **The band centre is not needed.** The operator's rule: once any plane reads
+  in-range, engaging the lock pulls it to focus by itself. Corroborated in the
+  previous session, where arming PFS from 2355 drove the axis up ~20 µm and
+  locked at 2375.
+
+So the reduction §2 built — centre of the longest contiguous run — answers a
+question ("where is this band?") that is not the question a focus hand-off asks
+("is there anywhere in this window the lock can take over?").
+
+**Decision.** A categorical probe stops at the **first plane that reads
+in-focus**, leaves Z there, and reports it. `stop_when_found` turns the full
+sweep back on for the case that really does want the band mapped.
+
+```
+probe={"device": ..., "property": ..., "in_focus_values": [...],
+       "stop_when_found": true}   # default for a categorical probe
+```
+
+**What confirms a single plane, given §2's refusals no longer run.** Nothing in
+the sweep — and nothing needs to. `_stable_read` (§4) already requires the
+reading to hold across consecutive samples spanning a minimum interval, so a
+transient cannot stop the sweep; and **the lock itself is the confirmation**.
+Engaging it either reports `Locked in focus` or `Focus lock failed`, at zero
+dose, immediately. That is a better test than three more property reads.
+
+**What this gives up, stated plainly.** The non-contiguous refusal — the one
+that says two separated runs are two reflecting surfaces — cannot fire on a
+sweep that stops inside the first run. Coverslip-versus-sample discrimination
+moves back to where the operator already does it: engage, then look for signal.
+A caller who wants that discrimination sets `stop_when_found: false` and gets
+§2's whole-curve behaviour, refusals included.
+
+**Payload.** Report `stopped_early`, `planes_read` and `planes_planned`, and
+keep the plane→reading table for the planes actually read. A sweep that stops at
+plane 9 of 201 must say so; "converged" over 9 planes and over 201 are different
+claims and the payload must not blur them.
+
+**Step size is the other half of this.** The same session swept 1 µm four times
+and, asked why, answered: "I didn't have a real reason." Nothing in the schema
+connects the step to what is being looked for. With an early stop, a coarse step
+is both cheap and safe — the sweep ends as soon as it lands in the band, so the
+only cost of a step too fine is time, and the only cost of a step too coarse is
+stepping over the band. Say that in the schema, in those terms, without naming a
+number: microclaw does not know this rig's capture range.
+
 ## Two defects this session exposed, neither Nikon-specific
 
 **1. A refusal that hands back the number it refused to act on.** All four
