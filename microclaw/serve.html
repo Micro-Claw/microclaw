@@ -7,7 +7,7 @@
   the server, so this page never fetches a subresource.
 -->
 <meta charset="utf-8">
-<title>Microclaw</title>
+<title>MicroClaw</title>
 <!-- Served by `serve` from the packaged favicon.ico; 404s if this file is
      opened straight off disk, which is harmless. -->
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
@@ -106,7 +106,7 @@
 <header>
   <div class="brand">
     <span class="glyph">◉</span>
-    <h1>Microclaw</h1>
+    <h1>MicroClaw</h1>
     <span class="sub" id="sub">live session</span>
   </div>
   <div class="stats hidden" id="stats">
@@ -126,12 +126,12 @@
 <main>
   <div class="banner hidden" id="setup-banner">
     <h2>Setup mode — hardware control locked</h2>
-    <p>Record and review stage travel bounds before restarting Microclaw.</p>
+    <p>Record and review stage travel bounds before restarting MicroClaw.</p>
     <div id="setup-checklist">Loading discovered stage axes…</div>
   </div>
   <div class="banner hidden" id="pair-banner">
     <h2>Pair this browser</h2>
-    <p>Enter the one-time pairing code printed by the Microclaw server.</p>
+    <p>Enter the one-time pairing code printed by the MicroClaw server.</p>
     <div class="row">
       <input type="text" id="pair-input" autocomplete="off" spellcheck="false">
       <button id="pair-submit" type="button">Pair</button>
@@ -140,7 +140,7 @@
 
   <div class="banner hidden" id="key-banner">
     <h2 id="key-title">No Anthropic API key</h2>
-    <p id="key-help">Microclaw needs a key before it can run a turn. It is sent to this
+    <p id="key-help">MicroClaw needs a key before it can run a turn. It is sent to this
       local server only, never echoed back, and never written to
       <code>safety_config.yaml</code>.</p>
     <div class="row" id="key-form">
@@ -167,7 +167,7 @@
 
   <div id="empty">
     <div class="big">Connected to Micro-Manager</div>
-    <p>Tell Microclaw what to image. Every tool call it makes appears below with
+    <p>Tell MicroClaw what to image. Every tool call it makes appears below with
       its result, and is mirrored live in the Micro-Manager GUI.</p>
     <p class="hint">One operator at a time — a second prompt is refused while a turn runs.</p>
   </div>
@@ -190,17 +190,17 @@
     </div>
   </div>
 
-  <div id="pending" class="hidden"><span class="spin"></span><span id="pending-text">Microclaw is working…</span></div>
+  <div id="pending" class="hidden"><span class="spin"></span><span id="pending-text">MicroClaw is working…</span></div>
 </main>
 
 <form id="composer">
   <div class="row">
-    <textarea id="msg" rows="1" placeholder="Tell Microclaw what to image…"></textarea>
+    <textarea id="msg" rows="1" placeholder="Tell MicroClaw what to image…"></textarea>
     <button id="stop" type="button" class="hidden" title="Stops at the next step boundary — it cannot interrupt a tool that is already running, and it does not shutter lasers or halt the stage.">Stop after the current step</button>
     <button id="send" type="submit">Send</button>
   </div>
   <div class="composer-hint">Enter to send · Shift+Enter for a new line. This session drives real hardware.
-    Stop is not an emergency stop — use the rig's E-stop for that.</div>
+    Stop is not an emergency stop — use Micro-Manager controls for that.</div>
 </form>
 
 <script src="transcript.js"></script>
@@ -476,7 +476,7 @@
       ? "⚠ Enable illumination?" : "Confirmation required";
     $("confirm-help").textContent = ill
       ? "Approving emits light at the sample — the same authority as typing y at the console."
-      : "Microclaw wants to persist model-written content. Read it before approving; declining is safe.";
+      : "MicroClaw wants to persist model-written content. Read it before approving; declining is safe.";
     $("confirm-summary").textContent = p.summary;
     $("confirm-approve").textContent = ill ? "Enable illumination" : "Approve";
     $("confirm-session").classList.toggle("hidden", !p.grantable);
@@ -496,7 +496,7 @@
     if (id && confirmId && id !== confirmId) return;
     confirmId = null;
     $("confirm-banner").classList.add("hidden");
-    $("pending-text").textContent = "Microclaw is working…";
+    $("pending-text").textContent = "MicroClaw is working…";
   }
 
   async function answerConfirm(approve) {
@@ -604,7 +604,7 @@
 
     if (!hasKey && !editable) {
       $("key-help").textContent =
-        "Microclaw needs a key. This server is bound beyond localhost, so the key " +
+        "MicroClaw needs a key. This server is bound beyond localhost, so the key " +
         "cannot be set from the browser — set ANTHROPIC_API_KEY and restart.";
       $("key-form").classList.add("hidden");
     }
@@ -630,7 +630,7 @@
     toast(state.stored_in === "keyring" ? "Key saved to the OS credential store."
         : state.stored_in === "file" ? "Key saved to " + state.stored_at + " (convenience, not protection)."
         : state.stale_store ? "Key set for this session. A different key is still saved "
-            + "on this machine and will be used the next time Microclaw starts."
+            + "on this machine and will be used the next time MicroClaw starts."
         : "Key set for this session only.");
   });
 
@@ -696,7 +696,7 @@
       const pending = await (await apiFetch("/api/confirm")).json();
       showGrants(pending.grants);
       if (pending.id) showConfirm(pending);
-    } catch (err) { toast("Could not reach the Microclaw server: " + err.message); }
+    } catch (err) { toast("Could not reach the MicroClaw server: " + err.message); }
     msg.focus();
   })();
 })();
