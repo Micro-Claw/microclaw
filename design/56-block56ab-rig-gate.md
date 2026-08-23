@@ -30,7 +30,7 @@ cd $HOME\Code\microclaw
 git fetch origin
 git checkout design56/probe
 git pull
-git merge-base --is-ancestor PINCOMMIT HEAD
+git merge-base --is-ancestor 126e168 HEAD
 if ($LASTEXITCODE -eq 0) { Write-Output "IMPLEMENTATION PRESENT" } else { Write-Output "WRONG TREE - STOP" }
 uv pip install -e .
 uv run pytest -q > suite.txt 2>&1
