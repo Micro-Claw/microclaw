@@ -30,7 +30,7 @@ cd $HOME\Code\microclaw
 git fetch origin
 git checkout design56/probe
 git pull
-git merge-base --is-ancestor 126e168 HEAD
+git merge-base --is-ancestor PIN2 HEAD
 if ($LASTEXITCODE -eq 0) { Write-Output "IMPLEMENTATION PRESENT" } else { Write-Output "WRONG TREE - STOP" }
 uv pip install -e .
 uv run pytest -q > suite.txt 2>&1
@@ -187,14 +187,27 @@ Run these two calls back to back, and **time each one**:
 > ["Within range of focus search", "Locked in focus"], stop_when_found false,
 > dwell_ms 500.
 
-**Required:** both sweep all 121 planes, and the **in-range bands are
-identical** — same first and last in-range Z, within one plane.
+> Call run_autofocus with z_min_um 2200, z_max_um 2800, z_step_um 5, method
+> "sweep", and probe set to device TIPFSStatus, property Status, in_focus_values
+> ["Within range of focus search", "Locked in focus"], stop_when_found false.
 
-- **Identical bands → 0 is correct**, and the time difference is the saving.
-  This closes the question.
-- **Different bands → the 0 dwell is too short for this sensor**, 56b is not
-  done, and the shift is the measurement of the real latency. Record both
-  `readings` arrays in full.
+**This limb already ran on 2026-08-23 and produced its answer:** dwell 0 read
+{2655, 2660} and refused, dwell 500 read {2650, 2655, 2660} and converged, at a
+cost of ~30 s over 121 planes. The default now follows the stopping rule —
+0 when stopping early, 500 ms when mapping the band — so **re-run it to confirm
+the new defaults reproduce that**, not to decide the question again.
+
+**Required:**
+- The `dwell_ms: 0` call reports `property_dwell_ms: 0` and reproduces the
+  narrower band, refusing as before.
+- The `dwell_ms: 500` call reports `property_dwell_ms: 500` and the wider band,
+  converging as before.
+- **And a third call with `stop_when_found false` and NO `dwell_ms` key at all**
+  must report `property_dwell_ms: 500` and match the second — that is the new
+  default doing its job.
+
+A band that now differs from 2026-08-23's in either direction is a finding;
+record both `readings` arrays in full.
 
 **Record both wall-clock times and both bands.**
 
@@ -343,7 +356,7 @@ measured final Z agrees with what the live Step 4 run reported.
 | 4 | one call, stops early | | read/planned = , final Z = , time = |
 | 5 | independent TIZDrive read-back | | payload = , read-back = |
 | 6 | locks first attempt; **both** validation checks run | | locked Z = , delta = |
-| 7 | **dwell 0 vs 500: same band?** | | band@0 = , band@500 = , times = |
+| 7 | dwell 0 / 500 / defaulted: bands reproduce 2026-08-23 | | band@0 = , band@500 = , band@default = , dwell reported = |
 | 8 | capture band width | | width = |
 | 9 | window not re-swept | | z_positions[0] = |
 | 10 | missed window refuses, names 1000/1200 | | |

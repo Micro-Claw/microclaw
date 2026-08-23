@@ -489,7 +489,7 @@ def test_emitted_property_probe_reproduces_window_dwell_and_read_count(
     emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
     assert "_autofocus_lo = 60" in emitted_call
     assert "_autofocus_hi = 64" in emitted_call
-    assert "dwell_s=17 / 1000.0" in emitted_call
+    assert "dwell_s=0.017" in emitted_call
     assert "Sweep Z: {_autofocus_lo} to {_autofocus_hi}" in emitted_call
 
     class FakeCore:

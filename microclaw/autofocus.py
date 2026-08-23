@@ -33,12 +33,14 @@ class FocusProbe:
     """One reading per plane, plus how a curve selects and admits a plane."""
 
     read: Callable[[], float | str | tuple[float | str, bool]]
+    #: Resolved dwell actually used, so the payload never has to re-derive it.
     choose: Callable[[list], int]
     admit: Callable[[list], Optional[str]]
     exposures_per_plane: int
     describe: str
     in_focus_values: frozenset[str] = frozenset()
     stop_when_found: bool = False
+    dwell_s: float = 0.0
 
 
 @dataclass
@@ -68,7 +70,24 @@ class AutofocusResult:
 MIN_CONTRAST = 0.15
 N_REF = 1024 * 1024
 MIN_BAND_PLANES = 3
+# Dwell before reading a status property, when the caller does not choose one.
+# It follows the STOPPING RULE, because that is where the Nikon gate of
+# 2026-08-23 showed the dwell does and does not matter. Sweeping 2200-2800 at
+# 5 um, dwell 0 read the band as {2655, 2660} and REFUSED it as too few planes;
+# dwell 500 ms read {2650, 2655, 2660} and converged. The 2650 plane is real and
+# the fast read missed it, at a cost of ~30 s over 121 planes.
+#
+# Stopping at the first in-range plane tolerates that: a late read lands one
+# plane deeper INTO the band, and engaging the lock confirms it at zero dose.
+# Mapping the band does not: its refusals are decided by the planes at the
+# edges, which are exactly the ones a lagging property reports wrongly.
+#
+# The 200 Hz PFS sampling rate does not license a zero dwell here. That is the
+# servo's own loop; the reading travels through Micro-Manager's adapter, which
+# polls on its own cadence. A device's internal rate is not its property's
+# update rate.
 PROPERTY_PROBE_MIN_DWELL_S = 0
+PROPERTY_PROBE_BAND_DWELL_S = 0.5
 
 
 def longest_true_run(flags) -> tuple[int, int]:
@@ -182,7 +201,10 @@ def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
 
 def property_probe(core, device, prop, in_focus_values=None, *,
                    step_um=1.0, lo_um=0.0, hi_um=0.0,
-                   dwell_s=0.0, stop_when_found=True) -> FocusProbe:
+                   dwell_s=None, stop_when_found=True) -> FocusProbe:
+    if dwell_s is None:
+        dwell_s = (PROPERTY_PROBE_MIN_DWELL_S if stop_when_found
+                   else PROPERTY_PROBE_BAND_DWELL_S)
     allowed = _strings(core.get_allowed_property_values(device, prop))
     values = [str(value) for value in (in_focus_values or [])]
     if allowed and not values:
@@ -224,6 +246,7 @@ def property_probe(core, device, prop, in_focus_values=None, *,
             ),
             in_focus_values=admitted,
             stop_when_found=stop_when_found,
+            dwell_s=dwell_s,
         )
     def read_number():
         return float(core.get_property(device, prop))
@@ -236,6 +259,7 @@ def property_probe(core, device, prop, in_focus_values=None, *,
         read=read_number, choose=choose_number, admit=admit_number,
         exposures_per_plane=0,
         describe=f"maximum numeric {device}.{prop}",
+        dwell_s=dwell_s,
     )
 
 

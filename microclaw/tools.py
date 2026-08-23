@@ -190,10 +190,10 @@ def _emit_autofocus(params: RecordedParams) -> str:
         prop = probe["property"]
         values = probe.get("in_focus_values")
         stop_when_found = probe.get("stop_when_found", values is not None)
-        dwell_ms = probe.get("dwell_ms", 0)
+        dwell_ms = probe.get("dwell_ms")
         extra_args = (
             f", z_min_um={z_min!r}, z_max_um={z_max!r}, dwell_ms={dwell_ms!r}"
-            if z_min is not None or dwell_ms else ""
+            if z_min is not None or dwell_ms is not None else ""
         )
         return "\n".join([
             "_autofocus_entry_z = float(core.get_position())",
@@ -203,7 +203,7 @@ def _emit_autofocus(params: RecordedParams) -> str:
             "_autofocus_probe = property_probe(",
             f"    core, {device!r}, {prop!r}, {values!r},",
             f"    step_um={z_step!r}, lo_um=_autofocus_lo, hi_um=_autofocus_hi,",
-            f"    dwell_s={dwell_ms!r} / 1000.0,",
+            f"    dwell_s={None if dwell_ms is None else dwell_ms / 1000.0!r},",
             f"    stop_when_found={stop_when_found!r},",
             ")",
             "print('AUTOFOCUS ENVELOPE')",
@@ -657,6 +657,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
             f"MIN_BAND_PLANES = {autofocus.MIN_BAND_PLANES!r}\n",
             "PROPERTY_PROBE_MIN_DWELL_S = "
             f"{autofocus.PROPERTY_PROBE_MIN_DWELL_S!r}\n",
+            "PROPERTY_PROBE_BAND_DWELL_S = "
+            f"{autofocus.PROPERTY_PROBE_BAND_DWELL_S!r}\n",
         ])
         for fn in (
             autofocus.longest_true_run, autofocus._strings, autofocus._band_admit,
@@ -4357,7 +4359,7 @@ def _run_autofocus_passes(
     stop_when_found: bool = False,
     z_min_um: float | None = None,
     z_max_um: float | None = None,
-    dwell_ms: int = 0,
+    dwell_ms: float | None = None,
 ) -> AutofocusResult:
     metric_fn = tenengrad
     min_contrast = (MIN_CONTRAST if probe_device is not None else
@@ -4388,7 +4390,7 @@ def _run_autofocus_passes(
             ctrl.core, probe_device, probe_property, in_focus_values,
             step_um=z_step_um,
             lo_um=lo_um, hi_um=hi_um,
-            dwell_s=max(dwell_ms / 1000.0, PROPERTY_PROBE_MIN_DWELL_S),
+            dwell_s=None if dwell_ms is None else dwell_ms / 1000.0,
             stop_when_found=stop_when_found,
         )
     else:
@@ -4515,8 +4517,10 @@ def run_autofocus(
             return {"error": "Malformed probe: in_focus_values must be a non-empty array of strings."}
         if "stop_when_found" in probe and not isinstance(probe["stop_when_found"], bool):
             return {"error": "Malformed probe: stop_when_found must be a boolean."}
-        dwell_ms = probe.get("dwell_ms", 0)
-        if isinstance(dwell_ms, bool) or not isinstance(dwell_ms, (int, float)) or dwell_ms < 0:
+        dwell_ms = probe.get("dwell_ms")
+        if dwell_ms is not None and (isinstance(dwell_ms, bool)
+                                     or not isinstance(dwell_ms, (int, float))
+                                     or dwell_ms < 0):
             return {"error": "Malformed probe: dwell_ms must be a non-negative number."}
         if "stop_when_found" in probe and values is None:
             return {
@@ -4583,7 +4587,7 @@ def run_autofocus(
                 probe.get("in_focus_values") if probe else None,
                 probe.get("stop_when_found", False) if probe else False,
                 z_min_um=z_min_um, z_max_um=z_max_um,
-                dwell_ms=probe.get("dwell_ms", 0) if probe else 0,
+                dwell_ms=probe.get("dwell_ms") if probe else None,
             )
         except ValueError as exc:
             return {"error": str(exc)}
@@ -4599,8 +4603,8 @@ def run_autofocus(
                 ctrl.core, probe["device"], probe["property"],
                 probe.get("in_focus_values"), step_um=z_step_um,
                 lo_um=lo_um, hi_um=hi_um,
-                dwell_s=max(probe.get("dwell_ms", 0) / 1000.0,
-                            PROPERTY_PROBE_MIN_DWELL_S),
+                dwell_s=(None if probe.get("dwell_ms") is None
+                         else probe["dwell_ms"] / 1000.0),
                 stop_when_found=probe.get("stop_when_found", False),
             )
         except ValueError as exc:
@@ -4645,10 +4649,9 @@ def run_autofocus(
         len(s.z_positions) for s in (result.coarse, result.fine) if s is not None
     )
     if exposures_per_plane == 0:
-        payload["property_dwell_ms"] = round(
-            max(probe.get("dwell_ms", 0) / 1000.0,
-                PROPERTY_PROBE_MIN_DWELL_S) * 1000
-        )
+        # From the probe that ran, not re-derived: the default follows the
+        # stopping rule now, and a payload that recomputed it could disagree.
+        payload["property_dwell_ms"] = round(active_probe.dwell_s * 1000)
         payload["convergence_means"] = "criterion satisfied; not proof the sample is in focus"
         payload["thumbnail_suppressed"] = (
             "Property-probe autofocus spends zero exposures; focus_metric_at_final "

@@ -576,11 +576,14 @@ rate inferred from an operation timeout. The constant was then "validated"
 against a lagging sensor written to embody that same assumption. A fake that
 encodes the assumption is not a test of it, and this one was the coordinator's.
 
-**Decision.** `PROPERTY_PROBE_MIN_DWELL_S` goes to **0**. The dwell stays as an
-**optional parameter** — other hardware may genuinely need it — as `dwell_ms` on
-the `probe` object, default 0, described as extra wait for a property that
-updates *slower than the stage settles*. It stops riding on `settle_ms`, whose
-image-path meaning is a camera settle and is a different thing.
+**Decision, as first written and then REFUTED on the rig — see §9d.**
+`PROPERTY_PROBE_MIN_DWELL_S` goes to **0**. The dwell stays as an **optional
+parameter** — other hardware may genuinely need it — as `dwell_ms` on the
+`probe` object, described as extra wait for a property that updates *slower than
+the stage settles*. It stops riding on `settle_ms`, whose image-path meaning is a
+camera settle and is a different thing.
+
+**§9d supersedes the "default 0" half of this.** The rest stands.
 
 `_stable_read` keeps its consecutive-agreement check and **loses the mandatory
 100 ms span**: three reads that must simply agree cost three bridge calls and no
@@ -735,6 +738,47 @@ limbs below are kept as the statement of intent; the runbook is what gets run.
   into the runbook as literals — not `<v1>`/`<v2>` placeholders (52c's
   strictest criterion produced no rig evidence because it shipped with
   placeholders and was run verbatim).
+
+#### 9d. Measured: a zero dwell is right for stopping, wrong for mapping
+
+**Nikon, 56ab gate, 2026-08-23.** The same window swept twice at 5 µm,
+`stop_when_found: false`:
+
+| dwell | planes read in-range | outcome |
+| --- | --- | --- |
+| `0` | 2655, 2660 | **refused** — two planes is not a band |
+| `500 ms` | **2650**, 2655, 2660 | **converged**, moved to 2655 |
+
+The 2650 plane is real and the fast read missed it. Cost of the dwell: **~30 s
+over 121 planes** (1:20 → 1:50), about half what §9a predicted.
+
+**Why §9a's argument was wrong, and it is worth naming the shape.** The 200 Hz
+figure is the PFS servo's own sampling loop. The reading does not come from the
+servo; it comes through Micro-Manager's TI adapter, which polls on its own
+cadence. **A device's internal rate is not its property's update rate.** That is
+the same error as §9c one level down: a correct number applied to the wrong
+quantity.
+
+**Decision (operator, 2026-08-23): the default follows the stopping rule.**
+
+- `stop_when_found: true` (the default) → dwell **0**. A late read lands one
+  plane *deeper into* the band, and engaging the lock confirms the plane at zero
+  dose. Both early-stop sweeps in this gate found the band and locked.
+- `stop_when_found: false` → dwell **`PROPERTY_PROBE_BAND_DWELL_S` = 0.5 s**.
+  Band mapping is decided by the planes at the band's edges, which are exactly
+  the ones a lagging property reports wrongly.
+- An explicit `dwell_ms` wins in either mode, including `0`.
+
+`FocusProbe` carries the resolved `dwell_s`, and the payload reports it from
+there rather than recomputing it, so `property_dwell_ms` cannot disagree with
+the sweep that ran. The emitted script receives `dwell_ms=None` when the caller
+omitted it and resolves it by the same rule, so live and standalone agree by
+construction rather than by a copied constant.
+
+**The one case the early-stop tolerance does not cover:** a step so coarse that
+the band is a single plane. Then a late read can land past it. That is
+indistinguishable from a step too coarse to find the band at all, which is
+already a refusal, and the lock is still the confirmation.
 
 ### 56b — `dwell_ms`, and an explicit window
 

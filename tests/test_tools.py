@@ -1410,9 +1410,22 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
-    def test_default_property_probe_adds_no_sleep_and_dwell_preserves_band(
+    def test_probe_dwell_default_follows_the_stopping_rule(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
+        """No dwell when stopping early; a dwell when mapping the band.
+
+        Nikon, 56ab gate 2026-08-23. Sweeping 2200-2800 at 5 um with
+        stop_when_found false: dwell 0 read the band as {2655, 2660} and REFUSED
+        it as too few planes, dwell 500 read {2650, 2655, 2660} and converged.
+        The 2650 plane is real. Band mapping is decided by its edge planes, which
+        are exactly the ones a lagging property reports wrongly; stopping at the
+        first in-range plane is not, because a late read lands one plane deeper
+        into the band and engaging the lock confirms it at zero dose.
+
+        So the default follows the mode, and an explicit dwell_ms still wins in
+        either. Asserting the ABSENCE of waiting is the point of the first case.
+        """
         position = [2.0]
         mock_ctrl.core.get_position.side_effect = lambda *_a: position[0]
         mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
@@ -1429,22 +1442,35 @@ class TestRunAutofocus:
             z_range_um=4.0, z_step_um=1.0, method="sweep",
             settle_ms=0, return_thumbnail=False,
         )
-        default = run_autofocus(
-            mock_ctrl, unconstrained_guard, **common,
-            probe={"device": "lock", "property": "status",
-                   "in_focus_values": ["in"], "stop_when_found": False},
-        )
+        base = {"device": "lock", "property": "status", "in_focus_values": ["in"]}
+
+        early = run_autofocus(mock_ctrl, unconstrained_guard, **common, probe=dict(base))
         assert sleeps == []
+        assert early["property_dwell_ms"] == 0
 
         position[0] = 2.0
-        waited = run_autofocus(
-            mock_ctrl, unconstrained_guard, **common,
-            probe={"device": "lock", "property": "status",
-                   "in_focus_values": ["in"], "stop_when_found": False,
-                   "dwell_ms": 500},
-        )
-        assert waited["coarse"]["readings"] == default["coarse"]["readings"]
+        sleeps.clear()
+        mapped = run_autofocus(mock_ctrl, unconstrained_guard, **common,
+                               probe={**base, "stop_when_found": False})
         assert sleeps == [0.5] * 5
+        assert mapped["property_dwell_ms"] == 500
+
+        position[0] = 2.0
+        sleeps.clear()
+        overridden = run_autofocus(mock_ctrl, unconstrained_guard, **common,
+                                   probe={**base, "stop_when_found": False,
+                                          "dwell_ms": 0})
+        assert sleeps == []
+        assert overridden["property_dwell_ms"] == 0
+        assert overridden["coarse"]["readings"] == mapped["coarse"]["readings"]
+
+        position[0] = 2.0
+        sleeps.clear()
+        run_autofocus(mock_ctrl, unconstrained_guard, **common,
+                      probe={**base, "dwell_ms": 500})
+        # Two, not five: the early stop lands on the second plane, so an
+        # explicit dwell is paid only for the planes actually read.
+        assert sleeps == [0.5] * 2
 
     def test_explicit_window_sweeps_only_that_window(
         self, mock_ctrl, unconstrained_guard
