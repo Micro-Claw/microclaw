@@ -889,8 +889,8 @@ They need a Nikon.
 
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 56a | `design56/probe` | `3158546` | codex, 4 rounds + 6 coordinator fixes | **partial** — Nikon Ti + Ti2-E/Dragonfly 2026-08-23; see "Owed rig evidence" | MERGE | design gate below |
-| 56b | `design56/probe` | `1b74016` | codex, 1 round + 2 coordinator fixes | **partial** — §9d measured on the Ti; the defaults implementing it are unrun | MERGE | design gate below |
+| 56a | ~~`design56/probe`~~ | `3158546` | codex, 4 rounds + 6 coordinator fixes | **partial** — Nikon Ti + Ti2-E/Dragonfly 2026-08-23; see "Owed rig evidence" | `8ed1a90` 2026-08-23 | done — §10 below |
+| 56b | ~~`design56/probe`~~ | `1b74016` | codex, 1 round + 2 coordinator fixes | **partial** — §9d measured on the Ti; the defaults implementing it are unrun | `8ed1a90` 2026-08-23 | done — §10 below |
 
 **Baseline on the start commit, coordinator-measured:** 1968 passed / 99 skipped
 / 3 warnings. `main` is green — the five `tests/test_agent.py` failures that

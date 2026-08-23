@@ -252,10 +252,10 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — four contracts we got wrong
+## The pycro-manager acquisition engine — five contracts we got wrong
 
-The first three were found on a rig by block 52a, the fourth by block 56 — each
-after a full green suite, and each because a test fake encoded our assumption
+The first three were found on a rig by block 52a, the fourth by block 56, and the
+fifth by design/56 — each after a full green suite, and each because a test fake encoded our assumption
 instead of the hardware's behaviour. Check code against these before writing the
 fake.
 
@@ -293,6 +293,24 @@ fake.
   `wait_for_device` returned the pre-move position, and a 22.85 µm miss was
   reported as a success. **Reviewed bounds are not proof that an asynchronous
   device achieved or settled at its target**, and neither is a busy flag.
+
+- **An asynchronous *reading* settles no faster than an asynchronous move, and a
+  hand-driven loop hides that behind its own latency.** Block 56 established that
+  a device which is not busy has not necessarily arrived; design/56 found the
+  same thing one level up, in the reading. A status property read immediately
+  after the axis parks can still be reporting the previous plane — the model
+  round trip in a hand-driven loop was donating a second of settling nobody had
+  asked for, and collapsing that loop into one tool call took it away.
+  **A device's internal rate is not its property's update rate**: the Nikon PFS
+  samples at 200 Hz, and a zero dwell still misread the edge of its capture band,
+  because the reading arrives through Micro-Manager's adapter on the adapter's
+  cadence. Measured — dwell 0 read the band as two planes and refused it, dwell
+  500 ms read three and converged. Do not infer a refresh period from an
+  operation timeout (`FullFocusTimeoutMs` times a *search*, not a read), and do
+  not validate a dwell against a fake you wrote to embody your own assumption.
+  Where the reading only has to be right *somewhere* inside a band, a late read
+  is harmless; where it decides the band's edges, it is not — design/56 §9d sets
+  the default by which of those two the caller asked for.
 
 - **`acquire()` only submits.** It returns an `AcquisitionFuture`; completion is
   awaited in `Acquisition.__exit__` (`mark_finished()` then `await_completion()`).

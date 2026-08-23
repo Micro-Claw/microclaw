@@ -13,14 +13,15 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-22 assignment of design/56
-> block 56a`** — find it *by that heading*, not by position; it sits behind
-> several superseded notes that look just like it. It is the only section that
-> describes the repository as it is now.
+> **The live state note is `### State at the 2026-08-23 close of design/56`** —
+> find it *by that heading*, not by position; it sits behind several superseded
+> notes that look just like it. It is the only section that describes the
+> repository as it is now.
 >
-> **`design/56` block 56a is assigned** (2026-08-22, branch `design56/probe`) —
-> its own doc and ledger are authoritative for it, not this file. Everything
-> else is still a choice, not a continuation — Track C is parked on an `.ilp`
+> **`design/56` is closed** — 56a and 56b merged 2026-08-23 (`8ed1a90`),
+> **with rig evidence owed**; its own doc's "Owed rig evidence" section is
+> authoritative for what is unverified. Nothing is assigned. What is next is a
+> choice, not a continuation — Track C is parked on an `.ilp`
 > that does not exist, design/54 is awaiting a Nikon gate, design/55 is written
 > and not started, and the rest of the open register is unscheduled. **Track A, Track B, Track D, Track E and
 > Track F are all closed** — verified 2026-08-19 against the run ledger, which
@@ -405,10 +406,55 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-22 assignment of design/56 block 56a — read this before assigning anything
+### State at the 2026-08-23 close of design/56 — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
+
+**`design/56` is MERGED (`8ed1a90`) and its branch is gone — but it merged
+OWING RIG EVIDENCE.** Read `design/56-the-focus-metric-need-not-be-an-image.md`
+§"Owed rig evidence" before trusting any limb of it. The operator was losing
+access to both Nikon systems and chose to merge working code rather than hold it
+behind a trip that could not be booked.
+
+- **The runbook is on `main`**, at `design/56-block56ab-rig-gate.md`, because a
+  block that merges owing evidence must not let its instructions die with the
+  branch. Four limbs still need a rig with a hardware focus lock; **M2 and M5
+  cannot run them.**
+- `main` measures **2090 passed / 99 skipped**, coordinator-measured on the merge
+  commit. On Windows expect ~1976/124 — same total, platform skips differ. Gate
+  on zero failures, never the count.
+
+**What the block does.** `run_autofocus` gains a `probe` that reads a device
+property at each plane instead of the camera, stops at the first in-range plane,
+and accepts an explicit `z_min_um`/`z_max_um` window. Proven on **two Nikons
+sharing no device label, property name or value string** — Ti
+(`TIPFSStatus`/`Status`/`Within range of focus search`) and Ti2-E with an Andor
+Dragonfly (`PFS`/`PFS in Range`/`In Range`). Nothing rig-specific entered
+`microclaw/`.
+
+**Three things that outlive this block and are easy to quote wrongly:**
+
+1. **design/40's "lock is binary" is superseded** — the status property is a
+   three-level ordinal and the in-range band measured ~29 µm on 60× oil. That
+   doc now says so at both places it claimed otherwise.
+2. **A device's internal rate is not its property's update rate.** The PFS
+   samples at 200 Hz and a zero dwell still misread the band's edge, because the
+   reading arrives through Micro-Manager's adapter. Now the fifth entry in
+   `CLAUDE.md` §"The pycro-manager acquisition engine".
+3. **The ~10 µm "PFS offset range" figure is correct and is a different quantity**
+   from the capture band the probe measures. Do not use one to judge a step size
+   for the other.
+
+**Three open register rows were added by this work** and none is scheduled: an
+aborted turn's error never reaching the transcript, the sweep not offering to
+engage the lock it found, and a guessed property name erroring without naming the
+real ones. The last two are marked **do not fix blind** — they need a Nikon.
+
+### State at the 2026-08-22 assignment of design/56 block 56a — SUPERSEDED, kept for the round history
+
+**Not the live note.** Superseded by `### State at the 2026-08-23 close of
+design/56` above.
 
 **`design/56` owns its own checklist and ledger**, like design/48 through
 design/55. This file does not track its blocks; it points at it. The doc is

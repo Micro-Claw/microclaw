@@ -64,9 +64,18 @@ agent re-derived and re-negotiated every step by hand.
 
 Three facts follow, all measured:
 
-- **Lock is binary.** `Focus lock failed` at every wrong height, `Locked in
-  focus` at the right one — no gradient, no partial signal. A bounded step
-  search is the only method; there is nothing to hill-climb.
+- **Lock is binary** — **SUPERSEDED 2026-08-23 by design/56 §"What the session
+  already measured"; kept for the round history.** What was measured here was
+  `Focus lock failed` at every wrong height and `Locked in focus` at the right
+  one, so a bounded step search looked like the only method. That was true of the
+  *instrument used*: arm-and-see at each height, which asks the lock a yes/no
+  question and can only get a yes/no back. Reading `TIPFSStatus.Status` without
+  arming shows a **three-level ordinal** — `Out of focus search range` →
+  `Within range of focus search` → `Locked in focus` — and the middle value is
+  readable while the lock is not holding, so there *is* a band to find and its
+  width was measured at ~29 µm on a 60× oil objective. A second Nikon spells the
+  same thing `PFS in Range` → `In Range`. **Do not quote "nothing to hill-climb"
+  forward**; design/56's probe finds that band at zero exposures.
 - **The stage moves after the lock.** Commanded 2490 → holds 2532; commanded
   2900 → holds 2912. `move_stage_z` reports the *request*, so its answer is
   wrong by up to ~40 µm at precisely the moment the servo takes over.
@@ -443,6 +452,9 @@ def engage_continuous_focus(ctrl, guard, *, z_start, z_ceiling, step_um,
 
     Lock is binary on the hardware measured in design/40 — there is no partial
     signal to hill-climb, so this steps and asks, it does not optimise.
+    (Superseded: see the "Lock is binary" bullet above. The status property is a
+    three-level ordinal and design/56's probe reads the band directly. This
+    stub's arm-and-see loop is not the method to build.)
     """
     device = ctrl.core.get_auto_focus_device()      # raises if unassigned
     entry = _read_focus_axes(ctrl)                  # focus stage AND every offset stage

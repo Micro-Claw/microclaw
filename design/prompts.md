@@ -7115,3 +7115,62 @@ the check has an explicit empty result rather than an eyeball over a list.
 **When you must gate against a known-broken baseline, pin the shape of the
 breakage, never its size** — a count is a measurement of work in progress, and a
 criterion built on one expires without telling you.
+
+## design/56 — the property probe (56a, 56b), closed 2026-08-23
+
+**Merged owing rig evidence, on purpose.** The operator was losing access to both
+Nikons mid-block. The runbook went to `main` with the code and design/56 gained an
+"Owed rig evidence" section naming four unverified limbs; the alternative was
+holding working code behind a trip nobody could book. Second time this repo has
+done it (54c was the first) and the convention held up.
+
+**What kept going wrong, and it was one thing four times.** Every defect that
+reached a rig had a green suite behind it, and every one of them came from a fake
+that encoded an assumption:
+
+- A `list` where the bridge returns a non-iterable `mmcorej_StrVector`. The tool
+  threw on its first real call. Three helpers for this already existed in the
+  package and the new code used none of them; the design doc's own stub had
+  called one.
+- A device that enumerates its allowed values. The real one enumerates nothing,
+  so the categorical path was unreachable on the exact hardware it was designed
+  for.
+- A lagging sensor that *alternates* on every read, which is trivially caught,
+  standing in for one that returns a **stable stale** value, which is not.
+- A dwell constant validated against a simulated sensor **I wrote to embody my own
+  assumption** — then refuted on the rig at the first measurement.
+
+The rule in `CLAUDE.md` step 3 says fix the fake before the code when a defect
+comes back from a rig. Worth adding: **the coordinator's own constants deserve the
+same suspicion as an implementer's tests.** Three of the four above I caught in
+review; the fourth was mine and I did not.
+
+**A top-level `oneOf` in one tool schema takes down all 84.** The Messages API
+rejects the whole request, so no tools load and a session cannot start. Found by
+the operator on the first prompt of a gate. 2001 tests passed. My review of that
+diff had printed the schema's `required` and `properties` and never its top-level
+keys. There is now a test over every schema; it is the cheap kind of check that
+only looks obvious afterwards.
+
+**Prompt text failed twice at the same behaviour, and the third fix was not
+prompt text.** Getting the model to offer the hardware focus lock before an image
+sweep took two edits that did not hold. The transcripts showed why: it had the
+lock *device* and still could not cheaply find the *property* to probe, so
+reaching for the camera was rational. `get_focus_lock_state` now returns the
+device's readable properties **with their current values**, and the choice becomes
+obvious — the two rigs share no names, so only the values could have
+disambiguated. **When a prompt edit fails twice, the missing thing is usually
+information the tool could have supplied.**
+
+**Gate design.** Two limbs that were not about the tool earned their place: one
+that opens a *fresh* session and asks only "can you find the focus?", and one
+requiring both lock-validation checks to actually run rather than be named. Both
+failed on the first trip and neither would have been visible from a payload. Also:
+no limb hardcoded where the focus was, because two sessions on the same rig put
+the band 300 µm apart — wide literal windows instead, so every command ran
+unedited.
+
+**Rig conventions worth not rediscovering:** everything runs under `uv`, the rig
+uses `microclaw serve`, and an error that aborts a turn is shown in the browser
+but never written to the transcript — the operator had to retype a 400 by hand.
+That last one is a register row now.
