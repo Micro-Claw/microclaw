@@ -3105,12 +3105,11 @@ class TestFocusLock:
         self._emu(monkeypatch, props={})
         mock_ctrl.core.get_auto_focus_device.return_value = "HardwareAF"
         mock_ctrl.core.is_continuous_focus_enabled.return_value = True
+        mock_ctrl.core.get_device_property_names.return_value = []
         state = get_focus_lock_state(mock_ctrl, unconstrained_guard)
-        assert state == {
-            "engaged": True,
-            "property": "continuous focus device HardwareAF",
-            "device": "HardwareAF",
-        }
+        assert state["engaged"] is True
+        assert state["property"] == "continuous focus device HardwareAF"
+        assert state["device"] == "HardwareAF"
         sweep = MagicMock()
         monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", sweep)
         result = run_autofocus(
@@ -3118,6 +3117,56 @@ class TestFocusLock:
         )
         assert "Focus lock is engaged" in result["error"]
         sweep.assert_not_called()
+
+    @pytest.mark.parametrize("rig, names, values, readonly, expected_pick", [
+        # Nikon Ti, measured 2026-08-22.
+        ("Ti", ["FullFocusTimeoutMs", "Name", "State", "Status"],
+         {"FullFocusTimeoutMs": "5000", "Name": "TIPFSStatus", "State": "Off",
+          "Status": "Out of focus search range"},
+         {"Status", "Name"}, "Status"),
+        # Nikon Ti2-E / Andor Dragonfly, measured 2026-08-23. Different device,
+        # different property, different values -- and a "PFS Status" that is a
+        # 16-bit string nobody should probe sitting next to the useful one.
+        ("Dragonfly",
+         ["DichroicMirrorInserted", "FocusMaintenance", "LEDIntensity",
+          "PFS Status", "PFS in Range"],
+         {"DichroicMirrorInserted": "1", "FocusMaintenance": "On",
+          "LEDIntensity": "3", "PFS Status": "0000001100001010",
+          "PFS in Range": "In Range"},
+         {"PFS Status", "PFS in Range"}, "PFS in Range"),
+    ])
+    def test_focus_lock_state_names_the_properties_a_probe_could_read(
+        self, mock_ctrl, unconstrained_guard, monkeypatch,
+        rig, names, values, readonly, expected_pick,
+    ):
+        """Naming the device but not the property is what sent it to the camera.
+
+        On both rigs the model had the lock device and still reached for an
+        image sweep -- on the Dragonfly the operator had to ask "why not do a
+        PFS search?". Finding the property took list_device_properties plus a
+        get_device_property_info per candidate, and on a cold session it was
+        cheaper to give up. The values are what disambiguate, and no rule about
+        names could: the two rigs share none.
+        """
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "PFSDEV"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_property_names.return_value = names
+        mock_ctrl.core.is_property_read_only.side_effect = (
+            lambda _d, prop: prop in readonly
+        )
+        mock_ctrl.core.get_property.side_effect = lambda _d, prop: values[prop]
+
+        state = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+
+        assert state["device"] == "PFSDEV"
+        assert set(state["status_properties"]) == readonly
+        assert state["status_properties"][expected_pick] == values[expected_pick]
+        assert "run_autofocus" in state["probe_hint"]
+        # Writable properties are not probe candidates and must not be offered.
+        assert all(name not in state["status_properties"]
+                   for name in names if name not in readonly)
 
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import set_focus_lock

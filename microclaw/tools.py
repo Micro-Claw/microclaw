@@ -8136,6 +8136,36 @@ def _read_qpd(ctrl: MicroscopeController, focus_lock: dict) -> dict | None:
 
 
 @emits_nothing
+def _lock_status_properties(ctrl, device: str) -> dict[str, str]:
+    """The lock device's read-only properties and what they read right now.
+
+    get_focus_lock_state named the DEVICE and stopped there, which left the one
+    thing run_autofocus's probe needs -- the property -- to be discovered by
+    hand. Measured twice: on a Nikon Ti the model hand-stepped Z rather than
+    look, and on a Nikon Ti2-E/Dragonfly it proposed an image sweep until the
+    operator asked "why not do a PFS search?".
+
+    Nothing here is rig-specific, and it cannot be: the two rigs disagree about
+    every name. The Ti reports Status -> "Out of focus search range"; the
+    Dragonfly reports "PFS in Range" -> "In Range" alongside a "PFS Status" that
+    is a 16-bit string no one should probe. Showing the values is what makes the
+    difference between them obvious without a single extra tool call.
+    """
+    try:
+        names = _str_vector(ctrl.core.get_device_property_names(device))
+    except Exception:
+        return {}
+    readable = {}
+    for name in names:
+        try:
+            if not bool(ctrl.core.is_property_read_only(device, name)):
+                continue
+            readable[str(name)] = str(ctrl.core.get_property(device, name))
+        except Exception:
+            continue
+    return readable
+
+
 def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Read the hardware focus lock via the EMU map ('Z stage focus locking').
 
@@ -8158,10 +8188,19 @@ def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict
         except Exception:
             engaged = None
         if device:
+            status = _lock_status_properties(ctrl, device)
             return {
                 "engaged": engaged,
                 "property": f"continuous focus device {device}",
                 "device": device,
+                "status_properties": status,
+                **({"probe_hint": (
+                    f"To find this lock's capture range at zero exposures, call "
+                    f"run_autofocus with probe device '{device}', one of the "
+                    f"properties above, and the values that mean in-range. Read "
+                    f"the values shown to pick the property; a bitfield or a "
+                    f"number is not the one you want."
+                )} if status else {}),
                 **({} if engaged is not None else {
                     "reason": "The autofocus adapter does not report whether continuous focus is enabled."
                 }),

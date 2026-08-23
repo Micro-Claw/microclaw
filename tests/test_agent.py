@@ -374,7 +374,7 @@ class TestNikonPfsPrompt:
         """
         assert "BEFORE proposing an image-based sweep" in SYSTEM_PROMPT
         assert "get_focus_lock_state" in SYSTEM_PROMPT
-        assert "Do not wait to be asked." in SYSTEM_PROMPT
+        assert "Do not wait to be asked" in SYSTEM_PROMPT
 
     def test_the_lock_validation_steps_are_steps_not_caveats(self):
         # Same session: it flagged the "locked too high" risk in its plan and
@@ -1148,3 +1148,16 @@ def test_unknown_status_strings_are_not_a_reason_to_hand_step_z():
     """
     assert "is NOT a reason to step Z" in SYSTEM_PROMPT
     assert "lists every value the sweep actually observed" in SYSTEM_PROMPT
+
+
+def test_the_lock_state_payload_is_enough_to_build_the_probe():
+    """Dragonfly 2026-08-23: it had the device and still proposed an image sweep.
+
+    Naming the device was never enough — the probe needs a property, and finding
+    one cost several exploratory calls. get_focus_lock_state now returns the
+    readable properties with their values, so the prompt points at that payload
+    instead of at an exploration.
+    """
+    assert "readable status" in SYSTEM_PROMPT
+    assert "do " in SYSTEM_PROMPT and "not go exploring with list_device_properties" in SYSTEM_PROMPT
+    assert "a bitfield or a number is not it" in SYSTEM_PROMPT

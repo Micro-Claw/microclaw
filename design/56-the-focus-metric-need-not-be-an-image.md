@@ -780,6 +780,45 @@ the band is a single plane. Then a late read can land past it. That is
 indistinguishable from a step too coarse to find the band at all, which is
 already a refusal, and the lock is still the confirmation.
 
+#### 9e. A second Nikon, and why naming the device was never enough
+
+**Nikon Ti2-E / Andor Dragonfly, 2026-08-23** (`pfs-dragonfly-design56ab/`).
+First cross-rig evidence for the probe, and it holds: same tool, entirely
+different names.
+
+| | Ti | Ti2-E / Dragonfly |
+| --- | --- | --- |
+| lock device | `TIPFSStatus` | `PFS` |
+| property | `Status` | `PFS in Range` |
+| in-range value | `Within range of focus search` | `In Range` |
+
+Nothing in `microclaw/` had to change for the second rig — the probe took all
+three as arguments, which is what §3 was for. `run_autofocus` found the band and
+the lock engaged on both.
+
+**But it still had to be asked.** On a cold session the operator wrote *"Why not
+do a PFS search?"*, and only then did it call the probe — correctly, first try.
+Later in the same session, once the rig's names were known, it went straight to
+the probe unprompted. So the failure is not reluctance; it is **not knowing which
+property to read**.
+
+`get_focus_lock_state` named the *device* and stopped. The probe needs a
+*property*, and finding one cost `list_device_properties` plus a
+`get_device_property_info` per candidate — on a cold session, cheaper to give up
+and reach for the camera. Two prompt edits had already tried to push the other
+way and neither held, which is the signal that the fix is not more prompt text.
+
+**Decision.** `get_focus_lock_state` returns the lock device's **read-only
+properties with their current values**, plus a hint naming `run_autofocus`. One
+call now carries everything the probe needs.
+
+The values are what disambiguate, and no rule about names could: the two rigs
+share none, and the Dragonfly's `PFS Status` reads `0000001100001010` — a
+bitfield sitting right next to the useful `PFS in Range`. Seeing
+`{"PFS Status": "0000001100001010", "PFS in Range": "In Range"}` makes the choice
+obvious; seeing the two names alone does not. Both rigs' measured property sets
+are the test fixtures.
+
 ### 56b — `dwell_ms`, and an explicit window
 
 Design: §9 (9a, 9b, 9c). Files: `microclaw/autofocus.py`
