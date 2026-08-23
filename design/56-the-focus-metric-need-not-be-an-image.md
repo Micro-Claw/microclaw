@@ -515,6 +515,18 @@ moves back to where the operator already does it: engage, then look for signal.
 A caller who wants that discrimination sets `stop_when_found: false` and gets
 §2's whole-curve behaviour, refusals included.
 
+**A transient state must not be named as in-focus, and the early stop is what
+makes that load-bearing.** Operator, 2026-08-23: the status reads `Focusing` for
+about a second whenever the lock is engaged, including by a human mid-sweep.
+Under §2's band reduction a stray transient contributed one plane and was
+outvoted by `MIN_BAND_PLANES`; under this section it **stops the sweep**, at
+whatever plane the transition happened to coincide with. `_stable_read` does not
+save us — it asks the reading to hold for ~100 ms and a one-second transient
+holds easily. So `in_focus_values` must name steady states only, and the schema
+has to say so rather than leaving it to be discovered. The rig's own session on
+2026-08-22 passed `["Within range of focus search", "Focusing", "Locked in
+focus"]`; the middle one is the hazard.
+
 **Payload.** Report `stopped_early`, `planes_read` and `planes_planned`, and
 keep the plane→reading table for the planes actually read. A sweep that stops at
 plane 9 of 201 must say so; "converged" over 9 planes and over 201 are different

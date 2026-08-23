@@ -951,10 +951,17 @@ TOOLS: list[dict[str, Any]] = [
                             "type": "array", "items": {"type": "string"},
                             "minItems": 1,
                             "description": (
-                                "For an enumerated property, values that mean in "
-                                "range. Copy allowed values exactly; unknown values "
-                                "are refused before any Z move. Omit only for a "
-                                "numeric property, which is maximised."
+                                "Values that mean in range. Copy them exactly; "
+                                "where the device enumerates its values, one it "
+                                "never reports is refused before any Z move. Name "
+                                "only STEADY states, never a transient one that "
+                                "appears while the device is settling or being "
+                                "engaged: the sweep stops at the first plane that "
+                                "matches, so a transient stops it at whatever "
+                                "plane happened to be under way, and holding for "
+                                "the settle interval does not make a transient a "
+                                "steady state. Omit only for a numeric property, "
+                                "which is maximised."
                             ),
                         },
                         "stop_when_found": {
