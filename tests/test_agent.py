@@ -362,6 +362,26 @@ class TestNikonPfsPrompt:
     which is exactly the kind of loss no other test could see.
     """
 
+    def test_a_hardware_focus_lock_is_offered_before_an_image_sweep(self):
+        """Nikon 2026-08-23: asked to find focus, it proposed an image sweep.
+
+        The operator had to ask "can you use the Nikon PFS system on here? Why
+        did you not propose using this?" -- the PFS guidance sat in the
+        rig-specific section while the generic Autofocus section said only
+        "run_autofocus is for interactive focus requests". get_focus_lock_state
+        names the configured autofocus device on ANY rig now, so the check is
+        generic and belongs where the model reads it.
+        """
+        assert "BEFORE proposing an image-based sweep" in SYSTEM_PROMPT
+        assert "get_focus_lock_state" in SYSTEM_PROMPT
+        assert "Do not wait to be asked." in SYSTEM_PROMPT
+
+    def test_the_lock_validation_steps_are_steps_not_caveats(self):
+        # Same session: it flagged the "locked too high" risk in its plan and
+        # then did not carry out either check until asked.
+        assert "Do BOTH of these every time you engage the " in SYSTEM_PROMPT
+        assert "not as caveats you mention and skip" in SYSTEM_PROMPT
+
     def test_pfs_status_reads_regardless_of_whether_the_lock_is_engaged(self):
         assert "TIPFSStatus-Status tells you if you are focusing" in SYSTEM_PROMPT
         assert "regardless of whether or not the PFS is on" in SYSTEM_PROMPT
