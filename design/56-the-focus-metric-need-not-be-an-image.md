@@ -698,7 +698,9 @@ see it. Replace the
 with the tool in the same commit — a prompt that still describes the loop will
 keep producing the loop.
 
-**Rig gate 56a (Nikon).** Re-run 2026-08-22 with the tool, on the same sample.
+**Rig gate 56a (Nikon).** Superseded by the combined runbook
+`design/56-block56ab-rig-gate.md`, which gates 56a and 56b in one trip. The
+limbs below are kept as the statement of intent; the runbook is what gets run.
 
 - With PFS **Off** and Z at ~2300, **one** `run_autofocus` call with the probe,
   `z_range_um=120`, `z_step_um=1`, `method="sweep"`, `in_focus_values=["Within
@@ -764,8 +766,8 @@ supersedes.
 
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 56a | `design56/probe` | `3158546` | assigned 2026-08-22 | — | — | — |
-| 56b | — | — | — | — | — | — |
+| 56a | `design56/probe` | `3158546` | codex, 4 rounds + 4 coordinator fixes | — | — | — |
+| 56b | `design56/probe` | `1b74016` | codex, 1 round | — | — | — |
 
 **Baseline on the start commit, coordinator-measured:** 1968 passed / 99 skipped
 / 3 warnings. `main` is green — the five `tests/test_agent.py` failures that
