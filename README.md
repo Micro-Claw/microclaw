@@ -1,4 +1,4 @@
-# Microclaw
+# MicroClaw
 
 <!-- The icon floats beside the description, never beside the <h1>: GitHub gives
      h1/h2 a full-width bottom border, and that rule would cut across the image. -->
@@ -546,3 +546,26 @@ Integration tests require a running MM instance with the Demo configuration:
 ```bash
 MM_RUNNING=1 pytest -m integration
 ```
+
+## Contributing
+
+Contributions are welcome. Every commit needs a `Signed-off-by` trailer
+certifying the [Developer Certificate of Origin](https://developercertificate.org/),
+which `git commit --signoff` adds for you. Contributors keep copyright in their
+own work — the collective notice in `LICENSE` is not an assignment. Do not add
+third-party code, data, papers or images unless their license permits
+redistribution here and the attribution is recorded in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full text.
+
+## License
+
+Microclaw is released under the [BSD 3-Clause license](LICENSE).
+
+Dependencies are separate works under their own licenses and are installed from
+PyPI rather than vendored here; the declared license of each direct dependency
+is listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). A redistributor
+of a binary or a packaged environment — including the `install.bat` environment —
+must comply with the notices of the complete resolved dependency set, not only
+the direct ones recorded there.
