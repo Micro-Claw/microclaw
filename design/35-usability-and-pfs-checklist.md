@@ -8514,6 +8514,32 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### Two from the Dragonfly session — added 2026-08-23 **(no block)**
+
+Both measured on the Nikon Ti2-E / Andor Dragonfly
+(`pfs-dragonfly-design56ab/`). **Neither is fixed, and neither can be tested
+where the operator still has access** — both need a rig with a hardware focus
+lock, which M2 and M5 are not. Do not fix them blind; this repo has already
+spent three rig trips on a mechanism that was green off-rig the whole time.
+
+**1. Finding the capture band does not offer to engage the lock.** The operator
+asked twice, in two different sessions: *"Why didn't you engage the PFS when you
+found it?"* `run_autofocus` deliberately does not engage — that is a hardware
+write and belongs to the caller — but the plan the model proposes should carry
+"sweep, engage, verify" as one procedure, since engaging is what confirms the
+plane at zero dose (design/56 §8). Prompt text alone has twice failed to move
+this behaviour (§9e), so a fix here should be judged against that history rather
+than assumed to work.
+
+**2. `get_device_property_info` on a stage's guessed property name errors
+without naming the real ones.** Measured: `PFSOffset` / `Position` returned
+`Invalid property name encountered: Position (2)`, while `get_stage_position` on
+the same device works. The error is *correct* — that device has no `Position`
+property — but it leaves the caller to guess again. Listing the device's actual
+property names in that refusal is generic, cheap, and would help on any rig.
+Testable off-rig with fakes; the reason it is parked is that it touches a shared
+error path and this merge is already carrying unverified change.
+
 ### An aborted turn's error never reaches the transcript — added 2026-08-23 **(no block)**
 
 Measured during the design/56 gate, on `microclaw serve`. The first prompt hit a

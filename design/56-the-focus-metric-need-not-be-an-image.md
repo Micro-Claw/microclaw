@@ -845,12 +845,52 @@ engine" that an asynchronous *reading* settles no faster than an asynchronous
 and update `design/40`'s "lock is binary" finding, which this session
 supersedes.
 
+## Owed rig evidence — read this before trusting a limb
+
+**56a and 56b merged 2026-08-23 by operator decision, with the gate partly run
+and four changes never on a rig at all.** The operator was losing access to both
+Nikons; merging working code beat holding it behind a trip that could not be
+booked. This section is the price of that, and the runbook
+(`design/56-block56ab-rig-gate.md`) is **merged to `main` with the code** rather
+than dying with the branch, so the owed limbs still have their instructions.
+
+**What the rig did establish** (Nikon Ti, `pfs-nikon-design56ab-2`, and
+Ti2-E/Dragonfly, `pfs-dragonfly-design56ab`, both 2026-08-23):
+
+- The probe finds the band and the lock engages, **on two rigs sharing no device
+  label, property name or value string** (§9e).
+- The armed-lock refusal fires on a non-EMU rig — impossible before this block.
+- All four argument refusals, the missed-window and blind-sensor refusals with
+  their values quoted, the explicit window, and D3's observed-value list, which
+  recovered a mistyped `Within range of focus` in the operator's own hands.
+- The dwell measurement of §9d, which refuted §9a.
+
+**What is owed, in the order it should be re-run:**
+
+1. **`set_focus_lock` export.** The gate's exported script died on it
+   (`NOT EMITTED: … has no device prefix`). Fixed, with a test reproducing the
+   rig's exact error string — but the fixed script has **never run on hardware**.
+   Runbook Step 15.
+2. **The mode-dependent dwell defaults** (§9d). The 0-vs-500 comparison ran and
+   decided the design; the *defaults implementing it* did not. Runbook Step 7,
+   including its third call with no `dwell_ms` key, which must report 500.
+3. **`status_properties` / `probe_hint`** (§9e). No live model has seen this
+   payload. It exists because two prompt edits failed to make the model offer
+   the probe on a cold session; whether a payload succeeds where prose did not
+   is exactly what is unverified.
+4. **Runbook Step 2** — the lock offered without being asked. It has never passed
+   cleanly: once it offered and then hand-walked Z, once it needed
+   *"Why not do a PFS search?"*. Item 3 is the intervention aimed at it.
+
+**None of these is testable on M2 or M5**, which have no hardware focus lock.
+They need a Nikon.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 56a | `design56/probe` | `3158546` | codex, 4 rounds + 4 coordinator fixes | — | — | — |
-| 56b | `design56/probe` | `1b74016` | codex, 1 round | — | — | — |
+| 56a | `design56/probe` | `3158546` | codex, 4 rounds + 6 coordinator fixes | **partial** — Nikon Ti + Ti2-E/Dragonfly 2026-08-23; see "Owed rig evidence" | MERGE | design gate below |
+| 56b | `design56/probe` | `1b74016` | codex, 1 round + 2 coordinator fixes | **partial** — §9d measured on the Ti; the defaults implementing it are unrun | MERGE | design gate below |
 
 **Baseline on the start commit, coordinator-measured:** 1968 passed / 99 skipped
 / 3 warnings. `main` is green — the five `tests/test_agent.py` failures that
