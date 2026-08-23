@@ -448,7 +448,6 @@ def test_emitted_property_probe_early_exit_matches_live_read_count(
             return "in" if self.position >= 8.0 else "out"
 
     monkeypatch.setattr(autofocus, "PROPERTY_PROBE_MIN_DWELL_S", 0.0)
-    monkeypatch.setattr(autofocus, "PROPERTY_READ_MIN_STABLE_S", 0.0)
     monkeypatch.setattr(tools, "PROPERTY_PROBE_MIN_DWELL_S", 0.0)
     live_core = FakeCore()
     live_result = tools._run_autofocus_passes(
@@ -462,8 +461,6 @@ def test_emitted_property_probe_early_exit_matches_live_read_count(
     runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
     runnable = runnable.replace(
         "PROPERTY_PROBE_MIN_DWELL_S = 0.5", "PROPERTY_PROBE_MIN_DWELL_S = 0.0"
-    ).replace(
-        "PROPERTY_READ_MIN_STABLE_S = 0.1", "PROPERTY_READ_MIN_STABLE_S = 0.0"
     )
     namespace = {
         "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
@@ -478,6 +475,54 @@ def test_emitted_property_probe_early_exit_matches_live_read_count(
     assert FakeCore.last.position == 8.0
     assert FakeCore.last.property_reads == live_property_reads
     assert len(live_result.coarse.metric_values) == 9
+
+
+def test_emitted_property_probe_reproduces_window_dwell_and_read_count(
+    tmp_path, monkeypatch
+):
+    spec = {"device": "lock", "property": "status",
+            "in_focus_values": ["in"], "stop_when_found": False,
+            "dwell_ms": 17}
+    params = {"z_min_um": 60, "z_max_um": 64, "z_step_um": 1,
+              "method": "sweep", "settle_ms": 0, "probe": spec}
+    _, _, source = export(tmp_path, [call("run_autofocus", params)])
+    emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
+    assert "_autofocus_lo = 60" in emitted_call
+    assert "_autofocus_hi = 64" in emitted_call
+    assert "dwell_s=17 / 1000.0" in emitted_call
+    assert "Sweep Z: {_autofocus_lo} to {_autofocus_hi}" in emitted_call
+
+    class FakeCore:
+        last = None
+        def __init__(self):
+            type(self).last = self
+            self.position = 50.0
+            self.property_reads = 0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def get_allowed_property_values(self, _device, _prop): return []
+        def get_property(self, _device, _prop):
+            self.property_reads += 1
+            return "in" if 61 <= self.position <= 63 else "out"
+
+    live_core = FakeCore()
+    live = tools._run_autofocus_passes(
+        SimpleNamespace(core=live_core), None, 1, "sweep", 0,
+        probe_device="lock", probe_property="status",
+        in_focus_values=["in"], stop_when_found=False,
+        z_min_um=60, z_max_um=64, dwell_ms=17,
+    )
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {"__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+                 "Acquisition": object,
+                 "multi_d_acquisition_events": lambda **kwargs: []}
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert namespace["autofocus_result"].coarse.z_positions == [60, 61, 62, 63, 64]
+    assert FakeCore.last.property_reads == live_core.property_reads
 
 
 def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(

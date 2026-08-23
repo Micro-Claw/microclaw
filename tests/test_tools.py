@@ -1410,6 +1410,78 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_default_property_probe_adds_no_sleep_and_dwell_preserves_band(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        position = [2.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_a: position[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector([])
+        mock_ctrl.core.get_property.side_effect = lambda *_a: (
+            "in" if 1.0 <= position[0] <= 3.0 else "out"
+        )
+        sleeps = []
+        monkeypatch.setattr(
+            "microclaw.autofocus.time", types.SimpleNamespace(sleep=sleeps.append)
+        )
+        common = dict(
+            z_range_um=4.0, z_step_um=1.0, method="sweep",
+            settle_ms=0, return_thumbnail=False,
+        )
+        default = run_autofocus(
+            mock_ctrl, unconstrained_guard, **common,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"], "stop_when_found": False},
+        )
+        assert sleeps == []
+
+        position[0] = 2.0
+        waited = run_autofocus(
+            mock_ctrl, unconstrained_guard, **common,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"], "stop_when_found": False,
+                   "dwell_ms": 500},
+        )
+        assert waited["coarse"]["readings"] == default["coarse"]["readings"]
+        assert sleeps == [0.5] * 5
+
+    def test_explicit_window_sweeps_only_that_window(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        position = [50.0]
+        read_positions = []
+        mock_ctrl.core.get_position.side_effect = lambda *_a: position[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector([])
+        def read(*_args):
+            read_positions.append(position[0])
+            return "in" if 61.0 <= position[0] <= 63.0 else "out"
+        mock_ctrl.core.get_property.side_effect = read
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_min_um=60.0, z_max_um=64.0,
+            z_step_um=1.0, method="sweep", settle_ms=0,
+            return_thumbnail=False,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"], "stop_when_found": False},
+        )
+        assert result["coarse"]["z_positions"] == [60.0, 61.0, 62.0, 63.0, 64.0]
+        assert read_positions[0] == 60.0
+        assert min(read_positions) == 60.0
+
+    def test_range_and_explicit_window_refuse_before_motion(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=4.0,
+            z_min_um=60.0, z_max_um=64.0, z_step_um=1.0, method="sweep",
+        )
+        assert "z_range_um" in result["error"]
+        assert "z_min_um" in result["error"] and "z_max_um" in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
     def test_stop_when_found_with_numeric_probe_refuses_before_motion(
         self, mock_ctrl, unconstrained_guard
     ):
@@ -1481,7 +1553,7 @@ class TestRunAutofocus:
         assert result["planes_planned"] == 5
         assert "metric_curve" not in result["coarse"]
         assert result["exposures_spent"] == 0
-        assert result["property_dwell_ms"] >= 200
+        assert result["property_dwell_ms"] == 0
         assert "suppressed" in result["thumbnail_suppressed"]
         mock_ctrl.core.snap_image.assert_not_called()
 

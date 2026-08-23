@@ -869,7 +869,8 @@ TOOLS: list[dict[str, Any]] = [
             "maximises image sharpness, which finds the sharpest plane, not "
             "necessarily the sample plane. method='sweep' is right with a probe: "
             "the coarse pass exists to save exposures and property reads spend none. "
-            "Sweeps Z from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
+            "Sweeps either the explicit z_min_um/z_max_um window or the window "
+            "from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
             "in z_step_um steps. Returns BOTH passes (coarse chooses the plane, fine "
             "refines it) with their metric curves and contrast, plus converged/moved/"
             "entry_z_um/final_z_um. If the metric curve is structureless (low "
@@ -897,6 +898,14 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "number",
                     "description": "Total Z sweep range in µm, centred on current Z.",
                 },
+                "z_min_um": {
+                    "type": "number",
+                    "description": "Explicit lower Z sweep bound in µm; supply with z_max_um instead of z_range_um.",
+                },
+                "z_max_um": {
+                    "type": "number",
+                    "description": "Explicit upper Z sweep bound in µm; supply with z_min_um instead of z_range_um.",
+                },
                 "z_step_um": {
                     "type": "number",
                     "description": (
@@ -912,7 +921,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "settle_ms": {
                     "type": "integer",
-                    "description": "Wait time after each Z move in ms (default 50).",
+                    "description": "Camera settle after each Z move for image-based autofocus, in ms (default 50). Does not control a property probe.",
                     "default": 50,
                 },
                 "return_thumbnail": {
@@ -975,11 +984,29 @@ TOOLS: list[dict[str, Any]] = [
                                 "Not valid for a numeric probe."
                             ),
                         },
+                        "dwell_ms": {
+                            "type": "number",
+                            "minimum": 0,
+                            "default": 0,
+                            "description": (
+                                "Extra wait after the stage settles before each "
+                                "property read, for a property that updates slower "
+                                "than the stage settles (default 0). This is not a "
+                                "camera settle."
+                            ),
+                        },
                     },
                     "required": ["device", "property"],
                 },
             },
-            "required": ["z_range_um", "z_step_um"],
+            "required": ["z_step_um"],
+            "oneOf": [
+                {"required": ["z_range_um"],
+                 "not": {"anyOf": [{"required": ["z_min_um"]},
+                                    {"required": ["z_max_um"]}]}},
+                {"required": ["z_min_um", "z_max_um"],
+                 "not": {"required": ["z_range_um"]}},
+            ],
         },
     },
     {

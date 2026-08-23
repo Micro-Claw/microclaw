@@ -68,8 +68,7 @@ class AutofocusResult:
 MIN_CONTRAST = 0.15
 N_REF = 1024 * 1024
 MIN_BAND_PLANES = 3
-PROPERTY_PROBE_MIN_DWELL_S = 0.5
-PROPERTY_READ_MIN_STABLE_S = 0.1
+PROPERTY_PROBE_MIN_DWELL_S = 0
 
 
 def longest_true_run(flags) -> tuple[int, int]:
@@ -140,44 +139,24 @@ def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
     return None
 
 
-def _stable_read(core, device, prop, dwell_s, samples=3, poll_s=None,
-                 min_stable_s=PROPERTY_READ_MIN_STABLE_S):
-    """Return a value only after dwell plus a time-spanning stable sample run."""
-    if poll_s is None:
-        poll_s = STAGE_MOVE_POLL_S
+def _stable_read(core, device, prop, dwell_s, samples=3):
+    """Return a value after dwell and consecutive agreeing bridge reads."""
     dwell_s = max(float(dwell_s), 0.0)
     if dwell_s:
         time.sleep(dwell_s)
-    poll_s = min(float(poll_s), min_stable_s / max(samples - 1, 1))
-    started = time.monotonic()
     last = str(core.get_property(device, prop))
-    read_cost = time.monotonic() - started
-    first_equal_at = time.monotonic()
-    # The budget starts AFTER the first read and is sized for the reads it has
-    # to contain. A slow bridge round trip is not evidence that the value moved:
-    # arming the deadline before the first read made read latency eat the
-    # stability window, and a constant, correct reading was then reported
-    # UNSETTLED once the round trip passed ~30 ms -- which refuses the whole
-    # sweep. This is block 56's lesson in the other direction: a slow read is
-    # not an unstable reading, just as a device that is not busy has not
-    # necessarily arrived. Raising settle_ms widens this too, which is the knob
-    # the operator already has.
-    deadline = first_equal_at + max(
-        min_stable_s * 2, poll_s * samples, dwell_s, read_cost * (samples + 2)
-    )
     count = 1
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if count >= samples and now - first_equal_at >= min_stable_s:
-            return last, True
-        if poll_s > 0:
-            time.sleep(min(poll_s, max(deadline - time.monotonic(), 0.0)))
+    # Bound a changing property without using elapsed time. Bridge latency is
+    # not instability: every bridge call gets the same chance to contribute,
+    # however long it takes. A stable property costs exactly `samples` calls.
+    for _ in range(samples * 3 - 1):
         value = str(core.get_property(device, prop))
         if value == last:
             count += 1
+            if count >= samples:
+                return last, True
         else:
             last, count = value, 1
-            first_equal_at = time.monotonic()
     return last, False
 
 
@@ -203,7 +182,7 @@ def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
 
 def property_probe(core, device, prop, in_focus_values=None, *,
                    step_um=1.0, lo_um=0.0, hi_um=0.0,
-                   dwell_s=0.05, stop_when_found=True) -> FocusProbe:
+                   dwell_s=0.0, stop_when_found=True) -> FocusProbe:
     allowed = _strings(core.get_allowed_property_values(device, prop))
     values = [str(value) for value in (in_focus_values or [])]
     if allowed and not values:
@@ -447,6 +426,8 @@ def coarse_then_fine_autofocus(
     metric_fn: Callable[[np.ndarray], float] = tenengrad,
     min_contrast: float = MIN_CONTRAST,
     probe: FocusProbe | None = None,
+    z_min_um: float | None = None,
+    z_max_um: float | None = None,
 ) -> AutofocusResult:
     """Two-pass autofocus that reports BOTH passes and restores Z on a flat curve.
 
@@ -471,8 +452,8 @@ def coarse_then_fine_autofocus(
     """
     entry_z = float(ctrl.core.get_position())
     active_probe = probe or image_probe(ctrl, metric_fn, None, min_contrast)
-    lo_bound = entry_z - z_range_um / 2
-    hi_bound = entry_z + z_range_um / 2
+    lo_bound = entry_z - z_range_um / 2 if z_min_um is None else z_min_um
+    hi_bound = entry_z + z_range_um / 2 if z_max_um is None else z_max_um
 
     try:
         coarse = sweep_autofocus(
@@ -565,6 +546,8 @@ def single_sweep_autofocus(
     metric_fn: Callable[[np.ndarray], float] = tenengrad,
     min_contrast: float = MIN_CONTRAST,
     probe: FocusProbe | None = None,
+    z_min_um: float | None = None,
+    z_max_um: float | None = None,
 ) -> AutofocusResult:
     """One-pass autofocus with the same contrast gate and result shape as
     coarse_then_fine_autofocus (the single pass is reported as `coarse`).
@@ -576,7 +559,10 @@ def single_sweep_autofocus(
     active_probe = probe or image_probe(ctrl, metric_fn, None, min_contrast)
     try:
         sweep = sweep_autofocus(
-            ctrl, entry_z - z_range_um / 2, entry_z + z_range_um / 2, z_step_um,
+            ctrl,
+            entry_z - z_range_um / 2 if z_min_um is None else z_min_um,
+            entry_z + z_range_um / 2 if z_max_um is None else z_max_um,
+            z_step_um,
             settle_ms, metric_fn=metric_fn, move_to_best=False,
             probe=active_probe,
         )
