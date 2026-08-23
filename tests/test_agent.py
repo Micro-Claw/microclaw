@@ -1134,3 +1134,17 @@ class TestBuiltInOfflineAdaptersAreDiscoverable:
         # which is true of saved adapters and false of these two.
         description = self._schema()["description"]
         assert "no review" in description or "need no review" in description
+
+
+def test_unknown_status_strings_are_not_a_reason_to_hand_step_z():
+    """Nikon 56ab gate, 2026-08-23: it offered PFS, then hand-walked Z anyway.
+
+    Its own account: "I told myself I needed to discover the in-range string
+    before the probe could stop on it." That is the loop design/56 exists to
+    delete, and it is unnecessary -- a wrong guess refuses with every value the
+    sweep observed, which is exactly how the operator's own mistyped
+    `Within range of focus` call recovered the right spelling later in the same
+    session. Nothing had told the model that.
+    """
+    assert "is NOT a reason to step Z" in SYSTEM_PROMPT
+    assert "lists every value the sweep actually observed" in SYSTEM_PROMPT

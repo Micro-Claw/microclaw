@@ -3294,3 +3294,34 @@ def test_emitted_regionless_run_scales_its_guard_to_the_live_frame(
     assert namespace["autofocus_result"].converged is False
     assert namespace["autofocus_result"].moved is False
     assert core.z == 50.0
+
+
+def test_generic_focus_lock_emits_the_core_call_it_actually_made(tmp_path):
+    """A non-EMU set_focus_lock must reach the standalone script.
+
+    Nikon, 56ab gate, 2026-08-23: the exported script ran the autofocus
+    correctly, printed its envelope, moved to 2649.975 -- and then died with
+
+        RuntimeError: NOT EMITTED: set_focus_lock - the recorded focus-lock
+        property has no device prefix
+
+    because block 56a taught set_focus_lock to work through MMCore's continuous
+    focus while _emit_focus_lock still assumed the EMU map's `Device.Property`
+    shape. Fail-closed rather than fabricating, correctly -- but the capability
+    was unusable in an export, which CLAUDE.md counts as unfinished.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "set_focus_lock", {"enabled": True}, {
+            "engaged": True,
+            "property": "continuous focus device TIPFSStatus",
+            "continuous_focus_device": "TIPFSStatus",
+            "value": True,
+        }))
+    assert "core.enable_continuous_focus(True)" in source
+    assert "NOT EMITTED" not in source
+
+    _, _, emu = export(tmp_path, completed_call(
+        "set_focus_lock", {"enabled": False},
+        {"engaged": False, "property": "PFS.State", "value": "0"}))
+    assert "core.set_property('PFS', 'State', '0')" in emu
+    assert "NOT EMITTED" not in emu

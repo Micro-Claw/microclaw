@@ -409,6 +409,15 @@ def _emit_focus_lock(params: RecordedParams) -> str:
     result = params.result
     if "property" not in result or "value" not in result:
         raise CannotEmit("the recorded result has no resolved focus-lock property/value")
+    # Two routes, like set_channel's: the EMU map writes a device property, and
+    # the generic path calls MMCore's own continuous-focus switch. This emitter
+    # knew only the first, so the moment block 56a taught set_focus_lock to work
+    # on a non-EMU rig, every session that used it exported a script that died
+    # three lines after a correct autofocus -- measured on the Nikon, 56ab gate,
+    # 2026-08-23. CLAUDE.md: a new capability is not finished until it can appear
+    # in an exported script, and this is the fourth block to learn it.
+    if result.get("continuous_focus_device"):
+        return f"core.enable_continuous_focus({bool(result['value'])!r})"
     device, separator, prop = result["property"].partition(".")
     if not separator:
         raise CannotEmit("the recorded focus-lock property has no device prefix")
@@ -8192,6 +8201,9 @@ def set_focus_lock(
         return {
             "engaged": bool(enabled),
             "property": f"continuous focus device {device}",
+            # The emitter's discriminator: this route is MMCore's own switch,
+            # not a device property write, and `property` above is prose.
+            "continuous_focus_device": device,
             "value": bool(enabled),
         }
     lock = build_emu_map(props, params)["focus_lock"]
