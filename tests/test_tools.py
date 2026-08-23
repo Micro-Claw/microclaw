@@ -55,6 +55,19 @@ from microclaw.tools import (
 )
 
 
+class StrVector:
+    """Bridge-shaped string vector: deliberately not Python-iterable."""
+
+    def __init__(self, values):
+        self._values = list(values)
+
+    def size(self):
+        return len(self._values)
+
+    def get(self, index):
+        return self._values[index]
+
+
 class TestLiveView:
     def test_start_live_view(self, mock_ctrl, unconstrained_guard):
         mock_ctrl.studio.live().is_live_mode_on.return_value = True
@@ -1397,6 +1410,248 @@ def _patch_autofocus(monkeypatch):
 
 
 class TestRunAutofocus:
+    def test_probe_dwell_default_follows_the_stopping_rule(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """No dwell when stopping early; a dwell when mapping the band.
+
+        Nikon, 56ab gate 2026-08-23. Sweeping 2200-2800 at 5 um with
+        stop_when_found false: dwell 0 read the band as {2655, 2660} and REFUSED
+        it as too few planes, dwell 500 read {2650, 2655, 2660} and converged.
+        The 2650 plane is real. Band mapping is decided by its edge planes, which
+        are exactly the ones a lagging property reports wrongly; stopping at the
+        first in-range plane is not, because a late read lands one plane deeper
+        into the band and engaging the lock confirms it at zero dose.
+
+        So the default follows the mode, and an explicit dwell_ms still wins in
+        either. Asserting the ABSENCE of waiting is the point of the first case.
+        """
+        position = [2.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_a: position[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector([])
+        mock_ctrl.core.get_property.side_effect = lambda *_a: (
+            "in" if 1.0 <= position[0] <= 3.0 else "out"
+        )
+        sleeps = []
+        monkeypatch.setattr(
+            "microclaw.autofocus.time", types.SimpleNamespace(sleep=sleeps.append)
+        )
+        common = dict(
+            z_range_um=4.0, z_step_um=1.0, method="sweep",
+            settle_ms=0, return_thumbnail=False,
+        )
+        base = {"device": "lock", "property": "status", "in_focus_values": ["in"]}
+
+        early = run_autofocus(mock_ctrl, unconstrained_guard, **common, probe=dict(base))
+        assert sleeps == []
+        assert early["property_dwell_ms"] == 0
+
+        position[0] = 2.0
+        sleeps.clear()
+        mapped = run_autofocus(mock_ctrl, unconstrained_guard, **common,
+                               probe={**base, "stop_when_found": False})
+        assert sleeps == [0.5] * 5
+        assert mapped["property_dwell_ms"] == 500
+
+        position[0] = 2.0
+        sleeps.clear()
+        overridden = run_autofocus(mock_ctrl, unconstrained_guard, **common,
+                                   probe={**base, "stop_when_found": False,
+                                          "dwell_ms": 0})
+        assert sleeps == []
+        assert overridden["property_dwell_ms"] == 0
+        assert overridden["coarse"]["readings"] == mapped["coarse"]["readings"]
+
+        position[0] = 2.0
+        sleeps.clear()
+        run_autofocus(mock_ctrl, unconstrained_guard, **common,
+                      probe={**base, "dwell_ms": 500})
+        # Two, not five: the early stop lands on the second plane, so an
+        # explicit dwell is paid only for the planes actually read.
+        assert sleeps == [0.5] * 2
+
+    def test_explicit_window_sweeps_only_that_window(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        position = [50.0]
+        read_positions = []
+        mock_ctrl.core.get_position.side_effect = lambda *_a: position[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector([])
+        def read(*_args):
+            read_positions.append(position[0])
+            return "in" if 61.0 <= position[0] <= 63.0 else "out"
+        mock_ctrl.core.get_property.side_effect = read
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_min_um=60.0, z_max_um=64.0,
+            z_step_um=1.0, method="sweep", settle_ms=0,
+            return_thumbnail=False,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"], "stop_when_found": False},
+        )
+        assert result["coarse"]["z_positions"] == [60.0, 61.0, 62.0, 63.0, 64.0]
+        assert read_positions[0] == 60.0
+        assert min(read_positions) == 60.0
+
+    def test_range_and_explicit_window_refuse_before_motion(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=4.0,
+            z_min_um=60.0, z_max_um=64.0, z_step_um=1.0, method="sweep",
+        )
+        assert "z_range_um" in result["error"]
+        assert "z_min_um" in result["error"] and "z_max_um" in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
+    def test_stop_when_found_with_numeric_probe_refuses_before_motion(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            probe={"device": "PFS", "property": "Offset",
+                   "stop_when_found": True},
+        )
+        assert "stop_when_found" in result["error"]
+        assert "numeric" in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
+    def test_property_probe_refuses_default_coarse_then_fine_before_motion(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 90.0, 1.0,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"]},
+        )
+        assert "method='sweep'" in result["error"]
+        assert "spends no exposures" in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
+    @pytest.mark.parametrize("region", [[10, 10, 64, 64], "drawn"])
+    def test_property_probe_refuses_metric_region_instead_of_ignoring_it(
+        self, mock_ctrl, unconstrained_guard, region
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            region=region,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"]},
+        )
+        assert "property" in result["error"] and "region does not apply" in result["error"]
+        mock_ctrl.drawn_region.assert_not_called()
+        mock_ctrl.core.set_position.assert_not_called()
+
+    def test_quoted_json_probe_is_schema_reachable_and_runs_zero_exposure_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools_schema import TOOLS
+        schema = next(tool for tool in TOOLS if tool["name"] == "run_autofocus")
+        probe_schema = schema["input_schema"]["properties"]["probe"]
+        assert probe_schema["type"] == "object"
+        assert probe_schema["required"] == ["device", "property"]
+
+        position = [51.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_args: position[0]
+        mock_ctrl.core.set_position.side_effect = lambda z: position.__setitem__(0, float(z))
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector(["out", "in"])
+        mock_ctrl.core.get_property.side_effect = lambda *_args: (
+            "in" if 50.0 <= position[0] <= 52.0 else "out"
+        )
+        monkeypatch.setattr("microclaw.autofocus.STAGE_MOVE_POLL_S", 0)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            settle_ms=5, return_thumbnail=True,
+            probe='{"device":"lock","property":"status","in_focus_values":["in"]}',
+        )
+
+        assert result["converged"] is True
+        assert result["final_z_um"] == 50.0
+        assert result["coarse"]["readings"] == ["out", "in"]
+        assert result["coarse"]["in_range"] == [False, True]
+        assert result["stopped_early"] is True
+        assert result["planes_read"] == 2
+        assert result["planes_planned"] == 5
+        assert "metric_curve" not in result["coarse"]
+        assert result["exposures_spent"] == 0
+        assert result["property_dwell_ms"] == 0
+        assert "suppressed" in result["thumbnail_suppressed"]
+        mock_ctrl.core.snap_image.assert_not_called()
+
+    def test_image_exposures_spent_includes_final_metric_thumbnail_snap(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        _patch_autofocus(monkeypatch)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 10.0, 1.0, return_thumbnail=True
+        )
+        payload = json.loads(result[0]["text"])
+        swept = len(_FAKE_AF_RESULT.coarse.z_positions) + len(
+            _FAKE_AF_RESULT.fine.z_positions
+        )
+        assert payload["exposures_spent"] == swept + 1
+
+    def test_early_stop_payload_never_contradicts_its_own_table(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """peak_interior must not claim "interior" about the last row read.
+
+        An early-stopped sweep stops because it found the target, so the chosen
+        plane is always the final row of the returned table. peak_interior was
+        computed against the PLANNED plane count, so the payload reported True
+        while its own z_positions said the plane sat at the end -- a field
+        disagreeing with the table beside it, which is how block 52a's defect
+        was found.
+        """
+        position = [51.0]
+        mock_ctrl.core.get_position.side_effect = lambda *_a: position[0]
+        mock_ctrl.core.set_position.side_effect = (
+            lambda z: position.__setitem__(0, float(z))
+        )
+        mock_ctrl.core.device_busy.return_value = False
+        mock_ctrl.core.get_allowed_property_values.return_value = []
+        mock_ctrl.core.get_property.side_effect = lambda *_a: (
+            "in" if position[0] >= 53.0 else "out"
+        )
+        monkeypatch.setattr("microclaw.autofocus.STAGE_MOVE_POLL_S", 0)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 20.0, 1.0, method="sweep",
+            settle_ms=5, return_thumbnail=False,
+            probe={"device": "lock", "property": "status",
+                   "in_focus_values": ["in"]},
+        )
+        coarse = result["coarse"]
+        assert coarse["stopped_early"] is True
+        assert coarse["planes_read"] < coarse["planes_planned"]
+        assert "peak_interior" not in coarse
+        assert "peak_interior does not apply" in coarse["stopping_rule"]
+
+    @pytest.mark.parametrize("allowed, values, message", [
+        (["out", "in"], None, "Name which"),
+        (["out", "in"], ["typo"], "never reports"),
+    ])
+    def test_property_probe_value_errors_are_tool_payloads_before_motion(
+        self, mock_ctrl, unconstrained_guard, allowed, values, message
+    ):
+        mock_ctrl.core.get_allowed_property_values.return_value = StrVector(allowed)
+        spec = {"device": "lock", "property": "status"}
+        if values is not None:
+            spec["in_focus_values"] = values
+        mock_ctrl.core.set_position.reset_mock()
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, 4.0, 1.0, method="sweep",
+            return_thumbnail=False, probe=spec,
+        )
+
+        assert message in result["error"]
+        mock_ctrl.core.set_position.assert_not_called()
+
     def test_drawn_region_resolves_once_and_sets_scaled_threshold(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
@@ -1416,6 +1671,7 @@ class TestRunAutofocus:
 
         mock_ctrl.drawn_region.assert_called_once_with()
         assert result["region"] == [2, 3, 8, 4]
+        assert result["criterion"] == "max tenengrad over [2, 3, 8, 4]"
         assert counts and set(counts) == {32}
 
     @pytest.mark.parametrize(
@@ -2841,6 +3097,76 @@ class TestFocusLock:
         result = get_focus_lock_state(mock_ctrl, unconstrained_guard)
         assert result["engaged"] is None
         assert "reason" in result
+
+    def test_non_emu_autofocus_device_reports_lock_and_blocks_sweep(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "HardwareAF"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = True
+        mock_ctrl.core.get_device_property_names.return_value = []
+        state = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+        assert state["engaged"] is True
+        assert state["property"] == "continuous focus device HardwareAF"
+        assert state["device"] == "HardwareAF"
+        sweep = MagicMock()
+        monkeypatch.setattr("microclaw.tools.coarse_then_fine_autofocus", sweep)
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=10.0, z_step_um=1.0
+        )
+        assert "Focus lock is engaged" in result["error"]
+        sweep.assert_not_called()
+
+    @pytest.mark.parametrize("rig, names, values, readonly, expected_pick", [
+        # Nikon Ti, measured 2026-08-22.
+        ("Ti", ["FullFocusTimeoutMs", "Name", "State", "Status"],
+         {"FullFocusTimeoutMs": "5000", "Name": "TIPFSStatus", "State": "Off",
+          "Status": "Out of focus search range"},
+         {"Status", "Name"}, "Status"),
+        # Nikon Ti2-E / Andor Dragonfly, measured 2026-08-23. Different device,
+        # different property, different values -- and a "PFS Status" that is a
+        # 16-bit string nobody should probe sitting next to the useful one.
+        ("Dragonfly",
+         ["DichroicMirrorInserted", "FocusMaintenance", "LEDIntensity",
+          "PFS Status", "PFS in Range"],
+         {"DichroicMirrorInserted": "1", "FocusMaintenance": "On",
+          "LEDIntensity": "3", "PFS Status": "0000001100001010",
+          "PFS in Range": "In Range"},
+         {"PFS Status", "PFS in Range"}, "PFS in Range"),
+    ])
+    def test_focus_lock_state_names_the_properties_a_probe_could_read(
+        self, mock_ctrl, unconstrained_guard, monkeypatch,
+        rig, names, values, readonly, expected_pick,
+    ):
+        """Naming the device but not the property is what sent it to the camera.
+
+        On both rigs the model had the lock device and still reached for an
+        image sweep -- on the Dragonfly the operator had to ask "why not do a
+        PFS search?". Finding the property took list_device_properties plus a
+        get_device_property_info per candidate, and on a cold session it was
+        cheaper to give up. The values are what disambiguate, and no rule about
+        names could: the two rigs share none.
+        """
+        from microclaw.tools import get_focus_lock_state
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "PFSDEV"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_property_names.return_value = names
+        mock_ctrl.core.is_property_read_only.side_effect = (
+            lambda _d, prop: prop in readonly
+        )
+        mock_ctrl.core.get_property.side_effect = lambda _d, prop: values[prop]
+
+        state = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+
+        assert state["device"] == "PFSDEV"
+        assert set(state["status_properties"]) == readonly
+        assert state["status_properties"][expected_pick] == values[expected_pick]
+        assert "run_autofocus" in state["probe_hint"]
+        # Writable properties are not probe candidates and must not be offered.
+        assert all(name not in state["status_properties"]
+                   for name in names if name not in readonly)
 
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import set_focus_lock

@@ -74,6 +74,7 @@ not holding. The complete observed value set:
 | `Dichroic mirror not inserted` | PFS blind; first read of the session |
 | `Out of focus search range` | every one of the eight search planes |
 | `Within range of focus search` | lines 225, 241 — lock dropped after a tile survey, Z parked at 2375.4; re-arming immediately gave `Locked in focus` |
+| `Focus lock failed` | Nikon session 2026-08-22 |
 | `Focusing` | transient, ~1 s after `State=On` |
 | `Locked in focus` | held |
 
@@ -285,35 +286,31 @@ best focus.** They coincide only if the range is symmetric about focus, and the
 session measured that it is not quite: locked Z ~2373.7, best offset 165.4 out
 of a 0–1000 range. This call finds range; the offset finds focus.
 
-### 3. `property_probe` asks the device, not the model, what kind of reading it is
+### 3. `in_focus_values` declares a categorical reading
 
 ```python
 def property_probe(core, device, prop, in_focus_values=None) -> FocusProbe:
     allowed = _strings(core.get_allowed_property_values(device, prop))
-    if allowed:                                    # the device enumerates
-        if not in_focus_values:
-            raise ValueError(
-                f"{device}.{prop} reports one of {sorted(allowed)}. Name which "
-                f"of those mean in-focus (in_focus_values)."
-            )
-        unknown = sorted(set(in_focus_values) - set(allowed))
+    if allowed and not in_focus_values:
+        raise ValueError(
+            f"{device}.{prop} reports one of {sorted(allowed)}. Name which "
+            f"of those mean in-focus (in_focus_values)."
+        )
+    if in_focus_values:
+        unknown = sorted(set(in_focus_values) - set(allowed)) if allowed else []
         if unknown:
             raise ValueError(
                 f"{device}.{prop} never reports {unknown}; it reports one of "
                 f"{sorted(allowed)}."
             )
-    elif in_focus_values:
-        raise ValueError(
-            f"{device}.{prop} enumerates no values, so it is read as a number "
-            f"and maximised; in_focus_values does not apply."
-        )
     ...
 ```
 
-A mistyped `in_focus_values` would otherwise produce zero in-range planes —
-which reads **identically to "the focus is not in this window"**, and the
-documented response to that is to search higher, toward a loaded oil coverslip.
-A string typo must fail before the first move.
+`in_focus_values` is the caller's declaration that the property is categorical.
+A non-empty device enumeration validates that declaration before the first move;
+an empty enumeration does not turn a string-valued status into a numeric probe.
+When enumeration is absent, the no-plane refusal lists the distinct observed
+values so a mistyped declaration is self-correcting after one sweep.
 
 **And the sweep must refuse on a precondition reading before it starts.** The
 session's very first `Status` was `Dichroic mirror not inserted`: PFS was blind.
@@ -462,6 +459,163 @@ Device label, property name and value list are literals, so **no `CannotEmit`**.
 The emitted envelope print carries the window, the step, the criterion and the
 `in_focus_values` it compares against.
 
+### 8. Stop when the band is found — the sweep's job is to reach the lock, not to map it
+
+**Measured, Nikon 2026-08-22 evening** (`pfs-nikon-design56-3/`,
+`20260822_231154_352122_microclaw_history.jsonl`). The probe worked: the fourth
+sweep found the band and locked. What it cost:
+
+| sweep | planes | window | result |
+| --- | --- | --- | --- |
+| 1 | 101 | 0.4–100.4 | no band |
+| 2 | 101 | 100.7–200.7 | no band |
+| 3 | 201 | 2149.8–2349.8 | no band |
+| 4 | 201 | 2350.9–2550.9 | band **2358.9–2387.9**, converged, locked |
+
+**604 planes. About six minutes of dwell alone**, before stage settling. And the
+sweep that succeeded **read its first in-range plane at index 9 of 201** — then
+swept 192 more planes to compute a band centre it did not need.
+
+Two measurements refute assumptions in the sections above:
+
+- **The capture band is ~29 µm on this objective**, not the ~10 µm the Problem
+  section reasons from. Thirty consecutive in-range planes at 1 µm. Every
+  argument here that treats a 5 µm step as necessarily too coarse is calibrated
+  to the wrong number; the step that is "too coarse" is a property of the rig
+  and must be *measured*, never carried in `microclaw/`.
+- **The band centre is not needed.** The operator's rule: once any plane reads
+  in-range, engaging the lock pulls it to focus by itself. Corroborated in the
+  previous session, where arming PFS from 2355 drove the axis up ~20 µm and
+  locked at 2375.
+
+So the reduction §2 built — centre of the longest contiguous run — answers a
+question ("where is this band?") that is not the question a focus hand-off asks
+("is there anywhere in this window the lock can take over?").
+
+**Decision.** A categorical probe stops at the **first plane that reads
+in-focus**, leaves Z there, and reports it. `stop_when_found` turns the full
+sweep back on for the case that really does want the band mapped.
+
+```
+probe={"device": ..., "property": ..., "in_focus_values": [...],
+       "stop_when_found": true}   # default for a categorical probe
+```
+
+**What confirms a single plane, given §2's refusals no longer run.** Nothing in
+the sweep — and nothing needs to. `_stable_read` (§4) already requires the
+reading to hold across consecutive samples spanning a minimum interval, so a
+transient cannot stop the sweep; and **the lock itself is the confirmation**.
+Engaging it either reports `Locked in focus` or `Focus lock failed`, at zero
+dose, immediately. That is a better test than three more property reads.
+
+**What this gives up, stated plainly.** The non-contiguous refusal — the one
+that says two separated runs are two reflecting surfaces — cannot fire on a
+sweep that stops inside the first run. Coverslip-versus-sample discrimination
+moves back to where the operator already does it: engage, then look for signal.
+A caller who wants that discrimination sets `stop_when_found: false` and gets
+§2's whole-curve behaviour, refusals included.
+
+**A transient state must not be named as in-focus, and the early stop is what
+makes that load-bearing.** Operator, 2026-08-23: the status reads `Focusing` for
+about a second whenever the lock is engaged, including by a human mid-sweep.
+Under §2's band reduction a stray transient contributed one plane and was
+outvoted by `MIN_BAND_PLANES`; under this section it **stops the sweep**, at
+whatever plane the transition happened to coincide with. `_stable_read` does not
+save us — it asks the reading to hold for ~100 ms and a one-second transient
+holds easily. So `in_focus_values` must name steady states only, and the schema
+has to say so rather than leaving it to be discovered. The rig's own session on
+2026-08-22 passed `["Within range of focus search", "Focusing", "Locked in
+focus"]`; the middle one is the hazard.
+
+**Payload.** Report `stopped_early`, `planes_read` and `planes_planned`, and
+keep the plane→reading table for the planes actually read. A sweep that stops at
+plane 9 of 201 must say so; "converged" over 9 planes and over 201 are different
+claims and the payload must not blur them.
+
+**Step size is the other half of this.** The same session swept 1 µm four times
+and, asked why, answered: "I didn't have a real reason." Nothing in the schema
+connects the step to what is being looked for. With an early stop, a coarse step
+is both cheap and safe — the sweep ends as soon as it lands in the band, so the
+only cost of a step too fine is time, and the only cost of a step too coarse is
+stepping over the band. Say that in the schema, in those terms, without naming a
+number: microclaw does not know this rig's capture range.
+
+### 9. The sweep waits on nothing, and re-sweeps what it has already cleared (56b)
+
+**Measured, Nikon 2026-08-23** (`pfs-nikon-design56-4/`,
+`20260823_095336_954938_microclaw_history.jsonl`). The probe found the band and
+locked. It also took, by the operator's stopwatch, **2–3 s per plane**:
+
+| sweep | planes | outcome |
+| --- | --- | --- |
+| 1 | 184 read of 184 | no band, 951.5 → 2415.5 |
+| 2 | 124 read of 141 | stopped early at 2664.7, locked |
+
+**308 planes. About 91 of sweep 2's planes re-swept 1684 → 2416, which sweep 1
+had already proved empty** — the operator did the arithmetic himself and asked
+why the tool had not.
+
+#### 9a. Two clocks, and we are neither of them
+
+Per plane, in order: `set_position`; `settle_stage_move`, which returns only
+after three in-tolerance samples **spanning ≥100 ms**, so the axis is confirmed
+parked; then `time.sleep(PROPERTY_PROBE_MIN_DWELL_S)` = **500 ms**; then
+`_stable_read`, three reads that must span a further **100 ms**.
+
+**600 ms per plane of added latency, after the axis has already been still for
+100 ms.** And it buys nothing. The Nikon PFS samples at **200 Hz — a 5 ms
+period — "independent of microscope and camera control software"**
+([microscopyu](https://www.microscopyu.com/applications/live-cell-imaging/nikon-perfect-focus-system),
+retrieved 2026-08-23). By the time the dwell begins, the sensor has re-evaluated
+about twenty times. There is nothing to wait for.
+
+**Where the 500 ms came from, recorded so it is not repeated.** §4 argued the
+evaluation is asynchronous and cited `FullFocusTimeoutMs = 5000`. That is the
+timeout for the full-focus *search operation*, not the status refresh period — a
+rate inferred from an operation timeout. The constant was then "validated"
+against a lagging sensor written to embody that same assumption. A fake that
+encodes the assumption is not a test of it, and this one was the coordinator's.
+
+**Decision, as first written and then REFUTED on the rig — see §9d.**
+`PROPERTY_PROBE_MIN_DWELL_S` goes to **0**. The dwell stays as an **optional
+parameter** — other hardware may genuinely need it — as `dwell_ms` on the
+`probe` object, described as extra wait for a property that updates *slower than
+the stage settles*. It stops riding on `settle_ms`, whose image-path meaning is a
+camera settle and is a different thing.
+
+**§9d supersedes the "default 0" half of this.** The rest stands.
+
+`_stable_read` keeps its consecutive-agreement check and **loses the mandatory
+100 ms span**: three reads that must simply agree cost three bridge calls and no
+sleeping, and a genuinely slow property makes them disagree and wait by itself.
+
+**`settle_stage_move` is not touched.** It is block 56's gated contract and it is
+what makes a reported plane position the measured one. Trading it for speed is
+the wrong direction.
+
+#### 9b. Sweep a window, not a range around wherever the stage happens to be
+
+`run_autofocus` centres on current Z and takes `z_range_um`, so searching "the
+part I have not searched yet" means moving the stage first and then computing a
+half-width. On 2026-08-23 that produced a centre of 2242 with a range of 1116,
+re-covering 730 µm of cleared ground; the operator's own arithmetic — centre
+2608, range 384 — was the correct call and the tool made it the harder one to
+express.
+
+**Decision.** Accept an explicit window, `z_min_um` / `z_max_um`, as an
+alternative to `z_range_um`. Supplying both forms is refused rather than ranked.
+The window is guard-checked at both ends exactly as the centred form is.
+
+#### 9c. A correct number, applied to the wrong quantity
+
+`SYSTEM_PROMPT` says the PFS offset range is ~10 µm for oil, and **that is right**
+— microscopyu gives ~10 µm oil, 20 µm water, 100 µm+ dry for the *offset* range.
+But §Problem used it to reason about the width of the band `Status` reports
+in-range, and those are different quantities: the band measured **29 µm** on this
+oil objective (§8). Do not carry either number into `microclaw/`; the argument
+that a given step is "too coarse" must come from a measurement, and the two
+figures must not be conflated again.
+
 ## Two defects this session exposed, neither Nikon-specific
 
 **1. A refusal that hands back the number it refused to act on.** All four
@@ -547,7 +701,9 @@ see it. Replace the
 with the tool in the same commit — a prompt that still describes the loop will
 keep producing the loop.
 
-**Rig gate 56a (Nikon).** Re-run 2026-08-22 with the tool, on the same sample.
+**Rig gate 56a (Nikon).** Superseded by the combined runbook
+`design/56-block56ab-rig-gate.md`, which gates 56a and 56b in one trip. The
+limbs below are kept as the statement of intent; the runbook is what gets run.
 
 - With PFS **Off** and Z at ~2300, **one** `run_autofocus` call with the probe,
   `z_range_um=120`, `z_step_um=1`, `method="sweep"`, `in_focus_values=["Within
@@ -583,19 +739,165 @@ keep producing the loop.
   strictest criterion produced no rig evidence because it shipped with
   placeholders and was run verbatim).
 
+#### 9d. Measured: a zero dwell is right for stopping, wrong for mapping
+
+**Nikon, 56ab gate, 2026-08-23.** The same window swept twice at 5 µm,
+`stop_when_found: false`:
+
+| dwell | planes read in-range | outcome |
+| --- | --- | --- |
+| `0` | 2655, 2660 | **refused** — two planes is not a band |
+| `500 ms` | **2650**, 2655, 2660 | **converged**, moved to 2655 |
+
+The 2650 plane is real and the fast read missed it. Cost of the dwell: **~30 s
+over 121 planes** (1:20 → 1:50), about half what §9a predicted.
+
+**Why §9a's argument was wrong, and it is worth naming the shape.** The 200 Hz
+figure is the PFS servo's own sampling loop. The reading does not come from the
+servo; it comes through Micro-Manager's TI adapter, which polls on its own
+cadence. **A device's internal rate is not its property's update rate.** That is
+the same error as §9c one level down: a correct number applied to the wrong
+quantity.
+
+**Decision (operator, 2026-08-23): the default follows the stopping rule.**
+
+- `stop_when_found: true` (the default) → dwell **0**. A late read lands one
+  plane *deeper into* the band, and engaging the lock confirms the plane at zero
+  dose. Both early-stop sweeps in this gate found the band and locked.
+- `stop_when_found: false` → dwell **`PROPERTY_PROBE_BAND_DWELL_S` = 0.5 s**.
+  Band mapping is decided by the planes at the band's edges, which are exactly
+  the ones a lagging property reports wrongly.
+- An explicit `dwell_ms` wins in either mode, including `0`.
+
+`FocusProbe` carries the resolved `dwell_s`, and the payload reports it from
+there rather than recomputing it, so `property_dwell_ms` cannot disagree with
+the sweep that ran. The emitted script receives `dwell_ms=None` when the caller
+omitted it and resolves it by the same rule, so live and standalone agree by
+construction rather than by a copied constant.
+
+**The one case the early-stop tolerance does not cover:** a step so coarse that
+the band is a single plane. Then a late read can land past it. That is
+indistinguishable from a step too coarse to find the band at all, which is
+already a refusal, and the lock is still the confirmation.
+
+#### 9e. A second Nikon, and why naming the device was never enough
+
+**Nikon Ti2-E / Andor Dragonfly, 2026-08-23** (`pfs-dragonfly-design56ab/`).
+First cross-rig evidence for the probe, and it holds: same tool, entirely
+different names.
+
+| | Ti | Ti2-E / Dragonfly |
+| --- | --- | --- |
+| lock device | `TIPFSStatus` | `PFS` |
+| property | `Status` | `PFS in Range` |
+| in-range value | `Within range of focus search` | `In Range` |
+
+Nothing in `microclaw/` had to change for the second rig — the probe took all
+three as arguments, which is what §3 was for. `run_autofocus` found the band and
+the lock engaged on both.
+
+**But it still had to be asked.** On a cold session the operator wrote *"Why not
+do a PFS search?"*, and only then did it call the probe — correctly, first try.
+Later in the same session, once the rig's names were known, it went straight to
+the probe unprompted. So the failure is not reluctance; it is **not knowing which
+property to read**.
+
+`get_focus_lock_state` named the *device* and stopped. The probe needs a
+*property*, and finding one cost `list_device_properties` plus a
+`get_device_property_info` per candidate — on a cold session, cheaper to give up
+and reach for the camera. Two prompt edits had already tried to push the other
+way and neither held, which is the signal that the fix is not more prompt text.
+
+**Decision.** `get_focus_lock_state` returns the lock device's **read-only
+properties with their current values**, plus a hint naming `run_autofocus`. One
+call now carries everything the probe needs.
+
+The values are what disambiguate, and no rule about names could: the two rigs
+share none, and the Dragonfly's `PFS Status` reads `0000001100001010` — a
+bitfield sitting right next to the useful `PFS in Range`. Seeing
+`{"PFS Status": "0000001100001010", "PFS in Range": "In Range"}` makes the choice
+obvious; seeing the two names alone does not. Both rigs' measured property sets
+are the test fixtures.
+
+### 56b — `dwell_ms`, and an explicit window
+
+Design: §9 (9a, 9b, 9c). Files: `microclaw/autofocus.py`
+(`PROPERTY_PROBE_MIN_DWELL_S`, `_stable_read`, `property_probe`),
+`microclaw/tools.py` (`run_autofocus`, `_run_autofocus_passes`,
+`_emit_autofocus`), `microclaw/tools_schema.py`, `microclaw/agent.py`,
+plus their tests.
+
+**Rig gate 56b (Nikon).** Two limbs, both comparisons rather than verdicts.
+
+- **The dwell finally gets measured.** Sweep one window that contains the band
+  twice, `stop_when_found: false` both times, at `dwell_ms: 0` and
+  `dwell_ms: 500`. The two in-range bands must be **identical**, and the
+  wall-clock time per plane must fall. Identical bands is the evidence that 0 is
+  right; a shifted band at 0 is the evidence it is not, and the shift is the
+  measurement of this device's true latency. This is the limb §4 should have had.
+- **The window is not re-swept.** With `z_min_um` / `z_max_um`, search a span
+  adjacent to one already cleared and confirm from the payload that
+  `z_positions` starts at `z_min_um` and that no plane below it was read.
+
 Step-10 design gate: record in `CLAUDE.md` §"The pycro-manager acquisition
 engine" that an asynchronous *reading* settles no faster than an asynchronous
 *move*, and that a hand-driven loop hides that behind its round-trip latency;
 and update `design/40`'s "lock is binary" finding, which this session
 supersedes.
 
+## Owed rig evidence — read this before trusting a limb
+
+**56a and 56b merged 2026-08-23 by operator decision, with the gate partly run
+and four changes never on a rig at all.** The operator was losing access to both
+Nikons; merging working code beat holding it behind a trip that could not be
+booked. This section is the price of that, and the runbook
+(`design/56-block56ab-rig-gate.md`) is **merged to `main` with the code** rather
+than dying with the branch, so the owed limbs still have their instructions.
+
+**What the rig did establish** (Nikon Ti, `pfs-nikon-design56ab-2`, and
+Ti2-E/Dragonfly, `pfs-dragonfly-design56ab`, both 2026-08-23):
+
+- The probe finds the band and the lock engages, **on two rigs sharing no device
+  label, property name or value string** (§9e).
+- The armed-lock refusal fires on a non-EMU rig — impossible before this block.
+- All four argument refusals, the missed-window and blind-sensor refusals with
+  their values quoted, the explicit window, and D3's observed-value list, which
+  recovered a mistyped `Within range of focus` in the operator's own hands.
+- The dwell measurement of §9d, which refuted §9a.
+
+**What is owed, in the order it should be re-run:**
+
+1. **`set_focus_lock` export.** The gate's exported script died on it
+   (`NOT EMITTED: … has no device prefix`). Fixed, with a test reproducing the
+   rig's exact error string — but the fixed script has **never run on hardware**.
+   Runbook Step 15.
+2. **The mode-dependent dwell defaults** (§9d). The 0-vs-500 comparison ran and
+   decided the design; the *defaults implementing it* did not. Runbook Step 7,
+   including its third call with no `dwell_ms` key, which must report 500.
+3. **`status_properties` / `probe_hint`** (§9e). No live model has seen this
+   payload. It exists because two prompt edits failed to make the model offer
+   the probe on a cold session; whether a payload succeeds where prose did not
+   is exactly what is unverified.
+4. **Runbook Step 2** — the lock offered without being asked. It has never passed
+   cleanly: once it offered and then hand-walked Z, once it needed
+   *"Why not do a PFS search?"*. Item 3 is the intervention aimed at it.
+
+**None of these is testable on M2 or M5**, which have no hardware focus lock.
+They need a Nikon.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 56a | — | — | — | — | — | — |
+| 56a | `design56/probe` | `3158546` | codex, 4 rounds + 6 coordinator fixes | **partial** — Nikon Ti + Ti2-E/Dragonfly 2026-08-23; see "Owed rig evidence" | MERGE | design gate below |
+| 56b | `design56/probe` | `1b74016` | codex, 1 round + 2 coordinator fixes | **partial** — §9d measured on the Ti; the defaults implementing it are unrun | MERGE | design gate below |
 
-Not started. `design/55` is written and unstarted and touches
+**Baseline on the start commit, coordinator-measured:** 1968 passed / 99 skipped
+/ 3 warnings. `main` is green — the five `tests/test_agent.py` failures that
+design/35's block-56 note worked around were fixed on `main` by `d116298`, so
+this block has no known-broken baseline to gate around.
+
+56a assigned. `design/55` is written and unstarted and touches
 `microclaw/tools.py` and `tests/test_session_script_export.py` in different
 regions (the acquisition preamble and hook capabilities, not autofocus);
 sequence rather than assume no conflict.

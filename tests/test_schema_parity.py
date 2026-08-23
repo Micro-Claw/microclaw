@@ -125,3 +125,33 @@ def test_region_declares_both_forms_at_the_top_level(name):
     # which strings are legal.
     assert "drawn" in schema["description"]
     assert "ARRAY" in schema["description"]
+
+
+@pytest.mark.parametrize("name", sorted(_SCHEMA_BY_NAME))
+def test_no_tool_schema_uses_a_top_level_combinator(name):
+    """The Messages API rejects oneOf/allOf/anyOf at the top of input_schema.
+
+    Not a style rule and not a per-tool problem: the request carries every tool,
+    so ONE offending schema returns
+
+        tools.36.custom.input_schema: input_schema does not support oneOf,
+        allOf, or anyOf at the top level
+
+    and NO tools load — microclaw cannot start a session at all. Block 56b
+    expressed "either z_range_um or z_min_um/z_max_um" as a top-level oneOf; the
+    whole suite stayed green because nothing checked the schemas against the
+    API's own structural rules, and it was found by an operator on the first
+    prompt of a rig gate.
+
+    Express an either/or in the descriptions and enforce it with the tool's own
+    refusals, which can say why. See run_autofocus.
+    """
+    schema = _SCHEMA_BY_NAME[name]["input_schema"]
+    for combinator in ("oneOf", "allOf", "anyOf"):
+        assert combinator not in schema, (
+            f"{name}.input_schema has a top-level {combinator}; the Messages API "
+            "rejects the entire request, so no tool loads"
+        )
+    assert schema.get("type") == "object", (
+        f"{name}.input_schema must declare type 'object' at the top level"
+    )

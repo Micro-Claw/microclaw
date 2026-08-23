@@ -864,7 +864,13 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_autofocus",
         "description": (
             "Run a software autofocus sweep to find the sharpest Z plane. "
-            "Sweeps Z from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
+            "A probe reads a device property at each plane instead of the camera; "
+            "use it when the rig has a hardware focus lock. Without it the sweep "
+            "maximises image sharpness, which finds the sharpest plane, not "
+            "necessarily the sample plane. method='sweep' is right with a probe: "
+            "the coarse pass exists to save exposures and property reads spend none. "
+            "Sweeps either the explicit z_min_um/z_max_um window or the window "
+            "from (current_z - z_range_um/2) to (current_z + z_range_um/2) "
             "in z_step_um steps. Returns BOTH passes (coarse chooses the plane, fine "
             "refines it) with their metric curves and contrast, plus converged/moved/"
             "entry_z_um/final_z_um. If the metric curve is structureless (low "
@@ -892,9 +898,21 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "number",
                     "description": "Total Z sweep range in µm, centred on current Z.",
                 },
+                "z_min_um": {
+                    "type": "number",
+                    "description": "Explicit lower Z sweep bound in µm. Supply z_min_um AND z_max_um TOGETHER, and then do NOT supply z_range_um -- the two forms are alternatives and passing both is refused. Use this form to search a span you have not searched yet, rather than moving the stage and computing a half-width around it.",
+                },
+                "z_max_um": {
+                    "type": "number",
+                    "description": "Explicit upper Z sweep bound in µm; supply with z_min_um instead of z_range_um.",
+                },
                 "z_step_um": {
                     "type": "number",
-                    "description": "Step size in µm for the fine sweep.",
+                    "description": (
+                        "Z step in µm. Size it to the capture range you expect: "
+                        "a step that is too fine costs time, while one that is "
+                        "too coarse can step over the band entirely."
+                    ),
                 },
                 "method": {
                     "type": "string",
@@ -903,13 +921,13 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "settle_ms": {
                     "type": "integer",
-                    "description": "Wait time after each Z move in ms (default 50).",
+                    "description": "Camera settle after each Z move for image-based autofocus, in ms (default 50). Does not control a property probe.",
                     "default": 50,
                 },
                 "return_thumbnail": {
                     "type": "boolean",
-                    "description": "Include a thumbnail of the focused image (default false). Only set to True if absolutely necessary.",
-                    "default": False,
+                    "description": "Include a thumbnail of the focused image (default true). It is automatically suppressed for a zero-exposure property probe.",
+                    "default": True,
                 },
                 "region": {
                     # Both types at the top level, with the array shape kept.
@@ -927,8 +945,75 @@ TOOLS: list[dict[str, Any]] = [
                         "the Micro-Manager Preview window."
                     ),
                 },
+                "probe": {
+                    "type": "object",
+                    "description": (
+                        "Optional. Read a device property at each plane instead of "
+                        "measuring image sharpness. Use this for a hardware focus "
+                        "lock that reports its capture range. Costs no exposures; "
+                        "omit for ordinary image-based autofocus."
+                    ),
+                    "properties": {
+                        "device": {"type": "string", "description": "Device label."},
+                        "property": {"type": "string", "description": "Property read at each plane."},
+                        "in_focus_values": {
+                            "type": "array", "items": {"type": "string"},
+                            "minItems": 1,
+                            "description": (
+                                "Values that mean in range. Copy them exactly; "
+                                "where the device enumerates its values, one it "
+                                "never reports is refused before any Z move. "
+                                "Where it enumerates NOTHING you cannot look them "
+                                "up, so pass your best guess and run the sweep: if "
+                                "no plane matches, the refusal lists every value "
+                                "the sweep actually observed, which names the "
+                                "right spelling at zero exposures. Never step Z by "
+                                "hand to discover them. Name "
+                                "only STEADY states, never a transient one that "
+                                "appears while the device is settling or being "
+                                "engaged: the sweep stops at the first plane that "
+                                "matches, so a transient stops it at whatever "
+                                "plane happened to be under way, and holding for "
+                                "the settle interval does not make a transient a "
+                                "steady state. Omit only for a numeric property, "
+                                "which is maximised."
+                            ),
+                        },
+                        "stop_when_found": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "For a categorical probe, stop at the first stable "
+                                "in_focus_values reading and leave Z there (default "
+                                "true). Set false to sweep the complete window, "
+                                "validate the band shape, and move to its centre. "
+                                "Not valid for a numeric probe."
+                            ),
+                        },
+                        "dwell_ms": {
+                            "type": "number",
+                            "minimum": 0,
+                            "default": 0,
+                            "description": (
+                                "Extra wait after the stage settles before each "
+                                "property read, for a property that updates slower "
+                                "than the stage settles (default 0). This is not a "
+                                "camera settle."
+                            ),
+                        },
+                    },
+                    "required": ["device", "property"],
+                },
             },
-            "required": ["z_range_um", "z_step_um"],
+            # No top-level oneOf/allOf/anyOf. The Messages API rejects the whole
+            # request -- "input_schema does not support oneOf, allOf, or anyOf at
+            # the top level" -- which means NO tools load and the session cannot
+            # start. Block 56b expressed the either/or that way and took the rig
+            # down on the first prompt of a gate. The constraint is stated in the
+            # descriptions and enforced by run_autofocus's own refusals, which
+            # answer with a reason the model can act on. See
+            # test_no_tool_schema_uses_a_top_level_combinator.
+            "required": ["z_step_um"],
         },
     },
     {
@@ -1945,17 +2030,19 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_focus_lock_state",
         "description": (
             "Read whether the hardware focus lock (external sensor / QPD) is engaged, "
-            "resolved through the EMU map, plus the current QPD readings. A sharp "
+            "using the generic Micro-Manager autofocus device, or the EMU map when "
+            "one exists, plus current QPD readings where available. A sharp "
             "image is NOT evidence that the lock is engaged — always answer the SMLM "
             "checklist's focus-lock item with this tool. Returns engaged=null on rigs "
-            "with no focus-lock property."
+            "with no configured or readable focus-lock device."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "set_focus_lock",
         "description": (
-            "Engage or disengage the hardware focus lock. Disengage before running a "
+            "Engage or disengage the hardware focus lock through Micro-Manager's "
+            "configured autofocus device (or the EMU map when present). Disengage before running a "
             "software autofocus sweep (which would otherwise fight the servo loop), "
             "and re-engage afterwards — run_autofocus refuses to run while it is on."
         ),

@@ -13,16 +13,16 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-19 close of block 56`** —
-> find it *by that heading*, not by position; it sits behind several superseded
-> notes that look just like it. It is the only section that describes the
-> repository as it is now.
+> **The live state note is `### State at the 2026-08-22 assignment of design/56
+> block 56a`** — find it *by that heading*, not by position; it sits behind
+> several superseded notes that look just like it. It is the only section that
+> describes the repository as it is now.
 >
-> **Nothing is assigned right now.** Block 56 merged 2026-08-19 (`c8f1801`) and
-> its branch and worktree are gone. What is next is a choice, not a
-> continuation — Track C is parked on an `.ilp` that does not exist, design/54 is
-> awaiting a Nikon gate, design/55 is written and not started, and the rest of
-> the open register is unscheduled. **Track A, Track B, Track D, Track E and
+> **`design/56` block 56a is assigned** (2026-08-22, branch `design56/probe`) —
+> its own doc and ledger are authoritative for it, not this file. Everything
+> else is still a choice, not a continuation — Track C is parked on an `.ilp`
+> that does not exist, design/54 is awaiting a Nikon gate, design/55 is written
+> and not started, and the rest of the open register is unscheduled. **Track A, Track B, Track D, Track E and
 > Track F are all closed** — verified 2026-08-19 against the run ledger, which
 > carries a merge commit for every one of their blocks.
 >
@@ -405,10 +405,53 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-19 close of block 56 — read this before assigning anything
+### State at the 2026-08-22 assignment of design/56 block 56a — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
+
+**`design/56` owns its own checklist and ledger**, like design/48 through
+design/55. This file does not track its blocks; it points at it. The doc is
+`design/56-the-focus-metric-need-not-be-an-image.md`, one block, **56a**.
+
+- **Assigned 2026-08-22** on branch `design56/probe`, from `main` at `3158546`.
+  Nothing merged yet, no rig gate run yet.
+- **Baseline, coordinator-measured on `3158546`: 1968 passed / 99 skipped / 3
+  warnings.** `main` is green again — the five `tests/test_agent.py` failures
+  the block-56 note below had to gate around were fixed by `d116298`. Do not
+  carry that workaround forward.
+- **`design/55` remains written and unstarted.** design/56's own closing note
+  asks that the two be sequenced rather than assumed conflict-free: 55 touches
+  `microclaw/tools.py`'s acquisition preamble and hook capabilities, 56a touches
+  its autofocus region. Different regions of the same files, so whichever lands
+  second rebases.
+
+**What 56a is, in one line:** `run_autofocus` gains an optional `probe` that
+reads a device property at each plane instead of the camera, so a rig with a
+hardware focus lock can find the lock's capture band at zero exposures. Two
+generic defects on `main` are preconditions of it and are worth knowing about
+independently of whether 56a ever runs:
+
+1. `run_autofocus`'s refusals hand back `best_z_um`, and on 2026-08-22 the model
+   read it out of four consecutive refusals and moved there itself — routing
+   around a fail-closed gate to the wrong plane.
+2. `get_focus_lock_state` / `set_focus_lock` are **EMU-only**. On a Nikon they
+   answer `{"engaged": None}`, which is falsy, so `run_autofocus`'s
+   armed-servo refusal has never fired on the one rig whose whole workflow is a
+   focus lock. This is the register row block 56's gate opened, now with a
+   design behind it.
+
+**`design/40`'s "lock is binary, nothing to hill-climb" is superseded** by the
+2026-08-22 Nikon session: `TIPFSStatus.Status` is a three-level ordinal and
+`Within range of focus search` is readable while the lock is *not* holding. Do
+not quote that finding forward.
+
+### State at the 2026-08-19 close of block 56 — SUPERSEDED, kept for the round history
+
+**Not the live note.** Superseded by `### State at the 2026-08-22 assignment of
+design/56 block 56a` above, which is where a cold session starts. Everything
+below this line was true at the 2026-08-19 close and is kept as the record of
+what block 56 established.
 
 **Block 56 is MERGED (`c8f1801`) and fully closed.** Branch and worktree deleted,
 ledger row closed, design gate run. **Nothing is in flight and nothing is
@@ -8470,6 +8513,57 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+### Two from the Dragonfly session — added 2026-08-23 **(no block)**
+
+Both measured on the Nikon Ti2-E / Andor Dragonfly
+(`pfs-dragonfly-design56ab/`). **Neither is fixed, and neither can be tested
+where the operator still has access** — both need a rig with a hardware focus
+lock, which M2 and M5 are not. Do not fix them blind; this repo has already
+spent three rig trips on a mechanism that was green off-rig the whole time.
+
+**1. Finding the capture band does not offer to engage the lock.** The operator
+asked twice, in two different sessions: *"Why didn't you engage the PFS when you
+found it?"* `run_autofocus` deliberately does not engage — that is a hardware
+write and belongs to the caller — but the plan the model proposes should carry
+"sweep, engage, verify" as one procedure, since engaging is what confirms the
+plane at zero dose (design/56 §8). Prompt text alone has twice failed to move
+this behaviour (§9e), so a fix here should be judged against that history rather
+than assumed to work.
+
+**2. `get_device_property_info` on a stage's guessed property name errors
+without naming the real ones.** Measured: `PFSOffset` / `Position` returned
+`Invalid property name encountered: Position (2)`, while `get_stage_position` on
+the same device works. The error is *correct* — that device has no `Position`
+property — but it leaves the caller to guess again. Listing the device's actual
+property names in that refusal is generic, cheap, and would help on any rig.
+Testable off-rig with fakes; the reason it is parked is that it touches a shared
+error path and this merge is already carrying unverified change.
+
+### An aborted turn's error never reaches the transcript — added 2026-08-23 **(no block)**
+
+Measured during the design/56 gate, on `microclaw serve`. The first prompt hit a
+400 from the Messages API; the browser showed it, and the saved JSONL contained
+**the user's prompt and nothing else**. The operator had to retype the error by
+hand to report it.
+
+`webserve.py`'s turn worker catches every exception and `emit`s it to the SSE
+stream only — the `finally` block's comment, "AuditLog has already appended and
+flushed every message", is true of messages the agent loop produced and silently
+untrue of a turn that produced none. So the one class of event a rig operator
+most needs recorded is the one class that is not.
+
+**Deliberately not made a block** (operator ruling, 2026-08-23: out of scope for
+design/56). Recorded here so it is not rediscovered.
+
+**What makes it more than a one-liner, for whoever does take it:**
+`ConversationStore.append` writes to the audit JSONL and *not* to the model
+context, so an error record is safe from the "synthetic assistant turn" angle.
+But `load_history` does not validate `role`, so a record with an invented role
+would be replayed straight to the API by any resume path. Pick the shape with
+that in mind; the transcript is this project's evidence channel and a fix that
+corrupts it is worse than the gap.
+
 
 ### The five that outlived Track B — added 2026-08-18
 

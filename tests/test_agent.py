@@ -362,9 +362,31 @@ class TestNikonPfsPrompt:
     which is exactly the kind of loss no other test could see.
     """
 
+    def test_a_hardware_focus_lock_is_offered_before_an_image_sweep(self):
+        """Nikon 2026-08-23: asked to find focus, it proposed an image sweep.
+
+        The operator had to ask "can you use the Nikon PFS system on here? Why
+        did you not propose using this?" -- the PFS guidance sat in the
+        rig-specific section while the generic Autofocus section said only
+        "run_autofocus is for interactive focus requests". get_focus_lock_state
+        names the configured autofocus device on ANY rig now, so the check is
+        generic and belongs where the model reads it.
+        """
+        assert "BEFORE proposing an image-based sweep" in SYSTEM_PROMPT
+        assert "get_focus_lock_state" in SYSTEM_PROMPT
+        assert "Do not wait to be asked" in SYSTEM_PROMPT
+
+    def test_the_lock_validation_steps_are_steps_not_caveats(self):
+        # Same session: it flagged the "locked too high" risk in its plan and
+        # then did not carry out either check until asked.
+        assert "Do BOTH of these every time you engage the " in SYSTEM_PROMPT
+        assert "not as caveats you mention and skip" in SYSTEM_PROMPT
+
     def test_pfs_status_reads_regardless_of_whether_the_lock_is_engaged(self):
         assert "TIPFSStatus-Status tells you if you are focusing" in SYSTEM_PROMPT
         assert "regardless of whether or not the PFS is on" in SYSTEM_PROMPT
+        assert "use run_autofocus with its property probe" in SYSTEM_PROMPT
+        assert "Just move the Z stage and check this property" not in SYSTEM_PROMPT
 
     def test_a_lock_found_too_high_is_diagnosed_by_moving_xy(self):
         # A PFS can lock on a coverslip the objective has pushed up at an angle;
@@ -1112,3 +1134,30 @@ class TestBuiltInOfflineAdaptersAreDiscoverable:
         # which is true of saved adapters and false of these two.
         description = self._schema()["description"]
         assert "no review" in description or "need no review" in description
+
+
+def test_unknown_status_strings_are_not_a_reason_to_hand_step_z():
+    """Nikon 56ab gate, 2026-08-23: it offered PFS, then hand-walked Z anyway.
+
+    Its own account: "I told myself I needed to discover the in-range string
+    before the probe could stop on it." That is the loop design/56 exists to
+    delete, and it is unnecessary -- a wrong guess refuses with every value the
+    sweep observed, which is exactly how the operator's own mistyped
+    `Within range of focus` call recovered the right spelling later in the same
+    session. Nothing had told the model that.
+    """
+    assert "is NOT a reason to step Z" in SYSTEM_PROMPT
+    assert "lists every value the sweep actually observed" in SYSTEM_PROMPT
+
+
+def test_the_lock_state_payload_is_enough_to_build_the_probe():
+    """Dragonfly 2026-08-23: it had the device and still proposed an image sweep.
+
+    Naming the device was never enough — the probe needs a property, and finding
+    one cost several exploratory calls. get_focus_lock_state now returns the
+    readable properties with their values, so the prompt points at that payload
+    instead of at an exploration.
+    """
+    assert "readable status" in SYSTEM_PROMPT
+    assert "do " in SYSTEM_PROMPT and "not go exploring with list_device_properties" in SYSTEM_PROMPT
+    assert "a bitfield or a number is not it" in SYSTEM_PROMPT

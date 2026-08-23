@@ -352,6 +352,179 @@ def test_emitted_autofocus_settles_delayed_stage_and_prints_envelope(
     assert "measured final Z: 50.2" in output
 
 
+def test_emitted_property_probe_defines_and_drives_every_helper(
+    tmp_path, monkeypatch, capsys
+):
+    class StrVector:
+        """Bridge-shaped string vector: deliberately not Python-iterable."""
+        def __init__(self, values): self._values = list(values)
+        def size(self): return len(self._values)
+        def get(self, index): return self._values[index]
+
+    spec = {"device": "lock", "property": "status",
+            "in_focus_values": ["in"]}
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep",
+        "settle_ms": 30, "probe": spec,
+    })])
+    for name in ("FocusProbe", "image_probe", "property_probe", "_strings",
+                 "longest_true_run", "_band_admit", "_stable_read"):
+        assert f"{'class' if name == 'FocusProbe' else 'def'} {name}" in source
+    assert "MIN_BAND_PLANES = 3" in source
+
+    class FakeCore:
+        last = None
+        def __init__(self):
+            type(self).last = self
+            self.position = 51.0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def get_allowed_property_values(self, _device, _prop):
+            return StrVector(["out", "in"])
+        def get_property(self, _device, _prop):
+            return "in" if 50.0 <= self.position <= 52.0 else "out"
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    result = namespace["autofocus_result"]
+    assert result.converged is True
+    assert result.final_z_um == 50.0
+    assert result.coarse.metric_values == ["out", "in"]
+    output = capsys.readouterr().out
+    assert "criterion: first lock.status in-range plane" in output
+    assert "in_focus_values: ['in']" in output
+    assert "stopping_rule: first in-focus plane" in output
+
+
+def test_emitted_numeric_property_prints_the_probe_description(tmp_path):
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 4, "z_step_um": 1, "method": "sweep",
+        "probe": {"device": "PFS", "property": "Offset"},
+    })])
+    emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
+    assert "property_probe(" in emitted_call
+    assert "_autofocus_probe.describe" in emitted_call
+    assert "centre of PFS.Offset in-range band" not in emitted_call
+
+
+def test_emitted_property_probe_early_exit_matches_live_read_count(
+    tmp_path, monkeypatch
+):
+    spec = {"device": "lock", "property": "status",
+            "in_focus_values": ["in"]}
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 200, "z_step_um": 1, "method": "sweep",
+        "settle_ms": 0, "probe": spec,
+    })])
+
+    class StrVector:
+        def __init__(self, values): self._values = list(values)
+        def size(self): return len(self._values)
+        def get(self, index): return self._values[index]
+
+    class FakeCore:
+        last = None
+        def __init__(self):
+            type(self).last = self
+            self.position = 100.0
+            self.property_reads = 0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def get_allowed_property_values(self, _device, _prop): return StrVector([])
+        def get_property(self, _device, _prop):
+            self.property_reads += 1
+            return "in" if self.position >= 8.0 else "out"
+
+    monkeypatch.setattr(autofocus, "PROPERTY_PROBE_MIN_DWELL_S", 0.0)
+    monkeypatch.setattr(tools, "PROPERTY_PROBE_MIN_DWELL_S", 0.0)
+    live_core = FakeCore()
+    live_result = tools._run_autofocus_passes(
+        SimpleNamespace(core=live_core), 200, 1, "sweep", 0,
+        probe_device="lock", probe_property="status",
+        in_focus_values=["in"], stop_when_found=True,
+    )
+    live_property_reads = live_core.property_reads
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    runnable = runnable.replace(
+        "PROPERTY_PROBE_MIN_DWELL_S = 0.5", "PROPERTY_PROBE_MIN_DWELL_S = 0.0"
+    )
+    namespace = {
+        "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+    }
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+
+    result = namespace["autofocus_result"]
+    assert result.converged is True
+    assert result.coarse.stopped_early is True
+    assert len(result.coarse.metric_values) == 9
+    assert FakeCore.last.position == 8.0
+    assert FakeCore.last.property_reads == live_property_reads
+    assert len(live_result.coarse.metric_values) == 9
+
+
+def test_emitted_property_probe_reproduces_window_dwell_and_read_count(
+    tmp_path, monkeypatch
+):
+    spec = {"device": "lock", "property": "status",
+            "in_focus_values": ["in"], "stop_when_found": False,
+            "dwell_ms": 17}
+    params = {"z_min_um": 60, "z_max_um": 64, "z_step_um": 1,
+              "method": "sweep", "settle_ms": 0, "probe": spec}
+    _, _, source = export(tmp_path, [call("run_autofocus", params)])
+    emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
+    assert "_autofocus_lo = 60" in emitted_call
+    assert "_autofocus_hi = 64" in emitted_call
+    assert "dwell_s=0.017" in emitted_call
+    assert "Sweep Z: {_autofocus_lo} to {_autofocus_hi}" in emitted_call
+
+    class FakeCore:
+        last = None
+        def __init__(self):
+            type(self).last = self
+            self.position = 50.0
+            self.property_reads = 0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z)
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def get_allowed_property_values(self, _device, _prop): return []
+        def get_property(self, _device, _prop):
+            self.property_reads += 1
+            return "in" if 61 <= self.position <= 63 else "out"
+
+    live_core = FakeCore()
+    live = tools._run_autofocus_passes(
+        SimpleNamespace(core=live_core), None, 1, "sweep", 0,
+        probe_device="lock", probe_property="status",
+        in_focus_values=["in"], stop_when_found=False,
+        z_min_um=60, z_max_um=64, dwell_ms=17,
+    )
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {"__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+                 "Acquisition": object,
+                 "multi_d_acquisition_events": lambda **kwargs: []}
+    exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert namespace["autofocus_result"].coarse.z_positions == [60, 61, 62, 63, 64]
+    assert FakeCore.last.property_reads == live_core.property_reads
+
+
 def test_emitted_autofocus_applies_same_small_region_threshold_as_live_run(
     tmp_path, monkeypatch
 ):
@@ -3121,3 +3294,34 @@ def test_emitted_regionless_run_scales_its_guard_to_the_live_frame(
     assert namespace["autofocus_result"].converged is False
     assert namespace["autofocus_result"].moved is False
     assert core.z == 50.0
+
+
+def test_generic_focus_lock_emits_the_core_call_it_actually_made(tmp_path):
+    """A non-EMU set_focus_lock must reach the standalone script.
+
+    Nikon, 56ab gate, 2026-08-23: the exported script ran the autofocus
+    correctly, printed its envelope, moved to 2649.975 -- and then died with
+
+        RuntimeError: NOT EMITTED: set_focus_lock - the recorded focus-lock
+        property has no device prefix
+
+    because block 56a taught set_focus_lock to work through MMCore's continuous
+    focus while _emit_focus_lock still assumed the EMU map's `Device.Property`
+    shape. Fail-closed rather than fabricating, correctly -- but the capability
+    was unusable in an export, which CLAUDE.md counts as unfinished.
+    """
+    _, _, source = export(tmp_path, completed_call(
+        "set_focus_lock", {"enabled": True}, {
+            "engaged": True,
+            "property": "continuous focus device TIPFSStatus",
+            "continuous_focus_device": "TIPFSStatus",
+            "value": True,
+        }))
+    assert "core.enable_continuous_focus(True)" in source
+    assert "NOT EMITTED" not in source
+
+    _, _, emu = export(tmp_path, completed_call(
+        "set_focus_lock", {"enabled": False},
+        {"engaged": False, "property": "PFS.State", "value": "0"}))
+    assert "core.set_property('PFS', 'State', '0')" in emu
+    assert "NOT EMITTED" not in emu

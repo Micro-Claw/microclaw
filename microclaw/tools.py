@@ -26,11 +26,15 @@ from ndstorage import Dataset
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
+    PROPERTY_PROBE_MIN_DWELL_S,
     AutofocusResult,
+    FocusProbe,
     coarse_then_fine_plane_count,
     coarse_then_fine_autofocus,
     curve_contrast,
     contrast_threshold,
+    image_probe,
+    property_probe,
     single_sweep_autofocus,
     sweep_plane_count,
 )
@@ -162,18 +166,64 @@ def _emit_autofocus(params: RecordedParams) -> str:
     method = params.get("method", signature.parameters["method"].default)
     settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
     region = params.get("region", signature.parameters["region"].default)
+    probe = params.get("probe", signature.parameters["probe"].default)
+    z_min = params.get("z_min_um")
+    z_max = params.get("z_max_um")
     if region == "drawn":
         region = params.result.get("region")
         if region is None:
             raise CannotEmit(
                 "the recorded drawn-region call has no resolved region"
             )
-    z_range = params["z_range_um"]
+    z_range = params.get("z_range_um")
     z_step = params["z_step_um"]
+    if z_min is None:
+        lo_line = f"_autofocus_lo = _autofocus_entry_z - {z_range!r} / 2"
+        hi_line = f"_autofocus_hi = _autofocus_entry_z + {z_range!r} / 2"
+    else:
+        lo_line = f"_autofocus_lo = {z_min!r}"
+        hi_line = f"_autofocus_hi = {z_max!r}"
+    if probe is not None:
+        if isinstance(probe, str):
+            probe = json.loads(probe)
+        device = probe["device"]
+        prop = probe["property"]
+        values = probe.get("in_focus_values")
+        stop_when_found = probe.get("stop_when_found", values is not None)
+        dwell_ms = probe.get("dwell_ms")
+        extra_args = (
+            f", z_min_um={z_min!r}, z_max_um={z_max!r}, dwell_ms={dwell_ms!r}"
+            if z_min is not None or dwell_ms is not None else ""
+        )
+        return "\n".join([
+            "_autofocus_entry_z = float(core.get_position())",
+            lo_line,
+            hi_line,
+            f"_autofocus_in_focus_values = {values!r}",
+            "_autofocus_probe = property_probe(",
+            f"    core, {device!r}, {prop!r}, {values!r},",
+            f"    step_um={z_step!r}, lo_um=_autofocus_lo, hi_um=_autofocus_hi,",
+            f"    dwell_s={None if dwell_ms is None else dwell_ms / 1000.0!r},",
+            f"    stop_when_found={stop_when_found!r},",
+            ")",
+            "print('AUTOFOCUS ENVELOPE')",
+            "print(f'Sweep Z: {_autofocus_lo} to {_autofocus_hi} um; '",
+            f"      f'step: {z_step!r} um; criterion: {{_autofocus_probe.describe}}; '",
+            f"      f'in_focus_values: {{_autofocus_in_focus_values!r}}; '",
+            f"      'stopping_rule: {'first in-focus plane' if stop_when_found else 'full sweep and band centre'}')",
+            "autofocus_result = _run_autofocus_passes("
+            f"mm, {z_range!r}, {z_step!r}, {method!r}, {settle!r}, None, "
+            f"{device!r}, {prop!r}, {values!r}, {stop_when_found!r}{extra_args})",
+            "print('AUTOFOCUS OUTCOME')",
+            "print(f'moved: {autofocus_result.moved}; measured final Z: '",
+            "      f'{autofocus_result.final_z_um}')",
+        ])
+    extra_args = (f", z_min_um={z_min!r}, z_max_um={z_max!r}"
+                  if z_min is not None else "")
     return "\n".join([
         "_autofocus_entry_z = float(core.get_position())",
-        f"_autofocus_lo = _autofocus_entry_z - {z_range!r} / 2",
-        f"_autofocus_hi = _autofocus_entry_z + {z_range!r} / 2",
+        lo_line,
+        hi_line,
         f"_autofocus_region = {region!r}",
         "_autofocus_min_contrast = contrast_threshold("
         "_metric_pixel_count(mm, _autofocus_region))",
@@ -182,7 +232,7 @@ def _emit_autofocus(params: RecordedParams) -> str:
         "      f'{_autofocus_region!r}; min_contrast: {_autofocus_min_contrast}')",
         "autofocus_result = _run_autofocus_passes("
         f"mm, {z_range!r}, {z_step!r}, {method!r}, {settle!r}, "
-        f"{region!r})",
+        f"{region!r}{extra_args})",
         "print('AUTOFOCUS OUTCOME')",
         "print(f'moved: {autofocus_result.moved}; measured final Z: '",
         "      f'{autofocus_result.final_z_um}')",
@@ -359,6 +409,15 @@ def _emit_focus_lock(params: RecordedParams) -> str:
     result = params.result
     if "property" not in result or "value" not in result:
         raise CannotEmit("the recorded result has no resolved focus-lock property/value")
+    # Two routes, like set_channel's: the EMU map writes a device property, and
+    # the generic path calls MMCore's own continuous-focus switch. This emitter
+    # knew only the first, so the moment block 56a taught set_focus_lock to work
+    # on a non-EMU rig, every session that used it exported a script that died
+    # three lines after a correct autofocus -- measured on the Nikon, 56ab gate,
+    # 2026-08-23. CLAUDE.md: a new capability is not finished until it can appear
+    # in an exported script, and this is the fourth block to learn it.
+    if result.get("continuous_focus_device"):
+        return f"core.enable_continuous_focus({bool(result['value'])!r})"
     device, separator, prop = result["property"].partition(".")
     if not separator:
         raise CannotEmit("the recorded focus-lock property has no device prefix")
@@ -591,14 +650,24 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
     if include_autofocus:
         parts.extend([
             inspect.getsource(autofocus.SweepResult),
+            inspect.getsource(autofocus.FocusProbe),
             inspect.getsource(autofocus.AutofocusResult),
             f"MIN_CONTRAST = {autofocus.MIN_CONTRAST!r}\n",
             f"N_REF = {autofocus.N_REF!r}\n",
+            f"MIN_BAND_PLANES = {autofocus.MIN_BAND_PLANES!r}\n",
+            "PROPERTY_PROBE_MIN_DWELL_S = "
+            f"{autofocus.PROPERTY_PROBE_MIN_DWELL_S!r}\n",
+            "PROPERTY_PROBE_BAND_DWELL_S = "
+            f"{autofocus.PROPERTY_PROBE_BAND_DWELL_S!r}\n",
         ])
         for fn in (
+            autofocus.longest_true_run, autofocus._strings, autofocus._band_admit,
+            autofocus._stable_read, autofocus.image_probe,
+            autofocus.property_probe,
             autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
             autofocus.curve_contrast, autofocus.contrast_threshold,
             autofocus.sweep_autofocus, autofocus._restore,
+            autofocus._refusal,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,
             autofocus.single_sweep_autofocus,
@@ -1508,7 +1577,7 @@ def export_session_script(
         "import math",
         "import time",
         *adaptive_imports,
-        f"from dataclasses import {'asdict, dataclass' if adaptive_used else 'dataclass'}",
+        f"from dataclasses import {'asdict, dataclass, field' if adaptive_used else 'dataclass, field'}",
         "from pathlib import Path",
         "from types import SimpleNamespace",
         "from typing import Any, Callable, NamedTuple, Optional",
@@ -3737,6 +3806,17 @@ def run_analysis_on_saved_dataset(
 
 # --- Image capture with analysis ---
 
+def _parse_quoted_json(value, expected_type):
+    """Recover a faithfully quoted structured tool argument."""
+    if not isinstance(value, str):
+        return value
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return value
+    return parsed if isinstance(parsed, expected_type) else value
+
+
 def _validate_metric_region(
     region: list[int] | None, frame_width: int, frame_height: int
 ) -> tuple[list[int] | None, str | None]:
@@ -3750,12 +3830,7 @@ def _validate_metric_region(
         # 54b shipped was unreachable through the agent. A faithful JSON array
         # of four integers says exactly one thing however it is quoted; parse
         # it, and let everything else fall through to the refusals below.
-        try:
-            parsed = json.loads(region)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, list):
-            region = parsed
+        region = _parse_quoted_json(region, list)
     if not isinstance(region, list) or len(region) != 4:
         return None, (
             f"Malformed region {region!r}: expected four integer values "
@@ -4278,9 +4353,17 @@ def _run_autofocus_passes(
     method: str,
     settle_ms: int,
     region: list[int] | None = None,
+    probe_device: str | None = None,
+    probe_property: str | None = None,
+    in_focus_values: list[str] | None = None,
+    stop_when_found: bool = False,
+    z_min_um: float | None = None,
+    z_max_um: float | None = None,
+    dwell_ms: float | None = None,
 ) -> AutofocusResult:
     metric_fn = tenengrad
-    min_contrast = contrast_threshold(_metric_pixel_count(ctrl, region))
+    min_contrast = (MIN_CONTRAST if probe_device is not None else
+                    contrast_threshold(_metric_pixel_count(ctrl, region)))
     if region is not None:
         x, y, width, height = region
 
@@ -4298,14 +4381,30 @@ def _run_autofocus_passes(
                     f"[{image.shape[1]}, {image.shape[0]}]."
                 )
             return tenengrad(image[y:y + height, x:x + width])
+    probe = None
+    if probe_device is not None:
+        entry_z = float(ctrl.core.get_position())
+        lo_um = entry_z - z_range_um / 2 if z_min_um is None else z_min_um
+        hi_um = entry_z + z_range_um / 2 if z_max_um is None else z_max_um
+        probe = property_probe(
+            ctrl.core, probe_device, probe_property, in_focus_values,
+            step_um=z_step_um,
+            lo_um=lo_um, hi_um=hi_um,
+            dwell_s=None if dwell_ms is None else dwell_ms / 1000.0,
+            stop_when_found=stop_when_found,
+        )
+    else:
+        probe = image_probe(ctrl, metric_fn, region, min_contrast)
     if method == "coarse_then_fine":
         return coarse_then_fine_autofocus(
             ctrl, z_range_um, max(z_step_um * 5, 1.0), z_step_um, settle_ms,
-            metric_fn=metric_fn, min_contrast=min_contrast,
+            metric_fn=metric_fn, min_contrast=min_contrast, probe=probe,
+            z_min_um=z_min_um, z_max_um=z_max_um,
         )
     return single_sweep_autofocus(
         ctrl, z_range_um, z_step_um, settle_ms, metric_fn=metric_fn,
-        min_contrast=min_contrast,
+        min_contrast=min_contrast, probe=probe,
+        z_min_um=z_min_um, z_max_um=z_max_um,
     )
 
 
@@ -4323,7 +4422,8 @@ def _round_sig(value: float, sig: int = 4) -> float:
     return float(f"%.{sig}g" % value)
 
 
-def _sweep_payload(sweep, min_contrast: float | None = None) -> dict | None:
+def _sweep_payload(sweep, min_contrast: float | None = None,
+                   probe: FocusProbe | None = None) -> dict | None:
     if sweep is None:
         return None
     payload = {
@@ -4331,13 +4431,33 @@ def _sweep_payload(sweep, min_contrast: float | None = None) -> dict | None:
         "measured_z_positions": [
             round(z, 3) for z in sweep.measured_z_positions
         ],
-        "metric_curve": [_round_sig(v) for v in sweep.metric_values],
         "best_z_um": round(sweep.best_z_um, 3),
-        "peak_interior": sweep.peak_interior,
-        "contrast": round(curve_contrast(sweep.metric_values), 3),
     }
-    if min_contrast is not None:
-        payload["min_contrast"] = round(min_contrast, 3)
+    # peak_interior answers "is the chosen plane away from a sweep boundary",
+    # which only means anything about a curve that was swept to its end. An
+    # early-stopped sweep stops BECAUSE it found the target, so the chosen plane
+    # is always the last row of the table it returns: reporting True contradicts
+    # the table, and reporting False would read as design/28 F1's edge-peak
+    # failure. Omit it and say the stopping rule instead.
+    if getattr(sweep, "stopped_early", False):
+        payload["stopping_rule"] = (
+            "stopped at the first in-focus plane; peak_interior does not apply"
+        )
+    else:
+        payload["peak_interior"] = sweep.peak_interior
+    if probe is not None and probe.exposures_per_plane == 0 and probe.in_focus_values:
+        payload["readings"] = list(sweep.metric_values)
+        payload["in_range"] = [value in probe.in_focus_values
+                               for value in sweep.metric_values]
+        payload["unsettled_planes"] = list(sweep.unsettled_indices)
+        payload["stopped_early"] = sweep.stopped_early
+        payload["planes_read"] = len(sweep.metric_values)
+        payload["planes_planned"] = sweep.planes_planned
+    else:
+        payload["metric_curve"] = [_round_sig(v) for v in sweep.metric_values]
+        payload["contrast"] = round(curve_contrast(sweep.metric_values), 3)
+        if min_contrast is not None:
+            payload["min_contrast"] = round(min_contrast, 3)
     return payload
 
 
@@ -4345,12 +4465,15 @@ def _sweep_payload(sweep, min_contrast: float | None = None) -> dict | None:
 def run_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
-    z_range_um: float,
-    z_step_um: float,
+    z_range_um: float | None = None,
+    z_step_um: float | None = None,
     method: str = "coarse_then_fine",
     settle_ms: int = 50,
     return_thumbnail: bool = True,
     region: list[int] | str | None = None,
+    probe: dict | str | None = None,
+    z_min_um: float | None = None,
+    z_max_um: float | None = None,
 ) -> list | dict:
     """Sweep Z to find the sharpest focal plane.
 
@@ -4368,22 +4491,78 @@ def run_autofocus(
     The sweep is headless: live view is paused for its duration and left off
     afterwards, and the viewer does not show the sweep as it happens.
     """
+    explicit_window = z_min_um is not None or z_max_um is not None
+    if z_range_um is not None and explicit_window:
+        return {"error": "Supply either z_range_um or z_min_um/z_max_um, not both forms."}
+    if explicit_window and (z_min_um is None or z_max_um is None):
+        return {"error": "An explicit window requires both z_min_um and z_max_um."}
+    if z_range_um is None and not explicit_window:
+        return {"error": "Supply z_range_um or both z_min_um and z_max_um."}
+    if z_step_um is None:
+        return {"error": "z_step_um is required."}
+    if explicit_window and z_min_um >= z_max_um:
+        return {"error": "z_min_um must be less than z_max_um."}
+    probe = _parse_quoted_json(probe, dict)
+    if probe is not None:
+        if not isinstance(probe, dict):
+            return {"error": f"Malformed probe {probe!r}: expected an object."}
+        if set(probe) - {"device", "property", "in_focus_values", "stop_when_found", "dwell_ms"}:
+            return {"error": "Malformed probe: expected only device, property, in_focus_values, stop_when_found, and dwell_ms."}
+        if not isinstance(probe.get("device"), str) or not isinstance(probe.get("property"), str):
+            return {"error": "Malformed probe: device and property must be strings."}
+        values = probe.get("in_focus_values")
+        if values is not None and (not isinstance(values, list) or
+                                   not values or
+                                   any(not isinstance(v, str) for v in values)):
+            return {"error": "Malformed probe: in_focus_values must be a non-empty array of strings."}
+        if "stop_when_found" in probe and not isinstance(probe["stop_when_found"], bool):
+            return {"error": "Malformed probe: stop_when_found must be a boolean."}
+        dwell_ms = probe.get("dwell_ms")
+        if dwell_ms is not None and (isinstance(dwell_ms, bool)
+                                     or not isinstance(dwell_ms, (int, float))
+                                     or dwell_ms < 0):
+            return {"error": "Malformed probe: dwell_ms must be a non-negative number."}
+        if "stop_when_found" in probe and values is None:
+            return {
+                "error": (
+                    "stop_when_found does not apply to a numeric probe: it has "
+                    "no in_focus_values target state to stop on."
+                )
+            }
+        probe["stop_when_found"] = probe.get("stop_when_found", values is not None)
+        if method == "coarse_then_fine":
+            return {
+                "error": (
+                    "A property probe requires method='sweep'. The coarse pass "
+                    "exists to save exposures, and a property read spends no "
+                    "exposures; its coarser step can skip the capture band."
+                )
+            }
+        if region is not None:
+            return {
+                "error": (
+                    "A probe reads a device property, so a focus-metric region "
+                    "does not apply. Omit region or omit probe."
+                )
+            }
     if region == "drawn":
         try:
             region = ctrl.drawn_region()
         except ValueError as exc:
             return {"error": str(exc)}
-    validated, error = _validate_metric_region(
-        region,
-        int(ctrl.core.get_image_width()),
-        int(ctrl.core.get_image_height()),
-    )
+    validated, error = ((None, None) if probe is not None else
+                        _validate_metric_region(
+                            region, int(ctrl.core.get_image_width()),
+                            int(ctrl.core.get_image_height())))
     if error:
         return {"error": error}
 
     entry_z = ctrl.core.get_position()
-    guard.check_z(entry_z - z_range_um / 2)
-    guard.check_z(entry_z + z_range_um / 2)
+    lo_um = entry_z - z_range_um / 2 if z_min_um is None else z_min_um
+    hi_um = entry_z + z_range_um / 2 if z_max_um is None else z_max_um
+    effective_range_um = hi_um - lo_um
+    guard.check_z(lo_um)
+    guard.check_z(hi_um)
 
     # A sweep against an engaged focus lock fights the piezo servo loop — a
     # candidate cause of the flat, structureless curve in amr_test (§5).
@@ -4400,17 +4579,39 @@ def run_autofocus(
         }
 
     with _pause_live(ctrl, restore=False) as live_state:
-        result = _run_autofocus_passes(
-            ctrl, z_range_um, z_step_um, method, settle_ms, validated
-        )
+        try:
+            result = _run_autofocus_passes(
+                ctrl, effective_range_um, z_step_um, method, settle_ms, validated,
+                probe.get("device") if probe else None,
+                probe.get("property") if probe else None,
+                probe.get("in_focus_values") if probe else None,
+                probe.get("stop_when_found", False) if probe else False,
+                z_min_um=z_min_um, z_max_um=z_max_um,
+                dwell_ms=probe.get("dwell_ms") if probe else None,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
 
     # The same number the sweep compared against, from the same helper — the
     # payload and the refusal must not be able to disagree. Reported only when
     # it is not the default, so an ordinary full-frame payload keeps its shape;
     # absent means MIN_CONTRAST, the same convention `region` uses.
-    applied_min_contrast = contrast_threshold(
+    active_probe = None
+    if probe:
+        try:
+            active_probe = property_probe(
+                ctrl.core, probe["device"], probe["property"],
+                probe.get("in_focus_values"), step_um=z_step_um,
+                lo_um=lo_um, hi_um=hi_um,
+                dwell_s=(None if probe.get("dwell_ms") is None
+                         else probe["dwell_ms"] / 1000.0),
+                stop_when_found=probe.get("stop_when_found", False),
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+    applied_min_contrast = (None if active_probe else contrast_threshold(
         _metric_pixel_count(ctrl, validated)
-    )
+    ))
     if applied_min_contrast == MIN_CONTRAST:
         applied_min_contrast = None
 
@@ -4422,14 +4623,40 @@ def run_autofocus(
         "final_z_um": round(result.final_z_um, 3),
         "z_range_um": z_range_um,
         # BOTH passes — the caller can see which one chose the plane.
-        "coarse": _sweep_payload(result.coarse, applied_min_contrast),
-        "fine": _sweep_payload(result.fine, applied_min_contrast),
+        "coarse": _sweep_payload(result.coarse, applied_min_contrast, active_probe),
+        "fine": _sweep_payload(result.fine, applied_min_contrast, active_probe),
         "warning": (
             "Peak focus was at the edge of the sweep range; consider widening z_range_um."
             if result.converged and not result.coarse.peak_interior
             else None
         ),
     }
+    if explicit_window:
+        payload["z_min_um"] = z_min_um
+        payload["z_max_um"] = z_max_um
+    if active_probe is not None and active_probe.in_focus_values:
+        payload["stopped_early"] = result.coarse.stopped_early
+        payload["planes_read"] = len(result.coarse.metric_values)
+        payload["planes_planned"] = result.coarse.planes_planned
+    if active_probe is None:
+        active_probe = image_probe(
+            ctrl, tenengrad, validated, applied_min_contrast or MIN_CONTRAST
+        )
+    criterion = active_probe.describe
+    exposures_per_plane = active_probe.exposures_per_plane if active_probe else 1
+    payload["criterion"] = criterion
+    payload["exposures_spent"] = exposures_per_plane * sum(
+        len(s.z_positions) for s in (result.coarse, result.fine) if s is not None
+    )
+    if exposures_per_plane == 0:
+        # From the probe that ran, not re-derived: the default follows the
+        # stopping rule now, and a payload that recomputed it could disagree.
+        payload["property_dwell_ms"] = round(active_probe.dwell_s * 1000)
+        payload["convergence_means"] = "criterion satisfied; not proof the sample is in focus"
+        payload["thumbnail_suppressed"] = (
+            "Property-probe autofocus spends zero exposures; focus_metric_at_final "
+            "and return_thumbnail were suppressed."
+        )
     # Present only when a region was used, so a regionless payload keeps its
     # shape. Every number above — both metric curves, contrast, and
     # focus_metric_at_final below — is measured over these pixels, and
@@ -4442,13 +4669,21 @@ def run_autofocus(
 
     # Invariant that would have surfaced the amr_test bug immediately: the
     # first pass must span the requested window around the entry Z.
-    zs = result.coarse.z_positions
-    assert min(zs) - 1e-6 <= result.entry_z_um <= max(zs) + 1e-6, (
-        "autofocus sweep window does not contain the entry Z"
-    )
+    swept_lo = result.coarse.z_positions[0]
+    swept_hi = swept_lo + effective_range_um
+    if explicit_window:
+        assert abs(swept_lo - lo_um) <= 1e-6 and abs(swept_hi - hi_um) <= 1e-6, (
+            "autofocus sweep did not span the requested window"
+        )
+    else:
+        assert swept_lo - 1e-6 <= result.entry_z_um <= swept_hi + 1e-6, (
+            "autofocus sweep window does not contain the entry Z"
+        )
 
-    if not return_thumbnail:
+    if not return_thumbnail or exposures_per_plane == 0:
         return payload
+
+    payload["exposures_spent"] += 1
 
     with _pause_live(ctrl, restore=False):
         image = snap_to_numpy(ctrl)
@@ -7901,6 +8136,36 @@ def _read_qpd(ctrl: MicroscopeController, focus_lock: dict) -> dict | None:
 
 
 @emits_nothing
+def _lock_status_properties(ctrl, device: str) -> dict[str, str]:
+    """The lock device's read-only properties and what they read right now.
+
+    get_focus_lock_state named the DEVICE and stopped there, which left the one
+    thing run_autofocus's probe needs -- the property -- to be discovered by
+    hand. Measured twice: on a Nikon Ti the model hand-stepped Z rather than
+    look, and on a Nikon Ti2-E/Dragonfly it proposed an image sweep until the
+    operator asked "why not do a PFS search?".
+
+    Nothing here is rig-specific, and it cannot be: the two rigs disagree about
+    every name. The Ti reports Status -> "Out of focus search range"; the
+    Dragonfly reports "PFS in Range" -> "In Range" alongside a "PFS Status" that
+    is a 16-bit string no one should probe. Showing the values is what makes the
+    difference between them obvious without a single extra tool call.
+    """
+    try:
+        names = _str_vector(ctrl.core.get_device_property_names(device))
+    except Exception:
+        return {}
+    readable = {}
+    for name in names:
+        try:
+            if not bool(ctrl.core.is_property_read_only(device, name)):
+                continue
+            readable[str(name)] = str(ctrl.core.get_property(device, name))
+        except Exception:
+            continue
+    return readable
+
+
 def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Read the hardware focus lock via the EMU map ('Z stage focus locking').
 
@@ -7912,7 +8177,35 @@ def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict
 
     props, params = _cached_emu_properties(ctrl)
     if not props:
-        return {"engaged": None, "reason": "No EMU configuration — cannot read a focus lock."}
+        try:
+            raw_device = ctrl.core.get_auto_focus_device()
+            device = raw_device if isinstance(raw_device, str) else ""
+        except Exception:
+            device = ""
+        try:
+            raw_engaged = ctrl.core.is_continuous_focus_enabled()
+            engaged = raw_engaged if isinstance(raw_engaged, bool) else None
+        except Exception:
+            engaged = None
+        if device:
+            status = _lock_status_properties(ctrl, device)
+            return {
+                "engaged": engaged,
+                "property": f"continuous focus device {device}",
+                "device": device,
+                "status_properties": status,
+                **({"probe_hint": (
+                    f"To find this lock's capture range at zero exposures, call "
+                    f"run_autofocus with probe device '{device}', one of the "
+                    f"properties above, and the values that mean in-range. Read "
+                    f"the values shown to pick the property; a bitfield or a "
+                    f"number is not the one you want."
+                )} if status else {}),
+                **({} if engaged is not None else {
+                    "reason": "The autofocus adapter does not report whether continuous focus is enabled."
+                }),
+            }
+        return {"engaged": None, "reason": "No hardware autofocus device is configured."}
     lock = build_emu_map(props, params)["focus_lock"]
     if lock is None or "device" not in lock:
         return {"engaged": None, "reason": "No focus-lock property in the EMU map."}
@@ -7935,7 +8228,26 @@ def set_focus_lock(
 
     props, params = _cached_emu_properties(ctrl)
     if not props:
-        return {"error": "No EMU configuration — cannot control a focus lock."}
+        try:
+            raw_device = ctrl.core.get_auto_focus_device()
+            device = raw_device if isinstance(raw_device, str) else ""
+        except Exception:
+            device = ""
+        if not device:
+            return {"error": "No hardware autofocus device is configured — cannot control a focus lock."}
+        try:
+            ctrl.core.enable_continuous_focus(bool(enabled))
+        except Exception as exc:
+            return {"error": f"Cannot {'engage' if enabled else 'disengage'} continuous focus on {device}: {exc}"}
+        ctrl.refresh_gui()
+        return {
+            "engaged": bool(enabled),
+            "property": f"continuous focus device {device}",
+            # The emitter's discriminator: this route is MMCore's own switch,
+            # not a device property write, and `property` above is prose.
+            "continuous_focus_device": device,
+            "value": bool(enabled),
+        }
     lock = build_emu_map(props, params)["focus_lock"]
     if lock is None or "device" not in lock:
         return {"error": "No focus-lock property in the EMU map."}
