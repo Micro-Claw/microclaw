@@ -8514,6 +8514,31 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### An aborted turn's error never reaches the transcript — added 2026-08-23 **(no block)**
+
+Measured during the design/56 gate, on `microclaw serve`. The first prompt hit a
+400 from the Messages API; the browser showed it, and the saved JSONL contained
+**the user's prompt and nothing else**. The operator had to retype the error by
+hand to report it.
+
+`webserve.py`'s turn worker catches every exception and `emit`s it to the SSE
+stream only — the `finally` block's comment, "AuditLog has already appended and
+flushed every message", is true of messages the agent loop produced and silently
+untrue of a turn that produced none. So the one class of event a rig operator
+most needs recorded is the one class that is not.
+
+**Deliberately not made a block** (operator ruling, 2026-08-23: out of scope for
+design/56). Recorded here so it is not rediscovered.
+
+**What makes it more than a one-liner, for whoever does take it:**
+`ConversationStore.append` writes to the audit JSONL and *not* to the model
+context, so an error record is safe from the "synthetic assistant turn" angle.
+But `load_history` does not validate `role`, so a record with an invented role
+would be replayed straight to the API by any resume path. Pick the shape with
+that in mind; the transcript is this project's evidence channel and a fix that
+corrupts it is worse than the gap.
+
+
 ### The five that outlived Track B — added 2026-08-18
 
 Track B closed on the operator ruling that PFS works. **These five are not Nikon
