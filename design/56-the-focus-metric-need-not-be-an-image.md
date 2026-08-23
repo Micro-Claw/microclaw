@@ -540,6 +540,79 @@ only cost of a step too fine is time, and the only cost of a step too coarse is
 stepping over the band. Say that in the schema, in those terms, without naming a
 number: microclaw does not know this rig's capture range.
 
+### 9. The sweep waits on nothing, and re-sweeps what it has already cleared (56b)
+
+**Measured, Nikon 2026-08-23** (`pfs-nikon-design56-4/`,
+`20260823_095336_954938_microclaw_history.jsonl`). The probe found the band and
+locked. It also took, by the operator's stopwatch, **2–3 s per plane**:
+
+| sweep | planes | outcome |
+| --- | --- | --- |
+| 1 | 184 read of 184 | no band, 951.5 → 2415.5 |
+| 2 | 124 read of 141 | stopped early at 2664.7, locked |
+
+**308 planes. About 91 of sweep 2's planes re-swept 1684 → 2416, which sweep 1
+had already proved empty** — the operator did the arithmetic himself and asked
+why the tool had not.
+
+#### 9a. Two clocks, and we are neither of them
+
+Per plane, in order: `set_position`; `settle_stage_move`, which returns only
+after three in-tolerance samples **spanning ≥100 ms**, so the axis is confirmed
+parked; then `time.sleep(PROPERTY_PROBE_MIN_DWELL_S)` = **500 ms**; then
+`_stable_read`, three reads that must span a further **100 ms**.
+
+**600 ms per plane of added latency, after the axis has already been still for
+100 ms.** And it buys nothing. The Nikon PFS samples at **200 Hz — a 5 ms
+period — "independent of microscope and camera control software"**
+([microscopyu](https://www.microscopyu.com/applications/live-cell-imaging/nikon-perfect-focus-system),
+retrieved 2026-08-23). By the time the dwell begins, the sensor has re-evaluated
+about twenty times. There is nothing to wait for.
+
+**Where the 500 ms came from, recorded so it is not repeated.** §4 argued the
+evaluation is asynchronous and cited `FullFocusTimeoutMs = 5000`. That is the
+timeout for the full-focus *search operation*, not the status refresh period — a
+rate inferred from an operation timeout. The constant was then "validated"
+against a lagging sensor written to embody that same assumption. A fake that
+encodes the assumption is not a test of it, and this one was the coordinator's.
+
+**Decision.** `PROPERTY_PROBE_MIN_DWELL_S` goes to **0**. The dwell stays as an
+**optional parameter** — other hardware may genuinely need it — as `dwell_ms` on
+the `probe` object, default 0, described as extra wait for a property that
+updates *slower than the stage settles*. It stops riding on `settle_ms`, whose
+image-path meaning is a camera settle and is a different thing.
+
+`_stable_read` keeps its consecutive-agreement check and **loses the mandatory
+100 ms span**: three reads that must simply agree cost three bridge calls and no
+sleeping, and a genuinely slow property makes them disagree and wait by itself.
+
+**`settle_stage_move` is not touched.** It is block 56's gated contract and it is
+what makes a reported plane position the measured one. Trading it for speed is
+the wrong direction.
+
+#### 9b. Sweep a window, not a range around wherever the stage happens to be
+
+`run_autofocus` centres on current Z and takes `z_range_um`, so searching "the
+part I have not searched yet" means moving the stage first and then computing a
+half-width. On 2026-08-23 that produced a centre of 2242 with a range of 1116,
+re-covering 730 µm of cleared ground; the operator's own arithmetic — centre
+2608, range 384 — was the correct call and the tool made it the harder one to
+express.
+
+**Decision.** Accept an explicit window, `z_min_um` / `z_max_um`, as an
+alternative to `z_range_um`. Supplying both forms is refused rather than ranked.
+The window is guard-checked at both ends exactly as the centred form is.
+
+#### 9c. A correct number, applied to the wrong quantity
+
+`SYSTEM_PROMPT` says the PFS offset range is ~10 µm for oil, and **that is right**
+— microscopyu gives ~10 µm oil, 20 µm water, 100 µm+ dry for the *offset* range.
+But §Problem used it to reason about the width of the band `Status` reports
+in-range, and those are different quantities: the band measured **29 µm** on this
+oil objective (§8). Do not carry either number into `microclaw/`; the argument
+that a given step is "too coarse" must come from a measurement, and the two
+figures must not be conflated again.
+
 ## Two defects this session exposed, neither Nikon-specific
 
 **1. A refusal that hands back the number it refused to act on.** All four
@@ -661,6 +734,26 @@ keep producing the loop.
   strictest criterion produced no rig evidence because it shipped with
   placeholders and was run verbatim).
 
+### 56b — `dwell_ms`, and an explicit window
+
+Design: §9 (9a, 9b, 9c). Files: `microclaw/autofocus.py`
+(`PROPERTY_PROBE_MIN_DWELL_S`, `_stable_read`, `property_probe`),
+`microclaw/tools.py` (`run_autofocus`, `_run_autofocus_passes`,
+`_emit_autofocus`), `microclaw/tools_schema.py`, `microclaw/agent.py`,
+plus their tests.
+
+**Rig gate 56b (Nikon).** Two limbs, both comparisons rather than verdicts.
+
+- **The dwell finally gets measured.** Sweep one window that contains the band
+  twice, `stop_when_found: false` both times, at `dwell_ms: 0` and
+  `dwell_ms: 500`. The two in-range bands must be **identical**, and the
+  wall-clock time per plane must fall. Identical bands is the evidence that 0 is
+  right; a shifted band at 0 is the evidence it is not, and the shift is the
+  measurement of this device's true latency. This is the limb §4 should have had.
+- **The window is not re-swept.** With `z_min_um` / `z_max_um`, search a span
+  adjacent to one already cleared and confirm from the payload that
+  `z_positions` starts at `z_min_um` and that no plane below it was read.
+
 Step-10 design gate: record in `CLAUDE.md` §"The pycro-manager acquisition
 engine" that an asynchronous *reading* settles no faster than an asynchronous
 *move*, and that a hand-driven loop hides that behind its round-trip latency;
@@ -672,6 +765,7 @@ supersedes.
 | Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
 | 56a | `design56/probe` | `3158546` | assigned 2026-08-22 | — | — | — |
+| 56b | — | — | — | — | — | — |
 
 **Baseline on the start commit, coordinator-measured:** 1968 passed / 99 skipped
 / 3 warnings. `main` is green — the five `tests/test_agent.py` failures that
