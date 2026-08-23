@@ -900,7 +900,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "z_min_um": {
                     "type": "number",
-                    "description": "Explicit lower Z sweep bound in µm; supply with z_max_um instead of z_range_um.",
+                    "description": "Explicit lower Z sweep bound in µm. Supply z_min_um AND z_max_um TOGETHER, and then do NOT supply z_range_um -- the two forms are alternatives and passing both is refused. Use this form to search a span you have not searched yet, rather than moving the stage and computing a half-width around it.",
                 },
                 "z_max_um": {
                     "type": "number",
@@ -999,14 +999,15 @@ TOOLS: list[dict[str, Any]] = [
                     "required": ["device", "property"],
                 },
             },
+            # No top-level oneOf/allOf/anyOf. The Messages API rejects the whole
+            # request -- "input_schema does not support oneOf, allOf, or anyOf at
+            # the top level" -- which means NO tools load and the session cannot
+            # start. Block 56b expressed the either/or that way and took the rig
+            # down on the first prompt of a gate. The constraint is stated in the
+            # descriptions and enforced by run_autofocus's own refusals, which
+            # answer with a reason the model can act on. See
+            # test_no_tool_schema_uses_a_top_level_combinator.
             "required": ["z_step_um"],
-            "oneOf": [
-                {"required": ["z_range_um"],
-                 "not": {"anyOf": [{"required": ["z_min_um"]},
-                                    {"required": ["z_max_um"]}]}},
-                {"required": ["z_min_um", "z_max_um"],
-                 "not": {"required": ["z_range_um"]}},
-            ],
         },
     },
     {

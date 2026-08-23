@@ -30,16 +30,18 @@ cd $HOME\Code\microclaw
 git fetch origin
 git checkout design56/probe
 git pull
-git merge-base --is-ancestor bc8cc4b HEAD
+git merge-base --is-ancestor PINCOMMIT HEAD
 if ($LASTEXITCODE -eq 0) { Write-Output "IMPLEMENTATION PRESENT" } else { Write-Output "WRONG TREE - STOP" }
-pip install -e .
-python -m pytest -q > suite.txt 2>&1
+uv pip install -e .
+uv run pytest -q > suite.txt 2>&1
 Select-String -Path suite.txt -Pattern "passed|failed" | Select-Object -Last 1
 (Select-String -Path suite.txt -Pattern "^FAILED" | Measure-Object).Count
 ```
 
 **Required:** `IMPLEMENTATION PRESENT`, and the last line prints **`0`**. The
-pass count should be near 2001; the criterion is zero failures.
+pass count should be near **1976 passed / 124 skipped on Windows** (2001/99 on
+macOS — the totals match, only the platform skips differ). The criterion is
+zero failures, not the count.
 
 ```powershell
 Get-Content "$env:APPDATA\microclaw\safety_config.yaml" | Select-String -Pattern "z_min|z_max|z_"
@@ -48,12 +50,20 @@ Get-Content "$env:APPDATA\microclaw\safety_config.yaml" | Select-String -Pattern
 **Required:** the configured Z range contains **1000 to 2800 µm**. Widen it in
 that file first if not, and say so in the results.
 
-Launch from this directory so the transcript lands here:
+Launch from this directory — the transcript is written to the server's working
+directory, so Step 4's grep only finds it if you start it here:
 
 ```powershell
 cd $HOME\Code\microclaw
-microclaw
+uv run microclaw serve
 ```
+
+**Known defect, and it will bite you.** An error that aborts a turn is shown in
+the browser but is **not written to the transcript** — the JSONL keeps your
+prompt and nothing else. On 2026-08-23 that forced the operator to retype a 400
+by hand. **If any step errors, copy the message out of the browser immediately**;
+it will not be in the log afterwards. Recorded as a finding, not fixed in this
+block.
 
 ## Step 1 — the device's own vocabulary
 
@@ -295,7 +305,7 @@ including the sweeps and the Z moves.** PFS **Off**, sample safe to sweep again.
 
 ```powershell
 $s = ".\routine.py"
-python -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read()); print('PARSES')" $s
+uv run python -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read()); print('PARSES')" $s
 Select-String -Path $s -Pattern "Within range of focus search"
 Select-String -Path $s -Pattern "Locked in focus"
 Select-String -Path $s -Pattern "property_probe\("
@@ -309,7 +319,7 @@ match**; the last prints **nothing**. A `NOT EMITTED` match names an undecorated
 tool — record which.
 
 ```powershell
-python .\routine.py > routine_out.txt 2>&1
+uv run python .\routine.py > routine_out.txt 2>&1
 Write-Output "exit code: $LASTEXITCODE"
 Select-String -Path routine_out.txt -Pattern "AUTOFOCUS ENVELOPE" -Context 0,3
 Select-String -Path routine_out.txt -Pattern "AUTOFOCUS OUTCOME" -Context 0,2
