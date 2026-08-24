@@ -182,18 +182,28 @@ because a block looks small.
    worktree**. Do not code the block inline. The implementer commits and
    reports; it never merges.
 
-   **Write the runner prompt to the scratchpad, then stop and offer to start the
-   agent. Do not spawn it automatically.** The prompt is the deliverable of this
-   step; running it is a separate decision that is the user's, because the same
-   prompt is often handed to a different agent runner (codex, for example)
-   instead. Say the prompt is ready, say what it covers, and ask. This is the one
-   place the block workflow does *not* override "don't spawn agents unless
-   asked" — everything else about delegation still stands, including that the
-   work does not get done inline.
+   **Write the runner prompt to the scratchpad, then launch the configured Codex
+   runner automatically.** Use the project `codex-runner` skill, keep its job
+   directory for the lifetime of the block, and run Codex in the assigned linked
+   worktree — never in the coordinator checkout. The result file is a handoff,
+   not evidence: review the diff and rerun the tests in step 3. If the runner is
+   unavailable or its automatic approval review cannot authorize a required
+   action, stop and report instead of doing the implementation inline.
+
+   **Two things the runner has not proved yet** (2026-08-24 — delete this
+   paragraph once the first real block has shown both). A revision turn's
+   automatic reviewer is *inherited* from the start turn's saved session, not
+   established by the wrapper's `-c` declaration; no probe has made a revision
+   actually request an escalation, so watch the first one that does and confirm
+   it is answered rather than left hanging. And `--strict-config` guards the
+   revise path only, so on a machine whose `config.toml` carries a field this
+   Codex version rejects, revisions fail while starts keep working.
 3. **Review what comes back.** Read the diff, not the summary. Re-run the suite
    yourself rather than accepting the reported count. Return findings to the
    implementer and repeat 2–3 until the code is right. Rejecting an
-   otherwise-green implementation is normal and has caught real defects.
+   otherwise-green implementation is normal and has caught real defects. Send
+   concrete findings back through the same `codex-runner` session; do not use
+   "last session", because another block or interactive run may be newer.
 
    **A test written after the code is not evidence until you have watched it
    fail.** Check out the pre-fix tree (`git checkout <before> -- microclaw/`),
