@@ -25,9 +25,11 @@ record across all five positions.
 
 **Two steps were repaired afterwards and are the only ones worth re-running:**
 Step 4's finder anchored on `workspace_dir`, which is absent from this machine's
-schema-3 minimal document, so it died and took Step 5's evidence file with it
-(see Step 5's `Test-Path` note); and Step 7 tested nothing twice over (see its
-own preamble). Both are fixed above. **Re-run Step 7 first, then Steps 4 and 5 against the
+schema-3 minimal document, so it raised `TypeError` and never produced a path —
+the operator found the script by hand. Separately and still unexplained, Step 5's
+`standalone.txt` came back **empty** even though the run itself succeeded, so the
+step's stated evidence is missing while its substance is not (see Step 5). And
+Step 7 tested nothing twice over (see its own preamble). Both are fixed above. **Re-run Step 7 first, then Steps 4 and 5 against the
 export it produces** — that order closes all three limbs in one session, and no
 older export can close 7b because none of them carries a `guard.check_exposure`
 line. Steps 0–3 and 6 are closed and need no repeat.
@@ -312,15 +314,23 @@ Leave Micro-Manager and the bridge running.
 
 ```powershell
 if (-not (Test-Path $Script)) { Write-Output "NO SCRIPT PATH - STOP"; return }
-uv run python $Script > "$Evidence\standalone.txt" 2>&1
-Write-Output "EXIT: $LASTEXITCODE"
-Get-Content "$Evidence\standalone.txt"
+uv run python $Script 2>&1 | Tee-Object -FilePath "$Evidence\standalone.txt"
+$code = $LASTEXITCODE
+"EXIT: $code" | Tee-Object -FilePath "$Evidence\standalone.txt" -Append
+$size = (Get-Item "$Evidence\standalone.txt").Length
+if ($size -lt 20) { Write-Output "STANDALONE OUTPUT IS EMPTY - STEP FAILED, SAY SO" }
+Write-Output "CAPTURED BYTES: $size"
 ```
 
-**The `Test-Path` line is not decoration.** On round 1 Step 4's finder died, left
-`$Script` empty, and `uv run python` with no argument read EOF from stdin and
-exited **0** — writing an empty `standalone.txt` that looked like a quiet
-success. A step whose evidence file is empty has not passed.
+**`Tee-Object` and the size check are both there because round 1's
+`standalone.txt` came back empty and nobody could tell.** The cause was never
+established — the operator had found the script by hand and passed a good path,
+so the finder was not to blame. `Tee-Object` puts the output on screen as well as
+in the file, so if the file ends up empty you still saw what happened; the exit
+code is appended into the same file rather than only printed; and the size check
+makes an empty capture announce itself instead of looking like a quiet success.
+**A step whose evidence file is empty has not passed** — record what was on
+screen and say the capture failed.
 
 **Required:** `EXIT: 0`, and the run completes the acquisition and writes its
 dataset and its hook log **beside the script**. Confirm the dataset from the
