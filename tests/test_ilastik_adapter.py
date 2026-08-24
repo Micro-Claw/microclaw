@@ -1,4 +1,3 @@
-import inspect
 import json
 import subprocess
 import sys
@@ -8,11 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from microclaw.hook_decisions import HookResult
-from microclaw.hook_manager import lint_hook_code, validate_hook_contract
 from microclaw import completed_dataset
 from microclaw.ilastik_adapter import (
-    IlastikCompletedDatasetAdapter, IlastikPooledObservationAdapter,
+    IlastikCompletedDatasetAdapter, _validate_absolute_command_paths,
     decimate_field, pool_probability_map,
 )
 from microclaw.safety import SafetyConstraints, SafetyGuard
@@ -27,42 +24,47 @@ def recorded_output():
     return data["probabilities"], str(data["axistags"]), list(data["label_names"])
 
 
+def pool(probabilities, axistags, labels, **kwargs):
+    return pool_probability_map(
+        probabilities, axistags=axistags, label_names=labels,
+        background_label="BG", numerator_label="apo_mito",
+        denominator_label="healthy_mito", **kwargs,
+    )
+
+
 def test_real_recorded_output_reads_axes_and_labels_in_their_recorded_order():
     probabilities, axistags, labels = recorded_output()
-    expected = pool_probability_map(probabilities, axistags=axistags, label_names=labels)
+    expected = pool(probabilities, axistags, labels)
     transposed = np.transpose(probabilities, (2, 0, 1))
     axes = json.loads(axistags)
     axes["axes"] = [axes["axes"][2], axes["axes"][0], axes["axes"][1]]
     reordered = transposed[[2, 0, 1], ...]
-    actual = pool_probability_map(
-        reordered, axistags=axes,
-        label_names=[labels[2], labels[0], labels[1]],
-    )
+    actual = pool(reordered, axes, [labels[2], labels[0], labels[1]])
     assert actual["apo_fraction"] == pytest.approx(expected["apo_fraction"])
     assert actual["mito_coverage"] == pytest.approx(expected["mito_coverage"])
 
 
 def test_coverage_gate_refuses_ratio_from_recorded_output():
     probabilities, axistags, labels = recorded_output()
-    pooled = pool_probability_map(
-        probabilities, axistags=axistags, label_names=labels, coverage_floor=1.0,
-    )
+    pooled = pool(probabilities, axistags, labels, coverage_floor=1.0)
     assert pooled["status"] == "unresolved"
     assert pooled["apo_fraction"] is None
 
 
-def test_plain_adapter_contract_and_lint():
-    source = inspect.getsource(IlastikPooledObservationAdapter)
-    assert IlastikPooledObservationAdapter.__bases__ == (object,)
-    assert "log_path" not in inspect.signature(IlastikPooledObservationAdapter).parameters
-    assert lint_hook_code(source) == []
-    module_source = "from microclaw.hook_decisions import HookResult\n" + source
-    assert validate_hook_contract(module_source, required_callback="analyze_frame") == []
-    probabilities, axistags, labels = recorded_output()
-    result = IlastikPooledObservationAdapter().analyze_frame(
-        probabilities, {"axistags": axistags, "LabelNames": labels}
+def test_pooling_is_generic_and_named_labels_are_validated():
+    probabilities, axistags, _ = recorded_output()
+    generic = pool_probability_map(
+        probabilities, axistags=axistags, label_names=["empty", "one", "two"],
+        background_label="empty", numerator_label="one", denominator_label="two",
+        coverage_key="coverage", ratio_key="fraction",
     )
-    assert isinstance(result, HookResult)
+    assert set(generic["pooled_channels"]) == {"empty", "one", "two"}
+    assert generic["coverage"] == pytest.approx(1 - generic["pooled_channels"]["empty"]["mean"])
+    with pytest.raises(ValueError, match="absent.*missing"):
+        pool_probability_map(
+            probabilities, axistags=axistags, label_names=["empty", "one", "two"],
+            background_label="empty", numerator_label="missing", denominator_label="two",
+        )
 
 
 class FakeView:
@@ -104,6 +106,8 @@ class FakeFile:
     def __getitem__(self, key):
         if self.path.suffix == ".h5":
             return FakeDataset(self.probabilities, {"axistags": self.axistags})
+        if key == "ilastikVersion":
+            return FakeDataset(np.array(b"9.8.7"))
         return FakeDataset(np.array(LABELS))
 
 
@@ -114,7 +118,8 @@ def adapter(tmp_path):
     project.write_bytes(b"pinned project")
     import hashlib
     return IlastikCompletedDatasetAdapter(
-        executable, project, hashlib.sha256(project.read_bytes()).hexdigest(), timeout_s=2,
+        executable, project, hashlib.sha256(project.read_bytes()).hexdigest(),
+        "BG", "apo_mito", "healthy_mito", timeout_s=2,
     )
 
 
@@ -127,10 +132,16 @@ def test_batch_is_one_absolute_invocation_and_cleans_intermediates(tmp_path, mon
         assert len(command) == 7
         assert "--readonly=true" in command
         assert "--output_format=hdf5" in command
+        project_arg = next(item for item in command if item.startswith("--project="))
+        output_arg = next(item for item in command if item.startswith("--output_filename_format="))
+        assert Path(project_arg.split("=", 1)[1]).is_absolute()
+        assert Path(output_arg.split("=", 1)[1]).is_absolute()
+        assert Path(command[0]).is_absolute()
         assert all(Path(item).is_absolute() for item in command[-1:])
         work = Path(kwargs["cwd"])
         work_seen.append(work)
         output = work / "field_000000_probabilities.h5"
+        # Measured real naming: field_000000.tiff -> field_000000_probabilities.h5.
         output.touch()
         return SimpleNamespace(returncode=0)
 
@@ -140,8 +151,30 @@ def test_batch_is_one_absolute_invocation_and_cleans_intermediates(tmp_path, mon
     ))
     result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
     assert result[0]["result"]["coordinates"] == {"position": 0}
+    assert result[0]["analyzer_version"] == "9.8.7"
     assert not work_seen[0].exists()
     assert decimate_field(FakeView().read_image()).shape == (256, 256)
+
+
+@pytest.mark.parametrize("relative", ["python", "model.ilp", "out/{nickname}.h5", "field.tiff"])
+def test_every_command_path_is_required_to_be_absolute(relative):
+    command = [
+        "/app/python", "/app/ilastik", "--headless", "--readonly=true",
+        "--project=/model.ilp", "--output_format=hdf5",
+        "--output_filename_format=/out/{nickname}.h5", "/in/field.tiff",
+    ]
+    inputs = ["/in/field.tiff"]
+    if relative == "python":
+        command[0] = relative
+    elif relative == "model.ilp":
+        command[4] = f"--project={relative}"
+    elif relative.startswith("out"):
+        command[6] = f"--output_filename_format={relative}"
+    else:
+        command[-1] = relative
+        inputs = [relative]
+    with pytest.raises(ValueError, match="must be absolute"):
+        _validate_absolute_command_paths(command, Path("/app/ilastik"), inputs)
 
 
 def test_completed_dataset_runner_executes_ilastik_path_end_to_end(tmp_path, monkeypatch):
@@ -182,6 +215,9 @@ def test_completed_dataset_runner_executes_ilastik_path_end_to_end(tmp_path, mon
             "executable_path": str(instance.executable_path),
             "project_path": str(instance.project_path),
             "project_sha256": instance.project_sha256,
+            "background_label": "BG",
+            "numerator_label": "apo_mito",
+            "denominator_label": "healthy_mito",
             "timeout_s": 2,
         }, str(tmp_path / "result"),
         model_project_config={"ilastik_project": str(instance.project_path)},

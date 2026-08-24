@@ -344,7 +344,7 @@ def run_analysis_on_saved_dataset(
         entry = {"source": "builtin", "version": __version__}
     else:
         cls, verb, entry, source = _load_saved_adapter(adapter)
-    if builtin is not None and builtin is not IlastikCompletedDatasetAdapter:
+    if builtin is not None and verb == "analyze_saved_frame":
         # Resolve optional rig state at the trusted runner boundary; adapters
         # remain plain measurement classes with no guard or configuration access.
         min_snr, min_snr_source = resolve_min_snr(
@@ -353,8 +353,7 @@ def run_analysis_on_saved_dataset(
         parameters = {
             **parameters, "min_snr": min_snr, "min_snr_source": min_snr_source,
         }
-    forbidden = (set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
-                 if builtin is None else set())
+    forbidden = set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
     if forbidden:
         raise ValueError(f"Offline adapter parameters request forbidden capabilities: {sorted(forbidden)}")
     instance = cls(**parameters)

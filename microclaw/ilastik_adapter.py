@@ -16,8 +16,6 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-from microclaw.hook_decisions import HookResult
-
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -46,8 +44,10 @@ def _axis_keys(axistags) -> list[str]:
 
 
 def pool_probability_map(probabilities, *, axistags, label_names,
+                         background_label, numerator_label, denominator_label,
                          coverage_floor=0.01, high_percentiles=(95.0, 99.0),
-                         area_threshold=0.5):
+                         area_threshold=0.5, coverage_key="mito_coverage",
+                         ratio_key="apo_fraction", label_semantics=None):
     """Pool all class channels while preserving unresolved class semantics."""
     labels = [item.decode("utf-8") if isinstance(item, bytes) else str(item)
               for item in label_names]
@@ -57,9 +57,13 @@ def pool_probability_map(probabilities, *, axistags, label_names,
     array = np.moveaxis(np.asarray(probabilities), axes.index("c"), -1)
     if array.shape[-1] != len(labels):
         raise ValueError("probability channel count does not match LabelNames")
-    required = {"BG", "apo_mito", "healthy_mito"}
-    if set(labels) != required:
-        raise ValueError(f"project labels must be exactly {sorted(required)!r}")
+    configured = {background_label, numerator_label, denominator_label}
+    missing = configured - set(labels)
+    if missing:
+        raise ValueError(
+            f"configured labels are absent from project LabelNames: {sorted(missing)!r}; "
+            f"available labels: {labels!r}"
+        )
     by_label = {label: array[..., index].astype(np.float64, copy=False)
                 for index, label in enumerate(labels)}
     vector = {}
@@ -72,55 +76,48 @@ def pool_probability_map(probabilities, *, axistags, label_names,
             },
             "thresholded_area": float(np.mean(channel >= area_threshold)),
         }
-    coverage = 1.0 - vector["BG"]["mean"]
+    coverage = 1.0 - vector[background_label]["mean"]
     result = {
         "pooled_channels": vector,
-        "mito_coverage": coverage,
+        coverage_key: coverage,
         "coverage_floor": float(coverage_floor),
         "area_threshold": float(area_threshold),
         "channel_mapping": {
-            "BG": "confirmed", "apo_mito": "unverified", "healthy_mito": "unverified"
+            label: (label_semantics or {}).get(label, "unverified") for label in labels
         },
         "ranking_unit": "whole_field",
     }
     if coverage < coverage_floor:
-        result.update(status="unresolved", apo_fraction=None)
+        result.update(status="unresolved", **{ratio_key: None})
     else:
-        apo = float(np.sum(by_label["apo_mito"]))
-        healthy = float(np.sum(by_label["healthy_mito"]))
-        denominator = apo + healthy
+        numerator = float(np.sum(by_label[numerator_label]))
+        denominator = numerator + float(np.sum(by_label[denominator_label]))
         result.update(status="unresolved" if denominator <= 0 else "unverified",
-                      apo_fraction=None if denominator <= 0 else apo / denominator)
+                      **{ratio_key: None if denominator <= 0 else numerator / denominator})
     return result
 
 
-class IlastikPooledObservationAdapter:
-    """Plain saved-hook shape for an already-produced probability map.
-
-    It intentionally does not launch ilastik.  The completed-survey adapter
-    below owns that boundary between passes.
-    """
-
-    def __init__(self, coverage_floor=0.01, high_percentiles=(95.0, 99.0),
-                 area_threshold=0.5):
-        self.parameters = (coverage_floor, high_percentiles, area_threshold)
-
-    def analyze_frame(self, image, metadata):
-        coverage_floor, high_percentiles, area_threshold = self.parameters
-        pooled = pool_probability_map(
-            image, axistags=metadata["axistags"], label_names=metadata["LabelNames"],
-            coverage_floor=coverage_floor, high_percentiles=high_percentiles,
-            area_threshold=area_threshold,
-        )
-        return HookResult(pooled)
+def _validate_absolute_command_paths(command: list[str], launcher_script_path,
+                                     input_paths) -> None:
+    paths = [command[0], *map(str, input_paths)]
+    if launcher_script_path is not None:
+        paths.append(command[1])
+    for prefix in ("--project=", "--output_filename_format="):
+        paths.extend(item.removeprefix(prefix) for item in command if item.startswith(prefix))
+    relative = [item for item in paths if not Path(item).is_absolute()]
+    if relative:
+        raise ValueError(f"every ilastik command path must be absolute: {relative!r}")
 
 
 class IlastikCompletedDatasetAdapter:
     """Run one bounded ilastik process across all selected saved fields."""
 
-    def __init__(self, executable_path, project_path, project_sha256, timeout_s=600,
+    def __init__(self, executable_path, project_path, project_sha256,
+                 background_label, numerator_label, denominator_label, timeout_s=600,
                  coverage_floor=0.01, high_percentiles=(95.0, 99.0),
-                 area_threshold=0.5, target_size=256, launcher_script_path=None):
+                 area_threshold=0.5, target_size=256, launcher_script_path=None,
+                 coverage_key="mito_coverage", ratio_key="apo_fraction",
+                 label_semantics=None):
         self.executable_path = Path(executable_path).resolve()
         self.project_path = Path(project_path).resolve()
         self.project_sha256 = project_sha256
@@ -131,6 +128,12 @@ class IlastikCompletedDatasetAdapter:
         self.target_size = int(target_size)
         self.launcher_script_path = (Path(launcher_script_path).resolve()
                                      if launcher_script_path else None)
+        self.background_label = str(background_label)
+        self.numerator_label = str(numerator_label)
+        self.denominator_label = str(denominator_label)
+        self.coverage_key = str(coverage_key)
+        self.ratio_key = str(ratio_key)
+        self.label_semantics = dict(label_semantics or {})
 
     def analyze_completed_dataset(self, dataset_view, selection, context):
         if not self.executable_path.is_file():
@@ -144,9 +147,20 @@ class IlastikCompletedDatasetAdapter:
             raise ValueError(
                 f"ilastik project sha256 mismatch: expected {self.project_sha256}, got {actual_hash}"
             )
-        import h5py
+        try:
+            import h5py
+        except (ImportError, ValueError) as error:
+            raise RuntimeError(
+                "ilastik HDF5 support is unavailable; install the microclaw[ilastik] "
+                "extra in Microclaw's environment"
+            ) from error
         with h5py.File(self.project_path, "r") as project:
             label_names = list(project["PixelClassification/LabelNames"][()])
+            version_value = project["ilastikVersion"][()]
+            if isinstance(version_value, np.ndarray):
+                version_value = version_value.item()
+            ilastik_version = (version_value.decode("utf-8")
+                               if isinstance(version_value, bytes) else str(version_value))
         with tempfile.TemporaryDirectory(prefix="microclaw-ilastik-") as temporary:
             work = Path(temporary).resolve()
             inputs = []
@@ -169,6 +183,7 @@ class IlastikCompletedDatasetAdapter:
                 f"--output_filename_format={output_template}",
                 *map(str, inputs),
             ]
+            _validate_absolute_command_paths(command, self.launcher_script_path, inputs)
             try:
                 subprocess.run(command, cwd=work, check=True, timeout=self.timeout_s,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -185,21 +200,32 @@ class IlastikCompletedDatasetAdapter:
                     dataset = handle["exported_data"]
                     pooled = pool_probability_map(
                         dataset[()], axistags=dataset.attrs["axistags"],
-                        label_names=label_names, coverage_floor=self.coverage_floor,
+                        label_names=label_names, background_label=self.background_label,
+                        numerator_label=self.numerator_label,
+                        denominator_label=self.denominator_label,
+                        coverage_floor=self.coverage_floor,
                         high_percentiles=self.high_percentiles,
                         area_threshold=self.area_threshold,
+                        coverage_key=self.coverage_key, ratio_key=self.ratio_key,
+                        label_semantics=self.label_semantics,
                     )
                 results.append({
                     "result": {"coordinates": item, **pooled},
                     "status": "unverified",
                     "analyzer": "ilastik_pixel_classification",
-                    "analyzer_version": "1.4.2",
+                    "analyzer_version": ilastik_version,
                     "parameters": {
                         "project_sha256": self.project_sha256,
                         "target_size": self.target_size,
                         "coverage_floor": self.coverage_floor,
                         "high_percentiles": list(self.high_percentiles),
                         "area_threshold": self.area_threshold,
+                        "background_label": self.background_label,
+                        "numerator_label": self.numerator_label,
+                        "denominator_label": self.denominator_label,
+                        "coverage_key": self.coverage_key,
+                        "ratio_key": self.ratio_key,
+                        "label_semantics": self.label_semantics,
                     },
                 })
             return results
