@@ -301,11 +301,11 @@ block's branch.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 57a | `design57/fail-closed-guard` | `2b07dd4` | codex-runner | demo — pending | — | — |
+| 57a | `design57/fail-closed-guard` | `2f7e1af` | codex-runner | demo — pending | — | — |
 
 **Baseline on the start commit, coordinator-measured:** 2090 passed / 99 skipped
-/ 3 warnings (macOS), measured at `e32242c`; `2b07dd4` adds this checklist and
-touches no code. On Windows expect the same total with a different skip
+/ 3 warnings (macOS), measured at `e32242c`. The two
+commits between it and the branch point add this checklist and touch no code. On Windows expect the same total with a different skip
 split. Gate on zero failures, never the count.
 
 **Sequencing.** `design/55` is written and unstarted and touches
