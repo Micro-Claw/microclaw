@@ -35,6 +35,7 @@ from microclaw.hooks import write_analysis_observation
 from microclaw.image_analysis import (
     compute_stats, connected_components, resolve_min_snr,
 )
+from microclaw.ilastik_adapter import IlastikCompletedDatasetAdapter
 from microclaw.safety import SafetyViolation
 
 
@@ -89,6 +90,7 @@ class FrameStatistics:
 BUILTIN_ADAPTERS = {
     "connected_components": ConnectedComponents,
     "frame_statistics": FrameStatistics,
+    "ilastik_pixel_classification": IlastikCompletedDatasetAdapter,
 }
 
 
@@ -334,12 +336,15 @@ def run_analysis_on_saved_dataset(
     if builtin is not None:
         # Package code has the same trusted standing as live image_analysis.
         # Its exact class source is pinned in the reproducibility manifest.
-        cls, verb = builtin, "analyze_saved_frame"
+        cls = builtin
+        verb = ("analyze_completed_dataset"
+                if callable(getattr(builtin, "analyze_completed_dataset", None))
+                else "analyze_saved_frame")
         source = inspect.getsource(builtin).encode("utf-8")
         entry = {"source": "builtin", "version": __version__}
     else:
         cls, verb, entry, source = _load_saved_adapter(adapter)
-    if builtin is not None:
+    if builtin is not None and builtin is not IlastikCompletedDatasetAdapter:
         # Resolve optional rig state at the trusted runner boundary; adapters
         # remain plain measurement classes with no guard or configuration access.
         min_snr, min_snr_source = resolve_min_snr(
@@ -348,7 +353,8 @@ def run_analysis_on_saved_dataset(
         parameters = {
             **parameters, "min_snr": min_snr, "min_snr_source": min_snr_source,
         }
-    forbidden = set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
+    forbidden = (set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
+                 if builtin is None else set())
     if forbidden:
         raise ValueError(f"Offline adapter parameters request forbidden capabilities: {sorted(forbidden)}")
     instance = cls(**parameters)

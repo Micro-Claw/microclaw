@@ -710,7 +710,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_analysis_on_saved_dataset",
         "description": (
             "Measure a completed NDTiff dataset. Zero hardware action: it reads "
-            "saved pixels and exposes nothing. Two adapters are BUILT IN and need "
+            "saved pixels and exposes nothing. Two general adapters are BUILT IN and need "
             "no review, hash pin or confirmation — reach for them before writing "
             "anything and before reasoning from a picture. 'connected_components' "
             "(input_kind='stage_coordinate_mosaic') labels contiguous signal and "
@@ -718,7 +718,10 @@ TOOLS: list[dict[str, Any]] = [
             "bounding box: this is how you answer whether two positions sit on the "
             "same object. 'frame_statistics' (input_kind='frames') scores every "
             "saved frame with the same statistics as a live snap: this is how you "
-            "say whether anything is in an acquisition you already ran. An adapter "
+            "say whether anything is in an acquisition you already ran. "
+            "'ilastik_pixel_classification' is the completed-survey batch boundary "
+            "for an installed ilastik and a user-trained, SHA-256-pinned .ilp; its "
+            "pooled whole-field scores remain scientifically unverified. An adapter "
             "from the user's saved manifest also runs here, and those stay reviewed "
             "and hash-pinned."
         ),
