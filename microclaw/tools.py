@@ -868,10 +868,17 @@ class _RecordedSafetyGuard:
             raise SafetyViolation(f"{{label}}={{value}} is below recorded minimum {{low}}")
         if high is not None and value > high:
             raise SafetyViolation(f"{{label}}={{value}} exceeds recorded maximum {{high}}")
+    def _require_stage_bounds(self, axis):
+        low, high = _LIMITS[f"{{axis.lower()}}_um"]
+        if low is None or high is None:
+            raise SafetyViolation(f"{{axis}} bounds are incomplete in the recorded stage envelope")
     def check_xy(self, x, y):
+        self._require_stage_bounds("X")
+        self._require_stage_bounds("Y")
         self._bounded(x, _LIMITS["x_um"][0], _LIMITS["x_um"][1], "X")
         self._bounded(y, _LIMITS["y_um"][0], _LIMITS["y_um"][1], "Y")
     def check_z(self, z):
+        self._require_stage_bounds("Z")
         self._bounded(z, _LIMITS["z_um"][0], _LIMITS["z_um"][1], "Z")
     def check_exposure(self, exposure_ms):
         self._bounded(exposure_ms, 0.0, _LIMITS["exposure_ms"][1], "Exposure")
@@ -1462,6 +1469,15 @@ def export_session_script(
                 "exposure_ms": (0.0, camera.max_exposure_ms),
                 "analysis_min_snr": guard.analysis_min_snr,
             }
+            for axis in ("x", "y", "z"):
+                pair = safety_limits[f"{axis}_um"]
+                if any(edge is None or not math.isfinite(float(edge)) for edge in pair):
+                    safety_limits = None
+                    safety_limits_error = (
+                        f"recorded stage bounds are incomplete for {axis.upper()}; "
+                        f"both {axis}_min and {axis}_max are required"
+                    )
+                    break
         except AttributeError as exc:
             safety_limits_error = (
                 "adaptive export safety constraints are unavailable or have an "

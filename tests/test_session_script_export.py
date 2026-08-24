@@ -20,8 +20,9 @@ class Guard:
         self.seen = []
         self._c = SimpleNamespace(
             stage=SimpleNamespace(
-                x_min=None, x_max=None, y_min=None, y_max=None,
-                z_min=None, z_max=None,
+                x_min=-1000.0, x_max=1000.0,
+                y_min=-1000.0, y_max=1000.0,
+                z_min=-1000.0, z_max=1000.0,
             ),
             camera=SimpleNamespace(max_exposure_ms=None),
         )
@@ -2739,6 +2740,82 @@ def test_adaptive_export_refuses_when_safety_constraints_are_unavailable(tmp_pat
     # The unrelated step still exported, and no unbounded guard was written.
     assert "core.set_xy_position(1.5, 2.5)" in source
     assert "_LIMITS" not in source
+
+
+def test_adaptive_export_refuses_incomplete_stage_bounds_without_losing_other_steps(
+    tmp_path,
+):
+    guard = Guard(tmp_path)
+    guard._c.stage.y_max = None
+    records = [call("clear_roi", {}), call("run_timelapse", {
+        "n_frames": 1, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })]
+
+    result = tools.export_session_script(None, guard, "routine.py", records)
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+
+    assert result["emitted_calls"] == 1
+    assert "core.clear_roi()" in source
+    refusal = [line for line in source.splitlines() if line.startswith("# NOT EMITTED")]
+    assert refusal == [
+        "# NOT EMITTED: run_timelapse — recorded stage bounds are incomplete for Y; "
+        "both y_min and y_max are required"
+    ]
+
+
+def test_recorded_guard_rejects_missing_stage_edge_but_allows_open_exposure():
+    limits = {
+        "x_um": (-1.0, 1.0), "y_um": (-1.0, None), "z_um": (-1.0, 1.0),
+        "exposure_ms": (0.0, None), "analysis_min_snr": None,
+    }
+    namespace = {"math": __import__("math")}
+    exec(tools._export_guard_source(limits), namespace)
+    guard = namespace["guard"]
+
+    guard.check_exposure(1_000_000.0)
+    with pytest.raises(namespace["SafetyViolation"], match="Y bounds.*recorded"):
+        guard.check_xy(0.0, 0.0)
+
+
+def test_bounded_adaptive_export_records_all_six_finite_stage_edges(tmp_path):
+    _, result, source = export(tmp_path, [call("run_timelapse", {
+        "n_frames": 1, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })])
+    assert result["emitted_calls"] == 1
+    assert "'x_um': (-1000.0, 1000.0)" in source
+    assert "'y_um': (-1000.0, 1000.0)" in source
+    assert "'z_um': (-1000.0, 1000.0)" in source
+    assert "bounds are incomplete in the recorded stage envelope" in source
+
+
+def test_adaptive_export_without_camera_config_executes_open_exposure_check(tmp_path):
+    _, result, source = export(tmp_path, [call("run_timelapse", {
+        "n_frames": 1, "interval_s": 0, "save_dir": "session",
+        "exposure_ms": 25.0, "hook_strategy": "snr_observer",
+    })])
+    assert result["emitted_calls"] == 1
+
+    class DemoCore:
+        def set_exposure(self, value): pass
+
+    class FakeAcquisition:
+        def __init__(self, **kwargs): self._hooks = kwargs
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def acquire(self, events):
+            list(events)
+
+    def fake_events(**kwargs):
+        return [{"axes": {"time": 0}}]
+
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    exec(compile(runnable, "routine.py", "exec"), {
+        "__file__": str(tmp_path / "routine.py"), "Core": DemoCore,
+        "Acquisition": FakeAcquisition, "multi_d_acquisition_events": fake_events,
+    })
+    assert "bounds are incomplete in the recorded stage envelope" in source
 
 
 def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):

@@ -307,7 +307,7 @@ class TestMoveStageZ:
 
     def test_get_z_position_reports_bounds_without_moving(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(z_max=40.0)))
+            stage=StageConstraints(z_min=0.0, z_max=40.0)))
         result = get_z_position(mock_ctrl, guard)
         assert result["out_of_bounds"] == [
             "Z=50.0 µm exceeds the maximum allowed (40.0 µm)."
@@ -347,7 +347,7 @@ class TestMoveStageXY:
     def test_get_xy_position_reports_bounds_without_moving(self, mock_ctrl):
         mock_ctrl.core.get_y_position.return_value = 12.5
         guard = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(y_max=10.0)))
+            stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=10.0)))
         result = get_xy_position(mock_ctrl, guard)
         assert result["out_of_bounds"] == [
             "Y=12.5 µm exceeds the maximum allowed (10.0 µm)."
@@ -821,6 +821,15 @@ class TestGetSystemState:
         assert "exposure_ms" in result
         assert "declared_illumination_properties" not in result
 
+    def test_missing_stage_bounds_are_reported_without_raising(self, mock_ctrl):
+        result = get_system_state(mock_ctrl, SafetyGuard(SafetyConstraints()))
+        assert result["out_of_bounds"] == [
+            "No X bounds configured for the core stage. Add stage.x_min and "
+            "stage.x_max before Microclaw may move it.",
+            "No Z bounds configured for the core stage. Add stage.z_min and "
+            "stage.z_max before Microclaw may move it.",
+        ]
+
     def test_reports_declared_illumination_values_without_judging_them(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
             shutters=[
@@ -856,7 +865,8 @@ class TestGetSystemState:
     ):
         mock_ctrl.core.get_y_position.return_value = 12.5
         guard = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(y_max=10.0)))
+            stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=10.0,
+                                   z_min=0, z_max=100)))
         result = get_system_state(mock_ctrl, guard)
         assert result["out_of_bounds"] == [
             "Y=12.5 µm exceeds the maximum allowed (10.0 µm)."
@@ -864,18 +874,24 @@ class TestGetSystemState:
         mock_ctrl.core.set_xy_position.assert_not_called()
         mock_ctrl.core.set_position.assert_not_called()
 
-    def test_in_bounds_and_unset_limit_omit_out_of_bounds(self, mock_ctrl):
+    def test_in_bounds_omits_but_unset_limit_reports_out_of_bounds(self, mock_ctrl):
         mock_ctrl.core.get_y_position.return_value = 12.5
         in_bounds = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(y_max=20.0)))
+            stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=20.0,
+                                   z_min=0, z_max=100)))
         unset = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(y_max=None)))
+            stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=None,
+                                   z_min=0, z_max=100)))
         assert "out_of_bounds" not in get_system_state(mock_ctrl, in_bounds)
-        assert "out_of_bounds" not in get_system_state(mock_ctrl, unset)
+        assert get_system_state(mock_ctrl, unset)["out_of_bounds"] == [
+            "No Y bounds configured for the core stage. Add stage.y_min and "
+            "stage.y_max before Microclaw may move it."
+        ]
 
     def test_reports_z_out_of_bounds_independently(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(z_max=40.0)))
+            stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=100,
+                                   z_min=0, z_max=40.0)))
         result = get_system_state(mock_ctrl, guard)
         assert result["out_of_bounds"] == [
             "Z=50.0 µm exceeds the maximum allowed (40.0 µm)."
@@ -883,9 +899,11 @@ class TestGetSystemState:
         mock_ctrl.core.set_position.assert_not_called()
 
     def test_reads_only_declared_named_stages_and_reports_bounds(self, mock_ctrl):
-        guard = SafetyGuard(SafetyConstraints(named_stages=[
-            NamedStageLimits("TIRF Stage", -10.0, 10.0),
-        ]))
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=100,
+                                   z_min=0, z_max=100),
+            named_stages=[NamedStageLimits("TIRF Stage", -10.0, 10.0)],
+        ))
         mock_ctrl.core.get_position.side_effect = lambda *args: (
             12.5 if args == ("TIRF Stage",) else 50.0
         )
@@ -2366,7 +2384,8 @@ class TestTileAcquisitionMarkPositions:
 
     def test_snap_grid_uses_the_same_rig_gate(self, centered_ctrl, monkeypatch):
         guard = SafetyGuard(SafetyConstraints(
-            analysis=AnalysisConstraints(min_snr=999.0)
+            stage=StageConstraints(x_min=0, x_max=512, y_min=0, y_max=512),
+            analysis=AnalysisConstraints(min_snr=999.0),
         ))
         monkeypatch.setattr(
             "microclaw.tools.snap_to_numpy_displayed",
@@ -3528,7 +3547,10 @@ class TestAcquisitionsRespectTheWorkspace:
 
     @pytest.fixture
     def ws_guard(self, tmp_path):
-        return SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path / "ws")))
+        return SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(z_min=-100, z_max=100),
+            workspace_dir=str(tmp_path / "ws"),
+        ))
 
     def test_zstack_outside_the_workspace_is_refused(self, mock_ctrl, ws_guard, monkeypatch):
         from microclaw import tools
@@ -3942,7 +3964,8 @@ class TestRunAOfflineTools:
 
     def test_validate_positions_reports_z_guard_message(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(z_max=5)))
+            stage=StageConstraints(x_min=-10, x_max=10, y_min=-10, y_max=10,
+                                   z_min=0, z_max=5)))
         result = tools.validate_positions(mock_ctrl, guard, [
             {"name": "bad-z", "x_um": 2, "y_um": 3, "z_um": 8},
         ])

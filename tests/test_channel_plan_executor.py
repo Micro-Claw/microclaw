@@ -14,7 +14,7 @@ from microclaw.tools import set_device_property
 from microclaw.safety import (
     CameraConstraints, ForbiddenProperty, IlluminationConstraints,
     IlluminationProperty, ParsedSafetyConfig, SafetyConstraints, SafetyGuard,
-    SafetyViolation, TypedActuatorId, TypedActuatorPolicy,
+    SafetyViolation, StageConstraints, TypedActuatorId, TypedActuatorPolicy,
 )
 
 
@@ -80,8 +80,9 @@ class Core:
     def get_y_position(self): return float(self.values.get(("XY", "Y"), 0))
 
 
-def make_guard(*, categorical=(), shutters=(), exposure=100, typed=None):
+def make_guard(*, categorical=(), shutters=(), exposure=100, typed=None, stage=None):
     result = SafetyGuard(SafetyConstraints(
+        stage=stage or StageConstraints(),
         camera=CameraConstraints(exposure), allowed_channels=["P"],
         allowed_properties=[ForbiddenProperty(d, p) for d, p in categorical],
         illumination=IlluminationConstraints(
@@ -431,7 +432,9 @@ def test_typed_continuous_and_stage_routing():
     core = Core(effects, {(d, p): "1" for d, p, _ in effects})
     core.types = {(d, p): "Float" for d, p, _ in effects}
     ctrl = controller(core, {(d, p): "typed_continuous_actuator" for d, p, _ in effects})
-    execute_channel_plan(ctrl, make_guard(typed=typed), "P")
+    execute_channel_plan(
+        ctrl, make_guard(typed=typed, stage=StageConstraints(z_min=0, z_max=100)), "P"
+    )
 
 
 def test_illumination_and_shutter_retarget_each_confirm():
