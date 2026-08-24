@@ -15,6 +15,20 @@ where a match is required has **failed**, not passed.
 
 ## What this gate can and cannot settle
 
+## Round 1 result — 2026-08-24, demo machine (`block57a-2026-08-24`)
+
+**Steps 0–6 PASS, scored from the artifacts.** Step 6 raised
+`SafetyViolation: X bounds are incomplete in the recorded stage envelope` at
+`guard.check_xy(0, 0)` before the acquisition opened, which is this block's new
+behaviour on hardware. The standalone hook log matched the live one record for
+record across all five positions.
+
+**Two steps were repaired afterwards and are the only ones worth re-running:**
+Step 4's finder anchored on `workspace_dir`, which is absent from this machine's
+schema-3 minimal document, so it died and took Step 5's evidence file with it
+(see Step 5's `Test-Path` note); and Step 7 tested nothing twice over (see its
+own preamble). Both are fixed above. **Re-run Step 4, Step 5 and Step 7 only.**
+
 **What it settles.** That the ordinary path still works after the guard was made
 to fail closed: a real session on a real MMCore opens, runs a real adaptive
 acquisition, exports a standalone script whose recorded stage envelope is finite,
@@ -161,24 +175,45 @@ and that is how a previous gate's evidence became unreadable.
 
 ```powershell
 @'
-import sys
+import json, sys
 from pathlib import Path
-from microclaw.paths import default_safety_config
-from microclaw.safety import ParsedSafetyConfig
-root = ParsedSafetyConfig.from_yaml(str(default_safety_config())).constraints.workspace_dir
-# An export is identified by its own provenance line, not by being newest: a
-# hand-written script and a saved hook are both .py files in the same tree, and
-# a previous gate lost a round to exactly that confusion.
-cands = [p for p in Path(root).rglob("*.py")
-         if "# RECORDED TOOL:" in p.read_text(encoding="utf-8", errors="ignore")]
-if not cands:
-    print("NO EXPORTED SCRIPT FOUND - STOP"); sys.exit(1)
-newest = max(cands, key=lambda p: p.stat().st_mtime)
-print("script:", newest)
-print("candidates seen:", len(cands))
-Path(sys.argv[1]).write_text(str(newest), encoding="utf-8")
+# The export's own path, read out of the session transcript. workspace_dir is
+# absent from the schema-3 minimal document every in-app setup writes, so it
+# cannot be the anchor; and a hand-written script must never be scored as this
+# block's evidence, so mtime cannot be either.
+here = Path(sys.argv[1])
+histories = sorted(here.glob("*_microclaw_history.jsonl"), key=lambda p: p.stat().st_mtime)
+if not histories:
+    print("NO SESSION TRANSCRIPT IN THIS DIRECTORY - STOP"); sys.exit(1)
+print("transcript:", histories[-1])
+exports = []
+for line in histories[-1].read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    content = json.loads(line).get("content")
+    for block in content if isinstance(content, list) else []:
+        if block.get("type") != "tool_result":
+            continue
+        body = block.get("content")
+        if isinstance(body, list):
+            body = "".join(b.get("text", "") for b in body if isinstance(b, dict))
+        if not isinstance(body, str) or "Session script exported" not in body:
+            continue
+        try:
+            exports.append(json.loads(body))
+        except ValueError:
+            pass
+if not exports:
+    print("NO EXPORT IN THIS SESSION - STOP"); sys.exit(1)
+last = exports[-1]
+print("emitted_calls:", last.get("emitted_calls"))
+print("script:", last["output_path"])
+if not last.get("emitted_calls"):
+    print("EXPORT EMITTED NOTHING - STOP"); sys.exit(1)
+Path(sys.argv[2]).write_text(last["output_path"], encoding="utf-8")
 '@ | Set-Content "$Evidence\find-script.py" -Encoding UTF8
-uv run python "$Evidence\find-script.py" "$Evidence\script-path.txt"
+uv run python "$Evidence\find-script.py" $Repo "$Evidence\script-path.txt"
+Write-Output "FIND EXIT: $LASTEXITCODE"
 $Script = (Get-Content "$Evidence\script-path.txt" -Raw).Trim()
 Write-Output "SCRIPT: $Script"
 @'
@@ -206,12 +241,12 @@ Select-String -Path $Script -Pattern "NOT EMITTED"
 
 **Required, in order:**
 
-1. `SCRIPT:` names a `.py` file inside `workspace_dir`. If the finder printed
-   `NO EXPORTED SCRIPT FOUND - STOP`, Step 3 did not export and this step cannot
-   run. The finder selects on the `# RECORDED TOOL:` provenance line rather than
-   on mtime, so a hand-written script cannot be picked up by accident; if
-   `candidates seen` is greater than 1, say which file was chosen in the
-   results.
+1. `FIND EXIT: 0`, and `emitted_calls:` prints a **positive** number.
+   **`emitted_calls: 0` means Step 3 FAILED**, whatever the file looks like —
+   the finder stops on it rather than handing Steps 5–6 an empty script to run.
+   The path comes from the transcript's own export record, so a hand-written
+   script cannot be picked up by accident, and `workspace_dir` — absent from the
+   minimal document in-app setup writes — is not needed.
 2. The checker prints **`SIX FINITE STAGE EDGES - PASS`** and
    **`LIMITS EXIT: 0`**. Its printed `_LIMITS` must carry the same six numbers
    Step 1 read out of the config. `INCOMPLETE STAGE ENVELOPE` is a FAIL and is
@@ -235,10 +270,16 @@ Exit the Microclaw server completely and confirm no Microclaw process remains.
 Leave Micro-Manager and the bridge running.
 
 ```powershell
+if (-not (Test-Path $Script)) { Write-Output "NO SCRIPT PATH - STOP"; return }
 uv run python $Script > "$Evidence\standalone.txt" 2>&1
 Write-Output "EXIT: $LASTEXITCODE"
 Get-Content "$Evidence\standalone.txt"
 ```
+
+**The `Test-Path` line is not decoration.** On round 1 Step 4's finder died, left
+`$Script` empty, and `uv run python` with no argument read EOF from stdin and
+exited **0** — writing an empty `standalone.txt` that looked like a quiet
+success. A step whose evidence file is empty has not passed.
 
 **Required:** `EXIT: 0`, and the run completes the acquisition and writes its
 dataset and its hook log **beside the script**. Confirm the dataset from the
@@ -281,11 +322,31 @@ Select-String -Path "$Evidence\edited-envelope-run.txt" -Pattern "SafetyViolatio
 **Before this block, this same edited script would have run to completion with
 no X bound at all.** That is the whole of what Step 6 measures.
 
-## Step 7 — the minimal document: no `camera:` section
+## Step 7 — the exposure check, against an open ceiling
 
-The config `_schema_3_document` writes carries no `camera` section at all, so
-`camera.max_exposure_ms` is `None` and every emitted `guard.check_exposure(...)`
-runs against an open ceiling. This step is the regression the design names.
+`_schema_3_document` writes no `camera` section at all
+(`setup_tools.py:277-289`), so `camera.max_exposure_ms` is `None` and every
+emitted `guard.check_exposure(...)` runs against an open ceiling. That is the
+regression this block can break.
+
+**Round 1 could not test it, and the reason is worth reading before you start.**
+This machine's config *is* the minimal document — Step 1 printed
+`max_exposure_ms None` and there is no `camera:` section to remove — so round
+1's strip-the-section step was a no-op whose verification could not fail. Worse,
+the agent recorded its survey with no exposure argument, so the exported script
+contained **zero** `guard.check_exposure` calls and the limb had nothing to
+check. Both halves are fixed below: the open ceiling is confirmed from Step 4's
+own output, and this step now forces an exposure into the recorded call.
+
+### 7a — the ceiling is already open, confirmed from Step 4
+
+Step 4's checker printed an `exposure ceiling:` line. **Required: it reads
+`None`.** If it does, this machine runs the minimal document natively and every
+script in Steps 3–6 already exported and ran against an open ceiling — record
+that and go straight to 7b.
+
+If it prints a number, this machine declares a ceiling, and the open-ceiling case
+needs a config without one:
 
 ```powershell
 $NoCam = Join-Path $Evidence "safety_config_no_camera.yaml"
@@ -294,46 +355,57 @@ import sys
 from pathlib import Path
 from microclaw.paths import default_safety_config
 src = Path(str(default_safety_config())).read_text(encoding="utf-8").splitlines()
-out, skip = [], False
+out, skip, removed = [], False, False
 for line in src:
     if line.startswith("camera:"):
         skip = True
+        removed = True
         continue
     if skip and (line.startswith(" ") or line.startswith("\t") or not line.strip()):
         continue
     skip = False
     out.append(line)
 Path(sys.argv[1]).write_text("\n".join(out) + "\n", encoding="utf-8")
-print("wrote", sys.argv[1])
+print("REMOVED A CAMERA SECTION" if removed else "NOTHING TO REMOVE - THIS STEP IS A NO-OP")
 '@ | Set-Content "$Evidence\strip-camera.py" -Encoding UTF8
 uv run python "$Evidence\strip-camera.py" $NoCam
-Select-String -Path $NoCam -Pattern "^camera:","max_exposure_ms"
 ```
 
-**Required: the last command prints nothing.** If it prints anything, the strip
-did not work — STOP and report it.
+**Required: `REMOVED A CAMERA SECTION`.** `NOTHING TO REMOVE` means you are in
+the 7a case above and should not pretend this step tested anything. Then launch
+with `uv run microclaw --safety-config $NoCam serve` instead of the plain
+`serve` in 7b, and require the session to **open** — a refusal here is a FAIL,
+because this is the document in-app setup writes.
+
+### 7b — force an exposure into the recorded call
+
+Start a fresh session from `$Repo` as in Step 3. Then, verbatim:
+
+> Run that same five-position SNR survey again, and set the camera exposure to
+> 20 ms for it. Then export it as a standalone script.
+
+**Name the exposure, do not describe an outcome.** The mechanism under test is
+the *emitted* `guard.check_exposure(20.0)` line executing against a `None`
+ceiling. A request phrased as "make sure the exposure is safe" gets satisfied by
+the agent reasoning about exposure and never recording one, which is round 1's
+failure in a different costume.
+
+Close Microclaw, then run Step 4 and Step 5 again against the new export, plus:
 
 ```powershell
-Set-Location $Repo
-uv run microclaw --safety-config $NoCam serve
+Select-String -Path $Script -Pattern "guard.check_exposure"
 ```
-
-**Required:** the session **opens**. A refusal here is a FAIL — the camera
-section is optional and this is the document the in-app setup writes.
-
-In that session, repeat Step 3's request (3a's wording; 3b if it does not land).
-A two-position, two-frame run is enough — this step is about the export, not
-about the acquisition. Then close Microclaw and run Step 4 and Step 5 again
-against the new export.
 
 **Required:**
 
-- Step 4's checks all pass on the new script, and its `_LIMITS` shows
-  `'exposure_ms': (0.0, None)` — the open ceiling, which is **correct and
-  expected here**, and which Step 4's `None`-hunting pattern deliberately does
-  not match.
-- Step 5's standalone run exits 0. The emitted `guard.check_exposure(...)` calls
-  pass against that open ceiling rather than raising.
+- That command prints **at least one match**, and the value in it is the 20 ms
+  you asked for. **Nothing printed is a FAIL for this step** — it means the
+  exposure never reached the recorded call and the limb is untested again.
+- Step 4's checker still prints `SIX FINITE STAGE EDGES - PASS`, and its
+  `exposure ceiling:` line still reads `None`.
+- Step 5's standalone run exits 0. The emitted `guard.check_exposure(20.0)`
+  passes against the open ceiling rather than raising — that is the whole point
+  of the step, and it is only evidence if the line is actually in the file.
 
 ---
 
@@ -352,4 +424,5 @@ refusal is not evidence of which refusal fired.
 | 4 finite envelope | | terminal output, script path |
 | 5 standalone run | | `standalone.txt`, dataset |
 | 6 edited envelope refuses | | `edited-envelope-run.txt` |
-| 7 no-camera document | | second export + `standalone.txt` |
+| 7a open ceiling | | Step 4 `exposure ceiling:` line |
+| 7b emitted exposure check | | `guard.check_exposure` match + `standalone.txt` |
