@@ -301,12 +301,35 @@ block's branch.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 57a | `design57/fail-closed-guard` | `2f7e1af` | codex-runner | demo — pending | — | — |
+| 57a | `design57/fail-closed-guard` | `2f7e1af` | codex, 2 rounds | demo — pushed, awaiting operator | — | — |
 
 **Baseline on the start commit, coordinator-measured:** 2090 passed / 99 skipped
 / 3 warnings (macOS), measured at `e32242c`. The two
 commits between it and the branch point add this checklist and touch no code. On Windows expect the same total with a different skip
 split. Gate on zero failures, never the count.
+
+**Round 1 review, so it is not re-litigated.** The implementation was right and
+green at 2099. Four findings went back. Two were mine to own: my runner prompt
+said "watch every new test fail", which is wrong for a *regression* test — the
+design lists the six-finite-edges and no-camera exports as evidence the ordinary
+path **still** works, so they are supposed to pass on both trees. Both had been
+made to fail pre-change by an assertion on the emitted guard's source text, and
+the no-camera script had already execed to completion against the old code before
+that line tripped. Removing it exposed the second finding: the test then proved
+nothing about its own name, because deleting the emitted `guard.check_exposure`
+line entirely left it passing. It now exports a second script with a *finite*
+ceiling below the recorded exposure and asserts the emitted `SafetyViolation` —
+coordinator-verified by mutation, which the earlier shape survived.
+
+The other two were the implementer's, and both are the block's own subject
+turned back on itself: `float(edge)` inside a `try` that caught only
+`AttributeError` let a non-numeric bound raise **out of** `export_session_script`
+and destroy every unrelated call with it — the exact whole-export failure the
+comment four lines above forbids, in the synthetic-guard case §2 names as the
+reason the defence exists. And the emitted guard answered a *deleted* `_LIMITS`
+key with a bare `KeyError` while answering a blanked edge legibly, in code whose
+purpose is defending a hand-edited script. The fix for the first also had to
+null `safety_limits`, which had been left holding the invalid dict.
 
 **Sequencing.** `design/55` is written and unstarted and touches
 `microclaw/tools.py`'s acquisition preamble and hook capabilities; 57a touches
