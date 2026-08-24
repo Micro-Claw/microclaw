@@ -2014,7 +2014,8 @@ them. `json.load`, not a line loop.
 | 45 | Platform | none — **assign first, before Track C** | `design45/saved-hook-repair` | `9855fe8` | `620a094` + runbook `c666217` + `6d2da0b` (review round 1 returned, four findings) + coordinator fix `38aae97` (re-pin, filament caveat); runbook pinned `6d2da0b`. **Round 1 returned four findings, all blocking, and the two that mattered were in the runbook.** (1) The rewritten integration test asserted nothing: `current_z = core.get_position()` followed by `assert core.get_position() == current_z` two lines later with nothing in between, plus a `not exists()` on a tmp file nothing writes — neither could fail — while its comment still narrated the `run_zstack` call the round had deleted. Restored to prove the new save-time gate and the old run-time gate *compose*: the refused save leaves no artifact, so attaching the name reaches the unknown-strategy refusal with Z unchanged and no dataset. (2) `hook_docs.py:266` still taught `self.log(metadata, ...)` on `HookBase` inside the section a saved-hook author reads — the same contradiction the round had correctly found and fixed in `SYSTEM_PROMPT` and the pattern block, so following the docs produced a hook the same round's new code refuses. (3) **Runbook Step 3 could not reach the code it tested**: "acquire one frame at the current position" routes an agent to `run_timelapse(n_frames=1, hook_strategy=…)`, which is the documented way to save a single plane and which routes to `_emit_adaptive` — the comment under test never appears. The tile route carried a second trap the round built itself, a hooked *timelapse* tile now refusing for want of recorded Z, so the prompt had to name a Z-stack; it now names `run_tile_acquisition`, 1×1, three-plane, and makes wrong routing a stop condition. (4) **Runbook Step 4's arithmetic could not close**: it expected 9 unresolvable names and told the operator to substitute "the matching migrated fixture" for each, but only 6 fixtures exist — the operator reaches name 7 and improvises, which is the exact failure the runbook exists to prevent. Now an explicit name→fixture table with stop-and-report for uncovered names, and a post-migration expectation stated as what it is rather than as 12/12. Suite 1815 / 99 / 3 at every round, coordinator-re-run each time rather than accepted | **M5 2026-08-12 (`45-m5`): Step 0 PASS, Step 1 PASS, Step 2 PASS on retry and found a defect, Step 3 PASS, Step 4 PARTIAL (9→4).** **Every step ran on M5, not the demo machine**, so the block's "demo sufficient for the mechanism" claim is *unexercised*, not confirmed — nothing rests on it, but do not cite it as measured. **Step 0**: 1798 passed / 116 skipped / 3 warnings = **1914 collected, equal to macOS's 1815 + 99**; `git merge-base --is-ancestor 6d2da0b HEAD` returned 0, so the coordinator re-pin held. **Step 1 PASS**: `generate_and_save_hook` refused a `HookBase`/`log_path` hook before writing, with exactly the two reasons, the `insufficient_for` list and the remedy note, and `list_hooks` never showed it. The runbook's added "these violations are deliberate, do not correct the source" sentence earned itself — without it a compliant agent rewrites the hook and the refusal under test never fires. **Step 3 PASS**: the agent chose `run_tile_acquisition(rows=1, cols=1, protocol="zstack", hook_strategy="snr_observer")` — the route round 2 rewrote the step to demand — and the export carries the comment byte-for-byte, emits `z_start 50.579 / z_end 52.579 / z_step 1` over one XY position, parses, and an AST walk finds **no `microclaw` import**; the SNR log holds three per-plane observations with real Z stamps. On the pre-round-2 wording this step routed to `run_timelapse` and `_emit_adaptive`, and the comment would never have appeared. **Step 2 found the block's own thesis in a second instance.** The agent saved a hook calling `HookResult(...)` and `StopSurvey()` **with no import line**; `generate_and_save_hook` returned *"saved successfully"* with the adaptive preflight passing, `describe_hook` returned `would_refuse: false`, and `run_adaptive_survey` then died with `name 'HookResult' is not defined` **mid-acquisition, after the stage moved**, leaving the empty dataset `block45_one_tile_1`. Reproduced off-rig: `_hook_contract_analysis` returns `[]` for that source. It is *not* the `_resolve_hook` case the block fixed — the hook constructs fine — which is why nothing caught it, and it matters beyond tidiness because **block 9's deliverable is an agent-generated hook and a forgotten import is the likeliest way one dies**. The fix extends the `ast.Call` walk that already resolves those names against `_ACTION_TYPES` to validate their signatures, scoped to the known action vocabulary so it cannot false-positive on arbitrary source. **Ungated by operator decision of 2026-08-12** — a pure static-analysis change with no hardware surface, verified against the rig's own failing case. **Step 4 PARTIAL, and the registry survey it rested on was stale**: M5 carries **21 saved hooks, not 12**, of which 9 were unresolvable; 5 were fixed (plus one redundant re-save of an already-resolvable name) and **4 remain, all `_v2`**. The cause was the runbook's own mapping table, which wrote "`mosaic_stitcher` or `mosaic_stitcher_v2`" as though they were alternate names for one entry — M5 carries both as separate entries, so re-saving one left the twin refused. Fixed in `556e0c0`: each name is its own entry and routes by its own reasons, pin-only re-saving from the hook's **own** path (preserving the operator's earlier migration instead of overwriting it from a fixture) and source/contract reasons from the fixture. The four outstanding are `filament_position_filter_v2` and `mosaic_cell_counter_v2` (pin-only) and `mosaic_stitcher_v2` and `mosaic_stitcher_rot_v2` (pin + `EmitArtifact`); **the operator will finish them in place and ruled they do not block the block.** **The assignment-time correction is confirmed on rig data**: both stitcher `_v2` rows refuse with the `provably_string` contract text and nothing about a reversed argument, and the un-suffixed names cleared once re-saved from the keyword-form fixtures | `c3fc591` | **done** — design/38 §H4's reversed-`EmitArtifact` verdict and §H6's registry survey **corrected, not annotated**; design/32 §4 amended for the save-time half of the contract, the measured 9-of-21, and the new decision-name refusal, with two Phase-1-era stale statements flagged for 7b rather than silently rewritten; the checklist's open-register entry rewritten with both corrections and a new finding opened (**there is no way to remove a saved hook**) |; M5 only to re-save the migrated hooks and confirm `list_hooks` reports twelve resolvable. Suite baseline at the branch point, macOS: **1811 passed / 99 skipped / 3 warnings**, coordinator-measured, equal to 43n's close | | |
 | 46 | Platform | none — assigned while Track C is parked | `design46/gui-refresh-sweep` — **DELETED, never merged** | `d938098` | `c68405a` + runbook `1f1bbf4` + `364ffcc` + `72055ed` + `cf03d65`. **DROPPED unmerged 2026-08-12 by operator ruling; no code from this block is on `main`.** The implementation was sound through one returned review round; the premise was not. **Micro-Manager publishes `PropertiesChangedEvent` and repaints itself**, measured on the demo machine against `main` — whose `set_exposure` is `guard → core.set_exposure → return` with no repaint in it — where setting the box to 50 and running one `set_exposure(20)` updated it to 20 unaided. **The existing six `refresh_gui()` sites are block 43b's EMU fix**, which is measured and works (`:7049` is the laser-property case) and is untouched by the drop. **The M5 sighting was one unreproduced session**, most likely a property refresh stuck once in the main GUI rather than in EMU. **And the design could not have fixed it anyway**: all eleven calls hung a repaint on a *write*, and that session made no exposure write — no `set_exposure`, no `exposure_ms`, four `run_timelapse` calls passing none — so not one would have fired. That was derivable at assignment from a paragraph already in this file and the coordinator did not derive it. **Two process results are worth keeping.** The first gate was **self-confirming and its nine PASS rows were never evidence**: the runbook manufactured staleness with the Script Panel, which repaints on Run, so every row observed a repaint that would have happened anyway — the coordinator's own §3 caused it by assuming a raw core write leaves the GUI stale. Replacing it with an A/B against `main` is what refuted the block in one prompt. And review round 1's four findings were real regardless: two runbook steps would have produced a false PASS by testing a different call site than the one they named. Suite 1826 / 99 / 3 = 1925 at the branch tip, coordinator-re-run at every round | **Demo 2026-08-12: automated gate PASS (458 tests); Part A `NOT TESTED` (machine self-repaints); §3a A/B on `main` → box updated unaided, which is the STOP outcome** | **none — dropped** | **done** — register entry rewritten with the four findings and the recurrence investigation; no design doc claimed anything this block would have changed |
 | 47 | Platform | none — promoted from the open register by operator decision | `design47/camera-roi-capability` | `d5d3470` | `73a378d` + runbook `c3830e8` + round 2 `9018188`/`1d27159`/`c3ec68b` + coordinator fix `bc50e6b`; runbook pinned `9018188`. **Round 1's authorization half was accepted unchanged** — typed entry gated on `camera_device` beside `dedicated-exposure`, unconditional `excluded` entry removed, and `authorize_path` split into distinct *excluded* and *missing entry* messages that are both truthful for the first time, `mmstudio-mda` keeping its reason. **Round 1 also contributed a fact the assignment did not have**: `getImageWidth`/`getImageHeight` describe the current image buffer, not the sensor, so the full-frame extent is not portably knowable. **Two blocking findings, and one was the coordinator's.** (1) **`set_roi` became shrink-only**: bounds were read from `core.get_roi()` — the *current* ROI, which is state, not a limit — so after any crop every later call had to nest inside it, and `test_set_roi_is_guarded_by_current_camera_geometry` encoded that as intended, refusing `(0,0,50,50)` against a `(10,20,100,80)` crop **under `unconstrained_guard`**. That rectangle is not unsafe and passed straight to `core.set_roi` before `2599869`, so the block meant to restore a broken operation was refusing operations that worked; repositioning also cost two hardware writes and bounced live view twice via `_bounce_live_if_on`. The correct response to an unknowable envelope is to guard integrality and positivity and let the adapter refuse its own sensor geometry. (2) **`clear_roi`'s guard call could not fail** — `check_roi(cx,cy,cw,ch, bounds=cx,cy,cw,ch)` reduces containment to `cx < cx`, so it could only trip on degenerate camera-reported values, which would block the one operation that recovers from a bad ROI. **This was a coordinator error**: the checklist item required both tools to go through the guard, round 1 implemented it literally and correctly, and the requirement was the defect — corrected on `main` at `7747279` as an error rather than silently reworded. (3) The runbook's negative step confirmed the code implemented its own rule but never checked the rule matched the camera; it now **measures** the convention with an opposite-corner request that is fully inside the sensor and entirely outside the crop, recording ACCEPTED or ADAPTER REFUSED as raw outcomes and treating a microclaw `SafetyViolation` there as a gate failure. (4) The "no entry" message misattributed a missing camera as an installation completeness error. Round 2 fixed all four; the coordinator then fixed the no-camera branch's `get_camera_device()` call, which sat on the refusal path and would have replaced a clear refusal with a bridge error. Suite 1833 / 99 / 3 = 1932 at round 1 and **1832 / 99 / 3 = 1931** after, the one-test drop being the two deleted tests, coordinator-re-run at every round | **Demo 2026-08-12: Steps 1–5 all PASS.** Suite on Windows **1815 passed / 116 skipped = 1931 collected**, equal to macOS 1832 + 99 and with the skip count unchanged, so nothing went green by starting to skip. **Step 1**: the map carries `camera-roi` as `built_in_typed_capability` beside `dedicated-exposure`, with round 2's corrected detail; the hard-coded exclusion is gone. **Step 3 is the block's real result and it is a measurement, not a tick**: from a crop at `(0,0,128,128)` the camera **ACCEPTED** `set_roi(384,384,128,128)` and `get_roi` confirmed it, so MMCore's `setROI` takes full-frame coordinates and round 1's current-ROI containment rule would have refused a valid reposition — the hardware disagreed with the guard, not merely the reviewer. **Step 4**: `set_roi(0,0,0,10)` refused by `check_roi` with "width and height must be positive; got 0x10", `get_roi` still `(384,384,128,128)`, so the refusal preceded hardware mutation. **Step 5**: no `import microclaw`, no `authorize_path` in the export — **but it exposed that ROI could not appear in a standalone script at all**: `set_roi`/`clear_roi` were undecorated, so the exported file's third line was `raise RuntimeError('NOT EMITTED: clear_roi …')` and the script died before its first hardware call. Coordinator folded emitters in before merge (`dcbc8cb`), inverting the test rather than deleting it; **undecorated tools 14 → 12** and `CLAUDE.md`'s count corrected | `a80fa87` | **done** — design/33 `:762` and `:912` corrected rather than annotated (both said "tracked for a later phase"); the carried-forward register row closed; `CLAUDE.md` updated with the count and with the rule the gate taught, that a new capability is not finished until it can appear in an exported script |
-| 9 | Features | 45 merged; **operator intake — 3 of 4 answered 2026-08-24, the known-input/known-result fixture still owed** | `design26/generated-adapter-run-b` | | | required. **Target is ilastik** (operator decision 2026-08-12). **Intake held 2026-08-12**: target is **puncta counting**, initial action **log scores only**; **no trained `.ilp` exists**, and the known-input/known-result pair cannot be supplied before one does, so the branch stays uncreated. F5 measured headless ilastik dying at the export slot rather than training a project, so the gate is a person drawing, not a missing feature. Seam already measured — design/26-ml-roi-detection §F, ilastik 1.4.2, 7.6 s start-up, `.ilp` portable. **Assignment-time correction**: the block's named Run B prompt asked for a `HookBase`/`log_analysis` adapter, the shape block 45 taught `generate_and_save_hook` to refuse before writing — corrected in `design/26-field-spike-prompts.md` and `design/26-ml-roi-detection.md:178`, merged `d938098`. **Coordinator recommendation, not a precondition**: score the classical floor on a real adjudicated puncta survey before spending the drawing time — puncta counting is close to what `ClassicalDescriptor` already separates, and F5's own trigger for reaching for ilastik is that measured failure. **Open question Run B exists to settle: whether ilastik buys anything over the classical floor; a negative result is a valid outcome**. **Intake re-held 2026-08-24: the `.ilp` arrived and refuted a recorded answer.** `260824_Mito-classify.ilp` (sha256 `a9a63447…c639ce`) is Pixel Classification, ilastik 1.4.2, genuinely trained — 100 trees / 8 forests / 22 features / 1887 samples — and its labels are `BG`, `apo_mito`, `healthy_mito`, so **the target is apoptotic-vs-healthy mitochondrial fields, not puncta counting**. Headless scored one 220×512 frame in 8.18 s to `(220,512,3)` float32, `y,x,c`, channels in `LabelNames` order summing to 1.0 — **three labels, so the channels are a softmax rather than complements and the channel→class mapping is load-bearing, the case F5 flagged and never tested**. The training lanes carry one mito class each from different sessions, so a session confound is possible and belongs in the verdict; training data are M2 488 WF OME-TIFF at 0.127 µm/px. **Two design/26 F5 claims were corrected by this file** (F5a's relative-path portability; F5b's "Launch error is not a clue"). Operator chose floor-first, and the floor is spike code, not `main` | | |
+| 9a | Features | 45 merged; **branch gate discharged 2026-08-24 — the `.ilp` exists and is hashed** | `design26/generated-adapter-run-b` | | | | |
+| 9b | Features | 9a; **blocked on operator intake — the known-input/known-result fixture** | to be created | | | required. **Split out of block 9 on 2026-08-24**: building the adapter and deciding whether it beats the classical floor have different gates, and only the second needs adjudicated fields. Carries the floor spike (not on `main` — `ClassicalDescriptor`/`FewShotProbe`/`detectors.py` are stubs, the working code is `design/26-roi-detection-spike.py`), the `mostly` threshold and `mito_coverage` floor, the apo-vs-healthy channel confirmation that a synthetic frame cannot make, the M2 survey, and the verdict. **The session confound goes in the verdict whatever the result.** A negative result is a legitimate outcome | | |
 | 10 | Features | 9; optional | `design26/few-shot-run-c` | | | required or marked skipped | | |
 | 11 | Features | accepted Run B fixtures | `design32/hook-worker-isolation` | | | regression required | | |
 | 12 | Closeout | prior applicable blocks | — | | | **required** | n/a | |
@@ -8390,9 +8391,23 @@ Carried from the previous checklist substantially unchanged; the item text there
 was reviewed and is still correct. Summarised here with its gates intact — read
 the old file's §11, §12, §13 for the full item lists before starting each.
 
-## 9. Design/26 Run B — generated adapter for a real existing analysis
+## 9a. Design/26 Run B — the ilastik adapter (construction)
 
 Branch: `design26/generated-adapter-run-b`
+
+**Split into 9a and 9b on 2026-08-24 by operator decision.** The old block bundled
+building the instrument with deciding whether the instrument beats the floor, and
+those two have different gates. **9a's gate is discharged**: the branch rule read
+*"until a real one exists there is nothing for an adapter to pin or hash"*, and the
+`.ilp` now exists and is hashed. **The one intake item still owed — a known input
+and its known result — gates the verdict, not the construction**, so it moves to
+9b with the floor comparison and the threshold.
+
+**9a earns no scientific claim, and the checklist says so on purpose.** F5's
+AUC 1.000 is this project's own cautionary case of plumbing read as a backend
+result. Everything 9a measures is determined by the `.ilp` and the file format;
+nothing it produces is evidence that ilastik separates apoptotic from healthy
+mitochondria.
 
 **The analysis is ilastik — operator decision, 2026-08-12.** That settles the
 "which workflow" half that kept this block deferred.
@@ -8480,8 +8495,10 @@ measured and four of this doc's claims were corrected by that run** (ilastik
 1.4.2, real human-drawn project, 2026-07-17): a `.ilp` really is a pickle,
 headless produces a project but cannot train it, start-up is **7.6 s** so scoring
 is batched rather than online but per-tile cost is not the blocker, and the
-`.ilp`'s remembered paths are relative so the artifact is portable. Use that
-measured contract rather than rediscovering a generic one
+`.ilp` is portable — **though not for the reason F5a gave**: this project's
+remembered paths are absolute, into an unmounted share, and portability actually
+rests on prediction never reading the training data at all (corrected
+2026-08-24). Use that measured contract rather than rediscovering a generic one
 (`design/26-field-spike-prompts.md:119`).
 
 **The one thing the spike could not answer is the question Run B exists to
@@ -8490,38 +8507,94 @@ already perfect on the spike's data. A real workflow on real samples is the only
 way to know, and a negative result is a legitimate and publishable outcome of
 this block — do not treat "ilastik wins" as the success condition.
 
-- [ ] **Do not create the branch** until the operator supplies the remaining
-      intake above. The usability track is what makes an operator able to run one.
-- [ ] Follow `design/26-field-spike-prompts.md` Run B and the three-question
-      intake. Investigate installed files, environment, help, source, and primary
-      docs; reproduce the result on copied input; separately measure startup,
-      marginal, and batch latency.
-- [ ] If software, model, or project is missing, **stop** and produce a pinned
-      installation plan for explicit authorization. Installation is not adapter
-      generation.
-- [ ] Select the execution strategy from evidence. Never accept unmeasured
-      per-tile environment, JVM, application, or model startup.
-- [ ] Create the branch only after the execution contract is reviewed.
-- [ ] Observation-only adapter, fixture-tested; unresolved axes, units,
-      coordinates, or semantics stay `unverified`. Show source/lint and wait for
+- [ ] Follow `design/26-field-spike-prompts.md` Run B. Investigate installed files,
+      environment, help, source, and primary docs. **No installation plan is
+      needed** — ilastik 1.4.2 is installed and is the version the `.ilp` was
+      drawn in; if that stops being true, **stop** and produce a pinned plan for
+      explicit authorization rather than installing anything.
+- [ ] Separately measure startup, marginal per-image, and batch latency **on this
+      project**, not F5's. F5's 255 ms marginal is for 256² tiles and does not
+      transfer to a full frame; decimate exactly as `ClassicalDescriptor` does.
+- [ ] **The execution boundary is measured, not open.** Batched subprocess over the
+      saved survey, absolute paths only, explicit `--output_format`,
+      `--readonly=true`, hdf5 `exported_data`, `.ilp` pinned by sha256. Never one
+      launch per tile. **A hard timeout and kill is mandatory, not defensive
+      styling** — the macOS failure path is a modal dialog that blocks forever
+      (design/26 F5b, corrected 2026-08-24).
+- [ ] Read the channel→class mapping from `LabelNames`; **never assume an order.**
+      Three labels means the channels are a softmax, not complements, so a wrong
+      order silently scores the wrong class and every fixture still passes.
+- [ ] Observation-only adapter: a plain class exposing
+      `analyze_frame(self, image, metadata)` returning a `HookResult`. It must
+      **not** inherit `HookBase` and must **not** take `log_path` — block 45's
+      save path refuses that shape before writing. Show source/lint and wait for
       explicit save approval.
-- [ ] Run on stored data through block 10 of the old checklist (the
-      completed-dataset runner, merged `a7a1e1c`) before any rig survey; run the
-      fixed rig survey only after acquisition confirmation.
-- [ ] Object ranking/revisit only for verified attributed boxes, masks, or
-      centroids; otherwise whole fields or "unresolved."
+- [ ] **Log the full pooled vector, not just the scalar.** Per-channel means, high
+      percentiles, thresholded area and `mito_coverage`, with `apo_fraction`
+      derived. This is what makes 9b's threshold a re-analysis of logged data
+      rather than a re-run, and it is the block's own "log scores only" spec.
+- [ ] `mito_coverage` is a **validity gate**: below the floor the adapter reports
+      unresolved rather than emitting a ratio computed on a handful of pixels.
+      The floor's *value* is 9b's; the mechanism is 9a's.
+- [ ] Fixtures are **real recorded ilastik output** on pinned inputs, which the
+      `.ilp` makes deterministic. Do not hand-build a probability map — this
+      repo's recurring defect is a fake that encodes the assumption under test.
+- [ ] Run on stored data through the completed-dataset runner (merged `a7a1e1c`)
+      before any rig survey. This proves the pipeline end to end and **proves
+      nothing about the biology**.
+- [ ] Rank whole fields. Object-level ranking/revisit is **not** available here —
+      pixel classification attributes no box, mask, or centroid.
 - [ ] Verify replay without network or adjudicator. Stop on output mismatch, lost
       attribution, cleanup leaks, timing-budget failure, or hardware-capability
       access.
 - [ ] Commit only generally reusable framework and adapter code plus fixtures.
       Lab-specific paths, models, thresholds, and projects stay as pinned
-      external or custom-hook artifacts.
+      external or custom-hook artifacts. **The `.ilp` is not committed** — it is
+      pinned by hash, and it is untrusted bytes by F4's argument.
 
 Post-merge design gate:
 
-- [ ] Mandatory: add the actual execution boundary, contract, timings, failures,
-      artifact identities, scientific limits, and Run B verdict to
+- [ ] Mandatory: add the actual execution boundary, contract, timings, failures
+      and artifact identities to `design/26-implementation.md`. **The verdict and
+      the scientific limits are 9b's**, and 9a must not write them.
+
+## 9b. Design/26 Run B — the verdict (does ilastik buy anything)
+
+Branch: to be created; **blocked on the remaining intake.**
+
+**Owed by the operator, and the only thing gating this block**: held-out fields
+marked mostly-apo / mostly-healthy / unusable. The two training lanes cannot
+serve — the classifier saw them. **A pair of apo and healthy fields from one
+session is worth more than any number from separate ones**, because every apo
+pixel the classifier has seen came from IF27/260805 and every healthy pixel from
+IF26/260612, so it may have learned the session rather than the morphology, and no
+quantity of held-out data from *separate* sessions can distinguish those.
+
+- [ ] Score the classical floor first, offline. The floor is **not on `main`** —
+      `ClassicalDescriptor`, `FewShotProbe` and `detectors.py` are design/26 stubs
+      and the only working implementation is `design/26-roi-detection-spike.py`,
+      whose section E already builds the oriented/configural case. A spike run
+      folded into the design doc; no branch, no rig time.
+- [ ] Choose the `mostly` threshold and the `mito_coverage` floor from the
+      fixture. Per F3 the threshold is the one part of the pipeline that does not
+      compile, so it is chosen from data and recorded, never hard-coded from
+      intuition.
+- [ ] **Confirm the channel→class mapping on real mitochondria.** Channel 0 is
+      confirmed `BG` (synthetic noise reads 0.98 there against 8.9e-8 on channel
+      2); apo-vs-healthy is *not* confirmed, because a noise frame cannot separate
+      them. The two training images close this cheaply — useless as a benchmark,
+      valid as a plumbing check.
+- [ ] Fixed rig survey on **M2** only after acquisition confirmation. M2 is where
+      the training data came from (488 WF OME-TIFF, 0.127 µm/px).
+- [ ] State the session confound in the verdict whatever the result. A win that
+      could be a session artifact is not a win.
+
+Post-merge design gate:
+
+- [ ] Mandatory: add the Run B verdict and the scientific limits to
       `design/26-implementation.md`. Re-plan Run C from those findings.
+      **A negative result is a legitimate outcome of this block; "ilastik wins"
+      is not the success condition.**
 
 ## 10. Design/26 Run C — optional few-shot biological classifier
 
