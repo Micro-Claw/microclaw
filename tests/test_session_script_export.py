@@ -2764,6 +2764,27 @@ def test_adaptive_export_refuses_incomplete_stage_bounds_without_losing_other_st
     ]
 
 
+def test_adaptive_export_refuses_non_numeric_stage_bound_without_losing_other_steps(
+    tmp_path,
+):
+    guard = Guard(tmp_path)
+    guard._c.stage.x_min = "not-a-number"
+    records = [call("clear_roi", {}), call("run_timelapse", {
+        "n_frames": 1, "interval_s": 0, "save_dir": "session",
+        "hook_strategy": "snr_observer",
+    })]
+
+    result = tools.export_session_script(None, guard, "routine.py", records)
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+
+    assert result["emitted_calls"] == 1
+    assert "core.clear_roi()" in source
+    refusal = [line for line in source.splitlines() if line.startswith("# NOT EMITTED")]
+    assert len(refusal) == 1
+    assert "safety constraints are unavailable" in refusal[0]
+    assert "could not convert string to float" in refusal[0]
+
+
 def test_recorded_guard_rejects_missing_stage_edge_but_allows_open_exposure():
     limits = {
         "x_um": (-1.0, 1.0), "y_um": (-1.0, None), "z_um": (-1.0, 1.0),
@@ -2777,6 +2798,15 @@ def test_recorded_guard_rejects_missing_stage_edge_but_allows_open_exposure():
     with pytest.raises(namespace["SafetyViolation"], match="Y bounds.*recorded"):
         guard.check_xy(0.0, 0.0)
 
+    missing_key_limits = dict(limits)
+    del missing_key_limits["z_um"]
+    missing_key_namespace = {"math": __import__("math")}
+    exec(tools._export_guard_source(missing_key_limits), missing_key_namespace)
+    with pytest.raises(
+        missing_key_namespace["SafetyViolation"], match="Z bounds.*recorded"
+    ):
+        missing_key_namespace["guard"].check_z(0.0)
+
 
 def test_bounded_adaptive_export_records_all_six_finite_stage_edges(tmp_path):
     _, result, source = export(tmp_path, [call("run_timelapse", {
@@ -2787,14 +2817,14 @@ def test_bounded_adaptive_export_records_all_six_finite_stage_edges(tmp_path):
     assert "'x_um': (-1000.0, 1000.0)" in source
     assert "'y_um': (-1000.0, 1000.0)" in source
     assert "'z_um': (-1000.0, 1000.0)" in source
-    assert "bounds are incomplete in the recorded stage envelope" in source
 
 
 def test_adaptive_export_without_camera_config_executes_open_exposure_check(tmp_path):
-    _, result, source = export(tmp_path, [call("run_timelapse", {
+    records = [call("run_timelapse", {
         "n_frames": 1, "interval_s": 0, "save_dir": "session",
         "exposure_ms": 25.0, "hook_strategy": "snr_observer",
-    })])
+    })]
+    _, result, source = export(tmp_path, records)
     assert result["emitted_calls"] == 1
 
     class DemoCore:
@@ -2815,7 +2845,23 @@ def test_adaptive_export_without_camera_config_executes_open_exposure_check(tmp_
         "__file__": str(tmp_path / "routine.py"), "Core": DemoCore,
         "Acquisition": FakeAcquisition, "multi_d_acquisition_events": fake_events,
     })
-    assert "bounds are incomplete in the recorded stage envelope" in source
+
+    bounded_guard = Guard(tmp_path)
+    bounded_guard._c.camera.max_exposure_ms = 10.0
+    tools.export_session_script(None, bounded_guard, "bounded.py", records)
+    bounded_source = (tmp_path / "bounded.py").read_text(encoding="utf-8")
+    bounded_runnable = re.sub(
+        r"^from pycromanager import .*$", "", bounded_source, flags=re.M
+    )
+    with pytest.raises(
+        Exception, match="Exposure=25.0 exceeds recorded maximum 10.0"
+    ) as exc_info:
+        exec(compile(bounded_runnable, "bounded.py", "exec"), {
+            "__file__": str(tmp_path / "bounded.py"), "Core": DemoCore,
+            "Acquisition": FakeAcquisition,
+            "multi_d_acquisition_events": fake_events,
+        })
+    assert exc_info.type.__name__ == "SafetyViolation"
 
 
 def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):

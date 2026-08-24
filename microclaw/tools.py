@@ -869,7 +869,7 @@ class _RecordedSafetyGuard:
         if high is not None and value > high:
             raise SafetyViolation(f"{{label}}={{value}} exceeds recorded maximum {{high}}")
     def _require_stage_bounds(self, axis):
-        low, high = _LIMITS[f"{{axis.lower()}}_um"]
+        low, high = _LIMITS.get(f"{{axis.lower()}}_um") or (None, None)
         if low is None or high is None:
             raise SafetyViolation(f"{{axis}} bounds are incomplete in the recorded stage envelope")
     def check_xy(self, x, y):
@@ -1478,7 +1478,8 @@ def export_session_script(
                         f"both {axis}_min and {axis}_max are required"
                     )
                     break
-        except AttributeError as exc:
+        except (AttributeError, TypeError, ValueError) as exc:
+            safety_limits = None
             safety_limits_error = (
                 "adaptive export safety constraints are unavailable or have an "
                 f"unsupported shape: {exc}"
