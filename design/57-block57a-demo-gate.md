@@ -26,10 +26,25 @@ record across all five positions.
 **Two steps were repaired afterwards and are the only ones worth re-running:**
 Step 4's finder anchored on `workspace_dir`, which is absent from this machine's
 schema-3 minimal document, so it raised `TypeError` and never produced a path —
-the operator found the script by hand. Separately and still unexplained, Step 5's
-`standalone.txt` came back **empty** even though the run itself succeeded, so the
-step's stated evidence is missing while its substance is not (see Step 5). And
-Step 7 tested nothing twice over (see its own preamble). Both are fixed above. **Re-run Step 7 first, then Steps 4 and 5 against the
+the operator found the script by hand. Step 5's `standalone.txt` came back empty;
+round 2 established why, and it is not a capture bug — see Step 5. And Step 7
+tested nothing twice over (see its own preamble).
+
+## Round 2 result — 2026-08-24, demo machine (`block57a-2026-08-24-round2`)
+
+**PASS. The gate is closed.** Suite 2075 passed / 124 skipped / 0 failed. 7a
+reported `NOTHING TO REMOVE`, which is this machine confirming it runs the
+minimal document natively. 7b's session set the exposure to 20 ms and the export
+carries **`guard.check_exposure(20)`** immediately before `core.set_exposure(20)`
+and after all five `guard.check_xy` calls; the standalone run exited 0 with the
+ceiling `None`. That is the regression proven on hardware. Step 4: six finite
+edges, no `microclaw` imports, no `# NOT EMITTED`. Step 5: the standalone hook
+log matched the live one record for record across all five positions.
+
+**One finding for the register, not for this block.** Exported adaptive *survey*
+scripts print nothing whatsoever — see Step 5. An operator running one unattended,
+which is the case the gate session asked for in its own words, gets no indication
+of where the data went. Both are fixed above. **Re-run Step 7 first, then Steps 4 and 5 against the
 export it produces** — that order closes all three limbs in one session, and no
 older export can close 7b because none of them carries a `guard.check_exposure`
 line. Steps 0–3 and 6 are closed and need no repeat.
@@ -322,18 +337,23 @@ if ($size -lt 20) { Write-Output "STANDALONE OUTPUT IS EMPTY - STEP FAILED, SAY 
 Write-Output "CAPTURED BYTES: $size"
 ```
 
-**`Tee-Object` and the size check are both there because round 1's
-`standalone.txt` came back empty and nobody could tell.** The cause was never
-established — the operator had found the script by hand and passed a good path,
-so the finder was not to blame. `Tee-Object` puts the output on screen as well as
-in the file, so if the file ends up empty you still saw what happened; the exit
-code is appended into the same file rather than only printed; and the size check
-makes an empty capture announce itself instead of looking like a quiet success.
-**A step whose evidence file is empty has not passed** — record what was on
-screen and say the capture failed.
+**An empty capture is expected here, and that is a finding, not a failure.**
+A `run_adaptive_survey` export **prints nothing at all**: `_emit_adaptive`'s
+non-survey branch ends with `print('Dataset:', ...)` (`tools.py:1332`), and the
+survey branch, which ends `acq.acquire(event_source(acq))`, has no equivalent.
+Rounds 1 and 2 both produced a `standalone.txt` containing only the exit line,
+through two different capture methods. That is the script, not the plumbing.
 
-**Required:** `EXIT: 0`, and the run completes the acquisition and writes its
-dataset and its hook log **beside the script**. Confirm the dataset from the
+So `CAPTURED BYTES` under ~20 tells you the run printed nothing — record it and
+carry on. **The evidence for this step is the exit code, the dataset and the hook
+log**, not the terminal. `Tee-Object` stays because it puts whatever the script
+*does* print on screen as well as in the file, which is what round 1 lacked.
+
+**Required:** `EXIT: 0`, and the run writes its dataset and its hook log
+**beside the script** — the hook log as `<name>_log_2.jsonl`, because
+`_next_available_log_path` refuses to overwrite the live session's. Compare the
+two logs record for record: same positions, same SNR, same decisions. That
+comparison is the point of this step. Confirm the dataset from the
 acquisition display or the filesystem — an empty terminal is not evidence that
 frames were taken. Compiling or importing the file is not evidence either.
 
@@ -432,8 +452,17 @@ because this is the document in-app setup writes.
 
 Start a fresh session from `$Repo` as in Step 3. Then, verbatim:
 
-> Run that same five-position SNR survey again, and set the camera exposure to
-> 20 ms for it. Then export it as a standalone script.
+> Pick a set of five nearby positions. I don't care how you pick them. At each
+> position, score it based on snr. Go through these positions one at a time and
+> have it stop itself once it has seen enough — I don't want to sit and watch it.
+> Set the camera exposure to 20 ms for it. And give me a script that makes that
+> call on its own when I rerun it next week.
+
+**The request must be self-contained.** Round 2's first attempt said "run that
+same five-position survey again", and the agent correctly answered that a fresh
+session has no record of one and declined to guess — it also said plainly that it
+had *not* set the exposure yet, which was the right call. A re-run prompt that
+refers to an earlier session's work is a prompt that cannot be answered.
 
 **Name the exposure, do not describe an outcome.** The mechanism under test is
 the *emitted* `guard.check_exposure(20.0)` line executing against a `None`
