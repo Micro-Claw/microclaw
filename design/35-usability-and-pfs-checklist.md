@@ -8647,8 +8647,30 @@ exits 0 having said nothing whatsoever. The comment above that print states the
 reason it exists — pycro-manager appends `_1`, `_2` on collision, so the obvious
 guess at the output directory is usually wrong — and the survey path is the one
 run **unattended**, which is what the operator asked for in the gate session's own
-words. Cheap to fix, and the fix is the same one line the other branch already
-carries. Not folded into 57a, which was about bounds.
+words. Not folded into 57a, which was about bounds.
+
+**It is not literally one line, and the open question must be settled before the
+code.** The survey branch wraps its acquisition in
+`_emitted_acquisition_with_restoration` (`tools.py:1230`), so the print appends
+after that call exactly as the non-survey branch does at `:1332` — `acq` is still
+bound, and on the failure path the wrapper re-raises so the print is correctly
+unreachable. But the survey branch has an **`acquire_on_hit` continuation that
+opens a second `Acquisition`** (`tools.py:1273`), also named `acq`. Decide what a
+two-phase run reports: printing only the survey's dataset would quietly hide the
+acquire-on-hit output, which is the more valuable of the two. Report both, and
+label which is which.
+
+**Give it a demo-gate limb even though it is small.** Its entire value is what an
+operator *sees* on a standalone run, and that is precisely what design/57's two
+rounds could not tell us: a green suite and hook logs matching record-for-record
+sat next to a script that printed nothing, and only reading the emitted source
+found it. A test asserting `"print('Dataset:'" in source` passes while the
+operator still learns nothing — so the limb is *run the exported survey
+standalone and read the terminal*, confirming it names the real `_1`/`_2`
+directory. Five minutes on the demo machine, which has everything set up.
+
+**Recommended as the next block** as of 2026-08-24: it is one of the few open rows
+testable without a Nikon.
 
 ### Two from the Dragonfly session — added 2026-08-23 **(no block)**
 
