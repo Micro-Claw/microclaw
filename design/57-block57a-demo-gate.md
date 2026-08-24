@@ -27,7 +27,34 @@ record across all five positions.
 Step 4's finder anchored on `workspace_dir`, which is absent from this machine's
 schema-3 minimal document, so it died and took Step 5's evidence file with it
 (see Step 5's `Test-Path` note); and Step 7 tested nothing twice over (see its
-own preamble). Both are fixed above. **Re-run Step 4, Step 5 and Step 7 only.**
+own preamble). Both are fixed above. **Re-run Step 7 first, then Steps 4 and 5 against the
+export it produces** — that order closes all three limbs in one session, and no
+older export can close 7b because none of them carries a `guard.check_exposure`
+line. Steps 0–3 and 6 are closed and need no repeat.
+
+### Re-run setup — run this before Step 7, instead of Step 0
+
+Steps 7, 4 and 5 all need `$Repo` and `$Evidence`. Open PowerShell in your
+checkout and run this block; it does not repeat the suite, which round 1 passed.
+
+```powershell
+$Repo     = (git rev-parse --show-toplevel)
+if (-not $Repo) { Write-Output "NOT IN A GIT CHECKOUT - STOP"; return }
+Set-Location $Repo
+git fetch origin
+git checkout design57/fail-closed-guard
+git pull
+git merge-base --is-ancestor cad3869 HEAD
+if ($LASTEXITCODE -eq 0) { Write-Output "IMPLEMENTATION PRESENT" } else { Write-Output "WRONG TREE - STOP" }
+$Evidence = "$HOME\Documents\microclaw-gates\block57a-round2-$(Get-Date -Format yyyy-MM-dd)"
+New-Item -ItemType Directory -Force $Evidence | Out-Null
+Write-Output "REPO: $Repo"
+Write-Output "EVIDENCE: $Evidence"
+```
+
+**Required:** `IMPLEMENTATION PRESENT`, and both paths print. The evidence
+directory carries a `-round2` suffix so it cannot overwrite round 1's, which is
+the record Steps 0–3 and 6 were scored from.
 
 **What it settles.** That the ordinary path still works after the guard was made
 to fail closed: a real session on a real MMCore opens, runs a real adaptive
@@ -55,11 +82,17 @@ be persuaded into the state that triggers it.
 
 ## Step 0 — pin, install, and run the full suite
 
+Open PowerShell **in your microclaw checkout** — the repo is not assumed to be
+under `$HOME` (on the demo machine it is `D:\Code\microclaw`), so it is derived
+rather than hardcoded:
+
 ```powershell
-$Repo     = "$HOME\Code\microclaw"
+$Repo     = (git rev-parse --show-toplevel)
+if (-not $Repo) { Write-Output "NOT IN A GIT CHECKOUT - STOP"; return }
 $Evidence = "$HOME\Documents\microclaw-gates\block57a-$(Get-Date -Format yyyy-MM-dd)"
 New-Item -ItemType Directory -Force $Evidence | Out-Null
 Set-Location $Repo
+Write-Output "REPO: $Repo"
 git fetch origin
 git checkout design57/fail-closed-guard
 git pull
@@ -71,7 +104,8 @@ Select-String -Path "$Evidence\suite.txt" -Pattern "passed|failed" | Select-Obje
 (Select-String -Path "$Evidence\suite.txt" -Pattern "^FAILED" | Measure-Object).Count
 ```
 
-**Required:** `IMPLEMENTATION PRESENT`, and the last line prints **`0`**. The
+**Required:** `REPO:` names your checkout, `IMPLEMENTATION PRESENT`, and the
+last line prints **`0`**. The
 branch point measured 2090 passed / 99 skipped on macOS; this branch adds tests,
 so expect more than 2090 and a Windows skip split near 124. **The criterion is
 zero failures, not the count.**
@@ -172,6 +206,13 @@ none of this code. Two `.py` files in one directory look identical at a glance,
 and that is how a previous gate's evidence became unreadable.
 
 ## Step 4 — the emitted envelope is finite
+
+> **Re-running the gate? Do Step 7 first.** Steps 4 and 5 need an exported
+> script, and 7b's session produces the one that can close all three at once —
+> it is the only export carrying a `guard.check_exposure` line. Running 4 and 5
+> against an older export re-proves nothing that the round-1 artifacts have not
+> already settled off-rig.
+
 
 ```powershell
 @'
@@ -390,7 +431,9 @@ ceiling. A request phrased as "make sure the exposure is safe" gets satisfied by
 the agent reasoning about exposure and never recording one, which is round 1's
 failure in a different costume.
 
-Close Microclaw, then run Step 4 and Step 5 again against the new export, plus:
+Close Microclaw, then run **Step 4 and Step 5 against this session's export** —
+the finder reads the newest transcript in `$Repo`, so it picks this one up on its
+own. Then, additionally:
 
 ```powershell
 Select-String -Path $Script -Pattern "guard.check_exposure"
