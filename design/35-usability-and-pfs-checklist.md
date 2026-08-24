@@ -13,14 +13,16 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-23 close of design/56`** —
-> find it *by that heading*, not by position; it sits behind several superseded
-> notes that look just like it. It is the only section that describes the
-> repository as it is now.
+> **The live state note is `### State at the 2026-08-24 assignment of design/57
+> block 57a`** — find it *by that heading*, not by position; it sits behind
+> several superseded notes that look just like it. It is the only section that
+> describes the repository as it is now.
 >
 > **`design/56` is closed** — 56a and 56b merged 2026-08-23 (`8ed1a90`),
 > **with rig evidence owed**; its own doc's "Owed rig evidence" section is
-> authoritative for what is unverified. Nothing is assigned. What is next is a
+> authoritative for what is unverified. **`design/57` block 57a is assigned**
+> (2026-08-24, `design57/fail-closed-guard`) and owns its own checklist and
+> ledger. Beyond it, what is next is a
 > choice, not a continuation — Track C is parked on an `.ilp`
 > that does not exist, design/54 is awaiting a Nikon gate, design/55 is written
 > and not started, and the rest of the open register is unscheduled. **Track A, Track B, Track D, Track E and
@@ -35,7 +37,7 @@ either disagrees with a *design*, stop and reconcile the design first.
 > that column reports it open when it is not. The only genuinely open rows are
 > Track C's 9, 10 and 11, which are parked on an `.ilp` that does not exist.
 >
-> **Work has continued outside this file** — `design/48` through `design/55` each
+> **Work has continued outside this file** — `design/48` through `design/57` each
 > own their own checklist and ledger. This file is not a picture of the
 > repository and has not been since 2026-08-13.
 
@@ -406,10 +408,50 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-23 close of design/56 — read this before assigning anything
+### State at the 2026-08-24 assignment of design/57 block 57a — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
+
+**`design/57` owns its own checklist and ledger**, like design/48 through
+design/56. This file does not track its block; it points at it. The doc is
+`design/57-silence-is-not-a-bound.md`, one block, **57a**.
+
+- **Assigned 2026-08-24** on branch `design57/fail-closed-guard`, from `main` at
+  `e32242c`. Nothing merged yet, no gate run yet.
+- **Baseline, coordinator-measured on `e32242c`: 2090 passed / 99 skipped / 3
+  warnings** (macOS). Same total on Windows with a different skip split. Gate on
+  zero failures, never the count.
+- **Its gate is the demo machine, not a booked rig.** The operator has lost
+  access to the Nikon and, for now, has only the demo machine; the block was
+  designed off-rig anyway, and the one thing it can plausibly break — an
+  ordinary adaptive session exporting a script whose recorded envelope is finite
+  and which still runs standalone — is fully exercised by the demo core, as
+  block 43h's demo rounds already showed.
+
+**What 57a is, in one line:** `SafetyGuard.check_xy` and `check_z` stop skipping
+a comparison whose bound is `None` and refuse instead, matching
+`check_named_stage`; `export_session_script` refuses to emit an adaptive step
+from an incomplete recorded envelope; and the fixtures that used
+`SafetyGuard(SafetyConstraints())` as a convenient no-op guard are corrected
+rather than papered over with fake global bounds.
+
+**What it is *not*.** It is not a fix for an open live-rig safety door. The
+question that started design/57 — "no XY bounds at all, will `move_stage_xy`
+move?" — was already answered by `validate_live_rig`, which refuses a missing or
+open range policy on a reachable axis before either entry point exposes any
+tool. Do not quote this block as having closed a live hole; it makes the
+portable guard's contract honest, which is a smaller and different claim.
+
+**The four Nikon limbs owed by design/56 are still owed and are now unbookable.**
+`design/56-the-focus-metric-need-not-be-an-image.md` §"Owed rig evidence" is
+authoritative. M2 and M5 cannot run them.
+
+### State at the 2026-08-23 close of design/56 — SUPERSEDED, kept for the round history
+
+**Not the live note.** Superseded by `### State at the 2026-08-24 assignment of
+design/57 block 57a` above. Everything below was true at the 2026-08-23 close
+of design/56 and remains the record of what that block established.
 
 **`design/56` is MERGED (`8ed1a90`) and its branch is gone — but it merged
 OWING RIG EVIDENCE.** Read `design/56-the-focus-metric-need-not-be-an-image.md`
