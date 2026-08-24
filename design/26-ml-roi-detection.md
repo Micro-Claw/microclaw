@@ -681,6 +681,13 @@ Three facts about the map, since the doc previously named none of them:
 | axis order | `axistags` on the dataset says **y, x, c** — read it, don't assume it |
 | where | HDF5 dataset `exported_data`; one channel per label drawn |
 
+**Measured 2026-08-24, and at three labels it binds.** Block 9's intake `.ilp` has
+`LabelNames` `['BG', 'apo_mito', 'healthy_mito']` and exports `(y, x, 3)` float32 whose
+channels **sum to 1.0** — a softmax over classes, not a complement pair. Channel index
+follows `LabelNames` order. So the paragraph below is right about the two-label case and
+must not be generalised: with 3+ labels a fitted probe cannot recover polarity, and an
+adapter that assumes an order silently scores the wrong class.
+
 **And the channel-order question turned out not to bind.** Both channels scored 1.000,
 which is not luck: with two labels the channels are complements (`p` and `1−p`), and a
 *fitted* probe learns its own polarity from the verdicts. So which channel is the user's
@@ -696,6 +703,15 @@ since headless takes its inputs on the command line. So "the user hands back the
 really is a self-contained artifact to pin. (The spike claimed the opposite on its first
 run, having resolved a relative path against the working directory and then solemnly
 reported that `FileSystem` — an enum, not a path — does not exist on this machine.)
+
+**Corrected 2026-08-24 — the relative path was an artifact of the spike's own project.**
+The first human-drawn `.ilp` to arrive (`260824_Mito-classify.ilp`, block 9's intake)
+stores **absolute** paths into a network share (`/Volumes/vbc/STRUCTBIO/...`) that is not
+mounted on this machine. So "the paths are relative" is a property of how the spike built
+its project, not of the format. **The portability conclusion survives, for a better
+reason than the one given**: prediction never reads the training data at all, because
+headless takes its inputs on the command line. Pin the `.ilp` by hash and ignore what it
+remembers.
 
 **Two things are still not free**, and the first one now has a number.
 
@@ -761,10 +777,25 @@ run could teach, each of which would have cost a rig session:
   project was drawn in for free, which matters because F5's artifact is only as portable
   as the ilastik that reads it.
 
+* **Every path handed to the `.app` stub must be absolute.** Its working directory is
+  `Contents/Resources`, so a relative input resolves there and dies
+  `FileNotFoundError: .../ilastik-1.4.2-arm64-OSX.app/Contents/Resources/synth_in.tif`.
+  Measured 2026-08-24. A batch that runs from the survey directory and passes bare tile
+  names finds none of them.
+
 (A note for whoever runs this on the rig: on macOS a failing ilastik prints `Launch error`
 and `Please get in touch with the ilastik team`. Measured — it appears **only** after a
 run has already failed, never on exit 0 or on an argparse rejection. It is bundle-stub
-noise on the crash path, not a broken install, and not a clue.)
+noise on the crash path, not a broken install, and not a clue.
+
+**Corrected 2026-08-24 — it is not merely noise, it BLOCKS.** On macOS that message is a
+**modal dialog**, and the process sits on it until a human clicks Terminate: the measured
+failure above burned 5.5 s of CPU and **1 m 43 s of wall time** waiting for a click, then
+exited 255. An unattended batch over a survey directory therefore does not fail — it
+**hangs, silently, with nothing in the console**. That is a first-class constraint on the
+execution boundary, not a rig-side curiosity: either invoke the inner interpreter rather
+than the `.app` stub, or give the adapter a hard timeout and kill. It remains true that
+the message is not a clue to the *cause*; the cause was the relative path above.)
 
 **It does not compile to a self-contained hook, and `hook_manager` already says so.**
 An ilastik-backed detector must shell out — and `hook_manager.py:14` bans `subprocess`
