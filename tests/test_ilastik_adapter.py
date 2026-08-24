@@ -1,3 +1,6 @@
+import builtins
+import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -28,7 +31,8 @@ def pool(probabilities, axistags, labels, **kwargs):
     return pool_probability_map(
         probabilities, axistags=axistags, label_names=labels,
         background_label="BG", numerator_label="apo_mito",
-        denominator_label="healthy_mito", **kwargs,
+        denominator_label="healthy_mito", coverage_key="mito_coverage",
+        ratio_key="apo_fraction", **kwargs,
     )
 
 
@@ -56,10 +60,10 @@ def test_pooling_is_generic_and_named_labels_are_validated():
     generic = pool_probability_map(
         probabilities, axistags=axistags, label_names=["empty", "one", "two"],
         background_label="empty", numerator_label="one", denominator_label="two",
-        coverage_key="coverage", ratio_key="fraction",
     )
     assert set(generic["pooled_channels"]) == {"empty", "one", "two"}
     assert generic["coverage"] == pytest.approx(1 - generic["pooled_channels"]["empty"]["mean"])
+    assert "ratio" in generic
     with pytest.raises(ValueError, match="absent.*missing"):
         pool_probability_map(
             probabilities, axistags=axistags, label_names=["empty", "one", "two"],
@@ -116,10 +120,10 @@ def adapter(tmp_path):
     executable.write_bytes(b"executable")
     project = tmp_path / "model.ilp"
     project.write_bytes(b"pinned project")
-    import hashlib
     return IlastikCompletedDatasetAdapter(
         executable, project, hashlib.sha256(project.read_bytes()).hexdigest(),
         "BG", "apo_mito", "healthy_mito", timeout_s=2,
+        coverage_key="mito_coverage", ratio_key="apo_fraction",
     )
 
 
@@ -218,6 +222,8 @@ def test_completed_dataset_runner_executes_ilastik_path_end_to_end(tmp_path, mon
             "background_label": "BG",
             "numerator_label": "apo_mito",
             "denominator_label": "healthy_mito",
+            "coverage_key": "mito_coverage",
+            "ratio_key": "apo_fraction",
             "timeout_s": 2,
         }, str(tmp_path / "result"),
         model_project_config={"ilastik_project": str(instance.project_path)},
@@ -226,6 +232,59 @@ def test_completed_dataset_runner_executes_ilastik_path_end_to_end(tmp_path, mon
     assert len(result["observations"]) == 1
     assert result["observations"][0]["result"]["ranking_unit"] == "whole_field"
     assert result["model_project_config"]["ilastik_project"]["sha256"] == instance.project_sha256
+
+
+@pytest.mark.skipif(importlib.util.find_spec("h5py") is None,
+                    reason="requires optional microclaw[ilastik] dependency")
+def test_real_h5py_reads_all_project_and_output_keys(tmp_path, monkeypatch):
+    import h5py
+
+    synthetic_labels = np.array([b"empty", b"first", b"second"])
+    executable = tmp_path / "python"
+    executable.write_bytes(b"executable")
+    project = tmp_path / "synthetic.ilp"
+    with h5py.File(project, "w") as handle:
+        group = handle.create_group("PixelClassification")
+        group.create_dataset("LabelNames", data=synthetic_labels)
+        handle.create_dataset("ilastikVersion", data=np.bytes_("4.3.2"))
+
+    prepared_output = tmp_path / "prepared.h5"
+    probabilities, axistags, _ = recorded_output()
+    with h5py.File(prepared_output, "w") as handle:
+        dataset = handle.create_dataset("exported_data", data=probabilities)
+        dataset.attrs["axistags"] = axistags
+
+    instance = IlastikCompletedDatasetAdapter(
+        executable, project, hashlib.sha256(project.read_bytes()).hexdigest(),
+        "empty", "first", "second", timeout_s=2,
+    )
+
+    def run(command, **kwargs):
+        expected = Path(kwargs["cwd"]) / "field_000000_probabilities.h5"
+        expected.write_bytes(prepared_output.read_bytes())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())[0]
+    assert result["analyzer_version"] == "4.3.2"
+    assert set(result["result"]["pooled_channels"]) == {
+        "empty", "first", "second",
+    }
+    assert result["result"]["ratio"] is not None
+
+
+def test_missing_h5py_names_optional_extra(tmp_path, monkeypatch):
+    instance = adapter(tmp_path)
+    original_import = builtins.__import__
+
+    def missing(name, *args, **kwargs):
+        if name == "h5py":
+            raise ImportError("synthetic missing optional dependency")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing)
+    with pytest.raises(RuntimeError, match=r"microclaw\[ilastik\]"):
+        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
 
 
 def test_timeout_is_killed_and_intermediates_are_cleaned(tmp_path, monkeypatch):

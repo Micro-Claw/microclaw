@@ -46,8 +46,8 @@ def _axis_keys(axistags) -> list[str]:
 def pool_probability_map(probabilities, *, axistags, label_names,
                          background_label, numerator_label, denominator_label,
                          coverage_floor=0.01, high_percentiles=(95.0, 99.0),
-                         area_threshold=0.5, coverage_key="mito_coverage",
-                         ratio_key="apo_fraction", label_semantics=None):
+                         area_threshold=0.5, coverage_key="coverage",
+                         ratio_key="ratio", label_semantics=None):
     """Pool all class channels while preserving unresolved class semantics."""
     labels = [item.decode("utf-8") if isinstance(item, bytes) else str(item)
               for item in label_names]
@@ -116,7 +116,7 @@ class IlastikCompletedDatasetAdapter:
                  background_label, numerator_label, denominator_label, timeout_s=600,
                  coverage_floor=0.01, high_percentiles=(95.0, 99.0),
                  area_threshold=0.5, target_size=256, launcher_script_path=None,
-                 coverage_key="mito_coverage", ratio_key="apo_fraction",
+                 coverage_key="coverage", ratio_key="ratio",
                  label_semantics=None):
         self.executable_path = Path(executable_path).resolve()
         self.project_path = Path(project_path).resolve()
