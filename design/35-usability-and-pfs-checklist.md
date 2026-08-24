@@ -13,16 +13,14 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-24 assignment of design/57
-> block 57a`** — find it *by that heading*, not by position; it sits behind
+> **The live state note is `### State at the 2026-08-24 close of design/57`** — find it *by that heading*, not by position; it sits behind
 > several superseded notes that look just like it. It is the only section that
 > describes the repository as it is now.
 >
 > **`design/56` is closed** — 56a and 56b merged 2026-08-23 (`8ed1a90`),
 > **with rig evidence owed**; its own doc's "Owed rig evidence" section is
-> authoritative for what is unverified. **`design/57` block 57a is assigned**
-> (2026-08-24, `design57/fail-closed-guard`) and owns its own checklist and
-> ledger. Beyond it, what is next is a
+> authoritative for what is unverified. **`design/57` is closed** — 57a merged
+> 2026-08-24 (`bfbe202`), demo-gated over two rounds. Beyond it, what is next is a
 > choice, not a continuation — Track C is parked on an `.ilp`
 > that does not exist, design/54 is awaiting a Nikon gate, design/55 is written
 > and not started, and the rest of the open register is unscheduled. **Track A, Track B, Track D, Track E and
@@ -408,10 +406,45 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-24 assignment of design/57 block 57a — read this before assigning anything
+### State at the 2026-08-24 close of design/57 — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
+
+**`design/57` is CLOSED.** Block 57a merged 2026-08-24 (`bfbe202`), branch and
+worktree deleted, demo gate passed over two rounds, design gate run. **Nothing is
+assigned and nothing is awaiting a rig.** `main` measures **2100 passed / 99
+skipped / 3 warnings**, coordinator-measured on the merge commit; Windows reports
+2075/124, same total.
+
+- **The runbook is on `main`** at `design/57-block57a-demo-gate.md`, carrying both
+  rounds' results and the corrections each round forced.
+- **What the block does:** `SafetyGuard.check_xy`/`check_z` refuse a `None` bound
+  instead of skipping the comparison, matching `check_named_stage`;
+  `export_session_script` refuses an incomplete recorded envelope through the
+  existing `CannotEmit` path; the emitted `_RecordedSafetyGuard` refuses a missing
+  or deleted recorded edge. `check_exposure` deliberately keeps its open ceiling —
+  `camera` is the one section `_schema_3_document` never writes.
+- **Do not quote it as closing a live-rig hole.** `validate_live_rig` already
+  refused a missing or open range policy on a reachable axis, before either entry
+  point exposed a tool. This made the *portable* guard's contract honest, which is
+  a smaller and different claim; `design/57`'s "Answer" section says so first.
+
+**One register row was added and it is testable on the demo machine** — an
+exported adaptive *survey* prints nothing at all, unlike every other emitted
+acquisition. Unscheduled.
+
+**The four Nikon limbs owed by design/56 are still owed and still unbookable.**
+M2 and M5 cannot run them.
+
+**What is next is a choice, not a continuation.** `design/55` is written and
+unstarted, Track C is parked on an `.ilp` that does not exist, design/54 awaits a
+Nikon gate, and the rest of the open register is unscheduled.
+
+### State at the 2026-08-24 assignment of design/57 block 57a — SUPERSEDED, kept for the round history
+
+**Not the live note.** Superseded by `### State at the 2026-08-24 close of
+design/57` above.
 
 **`design/57` owns its own checklist and ledger**, like design/48 through
 design/56. This file does not track its block; it points at it. The doc is
@@ -8601,6 +8634,21 @@ schedule them or record a reason at block 12.
 
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
+
+### One from the design/57 demo gate — added 2026-08-24 **(no block)**
+
+**An exported adaptive *survey* prints nothing at all, and this one CAN be tested
+where the operator has access** — the demo machine produced it twice.
+
+`_emit_adaptive`'s non-survey branch ends with `print('Dataset:', ...)`
+(`tools.py:1332`); the survey branch, ending `acq.acquire(event_source(acq))`,
+has no equivalent. A standalone survey run writes its dataset and hook log and
+exits 0 having said nothing whatsoever. The comment above that print states the
+reason it exists — pycro-manager appends `_1`, `_2` on collision, so the obvious
+guess at the output directory is usually wrong — and the survey path is the one
+run **unattended**, which is what the operator asked for in the gate session's own
+words. Cheap to fix, and the fix is the same one line the other branch already
+carries. Not folded into 57a, which was about bounds.
 
 ### Two from the Dragonfly session — added 2026-08-23 **(no block)**
 

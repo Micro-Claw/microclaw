@@ -19,9 +19,20 @@ The original version of this design treated that case as an open live-rig
 safety door. It is not. The parser and the guard do have a looser standalone
 contract, but neither overrides the live-rig authorization gate.
 
-## Remaining inconsistency
+## Remaining inconsistency — CLOSED by block 57a, merged 2026-08-24 (`bfbe202`)
 
-The lower-level guard still fails open when used outside a validated session:
+**Past tense from here.** `check_xy` now refuses with *"No X bounds configured for
+the core stage. Add stage.x_min and stage.x_max before Microclaw may move it."*
+and `check_z` with its Z equivalent, before any positional comparison. The
+emitted `_RecordedSafetyGuard` refuses with *"X bounds are incomplete in the
+recorded stage envelope"*, which is the string the demo gate raised on hardware.
+`check_exposure` kept its open ceiling, and a config with no `camera` section
+still exports and runs — proven on the demo machine, whose config *is* the
+minimal schema-3 document.
+
+The original text follows, because the question it answers gets asked again.
+
+The lower-level guard used to fail open when used outside a validated session:
 
 ```python
 SafetyGuard(SafetyConstraints()).check_xy(1e9, -1e9)  # returns
@@ -301,7 +312,7 @@ block's branch.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 57a | `design57/fail-closed-guard` | `2f7e1af` | codex, 2 rounds | demo — pushed, awaiting operator | — | — |
+| 57a | ~~`design57/fail-closed-guard`~~ | `2f7e1af` | codex, 2 rounds + 4 coordinator runbook fixes | **PASS** — demo machine, 2 rounds, 2026-08-24 | `bfbe202` 2026-08-24 | done — this section |
 
 **Baseline on the start commit, coordinator-measured:** 2090 passed / 99 skipped
 / 3 warnings (macOS), measured at `e32242c`. The two
@@ -335,3 +346,50 @@ null `safety_limits`, which had been left holding the invalid dict.
 `microclaw/tools.py`'s acquisition preamble and hook capabilities; 57a touches
 its `_export_safety_limits` block and `microclaw/safety.py`'s guard. Different
 regions of one file, so whichever lands second rebases.
+
+---
+
+# What the gate found that this block did not fix
+
+Both are pre-existing on `main`, both are out of 57a's scope, and both are worth
+knowing before the next adaptive-export gate.
+
+1. **An exported adaptive *survey* prints nothing at all.** `_emit_adaptive`'s
+   non-survey branch ends with `print('Dataset:', ...)` (`tools.py:1332`); the
+   survey branch, ending `acq.acquire(event_source(acq))`, has no equivalent. Two
+   gate rounds and two different capture methods each produced a `standalone.txt`
+   holding only the exit line. The comment above that print says exactly why it
+   exists — pycro-manager resolves collisions by appending `_1`, `_2`, so the
+   obvious guess at the directory is usually wrong — and the survey path is the
+   one an operator runs *unattended*. The gate session asked for precisely that,
+   in its own words: "I don't want to sit and watch it."
+
+2. **`workspace_dir` is absent from the schema-3 minimal document.** Nothing
+   depends on it in `microclaw/`, but any tooling that anchors on it — the gate's
+   first script finder did — raises `TypeError` on `Path(None)` against a config
+   the in-app setup wrote. Worth remembering when writing a runbook, not a defect
+   in the package.
+
+# What the round taught about gate design
+
+**A criterion that cannot fail is not a criterion, and this block produced two of
+them in one step.** Step 7 was written to strip the `camera:` section from a
+config and confirm the export still worked. On the gate machine there was no
+`camera:` section to strip, so the strip was a no-op whose verification passed by
+printing nothing; and the agent recorded no exposure, so the export contained
+zero `guard.check_exposure` calls and the limb had nothing to check. The step
+"passed" while testing nothing, twice over, and only reading the exported script
+caught it. Both halves are the same mistake in different clothes — describing an
+outcome rather than naming the mechanism, which `CLAUDE.md` step 6 already warns
+about and which cost 52b a rig trip.
+
+**The strongest evidence in the round came from comparing two artifacts that
+should agree**, not from any single one: the standalone hook log against the live
+one, record for record, across both rounds. That comparison is what 43h round 3
+destroyed by letting a standalone run overwrite the live logs, and
+`_next_available_log_path` is why it survived here.
+
+**A re-run prompt must be self-contained.** Round 2's first attempt asked a fresh
+session to "run that same five-position survey again"; the agent correctly said it
+had no record of one and declined to guess, and said plainly that it had not set
+the exposure yet. Both were right. The runbook now carries the whole request.

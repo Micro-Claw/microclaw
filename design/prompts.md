@@ -7174,3 +7174,63 @@ unedited.
 uses `microclaw serve`, and an error that aborts a turn is shown in the browser
 but never written to the transcript — the operator had to retype a 400 by hand.
 That last one is a register row now.
+
+
+## design/57 — the portable guard fails closed (57a), closed 2026-08-24
+
+**First block run entirely through the Codex runner, and it worked.** Two turns:
+a start that produced a correct, green implementation, and one revision that
+addressed four findings without drift. Neither of the two things `CLAUDE.md`
+flagged as unproven came up — no revision requested an escalation, and
+`--strict-config` did not trip. Those caveats stay until a block exercises them.
+
+**Two of the four review findings were mine, in the runner prompt.** I wrote
+"watch every new test fail", and that is wrong for a *regression* test: the design
+listed the six-finite-edges and no-camera exports as evidence the ordinary path
+**still** works, so they are supposed to pass on both trees. The implementer
+satisfied the instruction the only way it could be satisfied — by appending an
+assertion on the emitted guard's source text — and that assertion was the only
+thing failing pre-change. Removing it exposed the real problem underneath: the
+no-camera test then proved nothing about its own name, because deleting the
+emitted `guard.check_exposure` line left it passing. **A bad instruction produced
+a test that looked like evidence and was not.** Mutation-check the test you
+strengthen; I did, and the earlier shape survived removal of the very line it
+claimed to exercise.
+
+**The most valuable line in the whole diff was a test fixture.** The `Guard`
+double in `tests/test_session_script_export.py` carried all-`None` stage bounds,
+so every export test in that file had been exporting a `_LIMITS` full of `None` —
+the suite had been rehearsing the exact defect the block removes. Fourth time this
+repo has found a fake encoding the assumption instead of testing it, and the first
+time it was caught before a rig trip rather than after one.
+
+**Gate design: I shipped a step that could not fail, and it took two forms at
+once.** Step 7 stripped the `camera:` section from the config and confirmed the
+export still worked. The gate machine's config *is* the minimal schema-3 document,
+so there was no section to strip — the strip was a no-op and its verification
+passed *by printing nothing*. And the agent recorded no exposure, so the export
+contained zero `guard.check_exposure` calls and the limb had nothing to check. The
+step reported success while testing nothing, twice over. Only reading the exported
+script caught it. Same mistake as 52b: describing an outcome instead of naming the
+mechanism. The repaired step says "set the camera exposure to 20 ms" and greps for
+the emitted call.
+
+**I also broke the runs-unedited promise three times in one runbook** — a
+hardcoded `$HOME\Code\microclaw` when the machine's checkout is `D:\Code`, a
+script finder anchored on `workspace_dir` which the minimal document does not
+carry (`Path(None)` raises), and an "empty output means failure" criterion that
+was simply wrong. Deriving paths from `git rev-parse` and from the session
+transcript fixed the first two. The third was the interesting one.
+
+**An empty evidence file is not always a broken capture.** I spent a round
+theorising about PowerShell redirection before checking the artifact that settles
+it: an exported adaptive *survey* has no `print` in it at all. The non-survey
+branch of `_emit_adaptive` ends with `print('Dataset:', ...)`; the survey branch
+does not. Two rounds, two capture methods, same empty file — it was the script the
+whole time. **Read the emitted source before blaming the harness that ran it.**
+
+**What carried the round was comparing artifacts that should agree**, never a
+single one. The standalone hook log matched the live log record for record in both
+rounds — the comparison 43h round 3 lost when a standalone run overwrote the live
+logs, preserved here by `_next_available_log_path`. And a passing gate stayed a
+place to look: round 1 passed six steps and the seventh was worthless.
