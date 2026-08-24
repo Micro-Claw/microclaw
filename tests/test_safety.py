@@ -125,15 +125,53 @@ class TestBoundaryExact:
 
 
 class TestNoConstraints:
-    """Unconstrained guard should allow anything."""
+    """Only non-stage policies remain optional on a minimal guard."""
 
-    def test_extreme_z(self):
+    def test_core_stage_requires_declared_bounds(self):
         guard = SafetyGuard(SafetyConstraints())
-        guard.check_z(1_000_000.0)  # no exception
+        with pytest.raises(
+            SafetyViolation,
+            match=r"No X bounds configured.*stage\.x_min and stage\.x_max",
+        ):
+            guard.check_xy(0.0, 0.0)
+        with pytest.raises(
+            SafetyViolation,
+            match=r"No Z bounds configured.*stage\.z_min and stage\.z_max",
+        ):
+            guard.check_z(0.0)
 
     def test_all_channels(self):
         guard = SafetyGuard(SafetyConstraints())
         guard.check_channel("AnythingAtAll")
+
+@pytest.mark.parametrize(
+    "stage,missing_axis,keys",
+    [
+        (StageConstraints(x_min=-1, x_max=1), "Y", "stage.y_min and stage.y_max"),
+        (StageConstraints(y_min=-1, y_max=1), "X", "stage.x_min and stage.x_max"),
+    ],
+)
+def test_xy_requires_both_declared_axes_before_comparing(stage, missing_axis, keys):
+    guard = SafetyGuard(SafetyConstraints(stage=stage))
+    with pytest.raises(SafetyViolation) as exc_info:
+        guard.check_xy(100.0, 0.0)
+    assert str(exc_info.value) == (
+        f"No {missing_axis} bounds configured for the core stage. "
+        f"Add {keys} before Microclaw may move it."
+    )
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [StageConstraints(z_max=1), StageConstraints(z_min=-1)],
+    ids=["z-min-absent", "z-max-absent"],
+)
+def test_z_requires_both_edges(stage):
+    with pytest.raises(
+        SafetyViolation,
+        match=r"No Z bounds configured.*stage\.z_min and stage\.z_max",
+    ):
+        SafetyGuard(SafetyConstraints(stage=stage)).check_z(0.0)
 
 
 class TestFromYaml:
@@ -272,6 +310,12 @@ class TestFromYaml:
         }
         assert parsed.constraints.stage.x_max is None
         assert parsed.constraints.named_stages == [NamedStageLimits("TIRF", None, None)]
+        # A reviewed open edge still parses, but cannot authorize reachable motion.
+        with pytest.raises(
+            SafetyViolation,
+            match=r"No X bounds configured.*stage\.x_min and stage\.x_max",
+        ):
+            SafetyGuard(parsed.constraints).check_xy(0.0, 0.0)
 
     def test_guaranteed_mode_requires_allowed_categorical(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
@@ -393,7 +437,8 @@ class TestFromYaml:
         cfg.write_text("", encoding="utf-8")
         constraints = _parse(str(cfg))
         guard = SafetyGuard(constraints)
-        guard.check_z(999999.0)  # no exception
+        with pytest.raises(SafetyViolation, match="No Z bounds configured"):
+            guard.check_z(999999.0)
 
     def test_forbidden_property_loaded(self, tmp_path):
         cfg = tmp_path / "safety.yaml"
@@ -561,7 +606,7 @@ class TestFiniteRuntimeGuards:
 
     def test_programmatic_non_finite_limit_fails_closed(self):
         guard = SafetyGuard(SafetyConstraints(
-            stage=StageConstraints(z_max=float("nan"))
+            stage=StageConstraints(z_min=0, z_max=float("nan"))
         ))
         with pytest.raises(SafetyViolation, match="Configured stage.z_max"):
             guard.check_z(1)

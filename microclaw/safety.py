@@ -852,23 +852,29 @@ class SafetyGuard:
         x = _finite_number(x, "X position")
         y = _finite_number(y, "Y position")
         s = self._c.stage
+        for axis in ("x", "y"):
+            if getattr(s, f"{axis}_min") is None or getattr(s, f"{axis}_max") is None:
+                upper = axis.upper()
+                raise SafetyViolation(
+                    f"No {upper} bounds configured for the core stage. "
+                    f"Add stage.{axis}_min and stage.{axis}_max before Microclaw may move it."
+                )
         for name in ("x_min", "x_max", "y_min", "y_max"):
             value = getattr(s, name)
-            if value is not None:
-                _finite_number(value, f"Configured stage.{name}")
-        if s.x_min is not None and x < s.x_min:
+            _finite_number(value, f"Configured stage.{name}")
+        if x < s.x_min:
             raise SafetyViolation(
                 f"X={x:.1f} µm is below the minimum allowed ({s.x_min:.1f} µm)."
             )
-        if s.x_max is not None and x > s.x_max:
+        if x > s.x_max:
             raise SafetyViolation(
                 f"X={x:.1f} µm exceeds the maximum allowed ({s.x_max:.1f} µm)."
             )
-        if s.y_min is not None and y < s.y_min:
+        if y < s.y_min:
             raise SafetyViolation(
                 f"Y={y:.1f} µm is below the minimum allowed ({s.y_min:.1f} µm)."
             )
-        if s.y_max is not None and y > s.y_max:
+        if y > s.y_max:
             raise SafetyViolation(
                 f"Y={y:.1f} µm exceeds the maximum allowed ({s.y_max:.1f} µm)."
             )
@@ -876,15 +882,18 @@ class SafetyGuard:
     def check_z(self, z: float) -> None:
         z = _finite_number(z, "Z position")
         s = self._c.stage
-        if s.z_min is not None:
-            _finite_number(s.z_min, "Configured stage.z_min")
-        if s.z_max is not None:
-            _finite_number(s.z_max, "Configured stage.z_max")
-        if s.z_min is not None and z < s.z_min:
+        if s.z_min is None or s.z_max is None:
+            raise SafetyViolation(
+                "No Z bounds configured for the core stage. "
+                "Add stage.z_min and stage.z_max before Microclaw may move it."
+            )
+        _finite_number(s.z_min, "Configured stage.z_min")
+        _finite_number(s.z_max, "Configured stage.z_max")
+        if z < s.z_min:
             raise SafetyViolation(
                 f"Z={z:.1f} µm is below the minimum allowed ({s.z_min:.1f} µm)."
             )
-        if s.z_max is not None and z > s.z_max:
+        if z > s.z_max:
             raise SafetyViolation(
                 f"Z={z:.1f} µm exceeds the maximum allowed ({s.z_max:.1f} µm)."
             )

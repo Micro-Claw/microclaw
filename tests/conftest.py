@@ -94,6 +94,16 @@ def _clear_emu_session_cache():
 
 # ── Safety fixtures ─────────────────────────────────────────────────────────
 
+class PermissiveTestGuard(SafetyGuard):
+    """No-op stage checks for tests whose subject is not motion safety."""
+
+    def check_xy(self, x, y):
+        return None
+
+    def check_z(self, z):
+        return None
+
+
 @pytest.fixture
 def default_guard():
     constraints = SafetyConstraints(
@@ -107,7 +117,7 @@ def default_guard():
 
 @pytest.fixture
 def unconstrained_guard():
-    return SafetyGuard(SafetyConstraints())
+    return PermissiveTestGuard(SafetyConstraints())
 
 
 # ── Live MM connection (requires Micro-Manager running with demo config) ─────

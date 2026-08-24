@@ -11,7 +11,7 @@ from microclaw.hook_decisions import EmitArtifact, HookResult, UntrustedHookAdap
 from microclaw.hook_manager import saved_hook_source_refusal, validate_hook_contract
 from microclaw.safety import (
     ForbiddenProperty, IlluminationConstraints, NamedStageLimits,
-    SafetyConstraints, SafetyGuard, SafetyViolation,
+    SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints,
 )
 
 
@@ -380,6 +380,7 @@ def test_adaptive_tool_restores_named_stage_exactly_once_after_engine_exit(
     monkeypatch.setattr(tools, "Acquisition", EngineOrderedAcquisition)
     monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args, **kwargs: None)
     guard = SafetyGuard(SafetyConstraints(
+        stage=StageConstraints(x_min=-10, x_max=10, y_min=-10, y_max=10),
         named_stages=[NamedStageLimits("Axis", 90, 120)],
     ))
     monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
@@ -808,6 +809,7 @@ def test_adaptive_hardware_failure_reports_dataset_frames_and_last_state(
     monkeypatch.setattr(tools, "_acquire_with_hooks", explode)
     ctrl = MagicMock()
     guard = SafetyGuard(SafetyConstraints(
+        stage=StageConstraints(x_min=-10, x_max=10, y_min=-10, y_max=10),
         named_stages=[NamedStageLimits("Axis", 0, 100)]
     ))
     monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
