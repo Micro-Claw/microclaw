@@ -5,7 +5,7 @@ laser, no stage, no booked rig time — 9a has no hardware surface. Micro-Manage
 is needed only because Microclaw's session refuses to start without a ZMQ
 connection (`__main__.py:148`), not because the feature touches a microscope.
 
-Implementation ancestor: `720eae5`
+Implementation ancestor: `1ed6c27`
 
 PowerShell throughout, `uv` as the single launcher. Every command block runs
 **unedited** except the variables in Setup, which are yours to set — every later
