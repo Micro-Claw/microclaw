@@ -5,7 +5,7 @@ laser, no stage, no booked rig time — 9a has no hardware surface. Micro-Manage
 is needed only because Microclaw's session refuses to start without a ZMQ
 connection (`__main__.py:148`), not because the feature touches a microscope.
 
-Implementation ancestor: `40ccb43`
+Implementation ancestor: `2a329f7`
 
 PowerShell throughout, `uv` as the single launcher. Every command block runs
 **unedited** except the variables in Setup, which are yours to set — every later
@@ -340,25 +340,34 @@ This gate scores synthetic frames, where the numbers are meaningless by design.
 A real sample changes one thing that the gate cannot see, and it is the thing
 most likely to make a real run look like noise.
 
-**The pixel size is handled for you — do not set `target_size`.** ilastik's
-trained feature scales are in **pixels**, so the only stride that asks the
-classifier the question it was trained on is the one that lands the effective
-pixel size on the size the project was drawn at. The adapter now computes that
-itself from the dataset's `PixelSizeUm` and the project's own training
-resolution, and records `decimation_mode`, `decimation_stride`,
-`native_pixel_size_um`, `effective_pixel_size_um` and
-`project_training_resolution_um` in every observation.
+**The pixel size is handled for you — do not set `target_size`.** The adapter
+matches the pixel size the project was drawn at, computing it from the dataset's
+`PixelSizeUm` and the project's own training resolution, and records
+`decimation_mode`, `decimation_stride`, `native_pixel_size_um`,
+`effective_pixel_size_um` and `project_training_resolution_um` in every
+observation.
 
-**Read those five before reading any score.** Expect `decimation_mode:
-scale_matched`. `fallback_fixed_256` means the dataset carries no pixel
-calibration and the old fixed target was used — the scores may still be fine,
-but nothing has matched the scale and you should say so when reporting them.
-Measured on a 0.1056 µm dataset against this 0.127 µm project: `scale_matched`,
-stride 1, four full-resolution fields in 8.0 s.
+**Read those five before reading any score**, and expect one of two modes.
+`scale_matched` means both numbers were known. **`unknown_scale_no_decimation`
+means the project never recorded a pixel size** — ilastik writes `1` as a
+placeholder and Microclaw refuses to read that as a real micron — so every pixel
+is kept and only the time is spent. Both are fine; `fallback_fixed_256` no longer
+exists, because guessing a stride for a trained classifier fails silently.
+
+**This is what M5 round 1 got wrong.** A retrained project with no pixel size set
+was decimated 9x to 36x35, below its own feature scales, and ilastik produced
+nothing three times while the session blamed flaky I/O.
 
 **Budget the time.** ilastik's marginal cost is roughly 64× per full frame against
 a 256² tile, so a full-resolution survey is minutes, not seconds. Keep the first
 one small — 3×3 or 4×4.
+
+**A class nobody drew is refused, not scored.** ilastik exports one channel per
+*named* label, so a class that was never annotated comes back identically zero —
+and a ratio against it would be pinned at 1.000 and read as a confident "100%".
+If the adapter refuses saying the project *"names X but never trained on them"*,
+that is correct: pick a denominator from the trained set it lists, or draw the
+missing class and re-save.
 
 **You have no threshold, and that is correct.** "Mostly apoptotic" is block 9b's to
 calibrate. Read the spread of `ratio` across fields and choose by eye. If you have
