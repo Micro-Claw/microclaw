@@ -157,7 +157,7 @@ def test_batch_is_one_absolute_invocation_and_cleans_intermediates(tmp_path, mon
     assert result[0]["result"]["coordinates"] == {"position": 0}
     assert result[0]["parameters"]["project_ilastik_version"] == "9.8.7"
     assert not work_seen[0].exists()
-    assert decimate_field(FakeView().read_image()).shape == (256, 256)
+    assert decimate_field(FakeView().read_image())[0].shape == (256, 256)
 
 
 @pytest.mark.parametrize("relative", ["python", "model.ilp", "out/{nickname}.h5", "field.tiff"])
@@ -424,3 +424,21 @@ def test_missing_adapter_arguments_say_where_arguments_go():
         hint = hint_for_error(exc)
     assert "`parameters`" in hint
     assert "model_project_config" in hint
+
+
+def test_decimation_keeps_the_aspect_ratio_of_a_non_square_field():
+    # One stride for both axes. The classical descriptor strides each axis
+    # independently, which is fine for photometry and wrong here: a trained
+    # classifier is being asked about shape, and a 220x512 field strided
+    # (1, 2) leaves every mitochondrion half as wide as the ones it learned.
+    field = np.zeros((220, 512), dtype=np.uint16)
+    decimated, stride = decimate_field(field, target_size=256)
+    assert stride == 2
+    assert decimated.shape == (110, 256)
+    assert decimated.shape[1] / decimated.shape[0] == pytest.approx(512 / 220)
+
+
+def test_a_square_field_decimates_as_it_always_did():
+    field = np.zeros((2048, 2048), dtype=np.uint16)
+    decimated, stride = decimate_field(field, target_size=256)
+    assert (stride, decimated.shape) == (8, (256, 256))

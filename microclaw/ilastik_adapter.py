@@ -25,13 +25,75 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def decimate_field(image: np.ndarray, target_size: int = 256) -> np.ndarray:
-    """Use ClassicalDescriptor's exact stride decimation on a 2-D field."""
+def decimate_field(image: np.ndarray, target_size: int = 256):
+    """Decimate a 2-D field by ONE stride, and report the stride used.
+
+    The classical descriptor strides each axis independently, which is
+    harmless for the photometric quantities it computes. It is not harmless
+    here: a trained pixel classifier is being asked about *shape*, and an
+    independent per-axis stride squashes a non-square field along one axis
+    only -- a 220x512 frame becomes 220x256, and every mitochondrion in it is
+    half as wide as the one the classifier was trained on. One stride, taken
+    from the axis that needs the most, keeps the aspect ratio intact.
+    """
     array = np.asarray(image)
     if array.ndim != 2:
         raise ValueError("ilastik field input must be a two-dimensional image")
     height, width = array.shape
-    return array[::max(1, height // target_size), ::max(1, width // target_size)]
+    stride = max(1, height // target_size, width // target_size)
+    return array[::stride, ::stride], stride
+
+
+def _training_resolution_um(project):
+    """The pixel size the project's LABEL blocks were drawn at, if recorded.
+
+    ilastik's trained feature scales are in PIXELS. Scoring at a different
+    pixel size asks those features about different physical sizes than they
+    were trained on, which a probability map will not tell you about -- it
+    will just be wrong. Nothing here enforces a match; recording both numbers
+    is what makes a bad result diagnosable instead of mysterious.
+
+    It lives on the label blocks, not on the input-data axistags, which the
+    real project records as 0. Best effort: lanes disagree (this project has
+    0.127 on one and nothing on the other), so this is what the project
+    remembers, not an authority.
+    """
+    import json as _json
+    try:
+        sets = project["PixelClassification/LabelSets"]
+        names = list(sets.keys())
+    except Exception:
+        return None
+    for name in names:
+        try:
+            group = sets[name]
+            for block in list(group.keys()):
+                tags = group[block].attrs.get("axistags")
+                if isinstance(tags, bytes):
+                    tags = tags.decode("utf-8")
+                for axis in _json.loads(tags).get("axes", []):
+                    value = float(axis.get("resolution") or 0.0)
+                    if value > 0:
+                        return value
+        except Exception:
+            continue
+    return None
+
+
+def _native_pixel_size_um(dataset_view, coordinates):
+    """Micro-Manager's recorded pixel size, or None when it is uncalibrated."""
+    try:
+        metadata = dataset_view.read_metadata(**dict(coordinates))
+    except Exception:
+        return None
+    for key in ("PixelSizeUm", "PixelSize_um"):
+        try:
+            value = float(metadata.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
 
 
 def _check_configured_labels(labels, background_label, numerator_label,
@@ -188,6 +250,7 @@ class IlastikCompletedDatasetAdapter:
                 version_value = version_value.item()
             ilastik_version = (version_value.decode("utf-8")
                                if isinstance(version_value, bytes) else str(version_value))
+            training_resolution_um = _training_resolution_um(project)
         # Check the caller's labels the moment the project's are known. This
         # lived in pool_probability_map, which runs only after the batch, so a
         # mistyped label was refused *after* ilastik had scored every field --
@@ -201,13 +264,16 @@ class IlastikCompletedDatasetAdapter:
             work = Path(temporary).resolve()
             inputs = []
             coordinates = []
+            strides = []
             for index, item in enumerate(dataset_view.coordinates):
                 context.raise_if_cancelled()
                 coordinates.append(dict(item))
                 path = work / f"field_{index:06d}.tiff"
-                tifffile.imwrite(path, decimate_field(
+                decimated, stride = decimate_field(
                     dataset_view.read_image(**dict(item)), self.target_size
-                ))
+                )
+                tifffile.imwrite(path, decimated)
+                strides.append(stride)
                 inputs.append(path)
             output_template = str(work / "{nickname}_probabilities.h5")
             command = [str(self.executable_path)]
@@ -228,7 +294,8 @@ class IlastikCompletedDatasetAdapter:
                     f"ilastik batch exceeded hard timeout of {self.timeout_s:g} s and was killed"
                 ) from error
             results = []
-            for item, input_path in zip(coordinates, inputs):
+            native_um = _native_pixel_size_um(dataset_view, coordinates[0]) if coordinates else None
+            for item, input_path, stride_used in zip(coordinates, inputs, strides):
                 output = work / f"{input_path.stem}_probabilities.h5"
                 if not output.is_file():
                     raise FileNotFoundError(f"ilastik did not create expected output: {output.name}")
@@ -258,6 +325,11 @@ class IlastikCompletedDatasetAdapter:
                         # rather than asserting an analyzer version nothing here
                         # verified.
                         "project_ilastik_version": ilastik_version,
+                        "decimation_stride": stride_used,
+                        "native_pixel_size_um": native_um,
+                        "effective_pixel_size_um": (
+                            None if native_um is None else native_um * stride_used),
+                        "project_training_resolution_um": training_resolution_um,
                         "executable_path": str(self.executable_path),
                         "launcher_script_path": (str(self.launcher_script_path)
                                                  if self.launcher_script_path else None),

@@ -740,7 +740,12 @@ TOOLS: list[dict[str, Any]] = [
                         "'ilastik_pixel_classification' requires executable_path, "
                         "project_path, project_sha256, background_label, "
                         "numerator_label and denominator_label; the label names must "
-                        "be the project's own, which its refusal will list for you."
+                        "be the project's own, which its refusal will list for you. "
+                        "It also takes target_size (default 256), which decimates each "
+                        "field before scoring: a trained classifier's features are sized "
+                        "in PIXELS, so on a calibrated microscope set this to the frame's "
+                        "long dimension unless the effective pixel size still matches the "
+                        "one the project was drawn at — the manifest records both."
                     ),
                 },
                 "output_dir": {"type": "string"},

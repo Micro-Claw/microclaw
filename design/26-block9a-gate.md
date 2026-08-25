@@ -326,6 +326,50 @@ Measured by the coordinator on macOS against the real `.ilp` and a real
 If this machine disagrees with any of that, **the disagreement is the finding** —
 report it rather than reconciling it.
 
+## If you run this on a real sample — read before M5
+
+This gate scores synthetic frames, where the numbers are meaningless by design.
+A real sample changes one thing that the gate cannot see, and it is the thing
+most likely to make a real run look like noise.
+
+**Match the pixel size, or the classifier is answering a different question.**
+ilastik's trained feature scales are in **pixels** — 0.3, 0.7, 1.0, 1.6, 3.5,
+5.0, 10.0 — and this project was drawn at **0.127 µm/px** (read from its label
+blocks). The adapter's `target_size` defaults to 256, so a 2048² frame is strided
+**8×** and every feature then asks about structures eight times larger than the
+ones it learned. Nothing errors; the map is simply wrong.
+
+**Pass `target_size` explicitly** — the frame's long dimension (e.g. 2048) gives
+stride 1 and keeps the native scale. Aim for an effective pixel size near 0.127 µm.
+The manifest now records `decimation_stride`, `native_pixel_size_um`,
+`effective_pixel_size_um` and `project_training_resolution_um` in each
+observation's `parameters`; **check those four before reading any score**, because
+they are what distinguish "this sample does not separate" from "we fed it the
+wrong scale".
+
+**Budget the time.** ilastik's marginal cost is roughly 64× per full frame against
+a 256² tile, so a full-resolution survey is minutes, not seconds. Keep the first
+one small — 3×3 or 4×4.
+
+**You have no threshold, and that is correct.** "Mostly apoptotic" is block 9b's to
+calibrate. Read the spread of `ratio` across fields and choose by eye. If you have
+a field you know is apoptotic and one you know is healthy, score those first: they
+anchor the scale for everything after.
+
+**One limb you can close cheaply.** The apo-vs-healthy channel identity has never
+been confirmed — channel 0 is confirmed `BG`, but nothing has established that
+channel 1 is `apo_mito` rather than `healthy_mito`, because no synthetic frame can
+tell them apart. Score a field you know is apoptotic and check that `apo_mito`
+carries the higher pooled mean. That is a plumbing check, not a result, and it is
+unaffected by the sample.
+
+**What a real run cannot settle.** This project learned from **M2**, 488 WF, at
+0.127 µm/px, with every apoptotic pixel from one session and every healthy pixel
+from another. Scoring on a different microscope adds a second confound on top of
+that one, so a poor result on M5 cannot distinguish "ilastik does not separate
+these" from "it does not transfer between scopes". Block 9b's adjudicated fields
+should come from **M2** for the verdict to mean anything.
+
 ## What to send back
 
 The whole session transcript, every `analysis-manifest.json` under `$Work`, the
