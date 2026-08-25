@@ -132,6 +132,57 @@ def _native_pixel_size_um(dataset_view, coordinates):
     return None
 
 
+def discover_ilastik():
+    """Find an installed ilastik, or return None having looked.
+
+    Nobody should have to tell Microclaw where ilastik lives to score their
+    own project with it. Returns (executable, launcher_script) because macOS
+    needs both: the bundle's own `bin/ilastik` carries a shebang naming the
+    build machine's interpreter, so it has to be run as an argument to the
+    bundled Python. Everywhere else the launcher is None.
+
+    Several installations is not a choice this can make for someone, so it
+    reports them and lets the caller pass one explicitly.
+    """
+    import glob
+    import shutil
+    import sys
+
+    candidates = []
+    if sys.platform == "darwin":
+        for bundle in sorted(glob.glob("/Applications/ilastik-*.app")):
+            base = Path(bundle) / "Contents" / "ilastik-release" / "bin"
+            launcher = base / "ilastik"
+            for name in ("python3.11", "python3", "python"):
+                interpreter = base / name
+                if interpreter.is_file() and launcher.is_file():
+                    candidates.append((interpreter, launcher))
+                    break
+    elif sys.platform.startswith("win"):
+        for root in (r"C:\Program Files", r"C:\Program Files (x86)"):
+            for found in sorted(glob.glob(str(Path(root) / "ilastik-*" / "ilastik.exe"))):
+                candidates.append((Path(found), None))
+    else:
+        for pattern in ("/opt/ilastik-*/run_ilastik.sh",
+                        str(Path.home() / "ilastik-*" / "run_ilastik.sh")):
+            for found in sorted(glob.glob(pattern)):
+                candidates.append((Path(found), None))
+
+    if not candidates:
+        found = shutil.which("ilastik") or shutil.which("run_ilastik.sh")
+        if found:
+            candidates.append((Path(found), None))
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        return None
+    raise ValueError(
+        "several ilastik installations were found and choosing between them is "
+        f"not Microclaw's call: {[str(item[0]) for item in candidates]!r}. "
+        "Pass executable_path to say which one."
+    )
+
+
 def _check_configured_labels(labels, background_label, numerator_label,
                              denominator_label) -> None:
     """Refuse a label the project does not have, naming the ones it does."""
@@ -237,14 +288,16 @@ def _validate_absolute_command_paths(command: list[str], launcher_script_path,
 class IlastikCompletedDatasetAdapter:
     """Run one bounded ilastik process across all selected saved fields."""
 
-    def __init__(self, executable_path, project_path,
+    def __init__(self, project_path,
                  background_label, numerator_label, denominator_label,
-                 project_sha256=None, timeout_s=600,
+                 *, executable_path=None, project_sha256=None, timeout_s=600,
                  coverage_floor=0.01, high_percentiles=(95.0, 99.0),
                  area_threshold=0.5, target_size=None, launcher_script_path=None,
                  coverage_key="coverage", ratio_key="ratio",
                  label_semantics=None):
-        self.executable_path = Path(executable_path).resolve()
+        # Keyword-only past the four a person actually knows. Reordering this
+        # signature once already slid a label name into the hash slot.
+        self.executable_path = None if executable_path is None else Path(executable_path).resolve()
         self.project_path = Path(project_path).resolve()
         self.project_sha256 = project_sha256
         self.timeout_s = float(timeout_s)
@@ -262,6 +315,18 @@ class IlastikCompletedDatasetAdapter:
         self.label_semantics = dict(label_semantics or {})
 
     def analyze_completed_dataset(self, dataset_view, selection, context):
+        if self.executable_path is None:
+            discovered = discover_ilastik()
+            if discovered is None:
+                raise FileNotFoundError(
+                    "no ilastik installation was found. Pass executable_path with the "
+                    "path to the ilastik executable (on macOS, the bundled interpreter "
+                    "in ilastik-*.app/Contents/ilastik-release/bin, with "
+                    "launcher_script_path alongside it)."
+                )
+            self.executable_path, launcher = discovered
+            if launcher is not None and self.launcher_script_path is None:
+                self.launcher_script_path = launcher
         if not self.executable_path.is_file():
             raise FileNotFoundError(f"ilastik executable not found: {self.executable_path}")
         if self.launcher_script_path is not None and not self.launcher_script_path.is_file():

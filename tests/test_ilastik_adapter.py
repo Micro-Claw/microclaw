@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from microclaw import completed_dataset
+from microclaw import ilastik_adapter
 from microclaw.ilastik_adapter import (
     IlastikCompletedDatasetAdapter, _validate_absolute_command_paths, choose_stride,
     decimate_field, pool_probability_map,
@@ -121,7 +122,7 @@ def adapter(tmp_path):
     project = tmp_path / "model.ilp"
     project.write_bytes(b"pinned project")
     return IlastikCompletedDatasetAdapter(
-        executable, project, "BG", "apo_mito", "healthy_mito",
+        project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
         project_sha256=hashlib.sha256(project.read_bytes()).hexdigest(), timeout_s=2,
         coverage_key="mito_coverage", ratio_key="apo_fraction",
     )
@@ -255,7 +256,7 @@ def test_real_h5py_reads_all_project_and_output_keys(tmp_path, monkeypatch):
         dataset.attrs["axistags"] = axistags
 
     instance = IlastikCompletedDatasetAdapter(
-        executable, project, "empty", "first", "second",
+        project, "empty", "first", "second", executable_path=executable,
         project_sha256=hashlib.sha256(project.read_bytes()).hexdigest(), timeout_s=2,
     )
 
@@ -373,7 +374,8 @@ def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkey
     probabilities, axistags, _ = recorded_output()
     base = adapter(tmp_path)
     instance = IlastikCompletedDatasetAdapter(
-        base.executable_path, base.project_path, "BG", "mitochondria", "healthy_mito",
+        base.project_path, "BG", "mitochondria", "healthy_mito",
+        executable_path=base.executable_path,
         project_sha256=base.project_sha256, timeout_s=2,
     )
     launched = []
@@ -482,7 +484,8 @@ def test_the_project_hash_is_recorded_when_the_caller_supplies_none(tmp_path, mo
     project = tmp_path / "model.ilp"
     project.write_bytes(b"pinned project")
     instance = IlastikCompletedDatasetAdapter(
-        executable, project, "BG", "apo_mito", "healthy_mito", timeout_s=2,
+        project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
+        timeout_s=2,
     )
 
     def run(command, **kwargs):
@@ -503,4 +506,39 @@ def test_a_supplied_hash_is_still_verified_and_still_refuses(tmp_path):
     assert instance.project_sha256 is not None
     instance.project_path.write_bytes(b"changed underneath us")
     with pytest.raises(ValueError, match="sha256 mismatch"):
+        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+
+
+def test_it_finds_ilastik_rather_than_asking_where_it_lives(tmp_path, monkeypatch):
+    # Nobody should have to tell Microclaw where ilastik is installed to score
+    # their own project with it.
+    probabilities, axistags, _ = recorded_output()
+    project = tmp_path / "model.ilp"
+    project.write_bytes(b"pinned project")
+    found = tmp_path / "discovered_ilastik"
+    found.write_bytes(b"executable")
+    monkeypatch.setattr(ilastik_adapter, "discover_ilastik", lambda: (found, None))
+
+    def run(command, **kwargs):
+        assert command[0] == str(found)
+        (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
+        File=lambda path, mode: FakeFile(path, mode, Path("never"), probabilities, axistags)
+    ))
+    instance = IlastikCompletedDatasetAdapter(project, "BG", "apo_mito", "healthy_mito",
+                                              timeout_s=2)
+    result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())[0]
+    assert result["parameters"]["executable_path"] == str(found)
+
+
+def test_when_it_cannot_find_ilastik_it_asks_for_the_path(tmp_path, monkeypatch):
+    project = tmp_path / "model.ilp"
+    project.write_bytes(b"pinned project")
+    monkeypatch.setattr(ilastik_adapter, "discover_ilastik", lambda: None)
+    instance = IlastikCompletedDatasetAdapter(project, "BG", "apo_mito", "healthy_mito",
+                                              timeout_s=2)
+    with pytest.raises(FileNotFoundError, match="Pass executable_path"):
         instance.analyze_completed_dataset(FakeView(), {}, FakeContext())

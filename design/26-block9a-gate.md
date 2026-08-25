@@ -134,9 +134,12 @@ agent that found a better route is a *result*, not a reason to re-run the step.
 
 Answer its questions with your `$Ilp` and labels `BG`,
 `apo_mito`, `healthy_mito` with `BG` as background and the ratio apo-to-healthy.
-**Do not give it the hash and do not volunteer `launcher_script_path`.** The
-adapter hashes the project itself; an agent that *asks* you for a digest is a
-finding worth recording, since the schema tells it not to.
+**Give it the project path and the three label roles, and nothing else.** The
+adapter finds ilastik, hashes the project and matches the pixel size on its own.
+An agent that asks you for a digest, an executable path or a target size is a
+**finding worth recording** — the schema tells it not to. If it reports that it
+could not find ilastik, or found several, then passing `executable_path` is the
+correct response and that is the fallback working.
 **On the launcher:** — Windows needs no launcher script,
 and whether the agent leaves it out is part of what is being measured.
 
@@ -146,8 +149,7 @@ The call it should make:
 run_analysis_on_saved_dataset(
   dataset_path=<the survey>, adapter="ilastik_pixel_classification",
   axis_selection={"time": 0}, input_kind="frames",
-  parameters={"executable_path": "<$IlastikExe>",
-              "project_path": "<$Ilp>",
+  parameters={"project_path": "<$Ilp>",
               "background_label": "BG", "numerator_label": "apo_mito",
               "denominator_label": "healthy_mito",
               "coverage_key": "mito_coverage", "ratio_key": "apo_fraction",
@@ -195,7 +197,8 @@ Expected, each a separate limb:
 - `analyzer_version` is **Microclaw's** version, matching every other built-in
   adapter — it is deliberately not the ilastik version, because nothing in the
   run verifies which binary answered.
-- `executable_path` equal to your `$IlastikExe`, and **`launcher: None`** —
+- `executable_path` equal to your `$IlastikExe` **without anyone having typed
+  it**, and **`launcher: None`** —
   Windows needs no launcher script. If `launcher` is a path, the agent supplied
   one it was not asked for; record that.
 - `statuses: ['unverified']` — never `verified`.
