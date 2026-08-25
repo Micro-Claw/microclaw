@@ -732,11 +732,28 @@ TOOLS: list[dict[str, Any]] = [
                 "adapter": {"type": "string"},
                 "axis_selection": {"type": "object"},
                 "input_kind": {"type": "string", "enum": ["frames", "stage_coordinate_mosaic"]},
-                "parameters": {"type": "object"},
+                "parameters": {
+                    "type": "object",
+                    "description": (
+                        "Constructor arguments for the adapter itself — this is where "
+                        "every adapter-specific value goes, NOT model_project_config. "
+                        "'ilastik_pixel_classification' requires executable_path, "
+                        "project_path, project_sha256, background_label, "
+                        "numerator_label and denominator_label; the label names must "
+                        "be the project's own, which its refusal will list for you."
+                    ),
+                },
                 "output_dir": {"type": "string"},
                 "calibration_ref": _CALIBRATION_REF_SCHEMA,
                 "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
-                "model_project_config": {"type": "object"},
+                "model_project_config": {
+                    "type": "object",
+                    "description": (
+                        "Provenance only: paths recorded and hashed into the manifest so "
+                        "a run can be reproduced. Passing an adapter's arguments here "
+                        "does NOT configure it — they belong in parameters."
+                    ),
+                },
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
                 "max_array_bytes": {"type": "integer", "minimum": 1},
             },

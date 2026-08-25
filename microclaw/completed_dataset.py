@@ -324,7 +324,10 @@ def run_analysis_on_saved_dataset(
         raise ValueError("axis_selection and parameters must be objects")
     dataset_path = guard.resolve_readable_path(dataset_path)
     output_dir = guard.resolve_in_workspace(output_dir)
-    Path(output_dir).mkdir(parents=True, exist_ok=False)
+    if Path(output_dir).exists():
+        raise FileExistsError(
+            f"Cannot create a file when that file already exists: {output_dir!r}"
+        )
     if input_kind == "stage_coordinate_mosaic":
         if calibration_ref is not None and calibration_ref.get("kind") == "confirmed_current":
             raise ValueError(
@@ -356,7 +359,13 @@ def run_analysis_on_saved_dataset(
     forbidden = set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
     if forbidden:
         raise ValueError(f"Offline adapter parameters request forbidden capabilities: {sorted(forbidden)}")
+    # Built last, and only now is the output directory created. Constructing the
+    # adapter is where a wrong or missing parameter surfaces, and a directory
+    # made before that point survives the failure and then blocks the very name
+    # the caller retries with -- turning one argument error into two unrelated
+    # ones. Measured on the demo machine: three runs left five directories.
     instance = cls(**parameters)
+    Path(output_dir).mkdir(parents=True, exist_ok=False)
     dataset = Dataset(dataset_path)
     from microclaw.tools import _iter_present_coords
     coordinates = list(_iter_present_coords(dataset, axis_selection))

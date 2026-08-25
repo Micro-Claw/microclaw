@@ -34,6 +34,17 @@ def decimate_field(image: np.ndarray, target_size: int = 256) -> np.ndarray:
     return array[::max(1, height // target_size), ::max(1, width // target_size)]
 
 
+def _check_configured_labels(labels, background_label, numerator_label,
+                             denominator_label) -> None:
+    """Refuse a label the project does not have, naming the ones it does."""
+    missing = {background_label, numerator_label, denominator_label} - set(labels)
+    if missing:
+        raise ValueError(
+            f"configured labels are absent from project LabelNames: {sorted(missing)!r}; "
+            f"available labels: {labels!r}"
+        )
+
+
 def _axis_keys(axistags) -> list[str]:
     if isinstance(axistags, bytes):
         axistags = axistags.decode("utf-8")
@@ -57,13 +68,8 @@ def pool_probability_map(probabilities, *, axistags, label_names,
     array = np.moveaxis(np.asarray(probabilities), axes.index("c"), -1)
     if array.shape[-1] != len(labels):
         raise ValueError("probability channel count does not match LabelNames")
-    configured = {background_label, numerator_label, denominator_label}
-    missing = configured - set(labels)
-    if missing:
-        raise ValueError(
-            f"configured labels are absent from project LabelNames: {sorted(missing)!r}; "
-            f"available labels: {labels!r}"
-        )
+    _check_configured_labels(labels, background_label, numerator_label,
+                             denominator_label)
     by_label = {label: array[..., index].astype(np.float64, copy=False)
                 for index, label in enumerate(labels)}
     vector = {}
@@ -182,6 +188,15 @@ class IlastikCompletedDatasetAdapter:
                 version_value = version_value.item()
             ilastik_version = (version_value.decode("utf-8")
                                if isinstance(version_value, bytes) else str(version_value))
+        # Check the caller's labels the moment the project's are known. This
+        # lived in pool_probability_map, which runs only after the batch, so a
+        # mistyped label was refused *after* ilastik had scored every field --
+        # measured at 116 s on nine demo tiles, and minutes on a real survey.
+        _check_configured_labels(
+            [item.decode("utf-8") if isinstance(item, bytes) else str(item)
+             for item in label_names],
+            self.background_label, self.numerator_label, self.denominator_label,
+        )
         with tempfile.TemporaryDirectory(prefix="microclaw-ilastik-") as temporary:
             work = Path(temporary).resolve()
             inputs = []

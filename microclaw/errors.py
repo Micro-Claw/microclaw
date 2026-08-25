@@ -167,6 +167,20 @@ def hint_for_error(exc: Exception) -> str:
             "the same call will fail identically."
         )
     if isinstance(exc, (TypeError, ValueError)):
+        # "Re-read the tool schema" is useless when the missing values are an
+        # adapter's constructor arguments: the schema names the tool's own
+        # parameters, not the adapter's. A demo-machine session spent four calls
+        # and two abandoned output directories putting them in
+        # model_project_config, which is right beside it and looks like where a
+        # project path belongs. Say where they go.
+        if "__init__() missing" in text and "positional argument" in text:
+            return (
+                "An offline adapter was constructed without its required "
+                "arguments. Adapter constructor arguments go in the tool's "
+                "`parameters` object — not in `model_project_config`, which "
+                "only records provenance. The error names every argument the "
+                "adapter still needs."
+            )
         return (
             "This is an argument error, not a hardware fault: a tool was called "
             "with a missing, extra, or wrong-typed parameter. Re-read the tool "

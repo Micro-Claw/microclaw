@@ -95,12 +95,17 @@ uv run python -c "import h5py; print('h5py', h5py.__version__)"
 uv run python -m pytest -q 2>&1 | Select-Object -Last 3
 ```
 
-Expected: **`2099 passed, 116 skipped, 3 warnings`** — 2215 collected, equal to
-macOS's 2116 + 99. The branch-point baseline was 2100 + 99 on macOS, so this is
-+16 tests and zero failures.
+Expected: **`2094 passed, 124 skipped, 3 warnings`** — 2218 collected, equal to
+macOS's 2119 + 99. The branch-point baseline was 2100 + 99 on macOS, so this is
++19 tests and zero failures.
 
-**If you see `2098 passed, 117 skipped`**, the `[ilastik]` extra did not install
-and one test skipped itself on missing h5py. Fix the install rather than
+**Match the total, not the split.** Round 1 read 2091 + 124 against a runbook
+that predicted 2099 + 116, and the total agreed exactly — this machine skips
+**124**, which design/57's gate had already recorded and this runbook had not.
+A different *total* is a finding; a different split is a machine fact.
+
+**If the skip count rises by one more than expected**, the `[ilastik]` extra did
+not install and a real-h5py test skipped itself. Fix the install rather than
 recording the number, because Step 2 will fail for the same reason.
 
 ## Step 1 — does an agent reach for it unprompted
@@ -171,8 +176,10 @@ print("statuses:", sorted({o["status"] for o in obs}))
 print("ranking_unit:", obs[0]["result"]["ranking_unit"])
 print("channel_mapping:", obs[0]["result"]["channel_mapping"])
 print("pinned sha:", p["project_sha256"])
-print("ratios:", [o["result"]["apo_fraction"] for o in obs])
-print("coverage:", [round(o["result"]["mito_coverage"], 4) for o in obs])
+ck, rk = p["coverage_key"], p["ratio_key"]   # default to "coverage" / "ratio"
+print("keys:", ck, rk)
+print("ratios:", [o["result"][rk] for o in obs])
+print("coverage:", [round(o["result"][ck], 4) for o in obs])
 print("stage xy:", [(o["result"]["stage_x_um"], o["result"]["stage_y_um"]) for o in obs])
 '@ | uv run python -
 ```
@@ -191,9 +198,10 @@ Expected, each a separate limb:
   one it was not asked for; record that.
 - `statuses: ['unverified']` — never `verified`.
 - `ranking_unit: whole_field`.
-- `channel_mapping: {'BG': 'confirmed', 'apo_mito': 'unverified',
-  'healthy_mito': 'unverified'}`. If either mito channel reads `confirmed`, that
-  is a **gate failure** — it is the one claim 9a is forbidden to make.
+- both mito channels `unverified` in `channel_mapping`. If either reads
+  `confirmed`, that is a **gate failure** — it is the one claim 9a is forbidden
+  to make. `BG` reads `unverified` too unless someone passed `label_semantics`,
+  and that is fine: it is an optional annotation, not a result.
 - `pinned sha` equal to the Setup hash, digit for digit.
 - nine ratios and nine coverages.
 - **nine `stage_x_um` / `stage_y_um` pairs, none of them `None`** — these are what
@@ -262,8 +270,12 @@ Expected, measured by the coordinator against this exact code:
   available labels: ['BG', 'apo_mito', 'healthy_mito']`** — naming the bad label
   *and* listing the real ones.
 
-Both must be fast, with no ilastik process: the hash is checked and the labels
-read before the subprocess is built.
+**Both must be fast — under a second — and neither may start ilastik.** Round 1
+measured 3b at **116 s**, because the configured labels were checked inside the
+pooling step, which runs only after the whole batch: a mistyped label was refused
+*after* ilastik had scored every field. Fixed, and re-measured at **0.05 s**
+against the real project. A 3b that takes tens of seconds means the early check
+is gone.
 
 **The agent half is the open part.** The mechanism is confirmed; what is under
 test is whether the session *surfaces* these failures. An agent that reports
@@ -278,17 +290,23 @@ Ask the session to export its script, then:
 ```powershell
 $Script = (Get-ChildItem -Path $Work -Recurse -Filter *.py | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
 Write-Output $Script
-Select-String -Path $Script -Pattern "NOT EMITTED" | Measure-Object | Select-Object -ExpandProperty Count
+Select-String -Path $Script -Pattern "NOT EMITTED" | ForEach-Object { $_.Line }
 Select-String -Path $Script -Pattern "import microclaw" | Measure-Object | Select-Object -ExpandProperty Count
-uv run python -c "import ast,sys; ast.parse(open(sys.argv[1]).read()); print('PARSES')" $Script
+uv run python -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read()); print('PARSES')" $Script
 ```
 
-If no script is found, ask the session where it wrote one and use that path;
-report the path you used either way. Expected: **`0`** from both counts and
-`PARSES`. `run_analysis_on_saved_dataset` is `@emits_nothing`, so the analysis
-correctly does **not** appear in the standalone script — what is checked is that
-it does not plant a `RuntimeError` there, which is how three earlier blocks'
-exports died.
+What is under test is **the adapter's** emission, and it must be clean: every
+`# RECORDED TOOL: run_analysis_on_saved_dataset` is followed by
+`# No hardware-routine effect.`, the `import microclaw` count is **`0`**, and the
+file `PARSES`.
+
+**One `NOT EMITTED` line is expected and is NOT this block's failure.** Round 1
+produced `NOT EMITTED: run_tile_acquisition — observation-only hooked timelapse
+has positions without recorded Z`, because Step 1 acquires the survey with a
+hooked tile acquisition and that combination cannot be emitted. **That refusal
+exists on `main`** and is tracked in the open register. Record the exact lines
+`NOT EMITTED` matches; a line naming `run_analysis_on_saved_dataset` or the
+ilastik adapter **is** a gate failure, and any other tool is the pre-existing one.
 
 ## Already confirmed off-rig — do not re-derive
 
@@ -303,7 +321,7 @@ Measured by the coordinator on macOS against the real `.ilp` and a real
   provisional 0.01 floor, so a floor of 0.03 would have returned nine
   `unresolved`. The floor's *value* is block 9b's to choose.
 - Both Step 3 refusals firing with the messages quoted above.
-- Suite 2116 passed / 99 skipped / 0 failed.
+- Suite 2119 passed / 99 skipped / 0 failed.
 
 If this machine disagrees with any of that, **the disagreement is the finding** —
 report it rather than reconciling it.

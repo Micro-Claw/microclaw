@@ -363,3 +363,64 @@ def test_single_position_dataset_reports_no_stage_position_rather_than_failing(
 
     result = _run_with_view(tmp_path, monkeypatch, NoKeys())
     assert result["stage_x_um"] is None and result["stage_y_um"] is None
+
+
+def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkeypatch):
+    # The refusal used to live in pool_probability_map, which runs only after
+    # the batch: on the demo machine a mistyped label was refused 116 s in,
+    # after ilastik had scored every field. The message was right and the cost
+    # was the whole point, so this asserts the subprocess never happens.
+    probabilities, axistags, _ = recorded_output()
+    instance = IlastikCompletedDatasetAdapter(
+        *(lambda a: (a.executable_path, a.project_path, a.project_sha256))(adapter(tmp_path)),
+        "BG", "mitochondria", "healthy_mito", timeout_s=2,
+    )
+    launched = []
+
+    def run(command, **kwargs):
+        # Write the output the adapter expects, so that on the OLD ordering this
+        # test reaches the late refusal and fails on `launched`, rather than
+        # dying earlier on a missing file for an unrelated reason.
+        launched.append(command)
+        (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
+        File=lambda path, mode: FakeFile(path, mode, Path("never"), probabilities, axistags)
+    ))
+    with pytest.raises(ValueError, match="absent.*mitochondria"):
+        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+    assert launched == []
+
+
+def test_an_argument_error_leaves_no_output_directory_behind(tmp_path, monkeypatch):
+    # The directory was created before the adapter was constructed, so a wrong
+    # parameter left an empty directory that then blocked the name the caller
+    # retried with -- one argument error becoming two unrelated ones. Measured
+    # on the demo machine: three runs, five directories.
+    dataset_path = tmp_path / "dataset"
+    dataset_path.mkdir()
+    (dataset_path / "NDTiff.index").write_bytes(b"recorded dataset fixture")
+    out = tmp_path / "never_created"
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+    with pytest.raises(TypeError):
+        completed_dataset.run_analysis_on_saved_dataset(
+            guard, str(dataset_path), "ilastik_pixel_classification",
+            {"position": 0}, "frames", {}, str(out),
+        )
+    assert not out.exists()
+
+
+def test_missing_adapter_arguments_say_where_arguments_go():
+    # "Re-read the tool schema" was the old hint, and it could not help: the
+    # schema names the tool's parameters, not the adapter's. A demo session
+    # spent four calls putting them in model_project_config, which sits right
+    # beside `parameters` and looks like where a project path belongs.
+    from microclaw.errors import hint_for_error
+    try:
+        IlastikCompletedDatasetAdapter()
+    except TypeError as exc:
+        hint = hint_for_error(exc)
+    assert "`parameters`" in hint
+    assert "model_project_config" in hint
