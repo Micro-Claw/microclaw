@@ -213,8 +213,16 @@ class IlastikCompletedDatasetAdapter:
                     "result": {"coordinates": item, **pooled},
                     "status": "unverified",
                     "analyzer": "ilastik_pixel_classification",
-                    "analyzer_version": ilastik_version,
                     "parameters": {
+                        # The project records the version it was DRAWN in, which
+                        # is not necessarily the binary that just ran. Name it
+                        # for what it is and record the executable beside it,
+                        # rather than asserting an analyzer version nothing here
+                        # verified.
+                        "project_ilastik_version": ilastik_version,
+                        "executable_path": str(self.executable_path),
+                        "launcher_script_path": (str(self.launcher_script_path)
+                                                 if self.launcher_script_path else None),
                         "project_sha256": self.project_sha256,
                         "target_size": self.target_size,
                         "coverage_floor": self.coverage_floor,

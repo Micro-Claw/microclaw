@@ -155,7 +155,7 @@ def test_batch_is_one_absolute_invocation_and_cleans_intermediates(tmp_path, mon
     ))
     result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
     assert result[0]["result"]["coordinates"] == {"position": 0}
-    assert result[0]["analyzer_version"] == "9.8.7"
+    assert result[0]["parameters"]["project_ilastik_version"] == "9.8.7"
     assert not work_seen[0].exists()
     assert decimate_field(FakeView().read_image()).shape == (256, 256)
 
@@ -266,7 +266,9 @@ def test_real_h5py_reads_all_project_and_output_keys(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())[0]
-    assert result["analyzer_version"] == "4.3.2"
+    assert result["parameters"]["project_ilastik_version"] == "4.3.2"
+    assert result["parameters"]["executable_path"] == str(executable.resolve())
+    assert result["parameters"]["launcher_script_path"] is None
     assert set(result["result"]["pooled_channels"]) == {
         "empty", "first", "second",
     }
