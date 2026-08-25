@@ -12,7 +12,7 @@ import pytest
 
 from microclaw import completed_dataset
 from microclaw.ilastik_adapter import (
-    IlastikCompletedDatasetAdapter, _validate_absolute_command_paths,
+    IlastikCompletedDatasetAdapter, _validate_absolute_command_paths, choose_stride,
     decimate_field, pool_probability_map,
 )
 from microclaw.safety import SafetyConstraints, SafetyGuard
@@ -442,3 +442,29 @@ def test_a_square_field_decimates_as_it_always_did():
     field = np.zeros((2048, 2048), dtype=np.uint16)
     decimated, stride = decimate_field(field, target_size=256)
     assert (stride, decimated.shape) == (8, (256, 256))
+
+
+@pytest.mark.parametrize("native,training,expected,mode", [
+    # M5: 105 nm against a project drawn at 127 nm -> 1.21x, which rounds to
+    # stride 1 and leaves the scale inside the classifier's own tolerance.
+    (0.105, 0.127, 1, "scale_matched"),
+    # A finer rig needs real decimation, and matching the scale is what asks
+    # for it -- the same stride the fixed 256 target was reaching for.
+    (0.0159, 0.127, 8, "scale_matched"),
+    # Coarser than the training data: cannot upsample, so stride 1 and the
+    # mismatch is recorded rather than interpolated away.
+    (0.25, 0.127, 1, "scale_matched"),
+    # Nothing to match against falls back to the old fixed target.
+    (None, 0.127, 8, "fallback_fixed_256"),
+    (0.105, None, 8, "fallback_fixed_256"),
+])
+def test_stride_matches_the_scale_the_project_was_drawn_at(native, training, expected, mode):
+    stride, chosen = choose_stride((2048, 2048), native_pixel_size_um=native,
+                                   training_resolution_um=training)
+    assert (stride, chosen) == (expected, mode)
+
+
+def test_an_explicit_target_size_still_wins():
+    stride, mode = choose_stride((2048, 2048), native_pixel_size_um=0.105,
+                                 training_resolution_um=0.127, target_size=512)
+    assert (stride, mode) == (4, "explicit_target_size")

@@ -25,6 +25,35 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def choose_stride(shape, *, native_pixel_size_um, training_resolution_um,
+                  target_size=None):
+    """Pick the decimation stride, and say why.
+
+    ilastik's trained feature scales are in PIXELS, so the only stride that
+    asks the classifier the question it was trained on is the one that lands
+    the effective pixel size on the size the project was drawn at. When both
+    numbers are known that is simply training / native -- and it happens to
+    be the same stride the old fixed 256-pixel target was reaching for on a
+    fine rig, so matching the scale costs nothing in speed and is the reason
+    the fixed target ever looked right.
+
+    A caller who passes target_size explicitly overrides this. With neither a
+    pixel size nor a training resolution there is nothing to match, so it
+    falls back to the old behaviour and says so.
+    """
+    height, width = shape
+    if target_size is not None:
+        stride = max(1, height // target_size, width // target_size)
+        return stride, "explicit_target_size"
+    if native_pixel_size_um and training_resolution_um:
+        # Cannot upsample: a rig coarser than the training data gets stride 1
+        # and a recorded mismatch rather than a silent interpolation.
+        stride = max(1, round(training_resolution_um / native_pixel_size_um))
+        return stride, "scale_matched"
+    stride = max(1, height // 256, width // 256)
+    return stride, "fallback_fixed_256"
+
+
 def decimate_field(image: np.ndarray, target_size: int = 256):
     """Decimate a 2-D field by ONE stride, and report the stride used.
 
@@ -39,9 +68,16 @@ def decimate_field(image: np.ndarray, target_size: int = 256):
     array = np.asarray(image)
     if array.ndim != 2:
         raise ValueError("ilastik field input must be a two-dimensional image")
-    height, width = array.shape
-    stride = max(1, height // target_size, width // target_size)
+    stride, _ = choose_stride(array.shape, native_pixel_size_um=None,
+                              training_resolution_um=None, target_size=target_size)
     return array[::stride, ::stride], stride
+
+
+def decimate_by_stride(image: np.ndarray, stride: int):
+    array = np.asarray(image)
+    if array.ndim != 2:
+        raise ValueError("ilastik field input must be a two-dimensional image")
+    return array[::stride, ::stride]
 
 
 def _training_resolution_um(project):
@@ -204,7 +240,7 @@ class IlastikCompletedDatasetAdapter:
     def __init__(self, executable_path, project_path, project_sha256,
                  background_label, numerator_label, denominator_label, timeout_s=600,
                  coverage_floor=0.01, high_percentiles=(95.0, 99.0),
-                 area_threshold=0.5, target_size=256, launcher_script_path=None,
+                 area_threshold=0.5, target_size=None, launcher_script_path=None,
                  coverage_key="coverage", ratio_key="ratio",
                  label_semantics=None):
         self.executable_path = Path(executable_path).resolve()
@@ -214,7 +250,7 @@ class IlastikCompletedDatasetAdapter:
         self.coverage_floor = float(coverage_floor)
         self.high_percentiles = tuple(high_percentiles)
         self.area_threshold = float(area_threshold)
-        self.target_size = int(target_size)
+        self.target_size = None if target_size is None else int(target_size)
         self.launcher_script_path = (Path(launcher_script_path).resolve()
                                      if launcher_script_path else None)
         self.background_label = str(background_label)
@@ -265,14 +301,21 @@ class IlastikCompletedDatasetAdapter:
             inputs = []
             coordinates = []
             strides = []
+            native_um = None
+            stride_mode = None
             for index, item in enumerate(dataset_view.coordinates):
                 context.raise_if_cancelled()
                 coordinates.append(dict(item))
-                path = work / f"field_{index:06d}.tiff"
-                decimated, stride = decimate_field(
-                    dataset_view.read_image(**dict(item)), self.target_size
+                image = dataset_view.read_image(**dict(item))
+                if native_um is None:
+                    native_um = _native_pixel_size_um(dataset_view, item)
+                stride, stride_mode = choose_stride(
+                    np.asarray(image).shape, native_pixel_size_um=native_um,
+                    training_resolution_um=training_resolution_um,
+                    target_size=self.target_size,
                 )
-                tifffile.imwrite(path, decimated)
+                path = work / f"field_{index:06d}.tiff"
+                tifffile.imwrite(path, decimate_by_stride(image, stride))
                 strides.append(stride)
                 inputs.append(path)
             output_template = str(work / "{nickname}_probabilities.h5")
@@ -294,7 +337,6 @@ class IlastikCompletedDatasetAdapter:
                     f"ilastik batch exceeded hard timeout of {self.timeout_s:g} s and was killed"
                 ) from error
             results = []
-            native_um = _native_pixel_size_um(dataset_view, coordinates[0]) if coordinates else None
             for item, input_path, stride_used in zip(coordinates, inputs, strides):
                 output = work / f"{input_path.stem}_probabilities.h5"
                 if not output.is_file():
@@ -326,6 +368,7 @@ class IlastikCompletedDatasetAdapter:
                         # verified.
                         "project_ilastik_version": ilastik_version,
                         "decimation_stride": stride_used,
+                        "decimation_mode": stride_mode,
                         "native_pixel_size_um": native_um,
                         "effective_pixel_size_um": (
                             None if native_um is None else native_um * stride_used),

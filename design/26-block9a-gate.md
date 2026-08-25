@@ -332,20 +332,21 @@ This gate scores synthetic frames, where the numbers are meaningless by design.
 A real sample changes one thing that the gate cannot see, and it is the thing
 most likely to make a real run look like noise.
 
-**Match the pixel size, or the classifier is answering a different question.**
-ilastik's trained feature scales are in **pixels** — 0.3, 0.7, 1.0, 1.6, 3.5,
-5.0, 10.0 — and this project was drawn at **0.127 µm/px** (read from its label
-blocks). The adapter's `target_size` defaults to 256, so a 2048² frame is strided
-**8×** and every feature then asks about structures eight times larger than the
-ones it learned. Nothing errors; the map is simply wrong.
+**The pixel size is handled for you — do not set `target_size`.** ilastik's
+trained feature scales are in **pixels**, so the only stride that asks the
+classifier the question it was trained on is the one that lands the effective
+pixel size on the size the project was drawn at. The adapter now computes that
+itself from the dataset's `PixelSizeUm` and the project's own training
+resolution, and records `decimation_mode`, `decimation_stride`,
+`native_pixel_size_um`, `effective_pixel_size_um` and
+`project_training_resolution_um` in every observation.
 
-**Pass `target_size` explicitly** — the frame's long dimension (e.g. 2048) gives
-stride 1 and keeps the native scale. Aim for an effective pixel size near 0.127 µm.
-The manifest now records `decimation_stride`, `native_pixel_size_um`,
-`effective_pixel_size_um` and `project_training_resolution_um` in each
-observation's `parameters`; **check those four before reading any score**, because
-they are what distinguish "this sample does not separate" from "we fed it the
-wrong scale".
+**Read those five before reading any score.** Expect `decimation_mode:
+scale_matched`. `fallback_fixed_256` means the dataset carries no pixel
+calibration and the old fixed target was used — the scores may still be fine,
+but nothing has matched the scale and you should say so when reporting them.
+Measured on a 0.1056 µm dataset against this 0.127 µm project: `scale_matched`,
+stride 1, four full-resolution fields in 8.0 s.
 
 **Budget the time.** ilastik's marginal cost is roughly 64× per full frame against
 a 256² tile, so a full-resolution survey is minutes, not seconds. Keep the first

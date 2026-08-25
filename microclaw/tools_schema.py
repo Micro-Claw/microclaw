@@ -741,11 +741,11 @@ TOOLS: list[dict[str, Any]] = [
                         "project_path, project_sha256, background_label, "
                         "numerator_label and denominator_label; the label names must "
                         "be the project's own, which its refusal will list for you. "
-                        "It also takes target_size (default 256), which decimates each "
-                        "field before scoring: a trained classifier's features are sized "
-                        "in PIXELS, so on a calibrated microscope set this to the frame's "
-                        "long dimension unless the effective pixel size still matches the "
-                        "one the project was drawn at — the manifest records both."
+                        "Decimation is automatic and you should not set it: the "
+                        "adapter matches the pixel size the project was drawn at, "
+                        "and records decimation_mode, decimation_stride and the "
+                        "effective pixel size in every observation. target_size "
+                        "overrides that and is only for a caller who has a reason."
                     ),
                 },
                 "output_dir": {"type": "string"},
