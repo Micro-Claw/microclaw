@@ -132,9 +132,12 @@ agent that found a better route is a *result*, not a reason to re-run the step.
 
 ## Step 2 — the batch, one process over every field
 
-Answer its questions with your `$Ilp`, the hash from Setup, and labels `BG`,
+Answer its questions with your `$Ilp` and labels `BG`,
 `apo_mito`, `healthy_mito` with `BG` as background and the ratio apo-to-healthy.
-**Do not volunteer `launcher_script_path`** — Windows needs no launcher script,
+**Do not give it the hash and do not volunteer `launcher_script_path`.** The
+adapter hashes the project itself; an agent that *asks* you for a digest is a
+finding worth recording, since the schema tells it not to.
+**On the launcher:** — Windows needs no launcher script,
 and whether the agent leaves it out is part of what is being measured.
 
 The call it should make:
@@ -145,7 +148,6 @@ run_analysis_on_saved_dataset(
   axis_selection={"time": 0}, input_kind="frames",
   parameters={"executable_path": "<$IlastikExe>",
               "project_path": "<$Ilp>",
-              "project_sha256": "a9a634479b0f61a9e27e80f42c44f00594a1f33c39298bb28ca5223e1dc639ce",
               "background_label": "BG", "numerator_label": "apo_mito",
               "denominator_label": "healthy_mito",
               "coverage_key": "mito_coverage", "ratio_key": "apo_fraction",
@@ -202,7 +204,10 @@ Expected, each a separate limb:
   `confirmed`, that is a **gate failure** — it is the one claim 9a is forbidden
   to make. `BG` reads `unverified` too unless someone passed `label_semantics`,
   and that is fine: it is an optional annotation, not a result.
-- `pinned sha` equal to the Setup hash, digit for digit.
+- `project_sha256` equal to the Setup hash **digit for digit**, with
+  `project_sha256_source: computed` — the adapter hashed the project itself and
+  nobody typed a digest. A mismatch here means the file that was scored is not
+  the file you hashed in Setup.
 - nine ratios and nine coverages.
 - **nine `stage_x_um` / `stage_y_um` pairs, none of them `None`** — these are what
   make a ranked field revisitable, and Micro-Manager stamps them on every

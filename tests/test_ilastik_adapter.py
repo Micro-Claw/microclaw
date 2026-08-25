@@ -121,8 +121,8 @@ def adapter(tmp_path):
     project = tmp_path / "model.ilp"
     project.write_bytes(b"pinned project")
     return IlastikCompletedDatasetAdapter(
-        executable, project, hashlib.sha256(project.read_bytes()).hexdigest(),
-        "BG", "apo_mito", "healthy_mito", timeout_s=2,
+        executable, project, "BG", "apo_mito", "healthy_mito",
+        project_sha256=hashlib.sha256(project.read_bytes()).hexdigest(), timeout_s=2,
         coverage_key="mito_coverage", ratio_key="apo_fraction",
     )
 
@@ -255,8 +255,8 @@ def test_real_h5py_reads_all_project_and_output_keys(tmp_path, monkeypatch):
         dataset.attrs["axistags"] = axistags
 
     instance = IlastikCompletedDatasetAdapter(
-        executable, project, hashlib.sha256(project.read_bytes()).hexdigest(),
-        "empty", "first", "second", timeout_s=2,
+        executable, project, "empty", "first", "second",
+        project_sha256=hashlib.sha256(project.read_bytes()).hexdigest(), timeout_s=2,
     )
 
     def run(command, **kwargs):
@@ -371,9 +371,10 @@ def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkey
     # after ilastik had scored every field. The message was right and the cost
     # was the whole point, so this asserts the subprocess never happens.
     probabilities, axistags, _ = recorded_output()
+    base = adapter(tmp_path)
     instance = IlastikCompletedDatasetAdapter(
-        *(lambda a: (a.executable_path, a.project_path, a.project_sha256))(adapter(tmp_path)),
-        "BG", "mitochondria", "healthy_mito", timeout_s=2,
+        base.executable_path, base.project_path, "BG", "mitochondria", "healthy_mito",
+        project_sha256=base.project_sha256, timeout_s=2,
     )
     launched = []
 
@@ -468,3 +469,38 @@ def test_an_explicit_target_size_still_wins():
     stride, mode = choose_stride((2048, 2048), native_pixel_size_um=0.105,
                                  training_resolution_um=0.127, target_size=512)
     assert (stride, mode) == (4, "explicit_target_size")
+
+
+def test_the_project_hash_is_recorded_when_the_caller_supplies_none(tmp_path, monkeypatch):
+    # design/26 F4 asks for the project to be hash-pinned IN THE MANIFEST.
+    # That is provenance, and on first use there is nothing for the caller to
+    # have pinned against -- so requiring a digest before they can run their
+    # own classifier bought nothing and cost a step.
+    probabilities, axistags, _ = recorded_output()
+    executable = tmp_path / "python"
+    executable.write_bytes(b"executable")
+    project = tmp_path / "model.ilp"
+    project.write_bytes(b"pinned project")
+    instance = IlastikCompletedDatasetAdapter(
+        executable, project, "BG", "apo_mito", "healthy_mito", timeout_s=2,
+    )
+
+    def run(command, **kwargs):
+        (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
+        File=lambda path, mode: FakeFile(path, mode, Path("never"), probabilities, axistags)
+    ))
+    recorded = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())[0]["parameters"]
+    assert recorded["project_sha256"] == hashlib.sha256(project.read_bytes()).hexdigest()
+    assert recorded["project_sha256_source"] == "computed"
+
+
+def test_a_supplied_hash_is_still_verified_and_still_refuses(tmp_path):
+    instance = adapter(tmp_path)
+    assert instance.project_sha256 is not None
+    instance.project_path.write_bytes(b"changed underneath us")
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())

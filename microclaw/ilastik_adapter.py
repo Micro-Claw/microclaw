@@ -237,8 +237,9 @@ def _validate_absolute_command_paths(command: list[str], launcher_script_path,
 class IlastikCompletedDatasetAdapter:
     """Run one bounded ilastik process across all selected saved fields."""
 
-    def __init__(self, executable_path, project_path, project_sha256,
-                 background_label, numerator_label, denominator_label, timeout_s=600,
+    def __init__(self, executable_path, project_path,
+                 background_label, numerator_label, denominator_label,
+                 project_sha256=None, timeout_s=600,
                  coverage_floor=0.01, high_percentiles=(95.0, 99.0),
                  area_threshold=0.5, target_size=None, launcher_script_path=None,
                  coverage_key="coverage", ratio_key="ratio",
@@ -267,11 +268,21 @@ class IlastikCompletedDatasetAdapter:
             raise FileNotFoundError(f"ilastik launcher script not found: {self.launcher_script_path}")
         if not self.project_path.is_file():
             raise FileNotFoundError(f"ilastik project not found: {self.project_path}")
+        # design/26 F4 asks for the project to be hash-PINNED IN THE MANIFEST.
+        # That is provenance, and provenance is something Microclaw can take
+        # for itself: on first use there is nothing for the caller to have
+        # pinned against, and making them paste a digest to run their own
+        # classifier is the paragraph-of-explanation this project rejects.
+        # Supply one and it is verified; omit it and it is recorded.
         actual_hash = _sha256(self.project_path)
-        if actual_hash != self.project_sha256:
+        if self.project_sha256 is None:
+            sha_source = "computed"
+        elif actual_hash != self.project_sha256:
             raise ValueError(
                 f"ilastik project sha256 mismatch: expected {self.project_sha256}, got {actual_hash}"
             )
+        else:
+            sha_source = "verified"
         try:
             import h5py
         except (ImportError, ValueError) as error:
@@ -376,7 +387,8 @@ class IlastikCompletedDatasetAdapter:
                         "executable_path": str(self.executable_path),
                         "launcher_script_path": (str(self.launcher_script_path)
                                                  if self.launcher_script_path else None),
-                        "project_sha256": self.project_sha256,
+                        "project_sha256": actual_hash,
+                        "project_sha256_source": sha_source,
                         "target_size": self.target_size,
                         "coverage_floor": self.coverage_floor,
                         "high_percentiles": list(self.high_percentiles),
