@@ -95,11 +95,11 @@ uv run python -c "import h5py; print('h5py', h5py.__version__)"
 uv run python -m pytest -q 2>&1 | Select-Object -Last 3
 ```
 
-Expected: **`2097 passed, 116 skipped, 3 warnings`** — 2213 collected, equal to
-macOS's 2114 + 99. The branch-point baseline was 2100 + 99 on macOS, so this is
-+14 tests and zero failures.
+Expected: **`2099 passed, 116 skipped, 3 warnings`** — 2215 collected, equal to
+macOS's 2116 + 99. The branch-point baseline was 2100 + 99 on macOS, so this is
++16 tests and zero failures.
 
-**If you see `2096 passed, 117 skipped`**, the `[ilastik]` extra did not install
+**If you see `2098 passed, 117 skipped`**, the `[ilastik]` extra did not install
 and one test skipped itself on missing h5py. Fix the install rather than
 recording the number, because Step 2 will fail for the same reason.
 
@@ -303,7 +303,7 @@ Measured by the coordinator on macOS against the real `.ilp` and a real
   provisional 0.01 floor, so a floor of 0.03 would have returned nine
   `unresolved`. The floor's *value* is block 9b's to choose.
 - Both Step 3 refusals firing with the messages quoted above.
-- Suite 2114 passed / 99 skipped / 0 failed.
+- Suite 2116 passed / 99 skipped / 0 failed.
 
 If this machine disagrees with any of that, **the disagreement is the finding** —
 report it rather than reconciling it.
