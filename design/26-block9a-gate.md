@@ -173,6 +173,7 @@ print("channel_mapping:", obs[0]["result"]["channel_mapping"])
 print("pinned sha:", p["project_sha256"])
 print("ratios:", [o["result"]["apo_fraction"] for o in obs])
 print("coverage:", [round(o["result"]["mito_coverage"], 4) for o in obs])
+print("stage xy:", [(o["result"]["stage_x_um"], o["result"]["stage_y_um"]) for o in obs])
 '@ | uv run python -
 ```
 
@@ -195,6 +196,11 @@ Expected, each a separate limb:
   is a **gate failure** — it is the one claim 9a is forbidden to make.
 - `pinned sha` equal to the Setup hash, digit for digit.
 - nine ratios and nine coverages.
+- **nine `stage_x_um` / `stage_y_um` pairs, none of them `None`** — these are what
+  make a ranked field revisitable, and Micro-Manager stamps them on every
+  multi-position acquisition. All `None` means the survey was written as a single
+  position and ranking cannot drive a move; report that rather than working around
+  it.
 
 **Do not read the ratios as a result.** They are a mitochondria classifier
 scoring synthetic demo frames. They are listed only so a *structural* mismatch —

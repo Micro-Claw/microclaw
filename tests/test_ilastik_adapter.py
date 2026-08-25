@@ -318,3 +318,48 @@ def test_project_must_exist_and_match_hash(tmp_path, case):
         expected = ValueError
     with pytest.raises(expected):
         instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+
+
+class StageView(FakeView):
+    """A view that stamps intended stage coordinates, as MM does per position."""
+
+    def read_metadata(self, **coordinates):
+        return {"XPosition_um_Intended": "6005.7",
+                "YPosition_um_Intended": -2457.6,
+                "PositionName": "r0_c0"}
+
+
+def _run_with_view(tmp_path, monkeypatch, view):
+    probabilities, axistags, _ = recorded_output()
+    instance = adapter(tmp_path)
+
+    def run(command, **kwargs):
+        (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
+        File=lambda path, mode: FakeFile(path, mode, Path("never"), probabilities, axistags)
+    ))
+    return instance.analyze_completed_dataset(view, {}, FakeContext())[0]["result"]
+
+
+def test_scored_field_carries_the_stage_position_it_can_be_revisited_at(tmp_path, monkeypatch):
+    # Ranking a survey is only useful if the winner can be driven to, and an
+    # axis coordinate does not locate a stage. Strings are coerced: MM stamps
+    # these as text on some adapters.
+    result = _run_with_view(tmp_path, monkeypatch, StageView())
+    assert result["stage_x_um"] == pytest.approx(6005.7)
+    assert result["stage_y_um"] == pytest.approx(-2457.6)
+
+
+def test_single_position_dataset_reports_no_stage_position_rather_than_failing(
+        tmp_path, monkeypatch):
+    # MM omits the intended-XY keys on single-position acquisitions, so absence
+    # is ordinary and must not raise.
+    class NoKeys(FakeView):
+        def read_metadata(self, **coordinates):
+            return {"PositionName": "only"}
+
+    result = _run_with_view(tmp_path, monkeypatch, NoKeys())
+    assert result["stage_x_um"] is None and result["stage_y_um"] is None

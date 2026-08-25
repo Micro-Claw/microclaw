@@ -97,6 +97,27 @@ def pool_probability_map(probabilities, *, axistags, label_names,
     return result
 
 
+def _intended_stage_xy(dataset_view, coordinates):
+    """Intended stage XY for a field, or (None, None).
+
+    Ranking a survey is only useful if the winning field can be revisited, and
+    the axis coordinate alone does not locate a stage. Micro-Manager stamps
+    these keys on every multi-position acquisition and omits them on
+    single-position ones, so absence is ordinary and must not raise.
+    """
+    try:
+        metadata = dataset_view.read_metadata(**dict(coordinates))
+    except Exception:
+        return None, None
+    def _read(key):
+        value = metadata.get(key)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return _read("XPosition_um_Intended"), _read("YPosition_um_Intended")
+
+
 def _validate_absolute_command_paths(command: list[str], launcher_script_path,
                                      input_paths) -> None:
     paths = [command[0], *map(str, input_paths)]
@@ -209,8 +230,10 @@ class IlastikCompletedDatasetAdapter:
                         coverage_key=self.coverage_key, ratio_key=self.ratio_key,
                         label_semantics=self.label_semantics,
                     )
+                stage_x_um, stage_y_um = _intended_stage_xy(dataset_view, item)
                 results.append({
-                    "result": {"coordinates": item, **pooled},
+                    "result": {"coordinates": item, "stage_x_um": stage_x_um,
+                               "stage_y_um": stage_y_um, **pooled},
                     "status": "unverified",
                     "analyzer": "ilastik_pixel_classification",
                     "parameters": {
