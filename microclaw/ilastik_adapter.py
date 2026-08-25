@@ -50,8 +50,10 @@ def choose_stride(shape, *, native_pixel_size_um, training_resolution_um,
         # and a recorded mismatch rather than a silent interpolation.
         stride = max(1, round(training_resolution_um / native_pixel_size_um))
         return stride, "scale_matched"
-    stride = max(1, height // 256, width // 256)
-    return stride, "fallback_fixed_256"
+    # No scale to match against. Decimating anyway is a guess about a trained
+    # classifier's input, and the way that guess fails is silent -- so keep the
+    # pixels and pay the time. Speed is the caller's to buy with target_size.
+    return 1, "unknown_scale_no_decimation"
 
 
 def decimate_field(image: np.ndarray, target_size: int = 256):
@@ -109,11 +111,39 @@ def _training_resolution_um(project):
                     tags = tags.decode("utf-8")
                 for axis in _json.loads(tags).get("axes", []):
                     value = float(axis.get("resolution") or 0.0)
-                    if value > 0:
+                    # ilastik writes 1 when nobody set a pixel size, so 1 is a
+                    # placeholder far more often than a real micron. Reading it
+                    # as a measurement decimated a 324x312 M5 field to 36x35 --
+                    # below the project's own feature scales -- and ilastik
+                    # produced no output at all. A rig genuinely at 1 um/px
+                    # loses only the automatic stride, which is the safe way to
+                    # be wrong.
+                    if value > 0 and value != 1.0:
                         return value
         except Exception:
             continue
     return None
+
+
+def _tail(text, lines=12):
+    """The last few lines of ilastik's own output, for a failure message."""
+    kept = [line for line in (text or "").strip().splitlines() if line.strip()]
+    return "\n".join(kept[-lines:]) or "(ilastik printed nothing)"
+
+
+def _trained_labels(project, label_names):
+    """The subset of LabelNames the classifier actually learned.
+
+    ilastik exports one channel per NAMED label, so a class nobody drew comes
+    back identically zero rather than missing -- and a ratio against it is
+    pinned at 1.000, which reads as a confident result and is an artifact.
+    known_labels says which classes were trained; ilastik numbers them from 1.
+    """
+    try:
+        known = [int(v) for v in project["PixelClassification/ClassifierForests/known_labels"][()]]
+    except Exception:
+        return None
+    return {label_names[k - 1] for k in known if 1 <= k <= len(label_names)}
 
 
 def _native_pixel_size_um(dataset_view, coordinates):
@@ -367,11 +397,20 @@ class IlastikCompletedDatasetAdapter:
         # lived in pool_probability_map, which runs only after the batch, so a
         # mistyped label was refused *after* ilastik had scored every field --
         # measured at 116 s on nine demo tiles, and minutes on a real survey.
-        _check_configured_labels(
-            [item.decode("utf-8") if isinstance(item, bytes) else str(item)
-             for item in label_names],
-            self.background_label, self.numerator_label, self.denominator_label,
-        )
+            names = [item.decode("utf-8") if isinstance(item, bytes) else str(item)
+                     for item in label_names]
+            _check_configured_labels(names, self.background_label,
+                                     self.numerator_label, self.denominator_label)
+            trained = _trained_labels(project, names)
+            if trained is not None:
+                untrained = {self.numerator_label, self.denominator_label} - trained
+                if untrained:
+                    raise ValueError(
+                        f"the project names {sorted(untrained)!r} but never trained on "
+                        f"them: ilastik exports an all-zero channel for a class nobody "
+                        f"drew, so a ratio against it would be pinned at 1.000 and read "
+                        f"as a confident result. Trained labels: {sorted(trained)!r}."
+                    )
         with tempfile.TemporaryDirectory(prefix="microclaw-ilastik-") as temporary:
             work = Path(temporary).resolve()
             inputs = []
@@ -406,17 +445,32 @@ class IlastikCompletedDatasetAdapter:
             ]
             _validate_absolute_command_paths(command, self.launcher_script_path, inputs)
             try:
-                subprocess.run(command, cwd=work, check=True, timeout=self.timeout_s,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                completed = subprocess.run(
+                    command, cwd=work, check=True, timeout=self.timeout_s,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                captured = completed.stdout or ""
             except subprocess.TimeoutExpired as error:
                 raise TimeoutError(
                     f"ilastik batch exceeded hard timeout of {self.timeout_s:g} s and was killed"
+                ) from error
+            except subprocess.CalledProcessError as error:
+                raise RuntimeError(
+                    f"ilastik exited {error.returncode}. Its own output ends:"
+                    f"\n{_tail(error.output)}"
                 ) from error
             results = []
             for item, input_path, stride_used in zip(coordinates, inputs, strides):
                 output = work / f"{input_path.stem}_probabilities.h5"
                 if not output.is_file():
-                    raise FileNotFoundError(f"ilastik did not create expected output: {output.name}")
+                    # We captured ilastik's own words and used to throw them
+                    # away. On M5 that turned a FeatureSelectionConstraintError
+                    # -- the input had been decimated below the project's
+                    # feature scales -- into "did not create expected output",
+                    # and the session retried three times blaming flaky I/O.
+                    raise FileNotFoundError(
+                        f"ilastik did not create expected output: {output.name}. "
+                        f"Its own output ends:\n{_tail(captured)}"
+                    )
                 with h5py.File(output, "r") as handle:
                     dataset = handle["exported_data"]
                     pooled = pool_probability_map(

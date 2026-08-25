@@ -148,7 +148,7 @@ def test_batch_is_one_absolute_invocation_and_cleans_intermediates(tmp_path, mon
         output = work / "field_000000_probabilities.h5"
         # Measured real naming: field_000000.tiff -> field_000000_probabilities.h5.
         output.touch()
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
@@ -207,7 +207,7 @@ def test_completed_dataset_runner_executes_ilastik_path_end_to_end(tmp_path, mon
             return original_run(command, **kwargs)
         output = Path(kwargs["cwd"]) / "field_000000_probabilities.h5"
         output.touch()
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
@@ -263,7 +263,7 @@ def test_real_h5py_reads_all_project_and_output_keys(tmp_path, monkeypatch):
     def run(command, **kwargs):
         expected = Path(kwargs["cwd"]) / "field_000000_probabilities.h5"
         expected.write_bytes(prepared_output.read_bytes())
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", run)
     result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())[0]
@@ -336,7 +336,7 @@ def _run_with_view(tmp_path, monkeypatch, view):
 
     def run(command, **kwargs):
         (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
@@ -386,7 +386,7 @@ def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkey
         # dying earlier on a missing file for an unrelated reason.
         launched.append(command)
         (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
@@ -458,8 +458,8 @@ def test_a_square_field_decimates_as_it_always_did():
     # mismatch is recorded rather than interpolated away.
     (0.25, 0.127, 1, "scale_matched"),
     # Nothing to match against falls back to the old fixed target.
-    (None, 0.127, 8, "fallback_fixed_256"),
-    (0.105, None, 8, "fallback_fixed_256"),
+    (None, 0.127, 1, "unknown_scale_no_decimation"),
+    (0.105, None, 1, "unknown_scale_no_decimation"),
 ])
 def test_stride_matches_the_scale_the_project_was_drawn_at(native, training, expected, mode):
     stride, chosen = choose_stride((2048, 2048), native_pixel_size_um=native,
@@ -490,7 +490,7 @@ def test_the_project_hash_is_recorded_when_the_caller_supplies_none(tmp_path, mo
 
     def run(command, **kwargs):
         (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
@@ -522,7 +522,7 @@ def test_it_finds_ilastik_rather_than_asking_where_it_lives(tmp_path, monkeypatc
     def run(command, **kwargs):
         assert command[0] == str(found)
         (Path(kwargs["cwd"]) / "field_000000_probabilities.h5").touch()
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
@@ -541,4 +541,67 @@ def test_when_it_cannot_find_ilastik_it_asks_for_the_path(tmp_path, monkeypatch)
     instance = IlastikCompletedDatasetAdapter(project, "BG", "apo_mito", "healthy_mito",
                                               timeout_s=2)
     with pytest.raises(FileNotFoundError, match="Pass executable_path"):
+        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+
+
+def test_ilastiks_default_resolution_is_not_read_as_a_pixel_size(tmp_path):
+    # ilastik writes resolution 1 when nobody set a pixel size. Reading it as a
+    # real micron decimated a 324x312 M5 field to 36x35 -- below the project's
+    # own feature scales -- and ilastik produced no output at all.
+    import h5py
+    project = tmp_path / "unset.ilp"
+    with h5py.File(project, "w") as handle:
+        group = handle.create_group("PixelClassification/LabelSets/labels000")
+        block = group.create_dataset("block0000", data=np.zeros((4, 4, 1), dtype=np.uint8))
+        block.attrs["axistags"] = json.dumps(
+            {"axes": [{"key": "y", "resolution": 1}, {"key": "x", "resolution": 1},
+                      {"key": "c", "resolution": 0}]})
+    with h5py.File(project, "r") as handle:
+        assert ilastik_adapter._training_resolution_um(handle) is None
+    stride, mode = choose_stride((324, 312), native_pixel_size_um=0.1056,
+                                 training_resolution_um=None)
+    assert (stride, mode) == (1, "unknown_scale_no_decimation")
+
+
+def test_a_class_nobody_trained_cannot_be_a_ratio_denominator(tmp_path, monkeypatch):
+    # ilastik exports one channel per NAMED label, so an untrained class comes
+    # back identically zero and a ratio against it is pinned at 1.000 -- which
+    # reads as a confident result. known_labels says which were really trained.
+    probabilities, axistags, _ = recorded_output()
+    project = tmp_path / "partly.ilp"
+    project.write_bytes(b"pinned project")
+    executable = tmp_path / "python"
+    executable.write_bytes(b"executable")
+
+    class PartlyTrained(FakeFile):
+        def __getitem__(self, key):
+            if key == "PixelClassification/ClassifierForests/known_labels":
+                return FakeDataset(np.array([1, 2]))
+            return super().__getitem__(key)
+
+    monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
+        File=lambda path, mode: PartlyTrained(path, mode, Path("never"),
+                                              probabilities, axistags)))
+    instance = IlastikCompletedDatasetAdapter(
+        project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
+        timeout_s=2)
+    with pytest.raises(ValueError, match="never trained on them"):
+        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+
+
+def test_a_failed_batch_reports_what_ilastik_said(tmp_path, monkeypatch):
+    # "did not create expected output" cost three retries on M5 while the real
+    # reason -- FeatureSelectionConstraintError -- sat in captured output we
+    # were discarding.
+    probabilities, axistags, _ = recorded_output()
+    instance = adapter(tmp_path)
+
+    def run(command, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="INFO starting\nERROR FeatureSelectionConstraintError\n")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
+        File=lambda path, mode: FakeFile(path, mode, Path("never"), probabilities, axistags)
+    ))
+    with pytest.raises(FileNotFoundError, match="FeatureSelectionConstraintError"):
         instance.analyze_completed_dataset(FakeView(), {}, FakeContext())

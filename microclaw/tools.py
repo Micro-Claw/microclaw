@@ -3477,6 +3477,13 @@ def export_dataset_as_tiff(
 ) -> dict:
     dataset_path = guard.resolve_readable_path(dataset_path)
     output_path = guard.resolve_in_workspace(output_path)
+    # Every other writing tool makes its parent, and the generic path hint tells
+    # the reader microclaw does -- so when this one did not, the failure named
+    # three causes that were all wrong and cost nine calls on M5 before an agent
+    # worked around it by writing a README into the folder first. Exporting
+    # frames is how images reach a classifier for training, so this sits on the
+    # retraining path.
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     dataset = Dataset(dataset_path)
     axes = dataset.axes
 

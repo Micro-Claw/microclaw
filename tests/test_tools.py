@@ -3372,6 +3372,39 @@ class TestTimelapseTriggerPreflight:
 
 
 class TestExportDatasetAllAxes:
+    def test_it_creates_the_output_directory_rather_than_failing(
+            self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+        """Nine M5 exports failed because the parent folder did not exist.
+
+        Every other writing tool makes its parent, and the generic path hint
+        tells the reader microclaw does -- so the failure named three causes
+        that were all wrong. Exporting frames is how images reach a classifier
+        for training, so this sits on the retraining path.
+        """
+        class FakeDataset:
+            axes = {}
+
+            def __init__(self, path):
+                pass
+
+            def has_image(self, **kw):
+                return True
+
+            def read_image(self, **kw):
+                return np.zeros((4, 4), dtype=np.uint16)
+
+        monkeypatch.setattr("microclaw.tools.Dataset", FakeDataset)
+        monkeypatch.setattr("microclaw.tools.tifffile.imwrite",
+                            lambda path, stack, **k: Path(path).write_bytes(b"tiff"))
+        target = tmp_path / "made" / "by" / "the" / "tool" / "o.tif"
+        assert not target.parent.exists()
+        result = tools.export_dataset_as_tiff(
+            mock_ctrl, unconstrained_guard,
+            dataset_path="ds", output_path=str(target),
+        )
+        assert target.exists()
+        assert result["artifact"]["path"] == str(target)
+
     def test_present_coord_helper_uses_strings_sparse_axes_and_selection(self):
         from microclaw.tools import _iter_present_coords
 
