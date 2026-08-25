@@ -5,10 +5,11 @@ laser, no stage, no booked rig time — 9a has no hardware surface. Micro-Manage
 is needed only because Microclaw's session refuses to start without a ZMQ
 connection (`__main__.py:148`), not because the feature touches a microscope.
 
-Implementation ancestor: `19583e8`
+Implementation ancestor: `720eae5`
 
 PowerShell throughout, `uv` as the single launcher. Every command block runs
-**unedited** except the four variables in Setup, which are yours to set. A step
+**unedited** except the variables in Setup, which are yours to set — every later
+block reads them, so nothing below needs editing once Setup is right. A step
 that prints nothing where a match is required has **failed**, not passed.
 
 ## What this gate can and cannot settle
@@ -37,7 +38,7 @@ if ($LASTEXITCODE -eq 0) { Write-Output "PIN OK" } else { Write-Output "PIN FAIL
 
 # --- set these four ---
 $Ilp        = "C:\path\to\260824_Mito-classify.ilp"
-$IlastikDir = "C:\Program Files\ilastik-1.4.2"
+$IlastikDir = "C:\Program Files"   # or wherever ilastik landed
 $Work       = "$HOME\Documents\9a-gate"
 $DataName   = "block9a_survey"
 # ----------------------
@@ -65,7 +66,16 @@ printed, including if it printed nothing.
 ```powershell
 $IlastikExe = "<the path you chose from the list above>"
 & $IlastikExe --headless --help 2>&1 | Select-Object -First 3
+& $IlastikExe --version 2>&1 | Select-Object -First 2
 ```
+
+**Record the version it prints.** ilastik was already installed on this machine,
+so it need not be 1.4.2 — the version the `.ilp` was drawn in. A mismatch is
+**not a blocker and not a failure**; it is a fact the run must carry, because
+design/26 F5b notes the artifact is only as portable as the ilastik that reads
+it. The manifest records the two separately (`project_ilastik_version` from the
+`.ilp`, `executable_path` for what ran), so a mismatch will be visible in the
+evidence rather than hidden behind one number.
 
 If that prints ilastik's help or version banner, the executable is right. If it
 opens a window or hangs, **stop and report it** — that is a finding, not a
@@ -145,30 +155,39 @@ there raises `TypeError: unhashable type`.
 Score it from the artifact, not from the reply:
 
 ```powershell
-uv run python - <<'PY'
+$env:MANIFEST = "$Work\run1\analysis-manifest.json"
+@'
 import json, os
-path = os.path.expanduser(r"~\Documents\9a-gate\run1\analysis-manifest.json")
-doc = json.load(open(path))
+doc = json.load(open(os.environ["MANIFEST"]))
 obs = doc["observations"]
+p = obs[0]["parameters"]
 print("status:", doc["status"], "| latency_s:", round(doc["latency_s"], 2))
 print("observations:", len(obs))
-print("analyzer_version:", obs[0]["analyzer_version"])
+print("project_ilastik_version:", p["project_ilastik_version"])
+print("analyzer_version:", obs[0].get("analyzer_version"))
+print("executable_path:", p["executable_path"])
+print("launcher:", p["launcher_script_path"])
 print("statuses:", sorted({o["status"] for o in obs}))
 print("ranking_unit:", obs[0]["result"]["ranking_unit"])
 print("channel_mapping:", obs[0]["result"]["channel_mapping"])
-print("pinned sha:", obs[0]["parameters"]["project_sha256"])
-print("launcher:", obs[0]["parameters"].get("launcher_script_path", "<absent>"))
+print("pinned sha:", p["project_sha256"])
 print("ratios:", [o["result"]["apo_fraction"] for o in obs])
 print("coverage:", [round(o["result"]["mito_coverage"], 4) for o in obs])
-PY
+'@ | uv run python -
 ```
 
 Expected, each a separate limb:
 
 - `status: completed`, **`observations: 9`** — one per position, from **one**
   ilastik process.
-- **`analyzer_version: 1.4.2`**, read out of the `.ilp` rather than hard-coded.
-  Anything else means a version is being fabricated somewhere.
+- **`project_ilastik_version: 1.4.2`**, read out of the `.ilp` rather than
+  hard-coded. Anything else means a version is being fabricated somewhere.
+- `analyzer_version` is **Microclaw's** version, matching every other built-in
+  adapter — it is deliberately not the ilastik version, because nothing in the
+  run verifies which binary answered.
+- `executable_path` equal to your `$IlastikExe`, and **`launcher: None`** —
+  Windows needs no launcher script. If `launcher` is a path, the agent supplied
+  one it was not asked for; record that.
 - `statuses: ['unverified']` — never `verified`.
 - `ranking_unit: whole_field`.
 - `channel_mapping: {'BG': 'confirmed', 'apo_mito': 'unverified',
@@ -216,14 +235,15 @@ refuses one that already exists.
 > `mitochondria` as the numerator label.
 
 ```powershell
-uv run python - <<'PY'
+$env:WORK = $Work
+@'
 import json, os
-base = os.path.expanduser(r"~\Documents\9a-gate")
 for run in ("run2", "run3"):
-    doc = json.load(open(os.path.join(base, run, "analysis-manifest.json")))
+    path = os.path.join(os.environ["WORK"], run, "analysis-manifest.json")
+    doc = json.load(open(path))
     print(run, "status:", doc["status"], "| observations:", len(doc["observations"]))
     print("   ", doc["failure"]["type"], "-", doc["failure"]["message"])
-PY
+'@ | uv run python -
 ```
 
 Expected, measured by the coordinator against this exact code:
@@ -269,9 +289,10 @@ exports died.
 Measured by the coordinator on macOS against the real `.ilp` and a real
 9-position survey (`mitosis_survey_1`), 2026-08-24:
 
-- 9 observations from one batch in **8.87 s**; `analyzer_version: 1.4.2` read
-  from the `.ilp`; all statuses `unverified`; `channel_mapping` marking both mito
-  channels `unverified`; pinned sha matching.
+- 9 observations from one batch in **8.87–9.13 s**; `project_ilastik_version:
+  1.4.2` read from the `.ilp`; `analyzer_version: 0.1.0` (Microclaw's); all
+  statuses `unverified`; `channel_mapping` marking both mito channels
+  `unverified`; pinned sha matching.
 - ratios `0.33`–`0.61`, coverage `0.0138`–`0.0263` — every field just above the
   provisional 0.01 floor, so a floor of 0.03 would have returned nine
   `unresolved`. The floor's *value* is block 9b's to choose.
