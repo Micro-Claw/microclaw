@@ -135,10 +135,19 @@ runs:
 | 90 | 327.285 | sweep frame 1 |
 | 140 | 327.174 | sweep frame 2 |
 
-### Round 3 scope — three steps, about ten minutes
+### Round 3 scope — Step 0, then three prompts
 
-Run **Step 0** (proves the branch), then **Step 5 + 5b**, **Step 8**, and
-**Step 9**. Everything else passed on artifacts that are already in hand.
+Run **Step 0** and **Step 0b**, then the three prompts **[5b]**, **[8]** and
+Step 9's. Everything else passed on artifacts already in hand.
+
+**Nothing in round 3 asks you to run a script beyond the suite.** Step 5's frame
+means are arithmetic over a saved dataset and belong to the coordinator; the rig
+only has to produce the reversed sweep and send it. Round 2's version of Step 5
+had the operator running that computation on the rig, and the first draft of
+round 3 compounded it by asking for a dataset to be re-shot that had already been
+analysed — twice spending rig time on something a laptop could do from the
+artifacts. **If a gate step is arithmetic over data you already have, it is not a
+gate step.**
 
 ## What this gate settles
 
@@ -196,7 +205,33 @@ Select-String -Path "$Evidence\suite.txt" -Pattern "passed|failed" | Select-Obje
 
 **Required:** `IMPLEMENTATION PRESENT`, and a last line with **0 failed**. macOS
 measured `2181 passed / 99 skipped / 3 warnings` at the pin, and this machine
-read `2156 / 124` in round 1 — the same 2280 total. **Gate on zero failures, never the
+read `2156 / 124` in rounds 1 and 2 — the same 2280 total.
+
+### Step 0b — print the prompt sheet, and work from it, not from this file
+
+Every prompt below writes under `$Evidence`, which differs on every machine and
+every day. **Do not retype a path and do not copy a prompt out of this document
+— run this block and copy the printed lines.** Round 2 shipped
+`C:\Users\Public\...` beside a `$Evidence` variable the operator sets: a path
+they could not write to, which is block 9a's "hard-coded path beside a variable"
+defect, and asking them to substitute one is block 52c's.
+
+```powershell
+Write-Output "===== COPY THESE INTO MICROCLAW, ONE AT A TIME ====="
+Write-Output ""
+Write-Output "[3] Sweep the Aux Z stage across three positions - 40, 90 and 140 um - taking one frame at each, and save the run to $Evidence\sweep. Put it back where it started afterwards."
+Write-Output ""
+Write-Output "[5b] Run that same sweep once more with the three positions in the opposite order - 140, then 90, then 40 - saving to $Evidence\reversed and naming it auxz_reversed."
+Write-Output ""
+Write-Output "[8] Call run_multiposition_acquisition with exactly these arguments and do not substitute anything: protocol 'timelapse', the five positions in the list, save_dir $Evidence\nested, and protocol_params set to {'n_frames': 1, 'interval_s': 0, 'hook_action_plan': [{'hook_event_index': 0, 'actions': [{'kind': 'MoveNamedStage', 'position_um': 40}]}]}. I am testing a refusal - if it refuses, that is the result I want, so report the message and stop rather than finding a way to make it run."
+Write-Output ""
+Write-Output "[10] Also run a plain 3-frame timelapse at 10 ms with a 1 second interval saving to $Evidence\plain, then export this session as a standalone script to $Evidence\session.py."
+Write-Output ""
+Write-Output "===== END ====="
+```
+
+The `<SWEEP>`, `<REVERSED>`, `<NESTED>`, `<PLAIN>` and `<SESSION>` markers in the
+steps below **name which printed line to use. They are not values to type.** **Gate on zero failures, never the
 count.**
 
 ## Step 1 — the precondition, as a command that exits nonzero
@@ -238,8 +273,7 @@ Verbatim. It names a sweep and a range, and no tool, no hook, and no argument:
 
 > Sweep the `Aux Z` stage across three positions — 40, 90 and 140 um — taking one
 > frame at each, and save the run to
-> `C:\Users\Public\microclaw-gates\55b\sweep`. Put it back where it started
-> afterwards.
+> <SWEEP>. Put it back where it started afterwards.
 
 **Required, and this is the comparison the block exists for:**
 
@@ -262,7 +296,7 @@ Record how many calls it took. 55a's session needed five refusals and a hook.
 > `hook_strategy`, a `hook_action_plan` of three `MoveNamedStage` actions at 40,
 > 90 and 140 um, and a `named_stage_envelope` for `Aux Z` with `min_um` 0,
 > `max_um` 140, `max_writes` 4 and `restore` `"entry"`. Save it to
-> `C:\Users\Public\microclaw-gates\55b\sweep2`.
+> <SWEEP2>.
 
 ## Step 4 — the log, and the three numbers that must agree
 
@@ -280,58 +314,56 @@ Verbatim:
   `get_stage_position` all read `20.0`.** Block 52a's third gate passed every
   stated limb and was caught only by those three disagreeing.
 
-## Step 5 — the witness the log cannot supply
+## Step 5 — the reversed sweep (the rig's only job here)
 
-```powershell
-uv run python design\55-frame-means.py "C:\Users\Public\microclaw-gates\55b\sweep\sweep_1" > "$Evidence\55b-frame-means.txt" 2>&1
-Write-Output "frame-means exit code (expected 0 = frames differ):" $LASTEXITCODE
-Get-Content "$Evidence\55b-frame-means.txt"
-```
+**Nothing in this step runs a script on the rig.** Frame means are an offline
+computation over a saved dataset — the coordinator runs `55-frame-means.py` on
+the returned artifact, at zero dose, on any machine. Round 2 wrongly asked the
+operator to run it, and then round 3 nearly asked them to re-shoot a dataset that
+had already been analysed. **If a gate step is arithmetic over data you already
+have, it is not a gate step.**
 
-If the dataset directory is named differently, run
-`Get-ChildItem "C:\Users\Public\microclaw-gates\55b" -Directory` and use what is
-there — the suffix is pycro-manager's and this is the one path this runbook
-cannot predict.
+So the rig produces one thing that does not exist yet: the same sweep with its
+targets **reversed**.
 
-**Required:** `FRAMES DIFFER`, exit 0. `ALL FRAMES IDENTICAL` would be the Nikon
-result — three exposures at one position reported as a sweep.
-
-**But `FRAMES DIFFER` on its own does not prove the axis moved, and round 2 is
-why this step now has a second half.** Every sweep so far ran the same ascending
-targets, and every one produced the same shape: frame 0 unlike frames 1 and 2,
-which are nearly equal. That is exactly as consistent with *"frame 0 of a hooked
-run differs"* as with *"the image responds to `Aux Z`"*. The demo camera is a
-deterministic simulator, so repeating the identical sweep cannot separate them —
-it returns the identical frames by construction.
-
-### Step 5b — the control that separates them
-
-Verbatim:
+Use the printed prompt **[5b]**:
 
 > Run that same sweep once more with the three positions in the opposite order —
-> 140, then 90, then 40 — saving to
-> `C:\Users\Public\microclaw-gates\55b\reversed`.
+> 140, then 90, then 40 — saving to <REVERSED> and naming it `auxz_reversed`.
 
-```powershell
-uv run python design\55-frame-means.py "C:\Users\Public\microclaw-gates\55b\reversed\auxz_reversed_1"
-Write-Output "exit code:" $LASTEXITCODE
-```
+**Required on the rig:** the run completes, `frames_exposed: 3`, and `Aux Z`
+reads `20.0` afterwards. **Send the dataset directory.** That is all.
 
-If the dataset directory is named differently, list the folder and use what is
-there.
+### What the comparison decides, once the dataset is back
 
-**This is the whole witness, and it has exactly two outcomes:**
+The ascending baseline is already measured, from nine independent runs across two
+sessions, all identical to the last digit:
 
-- **The means come back in reversed order** — roughly the ascending run's third,
-  second, first value. The image tracks the axis, Step 5 is a real independent
-  check, and the sweep demonstrably moved hardware between exposures.
-- **The means come back in the same order as the ascending run** — frame 0 high,
-  frames 1 and 2 low. Then the frames vary with *position in the acquisition*,
-  not with the stage, **Step 5 proves nothing, and it must be struck from this
-  runbook rather than reported as a pass.** Say so plainly; a witness that
-  cannot fail is not a witness.
+| frame | `Aux Z` | mean |
+|---|---|---|
+| 0 | 40 | 858.705 |
+| 1 | 90 | 327.285 |
+| 2 | 140 | 327.174 |
 
-Report the means from both runs either way.
+That shape — frame 0 unlike frames 1 and 2, which nearly match — fits *"frame 0
+of a hooked run differs"* exactly as well as *"the image responds to `Aux Z`"*.
+The demo camera is a deterministic simulator, so repeating the identical sweep
+returns the identical frames by construction and separates nothing. Only
+reversing the targets does.
+
+**Two outcomes, and one of them deletes this step:**
+
+- **Reversed order** — roughly `327.17 / 327.29 / 858.71`. The image tracks the
+  axis, the sweep demonstrably moved hardware between exposures, and Step 5 is a
+  real witness independent of the log.
+- **Same order** — frame 0 high again. Then the frames vary with *position in the
+  acquisition*, not with the stage. **Step 5 proves nothing and gets struck**,
+  the claim that the demo can corroborate a sweep optically is withdrawn from
+  `design/55`, and the block still merges on the log, the restoration read-back
+  and the standalone re-execution — none of which depend on it.
+
+A witness that cannot fail is not a witness, so the second outcome is a result,
+not a failure.
 
 ## Step 6 — the default log name, and two runs that must not interleave
 
@@ -343,7 +375,7 @@ Verbatim:
 **Required:**
 
 ```powershell
-Get-ChildItem "C:\Users\Public\microclaw-gates\55b" -Recurse -Filter "*_plan_log*.jsonl" | Select-Object FullName, Length
+Get-ChildItem "$Evidence" -Recurse -Filter "*_plan_log*.jsonl" | Select-Object FullName, Length
 ```
 
 **Two or more distinct log files**, one of them suffixed `_2`. A single log
@@ -389,7 +421,7 @@ even a better one; this step exists to make one specific call fail**:
 
 > Call `run_multiposition_acquisition` with exactly these arguments and do not
 > substitute anything: `protocol` `"timelapse"`, the five positions in the list,
-> `save_dir` `C:\Users\Public\microclaw-gates\55b\nested`, and
+> `save_dir` <NESTED>, and
 > `protocol_params` set to
 > `{"n_frames": 1, "interval_s": 0, "hook_action_plan": [{"hook_event_index": 0,
 > "actions": [{"kind": "MoveNamedStage", "position_um": 40}]}]}`.
@@ -422,11 +454,10 @@ hook_strategy"; a message is fixed when the next reader takes the working route.
 Verbatim:
 
 > Also run a plain 3-frame timelapse at 10 ms with a 1 second interval saving to
-> `C:\Users\Public\microclaw-gates\55b\plain`, then export this session as a
-> standalone script to `C:\Users\Public\microclaw-gates\55b\session.py`.
+> <PLAIN>, then export this session as a standalone script to <SESSION>.
 
 ```powershell
-$Script = "C:\Users\Public\microclaw-gates\55b\session.py"
+$Script = "$Evidence\session.py"
 Copy-Item $Script "$Evidence\session.py"
 uv run python -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read()); print('SCRIPT PARSES')" "$Script"
 Write-Output "--- these three MUST print a match ---"
@@ -454,10 +485,10 @@ its own `_HERE` and still writes beside itself, not beside the repo:
 
 ```powershell
 Set-Location $Repo
-uv run python "C:\Users\Public\microclaw-gates\55b\session.py" > "$Evidence\standalone.txt" 2>&1
+uv run python "$Evidence\session.py" > "$Evidence\standalone.txt" 2>&1
 Write-Output "standalone exit code (expected 0):" $LASTEXITCODE
 Get-Content "$Evidence\standalone.txt"
-Get-ChildItem "C:\Users\Public\microclaw-gates\55b" -Recurse -Filter "*_plan_log*.jsonl" | Select-Object FullName, Length
+Get-ChildItem "$Evidence" -Recurse -Filter "*_plan_log*.jsonl" | Select-Object FullName, Length
 ```
 
 **Required:** exit 0; the printed envelope line naming `Aux Z`, the approved
