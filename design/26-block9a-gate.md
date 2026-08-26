@@ -12,6 +12,96 @@ PowerShell throughout, `uv` as the single launcher. Every command block runs
 block reads them, so nothing below needs editing once Setup is right. A step
 that prints nothing where a match is required has **failed**, not passed.
 
+## Demo round 2 — run ONLY this section
+
+**Round 1 (demo, 2026-08-25) and the M5 session (2026-08-25) are both scored and
+recorded.** The mechanism is proven on a real sample: survey → score →
+`mark_position` → multiposition → images. **Do not repeat it.**
+
+M5 produced four defects, all fixed afterwards and all verified off-rig against
+its own artifacts — the real `.ilp`, the real NDTiff datasets, real ilastik, all
+nine fields. What has **never run in a session** is the agent-facing half of
+those fixes: two new refusals, a reworded schema, and the TIFF-export fix. That
+is the surface round 1 showed is where the defects live, so this round tests only
+that.
+
+**No sample, no laser, no stage, no booked time.** Micro-Manager on the demo
+config is needed only because Microclaw will not start without a ZMQ connection.
+
+**Copy `260825_Mito-classify_M5.ilp` to the demo machine.** It is the test
+artifact for both new refusals at once: it records **no pixel size** (ilastik's
+`1` placeholder) and it **names three labels but trained only two**
+(`known_labels: [1, 2]` — `healthy_mito` was never drawn). Its sha256 is
+
+```
+55c2242e7edb7bb7fced0828b8a2fa3ba1fd4efc714a14f5b28686a30f9164c6
+```
+
+Run **Setup**, then **Step 0**, then **R1–R4 below**. Skip Steps 1–4 of the
+original gate; they are closed.
+
+### R1 — the suite
+
+```powershell
+uv run python -m pytest -q 2>&1 | Select-Object -Last 3
+```
+
+Expected **`2110 passed, 124 skipped, 3 warnings`** — 2234 collected, equal to
+macOS's 2135 + 99. Match the total; the split is a machine fact.
+
+### R2 — exporting frames now makes its own folder
+
+The fix with the least evidence: on M5 nine exports failed because the output
+folder did not exist, and the agent recovered by writing a README into it first.
+Acquire something small, then ask the session, verbatim:
+
+> Export those frames as TIFFs into a new folder called `regate_tiffs` that
+> doesn't exist yet.
+
+PASS: the TIFFs are written on the **first** attempt. **FAIL** if any export
+returns `FileNotFoundError`, or if the agent creates the folder by some other
+means first — that workaround is what this fix removes, and an agent that
+performs it has hidden the thing under test. Record what it did either way.
+
+### R3 — a project with no pixel size
+
+Point the session at the copied `.ilp` and a saved dataset. Ask, verbatim:
+
+> Score that dataset with this ilastik project and tell me what came back.
+
+Then read the manifest's `parameters`:
+
+- `decimation_mode` must be **`unknown_scale_no_decimation`** with
+  `decimation_stride: 1`. This project records no pixel size, and Microclaw
+  refuses to read ilastik's `1` placeholder as a real micron.
+- **`scale_matched` here would be a gate failure** — it would mean the
+  placeholder is being read as a measurement again, which is what decimated an
+  M5 field to 36×35 and made ilastik produce nothing at all.
+- The agent should *report* the mode rather than treat it as an error. It is not
+  one.
+
+### R4 — a class nobody drew
+
+Same project. Ask for the ratio it cannot give, verbatim:
+
+> Give me the ratio of apo_mito to healthy_mito for that dataset.
+
+Expected: a refusal in **under a second**, saying the project *"names
+['healthy_mito'] but never trained on them"* and listing the trained labels
+`['BG', 'apo_mito']`.
+
+**This is the most important step in the round.** Without the refusal, ilastik
+returns an all-zero channel for the untrained class and the ratio is pinned at
+**1.000** — a confident "100% apoptotic" that is an artifact. So:
+
+- **PASS**: the agent surfaces the refusal and explains that `healthy_mito` was
+  never annotated, offering to draw it or to score against a trained label.
+- **FAIL**: the agent silently substitutes a different denominator and reports a
+  number, or calls the refusal a bug and retries. Either hides exactly what the
+  refusal exists to expose.
+
+Record its wording verbatim.
+
 ## What this gate can and cannot settle
 
 It settles that the pipeline runs: a saved dataset in, one bounded ilastik batch,
