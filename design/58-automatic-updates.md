@@ -523,12 +523,35 @@ plus a small amount of repository configuration, and it gates 58e's merge only.
       at which point protection is available on the Free plan;
       **(c)** amend §"Decision" — *not* a release note — to state what boundary
       replaces it and why that is acceptable for the preview channel.
-- [ ] **There must be a check to require.** Add `.github/workflows/tests.yml`
-      running the suite on Windows and macOS. It does not exist today. Weigh the
-      Actions minutes a private Free repository gets before turning it on for
-      every push.
+- [ ] **There must be a check to require.** Add `.github/workflows/tests.yml`.
+      It does not exist today; Actions itself is enabled on the repository
+      (`{"enabled": true}`, verified 2026-08-26).
+- [ ] **Linux and Windows, not macOS.** Runner minutes are billed with
+      multipliers — Linux 1x, **Windows 2x, macOS 10x** — against the 2,000
+      minutes a month GitHub Free includes for an organization's *private*
+      repositories. The suite is ~108 s locally, so call a job five minutes with
+      dependency install: Linux + Windows is ~15 charged minutes a run and
+      comfortably over a hundred runs a month, while adding macOS would cost ~50
+      a run on its own and cap the month near forty. **Windows is the only
+      platform this project ships on**, and the coordinator measures macOS
+      locally at every block anyway — that is where the recorded baseline comes
+      from. Public repositories get Actions free and unlimited, so this
+      constraint dissolves the day the repository flips.
+- [ ] **Confirm the spending limit reads $0** before enabling: Organization
+      settings -> Billing -> Spending limits. At $0 an exhausted allowance stops
+      queueing workflows rather than billing anything, and no overage is possible
+      without both raising that limit and attaching a payment method. Verify it;
+      do not assume it.
 - [ ] **Then require it** on `main`, with the maintainer included in the rule.
       Record here that it is on, with the ruleset id.
+- [ ] **Requiring a check changes step 9 of the block workflow, and that is a
+      decision, not a side effect.** A required status check enforces **only on
+      pull requests**; protecting `main` blocks the direct push that
+      `CLAUDE.md` step 9 performs today ("merge the branch to `main`, push
+      `main`"). So protection converts every block merge into open-a-PR,
+      wait-for-green, merge — which also cuts against the standing "no PR until
+      integration" preference. Adding CI costs nothing and settles nothing here;
+      decide the PR flow deliberately before 58e, not at its merge.
 
 ## 58a — provenance, discovery, and materializing an exact commit
 
