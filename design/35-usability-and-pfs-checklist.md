@@ -13,7 +13,7 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-26 assignment of design/55`** — find it *by that heading*, not by position; it sits behind
+> **The live state note is `### State at the 2026-08-26 close of design/55`** — find it *by that heading*, not by position; it sits behind
 > several superseded notes that look just like it. It is the only section that
 > describes the repository as it is now.
 >
@@ -25,9 +25,11 @@ either disagrees with a *design*, stop and reconcile the design first.
 > and **block 9b is CLOSED as not needed** — its verdict premise was struck by
 > operator ruling. Block 10 is conditional by design and block 11 takes 9a's
 > fixtures. Beyond that, what is next is a choice, not a continuation — design/54
-> is awaiting a Nikon gate, design/55 is written and not started, and the rest of
-> the open register is unscheduled, including **one row added 2026-08-26: a
-> batched analyzer cannot batch a survey stored as one dataset per position**. **Track A, Track B, Track D, Track E and
+> is awaiting a Nikon gate, **design/55 is CLOSED** (both blocks merged
+> 2026-08-26), and the rest of the open register is unscheduled — including three
+> rows added 2026-08-26: a batched analyzer cannot batch a survey stored as one
+> dataset per position; the stage-move settle tolerance has no configuration
+> path; and an agent asked for positions it could have read itself. **Track A, Track B, Track D, Track E and
 > Track F are all closed** — verified 2026-08-19 against the run ledger, which
 > carries a merge commit for every one of their blocks.
 >
@@ -36,10 +38,11 @@ either disagrees with a *design*, stop and reconcile the design first.
 > commits (`20b92e2`, `a1b7579`, `1fb284d`, `e03830d`). An unticked heading is
 > not evidence that anything is open. **Nor is an empty merge column**: 43n's
 > merge hash is written inside its implementation cell, so a mechanical scan of
-> that column reports it open when it is not. The only genuinely open rows are
-> Track C's 9, 10 and 11, which are parked on an `.ilp` that does not exist.
+> that column reports it open when it is not. **Track C's 9a is merged and 9b is
+> closed as not needed**; 10 and 11 remain, and are no longer parked — the `.ilp`
+> arrived 2026-08-24.
 >
-> **Work has continued outside this file** — `design/48` through `design/57` each
+> **Work has continued outside this file** — `design/48` through `design/58` each
 > own their own checklist and ledger. This file is not a picture of the
 > repository and has not been since 2026-08-13.
 
@@ -441,13 +444,13 @@ acquisition. Unscheduled.
 **The four Nikon limbs owed by design/56 are still owed and still unbookable.**
 M2 and M5 cannot run them.
 
-**What is next is a choice, not a continuation.** `design/55` is written and
-unstarted, ~~Track C is parked on an `.ilp` that does not exist~~ — **Track C's
+**What is next is a choice, not a continuation.** ~~`design/55` is written and
+unstarted~~ — **design/55 CLOSED 2026-08-26**, ~~Track C is parked on an `.ilp` that does not exist~~ — **Track C's
 `.ilp` arrived 2026-08-24 and its feature work is now done; see the 2026-08-26
 note below** — design/54 awaits a Nikon gate, and the rest of the open register is
 unscheduled.
 
-### State at the 2026-08-26 close of block 9a — SUPERSEDED by the design/55 assignment note below
+### State at the 2026-08-26 close of block 9a — SUPERSEDED by the design/55 close note below
 
 **Track C's feature work is done.** Block 9a merged (`4a750aa`) — the ilastik
 completed-survey adapter, gated on the demo machine twice and on M5 with a real
@@ -474,34 +477,26 @@ as a file and not necessarily as a classifier. A project drawn on M2 applied to 
 gave twice as much probability to the wrong class, and nothing in the file or the
 probability map announces it.
 
-### State at the 2026-08-26 assignment of design/55 — read this before assigning anything
+### State at the 2026-08-26 close of design/55 — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section, including the block-9a note directly above it. Position is not recency —
 read the heading, not the order.
 
-**`design/55` is assigned and owns its own checklist and ledger**, like design/48
+**`design/55` is CLOSED and owns its own checklist and ledger**, like design/48
 through design/57. This file does not track its blocks; it points at them. The
 doc is `design/55-hook-strategy-is-not-the-hardware-predicate.md`, two blocks,
-**55a then 55b, in sequence** — both rewrite the same preamble in `run_timelapse`
-and `run_zstack`.
+55a and 55b, both merged.
 
-- **Assigned 2026-08-26** on branch `design55/unattached-plan-refuses`, from
-  `main` at `9128715` — `b54c30b` plus this assignment's doc commits.
-  Nothing merged, no gate run.
-- **Baseline, coordinator-measured on `b54c30b` (macOS): 2135 passed / 99 skipped
-  / 3 warnings.** Windows: same total, different skip split. Gate on zero
-  failures, never the count.
-- **Implementation goes to headless Codex** through the project `codex-runner`
-  skill, one linked worktree per block.
-- **55a is MERGED (`2eaa0e3`, 2026-08-26), demo-gated, branch deleted both
-  sides, design gate run.** `main` measures **2155 passed / 99 skipped / 3
-  warnings** on macOS; the demo machine reads `2129 / 124`, same 2253 total.
-  Runbook `design/55-block55a-demo-gate.md` is on `main` with round 1's result.
-  Both preamble reorders were proved **by mutation** — putting `set_exposure`
-  back above the guard turns the ordering test red while the refusal still raises
-  — because the pre-fix run only ever shows `DID NOT RAISE` and never reaches the
-  ordering assertion at all.
+**Nothing is assigned and nothing is awaiting a rig.** What is next is a choice:
+the open register below, or a new design. Two rows were added by design/55's own
+gates and neither is scheduled — the stage-move tolerance having no configuration
+path, and an agent asking for positions it could have read.
+
+- **55a merged `2eaa0e3`, 55b merged `ba60a80`**, both branches deleted locally
+  and on `origin`, both worktrees removed. Branch points were `9128715` and
+  `8f73b90`; implementation went to headless Codex through the project
+  `codex-runner` skill, one linked worktree per block.
 - **`design/55` is CLOSED.** 55a merged `2eaa0e3`, 55b merged `ba60a80`, both
   branches deleted, design gate run. `main` measures **2182 passed / 99 skipped /
   3 warnings**; the demo machine reads `2157 / 124`, same 2281 total.
