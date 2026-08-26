@@ -854,7 +854,7 @@ Gate Part B (M2 **or** M5 — whichever is free), same runbook:
 
 | Block | Branch | Start commit | Implementer | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 55a | `design55/unattached-plan-refuses` | `dfc1eb0` | Codex runner (worktree `../microclaw-55a`) | demo — not yet run | — | — |
+| 55a | `design55/unattached-plan-refuses` | `9128715` | Codex runner (worktree `../microclaw-55a`) | demo — not yet run | — | — |
 | 55b | — | — | — | demo + M2/M5 — not yet run | — | — |
 
 **Baseline, coordinator-measured on `b54c30b` (macOS): 2135 passed / 99 skipped /
