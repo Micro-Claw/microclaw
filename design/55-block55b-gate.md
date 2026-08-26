@@ -149,6 +149,70 @@ analysed — twice spending rig time on something a laptop could do from the
 artifacts. **If a gate step is arithmetic over data you already have, it is not a
 gate step.**
 
+## Round 3 result - 2026-08-26, demo machine (`block55b-2026-08-26-demo-round3`)
+
+**Both open limbs PASS, and one settles a question two rounds could not.**
+
+**Step 5b is decisive.** The reversed sweep returned the ascending run's means in
+exactly reversed order, to the last digit:
+
+| `Aux Z` | ascending run | reversed run |
+|---|---|---|
+| 40 | **858.705** (frame 0) | **858.705** (frame 2) |
+| 90 | **327.285** (frame 1) | **327.285** (frame 1) |
+| 140 | **327.174** (frame 2) | **327.174** (frame 0) |
+
+The mean follows the *axis*, not the frame index. The competing explanation --
+"frame 0 of a hooked run differs" -- is dead: frame 0 was the bright one going up
+and the dim one coming down. The demo camera does corroborate a plan-only sweep
+optically, Step 5 is a real witness independent of the hook log, and
+`ALL FRAMES IDENTICAL` stays this gate's headline failure. The plain timelapse in
+the same session read 1312.981 three times, so the instrument still reports
+identity when identity is the truth.
+
+**Step 8 PASS -- the outer preflight fired for the first time on a rig.**
+`protocol_params cannot carry per-run hook capabilities in a reserved
+multiposition protocol: hook_action_plan`. Nothing ran, nothing moved, and the
+session reported the message and stopped rather than routing around it. The
+mechanism-named rewrite is what got it there; round 2's outcome-shaped version
+produced a legitimate `snr_observer` run and no evidence at all.
+
+**Step 10 PASS**: 3 emitted calls, and the refused multiposition call correctly
+excluded as one that never ran.
+
+### Four findings, all the coordinator's
+
+**1. Step 9's prompt was missing from the sheet, so Step 9 did not run.** The
+sheet was hand-assembled while the scope section named the step. Added. **Still
+owed.**
+
+**2. The sheet printed prompts outside the round's scope**, so `[10]` produced an
+export nothing consumed and it read as though a standalone run had been skipped.
+Step 11 was deliberately out of scope -- round 2 passed it on four sweeps. The
+sheet now says to use only what the round asks for.
+
+**3. The agent asked for positions it could have read.** Told to use "the five
+positions in the list", it asked for them rather than calling
+`get_position_list`, then read the list when told to. Challenged, it named the
+error exactly: *"reading the position list is free, reversible bookkeeping --
+exactly the kind of thing I should just do rather than ask about. I asked when I
+should have looked."* Not a 55b defect; filed for the open register.
+
+**4. The schema hid three rules the rig kept rediscovering -- fixed.** Three
+sessions in a row burned one call each on the same constraints: a nonzero
+`interval_s` for a per-frame plan, a write budget of plan-length-plus-one when
+restoring, and an envelope that must contain the restoration target. All are
+refused at plan time and all are statically knowable, but none was in the
+*parameter* description a caller reads while filling that parameter in -- the
+interval rule sat in the tool's prose and got skimmed three times. `CLAUDE.md`:
+a feature that needs a paragraph of explanation before it can be called is a
+design problem. Now stated in `interval_s`, `hook_action_plan` and both envelope
+schemas, with a test so they cannot drop out silently.
+
+### Round 4 scope -- one prompt, plus Part B
+
+Prompt **[9]** on the demo machine, and **Part B** on M2 or M5. Nothing else.
+
 ## What this gate settles
 
 55a made an unattached plan refuse. It also, by design, left the capability
@@ -225,9 +289,13 @@ Write-Output "[5b] Run that same sweep once more with the three positions in the
 Write-Output ""
 Write-Output "[8] Call run_multiposition_acquisition with exactly these arguments and do not substitute anything: protocol 'timelapse', the five positions in the list, save_dir $Evidence\nested, and protocol_params set to {'n_frames': 1, 'interval_s': 0, 'hook_action_plan': [{'hook_event_index': 0, 'actions': [{'kind': 'MoveNamedStage', 'position_um': 40}]}]}. I am testing a refusal - if it refuses, that is the result I want, so report the message and stop rather than finding a way to make it run."
 Write-Output ""
+Write-Output "[9] Run a plain 3-frame timelapse but authorize a named_stage_envelope for Aux Z over 0 to 140 um, with no action plan and no hook."
+Write-Output ""
 Write-Output "[10] Also run a plain 3-frame timelapse at 10 ms with a 1 second interval saving to $Evidence\plain, then export this session as a standalone script to $Evidence\session.py."
 Write-Output ""
 Write-Output "===== END ====="
+Write-Output ""
+Write-Output "Use ONLY the prompts the round you are running asks for; see 'Round N scope'."
 ```
 
 The `<SWEEP>`, `<REVERSED>`, `<NESTED>`, `<PLAIN>` and `<SESSION>` markers in the
