@@ -58,7 +58,7 @@ from microclaw.agent import (
     set_api_key,
 )
 from microclaw.assets import icon_bytes, load_page
-from microclaw.config import load_safety_config_or_exit
+from microclaw.config import ConfigValidationResult, ParsedSafetyConfig
 from microclaw.controller import MicroscopeController
 from microclaw.rig_inventory import enumerate_rig
 from microclaw.setup_tools import (
@@ -302,8 +302,8 @@ def _sse(event: dict) -> str:
 class Session:
     """One live microscope + conversation, shared across requests."""
 
-    def __init__(self, args):
-        self.parsed_safety = load_safety_config_or_exit(args.safety_config)
+    def __init__(self, args, parsed_safety: ParsedSafetyConfig):
+        self.parsed_safety = parsed_safety
         guard = SafetyGuard(self.parsed_safety.constraints)
         print("Connecting to Micro-Manager...")
         ctrl = MicroscopeController(port=args.port, guard=guard)
@@ -471,7 +471,7 @@ class Session:
 class SetupSession(Session):
     """A connected session whose dispatcher exposes no normal capabilities."""
 
-    def __init__(self, args, *, blocked_path: Path | None = None):
+    def __init__(self, args, config_result: ConfigValidationResult):
         print("Connecting to Micro-Manager in setup mode...")
         ctrl = MicroscopeController(port=args.port, guard=None)
         if not ctrl.is_connected():
@@ -482,6 +482,7 @@ class SetupSession(Session):
         self.ctrl = ctrl
         self.guard = None
         self.parsed_safety = None
+        self.config_result = config_result
         self.mode = SessionMode.SETUP
         may_write = getattr(args, "setup_write_security_config", False)
         self.tool_schemas = (
@@ -498,9 +499,9 @@ class SetupSession(Session):
         )
         self._initialize(args)
         content = SETUP_FIRST_MESSAGE
-        if blocked_path is not None:
+        if config_result.classification == "blocked":
             content += (
-                f"\n\nAn existing security config at {blocked_path} is invalid or "
+                f"\n\nAn existing security config at {config_result.path} is invalid or "
                 "unreviewed. Setup cannot overwrite or delete it. Move it aside or "
                 "repair it deliberately, then restart this one-time setup command."
             )
@@ -509,20 +510,19 @@ class SetupSession(Session):
         self.store.append(message)
 
 
-def build_session(args):
+def build_session(args, config_result: ConfigValidationResult | None = None):
     """Use a valid reviewed config, otherwise open restricted setup."""
     path = Path(args.safety_config) if args.safety_config else config.default_safety_config()
-    result = config.validate_safety_config(path)
+    result = config_result if config_result is not None else config.validate_safety_config(path)
     if result.can_start_live_validation:
-        return Session(args)
-    blocked_path = path if path.exists() else None
-    if blocked_path is not None:
+        return Session(args, result.parsed)
+    if result.classification == "blocked":
         print(
-            f"Existing security bounds at {blocked_path} are not valid and reviewed. "
+            f"Existing security bounds at {result.path} are not valid and reviewed. "
             "Restricted setup will open, but it will not overwrite or delete that "
             "file. Move it aside or repair it deliberately, then restart setup."
         )
-    return SetupSession(args, blocked_path=blocked_path)
+    return SetupSession(args, result)
 
 
 def build_app(session, *, remote: bool = False, api_token: str | None = None,
@@ -1065,7 +1065,9 @@ def serve(args):
 
     from microclaw import tools
 
-    session = build_session(args)
+    path = Path(args.safety_config) if args.safety_config else config.default_safety_config()
+    config_result = config.validate_safety_config(path)
+    session = build_session(args, config_result=config_result)
     if token:
         _add_audit_secret(session, token)
     if pairing_code:

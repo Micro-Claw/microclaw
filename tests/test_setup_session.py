@@ -535,12 +535,13 @@ def test_setup_session_offers_writer_only_with_explicit_capability(monkeypatch, 
 def test_valid_upgrade_builds_normal_session_without_write_authority(monkeypatch, tmp_path):
     path = tmp_path / "safety_config.yaml"
     path.write_text("valid", encoding="utf-8")
-    validation = types.SimpleNamespace(can_start_live_validation=True)
+    validation = types.SimpleNamespace(can_start_live_validation=True, parsed="parsed")
     monkeypatch.setattr(webserve.config, "validate_safety_config", lambda p: validation)
     seen = []
 
     class Normal:
-        def __init__(self, args):
+        def __init__(self, args, parsed_safety):
+            assert parsed_safety == "parsed"
             seen.append(args.setup_write_security_config)
 
     monkeypatch.setattr(webserve, "Session", Normal)
