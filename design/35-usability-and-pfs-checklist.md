@@ -13,7 +13,7 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-24 close of design/57`** — find it *by that heading*, not by position; it sits behind
+> **The live state note is `### State at the 2026-08-26 assignment of design/55`** — find it *by that heading*, not by position; it sits behind
 > several superseded notes that look just like it. It is the only section that
 > describes the repository as it is now.
 >
@@ -447,7 +447,7 @@ unstarted, ~~Track C is parked on an `.ilp` that does not exist~~ — **Track C'
 note below** — design/54 awaits a Nikon gate, and the rest of the open register is
 unscheduled.
 
-### State at the 2026-08-26 close of block 9a — read this before assigning anything
+### State at the 2026-08-26 close of block 9a — SUPERSEDED by the design/55 assignment note below
 
 **Track C's feature work is done.** Block 9a merged (`4a750aa`) — the ilastik
 completed-survey adapter, gated on the demo machine twice and on M5 with a real
@@ -473,6 +473,41 @@ start-up is **60–90 s there against 5–7 s on macOS**. It wants a fresh sessi
 as a file and not necessarily as a classifier. A project drawn on M2 applied to M5
 gave twice as much probability to the wrong class, and nothing in the file or the
 probability map announces it.
+
+### State at the 2026-08-26 assignment of design/55 — read this before assigning anything
+
+**This is the live note.** It supersedes every other State-at note in this
+section, including the block-9a note directly above it. Position is not recency —
+read the heading, not the order.
+
+**`design/55` is assigned and owns its own checklist and ledger**, like design/48
+through design/57. This file does not track its blocks; it points at them. The
+doc is `design/55-hook-strategy-is-not-the-hardware-predicate.md`, two blocks,
+**55a then 55b, in sequence** — both rewrite the same preamble in `run_timelapse`
+and `run_zstack`.
+
+- **Assigned 2026-08-26** on branch `design55/unattached-plan-refuses`, from
+  `main` at `b54c30b`. Nothing merged, no gate run.
+- **Baseline, coordinator-measured on `b54c30b` (macOS): 2135 passed / 99 skipped
+  / 3 warnings.** Windows: same total, different skip split. Gate on zero
+  failures, never the count.
+- **Implementation goes to headless Codex** through the project `codex-runner`
+  skill, one linked worktree per block.
+
+**What 55a is, in one line:** `hook_strategy` is not the predicate for "this run
+moves hardware", so a `hook_action_plan` or hardware envelope passed without a
+hook is discarded in silence and the run reports success — on the Nikon,
+2026-08-18, that produced four sweeps that moved nothing and two that were scored
+as measurements. 55a refuses instead, before the camera is touched. 55b then
+gives the capability back by letting a fixed plan carry itself.
+
+**Both gates moved off the Nikon** (operator has lost access). 55a is entirely
+refusals and moves to the **demo machine** at no cost. 55b's mechanism moves too
+— `Aux Z` is a real MM stage over the real bridge — with **one short limb on M2
+or M5** for the thing a simulated axis cannot show: a device that takes real time
+to arrive. The Nikon gate's optical criterion (SNR rising then falling across the
+sweep) **is not reproducible on any available machine** and is recorded as
+untested rather than inferred; design/55's own checklist says why.
 
 ### State at the 2026-08-24 assignment of design/57 block 57a — SUPERSEDED, kept for the round history
 
