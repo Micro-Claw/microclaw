@@ -502,7 +502,8 @@ and `run_zstack`.
   back above the guard turns the ordering test red while the refusal still raises
   — because the pre-fix run only ever shows `DID NOT RAISE` and never reaches the
   ordering assertion at all.
-- **55b is NOT assigned yet**, and its gate plan changed because 55a's gate
+- **55b is ASSIGNED 2026-08-26** on `design55/plan-stands-alone` from `main` at
+  `8f73b90`. Its gate plan changed because 55a's gate
   refuted a premise this note used to carry. `Aux Z` **does** change the demo
   camera's image (3276.219 three times on a plain timelapse; 858.705 / 327.285 /
   327.174 across the sweep), so Part A gains an optical corroboration limb the
