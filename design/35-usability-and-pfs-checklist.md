@@ -494,6 +494,13 @@ and `run_zstack`.
   failures, never the count.
 - **Implementation goes to headless Codex** through the project `codex-runner`
   skill, one linked worktree per block.
+- **55a is implemented, reviewed and pushed (2026-08-26), awaiting the demo
+  machine.** Runbook `design/55-block55a-demo-gate.md` on the branch, pinning
+  `6a38ece`. Suite at the pin, coordinator-measured: **2154 passed / 99 skipped /
+  3 warnings**. Both preamble reorders were proved **by mutation** — putting
+  `set_exposure` back above the guard turns the ordering test red while the
+  refusal still raises — rather than by the pre-fix run alone, which only ever
+  shows `DID NOT RAISE`. 55b is not assigned yet.
 
 **What 55a is, in one line:** `hook_strategy` is not the predicate for "this run
 moves hardware", so a `hook_action_plan` or hardware envelope passed without a
