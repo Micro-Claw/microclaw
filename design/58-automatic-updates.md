@@ -725,6 +725,9 @@ No Micro-Manager needed.
       afterwards `git status --porcelain` and `git rev-parse --abbrev-ref HEAD`
       are unchanged, printed before and after.
 - [ ] A materialized staging tree's recorded SHA matches the fetched commit.
+- [ ] **A clone whose remote still names the pre-transfer repository is
+      accepted, and discovery still reaches `origin/main`.** Requirement 3, and
+      round 1's finding. The demo machine is the fixture; do not repoint it.
 - [ ] **A block branch is checked out in the clone, and discovery still names
       `origin/main`'s commit** — the branch is `design58/discovery`, the reported
       candidate is `git rev-parse origin/main`, and the two are printed together.
@@ -1108,6 +1111,72 @@ cannot fail this gate the way a user's launch can.
       automatic updates become available when the repository is public — it does
       not error and does not nag.
 
+## 58a demo gate round 1 — 2026-08-26, FAILED, and what it caught
+
+**Result: failed at limb 1, then printed `BLOCK 58a DEMO GATE PASSED`.** Both
+halves of that sentence are findings.
+
+### The defect it found is worth the trip
+
+`clone_provenance` refused the demo machine's clone:
+
+```
+UpdateError: clone remote does not match the compiled repository identity
+```
+
+The clone's remote still names **`zacsimile/microclaw`**, the pre-transfer
+namespace. GitHub redirects Git traffic after a transfer, so it had kept fetching
+and nothing had ever surfaced the stale name. The refusal was a coordinator
+review finding (S7, round 1) implemented against the **compiled-in** name, and it
+therefore fails closed on precisely the case requirement 3 exists to protect:
+
+> **The path must survive the repository moving.** Once an install is updating, a
+> rename or an organization transfer must not silently cut it off.
+
+**That machine is not misconfigured — it is the production condition.** Every
+GitHub Desktop clone taken before 2026-08-26 still carries the old name, and none
+of them has any reason to notice. **Do not repoint the demo machine's remote.**
+It is the only fixture available for requirement 3, and a green gate bought by
+editing it would ship code that cuts off every existing user on their first check.
+
+**Why four review rounds and a green suite missed it:** every clone fixture uses
+a `file:` remote, and the refusal is guarded by
+`remote_identity.startswith("github:")`. The entire suite skipped the branch. **A
+fixture that cannot reach the code is not coverage of it** — the same shape as
+`CLAUDE.md`'s "a fake that encodes your assumption", one step earlier: here the
+fake could not even execute the assumption.
+
+Fixed by deleting the compiled-in refusal, keeping `_verify_clone_remote`'s
+recorded-versus-current comparison (which is the real threat — a clone repointed
+*after* bootstrap), and recording a redirected name as a note. New fixtures use
+real `github.com` URLs in both SSH and HTTPS form.
+
+### Three defects were mine, and they are one defect
+
+The runbook was seven copy-paste PowerShell blocks. All three follow from that.
+
+1. **It could not enforce its own sequencing.** `$ErrorActionPreference = 'Stop'`
+   was set, but pasted interactively a `throw` ends the current pipeline, not the
+   session. Limbs 1–5 failed, each printed its `throw`, and the final block's
+   `Write-Host 'BLOCK 58a DEMO GATE PASSED'` ran anyway. **A gate that can print
+   PASSED while failing is worse than no gate.**
+2. **It called bare `python`.** Rig runbooks use `uv run`; the operator corrected
+   every line by hand while running it.
+3. **It captured nothing.** No transcript, no artifact directory — the evidence
+   reaching the coordinator was console scrollback the operator copied out.
+
+**The rule this establishes: if every step of a gate is a literal command, it is
+a program, and it ships as one.** A runbook is for steps a human performs and
+judges — driving a session, watching an optic, deciding whether a field looks
+right. Limbs that only compute belong in a script that runs them all, reports
+each independently, writes its own evidence, and exits nonzero. `design/58-block58a-demo-gate.py`
+plus a thin `.ps1` wrapper replaces the prose version; the wrapper is the only
+thing the operator runs.
+
+Reporting each limb independently rather than aborting at the first failure is
+deliberate: round 1's cascade meant one refusal hid five untested limbs behind
+`TypeError: 'NoneType' object does not support item assignment`.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1168,7 +1237,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | Block | Depends on | Branch | Start commit | Implementation | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
-| 58a | — | `design58/discovery` | `4103d36` | `84d49cb` + coordinator pin fix `9c087e2`; codex, **3 rounds, 12 findings**; runbook pins `84d49cb` | **awaiting demo gate** — `design/58-block58a-demo-gate.md` on the branch | — | — |
+| 58a | — | `design58/discovery` | `4103d36` | `84d49cb` + pin fix `9c087e2`; codex, **4 rounds, 13 findings** | **FAILED** demo round 1, 2026-08-26 — a real defect (B13) plus three coordinator runbook defects; gate rewritten as a script | — | — |
 | 58b | — | `design58/classification` | — | — | folded into 58c's runbook | — | — |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
