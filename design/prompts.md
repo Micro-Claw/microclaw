@@ -7234,3 +7234,62 @@ single one. The standalone hook log matched the live log record for record in bo
 rounds — the comparison 43h round 3 lost when a standalone run overwrote the live
 logs, preserved here by `_next_available_log_path`. And a passing gate stayed a
 place to look: round 1 passed six steps and the seventh was worthless.
+
+## Block 9a — the ilastik adapter, merged 2026-08-26
+
+Nine defects across three rounds, and **the coordinator wrote four of them**.
+That ratio is the note worth keeping.
+
+**Rejecting the right half.** Round 1 shipped two adapter faces; I called the
+saved-hook one dead code and had it deleted. It *was* dead as written, and the
+right conclusion was "we built the wrong shape", not "delete the half that is the
+block". That is what left only a built-in, which the operator then challenged as
+contrary to design/26's whole premise. The challenge was correct on the facts —
+`_load_saved_adapter` accepts a subprocess adapter whose lint warnings the user
+accepted at save time, so a generated adapter was never blocked — and the
+operator's own ruling resolved it the other way: a committed hook library is the
+destination, so the built-in stands. **Check whether a runner's contradiction is
+reporting a design problem before treating it as an implementation one.**
+
+**A fix that replaced a string that could lie with a field that lied
+differently.** I told round 1 to stop hard-coding `analyzer_version = "1.4.2"` and
+read it from the `.ilp`. The `.ilp` records the version it was *drawn* in, not the
+one that ran — true on my machine, false on any rig with a different ilastik
+installed. The rule the block earned: **a manifest must not state as fact a thing
+the run never checked.**
+
+**And a feature added to help broke a rig session six hours later.** Scale
+matching was correct reasoning — ilastik's feature scales are in pixels, so match
+the training pixel size — but it read ilastik's `resolution: 1` placeholder as a
+real micron, chose stride 9, and decimated a 324×312 field below the project's own
+feature scales. The operator's retrained project failed three times and the
+session diagnosed flaky I/O, because the real reason sat in captured output we
+discarded. **Two lessons: a default value is not a measurement, and a failure
+message that omits the tool's own words costs more than the bug.**
+
+**The deferred check guarded something other than what I argued.** I proposed
+reading `known_labels` to protect channel *ordering*, then deferred it because the
+existing count check already covered ordering. What it actually guards is channel
+*validity*: a class nobody drew exports an all-zero channel, so a ratio against it
+pins at **1.000** and reads as a confident result with nothing in the artifact
+looking wrong. **When you defer a check, you are also deferring the cases you have
+not thought of.**
+
+**Writing the runbook by running it caught six steps that would not have run** —
+a bash heredoc in a PowerShell block, a hard-coded path beside a variable the
+operator sets, an `axis_selection` form that raises `TypeError`, a Step 4
+expectation contradicted by Step 1's own instruction, and in round 2 an R3 whose
+natural reading trips R4's refusal and produces no manifest to score. Two more
+survived into the operator's hands: Setup asserts a hash for a file the *operator*
+supplies, and the hash quoted was of a copy that had since been re-saved.
+**Do not assert a digest for an artifact you do not distribute — report it.**
+
+**What the gates bought that no suite could.** The demo rounds measured the
+agent-facing surface, which is where every one of this block's usability defects
+lived: four calls to discover that adapter arguments go in `parameters`, and a
+refusal that overturned a *biological* explanation the agent had already committed
+to. M5 measured the rest: the whole chain on a real sample, and a domain shift
+that turned out to be real — the M2-trained classifier assigns twice as much
+*healthy* as *apoptotic* probability to a field the operator called apoptotic.
+**The coverage gate I suspected of being mis-set was reporting that honestly**, and
+scoring the artifacts is what distinguished the two.
