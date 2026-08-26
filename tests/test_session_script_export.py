@@ -3064,8 +3064,15 @@ def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypat
     assert repaints, "the emitted script never repainted; an EMU rig needs this"
 
 
+@pytest.mark.parametrize(
+    ("tool", "shape"),
+    [
+        ("run_timelapse", {"n_frames": 3, "interval_s": 1}),
+        ("run_zstack", {"z_start_um": 0, "z_end_um": 2, "z_step_um": 1}),
+    ],
+)
 def test_emitted_plan_only_run_actually_dispatches_writes_and_restores(
-    tmp_path
+    tool, shape, tmp_path
 ):
     plan = [
         {"hook_event_index": index, "actions": [{
@@ -3074,8 +3081,8 @@ def test_emitted_plan_only_run_actually_dispatches_writes_and_restores(
         for index, target in enumerate((1000, 3500, 6000))
     ]
     records = completed_call(
-        "run_timelapse", {
-            "n_frames": 3, "interval_s": 1, "save_dir": "session",
+        tool, {
+            **shape, "save_dir": "session",
             "name": "sweep",
             "named_stage_envelope": {
                 "device": "TITIRF", "min_um": 0, "max_um": 7000,
@@ -3083,7 +3090,7 @@ def test_emitted_plan_only_run_actually_dispatches_writes_and_restores(
             },
             "hook_action_plan": plan,
         },
-        {"status": "Timelapse complete.",
+        {"status": "Acquisition complete.",
          "log_path": "session/sweep_plan_log.jsonl"},
     )
     _, result, source = export(tmp_path, records)
@@ -3115,8 +3122,10 @@ def test_emitted_plan_only_run_actually_dispatches_writes_and_restores(
                 self._hooks["pre_hardware_hook_fn"](event)
 
     def fake_events(**kwargs):
-        return [{"axes": {"time": i}}
-                for i in range(kwargs["num_time_points"])]
+        if "num_time_points" in kwargs:
+            return [{"axes": {"time": i}}
+                    for i in range(kwargs["num_time_points"])]
+        return [{"axes": {"z": i}, "z": i} for i in range(3)]
 
     runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
     exec(compile(runnable, "routine.py", "exec"), {
@@ -3131,13 +3140,26 @@ def test_emitted_plan_only_run_actually_dispatches_writes_and_restores(
     assert (tmp_path / "sweep_plan_log.jsonl").exists()
 
 
-def test_hookless_timelapse_still_uses_plain_emitter(tmp_path):
-    _, result, source = export(tmp_path, [call("run_timelapse", {
-        "n_frames": 2, "interval_s": 1, "save_dir": "session",
+@pytest.mark.parametrize(
+    ("tool", "shape"),
+    [
+        ("run_timelapse", {"n_frames": 2, "interval_s": 1}),
+        ("run_zstack", {"z_start_um": 0, "z_end_um": 1, "z_step_um": 1}),
+    ],
+)
+def test_hookless_fixed_run_still_uses_plain_emitter(tool, shape, tmp_path):
+    _, result, source = export(tmp_path, [call(tool, {
+        **shape, "save_dir": "session",
     })])
     assert result["emitted_calls"] == 1
     assert "UntrustedHookAdapter" not in source
     assert "with Acquisition(directory=" in source
+
+
+def test_portable_log_path_source_is_the_live_function_source():
+    assert tools._portable_log_path_source() == inspect.getsource(
+        tools._next_available_log_path
+    )
 
 def test_emitted_adaptive_run_executes_decision_loop_and_pre_hardware_move(tmp_path, monkeypatch):
     """The export carries the rule, not a trace, and runs in engine order."""

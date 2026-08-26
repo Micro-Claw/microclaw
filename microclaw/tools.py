@@ -920,8 +920,7 @@ guard = _RecordedSafetyGuard()
 '''
 
 
-def _portable_log_path_source() -> str:
-    return '''def _next_available_log_path(path):
+def _next_available_log_path(path: Path) -> str:
     """Keep every standalone run log beside this script without collisions."""
     if not path.exists():
         return str(path)
@@ -929,7 +928,10 @@ def _portable_log_path_source() -> str:
         candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
         if not candidate.exists():
             return str(candidate)
-'''
+
+
+def _portable_log_path_source() -> str:
+    return inspect.getsource(_next_available_log_path)
 
 
 def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
@@ -5672,12 +5674,8 @@ def _prepare_log_path(guard: SafetyGuard, log_path: str | None, *,
         return None
     log_path = guard.resolve_in_workspace(log_path)
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-    if defaulted and Path(log_path).exists():
-        path = Path(log_path)
-        for number in itertools.count(2):
-            candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
-            if not candidate.exists():
-                return str(candidate)
+    if defaulted:
+        return _next_available_log_path(Path(log_path))
     return log_path
 
 

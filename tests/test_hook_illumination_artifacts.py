@@ -232,16 +232,17 @@ def test_empty_unattached_envelope_is_present(capability, monkeypatch, tmp_path)
 
 
 @pytest.mark.parametrize(
+    # A fixed plan now builds its own coordinator, so it cannot reach the
+    # no-coordinator refusal this matrix exercises.
     "capability", [name for name in HOOK_CAPABILITY_ARGS if name != "hook_action_plan"]
 )
 def test_every_hook_capability_refuses_without_hook_before_exposure(
     capability, monkeypatch, tmp_path
 ):
-    value = [] if capability == "hook_action_plan" else {}
     ctrl = MagicMock()
     with pytest.raises(ValueError, match="neither a hook nor a hook_action_plan"):
         _unattached_run(
-            monkeypatch, tmp_path, "timelapse", ctrl, **{capability: value}
+            monkeypatch, tmp_path, "timelapse", ctrl, **{capability: {}}
         )
     ctrl.core.set_exposure.assert_not_called()
 
