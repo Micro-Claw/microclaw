@@ -81,7 +81,7 @@ public/ZIP:    GitHub public API main HEAD   -> commit -> archive for that SHA
 
 The public provider is present in v1 even while it returns 404 for a private
 repository. It queries only the compiled-in repository
-`zacsimile/microclaw` and branch `main`, follows no URL supplied by the browser,
+`Micro-Claw/microclaw` and branch `main`, follows no URL supplied by the browser,
 and downloads a GitHub archive pinned to the returned full SHA—not a mutable
 `main.zip`. This requires neither Git nor a GitHub account, so a user who starts
 from `Code -> Download ZIP` begins updating automatically as soon as the repo is
@@ -121,10 +121,14 @@ immutable repository ID still matches. Persist that verified canonical name in
 fetches may follow GitHub's normal Git redirect, but discovery likewise verifies
 the fetched source against the recorded repository identity before staging.
 
-Moving `zacsimile/microclaw` into a Micro-Claw organization before shipping is
-still the simpler operational choice, but it is not a blocker. Verification by
-immutable identity is what makes requirement 3 survive either order; trusting
-the old owner/name alone would be unsafe if that namespace were later reused.
+The repository moved to the Micro-Claw organization on 2026-08-26, before any
+of this shipped, so the compiled-in identity above is correct from v1 and no
+production install ever has to follow the rename redirect. Its immutable
+repository ID is **1238975695**, unchanged by the transfer and verified after
+it; that is the value the bootstrap installer records. Keep the redirect
+handling anyway — verification by immutable identity is what makes requirement
+3 survive a later move, and trusting the owner/name alone would be unsafe if
+the old `zacsimile/microclaw` namespace were reused.
 
 Versioned, signed release metadata remains a later production channel. It can
 select less-frequent updates without changing the slot, banner, restart, or
