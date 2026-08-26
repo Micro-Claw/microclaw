@@ -267,6 +267,83 @@ answer, and this is the measurement that it was the right one.
 
 One three-frame sweep on M2 or M5. Nothing on the demo machine.
 
+## Part B result - 2026-08-26, M2 (`block55b-2026-08-26-m2`)
+
+**PASS on every criterion, and an unplanned hardware fault produced the best
+result in the block. THE GATE IS COMPLETE.**
+
+`TIRF Stage`, three frames 100 um apart from P = -0.1, 2 s interval, 50 ms,
+restore to entry. **No hook was written.**
+
+**`achieved_um` is a measurement, and on a real motor it is never the requested
+value:**
+
+| frame | requested | measured | error |
+|---|---|---|---|
+| 0 | -0.1 | **-0.2** | -0.1 |
+| 1 | 99.9 | **99.7** | -0.2 |
+| 2 | 198.8 | **198.8** | 0.0 |
+| restore | -0.2 (entry) | -0.1 | +0.1 |
+
+Every `Aux Z` move on the demo machine reported `error_um: 0.0` exactly, because
+a simulated stage arrives instantly and perfectly. **This table is the limb no
+demo run could ever supply**, and it is why Part B exists.
+
+### The unplanned result: a move that did not arrive, refused
+
+The first attempt asked for **199.9** and the stage stopped at **198.8 after
+10.109 s, reporting `idle`** - 1.1 um short, outside the 0.5 um tolerance. The
+run refused rather than reporting success:
+
+```
+named-stage move failed: Stage move did not reach target within tolerance:
+requested 199.9 um, measured 198.8 um after 10.109 s (idle).
+frames_exposed: 2
+last_hardware_state: {"device": "TIRF Stage", "position_um": -0.1}
+```
+
+**That is `CLAUDE.md`'s fourth contract firing on real hardware, inside a hook,
+by accident**: *a device that is not busy is not a device that arrived.* The
+stage went **idle** 1.1 um short and block 56's settle loop declined to call it
+success. The partial dataset was reported as partial, the axis was restored, and
+the hint told the session not to treat the run as untouched - which it obeyed,
+reading the position back rather than assuming.
+
+The envelope's contains-the-restoration-target rule then fired for a real
+physical reason rather than a pedantic one: entry was now **-0.2**, where the
+stage actually sat after the failure, below the **-0.1** floor. Widening the
+floor to -0.5 was the correct fix and the session found it unaided.
+
+### Two findings, neither of them this block's
+
+**1. The stage-move tolerance is a package constant with no configuration path,
+and on M2 that silently changed the experiment.** `STAGE_MOVE_TOLERANCE_UM = 0.5`
+in `microclaw/controller.py` is not settable from the safety config, not a tool
+argument, and not a rig-profile field. The operator asked for 199.9 um; the only
+way to complete the sweep was to retarget **198.8** - the position the stage
+happens to land at. **A fixed micron tolerance is a rig fact living in
+`microclaw/`**, which `CLAUDE.md` forbids, and it is per-device physics: it
+belongs beside `min_um`/`max_um` in the `named_stages` entry. Filed for the
+register; this is block 56's mechanism, not 55b's, and it needs its own design
+decision rather than a number changed here.
+
+The session handled it honestly under pressure: told it did have the knob, it
+checked `list_device_properties`, found none, and said so - *"I misspoke by first
+denying it existed and then can't produce it when I look"* - then read
+`tolerance_um: 0.5` out of the log to name the exact limit.
+
+**2. `55-frame-means.py` is only meaningful on a noiseless simulator.** M2's
+three frames read 236.823 / 236.416 / 236.978 - a spread of 0.56 on means of
+~237, which is camera noise, not an optical response. **On a real camera the
+script will always print `FRAMES DIFFER`**, so its verdict is evidence only where
+identical frames are physically possible. M2 is not in TIRF mode, so no optical
+change was expected and none is claimed - the same position `design/52-block52a`
+took about its own sweep.
+
+### The gate is closed
+
+Part A: thirteen steps, all PASS, four rounds. Part B: PASS. Nothing owed.
+
 ## What this gate settles
 
 55a made an unattached plan refuse. It also, by design, left the capability
