@@ -1237,7 +1237,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | Block | Depends on | Branch | Start commit | Implementation | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
-| 58a | — | `design58/discovery` | `4103d36` | `84d49cb` + pin fix `9c087e2`; codex, **4 rounds, 13 findings** | **FAILED** demo round 1, 2026-08-26 — a real defect (B13) plus three coordinator runbook defects; gate rewritten as a script | — | — |
+| 58a | — | `design58/discovery` | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`; codex, **4 rounds, 13 findings** | round 1 **FAILED** 2026-08-26 (B13 + three runbook defects, all fixed); **round 2 awaiting** — run `design\58-block58a-demo-gate.ps1` | — | — |
 | 58b | — | `design58/classification` | — | — | folded into 58c's runbook | — | — |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
@@ -1253,11 +1253,12 @@ Everything needed is on `main`.
 
 State as of 2026-08-26:
 
-- **58a is implemented and pushed, awaiting its demo gate.** Branch
-  `design58/discovery` from `main` at `4103d36`; implementation `84d49cb`,
-  runbook pin fix `9c087e2`. Suite on the branch, coordinator-measured: **2216
-  passed / 99 skipped / 3 warnings** (macOS), against the 2182 baseline — 34 new
-  tests. Everything else is open and nothing has merged.
+- **58a is implemented and pushed, awaiting demo gate round 2.** Branch
+  `design58/discovery` from `main` at `4103d36`; tip `b2f1e58`. Suite on the
+  branch, coordinator-measured: **2220 passed / 99 skipped / 3 warnings**
+  (macOS), against the 2182 baseline — 38 new tests. **Round 1 failed and its
+  findings are the section above**; do not read a green suite as readiness, and
+  do not repoint the demo machine's remote. Everything else is open and nothing has merged.
 - **Three review rounds, twelve findings.** Two are worth carrying: the runbook
   shipped in a state where it **could not pass** (it took the installed commit
   from the block branch's own HEAD, which is never an ancestor of `origin/main`,
