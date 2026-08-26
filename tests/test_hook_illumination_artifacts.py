@@ -595,6 +595,31 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
     assert not any(record.get("event") == "hook_failure" for record in records)
 
 
+def test_schema_states_the_three_rules_the_rig_kept_rediscovering(): 
+    """Every constraint refused at plan time must be findable before the call.
+
+    Three demo sessions in a row spent one call each rediscovering the same
+    three rules -- nonzero interval_s for a per-frame plan, a write budget of
+    plan-length-plus-one when restoring, and an envelope that contains the
+    restoration target. All three are statically knowable, and a caller reads
+    the PARAMETER description while filling that parameter in, not the tool's
+    prose. `CLAUDE.md`: a feature that needs a paragraph of explanation before
+    it can be called is a design problem.
+    """
+    from microclaw.tools_schema import TOOLS
+    timelapse = next(t for t in TOOLS if t["name"] == "run_timelapse")
+    props = timelapse["input_schema"]["properties"]
+    assert "nonzero" in props["interval_s"]["description"]
+    assert "hook_action_plan" in props["interval_s"]["description"]
+    plan = props["hook_action_plan"]["description"]
+    assert "interval_s" in plan and "no hook_strategy" in plan
+    for tool_name in ("run_timelapse", "run_zstack"):
+        tool = next(t for t in TOOLS if t["name"] == tool_name)
+        envelope = tool["input_schema"]["properties"]["named_stage_envelope"]
+        assert "restoration write" in envelope["description"]
+        assert "restoration target" in envelope["description"]
+
+
 def test_plan_only_default_logs_do_not_collide(monkeypatch, tmp_path):
     guard = SafetyGuard(SafetyConstraints())
     monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)

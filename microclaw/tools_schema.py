@@ -21,7 +21,15 @@ _HOOK_ILLUMINATION_ENVELOPE_SCHEMA = {
 
 _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA = {
     "type": "object",
-    "description": "One labelled stage, inclusive interval, attempted-write budget, and explicit restoration policy for a saved fixed-run hook.",
+    "description": (
+        "One labelled stage, inclusive interval, attempted-write budget, and "
+        "explicit restoration policy. Two rules callers get wrong, both refused "
+        "before the run starts: max_writes must cover every planned move PLUS "
+        "one reserved restoration write unless restore is 'leave' -- three "
+        "planned moves restoring to entry needs 4, not 3. And min_um/max_um "
+        "must contain every planned position AND the restoration target, so a "
+        "sweep of 40-140 that restores to 20 needs an interval starting at 20."
+    ),
     "properties": {
         "device": {"type": "string", "minLength": 1},
         "min_um": {"type": "number"}, "max_um": {"type": "number"},
@@ -38,7 +46,13 @@ _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA = {
 
 _HOOK_PROPERTY_ENVELOPE_SCHEMA = {
     "type": "object",
-    "description": "One exact device/property, categorical values or numeric interval, attempted-write budget, and explicit restoration policy.",
+    "description": (
+        "One exact device/property, categorical values or numeric interval, "
+        "attempted-write budget, and explicit restoration policy. max_writes "
+        "must cover every planned write PLUS one reserved restoration write "
+        "unless restore is 'leave', and the allowed values or interval must "
+        "contain the restoration target as well as every planned value."
+    ),
     "properties": {
         "device": {"type": "string", "minLength": 1},
         "property": {"type": "string", "minLength": 1},
@@ -64,7 +78,12 @@ _HOOK_ACTION_PLAN_SCHEMA = {
         "Exactly one indexed action list for every generated fixed-run event; "
         "empty action lists are explicit. Each action is a discriminated object, "
         "using exactly {'kind': 'MoveNamedStage', 'position_um': 12.5} or "
-        "{'kind': 'SetDeviceProperty', 'value': 'On'}."
+        "{'kind': 'SetDeviceProperty', 'value': 'On'}. Needs no hook_strategy -- "
+        "a fixed plan carries itself -- but does need named_stage_envelope or "
+        "property_envelope to authorize it, and on run_timelapse a NONZERO "
+        "interval_s: interval_s=0 lets the engine hardware-sequence the time "
+        "axis and a sequenced burst runs no software between exposures, so a "
+        "per-frame plan cannot be honoured."
     ),
     "items": {"type": "object", "properties": {
         "hook_event_index": {"type": "integer", "minimum": 0},
@@ -636,7 +655,12 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "n_frames": {"type": "integer", "description": "Number of frames."},
-                "interval_s": {"type": "number", "description": "Interval between frames in seconds."},
+                "interval_s": {"type": "number", "description": (
+                    "Interval between frames in seconds. Must be nonzero when "
+                    "hook_action_plan is set -- 0 lets the engine "
+                    "hardware-sequence the time axis, which leaves no software "
+                    "between exposures for a per-frame action."
+                )},
                 "channel": {"type": "string", "description": "Channel preset (optional)."},
                 "exposure_ms": {"type": "number", "description": "Exposure in ms (optional)."},
                 "save_dir": {"type": "string"},
