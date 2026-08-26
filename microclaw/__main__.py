@@ -409,6 +409,10 @@ def main():
             "must carry `reviewed: true`."
         ),
     )
+    parser.add_argument(
+        "--no-update-check", action="store_true",
+        help="Skip this launch's managed-install update check.",
+    )
     parser.add_argument("--port", type=int, default=4827)
     parser.add_argument(
         "--setup-write-security-config", action="store_true",
