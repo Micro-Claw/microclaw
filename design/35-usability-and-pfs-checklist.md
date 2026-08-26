@@ -20,10 +20,14 @@ either disagrees with a *design*, stop and reconcile the design first.
 > **`design/56` is closed** — 56a and 56b merged 2026-08-23 (`8ed1a90`),
 > **with rig evidence owed**; its own doc's "Owed rig evidence" section is
 > authoritative for what is unverified. **`design/57` is closed** — 57a merged
-> 2026-08-24 (`bfbe202`), demo-gated over two rounds. Beyond it, what is next is a
-> choice, not a continuation — Track C is parked on an `.ilp`
-> that does not exist, design/54 is awaiting a Nikon gate, design/55 is written
-> and not started, and the rest of the open register is unscheduled. **Track A, Track B, Track D, Track E and
+> 2026-08-24 (`bfbe202`), demo-gated over two rounds. **Track C's feature work is
+> done**: block 9a merged 2026-08-26 (`4a750aa`) after demo, M5 and demo rounds,
+> and **block 9b is CLOSED as not needed** — its verdict premise was struck by
+> operator ruling. Block 10 is conditional by design and block 11 takes 9a's
+> fixtures. Beyond that, what is next is a choice, not a continuation — design/54
+> is awaiting a Nikon gate, design/55 is written and not started, and the rest of
+> the open register is unscheduled, including **one row added 2026-08-26: a
+> batched analyzer cannot batch a survey stored as one dataset per position**. **Track A, Track B, Track D, Track E and
 > Track F are all closed** — verified 2026-08-19 against the run ledger, which
 > carries a merge commit for every one of their blocks.
 >
@@ -406,7 +410,7 @@ and the only branches on `origin` besides `main` are
   second merges `main` first**. Eight blocks remain after them: 43c, 43e, 43f,
   43g, 43h, 43i, 43j, 43k.
 
-### State at the 2026-08-24 close of design/57 — read this before assigning anything
+### State at the 2026-08-24 close of design/57 — SUPERSEDED by the 2026-08-26 note below
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
@@ -438,8 +442,37 @@ acquisition. Unscheduled.
 M2 and M5 cannot run them.
 
 **What is next is a choice, not a continuation.** `design/55` is written and
-unstarted, Track C is parked on an `.ilp` that does not exist, design/54 awaits a
-Nikon gate, and the rest of the open register is unscheduled.
+unstarted, ~~Track C is parked on an `.ilp` that does not exist~~ — **Track C's
+`.ilp` arrived 2026-08-24 and its feature work is now done; see the 2026-08-26
+note below** — design/54 awaits a Nikon gate, and the rest of the open register is
+unscheduled.
+
+### State at the 2026-08-26 close of block 9a — read this before assigning anything
+
+**Track C's feature work is done.** Block 9a merged (`4a750aa`) — the ilastik
+completed-survey adapter, gated on the demo machine twice and on M5 with a real
+sample, where the whole chain ran: survey, score, `mark_position`, multiposition
+acquisition, nine apoptotic fields imaged. Suite 2135 + 99 on `main`.
+
+**Block 9b is CLOSED as not needed, unstarted.** Its purpose was struck first —
+whether ilastik beats the classical floor is a research question about ilastik,
+not a product question about Microclaw, because **the microscopist owns the tool
+choice** (operator ruling 2026-08-25). design/26 F5 is corrected in place; do not
+re-propose the framing where Microclaw decides when ilastik is warranted.
+
+**Block 10 depends on 9a alone and is conditional by design. Block 11 takes 9a's
+committed fixtures.**
+
+**One row was added to the carried-forward register and deliberately not opened**
+(operator, 2026-08-26): a batched analyzer cannot batch a survey stored as one
+dataset per position, and `run_tile_acquisition(protocol="timelapse")` writes one
+per position — on Windows that is ~17 minutes against ~90 s, because ilastik's
+start-up is **60–90 s there against 5–7 s on macOS**. It wants a fresh session.
+
+**The most reusable thing block 9a measured is in design/26 F5**: a `.ilp` travels
+as a file and not necessarily as a classifier. A project drawn on M2 applied to M5
+gave twice as much probability to the wrong class, and nothing in the file or the
+probability map announces it.
 
 ### State at the 2026-08-24 assignment of design/57 block 57a — SUPERSEDED, kept for the round history
 
