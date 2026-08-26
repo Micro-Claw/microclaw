@@ -23,6 +23,11 @@ from microclaw.controller import (
     StageMoveError, settle_stage_move, stage_move_dispatch_failure,
 )
 
+#: Payload for a run whose hardware program is fully specified by
+#: hook_action_plan. It analyses nothing; the adapter's image_process_fn
+#: already no-ops on a payload with no analyze_frame.
+PLAN_ONLY = object()
+
 
 @dataclass(frozen=True)
 class MoveStage:

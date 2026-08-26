@@ -566,7 +566,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_zstack",
         "description": (
-            "Run a fixed Z-stack, plain or with an optional hook. A hook may adapt "
+            "Run a fixed Z-stack, plain or with an optional hook. A fixed "
+            "hook_action_plan needs no hook_strategy. A hook may adapt "
             "settings between planes, or measure every plane without changing the "
             "acquisition; for observation use snr_observer and call read_hook_log "
             "afterwards. Hooks cannot skip planes or stop early; use "
@@ -616,7 +617,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_timelapse",
         "description": (
-            "Run a fixed timelapse, plain or with an optional hook. A hook may adapt "
+            "Run a fixed timelapse, plain or with an optional hook. A fixed "
+            "hook_action_plan needs no hook_strategy, and a per-frame plan requires "
+            "a nonzero interval_s. A hook may adapt "
             "settings between frames, or measure every frame without changing the "
             "acquisition; for observation use snr_observer and call read_hook_log "
             "afterwards. Hooks cannot skip frames or stop early; use "
