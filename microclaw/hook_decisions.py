@@ -1238,7 +1238,7 @@ class UntrustedHookAdapter:
                 returned = None if discard else (image, metadata)
                 if discard:
                     self._record(metadata, event="legacy_hook_frame", outcome="discarded")
-            else:
+            elif hasattr(self.hook, "image_process_fn"):
                 returned = self.hook.image_process_fn(
                     image, metadata, DeniedEventQueue()
                 )
@@ -1246,6 +1246,11 @@ class UntrustedHookAdapter:
                     metadata, event="legacy_hook_frame",
                     outcome="discarded" if returned is None else "retained",
                 )
+            else:
+                # A fixed hook_action_plan is dispatched before exposure and
+                # needs no image analysis. Keep the frame and add no misleading
+                # legacy-hook record; the hook_action entries are its audit trail.
+                returned = image, metadata
             if self._context is not None:
                 self._context["progress"].image_done()
             return returned

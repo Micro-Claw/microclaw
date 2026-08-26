@@ -3334,6 +3334,7 @@ def run_zstack(
         result.update(_adaptive_result(
             dataset_path, log_path, status="Z-stack complete.",
             frames_planned=len(events), frames_acquired=len(events),
+            frames_exposed=len(events),
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
             duration_s=round(time.monotonic() - started, 6),
@@ -3529,6 +3530,7 @@ def run_timelapse(
         result.update(_adaptive_result(
             dataset_path, log_path, status="Timelapse complete.",
             frames_planned=len(events), frames_acquired=len(events),
+            frames_exposed=len(events),
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
             duration_s=round(time.monotonic() - started, 6),

@@ -3112,14 +3112,23 @@ def test_emitted_plan_only_run_actually_dispatches_writes_and_restores(
         def set_exposure(self, _value): pass
 
     class FakeAcquisition:
+        instance = None
+
         def __init__(self, **kwargs):
+            FakeAcquisition.instance = self
             self._hooks = kwargs
+            self.retained = []
             self._dataset_disk_location = str(tmp_path / "dataset")
         def __enter__(self): return self
         def __exit__(self, *_args): return False
         def acquire(self, events):
             for event in events:
                 self._hooks["pre_hardware_hook_fn"](event)
+                returned = self._hooks["image_process_fn"](
+                    np.array([[1]], dtype=np.uint16),
+                    {"Axes": dict(event.get("axes", {}))}, None,
+                )
+                self.retained.append(returned)
 
     def fake_events(**kwargs):
         if "num_time_points" in kwargs:
@@ -3137,6 +3146,8 @@ def test_emitted_plan_only_run_actually_dispatches_writes_and_restores(
         ("TITIRF", 1000.0), ("TITIRF", 3500.0),
         ("TITIRF", 6000.0), ("TITIRF", 500.0),
     ]
+    assert len(FakeAcquisition.instance.retained) == 3
+    assert all(returned is not None for returned in FakeAcquisition.instance.retained)
     assert (tmp_path / "sweep_plan_log.jsonl").exists()
 
 

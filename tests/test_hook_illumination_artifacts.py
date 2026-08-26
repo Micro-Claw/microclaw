@@ -531,15 +531,24 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
     monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
 
     class DrivingAcquisition:
+        instance = None
+
         def __init__(self, **kwargs):
+            DrivingAcquisition.instance = self
             self.callbacks = kwargs
             self.events = None
+            self.retained = []
             self._dataset_disk_location = str(tmp_path / "dataset")
         def __enter__(self): return self
         def acquire(self, events): self.events = events
         def __exit__(self, *_exc):
             for event in self.events:
                 self.callbacks["pre_hardware_hook_fn"](event)
+                returned = self.callbacks["image_process_fn"](
+                    np.array([[1]], dtype=np.uint16),
+                    {"Axes": dict(event.get("axes", {}))}, None,
+                )
+                self.retained.append(returned)
             return False
 
     monkeypatch.setattr(tools, "Acquisition", DrivingAcquisition)
@@ -573,6 +582,9 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
         ("TITIRF", 6000.0), ("TITIRF", 500.0),
     ]
     assert result["named_stage_restoration"]["restored"] is True
+    assert result["frames_exposed"] == 3
+    assert len(DrivingAcquisition.instance.retained) == 3
+    assert all(returned is not None for returned in DrivingAcquisition.instance.retained)
     log_path = Path(result["log_path"])
     assert log_path.name == "sweep_plan_log.jsonl"
     records = __import__("json").loads(log_path.read_text(encoding="utf-8"))
@@ -580,6 +592,7 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
                 if record.get("decision") == "accepted" and not record.get("restoration")]
     assert [record["achieved_um"] for record in accepted] == [1000.0, 3500.0, 6000.0]
     assert records[-1]["restoration"] is True
+    assert not any(record.get("event") == "hook_failure" for record in records)
 
 
 def test_plan_only_default_logs_do_not_collide(monkeypatch, tmp_path):
