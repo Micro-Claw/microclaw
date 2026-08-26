@@ -1,0 +1,595 @@
+"""Managed-install update provenance, discovery, and source materialization.
+
+This module deliberately has no connection to the agent tool surface.  It is a
+Windows launcher/UI facility whose only authority is the managed install's
+``update-state.json`` and the marker beside the running interpreter.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import random
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable
+
+from microclaw.paths import user_data_dir
+
+REPO_ID = 1238975695
+REPO = "Micro-Claw/microclaw"
+BRANCH = "main"
+
+STATE_NAME = "update-state.json"
+SLOT_NAME = "microclaw-slot.json"
+STAGED_SOURCE_NAME = "microclaw-staged-source.json"
+CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+CHECK_JITTER_SECONDS = 60 * 60
+GIT_TIMEOUT_SECONDS = 15
+HTTP_TIMEOUT_SECONDS = 8
+MAX_REDIRECTS = 3
+MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+MAX_EXTRACTED_BYTES = 256 * 1024 * 1024
+GITHUB_HOSTS = frozenset({"api.github.com", "codeload.github.com", "github.com"})
+_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+class UpdateError(Exception):
+    """An update source was unavailable or failed validation."""
+
+
+@dataclass(frozen=True)
+class Candidate:
+    sha: str
+    subject: str
+    source: str
+    canonical_repo: str = REPO
+    warning: str | None = None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _default_opener(request: urllib.request.Request, timeout: float):
+    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
+
+
+URLopener = Callable[[urllib.request.Request, float], Any]
+
+
+def state_path() -> Path:
+    return user_data_dir() / STATE_NAME
+
+
+def load_state(path: str | Path | None = None) -> dict[str, Any] | None:
+    target = Path(path) if path is not None else state_path()
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise UpdateError(f"invalid update state: {exc}") from exc
+    if not isinstance(value, dict):
+        raise UpdateError("invalid update state: expected an object")
+    return value
+
+
+def write_state(state: dict[str, Any], path: str | Path | None = None) -> Path:
+    """Atomically replace shared update state."""
+    target = Path(path) if path is not None else state_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(state, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def locate_git(*, path: str | None = None, local_app_data: str | Path | None = None) -> str:
+    """Find and validate Git on PATH, then in installed GitHub Desktop apps."""
+    candidates: list[Path] = []
+    found = shutil.which("git", path=path)
+    if found:
+        candidates.append(Path(found))
+    base = Path(local_app_data) if local_app_data else Path(
+        os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+    )
+    desktop = base / "GitHubDesktop"
+    if desktop.is_dir():
+        candidates.extend(sorted(
+            desktop.glob("app-*/resources/app/git/cmd/git.exe"), reverse=True
+        ))
+    for candidate in candidates:
+        try:
+            result = subprocess.run(
+                [str(candidate), "--version"], capture_output=True, text=True,
+                timeout=GIT_TIMEOUT_SECONDS, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0 and result.stdout.startswith("git version "):
+            return str(candidate.resolve())
+    raise UpdateError("Git was not found on PATH or in GitHub Desktop.")
+
+
+def clone_provenance(
+    clone: str | Path, installed_commit: str, *, git_executable: str | None = None,
+) -> dict[str, Any]:
+    """Build the installer record without using checkout state as update policy."""
+    git = git_executable or locate_git()
+    root = Path(clone).resolve()
+
+    def query(*args: str, allowed=(0,)) -> str:
+        result = subprocess.run(
+            [git, "-C", str(root), *args], capture_output=True, text=True,
+            timeout=GIT_TIMEOUT_SECONDS, check=False,
+        )
+        if result.returncode not in allowed:
+            raise UpdateError((result.stderr or result.stdout).strip() or "git failed")
+        return result.stdout.strip()
+
+    branch = query("symbolic-ref", "--quiet", "--short", "HEAD", allowed=(0, 1)) or None
+    upstream = None
+    if branch:
+        upstream = query(
+            "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}",
+            allowed=(0, 128),
+        ) or None
+    remote = query("config", "--get", f"branch.{BRANCH}.remote", allowed=(0, 1)) or "origin"
+    remote_url = query("remote", "get-url", remote)
+    remote_identity = _normalize_remote_url(remote_url, root)
+    clone_repository_note = None
+    if remote_identity.startswith("github:") and remote_identity != f"github:{REPO.casefold()}":
+        recorded_name = remote_identity.removeprefix("github:")
+        clone_repository_note = (
+            f"This clone tracks {recorded_name}, which GitHub may redirect to {REPO}. "
+            "Private Git transport does not expose the immutable repository id, so "
+            "this name redirect is recorded but not numerically verified."
+        )
+    return {
+        "provenance": "clone",
+        "clone_path": str(root),
+        "repo_id": REPO_ID,
+        "repo": REPO,
+        "canonical_repo": REPO,
+        "branch": branch,
+        "upstream": upstream,
+        "remote": remote,
+        "remote_url": remote_url,
+        "remote_identity": remote_identity,
+        "clone_repository_note": clone_repository_note,
+        "tracked_branch": BRANCH,
+        "git_executable": git,
+        "installed_commit": installed_commit,
+    }
+
+
+def public_provenance(installed_commit: str = "unknown") -> dict[str, Any]:
+    return {
+        "provenance": "public-head", "repo_id": REPO_ID, "repo": REPO,
+        "canonical_repo": REPO, "branch": BRANCH,
+        "installed_commit": installed_commit,
+    }
+
+
+def _git(state: dict[str, Any], *args: str, timeout: float = GIT_TIMEOUT_SECONDS):
+    git_executable = state.get("git_executable")
+    clone_path = state.get("clone_path")
+    if not isinstance(git_executable, str) or not git_executable:
+        raise UpdateError("clone provenance is missing git_executable")
+    if not isinstance(clone_path, str) or not clone_path:
+        raise UpdateError("clone provenance is missing clone_path")
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        return subprocess.run(
+            [git_executable, "-C", clone_path, *args],
+            capture_output=True, text=True, timeout=timeout, env=env, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise UpdateError(
+            "Git timed out. Open GitHub Desktop, Fetch origin, then Check again."
+        ) from exc
+
+
+def _normalize_remote_url(url: str, clone: str | Path | None = None) -> str:
+    """Canonicalize GitHub SSH/HTTPS names and exact filesystem remotes."""
+    value = url.strip().rstrip("/")
+    scp = re.fullmatch(r"git@github\.com:(.+)", value, re.IGNORECASE)
+    parsed = urllib.parse.urlparse(value)
+    if scp:
+        name = scp.group(1)
+    elif parsed.hostname and parsed.hostname.casefold() == "github.com":
+        name = parsed.path.lstrip("/")
+    else:
+        path = Path(urllib.request.url2pathname(parsed.path)) if parsed.scheme == "file" else Path(value)
+        if not path.is_absolute() and clone is not None:
+            path = Path(clone) / path
+        return f"file:{path.resolve()}"
+    if name.casefold().endswith(".git"):
+        name = name[:-4]
+    return f"github:{name.casefold()}"
+
+
+def _verify_clone_remote(state: dict[str, Any], remote: str, timeout: float) -> None:
+    result = _git(state, "remote", "get-url", remote, timeout=timeout)
+    if result.returncode != 0:
+        raise UpdateError(f"recorded remote {remote!r} no longer exists")
+    current = _normalize_remote_url(result.stdout, state.get("clone_path"))
+    recorded = state.get("remote_identity")
+    if isinstance(recorded, str):
+        if current != recorded:
+            raise UpdateError("recorded clone remote no longer matches repository identity")
+        return
+    expected = f"github:{str(state.get('repo') or REPO).casefold()}"
+    if current != expected:
+        raise UpdateError("recorded clone remote does not match repository identity")
+
+
+def _discovery_status(state: dict[str, Any], status: str, message: str) -> None:
+    state["discovery"] = {"status": status, "message": message}
+
+
+def discover_clone(state: dict[str, Any], *, timeout: float = GIT_TIMEOUT_SECONDS) -> Candidate | None:
+    """Fetch and compare the recorded remote's ``main`` without touching HEAD."""
+    remote = state.get("remote") or "origin"
+    _verify_clone_remote(state, remote, timeout)
+    remote_ref = f"refs/remotes/{remote}/{BRANCH}"
+    fetched = _git(state, "fetch", remote, BRANCH, timeout=timeout)
+    warning = None
+    if fetched.returncode != 0:
+        warning = "Open GitHub Desktop, Fetch origin, then Check again."
+    resolved = _git(state, "rev-parse", "--verify", remote_ref, timeout=timeout)
+    if resolved.returncode != 0:
+        if warning:
+            raise UpdateError(warning)
+        raise UpdateError((resolved.stderr or resolved.stdout).strip() or f"missing {remote_ref}")
+    sha = resolved.stdout.strip().lower()
+    if not _SHA.fullmatch(sha):
+        raise UpdateError("clone returned a malformed commit SHA")
+    installed = str(state.get("installed_commit", "unknown")).lower()
+    if installed != "unknown":
+        present = _git(state, "cat-file", "-e", f"{installed}^{{commit}}", timeout=timeout)
+        if present.returncode != 0:
+            _discovery_status(
+                state, "installed-commit-missing",
+                "The installed commit is missing from the recorded clone. "
+                "Open GitHub Desktop, Fetch origin, then Check again.",
+            )
+            return None
+        ancestor = _git(state, "merge-base", "--is-ancestor", installed, sha, timeout=timeout)
+        if ancestor.returncode == 1:
+            _discovery_status(
+                state, "diverged",
+                "The installed commit and the recorded clone's main history have diverged. "
+                "Resolve the clone in GitHub Desktop, then Check again.",
+            )
+            return None
+        if ancestor.returncode != 0:
+            raise UpdateError("could not compare installed and fetched clone history")
+        if installed == sha:
+            _discovery_status(state, "current", "The installed commit is current.")
+            return None
+    subject_result = _git(state, "show", "-s", "--format=%s", sha, timeout=timeout)
+    if subject_result.returncode != 0:
+        raise UpdateError("could not read fetched commit subject")
+    _discovery_status(state, "candidate", f"A newer main commit is available: {sha}.")
+    return Candidate(sha, subject_result.stdout.strip(), "clone", state.get("canonical_repo", REPO), warning)
+
+
+def _allowed_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in GITHUB_HOSTS:
+        raise UpdateError(f"redirect host is not allowlisted: {parsed.hostname or url}")
+
+
+def _open_manual(url: str, opener: URLopener, *, max_bytes: int) -> tuple[bytes, str]:
+    current = url
+    for redirects in range(MAX_REDIRECTS + 1):
+        _allowed_url(current)
+        request = urllib.request.Request(
+            current, headers={"Accept": "application/vnd.github+json", "User-Agent": "microclaw-updater"}
+        )
+        try:
+            response = opener(request, HTTP_TIMEOUT_SECONDS)
+        except urllib.error.HTTPError as exc:
+            if exc.code in {301, 302, 303, 307, 308}:
+                location = exc.headers.get("Location")
+                if not location:
+                    raise UpdateError("redirect had no Location") from exc
+                if redirects == MAX_REDIRECTS:
+                    raise UpdateError("too many redirects") from exc
+                current = urllib.parse.urljoin(current, location)
+                continue
+            if exc.code == 404:
+                raise UpdateError("repository is not public (404)") from exc
+            raise UpdateError(f"GitHub request failed: HTTP {exc.code}") from exc
+        except (OSError, TimeoutError) as exc:
+            raise UpdateError(f"GitHub request failed: {exc}") from exc
+        status = getattr(response, "status", response.getcode())
+        if status in {301, 302, 303, 307, 308}:
+            location = response.headers.get("Location")
+            response.close()
+            if not location:
+                raise UpdateError("redirect had no Location")
+            if redirects == MAX_REDIRECTS:
+                raise UpdateError("too many redirects")
+            current = urllib.parse.urljoin(current, location)
+            continue
+        if status != 200:
+            response.close()
+            if status == 404:
+                raise UpdateError("repository is not public (404)")
+            raise UpdateError(f"GitHub request failed: HTTP {status}")
+        chunks, total = [], 0
+        try:
+            while True:
+                chunk = response.read(min(64 * 1024, max_bytes + 1 - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise UpdateError("download exceeds size limit")
+                chunks.append(chunk)
+        finally:
+            response.close()
+        return b"".join(chunks), current
+    raise UpdateError("too many redirects")
+
+
+def _json_object(data: bytes, reason: str) -> dict[str, Any]:
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise UpdateError(reason) from exc
+    if not isinstance(value, dict):
+        raise UpdateError(reason)
+    return value
+
+
+def discover_public(
+    state: dict[str, Any], *, opener: URLopener = _default_opener,
+) -> Candidate | None:
+    """Discover public ``main`` and verify redirects by immutable repository id."""
+    repo = str(state.get("canonical_repo") or REPO)
+    api = f"https://api.github.com/repos/{repo}/commits/{BRANCH}"
+    data, final_url = _open_manual(api, opener, max_bytes=1024 * 1024)
+    final_parts = urllib.parse.urlparse(final_url).path.strip("/").split("/")
+    canonical = repo
+    if len(final_parts) >= 3 and final_parts[0] == "repos":
+        canonical = "/".join(final_parts[1:3])
+    if canonical != repo:
+        metadata, _ = _open_manual(
+            f"https://api.github.com/repos/{canonical}", opener, max_bytes=1024 * 1024
+        )
+        info = _json_object(metadata, "malformed repository metadata")
+        if info.get("id") != REPO_ID:
+            raise UpdateError("redirected repository id does not match")
+        full_name = info.get("full_name")
+        if not isinstance(full_name, str):
+            raise UpdateError("malformed repository metadata")
+        canonical = full_name
+        state["canonical_repo"] = canonical
+    body = _json_object(data, "malformed API body")
+    sha = body.get("sha")
+    if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+        raise UpdateError("API returned a non-40-hex sha")
+    installed = str(state.get("installed_commit", "unknown")).lower()
+    if installed == sha.lower():
+        return None
+    commit = body.get("commit")
+    message = commit.get("message") if isinstance(commit, dict) else None
+    if not isinstance(message, str):
+        raise UpdateError("malformed API body")
+    return Candidate(sha.lower(), message.splitlines()[0], "public-head", canonical)
+
+
+def _safe_extract_zip(data: bytes, destination: Path) -> None:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except (zipfile.BadZipFile, EOFError) as exc:
+        raise UpdateError("truncated or invalid archive") from exc
+    total = 0
+    with archive:
+        for member in archive.infolist():
+            path = PurePosixPath(member.filename)
+            mode = member.external_attr >> 16
+            if path.is_absolute() or ".." in path.parts:
+                raise UpdateError("archive contains an unsafe path")
+            kind = stat.S_IFMT(mode)
+            if stat.S_ISLNK(mode) or (kind not in {0, stat.S_IFREG, stat.S_IFDIR}):
+                raise UpdateError("archive contains a link or device entry")
+            target = destination.joinpath(*path.parts)
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with archive.open(member) as source, target.open("xb") as output:
+                    while True:
+                        chunk = source.read(64 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_EXTRACTED_BYTES:
+                            raise UpdateError("archive exceeds extracted size limit")
+                        output.write(chunk)
+            except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                raise UpdateError(f"archive extraction failed: {exc}") from exc
+
+
+def _flatten_archive_root(destination: Path) -> None:
+    children = list(destination.iterdir())
+    if len(children) == 1 and children[0].is_dir():
+        root = children[0]
+        for child in list(root.iterdir()):
+            child.replace(destination / child.name)
+        root.rmdir()
+
+
+def write_staged_source(destination: Path, sha: str) -> Path:
+    if not _SHA.fullmatch(sha):
+        raise UpdateError("staged source commit is not a full SHA")
+    marker = destination / STAGED_SOURCE_NAME
+    marker.write_text(json.dumps({"commit": sha.lower()}, sort_keys=True) + "\n", encoding="utf-8")
+    return marker
+
+
+def verify_staged_source(destination: str | Path, requested_sha: str) -> None:
+    try:
+        record = json.loads((Path(destination) / STAGED_SOURCE_NAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise UpdateError("staged source has no valid commit record") from exc
+    if record.get("commit") != requested_sha.lower():
+        raise UpdateError("staged source commit does not match requested SHA")
+
+
+def materialize_clone(
+    state: dict[str, Any], candidate: Candidate, destination: str | Path,
+) -> Path:
+    """Archive the fetched object itself; never use files from the worktree."""
+    dest = Path(destination)
+    dest.mkdir(parents=True, exist_ok=False)
+    archive_path = dest.parent / f".{dest.name}-{candidate.sha}.zip"
+    try:
+        result = _git(
+            state, "archive", "--format=zip", f"--output={archive_path}", candidate.sha
+        )
+        if result.returncode != 0:
+            raise UpdateError((result.stderr or result.stdout).strip() or "git archive failed")
+        data = archive_path.read_bytes()
+        if len(data) > MAX_DOWNLOAD_BYTES:
+            raise UpdateError("archive exceeds download size limit")
+        _safe_extract_zip(data, dest)
+        write_staged_source(dest, candidate.sha)
+        verify_staged_source(dest, candidate.sha)
+        return dest
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+
+def materialize_public(
+    state: dict[str, Any], candidate: Candidate, destination: str | Path,
+    *, opener: URLopener = _default_opener,
+) -> Path:
+    repo = candidate.canonical_repo
+    url = f"https://codeload.github.com/{repo}/zip/{candidate.sha}"
+    data, _ = _open_manual(url, opener, max_bytes=MAX_DOWNLOAD_BYTES)
+    dest = Path(destination)
+    dest.mkdir(parents=True, exist_ok=False)
+    try:
+        _safe_extract_zip(data, dest)
+        _flatten_archive_root(dest)
+        write_staged_source(dest, candidate.sha)
+        verify_staged_source(dest, candidate.sha)
+        return dest
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+
+
+def checks_enabled(no_update_check: bool = False) -> bool:
+    return not no_update_check and os.environ.get("MICROCLAW_UPDATE_CHECK") != "0"
+
+
+def check_for_update(
+    *, state_file: str | Path | None = None, no_update_check: bool = False,
+    opener: URLopener = _default_opener, now: float | None = None,
+    jitter: Callable[[float, float], float] = random.uniform,
+) -> Candidate | None:
+    """Run one due managed check, caching success or failure atomically."""
+    if sys.platform != "win32" or not checks_enabled(no_update_check):
+        return None
+    current = time.time() if now is None else now
+    path = Path(state_file) if state_file is not None else state_path()
+    try:
+        state = load_state(path)
+    except Exception:
+        # Provenance exists only in this file. If it cannot be read, preserving
+        # its bytes is the only chance of manual recovery; never replace it with
+        # a provenance-free error cache.
+        return None
+    if state is None:
+        return None
+    try:
+        last_attempt = state.get("last_attempt")
+        next_check = state.get("next_check")
+        if isinstance(last_attempt, (int, float)) and isinstance(next_check, (int, float)):
+            if current < next_check:
+                return None
+        state["last_attempt"] = current
+        state["next_check"] = current + CHECK_INTERVAL_SECONDS + jitter(0, CHECK_JITTER_SECONDS)
+        provenance = state.get("provenance")
+        if provenance == "clone":
+            candidate = discover_clone(state)
+        elif provenance == "public-head":
+            candidate = discover_public(state, opener=opener)
+        else:
+            raise UpdateError("unknown update provenance")
+        state["last_error"] = None
+        state["last_success"] = {
+            "checked_at": current,
+            "candidate": candidate.__dict__ if candidate else None,
+        }
+    except Exception as exc:  # startup must survive truncated operational state
+        state["last_attempt"] = current
+        state["last_error"] = str(exc) or type(exc).__name__
+        try:
+            state["next_check"] = current + CHECK_INTERVAL_SECONDS + jitter(0, CHECK_JITTER_SECONDS)
+        except Exception:
+            state["next_check"] = current + CHECK_INTERVAL_SECONDS
+        candidate = None
+    try:
+        write_state(state, path)
+    except Exception:
+        pass
+    return candidate
+
+
+def slot_marker_path(executable: str | Path | None = None) -> Path:
+    """Resolve the marker in this interpreter's environment, never shared state."""
+    exe = Path(executable or sys.executable).resolve()
+    env_root = exe.parent.parent if exe.parent.name.lower() == "scripts" else exe.parent
+    return env_root / SLOT_NAME
+
+
+def write_slot_marker(
+    commit: str, required_launcher_protocol: int, *, executable: str | Path | None = None,
+) -> Path:
+    if not _SHA.fullmatch(commit):
+        raise UpdateError("slot commit is not a full SHA")
+    if type(required_launcher_protocol) is not int or required_launcher_protocol < 1:
+        raise UpdateError("required launcher protocol must be a positive integer")
+    marker = slot_marker_path(executable)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    write_state(
+        {"commit": commit.lower(), "required_launcher_protocol": required_launcher_protocol},
+        marker,
+    )
+    return marker
+
+
+def read_slot_marker(*, executable: str | Path | None = None) -> dict[str, Any] | None:
+    return load_state(slot_marker_path(executable))
