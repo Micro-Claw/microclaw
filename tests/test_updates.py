@@ -127,6 +127,32 @@ def test_git_is_located_on_path_and_recorded(clone_pair):
     assert state["clone_path"] == str(clone.resolve())
 
 
+@pytest.mark.parametrize(
+    ("remote_url", "renamed_from"),
+    [
+        ("https://github.com/zacsimile/microclaw.git", "zacsimile/microclaw"),
+        ("git@github.com:zacsimile/microclaw.git", "zacsimile/microclaw"),
+        ("https://github.com/Micro-Claw/microclaw.git", None),
+    ],
+)
+def test_github_clone_name_is_recorded_without_rejecting_transferred_remote(
+    clone_pair, remote_url, renamed_from,
+):
+    remote, seed, clone, first = clone_pair
+    git(clone, "remote", "set-url", "origin", remote_url)
+    state = updates.clone_provenance(clone, first, git_executable=shutil_git())
+    assert state["remote_identity"] == (
+        "github:zacsimile/microclaw" if renamed_from else "github:micro-claw/microclaw"
+    )
+    assert state["clone_repository_note"] == (
+        None if renamed_from is None else
+        "This clone tracks zacsimile/microclaw, which GitHub may redirect to "
+        "Micro-Claw/microclaw. Private Git transport does not expose the immutable "
+        "repository id, so this name redirect is recorded but not numerically verified."
+    )
+    updates._verify_clone_remote(state, "origin", updates.GIT_TIMEOUT_SECONDS)
+
+
 def test_private_404_is_cached_and_preserves_last_success(tmp_path, monkeypatch):
     path = tmp_path / updates.STATE_NAME
     previous = {"checked_at": 1, "candidate": {"sha": "b" * 40}}
@@ -330,6 +356,15 @@ def test_clone_repointed_to_another_repository_is_refused(clone_pair, tmp_path):
     git(clone, "remote", "set-url", "origin", str(other))
     with pytest.raises(updates.UpdateError, match="repository identity"):
         updates.discover_clone(state)
+
+
+def test_github_clone_repointed_after_provenance_is_refused(clone_pair):
+    remote, seed, clone, first = clone_pair
+    git(clone, "remote", "set-url", "origin", "https://github.com/Micro-Claw/microclaw.git")
+    state = updates.clone_provenance(clone, first, git_executable=shutil_git())
+    git(clone, "remote", "set-url", "origin", "git@github.com:someone-else/microclaw.git")
+    with pytest.raises(updates.UpdateError, match="repository identity"):
+        updates._verify_clone_remote(state, "origin", updates.GIT_TIMEOUT_SECONDS)
 
 
 def test_noninteractive_fetch_failure_uses_desktop_guidance(tmp_path, monkeypatch):

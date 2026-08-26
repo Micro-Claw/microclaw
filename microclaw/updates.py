@@ -158,8 +158,14 @@ def clone_provenance(
     remote = query("config", "--get", f"branch.{BRANCH}.remote", allowed=(0, 1)) or "origin"
     remote_url = query("remote", "get-url", remote)
     remote_identity = _normalize_remote_url(remote_url, root)
+    clone_repository_note = None
     if remote_identity.startswith("github:") and remote_identity != f"github:{REPO.casefold()}":
-        raise UpdateError("clone remote does not match the compiled repository identity")
+        recorded_name = remote_identity.removeprefix("github:")
+        clone_repository_note = (
+            f"This clone tracks {recorded_name}, which GitHub may redirect to {REPO}. "
+            "Private Git transport does not expose the immutable repository id, so "
+            "this name redirect is recorded but not numerically verified."
+        )
     return {
         "provenance": "clone",
         "clone_path": str(root),
@@ -171,6 +177,7 @@ def clone_provenance(
         "remote": remote,
         "remote_url": remote_url,
         "remote_identity": remote_identity,
+        "clone_repository_note": clone_repository_note,
         "tracked_branch": BRANCH,
         "git_executable": git,
         "installed_commit": installed_commit,
