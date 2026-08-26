@@ -24,19 +24,15 @@ if ($LASTEXITCODE -ne 0) {
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $evidence = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "block58a-$stamp"
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-$log = Join-Path $evidence 'gate.txt'
-
-Start-Transcript -Path $log -Force | Out-Null
-try {
-    uv run python (Join-Path $repo 'design\58-block58a-demo-gate.py') --repo $repo --out $evidence
-    $code = $LASTEXITCODE
-} finally {
-    Stop-Transcript | Out-Null
-}
+# The Python writes its own gate.txt. Start-Transcript is deliberately NOT used:
+# in PowerShell 5.1 it does not capture a native child process's stdout, so round
+# 2's transcript held a header, a footer, and nothing else.
+uv run python (Join-Path $repo 'design\58-block58a-demo-gate.py') --repo $repo --out $evidence
+$code = $LASTEXITCODE
 
 Write-Host ''
 Write-Host "Evidence written to: $evidence"
-Write-Host '  gate.txt      full transcript, including the environment block'
+Write-Host '  gate.txt      full output, including the environment block'
 Write-Host '  results.json  one record per limb'
 Write-Host '  *-state.json  the update state each limb produced'
 Write-Host ''
@@ -44,6 +40,6 @@ Write-Host 'Send that whole folder back.'
 
 if ($code -ne 0) {
     Write-Host ''
-    Write-Host 'GATE FAILED - see the FAIL lines in the results table above.' -ForegroundColor Red
+    Write-Host 'GATE DID NOT PASS - see the FAIL / NOT EXERCISED lines above.' -ForegroundColor Red
 }
 exit $code

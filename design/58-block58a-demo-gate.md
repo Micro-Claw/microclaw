@@ -24,29 +24,34 @@ is a program and it ships as one.** A runbook is for steps a human performs and
 judges. These only compute.
 
 `58-block58a-demo-gate.py` runs every limb, reports each independently, writes
-`results.json` and a transcript, and exits nonzero if any failed. It reports
+`results.json` and its own `gate.txt`, and exits nonzero unless every limb
+actually ran and passed. Results are **PASS / FAIL / NOT EXERCISED** — a limb
+that tested nothing is never a pass, and the banner reads INCOMPLETE. It reports
 each limb rather than aborting at the first failure because round 1's cascade
 hid five untested limbs behind one `TypeError`.
 
-## Do not repoint the demo machine's remote
+## Requirement 3 builds its own fixture
 
-Its clone still names **`zacsimile/microclaw`**, from before the 2026-08-26
-transfer. That is not a misconfiguration — GitHub redirects Git traffic, so
-every pre-transfer GitHub Desktop clone is in exactly that state, and it is the
-only fixture available for requirement 3 ("a rename or an organization transfer
-must not silently cut it off"). Round 1's real defect was that
-`clone_provenance` refused it.
+Round 1's real defect was that `clone_provenance` **refused** a clone whose
+remote still named `zacsimile/microclaw` — the state every GitHub Desktop clone
+taken before the 2026-08-26 transfer is in, since GitHub redirects Git traffic
+and nothing surfaces the stale name.
 
-Limb 1b tests this directly. If the remote has been repointed to
-`Micro-Claw/microclaw` it reports **NOT EXERCISED** rather than passing, so the
-requirement cannot be made green by editing the fixture.
+Round 2's limb depended on the demo machine still being in that state, and it
+wasn't, so it reported NOT EXERCISED — and, through a defect of mine, counted
+that as a pass. Limb 1b now **constructs** its own clones and sets their remotes
+to the legacy HTTPS and SSH URLs. It needs no network and no particular state on
+your machine, so it cannot stop running because someone tidied a remote up.
+
+A limb that depends on finding its subject is a limb that stops running the day
+someone fixes the thing it was watching.
 
 ## What each limb settles
 
 | Limb | Settles |
 |---|---|
 | 1 | Provenance records a real clone and no longer refuses a redirected name |
-| 1b | **Requirement 3** — a pre-transfer remote still discovers `origin/main` |
+| 1b | **Requirement 3** — constructed clones on the legacy HTTPS and SSH names are accepted and noted, and repointing after bootstrap still refuses |
 | 2 | `check_for_update` finds `origin/main` from an ancestor install and caches it atomically |
 | 3 | The block branch's own HEAD is refused *specifically* as `diverged`, not silently |
 | 4 | A dirty checkout is byte-identical afterwards — status, HEAD, branch, contents |

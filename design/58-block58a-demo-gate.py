@@ -21,17 +21,41 @@ from pathlib import Path
 
 from microclaw import updates
 
-RESULTS: list[tuple[str, bool, str]] = []
+RESULTS: list[tuple[str, str, str]] = []
+
+
+class NotExercised(Exception):
+    """This limb could not run its mechanism. Never a pass."""
+
+
+class Tee:
+    """Own our log. PowerShell 5.1's Start-Transcript does not capture a native
+    child process's stdout, so round 2's gate.txt held only a header and footer
+    and the environment block was lost."""
+
+    def __init__(self, stream, path):
+        self.stream, self.file = stream, open(path, "w", encoding="utf-8")
+
+    def write(self, data):
+        self.stream.write(data)
+        self.file.write(data)
+        return len(data)
+
+    def flush(self):
+        self.stream.flush()
+        self.file.flush()
 
 
 def limb(name):
-    """Run one limb, record PASS/FAIL, never let it abort the others."""
+    """Run one limb, record PASS/FAIL/NOT EXERCISED, never abort the others."""
     def wrap(fn):
         try:
             detail = fn()
-            RESULTS.append((name, True, detail or ""))
+            RESULTS.append((name, "PASS", detail or ""))
+        except NotExercised as exc:
+            RESULTS.append((name, "NOT EXERCISED", str(exc)))
         except Exception as exc:
-            RESULTS.append((name, False, f"{type(exc).__name__}: {exc}"))
+            RESULTS.append((name, "FAIL", f"{type(exc).__name__}: {exc}"))
             traceback.print_exc()
         return fn
     return wrap
@@ -51,6 +75,7 @@ def main() -> int:
     args = ap.parse_args()
     repo, out = Path(args.repo), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    sys.stdout = sys.stderr = Tee(sys.__stdout__, out / "gate.txt")
 
     # --- Environment. This block is evidence in its own right: the round-1 gate
     # failed because of the remote URL, and nothing printed it.
@@ -86,27 +111,38 @@ def main() -> int:
         return (f"remote_identity={state.get('remote_identity')} "
                 f"remote={state.get('remote')} tracked={state.get('tracked_branch')} note={note}")
 
-    @limb("1b. requirement 3 — a pre-transfer remote name is accepted, not refused")
+    @limb("1b. requirement 3 — a pre-transfer GitHub remote is accepted, not refused")
     def _():
-        state = updates.load_state(clone_state)
-        identity = str(state.get("remote_identity") or "")
-        compiled = f"github:{updates.REPO.casefold()}"
-        if not identity.startswith("github:"):
-            return (f"SKIPPED — this clone's remote is {identity!r}, not a github.com URL, "
-                    "so it cannot exercise the redirect case")
-        if identity == compiled:
-            return (f"NOT EXERCISED — this clone already points at {updates.REPO}. "
-                    "A clone still on the pre-transfer name is what tests requirement 3; "
-                    "do not repoint the demo machine's remote to create one.")
-        # The interesting case: the clone names a repository GitHub redirects.
-        # Provenance must have succeeded (we got here) and discovery must work.
-        c = updates.check_for_update(state_file=clone_state, now=101, jitter=lambda a, b: 0)
-        if c is None:
-            raise AssertionError(
-                f"clone on redirected name {identity!r} produced no candidate; "
-                "requirement 3 says a transfer must not cut an install off")
-        return (f"clone tracks {identity} and GitHub redirects it to {compiled}; "
-                f"discovery still reached {c.sha}")
+        # Construct the fixture rather than hope to find one. Round 2 reported
+        # NOT EXERCISED because the demo machine's remote had been repointed,
+        # and a limb that depends on finding its own subject is a limb that
+        # stops running the day someone tidies up.
+        results = []
+        for url in ("https://github.com/zacsimile/microclaw.git",
+                    "git@github.com:zacsimile/microclaw.git"):
+            fixture = out / ("legacy-" + ("https" if url.startswith("http") else "ssh"))
+            shutil.rmtree(fixture, ignore_errors=True)
+            subprocess.run(["git", "clone", "--no-checkout", "--depth", "1",
+                            str(repo), str(fixture)], capture_output=True, text=True, check=True)
+            git(fixture, "remote", "set-url", "origin", url)
+            state = updates.clone_provenance(fixture, ancestor, git_executable=shutil.which("git"))
+            note = state.get("clone_repository_note")
+            if not note:
+                raise AssertionError(f"{url} recorded no redirect note")
+            if "zacsimile/microclaw" not in note:
+                raise AssertionError(f"note does not name the recorded repository: {note!r}")
+            # And the repoint detection S7 asked for still fires on a github URL.
+            git(fixture, "remote", "set-url", "origin",
+                "https://github.com/someone-else/microclaw.git")
+            try:
+                updates._verify_clone_remote(state, "origin", 15)
+            except updates.UpdateError:
+                pass
+            else:
+                raise AssertionError(f"repointing {url} after bootstrap was not refused")
+            results.append(url)
+        return (f"accepted and noted: {', '.join(results)}; "
+                "repoint after bootstrap still refused on both")
 
     @limb("2. check_for_update discovers origin/main from an ancestor install")
     def _():
@@ -208,22 +244,28 @@ def main() -> int:
     print("=" * 70)
     print("RESULTS")
     print("=" * 70)
-    failed = 0
-    for name, ok, detail in RESULTS:
-        print(f"[{'PASS' if ok else 'FAIL'}] {name}")
+    for name, status, detail in RESULTS:
+        print(f"[{status:>13}] {name}")
         if detail:
-            print(f"        {detail}")
-        failed += 0 if ok else 1
+            print(f"                {detail}")
     print()
     (out / "results.json").write_text(
-        json.dumps([{"limb": n, "passed": o, "detail": d} for n, o, d in RESULTS], indent=2),
+        json.dumps([{"limb": n, "status": s, "detail": d} for n, s, d in RESULTS], indent=2),
         encoding="utf-8",
     )
+    failed = sum(1 for _, s, _ in RESULTS if s == "FAIL")
+    skipped = sum(1 for _, s, _ in RESULTS if s == "NOT EXERCISED")
+    passed = sum(1 for _, s, _ in RESULTS if s == "PASS")
+    print(f"{passed} passed, {failed} failed, {skipped} not exercised, of {len(RESULTS)} limbs")
     if failed:
-        print(f"BLOCK 58a DEMO GATE FAILED — {failed} of {len(RESULTS)} limbs failed")
+        print(f"BLOCK 58a DEMO GATE FAILED — {failed} limb(s) failed")
+    elif skipped:
+        # Round 2 marked a NOT EXERCISED limb as passed. A criterion that
+        # cannot fail is not a criterion, and must never read as a pass.
+        print(f"BLOCK 58a DEMO GATE INCOMPLETE — {skipped} limb(s) tested nothing")
     else:
         print(f"BLOCK 58a DEMO GATE PASSED — all {len(RESULTS)} limbs")
-    return 1 if failed else 0
+    return 1 if (failed or skipped) else 0
 
 
 if __name__ == "__main__":
