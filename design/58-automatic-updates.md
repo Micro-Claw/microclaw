@@ -537,6 +537,24 @@ plus a small amount of repository configuration, and it gates 58e's merge only.
       locally at every block anyway — that is where the recorded baseline comes
       from. Public repositories get Actions free and unlimited, so this
       constraint dissolves the day the repository flips.
+- [ ] **It must not run on our merges. Trigger on `pull_request` and
+      `workflow_dispatch`, and on nothing else.** This block workflow branches
+      and merges constantly and every block is tested locally first, so a
+      `push` trigger would burn the allowance on merges that were already green
+      on the coordinator's machine and on the operator's. With no `push:` key
+      the workflow runs **zero** times automatically today, because there is no
+      PR flow — it is a dormant file that costs nothing until the 58-P decision
+      creates the PR flow that needs it, and `workflow_dispatch` means it can
+      still be fired by hand whenever a run is actually wanted. **Adding it now
+      is therefore free of both money and noise**; that is the whole reason it
+      can land ahead of the protection decision.
+- [ ] **If a path filter is added, add the companion job with it.** Most merges
+      here are documentation — every `coord/*` branch in this design's own
+      history is docs-only — so `paths-ignore` on `design/**`, `docs/**` and
+      `**.md` is tempting. The trap: a **required** check skipped by a path
+      filter is never reported, and GitHub leaves the PR waiting on a status
+      that will never arrive. Pair any filter with a job of the same name that
+      reports success on the filtered paths, or do not filter at all.
 - [ ] **Confirm the spending limit reads $0** before enabling: Organization
       settings -> Billing -> Spending limits. At $0 an exhausted allowance stops
       queueing workflows rather than billing anything, and no overage is possible
