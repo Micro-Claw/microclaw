@@ -69,6 +69,18 @@ from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_
 
 logger = logging.getLogger(__name__)
 
+#: Every run argument a hook -- or, under 55b, a plan-only coordinator -- must
+#: be present to carry. Canonical on purpose: parameterized tests drive every
+#: name through every refusal path, so a capability added here but not at a
+#: refusal site is a loud failure rather than another silent hole.
+#: Add a new capability HERE FIRST. The matrix iterates this tuple, so a
+#: capability that never lands here generates no case at all and is silently
+#: unguarded -- the one hole the tests cannot close for you.
+HOOK_CAPABILITY_ARGS = (
+    "illumination_envelope", "artifact_limits", "named_stage_envelope",
+    "property_envelope", "hook_action_plan",
+)
+
 
 def emits(renderer: Callable[[dict[str, Any]], str]):
     """Attach a source renderer to the tool whose call it reproduces."""
@@ -3245,9 +3257,10 @@ def run_zstack(
         _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
-    if not channel and exposure_ms is not None:
-        ctrl.core.set_exposure(exposure_ms)
 
+    # Event construction is pure, and everything above only reads or validates
+    # the rig, so the capability guard below can precede the preamble's one
+    # mutation without changing the order of any observable hardware action.
     events = _build_acquisition_events(
         channel=channel, exposure_ms=exposure_ms,
         z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
@@ -3259,14 +3272,18 @@ def run_zstack(
             hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
         except ValueError as exc:
             return {"error": str(exc)}
-        try:
-            _configure_hook_capabilities(
-                hook, ctrl, guard, save_dir, name, illumination_envelope,
-                artifact_limits, named_stage_envelope, hook_action_plan, events,
-                property_envelope=property_envelope,
-            )
-        except _HookArtifactBudgetError as exc:
-            return {"error": str(exc)}
+    try:
+        # Unconditional and ahead of set_exposure: a capability with no hook to
+        # carry it refuses before the camera is changed.
+        _configure_hook_capabilities(
+            hook, ctrl, guard, save_dir, name, illumination_envelope,
+            artifact_limits, named_stage_envelope, hook_action_plan, events,
+            property_envelope=property_envelope,
+        )
+    except _HookArtifactBudgetError as exc:
+        return {"error": str(exc)}
+    if not channel and exposure_ms is not None:
+        ctrl.core.set_exposure(exposure_ms)
     plan = plan_events(ctrl, events, exposure_ms)
     if hook is not None:
         plan = _plan_with_hook_dose(plan, hook)
@@ -3397,6 +3414,13 @@ def run_timelapse(
             "run_multiposition_acquisition(hook_strategy=...) instead; it uses one "
             "Acquisition and one hook log across every position."
         )
+    if hook_action_plan is not None and n_frames > 1 and interval_s == 0:
+        raise ValueError(
+            "interval_s=0 lets the engine hardware-sequence the time axis, and a "
+            "sequenced burst runs with no software between exposures, so a "
+            "per-frame hook_action_plan cannot be honoured. Pass a nonzero "
+            "interval_s to disable time-axis sequencing."
+        )
     trigger_preflight = None
     if laser_slot is not None:
         trigger_preflight = _verify_trigger_line_armed(ctrl, laser_slot)
@@ -3404,12 +3428,10 @@ def run_timelapse(
         _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
-    # Without a channel, the acquisition events carry no exposure, so set it on
-    # the core directly (mirrors run_zstack). This is the SMLM path —
-    # run_timelapse(interval_s=0) with no channel — where exposure must still apply.
-    if not channel and exposure_ms is not None:
-        ctrl.core.set_exposure(exposure_ms)
 
+    # Event construction is pure, and everything above only reads or validates
+    # the rig, so the capability guard below can precede the preamble's one
+    # mutation without changing the order of any observable hardware action.
     events = _build_acquisition_events(
         channel=channel, exposure_ms=exposure_ms,
         num_time_points=n_frames, time_interval_s=interval_s,
@@ -3421,14 +3443,20 @@ def run_timelapse(
             hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
         except ValueError as exc:
             return {"error": str(exc)}
-        try:
-            _configure_hook_capabilities(
-                hook, ctrl, guard, save_dir, name, illumination_envelope,
-                artifact_limits, named_stage_envelope, hook_action_plan, events,
-                property_envelope=property_envelope,
-            )
-        except _HookArtifactBudgetError as exc:
-            return {"error": str(exc)}
+    try:
+        # Unconditional and ahead of set_exposure: a capability with no hook to
+        # carry it refuses before the camera is changed.
+        _configure_hook_capabilities(
+            hook, ctrl, guard, save_dir, name, illumination_envelope,
+            artifact_limits, named_stage_envelope, hook_action_plan, events,
+            property_envelope=property_envelope,
+        )
+    except _HookArtifactBudgetError as exc:
+        return {"error": str(exc)}
+    # Without a channel, events carry no exposure, so set it directly. This is
+    # the preamble's only mutation and therefore stays below the guard.
+    if not channel and exposure_ms is not None:
+        ctrl.core.set_exposure(exposure_ms)
     plan = plan_events(ctrl, events, exposure_ms)
     if hook is not None:
         plan = _plan_with_hook_dose(plan, hook)
@@ -5781,10 +5809,20 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             )
         return
     if not isinstance(hook, UntrustedHookAdapter):
-        if (illumination_envelope or artifact_limits or
-                named_stage_envelope is not None or property_envelope is not None or
-                hook_action_plan is not None):
-            raise ValueError("Hook envelopes apply only to saved generated hooks.")
+        supplied = {
+            "illumination_envelope": illumination_envelope,
+            "artifact_limits": artifact_limits,
+            "named_stage_envelope": named_stage_envelope,
+            "property_envelope": property_envelope,
+            "hook_action_plan": hook_action_plan,
+        }
+        if any(value is not None for value in supplied.values()):
+            raise ValueError(
+                "hook_action_plan and hook envelopes are executed by a hook and "
+                "have no effect without one; pass hook_strategy."
+                if hook is None else
+                "Hook envelopes apply only to saved generated hooks."
+            )
         return
     if artifact_limits is not None:
         allowed = {"max_artifact_bytes", "max_count", "max_total_bytes"}

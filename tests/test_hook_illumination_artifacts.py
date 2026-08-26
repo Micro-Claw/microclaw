@@ -7,6 +7,7 @@ import pytest
 import tifffile
 
 from microclaw import tools
+from microclaw.tools import HOOK_CAPABILITY_ARGS
 from microclaw.hook_decisions import EmitArtifact, HookResult, UntrustedHookAdapter
 from microclaw.hook_manager import saved_hook_source_refusal, validate_hook_contract
 from microclaw.safety import (
@@ -57,6 +58,172 @@ def _guard(max_power=20, factor=2):
         power_properties=[ForbiddenProperty("Laser", "Power")],
         max_power_percent=max_power, max_power_step_factor=factor,
     )))
+
+
+def _unattached_run(
+    monkeypatch, tmp_path, tool, ctrl, *, interval_s=1, **capabilities
+):
+    acquire = MagicMock(return_value=str(tmp_path / "dataset"))
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    reservation = MagicMock(has_overrun=False)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args: reservation)
+    guard = SafetyGuard(SafetyConstraints(
+        stage=StageConstraints(z_min=-10, z_max=10),
+        named_stages=[NamedStageLimits("fixture-stage", 0, 7000)]
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    common = {"save_dir": str(tmp_path), "exposure_ms": 100, **capabilities}
+    if tool == "timelapse":
+        result = tools.run_timelapse(
+            ctrl, guard, n_frames=3, interval_s=interval_s, **common
+        )
+    else:
+        result = tools.run_zstack(
+            ctrl, guard, z_start_um=0, z_end_um=2, z_step_um=1, **common
+        )
+    return acquire, result
+
+
+def _line_89_capabilities():
+    return {
+        "named_stage_envelope": {
+            "device": "fixture-stage", "min_um": 1000, "max_um": 6000,
+            "max_writes": 3, "restore": "entry",
+        },
+        "hook_action_plan": [
+            {"hook_event_index": index, "actions": [
+                {"kind": "MoveNamedStage", "position_um": position}
+            ]}
+            for index, position in enumerate((1000, 3500, 6000))
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("tool", "interval_s", "message"),
+    [
+        ("timelapse", 0, "hardware-sequence the time axis"),
+        ("timelapse", 1, "have no effect without one"),
+        ("zstack", None, "have no effect without one"),
+    ],
+)
+def test_line_89_unattached_plan_refuses_without_stage_motion(
+    monkeypatch, tmp_path, tool, interval_s, message
+):
+    kwargs = _line_89_capabilities()
+    ctrl = MagicMock()
+    with pytest.raises(ValueError, match=message):
+        _unattached_run(
+            monkeypatch, tmp_path, tool, ctrl,
+            interval_s=interval_s if interval_s is not None else 1, **kwargs,
+        )
+    ctrl.core.set_position.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("capability", "value"),
+    [
+        ("illumination_envelope", {"device": "Laser"}),
+        ("property_envelope", {"device": "Wheel"}),
+        ("artifact_limits", {"max_count": 1}),
+    ],
+)
+def test_each_unattached_capability_refuses(capability, value, monkeypatch, tmp_path):
+    ctrl = MagicMock()
+    with pytest.raises(ValueError, match="have no effect without one"):
+        _unattached_run(
+            monkeypatch, tmp_path, "timelapse", ctrl, **{capability: value}
+        )
+    ctrl.core.set_position.assert_not_called()
+
+
+@pytest.mark.parametrize("tool", ["timelapse", "zstack"])
+def test_unattached_refusal_precedes_core_exposure(tool, monkeypatch, tmp_path):
+    ctrl = MagicMock()
+    with pytest.raises(ValueError, match="have no effect without one"):
+        _unattached_run(
+            monkeypatch, tmp_path, tool, ctrl,
+            property_envelope={"device": "Wheel"},
+        )
+    ctrl.core.set_exposure.assert_not_called()
+
+
+def test_sequenced_plan_refuses_before_preflight_exposure_or_acquisition(
+    monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    acquisition = MagicMock()
+    monkeypatch.setattr(tools, "Acquisition", acquisition)
+    monkeypatch.setattr(tools, "plan_events", lambda *args: object())
+    reservation = MagicMock(has_overrun=False)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args: reservation)
+    guard = SafetyGuard(SafetyConstraints())
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    with pytest.raises(ValueError, match="hardware-sequence the time axis"):
+        tools.run_timelapse(
+            ctrl, guard, n_frames=2, interval_s=0, save_dir=str(tmp_path),
+            exposure_ms=100,
+            hook_action_plan=[
+                {"hook_event_index": index, "actions": []} for index in range(2)
+            ],
+        )
+    ctrl.core.set_exposure.assert_not_called()
+    acquisition.assert_not_called()
+
+
+def test_single_frame_zero_interval_plan_still_runs(monkeypatch, tmp_path):
+    ctrl = MagicMock()
+    hook = UntrustedHookAdapter(object())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    reservation = MagicMock(has_overrun=False)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args: reservation)
+    monkeypatch.setattr(
+        tools, "_acquire_with_hooks", lambda *args, **kwargs: str(tmp_path / "dataset")
+    )
+    ctrl.core.get_position.return_value = 15
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    result = tools.run_timelapse(
+        ctrl, guard, n_frames=1, interval_s=0, save_dir=str(tmp_path),
+        hook_strategy="saved",
+        named_stage_envelope={
+            "device": "fixture-stage", "min_um": 10, "max_um": 20,
+            "max_writes": 1, "restore": "leave",
+        },
+        hook_action_plan=[
+            {"hook_event_index": 0, "actions": []}
+        ],
+    )
+    assert result["status"] == "Timelapse complete."
+
+
+@pytest.mark.parametrize(
+    "capability",
+    ["illumination_envelope", "property_envelope", "artifact_limits",
+     "named_stage_envelope"],
+)
+def test_empty_unattached_envelope_is_present(capability, monkeypatch, tmp_path):
+    ctrl = MagicMock()
+    with pytest.raises(ValueError, match="have no effect without one"):
+        _unattached_run(
+            monkeypatch, tmp_path, "timelapse", ctrl, **{capability: {}}
+        )
+
+
+@pytest.mark.parametrize("capability", HOOK_CAPABILITY_ARGS)
+def test_every_hook_capability_refuses_without_hook_before_exposure(
+    capability, monkeypatch, tmp_path
+):
+    value = [] if capability == "hook_action_plan" else {}
+    ctrl = MagicMock()
+    with pytest.raises(ValueError, match="have no effect without one"):
+        _unattached_run(
+            monkeypatch, tmp_path, "timelapse", ctrl, **{capability: value}
+        )
+    ctrl.core.set_exposure.assert_not_called()
 
 
 def test_envelope_confirmation_precedes_reservation(monkeypatch, tmp_path):
