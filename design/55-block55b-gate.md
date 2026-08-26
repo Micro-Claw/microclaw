@@ -4,13 +4,62 @@
 block 4c's setup added. **Part B: M2 or M5**, whichever is free — one sweep, a
 few minutes.
 
-Implementation ancestor: 067a6b2
+Implementation ancestor: 7d75c24
 
 PowerShell throughout. `uv` is the single launcher. **Every command block runs
 unedited.** Nothing in it is a placeholder to substitute — 52c's strictest
 criterion produced no rig evidence because it shipped as
 `Select-String -Pattern "<t2>", "<t3>"` and was run verbatim. A step that prints
 nothing where a match is required has **failed**, not passed.
+
+## Round 1 result — 2026-08-26, demo machine (`block55b-2026-08-26`)
+
+**Steps 0, 1 and 2 PASS. Step 3 FAILED on a real defect, now fixed. Steps 4–12
+were never reached.**
+
+- **Step 0**: `2156 passed / 124 skipped / 3 warnings` = 2280, exactly macOS's
+  `2181 + 99`. Zero failures — and blind to the defect below.
+- **Step 1**: `PRECONDITION PASS`.
+- **Step 2**: `Aux Z` parked at `20.0`, `within_tolerance: true`.
+- **Step 3's reach criterion PASSED and is the block's whole point.** From a
+  sentence naming no tool, no hook and no argument, the session called
+  `run_timelapse` with a `hook_action_plan` and **no `hook_strategy`** on its
+  first attempt, and **wrote no hook**. 55a's session needed five refusals and a
+  `PassthroughFrameLogger` it had to author. That comparison is the result this
+  gate existed to produce, and it holds.
+- **Step 3's run then died on the first frame**, twice, on different intervals
+  and envelopes: `hook_failure: 'object' object has no attribute
+  'image_process_fn'`, `frames_exposed: 0`, empty dataset.
+
+**The cause was a false premise in design/55 itself**, not in the
+implementation. §55b claimed `UntrustedHookAdapter` "already tolerates a payload
+with no `analyze_frame`" because `image_process_fn` guards on `hasattr`. That
+`hasattr` **selects between two branches** and does not no-op: the `else` branch
+is the *legacy* `image_process_fn` path, which `PLAN_ONLY = object()` cannot
+serve. The doc's supporting fact — that `UntrustedHookAdapter(object())` is
+already a fixture — is true and irrelevant, because that fixture never drives a
+frame. Corrected in `design/55` §"Decision → 55b" and fixed in
+`hook_decisions.py` with a third branch that passes the frame through.
+
+**Why a green suite could not see it: every fake drove `pre_hardware_hook_fn`
+and never `image_process_fn`** — the live test's `DrivingAcquisition` and the
+export test's `FakeAcquisition` both. They encoded the premise the design
+asserted, so neither could contradict it. Both fakes were corrected **before**
+the code, and with the code fix reverted they reproduce the rig's exact
+`AttributeError` — including inside the exec'd exported script, which carried the
+same defect.
+
+**The failure path behaved correctly and was deliberately left alone**:
+restoration fired to entry after the crash, `get_stage_position` confirmed
+`20.0`, the result reported `frames_exposed: 0`, and its hint said not to treat
+the run as untouched — which the session obeyed, reading the log instead of
+retrying blind.
+
+### Round 2 scope
+
+**Run the whole of Part A again.** Steps 0–2 are cheap and Step 0 proves the rig
+is on the fixed branch. Nothing from Step 4 onward has ever run, so there is no
+partial credit to preserve. Part B has not been attempted.
 
 ## What this gate settles
 
@@ -67,8 +116,8 @@ Select-String -Path "$Evidence\suite.txt" -Pattern "passed|failed" | Select-Obje
 ```
 
 **Required:** `IMPLEMENTATION PRESENT`, and a last line with **0 failed**. macOS
-measured `2181 passed / 99 skipped / 3 warnings` at the pin; this machine reports
-a different split with the same 2280 total. **Gate on zero failures, never the
+measured `2181 passed / 99 skipped / 3 warnings` at the pin, and this machine
+read `2156 / 124` in round 1 — the same 2280 total. **Gate on zero failures, never the
 count.**
 
 ## Step 1 — the precondition, as a command that exits nonzero
