@@ -242,6 +242,22 @@ because a block looks small.
    nothing, and "passed" — the block's strictest criterion produced no rig
    evidence at all and had to be checked off-rig afterwards. Write the command so
    that running it unedited either works or fails loudly.
+
+   **And if every step of a gate is a literal command, it is a program — ship it
+   as one.** Block 58a's gate went out as seven copy-paste PowerShell blocks and
+   came back reporting `BLOCK 58a DEMO GATE PASSED` over five failed limbs:
+   pasted interactively, a `throw` ends the current pipeline, not the session, so
+   every later block ran anyway. A runbook is for steps a human performs and
+   judges — driving a session, watching an optic, deciding whether a field looks
+   right. Steps that only compute belong in a script that runs them all, reports
+   each **independently** (one refusal must not hide five untested limbs behind
+   its cascade), and exits nonzero. Three more rules that block paid for: a limb
+   that could not run its mechanism reports **NOT EXERCISED** and that is never a
+   pass; a limb that *cannot fail* is not a criterion, so carry a control that
+   fires — 58a's opt-out limb passed three rounds by opting out inside the
+   24-hour interval, where the check would not have run anyway; and the script
+   owns its own log, because PowerShell 5.1's `Start-Transcript` does not capture
+   a native child process's stdout and the transcript came back empty twice.
 7. **Fix, sized to the finding.** Small corrections: do them yourself on the
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.
@@ -270,6 +286,14 @@ The first five were missed because a test fake encoded our assumption instead of
 the hardware's behaviour; the sixth because every test that could have caught it
 supplied the one argument whose absence was the defect. Check code against these
 before writing the fake, and check what the tests all happen to pass.
+
+**And one step earlier than a misleading fake: a fixture that cannot reach the
+code is not coverage of it.** Block 58a shipped a refusal guarded by
+`remote_identity.startswith("github:")` while every clone fixture in the suite
+used a `file:` remote. The branch was never executed — not once, through four
+review rounds and 2216 green tests — and the demo machine refused the operator's
+own clone on the first line. When a guard is conditional on the *shape* of its
+input, ask which fixtures produce that shape, and write one that does.
 
 - **A hook callback receives an event *or a list of events*.** When the engine
   hardware-sequences (an `interval_s=0` timelapse is exactly that shape), it

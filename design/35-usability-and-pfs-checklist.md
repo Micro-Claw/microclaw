@@ -487,8 +487,11 @@ design/48 through design/57. This file does not track its blocks; it points at
 them. The doc is `design/58-automatic-updates.md`, five blocks, **58a–58e**, plus
 a non-code prerequisite row **58-P**.
 
-- **Written 2026-08-26 against the code; nothing is assigned and nothing is
-  implemented.** Every row in that checklist is open.
+- **58a is MERGED** (`33028e9`, 2026-08-26), branch and worktree deleted. Its
+  demo gate passed on the **fourth** round; the first three failed on defects in
+  the *gate*, not the code. 58b–58e are open and unassigned.
+- **`main` measures 2220 passed / 99 skipped / 3 warnings** (macOS,
+  coordinator-measured at the merge), against 2182 before the block.
 - **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
   skipped / 3 warnings** (macOS). Gate on zero failures, never the count.
 - **What it is:** Windows automatic updates. Two update providers behind one

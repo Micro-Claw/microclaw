@@ -33,9 +33,17 @@ Three requirements shape everything below.
 The initial users have cloned the private repository with GitHub Desktop, and
 the preview intentionally wants them to follow repository head. Treat that clone
 as the authenticated update source. When `install.bat` runs inside a Git
-worktree, record its canonical path, repository identity, current branch,
-configured upstream (normally `origin/main`), and installed commit. Do not infer
+worktree, record its canonical path, repository identity, the observed branch
+and upstream **as diagnostics only**, and the installed commit. Do not infer
 these later from a `.git` directory that merely happens to be above the package.
+
+**Discovery tracks `<remote>/main`, never the checked-out branch, and the remote
+is `branch.main.remote` rather than whatever the current branch happens to
+track.** An earlier draft of this paragraph said "current branch", which would
+have retargeted the update channel the moment a gate session checked a block
+branch out on the machine holding the recorded clone. Measured on the demo
+machine 2026-08-26: `upstream: origin/design58/discovery`, `remote: origin`,
+`tracked_branch: main`, candidate `origin/main`.
 
 At check time run a bounded, non-interactive `git fetch` in the recorded clone,
 then compare the installed commit with the upstream remote-tracking ref. Use
@@ -118,8 +126,20 @@ a bounded redirect only between approved GitHub API/download hosts. It then
 resolves the destination metadata and accepts the new owner/name only when the
 immutable repository ID still matches. Persist that verified canonical name in
 `update-state.json`; reject a redirect to a different repository. Clone-provider
-fetches may follow GitHub's normal Git redirect, but discovery likewise verifies
-the fetched source against the recorded repository identity before staging.
+fetches may follow GitHub's normal Git redirect, and discovery verifies the
+fetched source against the identity **recorded at bootstrap** before staging.
+
+**That check is name-based, not id-based, and block 58a's gate proved why it
+must not be stricter.** A private Git fetch never exposes the immutable numeric
+id, and this design forbids asking a novice for a token, so there is no
+credential bridge to verify one. What discovery can and does detect is the
+recorded remote changing *after* bootstrap — a clone repointed at another
+repository. What it must **not** do is refuse a clone whose remote still names
+the pre-transfer `zacsimile/microclaw`: GitHub redirects that traffic, every
+GitHub Desktop clone taken before 2026-08-26 is in exactly that state, and
+refusing it breaks requirement 3 rather than enforcing it. Such a clone is
+accepted and the redirected name is recorded as a note that says, in the state
+file, that it was not numerically verified.
 
 The repository moved to the Micro-Claw organization on 2026-08-26, before any
 of this shipped, so the compiled-in identity above is correct from v1 and no
@@ -1237,7 +1257,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | Block | Depends on | Branch | Start commit | Implementation | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
-| 58a | — | `design58/discovery` | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`; codex, **4 rounds, 13 findings** | round 1 **FAILED** 2026-08-26 (B13 + three runbook defects, all fixed); **round 2 awaiting** — run `design\58-block58a-demo-gate.ps1` | — | — |
+| 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | `design58/classification` | — | — | folded into 58c's runbook | — | — |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |

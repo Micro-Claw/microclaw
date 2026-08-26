@@ -7426,3 +7426,69 @@ unplanned. It also exposed that `STAGE_MOVE_TOLERANCE_UM = 0.5` has no
 configuration path, so the only way to finish was to retarget the experiment to
 where the stage lands. **A fixed micron tolerance is a rig fact living in
 `microclaw/`**; filed, not fixed here.
+
+## design/58 block 58a — discovery and exact materialization (2026-08-26)
+
+Merged `33028e9`. Four Codex rounds, thirteen review findings, **four demo-gate
+rounds** — and the first three gate rounds failed on defects in the *gate*, not
+the code. That ratio is the block's lesson.
+
+**The one defect the rig found was real and structural.** `clone_provenance`
+refused the demo machine's clone because its remote still named
+`zacsimile/microclaw`. That is not a misconfigured machine: GitHub redirects Git
+traffic after a transfer, so every GitHub Desktop clone taken before 2026-08-26
+is in that state and has no reason to notice. The refusal was **my** review
+finding (S7 — "verify the clone's identity") implemented against the compiled-in
+name, which fails closed on exactly the case requirement 3 exists to protect. A
+review finding can be right about the threat and wrong about where the check
+goes; say which one you mean.
+
+**Why four review rounds and 2216 green tests missed it**: every clone fixture
+used a `file:` remote and the refusal was guarded by `startswith("github:")`.
+The branch was never executed. That is one step earlier than "a fake that
+encodes your assumption" — the fake could not even reach the assumption. Folded
+into `CLAUDE.md`.
+
+**Three gate defects, all one defect.** It shipped as seven copy-paste
+PowerShell blocks. Pasted interactively a `throw` ends the pipeline, not the
+session, so five failed limbs still reached `Write-Host 'PASSED'`; it called
+bare `python` where this project uses `uv run`, which the operator corrected by
+hand mid-run; and it captured no artifact, so the evidence that reached me was
+console scrollback. **If every step of a gate is a literal command it is a
+program and ships as one.** Rewritten as `.py` + a thin `.ps1`.
+
+**Then the rewritten gate had two more defects, and both are worth keeping.**
+A limb that reported `NOT EXERCISED` was recorded as `"passed": true` — the
+operator had repointed the remote, so requirement 3 had no subject, and my
+script called that a pass. Results are now PASS / FAIL / NOT EXERCISED, and the
+limb **constructs** its own clones rather than hoping to find one; a limb that
+depends on finding its subject stops running the day someone tidies up. And
+`gate.txt` came back holding a `Start-Transcript` header and footer and nothing
+else: PowerShell 5.1 does not capture a native child's stdout. The script owns
+its log now.
+
+**The last one is the one I would most want a future coordinator to read.** The
+opt-out limb passed three consecutive rounds while testing nothing: it opted out
+at `now=200` against a `next_check` of ~89372, so the twenty-four-hour interval
+returned `None` on its own and `last_attempt` stayed put whether or not the
+opt-outs existed. Item 15 had no rig evidence at all and read PASS every time.
+It now jumps past `next_check` and carries a **control** — a third check with no
+opt-out that must move `last_attempt`, failing the limb with "the opt-out
+evidence proved nothing" if it does not. That is 55b's reversed-targets lesson
+arriving in a different costume.
+
+**What the passing round actually established**, scored from artifacts rather
+than the verdict: candidate `45a6853` = `origin/main` and installed `1d9d5bd` =
+`45a6853~1` exactly; `upstream: origin/design58/discovery` while
+`tracked_branch: main` and the candidate is still `origin/main` (finding 6a on
+hardware); the block branch's own HEAD refused *specifically* as `diverged`; 341
+entries staged with a matching marker and correctly un-flattened; a real 404
+from `api.github.com` cached without clobbering a seeded prior success; and
+requirement 3 closed on constructed clones carrying both the HTTPS and SSH
+legacy names, with post-bootstrap repointing still refused on both.
+
+**Sequencing note for 58c.** Its `updater-launcher.ps1` cannot run on CI at all,
+so every claim about activation, health and rollback will rest on exactly the
+kind of evidence that failed three times here. Put the state machine in Python
+where it can be unit-tested, keep the `.ps1` thin, and write the gate as a
+program from the start.
