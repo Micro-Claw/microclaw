@@ -13,7 +13,7 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-26 close of design/55`** — find it *by that heading*, not by position; it sits behind
+> **The live state note is `### State at the 2026-08-26 assignment of design/58`** — find it *by that heading*, not by position; it sits behind
 > several superseded notes that look just like it. It is the only section that
 > describes the repository as it is now.
 >
@@ -477,11 +477,43 @@ as a file and not necessarily as a classifier. A project drawn on M2 applied to 
 gave twice as much probability to the wrong class, and nothing in the file or the
 probability map announces it.
 
-### State at the 2026-08-26 close of design/55 — read this before assigning anything
+### State at the 2026-08-26 assignment of design/58 — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
-section, including the block-9a note directly above it. Position is not recency —
-read the heading, not the order.
+section. Position is not recency — read the heading, not the order.
+
+**`design/58` is coordinated and owns its own checklist and ledger**, like
+design/48 through design/57. This file does not track its blocks; it points at
+them. The doc is `design/58-automatic-updates.md`, five blocks, **58a–58e**, plus
+a non-code prerequisite row **58-P**.
+
+- **Written 2026-08-26 against the code; nothing is assigned and nothing is
+  implemented.** Every row in that checklist is open.
+- **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
+  skipped / 3 warnings** (macOS). Gate on zero failures, never the count.
+- **What it is:** Windows automatic updates. Two update providers behind one
+  commit-SHA identity — a GitHub Desktop private clone today, public `main` on
+  the day the repository flips — materialized into one of two package slots
+  beside a stable external launcher, with a nonce-matched startup health marker
+  and rollback.
+- **Every gate is the demo machine, and no limb needs a microscope.** The Nikon
+  is gone; M2 and M5 are not needed either. One optional read-only, zero-dose
+  `check-config --json` on M2 or M5 is a convenience, not a debt.
+- **One thing blocks shipping and it is not code.** §"Decision" makes a protected
+  `main` with a required test check a prerequisite. Measured 2026-08-26, branch
+  protection and rulesets both return **HTTP 403 — "Upgrade to GitHub Pro or make
+  this repository public"**: `Micro-Claw` is a Free org and the repo is private.
+  There is also no `.github/` and no workflow, so there is no check to require.
+  It gates 58e's merge and nothing before it.
+- **The public provider has no positive path while the repo is private.** Its
+  404, caching and silence are gated; a successful public install is recorded as
+  owed evidence with two escapes, in that doc's §"Owed evidence that cannot be
+  booked".
+
+### State at the 2026-08-26 close of design/55 — SUPERSEDED, kept for the round history
+
+**Not the live note.** Superseded by `### State at the 2026-08-26 assignment of
+design/58` above. Everything below was true at the close of design/55.
 
 **`design/55` is CLOSED and owns its own checklist and ledger**, like design/48
 through design/57. This file does not track its blocks; it points at them. The
