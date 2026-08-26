@@ -65,20 +65,30 @@ performs it has hidden the thing under test. Record what it did either way.
 
 ### R3 — a project with no pixel size
 
+**Run R4 first if you prefer; they are independent.** R3 needs a run that
+*completes*, and with this project the ratio you would naturally ask for is the
+one R4 refuses — so this step names a **trained** denominator on purpose.
+
 Point the session at the copied `.ilp` and a saved dataset. Ask, verbatim:
 
-> Score that dataset with this ilastik project and tell me what came back.
+> Score that dataset with this ilastik project. Use BG as the background and
+> give me apo_mito against BG.
 
 Then read the manifest's `parameters`:
 
 - `decimation_mode` must be **`unknown_scale_no_decimation`** with
-  `decimation_stride: 1`. This project records no pixel size, and Microclaw
-  refuses to read ilastik's `1` placeholder as a real micron.
-- **`scale_matched` here would be a gate failure** — it would mean the
-  placeholder is being read as a measurement again, which is what decimated an
-  M5 field to 36×35 and made ilastik produce nothing at all.
-- The agent should *report* the mode rather than treat it as an error. It is not
-  one.
+  `decimation_stride: 1`, `native_pixel_size_um: 1.0` and
+  `project_training_resolution_um: null`. This project records no pixel size,
+  and Microclaw refuses to read ilastik's `1` placeholder as a real micron.
+- **`scale_matched` here is a gate failure** — it would mean the placeholder is
+  being read as a measurement again, which is what decimated an M5 field to
+  36×35 and made ilastik produce nothing at all.
+- The agent should *report* the mode, not treat it as an error. It is not one.
+
+Measured by the coordinator against this exact project and a real demo-camera
+survey: **completed in 12.6 s for 9 fields**, `unknown_scale_no_decimation`,
+stride 1, coverage 0.107. The scores are meaningless — a mitochondria classifier
+on a sine-wave test pattern — and are listed only so a structural mismatch shows.
 
 ### R4 — a class nobody drew
 
@@ -88,7 +98,10 @@ Same project. Ask for the ratio it cannot give, verbatim:
 
 Expected: a refusal in **under a second**, saying the project *"names
 ['healthy_mito'] but never trained on them"* and listing the trained labels
-`['BG', 'apo_mito']`.
+`['BG', 'apo_mito']`. Coordinator-measured against real demo-camera frames:
+**0.12 s**. The demo camera's image content is irrelevant here — this is checked
+the moment the project's labels are read, before any frame is touched — so the
+step is fully reachable on the demo machine.
 
 **This is the most important step in the round.** Without the refusal, ilastik
 returns an all-zero channel for the untrained class and the ratio is pinned at
