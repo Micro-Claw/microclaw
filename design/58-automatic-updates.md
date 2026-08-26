@@ -819,9 +819,16 @@ the updater outside the environment it replaces".
 - [ ] A config replaced on disk between the snapshot and `build_session` does not
       change what the session receives.
 
-### Gate — demo machine, folded into 58c's runbook
+### Gate — demo machine, its own program
 
-Three commands, no hardware, no Micro-Manager:
+**Not folded into 58c, and not a runbook.** Every limb here is a literal
+command, so it ships as `design/58-block58b-demo-gate.py` plus a thin `.ps1`,
+exactly as 58a's does after its three failed rounds — `uv run` throughout, one
+PASS / FAIL / NOT EXERCISED record per limb, its own log, nonzero exit unless
+every limb ran and passed. Folding it into a later block's gate would delay
+58b's only hardware evidence behind the heaviest block in the design.
+
+No hardware, no Micro-Manager:
 
 - [ ] `check-config --json` on the machine's real config → `ready`,
       `$LASTEXITCODE` **0**.
@@ -1258,7 +1265,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
-| 58b | — | `design58/classification` | — | — | folded into 58c's runbook | — | — |
+| 58b | — | `design58/classification` | `0207ba0` | **assigned 2026-08-26**, codex, worktree `wt-58b` | demo — its own script, `design/58-block58b-demo-gate.ps1` | — | — |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
@@ -1273,22 +1280,13 @@ Everything needed is on `main`.
 
 State as of 2026-08-26:
 
-- **58a is implemented and pushed, awaiting demo gate round 2.** Branch
-  `design58/discovery` from `main` at `4103d36`; tip `b2f1e58`. Suite on the
-  branch, coordinator-measured: **2220 passed / 99 skipped / 3 warnings**
-  (macOS), against the 2182 baseline — 38 new tests. **Round 1 failed and its
-  findings are the section above**; do not read a green suite as readiness, and
-  do not repoint the demo machine's remote. Everything else is open and nothing has merged.
-- **Three review rounds, twelve findings.** Two are worth carrying: the runbook
-  shipped in a state where it **could not pass** (it took the installed commit
-  from the block branch's own HEAD, which is never an ancestor of `origin/main`,
-  so the ancestry refusal fired and the step reported "Discovery did not track
-  origin/main" — a false message for correct behaviour); and the fix for
-  "startup must survive a corrupt state file" **destroyed the only copy of
-  provenance** by overwriting it with a provenance-free error cache, with a test
-  that asserted exactly that. The second is the more instructive: a test written
-  to confirm the implementation rather than the requirement, which is
-  `CLAUDE.md` step 3's warning one level up from a fake.
+- **58a is MERGED** (`33028e9`) and its branch, worktree and gate are closed.
+  `main` measures **2220 passed / 99 skipped / 3 warnings** (macOS,
+  coordinator-measured). Its round history is §"58a demo gate round 1" and
+  `design/prompts.md`.
+- **58b is assigned** (2026-08-26) on `design58/classification` from `main` at
+  `0207ba0`, codex in worktree `wt-58b`. Its gate ships as a **program**, not a
+  runbook — see `CLAUDE.md` step 6, which 58a rewrote.
 - **`design/58` is not a row in `design/35`.** It tracks itself, here.
 - **The repository is already `Micro-Claw/microclaw`, id 1238975695, private**,
   verified against the API on 2026-08-26. No production install will ever have to
