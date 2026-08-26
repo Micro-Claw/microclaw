@@ -627,7 +627,6 @@ Write each of these before the fix and watch it fail for the stated reason.
   construction or position motion as appropriate. A sixth capability therefore
   extends the matrix automatically and fails until every path recognizes it; no
   source or AST inspection of local dictionaries.
-
 ## Blocks
 
 ### 55a — an unattached hardware plan refuses
@@ -637,14 +636,10 @@ Files: `microclaw/tools.py` (`HOOK_CAPABILITY_ARGS`, `run_timelapse`,
 `run_zstack`, `_configure_hook_capabilities`),
 `tests/test_hook_illumination_artifacts.py`.
 
-**Rig gate 55a (Nikon).** The Nikon is the reproducer and the block is a
-refusal, so the gate is short and costs almost no dose.
-
-- The line-89 call, verbatim, refuses with a message naming `hook_strategy`, and
-  `get_stage_position("TITIRF")` is unchanged before and after.
-- The same call with `hook_strategy` set and `interval_s=0` refuses at planning
-  time, and no dataset directory is created.
-- One unrelated plain `run_timelapse` still runs and saves.
+**Gate: the demo machine.** Runbook `design/55-block55a-demo-gate.md`, on the
+block's branch. The Nikon gate this section used to name is not bookable — see
+§"The gate plan, 2026-08-26" below for what replaced it and why the substitution
+costs this block nothing.
 
 ### 55b — a fixed plan stands alone
 
@@ -657,42 +652,223 @@ Files: `microclaw/tools.py` (`run_timelapse`, `run_zstack`, `_emit_timelapse`,
 `tests/test_hook_illumination_artifacts.py`,
 `tests/test_session_script_export.py`.
 
-**Rig gate 55b (Nikon).** The sweep the session was owed, on the sample it was
-owed for.
-
-- A five-point `TITIRF` sweep through `run_timelapse` with a plan, a nonzero
-  `interval_s`, no `hook_strategy`, a write budget of six (five moves plus the
-  reserved restoration write), saved. `run_analysis_on_saved_dataset` reports
-  SNR **rising and then falling** across the five frames — the shape the
-  manual sweep measured (5000 blank, 5500 → 7600 rising, 8000 turning over). A
-  flat SNR across the five is this block failing.
-- The hook log's `achieved_um` per frame equals the planned target, and the final
-  entry restores the entry position. Compare the log's last achieved value
-  against `get_stage_position` afterwards; `CLAUDE.md` step 6 — 52a's third gate
-  passed every stated limb and was caught only by that disagreement.
-- `export_session_script`, then run the emitted file standalone with the laser
-  off. It sweeps the same five angles and restores. Grep it for the literal five
-  target values, written into the runbook as literals — not as `<t1>…<t5>`
-  placeholders to substitute (52c's strictest criterion produced no rig evidence
-  because it shipped with placeholders and was run verbatim).
+**Gate: the demo machine (Part A) plus one short limb on M2 or M5 (Part B).**
+Runbook `design/55-block55b-gate.md`, on the block's branch.
 
 Step-10 design gate: record in `CLAUDE.md` §"The pycro-manager acquisition
 engine" that a guard belonging to a coordinator is only as reachable as the
 coordinator, and in `design/52-approved-hook-property-actions.md` that a fixed
 plan no longer implies a hook.
 
+---
+
+# Checklist — coordinated 2026-08-26
+
+**Process is `CLAUDE.md` §"The block workflow", which is authoritative.** This
+section owns *what* the blocks are, their gates and the ledger. `design/55` is
+not tracked in `design/35`; this file tracks it, as design/48–design/57 each
+track their own.
+
+Two blocks, **in sequence, not in parallel** — both touch `run_timelapse` and
+`run_zstack`. Implementation is delegated to headless Codex through the project
+`codex-runner` skill, one linked worktree per block.
+
+## The gate plan, 2026-08-26 — why neither gate is on the Nikon
+
+**The operator has lost access to the Nikon.** The two rig gates written above
+name `TITIRF` and a five-point TIRF-angle sweep; neither can be run. Available
+machines are the **demo machine** (stock `MMConfig_demo.cfg` plus the `Aux Z`
+DStage that block 4c's setup added), **M2** and **M5**.
+
+The substitution is close to free, and it is worth stating exactly why rather
+than asserting it:
+
+- **55a costs nothing to move.** It is entirely refusals — no motion, no dose,
+  no optics. The demo machine runs a real MMCore, a real bridge and a real
+  acquisition engine, which is everything 55a's refusals sit in front of.
+- **55b's mechanism moves with it too.** Its evidence is requested-versus-
+  achieved position per event, a restoration record, an audit log, a set of
+  envelope refusals and an exported script that re-executes the program. `Aux Z`
+  is a real Micro-Manager stage device driven over the real bridge; every one of
+  those is observable on it.
+- **One thing does not move, and it is recorded as untested rather than
+  inferred.** The Nikon gate's criterion was *SNR rising and then falling across
+  the five frames* — the optical proof that frame *k* was exposed with the axis
+  at target *k*. **No machine now available can produce it.** The demo camera's
+  frames are bit-identical whatever the stage does (measured repeatedly, most
+  recently by block 43j's demo rounds), and M2 "has never been run in TIRF mode"
+  in its own gate's words (`design/52-block52a-rig-gate.md`), which is why 52a —
+  the block that first shipped this sweep — declared "it does not prove anything
+  optical" and passed anyway.
+- **What M2/M5 add instead is timing, and that is why Part B exists.** `Aux Z` is
+  simulated and arrives instantly, so a demo-only gate never exercises
+  `settle_stage_move` inside a hook on a device that takes real time to move —
+  `CLAUDE.md` §"A device that is not busy is not a device that arrived". Part B
+  is one sweep on a real motorized named stage and nothing else.
+
+**Every number in both runbooks is a literal.** `Aux Z` is bounded 0–200 µm in
+the demo `named_stages`, so the plan targets are written as `40`, `90`, `140`
+rather than computed from a position the operator pastes in. 52c's strictest
+criterion produced no rig evidence because it shipped as
+`Select-String -Pattern "<t2>", "<t3>"` and was run verbatim; nothing in either
+runbook is a placeholder to substitute.
+
+## 55a — an unattached hardware plan refuses
+
+Implementation:
+
+- [ ] `HOOK_CAPABILITY_ARGS` added at module level in `microclaw/tools.py`.
+- [ ] `_configure_hook_capabilities` is called **unconditionally** in both
+      `run_timelapse` and `run_zstack`, with `hook=None` when no hook resolved.
+- [ ] The call sits **ahead of `ctrl.core.set_exposure`** in both tools; the
+      preamble reorder moves no other line relative to a mutation.
+- [ ] The `not isinstance(hook, UntrustedHookAdapter)` refusal splits, and the
+      `hook is None` branch names the omission and says `pass hook_strategy`.
+- [ ] Presence is `is not None`, never truthiness — `{}` refuses.
+- [ ] `hook_action_plan` with `n_frames > 1` and `interval_s == 0` refuses at
+      planning time in `run_timelapse`, naming time-axis sequencing.
+- [ ] No emitter change (no session can record a plan-only call after 55a).
+
+Evidence, each watched failing on the pre-fix tree first:
+
+- [ ] The line-89 call refuses and `core.set_position` is never called; same for
+      `run_zstack`, and for each capability alone.
+- [ ] The refusal lands **before `set_exposure`** in both tools — asserted on
+      `set_exposure`, not only on `set_position`.
+- [ ] `interval_s == 0` + `n_frames > 1` + plan refuses before channel/exposure
+      mutation **and** before `Acquisition` construction.
+- [ ] `n_frames == 1`, `interval_s == 0`, one-entry plan still runs.
+- [ ] Parameterized matrix over `HOOK_CAPABILITY_ARGS` through the validator.
+- [ ] The four existing tests at `tests/test_hook_illumination_artifacts.py:148,
+      303, 441, 763` stay green **untouched**.
+
+Gate (demo machine), `design/55-block55a-demo-gate.md`:
+
+- [ ] Step 0 — pin by ancestry, install, full suite, zero failures.
+- [ ] Step 1 — `Aux Z` present and bounded `0–200` in `named_stages`; stop and
+      fix the config here if not, so every later number stays literal.
+- [ ] Step 2 — the line-89-shaped call refuses naming `hook_strategy`;
+      `Aux Z` reads the same before and after; **no dataset directory created**.
+- [ ] Step 3 — the same call with `hook_strategy` set and `interval_s=0` refuses
+      at planning time; no dataset directory.
+- [ ] Step 4 — the camera's `Exposure` property is **unchanged** across a refused
+      call that asked for a different exposure. This is "One guard, moved",
+      proved on hardware rather than on a fake.
+- [ ] Step 5 — each of the five capabilities alone refuses.
+- [ ] Step 6 — an ordinary `run_timelapse` and an ordinary `run_zstack` still run
+      and save.
+- [ ] Step 7 — `export_session_script` over that session parses, the refused
+      calls appear as skipped, the plain runs emit.
+
+## 55b — a fixed plan stands alone
+
+Implementation:
+
+- [ ] `PLAN_ONLY` sentinel in `microclaw/hook_decisions.py`.
+- [ ] Both tools build `UntrustedHookAdapter(PLAN_ONLY, log_path=...)` when a
+      plan is present and no `hook_strategy` is.
+- [ ] `_prepare_log_path` gains `default:`; a **defaulted** path is suffixed for
+      collision, an explicit one is not. The report says whether this rule and
+      `_next_available_log_path` (`tools.py:786`) can be made one thing.
+- [ ] The inner reserved-run refusal in both tools uses the capability predicate,
+      and keeps the existing message's second sentence.
+- [ ] `run_multiposition_acquisition` refuses `hook_strategy` or any
+      `HOOK_CAPABILITY_ARGS` name inside `protocol_params` **before** the
+      position loop's first move.
+- [ ] `_emit_timelapse` / `_emit_zstack` route on "does this run move hardware",
+      not on `hook_strategy`.
+- [ ] `_adaptive_hook_export` handles the plan-only record: empty hook source,
+      a self-contained `object()` in the constructor, `saved=True`.
+- [ ] `_emit_adaptive` reads the log path from **the result** when the input
+      carries none.
+- [ ] `microclaw/tools_schema.py` descriptions for both tools say a plan needs no
+      hook and needs a nonzero `interval_s`.
+
+Evidence:
+
+- [ ] The corrected line-89 call (`interval_s > 0`, `max_writes: 4`) drives
+      `set_position` for its three targets **in event order** and restores after
+      the `with` block.
+- [ ] With no `log_path`, a collision-free default log exists and records each
+      accepted write with `achieved_um`, plus the restoration record.
+- [ ] Out-of-bounds refuses; the restoration write is counted in the budget;
+      `CONFIRM_FN` is still required.
+- [ ] **The exported script is `exec`'d against fakes and its
+      `pre_hardware_hook_fn` driven per event** — the three writes and the
+      restoration, not merely that it compiles.
+- [ ] A hookless run still emits through `_emit_acquisition`, no adaptive runner.
+- [ ] A plan-only record added to `test_emitted_inline_defines_every_name_it_uses`.
+- [ ] The exported script of a defaulted-log run emits a **real** log name.
+- [ ] Two plan-only runs sharing `save_dir` and `name` write two logs.
+- [ ] `_reservation` refuses before confirmation, acquisition or motion; a plain
+      reserved acquisition is unchanged.
+- [ ] Empty `{}` refuses for every envelope and budget.
+- [ ] 55a's matrix extended to both refusal paths 55b adds.
+
+Gate Part A (demo machine), `design/55-block55b-gate.md`:
+
+- [ ] Step 0 — pin, install, full suite.
+- [ ] Step 1 — `Aux Z` present, bounded `0–200`, and its entry position recorded.
+- [ ] Step 2 — a 3-frame `run_timelapse`, `interval_s=2`, **no `hook_strategy`**,
+      plan `40 / 90 / 140` µm, envelope `max_writes: 4`, `restore: "entry"`.
+      One confirmation, one dataset, a `named_stage_restoration` in the result,
+      a `log_path` in the result, and `Aux Z` back at its entry position.
+- [ ] Step 3 — the log carries three accepted writes whose `achieved_um` equal
+      `40`, `90`, `140` in event order, plus the restoration record. **Compare
+      the log's last achieved value against `get_stage_position` afterwards**
+      (`CLAUDE.md` step 6 — 52a's third gate was caught only by that
+      disagreement).
+- [ ] Step 4 — the same plan with `restore: "leave"`: afterwards `Aux Z` reads
+      `140`, not the entry position. This is the **external** witness that the
+      moves happened, independent of the log the code under test writes.
+- [ ] Step 5 — two plan-only runs sharing `save_dir` and `name` leave two log
+      files, not one interleaved file.
+- [ ] Step 6 — refusals on hardware: a target of `250` (outside `0–200`);
+      `max_writes: 3` with `restore: "entry"`; a declined confirmation. Each
+      writes nothing and moves nothing.
+- [ ] Step 7 — `run_multiposition_acquisition` with `hook_action_plan` inside
+      `protocol_params` refuses **before the first XY move** (XY read before and
+      after).
+- [ ] Step 8 — `export_session_script`; grep the emitted file for the literals
+      `40`, `90` and `140`, and for the absence of `_log_path = None`.
+- [ ] Step 9 — run the emitted script standalone with Microclaw closed. It
+      sweeps the same three targets, restores, writes its own log, and its log
+      matches the live one record for record.
+- [ ] Step 10 — an ordinary hookless `run_timelapse` in the same session still
+      exports through `_emit_acquisition`; its script contains no
+      `UntrustedHookAdapter`.
+
+Gate Part B (M2 **or** M5 — whichever is free), same runbook:
+
+- [ ] One 3-frame plan-only sweep on a real motorized named stage — `TIRF Stage`
+      on M2 (`named_stages` `-10497.8 .. 6256.8`) or `Thorlabs ELL17/ELL20` on
+      M5 (`named_stages` `0 .. 20000`) — `interval_s=2`, `restore: "entry"`.
+      `achieved_um` within tolerance of each target on a device that takes real
+      time to move, and the axis back at entry afterwards.
+- [ ] **Recorded as untested, not inferred:** that the *image* changes across the
+      sweep. Neither machine can show it — M2 has never been run in TIRF mode,
+      and the demo camera's frames are bit-identical. If the Nikon ever comes
+      back, that limb is the one thing owed.
+
 ## Run ledger
 
-| Block | Branch | Start commit | Implementer | Rig gate | Merged | Design reconciled |
+| Block | Branch | Start commit | Implementer | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 55a | — | — | — | — | — | — |
-| 55b | — | — | — | — | — | — |
+| 55a | `design55/unattached-plan-refuses` | `b54c30b` | Codex runner (worktree `../microclaw-55a`) | demo — not yet run | — | — |
+| 55b | — | — | — | demo + M2/M5 — not yet run | — | — |
 
-Not started. `design/54` is live and unmerged on `design54/display-roi` and
-**touches three of the same files** — `microclaw/tools.py`,
-`microclaw/tools_schema.py` and `tests/test_session_script_export.py` — though
-in different regions (ROI and autofocus, not the acquisition preamble or the
-hook capabilities). Sequence against it rather than assuming no conflict:
-branch 55a from a tree that already carries 54, or merge 54 first. 55a and 55b
-both touch `run_timelapse` / `run_zstack`, so they also run in sequence, not in
-parallel with each other.
+**Baseline, coordinator-measured on `b54c30b` (macOS): 2135 passed / 99 skipped /
+3 warnings.** On Windows expect the same total with a different skip split
+(2110 + 124 on the demo machine at the 9a gate). **Gate on zero failures, never
+on the count.**
+
+**The sequencing note this file used to carry is spent.** `design/54` is fully
+merged — 54a/54b/54d/54e in `3be1037`, 54c in `1fa0eb6` — and both its branches
+are deleted, so 55a branches from plain `main`. 55a and 55b still run in
+sequence, because both rewrite the same preamble in `run_timelapse` and
+`run_zstack`.
+
+**Line numbers in this document are from 2026-08-19 and have drifted.**
+`run_zstack` is now `tools.py:3213` and `run_timelapse` `tools.py:3373`; the
+`if hook_strategy:` blocks are at `:3255` and `:3417`. Find every site by name,
+never by the line numbers quoted above.
