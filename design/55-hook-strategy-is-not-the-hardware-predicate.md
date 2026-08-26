@@ -889,7 +889,7 @@ Gate Part B (M2 **or** M5 — whichever is free), same runbook:
 | Block | Branch | Start commit | Implementer | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
 | 55a | `design55/unattached-plan-refuses` (deleted) | `9128715` | Codex runner (worktree `../microclaw-55a`), impl `6a38ece`; runbook `fa3b48c` pins `6a38ece`; coordinator message fix `d9546db` | **PASS demo 2026-08-26** (`block55a-2026-08-26`), Steps 0–4; six correct refusals in Step 3, and one defect found and fixed — the refusal named `hook_strategy` and the session correctly tried a *precoded* hook | **`2eaa0e3`** 2026-08-26 | **done** — `CLAUDE.md` §engine gains a sixth contract; the demo-camera premise this checklist used to scope the gates is corrected above |
-| 55b | `design55/plan-stands-alone` | `8f73b90` | Codex runner (worktree `../microclaw-55b`) — **assigned 2026-08-26** | demo Part A + M2/M5 Part B — not yet run | — | — |
+| 55b | `design55/plan-stands-alone` | `8f73b90` | Codex runner (worktree `../microclaw-55b`), impl `1d21a4c` + `067a6b2` (review round 1, three findings returned); runbook `968a068` pins `067a6b2` | `design/55-block55b-gate.md` — **pushed 2026-08-26, awaiting the demo machine (Part A) and M2/M5 (Part B)** | — | — |
 
 **Baseline, coordinator-measured on `b54c30b` (macOS): 2135 passed / 99 skipped /
 3 warnings.** After 55a: **2155 / 99** on macOS, `2129 / 124` on the demo machine
