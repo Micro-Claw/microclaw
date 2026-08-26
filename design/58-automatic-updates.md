@@ -572,6 +572,17 @@ two functions. `CLAUDE.md` §"Don't add layers".
 - [ ] **6. The user's checkout is never modified.** No fast-forward, merge,
       rebase, stash, discard, branch switch, or stamped file. A dirty tree and a
       feature branch do not block an update, because neither is build input.
+- [ ] **6a. Discovery tracks `<remote>/main`, never the checked-out branch.**
+      §"Track the private clone's upstream" says the bootstrap records the
+      clone's *current branch*; on our own machines that is wrong and it bites
+      immediately. The demo machine's clone is the one an operator checks a block
+      branch out onto to run a gate, so a bootstrap performed during a gate — or
+      a gate run after a bootstrap — would silently retarget the update channel
+      at `design58/two-slots`. Resolve the remote-tracking ref for the
+      compiled-in `BRANCH` at **check** time. Record the observed branch and
+      upstream as diagnostics if they are useful in an error message; never as
+      the thing that selects the commit. **Amend line 36 of this document** in
+      the post-merge design gate.
 - [ ] **7. Credentials that do not work produce the sentence, not a hang.**
       "Open GitHub Desktop, Fetch origin, then Check again." Microclaw still
       compares the remote-tracking ref GitHub Desktop refreshed.
@@ -641,6 +652,9 @@ evidence (`feedback_watch_it_fail_not_regressions`).
       checkout is **byte-identical** afterwards — status, HEAD, branch and
       worktree.
 - [ ] A diverged upstream (installed commit not an ancestor) offers nothing.
+- [ ] A clone on a feature branch, on a detached HEAD, and on a branch with no
+      configured upstream each still discover `<remote>/main`'s commit — three
+      cases, because each fails a different naive implementation.
 - [ ] A `git fetch` that would prompt exits non-zero under
       `GIT_TERMINAL_PROMPT=0` and produces the GitHub Desktop sentence, bounded
       by the timeout.
@@ -670,6 +684,10 @@ No Micro-Manager needed.
       afterwards `git status --porcelain` and `git rev-parse --abbrev-ref HEAD`
       are unchanged, printed before and after.
 - [ ] A materialized staging tree's recorded SHA matches the fetched commit.
+- [ ] **A block branch is checked out in the clone, and discovery still names
+      `origin/main`'s commit** — the branch is `design58/discovery`, the reported
+      candidate is `git rev-parse origin/main`, and the two are printed together.
+      This is the limb our own gate sessions would otherwise break.
 - [ ] `--no-update-check` and `MICROCLAW_UPDATE_CHECK=0` each perform no network
       call, proven by the unchanged attempt timestamp in `update-state.json`.
 
@@ -816,6 +834,29 @@ The block that can brick an install. It carries the migration.
       existing `env` into the managed layout as `env-a`, writes `active-slot.txt`,
       writes `microclaw-slot.json`, and records provenance — clone/upstream/commit
       when `.git` is present, otherwise `public-head` with commit `unknown`.
+- [ ] **12a. Migration covers `%LOCALAPPDATA%\microclaw\env` and nothing else,
+      and it must say so out loud.** `microclaw/shortcut.py:launcher()` handles
+      two layouts on purpose and its comment names the second: *"Under conda —
+      what the lab machine runs — python.exe sits at the env root."* A conda,
+      miniforge or embedded-Python install is not at the migrated path, so
+      `install.bat` builds a **second**, uv-managed installation beside it and
+      `install-shortcut` moves the desktop icon to the new one — leaving the old
+      environment orphaned, still holding old code, with nothing telling the user
+      it is no longer what the icon launches. Detect that case (a resolvable
+      `microclaw` outside the managed layout) and **print what happened and where
+      the old environment is**. Do not delete it, do not import from it, and do
+      not attempt an in-place conda upgrade.
+- [ ] **12b. The updater never installs into an environment it did not create.**
+      Every `uv pip install` targets a slot under `%LOCALAPPDATA%\microclaw`
+      that this installer or this updater made. No path derived from
+      `sys.executable`, `CONDA_PREFIX`, `PATH`, or a recorded clone may ever
+      become an install target. This is the item that answers "will it break my
+      miniforge environment" in code rather than in prose.
+- [ ] **12c. An unmanaged install stays silent, not broken.** With no
+      `update-state.json` it gets no check, no banner and no CLI line (58a item
+      3) and is left byte-untouched. That is the shipped behaviour for every
+      conda and embedded-Python user who never runs the new `install.bat`, and it
+      is the behaviour to keep.
 - [ ] **13. `%APPDATA%` is out of scope, in both directions.** Safety bounds, API
       credentials, histories and user data are never migration inputs and never
       deletion targets.
@@ -875,6 +916,12 @@ Step 1** — the runbook says so as a literal command, and prints the copy.
       before and after.
 - [ ] `install.bat` run twice in a row is idempotent and does not lose the
       active slot.
+- [ ] **A non-uv environment is left alone.** Create a throwaway conda/venv
+      environment with microclaw installed into it, run the updater-capable
+      `install.bat`, and afterwards: that environment's `microclaw` still
+      imports and still reports its own path, the installer **printed** where it
+      is and that the icon has moved, and nothing under it was written. Hash its
+      `site-packages` before and after.
 
 ## 58d — cached status, one staging job, and the banner
 
@@ -1048,6 +1095,15 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 
 - [ ] Rewrite §"Decision"'s branch-protection paragraph in the past tense with
       what was actually done, and record the ruleset id or the escape taken.
+- [ ] **Amend §"Track the private clone's upstream for now"**: it says the
+      bootstrap records the clone's *current branch*. Discovery must track
+      `<remote>/main`. See 58a item 6a for why our own gate machine is the case
+      that breaks it.
+- [ ] **Amend §"Put the updater outside the environment it replaces"** to say
+      what happens to a conda, miniforge or embedded-Python install. Today it
+      says only that `install.bat` "migrates the existing `env` install", which
+      is silent about the layout `shortcut.py` explicitly supports and the lab
+      machine actually runs. See 58c items 12a–12c.
 - [ ] Reconcile the `update-state.json` and `microclaw-slot.json` field lists in
       this document against what shipped. A design doc that names fields the code
       does not write is how 55b's `hasattr` misreading happened.
