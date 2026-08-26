@@ -920,8 +920,7 @@ guard = _RecordedSafetyGuard()
 '''
 
 
-def _portable_log_path_source() -> str:
-    return '''def _next_available_log_path(path):
+def _next_available_log_path(path: Path) -> str:
     """Keep every standalone run log beside this script without collisions."""
     if not path.exists():
         return str(path)
@@ -929,12 +928,17 @@ def _portable_log_path_source() -> str:
         candidate = path.with_name(f"{path.stem}_{number}{path.suffix}")
         if not candidate.exists():
             return str(candidate)
-'''
+
+
+def _portable_log_path_source() -> str:
+    return inspect.getsource(_next_available_log_path)
 
 
 def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
     """Return exact hook source, constructor expression, and saved-hook flag."""
     strategy = params.get("hook_strategy")
+    if not strategy and params.get("hook_action_plan") is not None:
+        return "", "UntrustedHookAdapter(object(), log_path=_log_path)", True
     if isinstance(strategy, list):
         raise CannotEmit("adaptive hook composition is not supported by the standalone runner")
     if not isinstance(strategy, str) or not strategy:
@@ -1099,7 +1103,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     if not limits:
         raise CannotEmit(params.get("_export_safety_limits_error")
                          or "the record carries no export-time safety limits")
-    recorded_log = params.get("log_path")
+    recorded_log = params.get("log_path") or params.result.get("log_path")
     log_name = Path(recorded_log).name if recorded_log else None
     common = [
         _export_guard_source(limits), hook_source,
@@ -1348,7 +1352,8 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
 
 
 def _emit_zstack(params: RecordedParams) -> str:
-    if params.get("hook_strategy"):
+    if (params.get("hook_strategy") or
+            params.get("hook_action_plan") is not None):
         return _emit_adaptive(params, "zstack", "zstack")
     return _emit_acquisition({
         "z_start": params["z_start_um"], "z_end": params["z_end_um"],
@@ -1357,7 +1362,8 @@ def _emit_zstack(params: RecordedParams) -> str:
 
 
 def _emit_timelapse(params: RecordedParams) -> str:
-    if params.get("hook_strategy"):
+    if (params.get("hook_strategy") or
+            params.get("hook_action_plan") is not None):
         return _emit_adaptive(params, "timelapse", "timelapse")
     return _emit_acquisition({
         "num_time_points": params["n_frames"],
@@ -1450,7 +1456,10 @@ def export_session_script(
     ]
     adaptive_used = any(
         name.startswith("run_adaptive_") or (
-            name in {"run_timelapse", "run_zstack"} and params.get("hook_strategy")
+            name in {"run_timelapse", "run_zstack"} and (
+                params.get("hook_strategy") or
+                params.get("hook_action_plan") is not None
+            )
         )
         for name, params in included
     )
@@ -1498,7 +1507,10 @@ def export_session_script(
             )
     for name, params in recorded:
         if name.startswith("run_adaptive_") or (
-            name in {"run_timelapse", "run_zstack"} and params.get("hook_strategy")
+            name in {"run_timelapse", "run_zstack"} and (
+                params.get("hook_strategy") or
+                params.get("hook_action_plan") is not None
+            )
         ):
             params["_export_safety_limits"] = safety_limits
             params["_export_safety_limits_error"] = safety_limits_error
@@ -3245,11 +3257,19 @@ def run_zstack(
     # Before set_exposure and before the sweep: an out-of-workspace save_dir
     # must not cost an acquisition to discover.
     save_dir = guard.resolve_in_workspace(save_dir)
-    if _reservation is not None and hook_strategy:
+    carries_hardware_capability = any(
+        value is not None for value in (
+            illumination_envelope, artifact_limits, named_stage_envelope,
+            property_envelope, hook_action_plan,
+        )
+    )
+    if _reservation is not None and (hook_strategy or carries_hardware_capability):
         raise ValueError(
-            "A hook cannot be nested in a reserved per-position protocol. Pass "
+            "A hook or hook hardware plan cannot be nested in a reserved "
+            "per-position protocol. Pass "
             "run_multiposition_acquisition(hook_strategy=...) instead; it uses one "
-            "Acquisition and one hook log across every position."
+            "Acquisition and one hook log across every position. A "
+            "hook_action_plan has no such route: its indices address one run's events."
         )
     guard.check_z(z_start_um)
     guard.check_z(z_end_um)
@@ -3265,13 +3285,22 @@ def run_zstack(
         channel=channel, exposure_ms=exposure_ms,
         z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
+    carries_plan = hook_action_plan is not None
     hook = None
-    log_path = _prepare_log_path(guard, log_path) if hook_strategy else None
+    log_path = (
+        _prepare_log_path(
+            guard, log_path, default=f"{save_dir}/{name}_plan_log.jsonl"
+        ) if carries_plan else
+        _prepare_log_path(guard, log_path) if hook_strategy else None
+    )
     if hook_strategy:
         try:
             hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
         except ValueError as exc:
             return {"error": str(exc)}
+    elif carries_plan:
+        from microclaw.hook_decisions import PLAN_ONLY, UntrustedHookAdapter
+        hook = UntrustedHookAdapter(PLAN_ONLY, log_path=log_path)
     try:
         # Unconditional and ahead of set_exposure: a capability with no hook to
         # carry it refuses before the camera is changed.
@@ -3305,6 +3334,7 @@ def run_zstack(
         result.update(_adaptive_result(
             dataset_path, log_path, status="Z-stack complete.",
             frames_planned=len(events), frames_acquired=len(events),
+            frames_exposed=len(events),
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
             duration_s=round(time.monotonic() - started, 6),
@@ -3408,11 +3438,19 @@ def run_timelapse(
     _reservation: Reservation | None = None,
 ) -> dict:
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
-    if _reservation is not None and hook_strategy:
+    carries_hardware_capability = any(
+        value is not None for value in (
+            illumination_envelope, artifact_limits, named_stage_envelope,
+            property_envelope, hook_action_plan,
+        )
+    )
+    if _reservation is not None and (hook_strategy or carries_hardware_capability):
         raise ValueError(
-            "A hook cannot be nested in a reserved per-position protocol. Pass "
+            "A hook or hook hardware plan cannot be nested in a reserved "
+            "per-position protocol. Pass "
             "run_multiposition_acquisition(hook_strategy=...) instead; it uses one "
-            "Acquisition and one hook log across every position."
+            "Acquisition and one hook log across every position. A "
+            "hook_action_plan has no such route: its indices address one run's events."
         )
     if hook_action_plan is not None and n_frames > 1 and interval_s == 0:
         raise ValueError(
@@ -3436,13 +3474,22 @@ def run_timelapse(
         channel=channel, exposure_ms=exposure_ms,
         num_time_points=n_frames, time_interval_s=interval_s,
     )
+    carries_plan = hook_action_plan is not None
     hook = None
-    log_path = _prepare_log_path(guard, log_path) if hook_strategy else None
+    log_path = (
+        _prepare_log_path(
+            guard, log_path, default=f"{save_dir}/{name}_plan_log.jsonl"
+        ) if carries_plan else
+        _prepare_log_path(guard, log_path) if hook_strategy else None
+    )
     if hook_strategy:
         try:
             hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
         except ValueError as exc:
             return {"error": str(exc)}
+    elif carries_plan:
+        from microclaw.hook_decisions import PLAN_ONLY, UntrustedHookAdapter
+        hook = UntrustedHookAdapter(PLAN_ONLY, log_path=log_path)
     try:
         # Unconditional and ahead of set_exposure: a capability with no hook to
         # carry it refuses before the camera is changed.
@@ -3483,6 +3530,7 @@ def run_timelapse(
         result.update(_adaptive_result(
             dataset_path, log_path, status="Timelapse complete.",
             frames_planned=len(events), frames_acquired=len(events),
+            frames_exposed=len(events),
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
             duration_s=round(time.monotonic() - started, 6),
@@ -5266,6 +5314,15 @@ def run_multiposition_acquisition(
         save_dir = guard.resolve_in_workspace(save_dir)
 
     params = protocol_params or {}
+    supplied = [
+        key for key in ("hook_strategy", *HOOK_CAPABILITY_ARGS)
+        if params.get(key) is not None
+    ]
+    if supplied:
+        return {
+            "error": "protocol_params cannot carry per-run hook capabilities in a "
+            "reserved multiposition protocol: " + ", ".join(supplied)
+        }
     results = []
 
     projection = None
@@ -5600,7 +5657,8 @@ def run_multiposition_with_autofocus(
 
 # --- Hook-based adaptive acquisition ---
 
-def _prepare_log_path(guard: SafetyGuard, log_path: str | None) -> str | None:
+def _prepare_log_path(guard: SafetyGuard, log_path: str | None, *,
+                      default: str | None = None) -> str | None:
     """Resolve a hook's log path in the workspace and create its parent directory.
 
     The hook writes this file itself, so the path never passed the guard on its
@@ -5612,10 +5670,14 @@ def _prepare_log_path(guard: SafetyGuard, log_path: str | None) -> str | None:
     the image processor*, after the acquisition has already moved the stage and
     written a dataset. save_dir is created up front; log_path must be too.
     """
+    defaulted = not log_path and bool(default)
+    log_path = log_path or default
     if not log_path:
         return None
     log_path = guard.resolve_in_workspace(log_path)
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    if defaulted:
+        return _next_available_log_path(Path(log_path))
     return log_path
 
 
@@ -5818,9 +5880,9 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         }
         if any(value is not None for value in supplied.values()):
             raise ValueError(
-                "hook_action_plan and hook envelopes are executed by a hook and "
-                "have no effect without one; pass hook_strategy naming a saved "
-                "generated hook. A precoded hook cannot carry them."
+                "Hook envelopes with neither a hook nor a hook_action_plan have "
+                "no effect; pass hook_strategy naming a saved generated hook. "
+                "A precoded hook cannot carry them."
                 if hook is None else
                 "Hook envelopes apply only to saved generated hooks."
             )

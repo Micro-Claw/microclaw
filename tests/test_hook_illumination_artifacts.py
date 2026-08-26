@@ -103,8 +103,6 @@ def _line_89_capabilities():
     ("tool", "interval_s", "message"),
     [
         ("timelapse", 0, "hardware-sequence the time axis"),
-        ("timelapse", 1, "have no effect without one"),
-        ("zstack", None, "have no effect without one"),
     ],
 )
 def test_line_89_unattached_plan_refuses_without_stage_motion(
@@ -130,7 +128,7 @@ def test_line_89_unattached_plan_refuses_without_stage_motion(
 )
 def test_each_unattached_capability_refuses(capability, value, monkeypatch, tmp_path):
     ctrl = MagicMock()
-    with pytest.raises(ValueError, match="have no effect without one"):
+    with pytest.raises(ValueError, match="neither a hook nor a hook_action_plan"):
         _unattached_run(
             monkeypatch, tmp_path, "timelapse", ctrl, **{capability: value}
         )
@@ -160,7 +158,7 @@ def test_no_hook_refusal_names_the_hook_kind_that_can_carry_the_plan(
 @pytest.mark.parametrize("tool", ["timelapse", "zstack"])
 def test_unattached_refusal_precedes_core_exposure(tool, monkeypatch, tmp_path):
     ctrl = MagicMock()
-    with pytest.raises(ValueError, match="have no effect without one"):
+    with pytest.raises(ValueError, match="neither a hook nor a hook_action_plan"):
         _unattached_run(
             monkeypatch, tmp_path, tool, ctrl,
             property_envelope={"device": "Wheel"},
@@ -227,21 +225,24 @@ def test_single_frame_zero_interval_plan_still_runs(monkeypatch, tmp_path):
 )
 def test_empty_unattached_envelope_is_present(capability, monkeypatch, tmp_path):
     ctrl = MagicMock()
-    with pytest.raises(ValueError, match="have no effect without one"):
+    with pytest.raises(ValueError, match="neither a hook nor a hook_action_plan"):
         _unattached_run(
             monkeypatch, tmp_path, "timelapse", ctrl, **{capability: {}}
         )
 
 
-@pytest.mark.parametrize("capability", HOOK_CAPABILITY_ARGS)
+@pytest.mark.parametrize(
+    # A fixed plan now builds its own coordinator, so it cannot reach the
+    # no-coordinator refusal this matrix exercises.
+    "capability", [name for name in HOOK_CAPABILITY_ARGS if name != "hook_action_plan"]
+)
 def test_every_hook_capability_refuses_without_hook_before_exposure(
     capability, monkeypatch, tmp_path
 ):
-    value = [] if capability == "hook_action_plan" else {}
     ctrl = MagicMock()
-    with pytest.raises(ValueError, match="have no effect without one"):
+    with pytest.raises(ValueError, match="neither a hook nor a hook_action_plan"):
         _unattached_run(
-            monkeypatch, tmp_path, "timelapse", ctrl, **{capability: value}
+            monkeypatch, tmp_path, "timelapse", ctrl, **{capability: {}}
         )
     ctrl.core.set_exposure.assert_not_called()
 
@@ -512,6 +513,229 @@ def test_fixed_plan_survives_queued_engine_closed_key_round_trip(
         "last_known_um": 12.0 if restore == "leave" else 15.0,
         "restored": restore == "entry",
     }
+
+
+@pytest.mark.parametrize("tool", ["timelapse", "zstack"])
+def test_plan_only_run_dispatches_three_writes_restores_and_logs(
+    tool, monkeypatch, tmp_path
+):
+    position = 500.0
+    ctrl = MagicMock()
+
+    def set_position(_device, target):
+        nonlocal position
+        position = float(target)
+
+    ctrl.core.set_position.side_effect = set_position
+    ctrl.core.get_position.side_effect = lambda _device: position
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+
+    class DrivingAcquisition:
+        instance = None
+
+        def __init__(self, **kwargs):
+            DrivingAcquisition.instance = self
+            self.callbacks = kwargs
+            self.events = None
+            self.retained = []
+            self._dataset_disk_location = str(tmp_path / "dataset")
+        def __enter__(self): return self
+        def acquire(self, events): self.events = events
+        def __exit__(self, *_exc):
+            for event in self.events:
+                self.callbacks["pre_hardware_hook_fn"](event)
+                returned = self.callbacks["image_process_fn"](
+                    np.array([[1]], dtype=np.uint16),
+                    {"Axes": dict(event.get("axes", {}))}, None,
+                )
+                self.retained.append(returned)
+            return False
+
+    monkeypatch.setattr(tools, "Acquisition", DrivingAcquisition)
+    guard = SafetyGuard(SafetyConstraints(
+        stage=StageConstraints(z_min=-10, z_max=10),
+        named_stages=[NamedStageLimits("TITIRF", 0, 7000)]
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+
+    common = dict(
+        ctrl=ctrl, guard=guard, save_dir=str(tmp_path), name="sweep",
+        named_stage_envelope={
+            "device": "TITIRF", "min_um": 0, "max_um": 7000,
+            "max_writes": 4, "restore": "entry",
+        },
+        hook_action_plan=[
+            {"hook_event_index": index, "actions": [{
+                "kind": "MoveNamedStage", "position_um": target,
+            }]}
+            for index, target in enumerate((1000, 3500, 6000))
+        ],
+    )
+    result = (
+        tools.run_timelapse(n_frames=3, interval_s=1, **common)
+        if tool == "timelapse" else
+        tools.run_zstack(z_start_um=0, z_end_um=2, z_step_um=1, **common)
+    )
+
+    assert [item.args for item in ctrl.core.set_position.call_args_list] == [
+        ("TITIRF", 1000.0), ("TITIRF", 3500.0),
+        ("TITIRF", 6000.0), ("TITIRF", 500.0),
+    ]
+    assert result["named_stage_restoration"]["restored"] is True
+    assert result["frames_exposed"] == 3
+    assert len(DrivingAcquisition.instance.retained) == 3
+    assert all(returned is not None for returned in DrivingAcquisition.instance.retained)
+    log_path = Path(result["log_path"])
+    assert log_path.name == "sweep_plan_log.jsonl"
+    records = __import__("json").loads(log_path.read_text(encoding="utf-8"))
+    accepted = [record for record in records
+                if record.get("decision") == "accepted" and not record.get("restoration")]
+    assert [record["achieved_um"] for record in accepted] == [1000.0, 3500.0, 6000.0]
+    assert records[-1]["restoration"] is True
+    assert not any(record.get("event") == "hook_failure" for record in records)
+
+
+def test_schema_states_the_three_rules_the_rig_kept_rediscovering(): 
+    """Every constraint refused at plan time must be findable before the call.
+
+    Three demo sessions in a row spent one call each rediscovering the same
+    three rules -- nonzero interval_s for a per-frame plan, a write budget of
+    plan-length-plus-one when restoring, and an envelope that contains the
+    restoration target. All three are statically knowable, and a caller reads
+    the PARAMETER description while filling that parameter in, not the tool's
+    prose. `CLAUDE.md`: a feature that needs a paragraph of explanation before
+    it can be called is a design problem.
+    """
+    from microclaw.tools_schema import TOOLS
+    timelapse = next(t for t in TOOLS if t["name"] == "run_timelapse")
+    props = timelapse["input_schema"]["properties"]
+    assert "nonzero" in props["interval_s"]["description"]
+    assert "hook_action_plan" in props["interval_s"]["description"]
+    plan = props["hook_action_plan"]["description"]
+    assert "interval_s" in plan and "no hook_strategy" in plan
+    for tool_name in ("run_timelapse", "run_zstack"):
+        tool = next(t for t in TOOLS if t["name"] == tool_name)
+        envelope = tool["input_schema"]["properties"]["named_stage_envelope"]
+        assert "restoration write" in envelope["description"]
+        assert "restoration target" in envelope["description"]
+
+
+def test_plan_only_default_logs_do_not_collide(monkeypatch, tmp_path):
+    guard = SafetyGuard(SafetyConstraints())
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    first = tools._prepare_log_path(
+        guard, None, default=str(tmp_path / "same_plan_log.jsonl")
+    )
+    Path(first).touch()
+    second = tools._prepare_log_path(
+        guard, None, default=str(tmp_path / "same_plan_log.jsonl")
+    )
+    assert Path(second).name == "same_plan_log_2.jsonl"
+
+
+@pytest.mark.parametrize(
+    ("envelope", "confirm", "message"),
+    [
+        ({"device": "TITIRF", "min_um": 0, "max_um": 2000,
+          "max_writes": 4, "restore": "leave"}, True, "outside the envelope"),
+        ({"device": "TITIRF", "min_um": 0, "max_um": 7000,
+          "max_writes": 3, "restore": "entry"}, True, "reserved for restoration"),
+        ({"device": "TITIRF", "min_um": 0, "max_um": 7000,
+          "max_writes": 4, "restore": "entry"}, False, "declined.*not started"),
+    ],
+)
+def test_plan_only_run_keeps_envelope_budget_and_confirmation_refusals(
+    envelope, confirm, message, monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_position.return_value = 500
+    acquire = MagicMock()
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: confirm)
+    guard = SafetyGuard(SafetyConstraints(
+        named_stages=[NamedStageLimits("TITIRF", 0, 7000)]
+    ))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    exc_type = SafetyViolation if not confirm else ValueError
+    with pytest.raises(exc_type, match=message):
+        tools.run_timelapse(
+            ctrl, guard, 3, 1, str(tmp_path),
+            named_stage_envelope=envelope,
+            hook_action_plan=[
+                {"hook_event_index": index, "actions": [{
+                    "kind": "MoveNamedStage", "position_um": target,
+                }]}
+                for index, target in enumerate((1000, 3500, 6000))
+            ],
+        )
+    acquire.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+@pytest.mark.parametrize("tool", ["timelapse", "zstack"])
+@pytest.mark.parametrize("capability", HOOK_CAPABILITY_ARGS)
+def test_reserved_run_refuses_every_hook_capability_before_work(
+    tool, capability, monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    confirm = MagicMock()
+    acquire = MagicMock()
+    monkeypatch.setattr(tools, "CONFIRM_FN", confirm)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(z_min=-10, z_max=10)))
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    kwargs = {capability: [] if capability == "hook_action_plan" else {}}
+    with pytest.raises(ValueError, match="reserved per-position protocol"):
+        if tool == "timelapse":
+            tools.run_timelapse(
+                ctrl, guard, 1, 1, str(tmp_path), exposure_ms=10,
+                _reservation=MagicMock(), **kwargs,
+            )
+        else:
+            tools.run_zstack(
+                ctrl, guard, 0, 1, 1, str(tmp_path), exposure_ms=10,
+                _reservation=MagicMock(), **kwargs,
+            )
+    confirm.assert_not_called()
+    acquire.assert_not_called()
+    ctrl.core.set_exposure.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
+
+
+def test_plain_reserved_timelapse_is_unchanged(monkeypatch, tmp_path):
+    ctrl = MagicMock()
+    reservation = MagicMock(has_overrun=False)
+    monkeypatch.setattr(
+        tools, "_acquire_with_hooks", lambda *args, **kwargs: str(tmp_path / "dataset")
+    )
+    guard = SafetyGuard(SafetyConstraints())
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    result = tools.run_timelapse(
+        ctrl, guard, 1, 0, str(tmp_path), _reservation=reservation,
+    )
+    assert result["status"] == "Timelapse complete."
+
+
+@pytest.mark.parametrize("capability", ("hook_strategy", *HOOK_CAPABILITY_ARGS))
+def test_multiposition_preflight_refuses_nested_capability_before_xy_move(
+    capability, monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    guard = SafetyGuard(SafetyConstraints())
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    value = "saved" if capability == "hook_strategy" else (
+        [] if capability == "hook_action_plan" else {}
+    )
+    result = tools.run_multiposition_acquisition(
+        ctrl, guard, "timelapse", save_dir=str(tmp_path),
+        positions=[{"name": "p0", "x_um": 1, "y_um": 2}],
+        protocol_params={
+            "n_frames": 1, "interval_s": 0, capability: value,
+        },
+    )
+    assert capability in result["error"]
+    ctrl.core.set_xy_position.assert_not_called()
+    ctrl.core.set_position.assert_not_called()
 
 
 def test_adaptive_tool_restores_named_stage_exactly_once_after_engine_exit(
