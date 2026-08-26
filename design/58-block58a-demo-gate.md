@@ -9,7 +9,7 @@ directory outside the checkout.
 $ErrorActionPreference = 'Stop'
 $repo = (git rev-parse --show-toplevel).Trim()
 Set-Location $repo
-git merge-base --is-ancestor 4ace157 HEAD
+git merge-base --is-ancestor 84d49cb HEAD
 if ($LASTEXITCODE -ne 0) { throw 'This checkout does not contain Block 58a' }
 $gate = Join-Path ([IO.Path]::GetTempPath()) ("microclaw-58a-" + [guid]::NewGuid())
 New-Item -ItemType Directory $gate | Out-Null
@@ -17,6 +17,11 @@ $env:MC58_REPO = $repo
 $env:MC58_GATE = $gate
 python -c "import microclaw; print(microclaw.__file__)"
 ```
+
+`84d49cb` is the implementation commit, not the branch point: pinning the
+branch point would have passed on plain `main` and proved nothing. Amending this
+runbook cannot invalidate the pin, because the check is ancestry, not an exact
+tip.
 
 The checked-out block HEAD is deliberately not the installed commit for the
 positive discovery limb: before merge it is not an ancestor of `origin/main`,
