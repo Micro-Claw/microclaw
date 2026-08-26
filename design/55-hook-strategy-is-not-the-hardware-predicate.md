@@ -899,11 +899,29 @@ on the count.**
 
 **The sequencing note this file used to carry is spent.** `design/54` is fully
 merged — 54a/54b/54d/54e in `3be1037`, 54c in `1fa0eb6` — and both its branches
-are deleted, so 55a branches from plain `main`. 55a and 55b still run in
-sequence, because both rewrite the same preamble in `run_timelapse` and
-`run_zstack`.
+are deleted. **55a is merged (`2eaa0e3`), so 55b branches from plain `main` too**;
+nothing else is in flight against these files.
 
-**Line numbers in this document are from 2026-08-19 and have drifted.**
-`run_zstack` is now `tools.py:3213` and `run_timelapse` `tools.py:3373`; the
-`if hook_strategy:` blocks are at `:3255` and `:3417`. Find every site by name,
-never by the line numbers quoted above.
+**Every `tools.py` line number in the prose above is from 2026-08-19 and is
+wrong. Find each site by name.** They have drifted twice already — once before
+55a and again because 55a edited these very functions — so this note does not
+quote replacements: any number written here is stale by the next block. The
+sites 55b touches, by name, are `run_zstack`, `run_timelapse`,
+`_configure_hook_capabilities`, `_prepare_log_path`, `_next_available_log_path`
+(inside an emitted-source string, so it cannot be called from the live path),
+`_adaptive_hook_export`, `_emit_adaptive`, `_emit_timelapse`, `_emit_zstack`,
+`_run_protocol_at` and `run_multiposition_acquisition`.
+
+**55a's shape is the thing to read before writing 55b**, because 55b rewrites the
+same preamble: `_configure_hook_capabilities` is already unconditional and
+already sits ahead of `core.set_exposure` in both tools, and 55b must keep both
+properties while giving the `hook is None` case a coordinator to fill.
+
+**55a's gate produced the refusal cascade 55b exists to remove**, and it is the
+acceptance target as much as any test. In order, the session hit: the
+`interval_s=0` sequencing refusal (**stays**); the no-hook refusal (**must stop
+firing for a plan**); `Hook envelopes apply only to saved generated hooks` for a
+precoded hook (**stays**); the write-budget refusal (**stays**); the
+restore-outside-the-envelope refusal (**stays**); then had to write a hook that
+does nothing. After 55b the first call in that cascade that carries a plan should
+run.
