@@ -1122,9 +1122,14 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
   then regardless; or
   **(b)** create a small public fixture repository under `Micro-Claw` and gate a
   **throwaway** build whose only diff from `main` is the three compiled-in
-  identity constants. The diff must be exactly those constants, and the build
-  must never be merged or installed as a user's Microclaw. This proves the real
-  code path against real GitHub without waiting.
+  identity constants.
+  **Decided 2026-08-26 (operator): (a).** The flip-day run is requirement 2's own
+  acceptance test and has to happen then regardless, so (b) would duplicate it
+  early at the cost of a public repository to create and later delete. **This is
+  therefore a real, accepted gap in the shipped evidence** — 58a and 58e gate the
+  provider's 404, caching and silence, and nothing gates a successful public
+  install until the day the repository goes public. Write that day's run into the
+  flip checklist rather than trusting anyone to remember this paragraph.
   **Do not add an environment override to production code to make this
   testable.** §"Ship the public-head path" forbids a browser-supplied URL for a
   reason, and a test hook in the trust boundary is the same hole with a nicer
@@ -1163,7 +1168,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | Block | Depends on | Branch | Start commit | Implementation | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
-| 58a | — | `design58/discovery` | — | — | demo — not run | — | — |
+| 58a | — | `design58/discovery` | `4103d36` | **assigned 2026-08-26**, codex runner, worktree `wt-58a` | demo — not run | — | — |
 | 58b | — | `design58/classification` | — | — | folded into 58c's runbook | — | — |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
@@ -1179,8 +1184,9 @@ Everything needed is on `main`.
 
 State as of 2026-08-26:
 
-- **Nothing is assigned and nothing has been implemented.** This checklist was
-  written first, against the code, and every row above is open.
+- **58a is assigned** (2026-08-26, branch `design58/discovery` from `main` at
+  `4103d36`, headless Codex in worktree `wt-58a`). Everything else is open, and
+  nothing has merged.
 - **`design/58` is not a row in `design/35`.** It tracks itself, here.
 - **The repository is already `Micro-Claw/microclaw`, id 1238975695, private**,
   verified against the API on 2026-08-26. No production install will ever have to
