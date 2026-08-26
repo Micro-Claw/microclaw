@@ -6,6 +6,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Not inside a git checkout.' }
 $repo = $repo.Trim()
 Set-Location $repo
 
+git merge-base --is-ancestor a462032 HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw 'This checkout does not contain Block 58b. Run: git checkout design58/classification'
+}
+
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $evidence = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "block58b-$stamp"
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
