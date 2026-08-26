@@ -8878,6 +8878,56 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### Two from design/55's gates — added 2026-08-26 **(no block)**
+
+**1. The stage-move settle tolerance is a package constant with no configuration
+path, and on a real rig it silently changed the experiment.**
+`STAGE_MOVE_TOLERANCE_UM = 0.5` lives in `microclaw/controller.py`. It is not in
+the safety config, not an argument to `move_named_stage`, and not a rig-profile
+field. **Measured on M2, 2026-08-26** (design/55 Part B): a sweep asked for
+`199.9 µm`, the `TIRF Stage` stopped at `198.8` after 10.109 s reporting **idle**
+— 1.1 µm short — and the run correctly refused. The only way to finish the sweep
+was to **retarget it to 198.8**, the position the stage happens to land at. The
+operator asked for 199.9 and got a different experiment.
+
+**The refusal is not the defect and must not be "fixed" by loosening it.** The
+stage genuinely did not arrive, and block 56's contract reporting that is right.
+What is missing is any way for a rig to declare that 1.1 µm is acceptable *on
+that axis*. A fixed micron tolerance is a rig fact living in `microclaw/`, which
+`CLAUDE.md` forbids, and it is per-device physics that belongs beside `min_um`
+and `max_um` in the `named_stages` entry.
+
+**It is a design decision, not a number, and it is design/56's mechanism rather
+than design/55's.** Three things are unsettled: where the value lives for the
+**core focus and XY**, which have no `named_stages` entry but reach the same loop
+through `autofocus.py` and `move_stage_z`; what the default is when a device
+declares nothing (0.5 fails closed for M2 forever; a wider default silently
+loosens every rig that works today); and whether `move_named_stage` gets a
+per-call override, which would be a per-call relaxation of a safety-relevant
+bound and needs the scrutiny the envelope bounds got.
+
+**It has an export coupling that will bite.** `_stage_move_contract_source()`
+(`tools.py`) emits all five constants as literals into every standalone script
+and inlines `settle_stage_move` with `inspect.getsource`. A config-driven
+tolerance must travel into the export as a **recorded per-device value**, or the
+standalone script enforces a different tolerance than the live run did — the
+defect class `CLAUDE.md` §"An exported script that compiles is not an exported
+script that works" exists to prevent. Six call sites read the constant, across
+`tools.py`, `hook_decisions.py` and `autofocus.py`.
+
+**The gate is already written by the accident that found it**: on M2, request
+`199.9` with a declared tolerance of `1.5 µm` and the sweep should complete
+rather than refuse, with `achieved_um` still reporting the measured `198.8`.
+
+**2. An agent asked the operator for positions it could have read itself.** Told
+to use "the five positions in the list" (design/55 round 3), it came back asking
+for them rather than calling `get_position_list`, then read the list when told
+to. Challenged, it diagnosed itself exactly — *"reading the position list is
+free, reversible bookkeeping — exactly the kind of thing I should just do rather
+than ask about. I asked when I should have looked."* Cheap, reversible reads
+should not be round-tripped to the operator. Probably a `SYSTEM_PROMPT` nudge;
+no block, and no evidence yet on how often it happens.
+
 ### One from block 9a's demo round 2 — added 2026-08-26 **(no block)**
 
 **A batched analyzer cannot batch a survey stored as one dataset per position,
