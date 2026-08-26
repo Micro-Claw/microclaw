@@ -487,7 +487,8 @@ doc is `design/55-hook-strategy-is-not-the-hardware-predicate.md`, two blocks,
 and `run_zstack`.
 
 - **Assigned 2026-08-26** on branch `design55/unattached-plan-refuses`, from
-  `main` at `b54c30b`. Nothing merged, no gate run.
+  `main` at `dfc1eb0` — `b54c30b` plus this assignment's doc commits.
+  Nothing merged, no gate run.
 - **Baseline, coordinator-measured on `b54c30b` (macOS): 2135 passed / 99 skipped
   / 3 warnings.** Windows: same total, different skip split. Gate on zero
   failures, never the count.
