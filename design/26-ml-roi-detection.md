@@ -770,6 +770,24 @@ ilastik 1.4.2, an operator's own projects on M5 and the demo machine):
   produced no output at all and reported nothing about why. A project drawn
   without a pixel size is ordinary; treat the value as unknown and keep every
   pixel.
+* **A `.ilp` is portable as a file and not necessarily as a classifier.** F5a
+  established the artifact travels; block 9a measured that the *classifier* may
+  not. A project drawn on M2 (488 WF, 0.127 µm/px) was applied to M5 (0.1056
+  µm/px) and **did not transfer**: on a field the operator identified as
+  apoptotic it assigned BG 0.969 / apo 0.010 / **healthy 0.021** — twice as much
+  probability to the wrong class — against BG 0.905 / apo 0.095 for a project
+  retrained on M5's own images. Across four M5 surveys the M2 project left
+  **60–88% of fields below the coverage floor**, which was the validity gate
+  correctly reporting a classifier finding almost nothing rather than a
+  mis-set threshold.
+
+  **So "hand me the `.ilp` and I will score the survey" carries an unstated
+  precondition: the same instrument, or close to it.** The remedy is cheap and the
+  operator took it — retrain on a handful of images from the rig in use — but
+  nothing in the file, the adapter or the probability map announces the problem.
+  A pooled score from a non-transferring classifier looks exactly like a pooled
+  score from a working one, only smaller.
+
 * **A named-but-untrained class exports an all-zero channel, not a missing one.**
   A project can name three labels and train two (`known_labels` says which), and
   ilastik still emits three channels with the untrained one identically zero. A
