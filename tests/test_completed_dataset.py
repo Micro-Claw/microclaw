@@ -135,7 +135,7 @@ def test_unknown_adapter_names_the_refusal_and_lists_saved_choices(offline_home)
     message = str(caught.value)
     assert "No adapter named 'not_an_adapter'" in message
     assert message.index("Available built-in adapters") < message.index("Available saved adapters")
-    assert "['connected_components', 'frame_statistics']" in message
+    assert "['connected_components', 'frame_statistics', 'ilastik_pixel_classification']" in message
     assert "Available saved adapters: ['alpha', 'zebra']" in message
 
 

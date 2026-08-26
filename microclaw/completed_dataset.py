@@ -35,6 +35,7 @@ from microclaw.hooks import write_analysis_observation
 from microclaw.image_analysis import (
     compute_stats, connected_components, resolve_min_snr,
 )
+from microclaw.ilastik_adapter import IlastikCompletedDatasetAdapter
 from microclaw.safety import SafetyViolation
 
 
@@ -89,6 +90,7 @@ class FrameStatistics:
 BUILTIN_ADAPTERS = {
     "connected_components": ConnectedComponents,
     "frame_statistics": FrameStatistics,
+    "ilastik_pixel_classification": IlastikCompletedDatasetAdapter,
 }
 
 
@@ -322,7 +324,10 @@ def run_analysis_on_saved_dataset(
         raise ValueError("axis_selection and parameters must be objects")
     dataset_path = guard.resolve_readable_path(dataset_path)
     output_dir = guard.resolve_in_workspace(output_dir)
-    Path(output_dir).mkdir(parents=True, exist_ok=False)
+    if Path(output_dir).exists():
+        raise FileExistsError(
+            f"Cannot create a file when that file already exists: {output_dir!r}"
+        )
     if input_kind == "stage_coordinate_mosaic":
         if calibration_ref is not None and calibration_ref.get("kind") == "confirmed_current":
             raise ValueError(
@@ -334,12 +339,15 @@ def run_analysis_on_saved_dataset(
     if builtin is not None:
         # Package code has the same trusted standing as live image_analysis.
         # Its exact class source is pinned in the reproducibility manifest.
-        cls, verb = builtin, "analyze_saved_frame"
+        cls = builtin
+        verb = ("analyze_completed_dataset"
+                if callable(getattr(builtin, "analyze_completed_dataset", None))
+                else "analyze_saved_frame")
         source = inspect.getsource(builtin).encode("utf-8")
         entry = {"source": "builtin", "version": __version__}
     else:
         cls, verb, entry, source = _load_saved_adapter(adapter)
-    if builtin is not None:
+    if builtin is not None and verb == "analyze_saved_frame":
         # Resolve optional rig state at the trusted runner boundary; adapters
         # remain plain measurement classes with no guard or configuration access.
         min_snr, min_snr_source = resolve_min_snr(
@@ -351,7 +359,13 @@ def run_analysis_on_saved_dataset(
     forbidden = set(parameters) & set(FORBIDDEN_SAVED_HOOK_PARAMS)
     if forbidden:
         raise ValueError(f"Offline adapter parameters request forbidden capabilities: {sorted(forbidden)}")
+    # Built last, and only now is the output directory created. Constructing the
+    # adapter is where a wrong or missing parameter surfaces, and a directory
+    # made before that point survives the failure and then blocks the very name
+    # the caller retries with -- turning one argument error into two unrelated
+    # ones. Measured on the demo machine: three runs left five directories.
     instance = cls(**parameters)
+    Path(output_dir).mkdir(parents=True, exist_ok=False)
     dataset = Dataset(dataset_path)
     from microclaw.tools import _iter_present_coords
     coordinates = list(_iter_present_coords(dataset, axis_selection))

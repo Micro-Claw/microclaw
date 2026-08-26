@@ -710,7 +710,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_analysis_on_saved_dataset",
         "description": (
             "Measure a completed NDTiff dataset. Zero hardware action: it reads "
-            "saved pixels and exposes nothing. Two adapters are BUILT IN and need "
+            "saved pixels and exposes nothing. Two general adapters are BUILT IN and need "
             "no review, hash pin or confirmation — reach for them before writing "
             "anything and before reasoning from a picture. 'connected_components' "
             "(input_kind='stage_coordinate_mosaic') labels contiguous signal and "
@@ -718,7 +718,10 @@ TOOLS: list[dict[str, Any]] = [
             "bounding box: this is how you answer whether two positions sit on the "
             "same object. 'frame_statistics' (input_kind='frames') scores every "
             "saved frame with the same statistics as a live snap: this is how you "
-            "say whether anything is in an acquisition you already ran. An adapter "
+            "say whether anything is in an acquisition you already ran. "
+            "'ilastik_pixel_classification' is the completed-survey batch boundary "
+            "for an installed ilastik and a user-trained, SHA-256-pinned .ilp; its "
+            "pooled whole-field scores remain scientifically unverified. An adapter "
             "from the user's saved manifest also runs here, and those stay reviewed "
             "and hash-pinned."
         ),
@@ -729,11 +732,38 @@ TOOLS: list[dict[str, Any]] = [
                 "adapter": {"type": "string"},
                 "axis_selection": {"type": "object"},
                 "input_kind": {"type": "string", "enum": ["frames", "stage_coordinate_mosaic"]},
-                "parameters": {"type": "object"},
+                "parameters": {
+                    "type": "object",
+                    "description": (
+                        "Constructor arguments for the adapter itself — this is where "
+                        "every adapter-specific value goes, NOT model_project_config. "
+                        "'ilastik_pixel_classification' needs only four: project_path "
+                        "and the three label roles background_label, numerator_label "
+                        "and denominator_label, whose names must be the project's own "
+                        "— its refusal lists them for you. Everything else is worked "
+                        "out and recorded: the installed ilastik is found, the project "
+                        "is hashed, and the decimation matches the pixel size it was "
+                        "drawn at. **Do not ask the user for a digest, an executable "
+                        "path or a target size.** Pass executable_path only if the "
+                        "adapter reports it could not find ilastik or found several. "
+                        "Decimation is automatic and you should not set it: the "
+                        "adapter matches the pixel size the project was drawn at, "
+                        "and records decimation_mode, decimation_stride and the "
+                        "effective pixel size in every observation. target_size "
+                        "overrides that and is only for a caller who has a reason."
+                    ),
+                },
                 "output_dir": {"type": "string"},
                 "calibration_ref": _CALIBRATION_REF_SCHEMA,
                 "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
-                "model_project_config": {"type": "object"},
+                "model_project_config": {
+                    "type": "object",
+                    "description": (
+                        "Provenance only: paths recorded and hashed into the manifest so "
+                        "a run can be reproduced. Passing an adapter's arguments here "
+                        "does NOT configure it — they belong in parameters."
+                    ),
+                },
                 "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
                 "max_array_bytes": {"type": "integer", "minimum": 1},
             },

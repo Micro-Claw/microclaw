@@ -16,6 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ilastik = [
+    "h5py>=3.10",
+]
 # `microclaw serve` only. keyring brokers the API key to the OS credential
 # store; without it serve falls back to a user-level config file.
 serve = [
