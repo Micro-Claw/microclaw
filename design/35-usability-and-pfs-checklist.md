@@ -502,8 +502,19 @@ and `run_zstack`.
   back above the guard turns the ordering test red while the refusal still raises
   — because the pre-fix run only ever shows `DID NOT RAISE` and never reaches the
   ordering assertion at all.
-- **55b is ASSIGNED 2026-08-26** on `design55/plan-stands-alone` from `main` at
-  `8f73b90`. Its gate plan changed because 55a's gate
+- **55b is implemented, reviewed over one round, and pushed (2026-08-26),
+  awaiting the demo machine (Part A) and M2 or M5 (Part B).** Branch
+  `design55/plan-stands-alone` from `main` at `8f73b90`; runbook
+  `design/55-block55b-gate.md` pins `067a6b2`. Suite at the pin,
+  coordinator-measured: **2181 passed / 99 skipped / 3 warnings**. Review round 1
+  returned three findings, one substantive: the runner had written the log-path
+  collision rule twice — once live, once as a hand-written string emitted into
+  standalone scripts — and declined to fold them on the grounds that unifying
+  would change the exporter's architecture. It would not: the exporter already
+  inlines live functions with `inspect.getsource` in twenty-odd places, including
+  `UntrustedHookAdapter` itself. Now one function, emitted by
+  `inspect.getsource`, with an identity test that goes red the moment anyone
+  re-hardcodes the string. Its gate plan changed because 55a's gate
   refuted a premise this note used to carry. `Aux Z` **does** change the demo
   camera's image (3276.219 three times on a plain timelapse; 858.705 / 327.285 /
   327.174 across the sweep), so Part A gains an optical corroboration limb the
