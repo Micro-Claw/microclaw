@@ -652,6 +652,28 @@ caveat) and the ranking is not worth acting on, that is the moment the agent say
 Which is the same shape as everything else in this doc: the artifact comes back as
 a **file**, and microclaw runs it. It is simply a file microclaw did not compile.
 
+> **Corrected by operator ruling, 2026-08-25 — the trigger is the user's, not a
+> measurement microclaw owns.** The paragraph above makes Microclaw the judge of
+> whether the user's chosen analysis is worth reaching for, and that contradicts
+> what this program is: *"an assistant to a microscopist's session, not a
+> replacement for it"*, and *"the user owns the session"*. **A microscopist who
+> wants ilastik is entitled to use ilastik**, and they know their sample better
+> than a descriptor score does.
+>
+> What survives is the *ordering*, not the gatekeeping: **offer the cheap route
+> first** — thresholding, `connected_components`, anything in scikit-image — and
+> **offer ilastik when that does not separate what the user is describing, or
+> whenever they ask.** The agent prompt already routes an ilastik request to the
+> built-in adapter (block 9a, merged 2026-08-26) rather than making the user
+> justify it.
+>
+> This also retires the question block 9b was created to answer. **Whether ilastik
+> beats the classical floor is a research question about ilastik, not a product
+> question about Microclaw**, and answering it was never a precondition for
+> letting someone score a survey with a project they drew themselves. F2's caveat
+> stands as a *scientific* note about that spike's data; it is no longer a gate on
+> the feature.
+
 **How it attaches, and the two things that are not free.**
 
 It fits the `Descriptor` seam unchanged — ilastik emits a per-pixel probability
@@ -732,6 +754,29 @@ F_4  one tile alone      : 7.85 s   (start-up + one tile)
      start-up, implied    : 7.59 s
      -> batching 45 tiles saved 334 s
 ```
+
+**Three things block 9a measured that this section did not have** (2026-08-25/26,
+ilastik 1.4.2, an operator's own projects on M5 and the demo machine):
+
+* **The start-up is platform-shaped, and 7.6 s is the macOS number.** On Windows
+  it is **60–90 s** — measured at 85–104 s per single-field invocation against a
+  nine-field batch of 69 s, and 8–13 s for the same work on macOS. So "batching
+  45 tiles saved 334 s" understates Windows by an order of magnitude, and the
+  batch is not an optimisation there but the difference between ninety seconds
+  and seventeen minutes. **Do not quote the 7.6 s as cross-platform.**
+* **`resolution: 1` in a project is a placeholder, not a pixel size.** ilastik
+  writes it when nobody sets one, and reading it as a real micron decimated a
+  324×312 field to 36×35 — below the project's own feature scales — so ilastik
+  produced no output at all and reported nothing about why. A project drawn
+  without a pixel size is ordinary; treat the value as unknown and keep every
+  pixel.
+* **A named-but-untrained class exports an all-zero channel, not a missing one.**
+  A project can name three labels and train two (`known_labels` says which), and
+  ilastik still emits three channels with the untrained one identically zero. A
+  ratio against it is therefore pinned at **1.000** and reads as a confident
+  result, with nothing in the artifact looking wrong. `known_labels` is the only
+  signal that distinguishes this from a class that is genuinely absent from the
+  field.
 
 **The ruling holds, but read WHICH number carries it.** The blocker is the 7.6 s
 start-up, not throughput: the marginal 255 ms per tile would sit *inside* a 100–500 ms
