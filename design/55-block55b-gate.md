@@ -213,6 +213,60 @@ schemas, with a test so they cannot drop out silently.
 
 Prompt **[9]** on the demo machine, and **Part B** on M2 or M5. Nothing else.
 
+## Round 4 result - 2026-08-26, demo machine (`block55b-2026-08-26-demo-round4`)
+
+**Step 9 PASS. PART A IS COMPLETE - every step passed. Only Part B remains.**
+
+Suite `2157 / 124` = 2281, equal to macOS's `2182 + 99` after round 3's schema
+test. Zero failures.
+
+The refusal fired verbatim: *"Hook envelopes with neither a hook nor a
+hook_action_plan have no effect; pass hook_strategy naming a saved generated
+hook. A precoded hook cannot carry them."* The session then named **both** valid
+routes -- a `hook_action_plan`, or a *saved generated* hook -- and reached for
+neither a precoded hook nor a workaround. 55a's session, given the older wording,
+went straight to `snr_observer` and lost a round trip; this one did not.
+
+**The more interesting result is what happened before the call, and it is round
+3's schema fix working.** Unprompted, the session:
+
+- refused to treat the envelope as meaningful on its own -- *"a
+  `named_stage_envelope` is only meaningful when there's something that moves the
+  stage during the run"* -- and asked before running rather than after failing;
+- computed `max_writes: 1` and said why: nothing moves, so the single reserved
+  **restoration** write is the whole budget. That is the plan-plus-one rule
+  applied in the direction nobody had tested;
+- volunteered that `interval_s: 0` could not carry a per-frame plan, without
+  having tried it.
+
+Those are the three constraints that cost one call each in rounds 1, 2 and 3.
+After the descriptions moved into the parameters the caller actually reads, all
+three were applied **preemptively, in a single turn, on the first attempt.** The
+operator's question -- *why does it keep rediscovering these?* -- had a one-word
+answer, and this is the measurement that it was the right one.
+
+### Part A: complete
+
+| step | result | round |
+|---|---|---|
+| 0 pin/install/suite | PASS | every round |
+| 1 precondition | PASS | 2 |
+| 2 park at 20 | PASS | 2 |
+| 3 reach: no hook written | PASS | 2, 3 |
+| 4 log + three-way agreement | PASS | 2 |
+| 5 / 5b optical witness | PASS - reversed order, decisive | 3 |
+| 6 default log, no interleave | PASS | 2 |
+| 7 three envelope refusals | PASS | 2 |
+| 8 multiposition preflight | PASS | 3 |
+| 9 corrected 55a message | PASS | 4 |
+| 10 export literals | PASS | 2, 3 |
+| 11 standalone re-execution | PASS - four sweeps | 2 |
+| 12 hookless emitter unchanged | PASS | 2 |
+
+### Round 5 scope - Part B only
+
+One three-frame sweep on M2 or M5. Nothing on the demo machine.
+
 ## What this gate settles
 
 55a made an unattached plan refuse. It also, by design, left the capability
