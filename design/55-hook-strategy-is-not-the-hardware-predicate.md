@@ -323,11 +323,25 @@ it is display-only (nothing is saved), it costs a bridge round trip per point,
 and it exports as a sequence of unrelated calls rather than one sweep.
 
 So: let the plan stand alone, by handing it the coordinator it already needs.
-`UntrustedHookAdapter` **is** that coordinator, and it already tolerates a
-payload with no `analyze_frame` — `image_process_fn` guards on
-`hasattr(self.hook, "analyze_frame")` (`hook_decisions.py:1156`), and
-`UntrustedHookAdapter(object())` is already used as a fixture
-(`tests/test_hook_illumination_artifacts.py:260`). No new class, no new layer.
+`UntrustedHookAdapter` **is** that coordinator. No new class, no new layer.
+
+> **CORRECTED 2026-08-26 — the paragraph that stood here was wrong, and it cost
+> a demo-gate trip.** It said the adapter "already tolerates a payload with no
+> `analyze_frame`" because `image_process_fn` guards on `hasattr(self.hook,
+> "analyze_frame")`, and cited `UntrustedHookAdapter(object())` already being
+> used as a fixture. Both facts are true and the conclusion was false. **That
+> `hasattr` selects between two branches; it does not no-op.** The `else` branch
+> is the *legacy* `image_process_fn` path and calls
+> `self.hook.image_process_fn(...)`, which `object()` does not have — so every
+> plan-only run died on its first frame with `'object' object has no attribute
+> 'image_process_fn'` and `frames_exposed: 0`. The fixture is real and irrelevant:
+> it never drives a frame through the adapter. `image_process_fn` now has three
+> branches, the third passing a plan-only frame through untouched.
+>
+> **The generalisable part**: a `hasattr` guard in an if/elif is a *router*, not
+> a tolerance. Reading one as the other is how a design doc asserts a capability
+> the code does not have — and every fake written from the doc will agree with
+> it, which is why the suite stayed green through two review rounds.
 
 ```python
 # microclaw/hook_decisions.py
