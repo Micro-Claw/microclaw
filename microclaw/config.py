@@ -43,10 +43,11 @@ class ConfigValidationResult:
     parsed: ParsedSafetyConfig | None
     reviewed: bool | None
     diagnostics: tuple[ConfigDiagnostic, ...]
+    _missing: bool = field(default=False, repr=False)
     classification: ConfigClassification = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.parsed is None and not self.path.exists():
+        if self.parsed is None and self._missing:
             classification = "missing"
         elif self.can_start_live_validation:
             classification = "ready"
@@ -154,6 +155,7 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
         return ConfigValidationResult(
             p, None, None,
             (ConfigDiagnostic("schema", f"No safety config at {p}.", True),),
+            _missing=True,
         )
 
     try:

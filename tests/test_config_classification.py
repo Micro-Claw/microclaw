@@ -1,9 +1,24 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from microclaw import config
+
+
+def test_missing_classification_does_not_restat_after_validation(monkeypatch, tmp_path):
+    calls = 0
+
+    def exists(path):
+        nonlocal calls
+        calls += 1
+        return False if calls == 1 else True
+
+    monkeypatch.setattr(Path, "exists", exists)
+    result = config.validate_safety_config(tmp_path / "appears-after-check.yaml")
+    assert result.classification == "missing"
+    assert calls == 1
 
 
 @pytest.mark.parametrize(
