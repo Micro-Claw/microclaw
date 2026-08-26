@@ -494,13 +494,24 @@ and `run_zstack`.
   failures, never the count.
 - **Implementation goes to headless Codex** through the project `codex-runner`
   skill, one linked worktree per block.
-- **55a is implemented, reviewed and pushed (2026-08-26), awaiting the demo
-  machine.** Runbook `design/55-block55a-demo-gate.md` on the branch, pinning
-  `6a38ece`. Suite at the pin, coordinator-measured: **2154 passed / 99 skipped /
-  3 warnings**. Both preamble reorders were proved **by mutation** — putting
-  `set_exposure` back above the guard turns the ordering test red while the
-  refusal still raises — rather than by the pre-fix run alone, which only ever
-  shows `DID NOT RAISE`. 55b is not assigned yet.
+- **55a is MERGED (`2eaa0e3`, 2026-08-26), demo-gated, branch deleted both
+  sides, design gate run.** `main` measures **2155 passed / 99 skipped / 3
+  warnings** on macOS; the demo machine reads `2129 / 124`, same 2253 total.
+  Runbook `design/55-block55a-demo-gate.md` is on `main` with round 1's result.
+  Both preamble reorders were proved **by mutation** — putting `set_exposure`
+  back above the guard turns the ordering test red while the refusal still raises
+  — because the pre-fix run only ever shows `DID NOT RAISE` and never reaches the
+  ordering assertion at all.
+- **55b is NOT assigned yet**, and its gate plan changed because 55a's gate
+  refuted a premise this note used to carry. `Aux Z` **does** change the demo
+  camera's image (3276.219 three times on a plain timelapse; 858.705 / 327.285 /
+  327.174 across the sweep), so Part A gains an optical corroboration limb the
+  camera writes independently of the log. What no available machine can produce
+  is an *optimum*, which is a narrower claim than "nothing optical".
+- **One finding for the register, not opened**: the demo machine starts in
+  `DEGRADED TRUSTED-PLUGIN MODE` with a hardware-motion plugin warning, because
+  its schema-3 minimal document writes no `plugins` section. Pre-existing, seen
+  in every 55a probe run.
 
 **What 55a is, in one line:** `hook_strategy` is not the predicate for "this run
 moves hardware", so a `hook_action_plan` or hardware envelope passed without a

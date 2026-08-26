@@ -691,15 +691,28 @@ than asserting it:
   envelope refusals and an exported script that re-executes the program. `Aux Z`
   is a real Micro-Manager stage device driven over the real bridge; every one of
   those is observable on it.
-- **One thing does not move, and it is recorded as untested rather than
-  inferred.** The Nikon gate's criterion was *SNR rising and then falling across
-  the five frames* — the optical proof that frame *k* was exposed with the axis
-  at target *k*. **No machine now available can produce it.** The demo camera's
-  frames are bit-identical whatever the stage does (measured repeatedly, most
-  recently by block 43j's demo rounds), and M2 "has never been run in TIRF mode"
-  in its own gate's words (`design/52-block52a-rig-gate.md`), which is why 52a —
-  the block that first shipped this sweep — declared "it does not prove anything
-  optical" and passed anyway.
+- **One thing does not move — but less of it than this section first claimed.
+  Corrected 2026-08-26 by 55a's own gate.** The Nikon criterion was *SNR rising
+  and then falling across the five frames*: an **optimum**, the optical proof
+  that a TIRF angle sweep found an angle. No machine now available produces an
+  optimum — M2 "has never been run in TIRF mode" in its own gate's words
+  (`design/52-block52a-rig-gate.md`), which is why 52a, the block that first
+  shipped this sweep, declared "it does not prove anything optical" and passed
+  anyway.
+
+  **What this section got wrong is the demo machine.** It said the demo camera's
+  frames are bit-identical whatever the stage does, and used that to rule out an
+  optical limb entirely. Measured on 2026-08-26 from 55a's two datasets: they are
+  bit-identical across *time* — a plain 10 ms timelapse gives mean **3276.219**
+  on all three frames — and they are **not** identical across `Aux Z`. The sweep
+  gave **858.705 / 327.285 / 327.174** at 40 / 90 / 140 um, with frames 1 and 2
+  agreeing to their last figure (min 70, max 584 on both) and frame 0 differing
+  from both, when nothing but the planned axis varied between them. So **the demo
+  machine can carry an optical corroboration limb**: not an optimum, but a
+  falsifiable response, and three identical frames would be 55b failing. It is a
+  witness the camera writes, independent of the log the code under test writes.
+  55b's Part A Step 3a is that limb, and it *measures* the response rather than
+  assuming this one — three frames are an inference, not a curve.
 - **What M2/M5 add instead is timing, and that is why Part B exists.** `Aux Z` is
   simulated and arrives instantly, so a demo-only gate never exercises
   `settle_stage_move` inside a hook on a device that takes real time to move —
@@ -809,10 +822,25 @@ Gate Part A (demo machine), `design/55-block55b-gate.md`:
 
 - [ ] Step 0 — pin, install, full suite.
 - [ ] Step 1 — `Aux Z` present, bounded `0–200`, and its entry position recorded.
+- [ ] Step 1a — **park `Aux Z` at 20 µm before Step 2, not at 0.** 55a's gate
+      ran with entry `0` and a restore target of `0`, which makes restoration
+      indistinguishable from never having moved to any witness outside the log
+      the code under test writes. A non-zero entry fixes that for free.
 - [ ] Step 2 — a 3-frame `run_timelapse`, `interval_s=2`, **no `hook_strategy`**,
-      plan `40 / 90 / 140` µm, envelope `max_writes: 4`, `restore: "entry"`.
-      One confirmation, one dataset, a `named_stage_restoration` in the result,
-      a `log_path` in the result, and `Aux Z` back at its entry position.
+      plan `40 / 90 / 140` µm, envelope `min_um: 0`, `max_um: 140`,
+      `max_writes: 4`, `restore: "entry"`. One confirmation, one dataset, a
+      `named_stage_restoration` in the result, a `log_path` in the result, and
+      `Aux Z` back at **20**, not at a target the sweep visited.
+      **The envelope's `min_um` must contain the restore value**, and its
+      `max_writes` must be plan length **plus one** — 55a's gate spent two
+      refusals discovering both, so write them as literals here.
+- [ ] Step 3a — **the optical corroboration limb, new 2026-08-26.** Score the
+      three frames of Step 2's dataset with `run_analysis_on_saved_dataset` and
+      record the per-frame mean. **Three identical means is this block failing**;
+      the frames must differ, because the only thing that varied across them is
+      the axis the plan moved. Report the numbers whatever they are — this limb
+      measures the demo camera's response to `Aux Z`, which 55a's gate observed
+      over three frames and no one has characterised.
 - [ ] Step 3 — the log carries three accepted writes whose `achieved_um` equal
       `40`, `90`, `140` in event order, plus the restoration record. **Compare
       the log's last achieved value against `get_stage_position` afterwards**
@@ -837,6 +865,12 @@ Gate Part A (demo machine), `design/55-block55b-gate.md`:
 - [ ] Step 10 — an ordinary hookless `run_timelapse` in the same session still
       exports through `_emit_acquisition`; its script contains no
       `UntrustedHookAdapter`.
+- [ ] Step 11 — **55a's corrected message, observed in a session rather than in a
+      unit test.** Ask for an envelope-bounded run with *no* plan and no hook —
+      the one shape 55b still refuses. Required: the agent's next call names a
+      **saved** hook, not a precoded one. 55a's gate lost a round trip to the old
+      wording, and a message is only fixed when the next reader takes the working
+      route.
 
 Gate Part B (M2 **or** M5 — whichever is free), same runbook:
 
@@ -854,11 +888,12 @@ Gate Part B (M2 **or** M5 — whichever is free), same runbook:
 
 | Block | Branch | Start commit | Implementer | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- |
-| 55a | `design55/unattached-plan-refuses` | `9128715` | Codex runner (worktree `../microclaw-55a`), impl `6a38ece`; runbook `fa3b48c` pins `6a38ece` | `design/55-block55a-demo-gate.md` — **pushed 2026-08-26, awaiting the demo machine** | — | — |
+| 55a | `design55/unattached-plan-refuses` (deleted) | `9128715` | Codex runner (worktree `../microclaw-55a`), impl `6a38ece`; runbook `fa3b48c` pins `6a38ece`; coordinator message fix `d9546db` | **PASS demo 2026-08-26** (`block55a-2026-08-26`), Steps 0–4; six correct refusals in Step 3, and one defect found and fixed — the refusal named `hook_strategy` and the session correctly tried a *precoded* hook | **`2eaa0e3`** 2026-08-26 | **done** — `CLAUDE.md` §engine gains a sixth contract; the demo-camera premise this checklist used to scope the gates is corrected above |
 | 55b | — | — | — | demo + M2/M5 — not yet run | — | — |
 
 **Baseline, coordinator-measured on `b54c30b` (macOS): 2135 passed / 99 skipped /
-3 warnings.** On Windows expect the same total with a different skip split
+3 warnings.** After 55a: **2155 / 99** on macOS, `2129 / 124` on the demo machine
+— same 2253 total. On Windows expect the same total with a different skip split
 (2110 + 124 on the demo machine at the 9a gate). **Gate on zero failures, never
 on the count.**
 

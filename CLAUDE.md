@@ -262,12 +262,14 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — five contracts we got wrong
+## The pycro-manager acquisition engine — six contracts we got wrong
 
-The first three were found on a rig by block 52a, the fourth by block 56, and the
-fifth by design/56 — each after a full green suite, and each because a test fake encoded our assumption
-instead of the hardware's behaviour. Check code against these before writing the
-fake.
+The first three were found on a rig by block 52a, the fourth by block 56, the
+fifth by design/56, and the sixth by design/55 — each after a full green suite.
+The first five were missed because a test fake encoded our assumption instead of
+the hardware's behaviour; the sixth because every test that could have caught it
+supplied the one argument whose absence was the defect. Check code against these
+before writing the fake, and check what the tests all happen to pass.
 
 - **A hook callback receives an event *or a list of events*.** When the engine
   hardware-sequences (an `interval_s=0` timelapse is exactly that shape), it
@@ -321,6 +323,19 @@ fake.
   Where the reading only has to be right *somewhere* inside a band, a late read
   is harmless; where it decides the band's edges, it is not — design/56 §9d sets
   the default by which of those two the caller asked for.
+
+- **A guard is only as reachable as the object it lives on.** design/52's
+  refusal for a hardware-sequenced batch is a method on
+  `UntrustedHookAdapter`, and block 55a (merged 2026-08-26) found that no
+  coordinator is constructed when no hook is attached — so a `hook_action_plan`
+  or hardware envelope passed without `hook_strategy` was discarded in silence
+  and the run reported success. Four sites had used `hook_strategy` as a proxy
+  for "does this run move hardware"; it is not that predicate. Before putting a
+  refusal on a coordinator, hook, or adapter, ask which callers construct one —
+  and refuse in the tool if any caller does not. The capability set is
+  `HOOK_CAPABILITY_ARGS` in `tools.py`; **add a new capability there first**, or
+  the parameterized refusal matrix generates no case for it and it is silently
+  unguarded.
 
 - **`acquire()` only submits.** It returns an `AcquisitionFuture`; completion is
   awaited in `Acquisition.__exit__` (`mark_finished()` then `await_completion()`).
