@@ -61,6 +61,85 @@ retrying blind.
 is on the fixed branch. Nothing from Step 4 onward has ever run, so there is no
 partial credit to preserve. Part B has not been attempted.
 
+## Round 2 result — 2026-08-26, demo machine (`block55b-2026-08-26-demo-round2`)
+
+**The mechanism works end to end on hardware. Two steps produced no evidence,
+and both are this runbook's fault, not the code's. Round 3 re-runs only those.**
+
+- **Steps 0, 1, 2, 4, 6, 7, 10, 12 PASS.** Suite `2156 / 124` = 2280, equal to
+  macOS's `2181 + 99`. `Aux Z` parked and read `20.0` before and after every one
+  of the seven runs and three refusals in the session.
+- **Step 3 PASS on the criterion the block exists for.** From a sentence naming
+  no tool, the session called `run_timelapse` with a `hook_action_plan` and **no
+  `hook_strategy`**, and **`generate_and_save_hook` appears nowhere in the
+  session.** Against 55a, which needed five refusals *and* a hand-written
+  do-nothing hook, that is the dead end removed. It still took four calls:
+  `interval_s=0`, then `max_writes: 3` when the plan needs plan-length-plus-one,
+  then a restore value of 20 outside a `40..140` envelope. Three refusals to
+  author one sweep — recorded for the register, not fixed here.
+- **Step 4 PASS with the three-way agreement**: log `40 / 90 / 140` then
+  restoration to `20.0`, `named_stage_restoration.last_known_um` `20.0`, and a
+  separate `get_stage_position` `20.0`.
+- **Step 6 PASS**: three runs to one `save_dir` under one `name` left
+  `auxz_sweep_plan_log.jsonl`, `_2` and `_3`, four records each, none
+  interleaved.
+- **Step 7 PASS**: out-of-bounds, budget-one-short and declined-authorization all
+  refused, axis unmoved after each.
+- **Step 9 PARTIAL**: 55a's corrected message fired verbatim. Its second half —
+  the agent's *next* call naming a saved hook — was not observed; the session
+  moved on.
+- **Step 11 PASS for this block, then died on a defect that is not this
+  block's.** All four plan-only sweeps re-executed standalone with Microclaw
+  closed, each printing its envelope and dataset path and writing its own log.
+  The script then raised `NOT EMITTED: run_multiposition_acquisition —
+  observation-only hooked timelapse has positions without recorded Z`, **which
+  exists on `main`** — block 9a's gate hit the identical shape with
+  `run_tile_acquisition` and the operator ruled it a register item. It only
+  entered this session because Step 8 improvised a multiposition run.
+
+**One observation that looks like a defect and is not.** The standalone run wrote
+`auxz_sweep_plan_log_2_2.jsonl`. The four live runs came from three different
+directories and their recorded basenames were `.jsonl`, `.jsonl`, `_2`, `_3`; the
+script collapses them into one directory, so the third one's *recorded* name
+`_2` was already taken and correctly became `_2_2`. The collision rule composing
+with itself is the right behaviour.
+
+### The two steps that produced nothing, and why
+
+**Step 8 tested nothing.** It asked for an outcome — "a multiposition acquisition
+using `protocol_params` that carry a `hook_action_plan`" — the agent offered
+better routes, a perfectly good `snr_observer` multiposition run happened
+instead, and **the refusal being gated never fired.** Its XY criterion was void
+too: that run legitimately moved the stage to `y=-600`. This is block 52b's
+mandatory limb repeating in a runbook written after the lesson. Rewritten below
+to name the call and to tell the agent that a refusal *is* the wanted result.
+
+**Step 5 could not prove what it claimed.** Every sweep ran ascending
+`40 / 90 / 140` and every one produced frame 0 unlike frames 1 and 2, which were
+nearly equal. That shape fits *"frame 0 of a hooked run differs"* exactly as well
+as *"the image responds to `Aux Z`"*, and the demo camera is a deterministic
+simulator, so repeating the same sweep returns the same frames by construction
+and separates nothing. **Step 5b, a reversed sweep, is the one run that
+settles it**, and the honest outcome includes striking the step.
+
+For the record, the means available across both sessions, which *suggest* a
+monotonic response but come from an uncontrolled comparison — the first two
+points are whole plain runs, the last three are frame positions inside hooked
+runs:
+
+| `Aux Z` | mean | source |
+|---|---|---|
+| 0 | 3276.219 | 55a plain timelapse |
+| 20 | 1312.981 | round-2 plain timelapse |
+| 40 | 858.705 | sweep frame 0 |
+| 90 | 327.285 | sweep frame 1 |
+| 140 | 327.174 | sweep frame 2 |
+
+### Round 3 scope — three steps, about ten minutes
+
+Run **Step 0** (proves the branch), then **Step 5 + 5b**, **Step 8**, and
+**Step 9**. Everything else passed on artifacts that are already in hand.
+
 ## What this gate settles
 
 55a made an unattached plan refuse. It also, by design, left the capability
@@ -214,13 +293,45 @@ If the dataset directory is named differently, run
 there — the suffix is pycro-manager's and this is the one path this runbook
 cannot predict.
 
-**Required:** `FRAMES DIFFER`, exit 0. **`ALL FRAMES IDENTICAL` is this gate's
-headline failure** — it is the Nikon result, three exposures at one position
-reported as a sweep, and no hook log can rule it out about itself.
+**Required:** `FRAMES DIFFER`, exit 0. `ALL FRAMES IDENTICAL` would be the Nikon
+result — three exposures at one position reported as a sweep.
 
-Report the three means whatever they are. Nobody has characterised this camera's
-response to `Aux Z`; 55a saw 858.705 / 327.285 / 327.174 over three frames and
-that is an observation, not a curve.
+**But `FRAMES DIFFER` on its own does not prove the axis moved, and round 2 is
+why this step now has a second half.** Every sweep so far ran the same ascending
+targets, and every one produced the same shape: frame 0 unlike frames 1 and 2,
+which are nearly equal. That is exactly as consistent with *"frame 0 of a hooked
+run differs"* as with *"the image responds to `Aux Z`"*. The demo camera is a
+deterministic simulator, so repeating the identical sweep cannot separate them —
+it returns the identical frames by construction.
+
+### Step 5b — the control that separates them
+
+Verbatim:
+
+> Run that same sweep once more with the three positions in the opposite order —
+> 140, then 90, then 40 — saving to
+> `C:\Users\Public\microclaw-gates\55b\reversed`.
+
+```powershell
+uv run python design\55-frame-means.py "C:\Users\Public\microclaw-gates\55b\reversed\auxz_reversed_1"
+Write-Output "exit code:" $LASTEXITCODE
+```
+
+If the dataset directory is named differently, list the folder and use what is
+there.
+
+**This is the whole witness, and it has exactly two outcomes:**
+
+- **The means come back in reversed order** — roughly the ascending run's third,
+  second, first value. The image tracks the axis, Step 5 is a real independent
+  check, and the sweep demonstrably moved hardware between exposures.
+- **The means come back in the same order as the ascending run** — frame 0 high,
+  frames 1 and 2 low. Then the frames vary with *position in the acquisition*,
+  not with the stage, **Step 5 proves nothing, and it must be struck from this
+  runbook rather than reported as a pass.** Say so plainly; a witness that
+  cannot fail is not a witness.
+
+Report the means from both runs either way.
 
 ## Step 6 — the default log name, and two runs that must not interleave
 
@@ -261,18 +372,39 @@ and a declined authorization that reports the run was **not started**. Then:
 
 ## Step 8 — the refusal that has no route, before the first move
 
-Verbatim:
+**Round 2 note: the step that stood here tested nothing, and this is its
+replacement.** It asked for "a multiposition acquisition using `protocol_params`
+that carry a `hook_action_plan`" — an *outcome*. The agent offered better routes,
+the operator took one, a perfectly good `snr_observer` multiposition run
+happened, and **the refusal being gated never fired**. That is block 52b's
+mandatory limb repeating, and `CLAUDE.md` step 6 names it: *an outcome-shaped
+step gets satisfied by the better route.* The step now names the call.
 
-> Run a multiposition acquisition over the positions in the list, using
-> `protocol_params` that carry a `hook_action_plan`.
-
-**Required:** refused, naming `hook_action_plan`, **and the stage has not moved**.
-`_run_protocol_at` moves XY before it calls either acquisition tool, so this
-refusal has to happen before the position loop starts. Confirm with:
+First, record where the stage is:
 
 > What are the current stage coordinates?
 
-Compare against what they were before the call.
+Write down X and Y. Then, verbatim — and **do not accept an alternative route,
+even a better one; this step exists to make one specific call fail**:
+
+> Call `run_multiposition_acquisition` with exactly these arguments and do not
+> substitute anything: `protocol` `"timelapse"`, the five positions in the list,
+> `save_dir` `C:\Users\Public\microclaw-gates\55b\nested`, and
+> `protocol_params` set to
+> `{"n_frames": 1, "interval_s": 0, "hook_action_plan": [{"hook_event_index": 0,
+> "actions": [{"kind": "MoveNamedStage", "position_um": 40}]}]}`.
+> I am testing a refusal — if it refuses, that is the result I want, so report
+> the message and stop rather than finding a way to make it run.
+
+**Required:** an error naming `hook_action_plan`, and **X and Y unchanged from
+the reading you took a moment ago**. `_run_protocol_at` moves XY before it calls
+either acquisition tool, so this refusal has to land before the position loop
+starts. Confirm with:
+
+> What are the current stage coordinates?
+
+**If a multiposition acquisition actually runs, the step has failed** — no
+matter how sensible the run was.
 
 ## Step 9 — 55a's corrected message, in a session rather than a unit test
 
@@ -315,11 +447,14 @@ live run kept.
 
 ## Step 11 — the standalone run
 
-**Close Microclaw.** Then:
+**Close Microclaw.** Then — **stay in the repo.** `uv run` resolves only from the
+microclaw checkout, so `Set-Location` to the evidence folder first would break
+it. Give `uv run python` the absolute path instead; the emitted script resolves
+its own `_HERE` and still writes beside itself, not beside the repo:
 
 ```powershell
-Set-Location "C:\Users\Public\microclaw-gates\55b"
-uv run python session.py > "$Evidence\standalone.txt" 2>&1
+Set-Location $Repo
+uv run python "C:\Users\Public\microclaw-gates\55b\session.py" > "$Evidence\standalone.txt" 2>&1
 Write-Output "standalone exit code (expected 0):" $LASTEXITCODE
 Get-Content "$Evidence\standalone.txt"
 Get-ChildItem "C:\Users\Public\microclaw-gates\55b" -Recurse -Filter "*_plan_log*.jsonl" | Select-Object FullName, Length
