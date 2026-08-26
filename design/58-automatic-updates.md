@@ -1168,7 +1168,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | Block | Depends on | Branch | Start commit | Implementation | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
-| 58a | — | `design58/discovery` | `4103d36` | **assigned 2026-08-26**, codex runner, worktree `wt-58a` | demo — not run | — | — |
+| 58a | — | `design58/discovery` | `4103d36` | `84d49cb` + coordinator pin fix `9c087e2`; codex, **3 rounds, 12 findings**; runbook pins `84d49cb` | **awaiting demo gate** — `design/58-block58a-demo-gate.md` on the branch | — | — |
 | 58b | — | `design58/classification` | — | — | folded into 58c's runbook | — | — |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
@@ -1184,9 +1184,21 @@ Everything needed is on `main`.
 
 State as of 2026-08-26:
 
-- **58a is assigned** (2026-08-26, branch `design58/discovery` from `main` at
-  `4103d36`, headless Codex in worktree `wt-58a`). Everything else is open, and
-  nothing has merged.
+- **58a is implemented and pushed, awaiting its demo gate.** Branch
+  `design58/discovery` from `main` at `4103d36`; implementation `84d49cb`,
+  runbook pin fix `9c087e2`. Suite on the branch, coordinator-measured: **2216
+  passed / 99 skipped / 3 warnings** (macOS), against the 2182 baseline — 34 new
+  tests. Everything else is open and nothing has merged.
+- **Three review rounds, twelve findings.** Two are worth carrying: the runbook
+  shipped in a state where it **could not pass** (it took the installed commit
+  from the block branch's own HEAD, which is never an ancestor of `origin/main`,
+  so the ancestry refusal fired and the step reported "Discovery did not track
+  origin/main" — a false message for correct behaviour); and the fix for
+  "startup must survive a corrupt state file" **destroyed the only copy of
+  provenance** by overwriting it with a provenance-free error cache, with a test
+  that asserted exactly that. The second is the more instructive: a test written
+  to confirm the implementation rather than the requirement, which is
+  `CLAUDE.md` step 3's warning one level up from a fake.
 - **`design/58` is not a row in `design/35`.** It tracks itself, here.
 - **The repository is already `Micro-Claw/microclaw`, id 1238975695, private**,
   verified against the API on 2026-08-26. No production install will ever have to
