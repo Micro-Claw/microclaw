@@ -502,8 +502,18 @@ and `run_zstack`.
   back above the guard turns the ordering test red while the refusal still raises
   — because the pre-fix run only ever shows `DID NOT RAISE` and never reaches the
   ordering assertion at all.
-- **55b is implemented, reviewed over one round, and pushed (2026-08-26),
-  awaiting the demo machine (Part A) and M2 or M5 (Part B).** Branch
+- **55b failed its first demo gate on a real defect, is fixed, and is awaiting
+  round 2 (Part A in full, then Part B).** The runbook is re-pinned to `7d75c24`
+  and carries round 1's result. **What failed was a premise in design/55, not the
+  implementation**: the doc claimed `UntrustedHookAdapter` tolerates a payload
+  with no `analyze_frame`, reading a `hasattr` *router* as a tolerance, so every
+  plan-only run died on its first frame with `frames_exposed: 0`. Corrected in
+  the design doc. Both test fakes drove `pre_hardware_hook_fn` and never
+  `image_process_fn`, so a suite of 2280 stayed green through two review rounds;
+  the fakes were fixed before the code and now reproduce the rig's exact error.
+  **Step 3's reach criterion passed and stands**: the session reached the
+  plan-only route on its first attempt and wrote no hook, against 55a's five
+  refusals and a hand-written do-nothing hook. Branch
   `design55/plan-stands-alone` from `main` at `8f73b90`; runbook
   `design/55-block55b-gate.md` pins `067a6b2`. Suite at the pin,
   coordinator-measured: **2181 passed / 99 skipped / 3 warnings**. Review round 1
