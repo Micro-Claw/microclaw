@@ -7293,3 +7293,65 @@ that turned out to be real — the M2-trained classifier assigns twice as much
 *healthy* as *apoptotic* probability to a field the operator called apoptotic.
 **The coverage gate I suspected of being mis-set was reporting that honestly**, and
 scoring the artifacts is what distinguished the two.
+
+## Block 55a — an unattached hardware plan refuses (merged 2026-08-26, `2eaa0e3`)
+
+**A guard that lives on an object the failing path never constructs is not a
+guard.** design/52 put the right refusal in the right place for the wrong
+precondition: `UntrustedHookAdapter.pre_hardware_hook_fn` refuses a
+hardware-sequenced batch correctly, but it is a *method on the coordinator*, and
+no coordinator exists when no hook is attached. Four sites had taken
+`hook_strategy` as a proxy for "does this run move hardware". It is not that
+predicate.
+
+**"Watch it fail" is not enough when every test fails for the same shallow
+reason.** All eighteen new tests failed pre-fix with `DID NOT RAISE`, including
+the two whose real subject is *ordering* — so the ordering assertion was never
+reached and the pre-fix run said nothing about whether it bites. **Proving it
+took a mutation**: leave the guard raising, move `core.set_exposure` back above
+it, and `test_unattached_refusal_precedes_core_exposure` goes red in both tools
+(`assert (100,) == ()`). That is the regression `CLAUDE.md` warns can otherwise
+ship green, and the pre-fix run could not have caught it. **When a new test's
+subject is order rather than outcome, mutate the order; a pre-fix failure on the
+outcome is a different test passing.**
+
+**The runner was right to refuse one instruction.** The prompt said every new
+test must be watched failing. One of them — a single-frame zero-interval plan
+that must *still run* — is a non-regression, and it reported its pre-fix pass
+instead of manufacturing a failure. That is `feedback_watch_it_fail_not_regressions`
+holding up from the other side of the handoff.
+
+**A refusal that sends the caller into a second refusal has named a way forward
+that is not one.** Told to `pass hook_strategy`, the gate session passed
+`snr_observer` and hit `Hook envelopes apply only to saved generated hooks` a
+round trip later. Fixed on the branch after the gate; the message now names a
+*saved generated* hook and says a precoded one cannot carry the plan. The design
+doc argues this about *other* people's messages and its own new message had the
+same defect.
+
+**The probe existed because the call under test is one no agent will compose.**
+Ask an agent for a per-frame sweep and it correctly reaches for a hook, the
+refusal never fires, and the step passes having tested nothing — 52b's mandatory
+limb exactly. So the nine shapes were issued literally, from a committed probe,
+against the same controller and guard a session builds. **Running that probe
+against fakes on both trees before shipping it is the only reason to trust it**:
+pre-fix every case RAN and the exposure bracket read CHANGED; post-fix every case
+refused for the message it was told to expect. A gate step nobody has executed
+is a gate step that dies on the rig.
+
+**The gate found more than it was written to find, twice.** Step 3 produced six
+consecutive correct refusals, and the fourth — `hook_action_plan would consume
+the write reserved for restoration` — is the *second* planning error design/55
+predicted the omission bug had been hiding. And the session, finding no hook that
+fit, wrote one whose entire purpose is to exist (`PassthroughFrameLogger`,
+"the plan moves hardware, not this hook") — **design/55's argument for 55b, made
+by an agent that had never read design/55.**
+
+**A premise in my own runbook was refuted by the gate's own data.** I wrote that
+the demo camera's frames are bit-identical whatever the stage does, and used it
+to rule out an optical limb. They are bit-identical across *time* — the plain
+timelapse gives mean 3276.219 three times — and they are **not** identical across
+`Aux Z`: 858.705 / 327.285 / 327.174 at 40 / 90 / 140 um, with nothing but the
+planned axis varying. **Check the premise you are using to scope a gate against
+the artifacts the gate produced, not only against the ones that made you write
+it.**
