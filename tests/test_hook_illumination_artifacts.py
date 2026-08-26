@@ -137,6 +137,26 @@ def test_each_unattached_capability_refuses(capability, value, monkeypatch, tmp_
     ctrl.core.set_position.assert_not_called()
 
 
+def test_no_hook_refusal_names_the_hook_kind_that_can_carry_the_plan(
+    monkeypatch, tmp_path
+):
+    """The fix it names must be one that works on the next attempt.
+
+    Demo gate, 2026-08-26: told to "pass hook_strategy", the session passed
+    `snr_observer` -- a precoded hook -- and hit "Hook envelopes apply only to
+    saved generated hooks" one round trip later. A refusal that sends the caller
+    into a second refusal has named a way forward that is not one.
+    """
+    ctrl = MagicMock()
+    with pytest.raises(ValueError) as excinfo:
+        _unattached_run(
+            monkeypatch, tmp_path, "timelapse", ctrl,
+            property_envelope={"device": "Wheel"},
+        )
+    assert "saved" in str(excinfo.value)
+    assert "precoded" in str(excinfo.value).lower()
+
+
 @pytest.mark.parametrize("tool", ["timelapse", "zstack"])
 def test_unattached_refusal_precedes_core_exposure(tool, monkeypatch, tmp_path):
     ctrl = MagicMock()

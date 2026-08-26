@@ -13,6 +13,75 @@ below runs unedited.** Nothing in it is a placeholder you are meant to
 substitute, and a step that prints nothing where a match is required has
 **failed**, not passed.
 
+## Round 1 result — 2026-08-26, demo machine (`block55a-2026-08-26`)
+
+**GATE PASS, Steps 0–4, scored from the artifacts.**
+
+- **Step 0**: `2129 passed / 124 skipped / 3 warnings` = 2253 collected, exactly
+  macOS's `2154 + 99`. Zero failures. Match the total, not the split.
+- **Step 1**: `PRECONDITION PASS`. `Aux Z` at 0.0 um, bounded 0–200.
+- **Step 2**: `PROBE PASS`, exit 0. All nine shapes refused **for the message
+  each was told to expect**, no dataset directory appeared for any of them, and
+  both bracket reads were unchanged (position 0.0, exposure 10.0) though each
+  refused case asked for a different exposure. The control acquisition ran and
+  set the exposure it asked for.
+- **Step 3 produced six refusals in a row and every one of them was correct**,
+  which is more than the step asked for. In order: the `interval_s=0` sequencing
+  refusal; the no-hook refusal; `Hook envelopes apply only to saved generated
+  hooks` for a precoded `snr_observer`; **`hook_action_plan would consume the
+  write reserved for restoration`** for `max_writes: 3`; `named-stage planned or
+  restoration position is outside the envelope` for a restore target below the
+  interval; then the run. The fourth is the one worth reading twice — design/55
+  §Problem predicted it, saying the Nikon's line-89 call *"is itself one write
+  short"* and that **the omission bug hid this second planning error too**.
+  Unhiding it is 55a working exactly as designed.
+- The sweep then ran for real: `40 / 90 / 140` with `achieved_um` equal to
+  `requested_um` and `error_um: 0.0` on all three, plus the restoration write.
+  `named_stage_restoration.last_known_um`, the log's final achieved value and a
+  separate `get_stage_position` afterwards all read `0.0` — the three-way
+  agreement `CLAUDE.md` step 6 asks for.
+- **Step 4**: the exported script parses (2997 lines), zero `# NOT EMITTED`, no
+  `microclaw` import, and **all six refusals appear as single-line `# SKIPPED`
+  comments** — block 52b's newline-in-a-recorded-error defect did not recur over
+  six chances. The hooked run emitted through the adaptive path with
+  `PassthroughFrameLogger` inlined, the envelope and the literal targets
+  `40 / 90 / 140` written into `hook_action_plan`, and `configure_named_stage`
+  carrying the restore policy.
+
+### Three findings, and the block's own argument confirmed
+
+**1. The refusal named a fix that did not work — corrected on this branch.** Told
+to `pass hook_strategy`, the session passed `snr_observer` and hit
+`Hook envelopes apply only to saved generated hooks` one round trip later. The
+message now says *"pass hook_strategy naming a saved generated hook. A precoded
+hook cannot carry them."* Regression test
+`test_no_hook_refusal_names_the_hook_kind_that_can_carry_the_plan`, watched
+failing on the pre-fix message first. Suite `2155 + 99`.
+
+**2. Step 3's z-stack prompt is not runnable as written, and that is the
+runbook's defect, not the rig's.** It asks for a stack "over 2 um around where
+the focus is now"; the focus sits at `0.0`, which is the demo config's `z_min`,
+so `check_z` correctly refused `-1.0` and the operator had to choose a one-sided
+stack. The guard behaved; the step did not. Ask for `0 -> 2 um` explicitly.
+
+**3. `Aux Z` changes the demo camera's image, and this runbook's own premise said
+it could not.** Measured from the two datasets: the plain 10 ms timelapse gives
+mean **3276.219** on all three frames, **bit-identical**. The sweep gives
+**858.705 / 327.285 / 327.174** at 40 / 90 / 140 um — and frames 1 and 2 are
+identical to their last significant figure (min 70, max 584 on both) while frame
+0 is not. Nothing but the planned axis varied between those frames, so **the
+demo camera is not blind to `Aux Z`**. This matters for 55b, not for 55a; see
+design/55's checklist, where the claim it refutes has been corrected.
+
+**What the session did unprompted is 55b's argument, made by an agent that had
+never read design/55.** Finding no hook that fits, it wrote one whose entire
+purpose is to exist: `PassthroughFrameLogger`, *"records each frame's mean
+intensity and proposes no actions ... the plan moves hardware, not this hook."*
+design/55 §55b calls that a usability defect in advance — *"requiring the caller
+to write, register and hash-pin a hook that does nothing, purely to carry a plan
+that analyses nothing"*. It cost this session a hook, five refusals and a
+manifest entry to sweep three positions.
+
 ## What this gate settles, and what it cannot
 
 It settles, on real hardware and a real bridge:

@@ -5819,7 +5819,8 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         if any(value is not None for value in supplied.values()):
             raise ValueError(
                 "hook_action_plan and hook envelopes are executed by a hook and "
-                "have no effect without one; pass hook_strategy."
+                "have no effect without one; pass hook_strategy naming a saved "
+                "generated hook. A precoded hook cannot carry them."
                 if hook is None else
                 "Hook envelopes apply only to saved generated hooks."
             )
