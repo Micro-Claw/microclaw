@@ -1,5 +1,22 @@
 # Approved hooks may change bounded hardware properties
 
+> **A fixed plan no longer implies a hook (design/55 block 55b, merged
+> 2026-08-26).** Everything below assumes `hook_action_plan` and its envelopes
+> ride on a saved generated hook. That was never a requirement of the design —
+> a fixed plan is a complete, closed program whose every action, bound, budget,
+> restoration policy and authorization is stated before the first exposure — and
+> requiring a hook that analyses nothing was a usability defect. `run_timelapse`
+> and `run_zstack` now synthesize the coordinator themselves when a plan arrives
+> with no `hook_strategy`. **Where this document says a plan needs a hook, read
+> "needs a coordinator", which the tool now supplies.** The envelopes,
+> confirmation, write budget, restoration and audit log are unchanged.
+>
+> The guard this design put on `UntrustedHookAdapter.pre_hardware_hook_fn` was
+> also never reachable on the failing path, because no coordinator existed to
+> carry it — see `CLAUDE.md` §"The pycro-manager acquisition engine", sixth
+> contract.
+
+
 Date: 2026-08-14
 
 Finding from the TIRF session at

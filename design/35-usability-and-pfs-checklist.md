@@ -502,22 +502,26 @@ and `run_zstack`.
   back above the guard turns the ordering test red while the refusal still raises
   — because the pre-fix run only ever shows `DID NOT RAISE` and never reaches the
   ordering assertion at all.
-- **55b passed round 2's mechanism on the demo machine and is awaiting a short
-  round 3** — Steps 5+5b, 8 and 9 only, about ten minutes. Plan-only runs move
-  the axis in event order, restore, log without collision, refuse correctly,
-  export, and re-execute standalone; **the session reached the plan-only route
-  from a sentence naming no tool and wrote no hook at all**, which is the
-  comparison against 55a the block existed for. **The two steps that produced no
-  evidence are the coordinator's runbook, not the code**: Step 8 was
-  outcome-shaped so the agent took a better route and the gated refusal never
-  fired (52b's mandatory limb, repeating in a runbook written after the lesson),
-  and Step 5's witness could not distinguish "the image responds to `Aux Z`"
-  from "frame 0 of a hooked run differs", because every sweep ran the same
-  ascending targets against a deterministic simulator. Both rewritten; Step 5b
-  is a reversed sweep whose honest outcome includes striking Step 5. Round 1's
-  history is below.
-- **Round 1 failed on a real defect, since fixed.** The runbook is re-pinned to `7d75c24`
-  and carries round 1's result. **What failed was a premise in design/55, not the
+- **`design/55` is CLOSED.** 55a merged `2eaa0e3`, 55b merged `ba60a80`, both
+  branches deleted, design gate run. `main` measures **2182 passed / 99 skipped /
+  3 warnings**; the demo machine reads `2157 / 124`, same 2281 total.
+- **What it does:** `hook_strategy` was being used as the predicate for "this run
+  moves hardware". A `hook_action_plan` or hardware envelope passed without a
+  hook was discarded in silence and the run reported success — four Nikon TIRF
+  sweeps that moved nothing, two scored as measurements. 55a refuses, ahead of
+  the camera write; 55b lets a fixed plan carry itself, since it is already a
+  complete closed program.
+- **Two register rows opened, neither in scope for a fix here.**
+  `STAGE_MOVE_TOLERANCE_UM = 0.5` is a package constant with **no configuration
+  path** — on M2 a legitimate 199.9 µm target was unreachable and the experiment
+  had to be retargeted to 198.8, where the stage lands. That is a rig fact living
+  in `microclaw/` and per-device physics that belongs beside `min_um`/`max_um`.
+  And an agent asked the operator for positions it could have read with
+  `get_position_list`, then diagnosed itself exactly when challenged.
+- **`design/55-block55b-gate.md` is on `main`** with all five rounds' results,
+  including the two rounds that produced no evidence through coordinator runbook
+  defects and what fixed each.
+
   implementation**: the doc claimed `UntrustedHookAdapter` tolerates a payload
   with no `analyze_frame`, reading a `hasattr` *router* as a tolerance, so every
   plan-only run died on its first frame with `frames_exposed: 0`. Corrected in

@@ -7355,3 +7355,74 @@ timelapse gives mean 3276.219 three times — and they are **not** identical acr
 planned axis varying. **Check the premise you are using to scope a gate against
 the artifacts the gate produced, not only against the ones that made you write
 it.**
+
+## Block 55b — a fixed plan stands alone (merged 2026-08-26, `ba60a80`)
+
+**The design doc's own premise was the defect, and every fake agreed with it.**
+design/55 §55b argued that `UntrustedHookAdapter` already tolerates a payload
+with no `analyze_frame`, citing a `hasattr` guard and an existing `object()`
+fixture. Both facts true, conclusion false: **that `hasattr` is a router, not a
+tolerance** — its `else` branch is the legacy `image_process_fn` path, which
+`object()` cannot serve. Every plan-only run died on its first frame with
+`frames_exposed: 0`. The fixture was real and irrelevant, because it never
+drives a frame. **A suite of 2280 stayed green through two review rounds of a
+feature that could not run once**, because both test fakes drove
+`pre_hardware_hook_fn` and never `image_process_fn` — they were written from the
+doc, so they could only confirm it. Fix the fake before the code; then the
+corrected fakes reproduced the rig's exact `AttributeError`, including inside the
+exec'd exported script.
+
+**"Watch it fail" is the wrong instrument for an ordering test, and I said so
+twice before believing it.** Pre-fix, every 55a test failed on `DID NOT RAISE`
+and never reached its ordering assertion. Only a **mutation** — leave the guard
+raising, move `set_exposure` back above it — turns the ordering test red. Same
+for 55b's multiposition preflight, and for the emitted-name guard, which passes
+vacuously pre-fix and only bites when you make the emitter emit `PLAN_ONLY`.
+**If a test's subject is order or structure rather than outcome, mutate it.**
+
+**The runner declined a fold for a reason that was factually wrong, and saying so
+was worth a round.** It kept the log-path collision rule in two places — live,
+and as a hand-written string emitted into scripts — because unifying "would
+change the exporter's source-generation architecture." The exporter already
+inlines live functions with `inspect.getsource` in twenty-odd places, including
+`UntrustedHookAdapter` ninety lines below that string. Returning the specific
+counter-evidence got a clean fold and an identity test.
+
+**Five gate rounds, and two of them produced nothing because of how I wrote the
+steps.** Step 8 asked for an *outcome* — "a multiposition acquisition using
+`protocol_params` that carry a `hook_action_plan`" — so the agent offered better
+routes, a good `snr_observer` run happened, and the gated refusal never fired.
+That is 52b's mandatory limb repeating **in a runbook I wrote after recording the
+lesson**. Rewritten to name the call and to say *a refusal is the result I want*,
+it fired first try. And Step 5 asked the operator to run arithmetic over a saved
+dataset — offline analysis is the coordinator's job at zero dose (design/29 F5) —
+then my first round-3 draft compounded it by asking for a dataset to be re-shot
+that had already been analysed. **If a gate step is arithmetic over data you
+already have, it is not a gate step.**
+
+**A witness that cannot fail is not a witness.** Step 5 claimed the demo camera
+corroborates a sweep optically, but every run used the same ascending targets and
+the camera is a deterministic simulator, so repeating it proved nothing. The
+control was one run with the targets **reversed**, and it was decisive: 40 µm
+gives 858.705 whether it is the first frame or the last. Write the control into
+the step, and be willing for its outcome to delete the step.
+
+**The operator's usability question was the most valuable review of the block.**
+*"Why does it keep re-discovering the nonzero interval and max_writes
+constraints? Just provide that information in the tool description."* Three
+sessions had each burned a call on the same three plan-time refusals. All were
+statically knowable; none was in the **parameter** description a caller reads
+while filling that parameter in — the interval rule sat in the tool's prose and
+was skimmed three times. Moved into `interval_s`, `hook_action_plan` and both
+envelope schemas, and the very next session applied all three preemptively in one
+turn, including computing `max_writes: 1` because only the reserved restoration
+write would happen. **Prose the caller does not read is not documentation**, and
+this is the rare usability fix with a before-and-after measurement.
+
+**M2's best result was an accident.** A move asked for 199.9 µm, the stage
+stopped at 198.8 reporting **idle**, and the run refused rather than reporting
+success — `CLAUDE.md`'s fourth contract firing on real hardware inside a hook,
+unplanned. It also exposed that `STAGE_MOVE_TOLERANCE_UM = 0.5` has no
+configuration path, so the only way to finish was to retarget the experiment to
+where the stage lands. **A fixed micron tolerance is a rig fact living in
+`microclaw/`**; filed, not fixed here.
