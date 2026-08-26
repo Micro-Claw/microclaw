@@ -502,8 +502,21 @@ and `run_zstack`.
   back above the guard turns the ordering test red while the refusal still raises
   — because the pre-fix run only ever shows `DID NOT RAISE` and never reaches the
   ordering assertion at all.
-- **55b failed its first demo gate on a real defect, is fixed, and is awaiting
-  round 2 (Part A in full, then Part B).** The runbook is re-pinned to `7d75c24`
+- **55b passed round 2's mechanism on the demo machine and is awaiting a short
+  round 3** — Steps 5+5b, 8 and 9 only, about ten minutes. Plan-only runs move
+  the axis in event order, restore, log without collision, refuse correctly,
+  export, and re-execute standalone; **the session reached the plan-only route
+  from a sentence naming no tool and wrote no hook at all**, which is the
+  comparison against 55a the block existed for. **The two steps that produced no
+  evidence are the coordinator's runbook, not the code**: Step 8 was
+  outcome-shaped so the agent took a better route and the gated refusal never
+  fired (52b's mandatory limb, repeating in a runbook written after the lesson),
+  and Step 5's witness could not distinguish "the image responds to `Aux Z`"
+  from "frame 0 of a hooked run differs", because every sweep ran the same
+  ascending targets against a deterministic simulator. Both rewritten; Step 5b
+  is a reversed sweep whose honest outcome includes striking Step 5. Round 1's
+  history is below.
+- **Round 1 failed on a real defect, since fixed.** The runbook is re-pinned to `7d75c24`
   and carries round 1's result. **What failed was a premise in design/55, not the
   implementation**: the doc claimed `UntrustedHookAdapter` tolerates a payload
   with no `analyze_frame`, reading a `hasattr` *router* as a tolerance, so every
