@@ -46,6 +46,16 @@ your machine, so it cannot stop running because someone tidied a remote up.
 A limb that depends on finding its subject is a limb that stops running the day
 someone fixes the thing it was watching.
 
+## Limb 7 carries a control, and here is why
+
+Rounds 1–3 opted out at `now=200` against a `next_check` of ~89372. The
+twenty-four hour interval returned `None` on its own, so the limb passed
+**whether or not the opt-outs existed** — three rounds of PASS over an untested
+mechanism. It now jumps past `next_check` so a check is genuinely due, and then
+runs a control check with no opt-out that must move `last_attempt`. If the
+control does not fire, the limb fails and says the opt-out evidence proved
+nothing.
+
 ## What each limb settles
 
 | Limb | Settles |
@@ -57,7 +67,7 @@ someone fixes the thing it was watching.
 | 4 | A dirty checkout is byte-identical afterwards — status, HEAD, branch, contents |
 | 5 | Staging materializes exactly the discovered candidate and its marker matches |
 | 6 | The private repo's public 404 is cached without clobbering a prior success |
-| 7 | `--no-update-check` and `MICROCLAW_UPDATE_CHECK=0` perform no check at all |
+| 7 | Both opt-outs suppress a check that **was due**, proven by a control that fires without them |
 | 8 | The gate left the checkout as it found it |
 
 Implementation pinned by ancestry, not an exact tip, so amending this file

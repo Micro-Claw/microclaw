@@ -219,20 +219,44 @@ def main() -> int:
             raise AssertionError("prior success was overwritten")
         return f"last_error={after['last_error']!r}; prior success preserved"
 
-    @limb("7. both opt-outs perform no check at all")
+    @limb("7. both opt-outs perform no check that would otherwise have happened")
     def _():
-        before = updates.load_state(public_state)["last_attempt"]
-        updates.check_for_update(state_file=public_state, no_update_check=True, now=200)
+        # The check must be DUE, or this limb cannot fail. Rounds 1-3 opted out
+        # at now=200 against a next_check of ~89372, so the 24-hour interval
+        # returned None on its own and the limb passed whether or not the
+        # opt-outs existed. Jump past next_check, and prove with a control that
+        # a check really would have fired here.
+        state = updates.load_state(public_state)
+        due = float(state["next_check"]) + 1000.0
+        before = state["last_attempt"]
+
+        updates.check_for_update(state_file=public_state, no_update_check=True, now=due)
         after_flag = updates.load_state(public_state)["last_attempt"]
+
         os.environ["MICROCLAW_UPDATE_CHECK"] = "0"
         try:
-            updates.check_for_update(state_file=public_state, now=300)
+            updates.check_for_update(state_file=public_state, now=due + 1)
         finally:
             os.environ.pop("MICROCLAW_UPDATE_CHECK", None)
         after_env = updates.load_state(public_state)["last_attempt"]
+
         if not (before == after_flag == after_env):
-            raise AssertionError(f"attempt moved: {before} -> {after_flag} -> {after_env}")
-        return f"last_attempt stayed {before} across --no-update-check and MICROCLAW_UPDATE_CHECK=0"
+            raise AssertionError(
+                f"an opt-out performed a check: {before} -> {after_flag} -> {after_env}")
+
+        # Control. Without this the limb is unfalsifiable, which is how it
+        # passed three rounds while testing nothing.
+        updates.check_for_update(state_file=public_state, now=due + 2)
+        control = updates.load_state(public_state)["last_attempt"]
+        if control != due + 2:
+            raise AssertionError(
+                f"control failed: a due check with no opt-out did not run "
+                f"(last_attempt {control!r}, expected {due + 2!r}). "
+                "The opt-out limbs above therefore proved nothing.")
+
+        return (f"due at {due}: last_attempt held at {before} through "
+                f"--no-update-check and MICROCLAW_UPDATE_CHECK=0, then the "
+                f"control check moved it to {control}")
 
     @limb("8. the gate left the checkout exactly as it found it")
     def _():
