@@ -426,3 +426,672 @@ V1 ships both providers. After users perform the one-time updater bootstrap,
 authorized private clones update and private ZIPs wait harmlessly. On the day
 the repository becomes public, those updater-capable ZIP installs start
 discovering and installing public `main` commits with no further user action.
+
+---
+
+# Checklist — coordinated 2026-08-26
+
+**Process is `CLAUDE.md` §"The block workflow", which is authoritative.** This
+section owns *what* the blocks are, their gates and the ledger. `design/58` is
+**not** a row in `design/35`; it tracks itself, as design/48 through design/57
+each do.
+
+Five blocks, **in sequence**. 58b is the only one that could run beside another
+(it touches `config.py`/`__main__.py` and nothing the others own), and it is
+still cheaper to run in order than to rebase `webserve.serve` twice.
+Implementation is delegated to headless Codex through the project `codex-runner`
+skill, one linked worktree per block.
+
+## Measured before anything was assigned
+
+- **Suite on `main` at `feb0565`, coordinator-measured: 2182 passed / 99 skipped
+  / 3 warnings** (macOS). The demo machine reads the same total with a different
+  skip split (2157 / 124 at the design/55 close). **Gate on zero failures, never
+  the count.**
+- **Repository identity verified live, 2026-08-26**: `Micro-Claw/microclaw`,
+  `id` **1238975695**, `default_branch` `main`, `private: true`. That is the
+  value §"Ship the public-head path" compiles in, confirmed against the API
+  rather than copied forward from the transfer note.
+- **`httpx` is a *test* dependency, not a runtime one** (`pyproject.toml`
+  `[project.optional-dependencies].test`). The public provider gets **stdlib
+  `urllib.request` and nothing else** — adding a runtime HTTP dependency to
+  reach one GitHub endpoint is the layer this repo does not add, and manual
+  redirect handling is required anyway by the host allowlist.
+- **`install.bat` already branches on `check-config`'s exit code**
+  (`"%MC_EXE%" check-config >nul 2>&1` / `if errorlevel 1`), and that branch is
+  what protects an existing reviewed config from being overwritten during an
+  upgrade. 58b changes `check-config`; see its item 2.
+
+### The ship prerequisite is not merely undone — it is currently unavailable
+
+§"Decision" makes a protected `main` with a required test check a **prerequisite
+to ship**, not a description of today. Measured 2026-08-26, it cannot be turned
+on at all:
+
+```
+GET /repos/Micro-Claw/microclaw/rulesets            -> 403
+GET /repos/Micro-Claw/microclaw/branches/main/protection -> 403
+   "Upgrade to GitHub Pro or make this repository public to enable this feature."
+```
+
+`Micro-Claw` is a **Free** organization and the repository is **private**;
+branch protection and rulesets are unavailable in that combination. And there is
+**no `.github/` directory and no workflow in the tree**, so there is no test
+check to require even if protection could be enabled.
+
+This blocks **shipping the first updater-capable installer to a user** — 58e's
+merge — and blocks nothing before it. Three escapes, in 58-P below. A release
+note is explicitly not one of them; the design already rules that out.
+
+## The gate plan — every gate is the demo machine
+
+**The operator has lost access to the Nikon; available machines are the demo
+machine, M2 and M5.** That costs this design nothing, and it is worth saying
+exactly why rather than asserting it.
+
+- **Nothing here touches hardware.** The updater discovers a commit, builds an
+  environment, swaps a text file and restarts a process. The one rig-adjacent
+  contract in the whole document — §"Put the updater outside the environment it
+  replaces", an update completed with Micro-Manager **closed** keeps the new slot
+  and does not relaunch — requires Micro-Manager *closed*, which the demo
+  machine supplies by not opening it.
+- **The demo machine is Windows, which is the only platform this ships on.** Off
+  Windows the updater is silent by design. Every gate below is PowerShell.
+- **A rig is the wrong machine for this gate anyway.** These steps replace the
+  installed environment, kill the server and force rollbacks, repeatedly. Doing
+  that on M2 or M5 buys nothing and spends rig time.
+
+**One optional limb is worth M2 or M5, and it is read-only and zero-dose**:
+58b's promotion guard against a *fuller* reviewed config than the demo machine's
+minimal schema-3 document. It is a single `check-config --json` invocation, needs
+no acquisition and no Micro-Manager, and is not a precondition of merging.
+
+**Every command block in every runbook runs unedited.** No `<placeholder>` a
+reader is meant to substitute — 52c's strictest criterion produced no evidence
+because one shipped with `Select-String -Pattern "<t2>", "<t3>"` and was run
+verbatim. A step that prints nothing where a match is required has **failed**.
+
+## 58-P — a protected `main` with a required check
+
+**Not a code block, and not assignable to a runner.** It is an operator decision
+plus a small amount of repository configuration, and it gates 58e's merge only.
+
+- [ ] **Decide the escape.** Exactly one of:
+      **(a)** upgrade `Micro-Claw` to GitHub Team, which makes rulesets available
+      on a private repository;
+      **(b)** hold the first shipped installer until the repository is public,
+      at which point protection is available on the Free plan;
+      **(c)** amend §"Decision" — *not* a release note — to state what boundary
+      replaces it and why that is acceptable for the preview channel.
+- [ ] **There must be a check to require.** Add `.github/workflows/tests.yml`
+      running the suite on Windows and macOS. It does not exist today. Weigh the
+      Actions minutes a private Free repository gets before turning it on for
+      every push.
+- [ ] **Then require it** on `main`, with the maintainer included in the rule.
+      Record here that it is on, with the ruleset id.
+
+## 58a — provenance, discovery, and materializing an exact commit
+
+**Branch:** `design58/discovery`. **Design sections:** "Track the private clone's
+upstream for now", "Ship the public-head path at the same time", the
+`update-state.json`/`microclaw-slot.json` paragraphs of "Put the updater outside
+the environment it replaces", "Check quietly, ask where the user already is"
+(caching and opt-out only), "Failure and trust boundaries" (first, third and
+fourth bullets), "Delivery" step 1.
+
+**One new module, `microclaw/updates.py`.** No package, no provider registry, no
+abstract base class: two functions that return the same `Candidate` record are
+two functions. `CLAUDE.md` §"Don't add layers".
+
+### Items
+
+- [ ] **1. Compiled-in identity, in one place and not configurable.**
+      `REPO_ID = 1238975695`, `REPO = "Micro-Claw/microclaw"`, `BRANCH = "main"`.
+      No environment override, no config key, no value reachable from the
+      browser. §"Ship the public-head path" is explicit that the provider
+      "follows no URL supplied by the browser".
+- [ ] **2. `update-state.json`, written atomically**, holding provenance
+      (`clone` or `public-head`), the recorded clone path / repo identity /
+      branch / upstream / **git executable**, the verified canonical owner/name,
+      and the discovery, dismissal and staging UI state. **It is not
+      authoritative about which code is executing** — that is the slot marker.
+- [ ] **3. No recorded state means no update path.** No `update-state.json` →
+      no check, no banner, no CLI line. A developer running from a source
+      checkout is never offered an update on the strength of a `.git` directory
+      above their package. Off Windows the module is silent, as
+      `microclaw/shortcut.py` already is.
+- [ ] **4. Git is located and recorded, not assumed.** `PATH` first, then the
+      installed GitHub Desktop bundle. Do not assume GitHub Desktop put `git` on
+      `PATH`. Record the executable that was validated.
+- [ ] **5. Clone discovery: bounded, non-interactive, read-only.**
+      `git fetch` as a subprocess **argument list**, with `GIT_TERMINAL_PROMPT=0`
+      and a timeout, in the recorded clone. Compare the installed commit against
+      the remote-tracking ref. Offer the update only when the installed commit is
+      an **ancestor** of the fetched upstream commit — a non-fast-forward or a
+      downgrade is never offered.
+- [ ] **6. The user's checkout is never modified.** No fast-forward, merge,
+      rebase, stash, discard, branch switch, or stamped file. A dirty tree and a
+      feature branch do not block an update, because neither is build input.
+- [ ] **7. Credentials that do not work produce the sentence, not a hang.**
+      "Open GitHub Desktop, Fetch origin, then Check again." Microclaw still
+      compares the remote-tracking ref GitHub Desktop refreshed.
+- [ ] **8. Clone materialization is `git archive <sha>`** into a fresh staging
+      directory (or a detached temporary worktree). The staged source records the
+      requested SHA, and that is verified **before** the build.
+- [ ] **9. Public discovery through stdlib `urllib.request`.** One API call for
+      `main`'s HEAD, short connect and read timeouts. The response must yield a
+      **40-hex** commit; anything else is a malformed response, not a candidate.
+- [ ] **10. Public materialization is pinned to that SHA** — an archive for the
+      returned full commit, never a mutable `main.zip`.
+- [ ] **11. Host allowlist and bounded, revalidated redirects.** Automatic
+      redirects **off**; follow manually, at most a small fixed number, and
+      revalidate the host at every hop against the GitHub API/download hosts.
+- [ ] **12. Redirect acceptance is by immutable id.** Resolve the destination
+      metadata and accept a new owner/name **only** when `REPO_ID` still matches;
+      persist the verified canonical name into `update-state.json`; reject a
+      redirect to any other repository. Keep this even though the transfer is
+      already done — it is what makes requirement 3 survive a later move, and the
+      vacated `zacsimile/microclaw` namespace could be reused by anyone.
+- [ ] **13. Extraction is hostile-input handling.** Bounded download size,
+      bounded extracted size, and members rejected for absolute paths, `..`,
+      symlinks, hardlinks and device entries. Run as the current user, never
+      elevated.
+- [ ] **14. Every attempt is cached, including the failures.** A private-repo
+      404 and a transient error both cache, so an unavailable source is not
+      retried on every launch. Retain the last **successful** result separately.
+      At most one background check per 24 hours plus jitter.
+- [ ] **15. Opt-out.** `--no-update-check` for a launch and
+      `MICROCLAW_UPDATE_CHECK=0` for a managed offline machine. Neither disables
+      *using* the installed version. (The flag is parsed here; the REPL line and
+      prompt it suppresses arrive in 58e.)
+- [ ] **16. `microclaw-slot.json` is written and read beside the running
+      interpreter.** At least the full commit SHA and the required launcher
+      protocol. Resolve it from `sys.executable`, never from shared state, so
+      activation and rollback cannot make one slot report the other's commit.
+      Nothing in the tree records a commit today and `__version__` stays
+      `0.1.0` — a channel that follows head has no version to compare.
+- [ ] **17. A ZIP install bootstraps as `unknown`** and the first successful
+      public check may therefore offer the current HEAD once. Every later
+      comparison is exact.
+- [ ] **18. No agent tool, no schema, no emitter.** Nothing in this block reaches
+      `TOOL_REGISTRY`, `tools_schema.py` or `export_session_script`. Update state
+      is operational UI state, not conversation history and not a model tool: the
+      agent cannot approve or trigger its own replacement.
+
+### Tests — watch each one fail on the pre-change tree
+
+`git checkout <before> -- microclaw/`, run, confirm it fails **for the stated
+reason**, restore. The implementer does it; the coordinator re-verifies it. The
+exception is anything asserting existing behaviour is *unchanged* — a regression
+test is supposed to pass on both trees, and demanding it fail manufactures fake
+evidence (`feedback_watch_it_fail_not_regressions`).
+
+- [ ] A private-repository 404 yields no candidate, caches the attempt, and
+      leaves the last successful result alone.
+- [ ] A malformed API body, a non-40-hex `sha`, and a truncated archive each
+      refuse with a distinguishable reason.
+- [ ] An archive member with an absolute path, one with `..`, and one that is a
+      symlink are each rejected; a plain oversize archive is rejected before it
+      is written out.
+- [ ] A redirect to a repository whose `id` differs is **rejected**; a redirect
+      to a different owner/name whose `id` matches is accepted and the canonical
+      name is persisted. A redirect to a non-allowlisted host is rejected at the
+      hop, not after the download.
+- [ ] A dirty checkout on a feature branch still produces a candidate, and the
+      checkout is **byte-identical** afterwards — status, HEAD, branch and
+      worktree.
+- [ ] A diverged upstream (installed commit not an ancestor) offers nothing.
+- [ ] A `git fetch` that would prompt exits non-zero under
+      `GIT_TERMINAL_PROMPT=0` and produces the GitHub Desktop sentence, bounded
+      by the timeout.
+- [ ] `git archive` staging materialises the **exact** requested SHA, verified
+      against the tree, and a mismatch refuses before any build.
+- [ ] A source checkout with no `update-state.json` offers nothing, with a `.git`
+      directory sitting right above the package.
+- [ ] On a non-Windows platform every entry point returns silently.
+- [ ] Two slot markers with different SHAs: a process resolving from its own
+      `sys.executable` reports its own, across a simulated activation **and** a
+      simulated rollback.
+- [ ] The 24-hour interval is honoured, jitter is applied, and a cached failure
+      suppresses the retry.
+- [ ] `TOOL_REGISTRY` and the tool schemas are unchanged — an identity test, so
+      it goes red the moment an update verb becomes a model tool.
+
+### Gate — demo machine, `design/58-block58a-demo-gate.md`
+
+The first exercise of real Git, real network and the real private repository.
+No Micro-Manager needed.
+
+- [ ] Discovery against the demo machine's own clone finds a commit that equals
+      its `git rev-parse origin/main`, printed side by side.
+- [ ] The public provider **404s** on the private repository, the attempt is
+      recorded in `update-state.json`, and the status line is the silent one.
+- [ ] A file is dirtied and a branch checked out in the clone before the check;
+      afterwards `git status --porcelain` and `git rev-parse --abbrev-ref HEAD`
+      are unchanged, printed before and after.
+- [ ] A materialized staging tree's recorded SHA matches the fetched commit.
+- [ ] `--no-update-check` and `MICROCLAW_UPDATE_CHECK=0` each perform no network
+      call, proven by the unchanged attempt timestamp in `update-state.json`.
+
+## 58b — one classification, reported by each slot, from one validation snapshot
+
+**Branch:** `design58/classification`. **Design sections:** "Failure and trust
+boundaries" bullet 3 in full, and the `result`/`build_session` snippet in "Put
+the updater outside the environment it replaces".
+
+### Items
+
+- [ ] **1. `check-config --json` writes exactly one JSON object to stdout**, with
+      `classification` (`missing`, `blocked`, `ready`), the path, and the existing
+      diagnostics. **Exit 0 for all three successfully computed classifications**;
+      reserve non-zero for failing to classify or to emit valid output. Nothing
+      else may be printed on stdout in this mode.
+- [ ] **2. The human mode's exit codes do not change.** `install.bat` runs
+      `check-config` bare and branches on `errorlevel 1` to protect an existing
+      config from being overwritten during an upgrade. Inverting that branch
+      would let an upgrade overwrite a reviewed rig's bounds. Pin it with a test.
+- [ ] **3. No second validator.** The classification is derived from the existing
+      `ConfigValidationResult` — `parsed is None and not path.exists()` →
+      `missing`; `can_start_live_validation` → `ready`; everything else →
+      `blocked`. `validate_safety_config` keeps its signature and its behaviour.
+- [ ] **4. Hoist the validation, do not duplicate it.**
+      `build_session(args, config_result=result)` branches on the supplied
+      result. `Session.__init__` receives already-parsed constraints instead of
+      calling `load_safety_config_or_exit`; `SetupSession` receives the same
+      result. One immutable snapshot, so the health marker and the live session
+      describe the same file contents even if another process edits it during
+      startup. `build_session(args)` with no result keeps working — it computes
+      the snapshot itself, once.
+- [ ] **5. The comparison is active-versus-candidate, not an unconditional
+      candidate `check-config`.** `ready→ready` proceeds. `ready→missing` and
+      `ready→blocked` refuse: an update may never downgrade an accepted reviewed
+      config into a setup state. `blocked→blocked` and `missing→missing` proceed,
+      which is what keeps first-launch machines updateable. `blocked→ready` and
+      `missing→ready` **refuse** — an update alone must not promote a
+      previously blocked file into normal hardware control without a new human
+      review.
+- [ ] **6. The refusal names the escape.** "Repair or re-review the file in setup
+      until this version also classifies it `ready`, then the update proceeds" —
+      not a bypass, and not a message that makes the machine look permanently
+      stuck.
+- [ ] **7. Each classification comes from that slot's own CLI.** The comparison
+      means nothing if one validator classifies both files. Invoke each slot's
+      own `microclaw.exe check-config --json` as a subprocess.
+
+### Tests
+
+- [ ] The **nine-cell** matrix of active × candidate classification,
+      parameterized, each with the expected proceed/refuse and, for the two
+      promotion cells, the escape sentence.
+- [ ] `check-config --json` exits **0** for `missing`, `blocked` and `ready`, and
+      its stdout parses as exactly one JSON object in each.
+- [ ] `check-config --json` exits non-zero when classification itself fails, and
+      emits no half-object.
+- [ ] Human `check-config` still exits 1 on unreviewed and 0 on ready —
+      *regression*, so do not stage a failing run for it.
+- [ ] A structural assertion in `tests/test_installer.py` that `install.bat`
+      still runs `check-config` **without** `--json` and branches on
+      `errorlevel`.
+- [ ] `build_session` calls `validate_safety_config` **once** — spy on it and
+      assert the call count, for both the `Session` and `SetupSession` routes.
+- [ ] A config replaced on disk between the snapshot and `build_session` does not
+      change what the session receives.
+
+### Gate — demo machine, folded into 58c's runbook
+
+Three commands, no hardware, no Micro-Manager:
+
+- [ ] `check-config --json` on the machine's real config → `ready`,
+      `$LASTEXITCODE` **0**.
+- [ ] The same against a copied-aside path that does not exist → `missing`,
+      `$LASTEXITCODE` **0**.
+- [ ] The same against a copy with `reviewed: false` → `blocked`,
+      `$LASTEXITCODE` **0** — and bare `check-config` against that same copy
+      still prints `$LASTEXITCODE` **1**.
+- [ ] **Optional, M2 or M5, read-only and zero-dose.** One
+      `check-config --json` against that rig's fuller reviewed config, which
+      carries the `plugins` and actuator sections the demo machine's minimal
+      schema-3 document does not. Not a precondition of merging. Copying the
+      file to the demo machine instead is equally good evidence and costs no rig
+      time.
+
+## 58c — two slots and a launcher outside them
+
+**Branch:** `design58/two-slots`. **Design sections:** "Put the updater outside
+the environment it replaces" in full, "Failure and trust boundaries" bullets 5
+and 6, "Delivery" step 2.
+
+The block that can brick an install. It carries the migration.
+
+### Items
+
+- [ ] **1. Only `install.bat` writes the external launcher files** —
+      `Microclaw.cmd` and `updater-launcher.ps1`, sourced from beside itself
+      (`scripts/`). A slot's `install-shortcut` keeps writing the icon and the
+      `.lnk` and **leaves the launcher alone whenever a managed layout is
+      present**. A staged environment must not be able to rewrite its own
+      launcher, and a rollback must not land on a launcher the rolled-back slot
+      wrote.
+- [ ] **2. The wrapper stops naming a slot.** `_wrapper_text` currently bakes in
+      the absolute `<env>\Scripts\microclaw.exe` that `launcher()` resolved from
+      `sys.executable` — precisely the path an update has to change.
+      `Microclaw.cmd` becomes `MICROCLAW_FROM_SHORTCUT=1` plus an invocation of
+      `updater-launcher.ps1` with `-NoProfile -ExecutionPolicy Bypass`, because a
+      default workstation execution policy refuses to run a `.ps1` at all.
+      **The non-managed developer install keeps today's behaviour** — that path
+      has no slots and must not acquire them.
+- [ ] **3. The launcher reads two trivial text files**, `active-slot.txt`
+      (exactly `a` or `b`) and `pending-slot.txt` (absent, `a` or `b`). It does
+      not parse application JSON. Keep it thin: slot selection, child lifecycle,
+      health, rollback, and nothing else.
+- [ ] **4. Activation happens at launch**, before the child starts: a valid
+      pending slot is activated, then the active slot runs.
+- [ ] **5. Fresh nonce per child start.** The launcher generates it, passes it in
+      the environment, **removes any old marker first**, and accepts only a newly
+      written marker containing that nonce. A stale marker from the previous run
+      is a failure, not a pass.
+- [ ] **6. Health is written at a common pre-hardware boundary in `serve()`,
+      immediately before `build_session(args)`** — after validating the launch
+      nonce, the slot metadata against the executing environment, the imports,
+      the serve arguments and dependencies, and the offline classification;
+      never after. It covers both `Session` and `SetupSession`.
+- [ ] **7. Health does not require an answering bridge.** A closed or slow rig is
+      not evidence that new code is defective and **must not** cause rollback.
+- [ ] **8. An update completed with Micro-Manager closed is a completed update.**
+      The marker is written, the child then exits on the bridge check, and the
+      launcher **keeps the new slot, does not roll back, and does not relaunch**.
+      The user starts Microclaw again from the icon. Someone reading only "keep
+      the old slot until healthy" could as reasonably build a relaunch loop that
+      exits every time; this outcome is written down because it is not derivable.
+- [ ] **9. Rollback.** If the child exits or times out before a nonce-matched
+      marker, the launcher switches back and reports the rollback **on the next
+      successful launch**.
+- [ ] **10. Keep one known-good slot.** Do not delete the old slot until the new
+      one reaches a healthy startup marker. Bounded logs.
+- [ ] **11. Versioned launcher protocol.** Each candidate declares the minimum
+      protocol it needs; **refuse staging** when the installed launcher is older
+      and ask for a one-time installer bootstrap. Routine updates stay within the
+      shipped protocol.
+- [ ] **12. Migration.** The first updater-capable `install.bat` moves the
+      existing `env` into the managed layout as `env-a`, writes `active-slot.txt`,
+      writes `microclaw-slot.json`, and records provenance — clone/upstream/commit
+      when `.git` is present, otherwise `public-head` with commit `unknown`.
+- [ ] **13. `%APPDATA%` is out of scope, in both directions.** Safety bounds, API
+      credentials, histories and user data are never migration inputs and never
+      deletion targets.
+- [ ] **14. Never install an editable package**, in any slot, on any path.
+- [ ] **15. Staging needs more network than checking does.** `uv pip install`
+      resolves the dependency tree from PyPI; the likeliest real failure is
+      GitHub reachable and PyPI not. Report "the update could not be built", keep
+      the active slot, and **do not retry inside the same check interval**.
+
+### Tests
+
+The `.ps1` cannot execute on the CI platform, so split the evidence deliberately
+rather than testing only what is convenient:
+
+- [ ] **The state machine is Python and is unit-tested**: activation, pending
+      consumption, nonce generation and matching, stale-marker rejection, slot
+      metadata that names the *other* slot, rollback, and the protocol-too-old
+      refusal — as pure functions over the two text files and the marker.
+- [ ] **The `.ps1` and `.cmd` are structurally tested** in
+      `tests/test_installer.py`'s existing style: `-NoProfile
+      -ExecutionPolicy Bypass` present, no slot name baked into `Microclaw.cmd`,
+      every branch reachable, and the two files written by `install.bat` and by
+      nothing else. Grep `microclaw/` for a writer of either filename and assert
+      there is none.
+- [ ] `shortcut.install` on a machine with a managed layout writes the icon and
+      `.lnk` and **does not touch** the launcher; without one it behaves exactly
+      as today.
+- [ ] `serve()` writes the marker **before** `build_session` — assert ordering by
+      instrumenting both, not by reading the source.
+- [ ] A `build_session` that raises on the bridge **after** the marker is written
+      leaves the marker in place (item 8, the shape that decides relaunch).
+- [ ] A wrong or missing nonce means no health, and the marker file's mere
+      existence is never sufficient.
+- [ ] Migration preserves `%APPDATA%` config, credential file and histories
+      byte-for-byte, and never reads them as inputs.
+- [ ] A staging build whose `uv pip install` fails leaves the active slot and
+      `active-slot.txt` untouched and writes no `pending-slot.txt`.
+
+### Gate — demo machine, `design/58-block58c-demo-gate.md`
+
+The heavy one. It carries 58b's three commands as its first step. **Back up
+`%APPDATA%\microclaw` and the existing `%LOCALAPPDATA%\microclaw\env` before
+Step 1** — the runbook says so as a literal command, and prints the copy.
+
+- [ ] An existing `env` install migrates to `env-a`, `active-slot.txt` reads `a`,
+      and `microclaw-slot.json` carries the checkout's commit.
+- [ ] The desktop icon launches through `updater-launcher.ps1` and the child is
+      `env-a`'s executable — proven from the process command line, not inferred.
+- [ ] The health marker exists, carries the launch nonce, and was written before
+      the bridge was contacted.
+- [ ] **Micro-Manager closed**: the marker is written, the child exits on the
+      bridge check, the launcher keeps the slot, does not roll back, and does not
+      relaunch. This is the limb most likely to be built as a relaunch loop.
+- [ ] A slot deliberately made to fail its start rolls back, and the rollback is
+      reported **on the next launch**, not on the failing one.
+- [ ] `%APPDATA%` config, key and histories are unchanged, printed as hashes
+      before and after.
+- [ ] `install.bat` run twice in a row is idempotent and does not lose the
+      active slot.
+
+## 58d — cached status, one staging job, and the banner
+
+**Branch:** `design58/endpoints`. **Design sections:** "Check quietly, ask where
+the user already is" (the API and banner halves), "Delivery" step 3.
+
+### Items
+
+- [ ] **1. `GET /api/update` reads cached state only and never performs network
+      I/O.** This is the route the browser polls.
+- [ ] **2. `POST /api/update/check`** is the explicit "Check now".
+- [ ] **3. `POST /api/update/stage`** begins **one** background staging job. A
+      second request while one runs is refused, not queued.
+- [ ] **4. `POST /api/update/restart`** refuses unless the session is idle —
+      no agent turn, acquisition, pending confirmation or setup write in flight.
+      (The shutdown and relaunch it requests land in 58e.)
+- [ ] **5. `POST /api/update/dismiss`** carries "Later" (seven days for that
+      commit) and "Skip this commit".
+- [ ] **6. All mutating routes take the same remote authentication** as every
+      other mutating route, and the same cross-origin block.
+- [ ] **7. The browser never calls GitHub.** It reads local update state only.
+- [ ] **8. The banner** goes at the top of the existing UI in `serve.html`,
+      alongside `#setup-banner`, `#pair-banner` and `#key-banner`, following their
+      markup and CSS rather than introducing a new pattern. Short SHA and commit
+      subject, **Update** · **Later** · **View on GitHub**; Update becomes
+      progress, then **Restart now** / **Restart later**.
+- [ ] **9. When the candidate is not `ready` under 58b's comparison**, the banner
+      says the update needs the maintainer and carries the escape sentence.
+- [ ] **10. The agent cannot see or reach any of it.** Not a tool, not in
+      conversation history, not in the context provider. Identity test.
+
+### Tests
+
+- [ ] `GET /api/update` performs no network I/O — patch the provider and assert
+      it is never called, rather than asserting on a timing.
+- [ ] A second `stage` while one runs is refused with a distinguishable status.
+- [ ] `restart` refuses during a turn, during an acquisition, with a pending
+      confirmation, and during a setup write — four cases, not one.
+- [ ] Every mutating route rejects an unauthenticated remote request, in the
+      style `tests/test_host_isolation.py` already uses.
+- [ ] "Later" suppresses the same commit for seven days and **does not** suppress
+      a different one; "Skip this commit" suppresses only that commit.
+- [ ] The serve page renders the banner from a fixture state, and the transcript
+      JS test file's existing harness covers the three button states.
+- [ ] `TOOL_REGISTRY`, the tool schemas and the model's context are unchanged.
+
+### Gate — demo machine, `design/58-block58d-demo-gate.md`
+
+Against a **real** discovered commit, not a fixture. Because the repository is
+private, the clone provider is the one that produces a candidate; to have
+something to discover, the runbook checks out a commit one behind `origin/main`
+into the managed slot first, as a literal command.
+
+- [ ] The banner appears with the real short SHA and subject, and matches
+      `git log -1 --format=%h %s origin/main` printed beside it.
+- [ ] "Later" hides it; a restart of the server does not bring it back.
+- [ ] "Check now" re-checks and the attempt timestamp in `update-state.json`
+      moves.
+- [ ] "Restart now" **refuses** while a turn is running — start a long turn, then
+      click it, and capture the refusal.
+- [ ] The browser made no request to GitHub — from the browser devtools network
+      log, saved.
+
+## 58e — restart, the terminal line, and the end-to-end update
+
+**Branch:** `design58/restart`. **Design sections:** the `MICROCLAW_UPDATE_RESTART`
+paragraph and the "Restart now"/"Restart later" paragraph of "Put the updater
+outside the environment it replaces", the REPL half of "Check quietly", "Delivery"
+step 4.
+
+### Items
+
+- [ ] **1. The exit pause is suppressed for an update restart, and only then.**
+      `Microclaw.cmd` sets `MICROCLAW_FROM_SHORTCUT=1`, which makes `main()`
+      register the atexit handler that blocks on
+      `Press Enter to close this window...` (`microclaw/shortcut.py:168`) — and
+      the launcher is waiting on exactly that exit. The **server process sets
+      `MICROCLAW_UPDATE_RESTART=1` on itself** while handling
+      `/api/update/restart`, immediately before requesting shutdown; the
+      already-registered handler checks the flag **when it runs**. The launcher
+      cannot pass it at spawn, because nothing knows at spawn whether this run
+      ends in an update.
+- [ ] **2. The pause stays for every ordinary exit.** It exists so a novice can
+      read a startup refusal.
+- [ ] **3. "Restart now"** requests a graceful shutdown; after the child exits the
+      **still-running launcher** activates the pending slot and starts
+      `microclaw serve` again. Closing the console may kill both, so it is never
+      relied on for post-exit work.
+- [ ] **4. "Restart later"** activates at the beginning of the next desktop
+      launch.
+- [ ] **5. "Restart now" is offered only when the launch nonce and the
+      launcher-owned flag are both present and the pending slot is valid.** A
+      user who runs `env-a\Scripts\microclaw.exe serve` directly may stage and
+      choose Restart later, and the UI **must not** claim it can relaunch that
+      process.
+- [ ] **6. The REPL prints one unobtrusive line after startup** and asks
+      `Update now? [y/N]` **only when stdin is interactive**. Never under
+      redirection, tests, a service, or `--no-update-check`. **No prompt before a
+      `serve` launch** — desktop users may not understand the console, and it
+      delays the interface they do understand.
+- [ ] **7. `--no-update-check` reaches both entry points** — it belongs on the
+      top-level parser, beside `--safety-config`, not on the `serve` subparser,
+      because subcommand flags there would clobber the session defaults.
+
+### Tests
+
+- [ ] The atexit handler skips the prompt when `MICROCLAW_UPDATE_RESTART=1` is
+      set **at handler-run time**, and pauses when it is set at neither time and
+      when it is set only at registration time. The middle case is the one that
+      matters.
+- [ ] `/api/update/restart` sets the flag **before** requesting shutdown —
+      ordering asserted by instrumentation.
+- [ ] "Restart now" is not offered without nonce + launcher flag + valid pending
+      slot; each of the three absences separately.
+- [ ] The REPL prompt appears with a fake interactive stdin and is absent under a
+      non-tty, under `--no-update-check`, and under `MICROCLAW_UPDATE_CHECK=0`.
+- [ ] `serve` never prompts, under any combination.
+
+### Gate — demo machine, `design/58-block58e-demo-gate.md`
+
+The full Delivery-step-4 sequence. **Drive it from the desktop shortcut, not a
+terminal**, so the exit pause is live and a stall is visible — a terminal run
+cannot fail this gate the way a user's launch can.
+
+- [ ] Clone install → discovered upstream commit → update → **Restart now** →
+      the new slot is serving, proven from `microclaw-slot.json` beside the
+      running interpreter.
+- [ ] The restart did **not** stall on `Press Enter to close this window...`,
+      timed.
+- [ ] An ordinary Ctrl-C exit **does** still pause.
+- [ ] A direct `env-a\Scripts\microclaw.exe serve` stages and offers **Restart
+      later only** — the absence of the Restart-now control is the evidence.
+- [ ] Active files locked during staging do not break the build.
+- [ ] A deliberately failed install, and a deliberately failed start, each leave
+      the old slot serving.
+- [ ] Offline launch works.
+- [ ] PyPI unreachable during staging reports "the update could not be built",
+      keeps the active slot, and does not retry inside the interval.
+- [ ] Update once with **Micro-Manager closed**: the new slot is kept, with no
+      rollback and no relaunch.
+- [ ] `%APPDATA%` config, key and histories preserved, hashed before and after.
+- [ ] A **public ZIP** install records `public-head`, and its status line says
+      automatic updates become available when the repository is public — it does
+      not error and does not nag.
+
+## Owed evidence that cannot be booked
+
+Recorded rather than inferred, the way design/56 records its Nikon limbs.
+
+- **The public provider has no positive path while the repository is private.**
+  Every gate above exercises its 404, its caching and its silence, which is the
+  behaviour shipped to real users today; none exercises a successful public
+  discovery, download and install. Two ways to close it, both operator
+  decisions:
+  **(a)** on the day the repository goes public, run 58a's and 58e's public limbs
+  against it — this is also requirement 2's own acceptance test and should be run
+  then regardless; or
+  **(b)** create a small public fixture repository under `Micro-Claw` and gate a
+  **throwaway** build whose only diff from `main` is the three compiled-in
+  identity constants. The diff must be exactly those constants, and the build
+  must never be merged or installed as a user's Microclaw. This proves the real
+  code path against real GitHub without waiting.
+  **Do not add an environment override to production code to make this
+  testable.** §"Ship the public-head path" forbids a browser-supplied URL for a
+  reason, and a test hook in the trust boundary is the same hole with a nicer
+  name.
+- **Nothing is owed to a microscope.** No limb of design/58 needs M2, M5 or a
+  Nikon. 58b's optional fuller-config limb is a convenience, not a debt.
+
+## Post-merge design gate
+
+- [ ] Rewrite §"Decision"'s branch-protection paragraph in the past tense with
+      what was actually done, and record the ruleset id or the escape taken.
+- [ ] Reconcile the `update-state.json` and `microclaw-slot.json` field lists in
+      this document against what shipped. A design doc that names fields the code
+      does not write is how 55b's `hasattr` misreading happened.
+- [ ] Fold into `CLAUDE.md` **only** what is generic. Two candidates are already
+      visible and neither is Micro-Manager-specific: *only the thing outside both
+      slots may write the thing outside both slots*, and *a health marker's
+      existence is not health — a nonce-matched, freshly written marker is.*
+      Do not fold Windows layout details there; they belong here.
+- [ ] Move the `design/35` boundary note off "nothing is assigned" and onto
+      design/58's state.
+- [ ] Tick the carried-forward register rows this touches, if any. **The
+      eleven-undecorated-tools row does not move** — design/58 adds no tool.
+
+## Run ledger
+
+| Block | Depends on | Branch | Start commit | Implementation | Gate | Merged | Design reconciled |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
+| 58a | — | `design58/discovery` | — | — | demo — not run | — | — |
+| 58b | — | `design58/classification` | — | — | folded into 58c's runbook | — | — |
+| 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
+| 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
+| 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
+
+**Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
+skipped / 3 warnings** (macOS). Windows reads the same collected total with a
+different skip split. **Gate on zero failures, never the count.**
+
+## Resuming this block cold
+
+Everything needed is on `main`.
+
+State as of 2026-08-26:
+
+- **Nothing is assigned and nothing has been implemented.** This checklist was
+  written first, against the code, and every row above is open.
+- **`design/58` is not a row in `design/35`.** It tracks itself, here.
+- **The repository is already `Micro-Claw/microclaw`, id 1238975695, private**,
+  verified against the API on 2026-08-26. No production install will ever have to
+  follow the rename redirect; the redirect handling ships anyway, per §"Ship the
+  public-head path".
+- **58-P is not a code block and cannot be done by a runner.** Branch protection
+  is currently *unavailable* — Free org, private repo, HTTP 403 — and there is no
+  workflow to require. Read §"The ship prerequisite is not merely undone" before
+  planning around it.
+- **Every gate is the demo machine.** The Nikon is gone and no limb of this
+  design needs a microscope at all.
