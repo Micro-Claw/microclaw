@@ -1204,6 +1204,39 @@ Reporting each limb independently rather than aborting at the first failure is
 deliberate: round 1's cascade meant one refusal hid five untested limbs behind
 `TypeError: 'NoneType' object does not support item assignment`.
 
+## 58b's gate is expected to report INCOMPLETE, and that is the correct result
+
+`compare_slot_configurations` compares **one config file** classified by **two
+code versions**. Two genuinely different validators cannot exist until 58c builds
+the second slot, so one limb reports **NOT EXERCISED** naming 58c, the banner
+reads INCOMPLETE, and the script exits nonzero. **Do not read that as a failure
+and do not engineer it away** — it is the honest state of the evidence, and the
+alternative that round 1 attempted was worse.
+
+Round 1's gate resolved its "two slots" as the operator's real installed
+Microclaw at `%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe` and whatever
+`microclaw` was on `PATH`. Neither is the code under review, so the gate could
+have failed because the installed copy predated the block, or passed while
+exercising something else entirely. It also classified **three different files**
+with two executables and then called the **pure** comparison on results it had
+gathered itself — re-implementing the mechanism rather than invoking it, so
+`compare_slot_configurations`, the only new runtime behaviour in the block, had
+no gate coverage at all. Its unit test monkeypatches `subprocess.run`, so no real
+process was ever spawned by anything.
+
+The rewrite runs the real function against the checkout's own CLI and a
+**gate-written stub** as the candidate — two real subprocesses, the real argument
+order through a real argparse, real JSON over a real pipe — and drives all nine
+cells plus three failure paths that way. Every limb name and detail string
+carries "(candidate = gate stub, not a second slot)" so no later reader mistakes
+it for two-slot evidence.
+
+**One thing the runner did better than asked.** The `limb` decorator now takes a
+mandatory `fails_if` argument, recorded into every result, so "what would make
+this limb fail" is answered structurally rather than by discipline. 58a's
+unfalsifiable opt-out limb could not have been written this way. Consider it for
+58c's gate.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1265,7 +1298,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
-| 58b | — | `design58/classification` | `0207ba0` | **assigned 2026-08-26**, codex, worktree `wt-58b` | demo — its own script, `design/58-block58b-demo-gate.ps1` | — | — |
+| 58b | — | `design58/classification` | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **awaiting demo** — `design\58-block58b-demo-gate.ps1`; expect **INCOMPLETE**, see below | — | — |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
@@ -1284,9 +1317,17 @@ State as of 2026-08-26:
   `main` measures **2220 passed / 99 skipped / 3 warnings** (macOS,
   coordinator-measured). Its round history is §"58a demo gate round 1" and
   `design/prompts.md`.
-- **58b is assigned** (2026-08-26) on `design58/classification` from `main` at
-  `0207ba0`, codex in worktree `wt-58b`. Its gate ships as a **program**, not a
-  runbook — see `CLAUDE.md` step 6, which 58a rewrote.
+- **58b is implemented and pushed, awaiting its demo gate.** Branch
+  `design58/classification` from `main` at `1a582dc`, tip `f50fd82`. Suite
+  **2244 passed / 99 skipped / 3 warnings** (macOS, coordinator-measured), from
+  2220. Its gate is expected to report **INCOMPLETE** — see the section above
+  before treating that as a failure.
+- **Three of five runner turns on 58b were cut short** — one OpenAI usage limit,
+  two harness kills, one of which left the gate script deleted mid-rewrite after
+  an `apply_patch` refusal on a combined delete-and-create. None was a code
+  problem. The recovery that worked: keep the interrupted work, tell the next
+  turn in writing not to trust it, and commit any part that is complete and
+  correct so a further interruption cannot lose it (`30b0d9b`).
 - **`design/58` is not a row in `design/35`.** It tracks itself, here.
 - **The repository is already `Micro-Claw/microclaw`, id 1238975695, private**,
   verified against the API on 2026-08-26. No production install will ever have to
