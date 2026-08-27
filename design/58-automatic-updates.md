@@ -1625,6 +1625,132 @@ What the artifacts corroborate, cross-checked rather than taken from a verdict:
    501 seam moves to 58e. **A control that cannot fire is not a control**, and
    this one had been written to expect the wrong branch of its own route.
 
+## 58e is pushed for its gate — 2026-08-27
+
+Branch `design58/restart` at `aabbe4e`, implementation pinned at `43db9f0`.
+Suite **2322 passed / 99 skipped / 3 warnings** (macOS, coordinator-measured),
+from 2296. Three Codex rounds, thirty-two findings, and the pattern of this
+design held again: **the product needed one round, the gate needed three.**
+
+**Round 1 shipped a suite that did not run.** The runner's interpreter died with
+signal 139, so it reported "static compilation, smoke probes and diff checks
+passed" — and the change from `uvicorn.run(app, …)` to `uvicorn.Server.run()`
+left four tests that monkeypatch `uvicorn.run` binding a real port and blocking
+forever, plus three failing on `app.state` where `build_app` is stubbed as
+`object()`. **A runner that cannot run the suite has produced a handoff, not
+evidence**, and this is the clearest instance in the design.
+
+**The block's own coordinator addition nearly bricked the thing it protects.**
+`_reconcile_installed_commit` raised, and it ran *after* `active-slot.txt` was
+rewritten and pending unlinked. Reproduced off-rig: activation raised with the
+selector already moved to `b`, nothing left to retry, and the launcher then
+refusing to launch at all; in `rollback_slot` it raised before the report was
+written, so a rollback became silent. A plain `OSError` from `write_state` — a
+locked or read-only file — reaches the same place with a perfectly valid slot.
+**Bookkeeping added to a state machine must not be able to fail the state
+machine.**
+
+**Five of the gate's limbs could not fail**, which is the third distinct time
+this design has shipped one. The direct-executable limb asserted
+`automatic_restart is False` at a point where nothing had staged; the
+Ctrl-C limb asserted that the operator's own reaction time was positive; the
+offline limb scored the Micro-Manager-closed artifact; the locked-files limb
+restated the one-job limb. And two limbs **contradicted each other**:
+`stage_inactive_slot` either publishes a pending slot or refuses, never both, so
+a not-ready limb and a progress limb reading the same `stage.json` could not
+both pass. Ask of every limb not only *what would this look like if the
+mechanism had not run*, but *can this limb and its neighbour both be true at
+once*.
+
+**A limb that asserts a compound expression reports nothing when it fails.**
+Every limb in round 2 was `assert a and b and c`; the decorator stores
+`str(exc)`, which is empty for a bare assert, so a rig FAIL would have come back
+as `FAIL: Restart now button — ` with no numbers. That is the difference between
+one trip and two.
+
+**Interruption seven, and the second of its exact kind.** A revision turn was
+killed early, after `apply_patch` refused a patch with *multiple operations
+targeting one path* — the same refusal that cost 58b its gate script. It had
+committed nothing and had deleted `58-block58e-demo-gate.py`, so it was
+discarded, the file restored from `3f328d9`, and the next turn told in writing
+that nothing survived and that both files must be rewritten **in place**.
+
+Three coordinator corrections went in directly (`aabbe4e`): the not-ready limb
+now names its gate stub, per 58b's rule; the offline phase no longer rewrites
+`provenance`, because changing the update channel on a machine this gate can
+brick buys nothing and offline `discover_clone` correctly records a *warning*
+rather than an error, so the limb would have failed the product for behaving as
+designed; and the post-Direct step removes the pending selector instead of
+deleting `env-b` before a copy that could fail.
+
+## 58e demo gate round 1 — 2026-08-27, STOPPED, and it found the defect that mattered
+
+The operator stopped at the Restart phase: no Restart control appeared in the
+browser. **The browser was right** — nothing had been staged — and the artifacts
+in `block58e-20260827-155533` name one root cause with a three-phase cascade.
+
+**`uv venv` refuses an existing environment, and staging called it
+unconditionally.** `stage_inactive_slot` runs
+`uv venv --python 3.12 <inactive slot>`; on uv 0.11.28 that exits 2 with *"A
+virtual environment already exists at"*, and after a machine's first update the
+inactive slot always is one. **The first update on a fresh install works and
+every later one fails.** Confirmed on the demo machine with a throwaway probe:
+first `uv venv` exit 0, second exit 2 with that message, `--clear` exit 0.
+
+The diagnosis came from hashes rather than from the verdict. `env-b`'s
+executable and marker are **byte-identical across all seven snapshots**, from
+`prepare` through `stage.after`; a successful `uv venv` would have wiped that
+executable, so the failure is provably the first of the two commands and not the
+`uv pip install` that everyone would guess.
+
+**This is 58c's defect one level up.** `install.bat`'s `:make_env` was fixed to
+probe before reusing a slot; nothing gave `stage_inactive_slot` the same
+treatment, and unlike the installer, staging must *replace* rather than reuse —
+it is rebuilding the slot at a different commit. The fix is `--clear`, which is
+safe for the reason the two-slot design already guarantees: the rollback target
+is always the **active** slot, which staging never touches.
+
+**The fake was the reason the suite could not see it.** Every fake `uv` in
+`tests/test_updates.py` returned 0 for `venv` unconditionally, and each one
+created the slot directory itself. CLAUDE.md's rule — *when a defect comes back
+from a rig, fix the fake before the code* — was applied literally: one shared
+`fake_uv` now refuses an existing environment exactly as uv 0.11.28 does, and
+`test_staging_replaces_an_inactive_slot_that_already_exists` stages twice in a
+row. On the pre-fix tree it fails with `UpdateError: the update could not be
+built`, which is the rig failure reproduced off-rig.
+
+**Two more defects the trip exposed, both about being able to diagnose the next
+one.**
+
+- **The failure path discarded `uv`'s stderr**, recording only the user-facing
+  `"the update could not be built"`. That sentence is right for the banner and
+  useless on a rig: it cost this block a second round-trip to learn which
+  command had failed. `update-state.json` now also carries `build_error_detail`
+  — failing subcommand, exit code, bounded stderr tail — and the gate's
+  unreachable-PyPI limb asserts it, so the diagnostic is itself gated.
+- **One failed build silently short-circuited every later staging phase.**
+  `stage_inactive_slot` refuses immediately while `build_failed_commit` matches
+  the candidate inside the interval — correct product behaviour, and it meant
+  `NotReady` recorded `"the update could not be built"` instead of a comparison
+  refusal, and `Stage` never built at all. Four limbs' evidence lost to one
+  failure. Every staging phase now clears that cache first and records what it
+  cleared, so a cascade cannot hide a mechanism that was never run.
+
+**What the round did prove, at real production paths.** The one-job refusal is
+genuine: `202 {"staging": true}` then `409 An update staging job is already
+running` while `staging` was true. And the two-slot comparison ran for real —
+`env-a` and `env-b`'s own CLIs both classified the shared config `ready` with
+`proceed: true`, each isolated import resolving to its own slot's
+`site-packages`. Discovery was correct throughout: the candidate was
+`origin/main` by SHA and subject.
+
+**A PowerShell trap worth writing down.** The diagnostic probe first came back as
+`NativeCommandError`, not a uv failure: `uv` writes progress to **stderr**, and
+`2>&1` on a native command under `$ErrorActionPreference = 'Stop'` — which the
+gate's own `.ps1` sets — turns the first stderr line into a terminating error, so
+the exit code is never printed. Redirect inside `cmd` when you need both a native
+command's stderr and its exit status.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1691,6 +1817,10 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
       user already is", including the two things that ship as routes without UI
       and the one caller the checklist never named. **58e still owes** the
       terminal line and the restart/relaunch half of that section.
+- [ ] **After 58e**: reconcile `update-state.json`'s field list in §"Put the
+      updater outside the environment it replaces" with `build_error_detail`,
+      added at 58e gate round 1 so a staging failure names the command that
+      failed rather than only the sentence the banner shows.
 - [ ] **After 58e**: record whether the 30-second health **timeout** branch ever
       got rig evidence. 58c exercised only `child-exited`; the timeout path has
       unit coverage with an injected clock and nothing more.
@@ -1704,7 +1834,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | assigned 2026-08-27 | demo — not run | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `aabbe4e`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `+uv --clear fix` | round 1 **STOPPED** demo 2026-08-27 — `uv venv` refused the existing inactive slot, so nothing staged and no Restart control could appear; fixed, awaiting round 2 | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
