@@ -1287,6 +1287,36 @@ gate runs from the checkout, so the *interpreter* was the fixture's and the
 *package* was ours. Every `python -c` that imports microclaw now runs with `-I`
 from a cwd outside the checkout.
 
+**A second product defect, found by the restore rather than the gate.** The
+restore command ended on *"uv trampoline failed to spawn Python child process"*.
+A uv venv's `python.exe` is a trampoline onto an interpreter recorded in
+`pyvenv.cfg`, and the demo machine's read:
+
+```
+home = D:\Code\microclaw\block5b-20260804-124610\fresh-appdata\uv\python\cpython-3.12-windows-x86_64-none
+```
+
+**Block 5b's gate (2026-08-04) redirected uv's Python install directory into a
+throwaway evidence fixture.** The venv wrote that path down permanently, and the
+demo machine's installed Microclaw broke three weeks later when the fixture was
+deleted. uv's own store was never involved and still holds 3.12.13.
+
+Two things follow, and the second is the more valuable.
+
+- `:make_env` reused the slot on `if exist "%MC_PY%"`, so it would have carried
+  that fault into `uv pip install` and failed the install a second time for a
+  second reason. **The test is execution, not existence** — `"%MC_PY%" -c "pass"`
+  — and `--clear` is reached only after that probe fails, the one condition where
+  replacing an environment loses nothing. This is `CLAUDE.md`'s "a device that is
+  not busy is not a device that arrived", one layer up.
+- **A gate must not leave production state pointing into its own evidence
+  folder.** Nothing in this repository would have caught that, and it had been
+  true and invisible for three weeks. `Verify` now checks the property directly:
+  every slot's interpreter must start, its `sys.base_prefix` must exist, and it
+  must not sit under the evidence directory. **Candidate for `CLAUDE.md` at the
+  post-merge design gate** — it is generic gate-writing guidance with nothing
+  Micro-Manager-specific about it.
+
 **And the block that can brick an install shipped without a way back.** The
 backup existed; the instruction to use it did not. The runbook now carries a
 literal restore command, because "expected during a failed gate and fully
@@ -1344,6 +1374,11 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
       Do not fold Windows layout details there; they belong here.
 - [ ] Move the `design/35` boundary note off "nothing is assigned" and onto
       design/58's state.
+- [ ] **Fold the evidence-independence rule into `CLAUDE.md`**: a gate must not
+      leave production state pointing into its own evidence folder. Block 5b's
+      gate redirected uv's Python install directory into a fixture and silently
+      broke the demo machine's install for three weeks. Generic, not
+      Micro-Manager-specific. See §"58c demo gate round 1".
 - [ ] Tick the carried-forward register rows this touches, if any. **The
       eleven-undecorated-tools row does not move** — design/58 adds no tool.
 
@@ -1354,7 +1389,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | 58-P | public flip | n/a (repo config) | — | **not a blocker** — deferred to the flip by operator decision 2026-08-27 | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
-| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | `01b634f` → `9f1b781`; coordinator `d96d3f3`, `a665a2a`, `1a01cdd`, `f51b4bd`, `9f1b781`; codex, **2 rounds, 17 findings**, 1 turn killed mid-flight | **round 1 FAILED** demo 2026-08-27 at limb 1 — `uv venv` refuses the migrated slot; fixed `f51b4bd`, awaiting round 2 | — | — |
+| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | `01b634f` → `7f640c7`; coordinator `d96d3f3`, `a665a2a`, `1a01cdd`, `f51b4bd`, `2f23854`, `c2dfae5`; codex, **2 rounds, 17 findings**, 1 turn killed mid-flight | **round 1 FAILED** demo 2026-08-27 — two product defects in `:make_env`, both fixed; awaiting round 2 | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
 
