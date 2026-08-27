@@ -2128,6 +2128,59 @@ an eighth trip, exactly as 58d's round 1 was.
 **Remaining after this round**: `Restart later`, `Micro-Manager closed`, and
 `offline` — the last needing physical access to the machine.
 
+## 58e's combined rig evidence — scored across rounds 6, 7 and 8, 2026-08-27
+
+**Eight gate rounds and five spike rounds is more than this block should have
+cost, and the operator called it: "brutal doing this many gates. we need to wrap
+this up."** That is the right call. The gate scores one evidence directory, so
+each round re-proved what came before it; the honest way to close is to score
+the limbs across rounds, having first verified the mechanisms were identical.
+
+**The diff check, done before accepting split evidence, as 58c requires.**
+`git diff 7d6b919 HEAD -- microclaw/ install.bat scripts/ tests/` is **empty**:
+rounds 7 and 8 ran the product code that is on the branch now. For round 6's
+rollback limb, `scripts/updater-launcher.ps1` and `microclaw/shortcut.py` are
+unchanged since `c46e2db`, and no rollback path in `updates.py`
+(`rollback_slot`, `consume_rollback_report`, `wait_for_launcher_health`,
+`health_matches`) differs. The rollback evidence therefore carries.
+
+| Limb | Proved | Evidence |
+| --- | --- | --- |
+| Direct executable stages, offers Restart later only | R7, R8 | `pending_staged` true with `automatic_restart` false on a non-launcher-owned process |
+| One staging job; second refused | R7, R8 | 202 then 409 across 66–269 `staging: true` samples |
+| Progress then ready banner states | R7, R8 | `staging` true before `pending_staged` true |
+| Not-ready comparison banner | R7, R8 | real `stage_inactive_slot` refusal, candidate CLI a gate stub |
+| Two real slot CLIs over one config | R7, R8 | `proceed: true`, both `ready`, isolated imports per slot |
+| Active files locked, inactive rebuilt | R8 | active bytes identical, `pyvenv.cfg` mtime advanced |
+| **Restart now, one nonce-matched relaunch** | **R8** | **5.60 s, health carrying that launch's nonce, request consumed, commit reconciled** |
+| Ordinary Ctrl-C keeps the exit pause | R7, R8 | four child PIDs present at the prompt, none after Enter |
+| Failed start rolls back, reports next launch | R6 | `rollback-reported=` absent on the failing launch, present on the next |
+| Unreachable index cached, selector untouched | R8 | `build_error` + `uv pip exit 2: …`, no pending, active unchanged |
+| Restore returns production state | R7 | commit, selector, pending and `%APPDATA%` hash all back |
+| Public ZIP records `public-head`/`unknown`/404 | R7 | fresh ZIP install's cached state |
+| **Restart later activates at the next launch** | — | never run |
+| **Micro-Manager closed keeps the slot** | — | never run |
+| **Offline launch** | — | needs physical access |
+
+**Twelve of fifteen limbs have rig evidence.** Of the three that do not:
+`Restart later` exercises the *same* `activate_pending` call in the same
+launcher path that round 8 proved when the restart flipped `a` -> `b` at launch —
+what is untested is only that it happens on a manual launch rather than a
+launcher-driven one. `Micro-Manager closed` is a genuine gap: nothing has yet
+proved that a slot which reaches health and then exits on the bridge check is
+**kept** rather than rolled back or relaunched. Offline is a genuine gap that
+needs someone at the machine.
+
+**Two gate defects this round, both cheap and both fixed.** `-Mode Closed` hung
+for fifteen minutes because the public-ZIP install had left no cached candidate:
+`/api/update/stage` answered 409 and the phase polled for a job that did not
+exist. Every staging phase now checks the POST was accepted first. And the
+public-ZIP limb demanded a cached 404 that only exists after the install has run
+its check once, so a fresh install now reports NOT EXERCISED with the command
+that produces it. **A phase that polls without checking the request was accepted
+will always hang rather than fail**, and hanging is the most expensive failure
+mode a gate has: it costs the operator's evening, not a line in a report.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -2218,7 +2271,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]`. Round 6 added **rollback with its deferred report** and the **unreachable-index** limb; round 7 reached 10 PASS with **all three failures re-scored as gate defects** from the returned artifacts. `Restart later`, `Micro-Manager closed` and `offline` remain | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]`. Round 6 added **rollback with its deferred report** and the **unreachable-index** limb; round 7 reached 10 PASS re-scored from artifacts; **round 8 proved Restart now's nonce-matched relaunch in 5.60 s**. Scored across rounds, **12 of 15 limbs have rig evidence**; `Restart later`, `Micro-Manager closed` and `offline` remain | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
