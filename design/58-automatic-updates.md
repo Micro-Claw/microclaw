@@ -942,7 +942,26 @@ rather than testing only what is convenient:
 - [ ] A staging build whose `uv pip install` fails leaves the active slot and
       `active-slot.txt` untouched and writes no `pending-slot.txt`.
 
-### Gate — demo machine, `design/58-block58c-demo-gate.md`
+### Gate — demo machine, a runbook **and** a program
+
+**Decided at assignment, 2026-08-27.** 58a's rule is that limbs which only
+compute ship as a program; 58c is the first gate of this design that genuinely
+has both kinds of limb. It therefore ships as **three** files on the branch:
+
+- `design/58-block58c-demo-gate.md` — the human-driven sequence only: back up,
+  run `install.bat`, double-click the desktop icon, close Micro-Manager, break a
+  slot, launch again. Each step names the *mechanism* under test, not the
+  outcome, and says what to record.
+- `design/58-block58c-demo-gate.py` + `.ps1` — every limb that only computes:
+  layout and marker inspection, the process command line, hash comparison of
+  `%APPDATA%`, the two-slot classification (58b's owed limb), the non-uv
+  environment's untouched `site-packages`. Copy 58b's structure, **including the
+  mandatory `fails_if` argument of the `limb` decorator**, PASS / FAIL / NOT
+  EXERCISED, independent limbs, its own log, nonzero exit.
+
+The program is run **after** the human steps and reads the state they left
+behind, so a human step that was skipped shows up as a failing or NOT EXERCISED
+limb rather than as silence. No `<placeholder>` in either file.
 
 The heavy one. It carries 58b's three commands as its first step. **Back up
 `%APPDATA%\microclaw` and the existing `%LOCALAPPDATA%\microclaw\env` before
@@ -1281,7 +1300,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | 58-P | public flip | n/a (repo config) | — | **not a blocker** — deferred to the flip by operator decision 2026-08-27 | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
-| 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
+| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | **assigned 2026-08-27**, codex, worktree `../microclaw-58c` | demo — its own program, `design/58-block58c-demo-gate.ps1` | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
 
@@ -1293,7 +1312,8 @@ different skip split. **Gate on zero failures, never the count.**
 
 Everything needed is on `main`.
 
-**State as of 2026-08-27. Next block is 58c, and it is the heaviest one.**
+**State as of 2026-08-27. 58c is ASSIGNED — see the ledger. 58d is next, and
+depends only on 58a and 58b.**
 
 ### Read these before assigning 58c, in this order
 
@@ -1339,6 +1359,9 @@ State:
   demo gate ran 16 PASS / 0 FAIL / **1 NOT EXERCISED**, verdict INCOMPLETE — the
   correct result, not a failure. `main` measures **2244 passed / 99 skipped / 3
   warnings** (macOS, coordinator-measured), from 2220.
+- **58c is assigned** (2026-08-27) on `design58/two-slots` from `main` at
+  `83bbec7`, codex in worktree `../microclaw-58c`. Its gate ships as a runbook
+  **and** a program — see §"Gate — demo machine, a runbook **and** a program".
 - **58b left one debt for 58c**, and it is the only one: two real slot
   validators classifying one shared file. 58c creates the second slot, so its
   gate **must** close that limb. It is written into the carried-forward list
