@@ -131,9 +131,21 @@ def classify_config_with_slot(
     if completed.returncode != 0:
         detail = completed.stderr.strip() or f"exit code {completed.returncode}"
         raise RuntimeError(f"slot could not classify the safety config: {detail}")
+    # The candidate slot is a DIFFERENT VERSION of microclaw by definition, so
+    # its stdout is not ours to dictate: it may carry a banner, a warning, or --
+    # measured on the demo machine, block 58e -- the exit pause's own prompt,
+    # because `input()` writes "Press Enter to close this window..." to stdout
+    # before it reads.  Closing the child's stdin stopped that call from
+    # hanging and left the prompt sitting after the JSON, which failed a
+    # whole-stream parse and reported the update as unbuildable.  Take the first
+    # JSON object out of the stream and ignore whatever surrounds it.
+    text = completed.stdout
+    start = text.find("{")
     try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
+        if start < 0:
+            raise ValueError("no JSON object in the slot's output")
+        payload, _ = json.JSONDecoder().raw_decode(text[start:])
+    except ValueError as exc:
         raise RuntimeError("slot emitted invalid config-classification JSON") from exc
     if not isinstance(payload, dict) or payload.get("classification") not in {
         "missing", "blocked", "ready",

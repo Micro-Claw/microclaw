@@ -91,3 +91,27 @@ def test_slot_classification_never_inherits_the_callers_stdin(tmp_path, monkeypa
     monkeypatch.setattr(config.subprocess, "run", record)
     assert config.classify_config_with_slot("slot.exe", tmp_path / "safety.yaml") == "ready"
     assert seen["stdin"] is subprocess.DEVNULL
+
+
+@pytest.mark.parametrize("stdout,expected", [
+    ('{"classification": "ready"}', "ready"),
+    # The exact shape the demo machine produced: input() writes its prompt to
+    # stdout before raising EOFError on a closed stdin, so the pause's text
+    # lands after the JSON. Block 58e's fourth gate round died on this.
+    ('{"classification": "ready"}\n\nPress Enter to close this window...', "ready"),
+    ('warning: something on stdout\n{"classification": "blocked"}', "blocked"),
+    ('{"classification": "missing"}\ntrailing noise\n', "missing"),
+])
+def test_slot_classification_survives_noise_around_the_json(tmp_path, monkeypatch, stdout, expected):
+    """A candidate slot is another version of microclaw; its stdout is not ours."""
+    monkeypatch.setattr(config.subprocess, "run", lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 0, stdout, ""))
+    assert config.classify_config_with_slot("slot.exe", tmp_path / "s.yaml") == expected
+
+
+@pytest.mark.parametrize("stdout", ["", "no braces at all", "{not json"])
+def test_slot_classification_still_refuses_output_with_no_usable_json(tmp_path, monkeypatch, stdout):
+    monkeypatch.setattr(config.subprocess, "run", lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 0, stdout, ""))
+    with pytest.raises(RuntimeError, match="invalid config-classification JSON"):
+        config.classify_config_with_slot("slot.exe", tmp_path / "s.yaml")
