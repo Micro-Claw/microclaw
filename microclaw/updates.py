@@ -73,6 +73,12 @@ def _read_slot_text(path: Path, *, required: bool) -> str | None:
     return value
 
 
+def _write_slot_text(path: Path, slot: str) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(slot + "\n", encoding="ascii")
+    os.replace(temporary, path)
+
+
 def activate_pending(root: str | Path) -> tuple[str, str | None]:
     """Consume a valid pending selector before launch and return (active, previous)."""
     base = Path(root)
@@ -94,7 +100,7 @@ def activate_pending(root: str | Path) -> tuple[str, str | None]:
             "installed launcher is too old for this update; run the installer once "
             "to bootstrap the launcher"
         )
-    active_path.write_text(pending + "\n", encoding="ascii")
+    _write_slot_text(active_path, pending)
     pending_path.unlink()
     return pending, active
 
@@ -126,7 +132,7 @@ def rollback_slot(root: str | Path, failed: str, previous: str | None) -> str:
     if failed not in {"a", "b"} or previous not in {"a", "b"} or failed == previous:
         raise UpdateError("rollback requires distinct valid failed and previous slots")
     base = Path(root)
-    (base / ACTIVE_SLOT_NAME).write_text(previous + "\n", encoding="ascii")
+    _write_slot_text(base / ACTIVE_SLOT_NAME, previous)
     (base / ROLLBACK_NAME).write_text(
         f"Microclaw rolled back from slot {failed} to slot {previous}.\n", encoding="utf-8"
     )
@@ -171,7 +177,9 @@ def write_launcher_health(
         return None
     root, _slot, nonce = launch
     target = root / HEALTH_NAME
-    target.write_text(nonce + "\n", encoding="ascii")
+    temporary = root / f".{HEALTH_NAME}.tmp"
+    temporary.write_text(nonce + "\n", encoding="ascii")
+    os.replace(temporary, target)
     return target
 
 

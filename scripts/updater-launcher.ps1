@@ -17,16 +17,15 @@ function Read-Slot([string]$path, [bool]$required) {
 }
 
 $active = Read-Slot $activePath $true
-$previous = $null
-$pending = Read-Slot $pendingPath $false
-if ($null -ne $pending) {
-    if ($pending -ne $active) {
-        $previous = $active
-        Set-Content -LiteralPath $activePath -Value $pending -Encoding ASCII
-        $active = $pending
-    }
-    Remove-Item -LiteralPath $pendingPath -Force
-}
+$selectorPython = Join-Path $root "env-$active\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $selectorPython)) { throw "Active slot Python is missing: $selectorPython" }
+# The tested Python state machine owns pending validation, protocol checks,
+# atomic activation, and consumption. PowerShell only carries its two text lines.
+$selection = @(& $selectorPython -c "import sys; from microclaw.updates import activate_pending; a,p=activate_pending(sys.argv[1]); print(a); print(p or '')" $root)
+if ($LASTEXITCODE -ne 0 -or $selection.Count -lt 2) { throw 'Pending-slot activation failed.' }
+$active = $selection[0].Trim()
+$previous = $selection[1].Trim()
+if ($previous -eq '') { $previous = $null }
 
 $exe = Join-Path $root "env-$active\Scripts\microclaw.exe"
 if (-not (Test-Path -LiteralPath $exe)) {
