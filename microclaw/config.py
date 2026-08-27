@@ -116,6 +116,15 @@ def classify_config_with_slot(
     try:
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=timeout, check=False,
+            # stdin is NOT inherited.  `capture_output` redirects only stdout and
+            # stderr, so without this the child keeps the parent's console -- and
+            # the desktop launcher exports MICROCLAW_FROM_SHORTCUT=1 into the
+            # server, so this classifier registered `pause_on_exit` and blocked
+            # forever on "Press Enter to close this window..." *after* printing
+            # its JSON.  Measured on the demo machine, block 58e: 0.66s with
+            # stdin=DEVNULL, and a hang with an inherited console.  Staging on a
+            # desktop-launched server could therefore never succeed.
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"slot could not classify the safety config: {exc}") from exc

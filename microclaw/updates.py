@@ -446,12 +446,21 @@ def state_path() -> Path:
 
 def load_state(path: str | Path | None = None) -> dict[str, Any] | None:
     target = Path(path) if path is not None else state_path()
-    try:
-        value = json.loads(target.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise UpdateError(f"invalid update state: {exc}") from exc
+    for attempt in range(STATE_REPLACE_ATTEMPTS):
+        try:
+            value = json.loads(target.read_text(encoding="utf-8"))
+            break
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            # Measured on the demo machine: 581 transient read failures in a
+            # million reads while another process was replacing this file.  Rare
+            # -- but activate_pending treats a read failure as "no valid pending
+            # slot" and discards the update, so one unlucky launch would throw
+            # away a staged update the user had asked to install.
+            if attempt == STATE_REPLACE_ATTEMPTS - 1:
+                raise UpdateError(f"invalid update state: {exc}") from exc
+            time.sleep(STATE_REPLACE_BACKOFF_SECONDS * (attempt + 1))
     if not isinstance(value, dict):
         raise UpdateError("invalid update state: expected an object")
     return value

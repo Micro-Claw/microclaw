@@ -580,7 +580,12 @@ def main():
     # not connect") would flash past unread. No-op unless the .cmd wrapper ran.
     from microclaw.shortcut import pause_on_exit
 
-    pause_on_exit()
+    # Not for a machine-readable invocation.  `check-config --json` is a
+    # programmatic interface -- `compare_slot_configurations` calls one slot's
+    # CLI from inside another -- and a mode whose whole output is JSON must
+    # never end by waiting for a human to press a key.
+    if not (args.command == "check-config" and getattr(args, "json", False)):
+        pause_on_exit()
 
     if args.command == "install-shortcut":
         install_shortcut(args)

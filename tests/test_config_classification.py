@@ -66,3 +66,28 @@ def test_slot_classification_refuses_invalid_output(monkeypatch, tmp_path):
     )
     with pytest.raises(RuntimeError, match="invalid config-classification JSON"):
         config.classify_config_with_slot("slot.exe", tmp_path / "safety.yaml")
+
+
+def test_slot_classification_never_inherits_the_callers_stdin(tmp_path, monkeypatch):
+    """The hang that stopped block 58e's demo gate twice.
+
+    `capture_output` redirects stdout and stderr only, so without an explicit
+    `stdin` the slot CLI keeps the caller's console -- and the desktop launcher
+    exports MICROCLAW_FROM_SHORTCUT=1 into the server, which makes that child
+    register the "Press Enter to close this window..." handler and block after
+    printing its JSON.  Measured on the demo machine: 0.66s with stdin closed,
+    45s+ (timeout) with an inherited console, on both slots.
+
+    The subject here is *how* the subprocess is invoked, which no in-process
+    fixture can observe -- reproducing it needs a real console -- so this
+    asserts the argument rather than the behaviour, deliberately.
+    """
+    seen = {}
+
+    def record(command, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, '{"classification": "ready"}', "")
+
+    monkeypatch.setattr(config.subprocess, "run", record)
+    assert config.classify_config_with_slot("slot.exe", tmp_path / "safety.yaml") == "ready"
+    assert seen["stdin"] is subprocess.DEVNULL
