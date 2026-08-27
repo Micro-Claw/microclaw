@@ -769,3 +769,90 @@ def test_unknown_slot_marker_does_not_replace_arranged_installed_commit(tmp_path
     updates.write_slot_marker("unknown", 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
     updates.activate_pending(tmp_path, 1)
     assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == arranged
+
+
+def test_malformed_marker_commit_does_not_block_pending_activation(tmp_path):
+    old = "a" * 40
+    updates.write_state(updates.public_provenance(old), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    marker = updates.slot_marker_path(tmp_path / "env-b" / "Scripts" / "python.exe")
+    marker.parent.mkdir(parents=True)
+    marker.write_text(
+        json.dumps({"commit": "malformed", "required_launcher_protocol": 1}),
+        encoding="utf-8",
+    )
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "b"
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == old
+
+
+def test_reconciliation_write_failure_does_not_block_rollback_report(tmp_path, monkeypatch):
+    updates.write_state(updates.public_provenance("b" * 40), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("b\n", encoding="ascii")
+    updates.write_slot_marker(
+        "a" * 40, 1, executable=tmp_path / "env-a" / "Scripts" / "python.exe",
+    )
+    monkeypatch.setattr(updates, "write_state", lambda *a, **k: (_ for _ in ()).throw(OSError("locked")))
+    assert updates.rollback_slot(tmp_path, "b", "a") == "a"
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "a"
+    assert "rolled back" in (tmp_path / updates.ROLLBACK_NAME).read_text(encoding="utf-8")
+
+
+def test_terminal_notice_reads_cached_candidate_and_public_404(tmp_path):
+    path = tmp_path / updates.STATE_NAME
+    candidate = updates.Candidate("a" * 40, "Useful change", "public-head")
+    state = updates.public_provenance()
+    state["last_success"] = {"candidate": candidate.__dict__}
+    updates.write_state(state, path)
+    assert updates.terminal_update_notice(state_file=path) == (
+        "A newer Microclaw commit is available: aaaaaaa — Useful change.", candidate,
+    )
+    state.pop("last_success")
+    state["last_error"] = "repository is not public (404)"
+    updates.write_state(state, path)
+    assert updates.terminal_update_notice(state_file=path) == (
+        "Automatic updates become available when the repository is public.", None,
+    )
+
+
+def test_terminal_notice_unmanaged_install_is_silent_and_untouched(tmp_path):
+    path = tmp_path / updates.STATE_NAME
+    assert updates.terminal_update_notice(state_file=path) == (None, None)
+    assert not path.exists()
+
+
+def test_start_due_check_is_shared_nonblocking_opt_out_boundary(monkeypatch):
+    started = []
+    monkeypatch.setattr(updates, "check_for_update", lambda **kwargs: started.append(kwargs))
+    thread = updates.start_due_check(False)
+    thread.join(timeout=1)
+    assert started == [{"no_update_check": False}]
+    assert updates.start_due_check(True) is None
+
+
+def test_stage_cached_candidate_uses_shared_materialize_and_slot_builder(tmp_path, monkeypatch):
+    path = tmp_path / updates.STATE_NAME
+    updates.write_state(updates.public_provenance(), path)
+    monkeypatch.setattr(updates, "state_path", lambda: path)
+    calls = []
+    monkeypatch.setattr(
+        updates, "materialize_public",
+        lambda state, candidate, source: calls.append(("materialize", candidate.sha)) or source.mkdir(),
+    )
+    monkeypatch.setattr(updates.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(
+        updates, "stage_inactive_slot",
+        lambda root, source, candidate, **kwargs: calls.append(
+            ("stage", root, candidate.sha, kwargs["config_path"])
+        ) or (root / "env-b"),
+    )
+    candidate = updates.Candidate("a" * 40, "Useful", "public-head")
+    config = tmp_path / "safety.yaml"
+    assert updates.stage_cached_candidate(candidate, config_path=config) == tmp_path / "env-b"
+    assert calls == [
+        ("materialize", candidate.sha),
+        ("stage", tmp_path, candidate.sha, config),
+    ]
+    assert list((tmp_path / "downloads").iterdir()) == []

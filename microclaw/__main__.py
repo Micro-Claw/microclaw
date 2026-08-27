@@ -164,9 +164,13 @@ def run_session(args):
     notice, candidate = updates.terminal_update_notice()
     if notice:
         print(notice)
-    if (candidate is not None and sys.stdin.isatty()
+    if (candidate is not None and sys.stdin is not None and sys.stdin.isatty()
             and updates.checks_enabled(no_update_check)):
-        if input("Update now? [y/N] ").strip().casefold() == "y":
+        try:
+            answer = input("Update now? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.strip().casefold() == "y":
             try:
                 updates.stage_cached_candidate(candidate, config_path=args.safety_config)
             except updates.UpdateError as exc:

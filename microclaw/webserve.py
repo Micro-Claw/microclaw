@@ -49,7 +49,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, tools, updates
+from microclaw import config, credentials, shortcut, tools, updates
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import AuditLog, ConversationStore, prune_transcripts
 from microclaw.agent import (
@@ -707,13 +707,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             candidate["url"] = f"https://github.com/{repo}/commit/{candidate['sha']}"
         dismissal = state.get("dismissal")
         now = time.time()
-        suppressed = False
-        if candidate and isinstance(dismissal, dict) and dismissal.get("commit") == candidate.get("sha"):
-            suppressed = dismissal.get("action") == "skip" or (
-                dismissal.get("action") == "later"
-                and isinstance(dismissal.get("until"), (int, float))
-                and now < dismissal["until"]
-            )
+        suppressed = updates.candidate_is_suppressed(candidate, dismissal, now=now)
         root = path.parent
         pending = None
         try:
@@ -779,17 +773,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 state = updates.load_state(state_path) or {}
                 state["staging"] = {"status": "running", "commit": candidate.sha}
                 updates.write_state(state, state_path)
-                work = Path(tempfile.mkdtemp(prefix="microclaw-stage-", dir=root / "downloads"))
-                source = work / "source"
-                materialize = (updates.materialize_clone if candidate.source == "clone"
-                               else updates.materialize_public)
-                materialize(state, candidate, source)
-                uv = shutil.which("uv")
-                if not uv:
-                    raise updates.UpdateError("the update could not be built: uv was not found")
-                updates.stage_inactive_slot(
-                    root, source, candidate, uv_executable=uv,
-                    config_path=session.safety_config_path,
+                updates.stage_cached_candidate(
+                    candidate, config_path=session.safety_config_path,
                 )
             except Exception as exc:
                 latest = updates.load_state(state_path) or {}
@@ -847,7 +832,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(409, "Automatic restart is not available; restart later.")
         root, _slot, nonce = launch
         updates.write_restart_request(root, nonce)
-        os.environ["MICROCLAW_UPDATE_RESTART"] = "1"
+        os.environ[shortcut.UPDATE_RESTART_ENV] = "1"
         server.should_exit = True
         return JSONResponse({"restart_requested": True})
 

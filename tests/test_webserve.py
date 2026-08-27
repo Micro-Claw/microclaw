@@ -24,6 +24,24 @@ from microclaw.tools_schema import TOOLS_CACHED
 from microclaw.webserve import build_app, serve
 
 
+def _stub_uvicorn_server(monkeypatch, events=None):
+    import uvicorn
+    seen = []
+
+    class Server:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit = False
+            seen.append(self)
+
+        def run(self):
+            if events is not None:
+                events.append("run")
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    return seen
+
+
 class _FakeLock:
     """asyncio.Lock() binds to the loop that first awaits it; TestClient runs
     its own. A stub keeps `locked()` under the test's control."""
@@ -345,6 +363,52 @@ def test_restart_writes_request_then_flag_then_requests_shutdown(session, tmp_pa
         ("write", tmp_path, "child_nonce_123456"),
         ("shutdown", "1", True),
     ]
+
+
+@pytest.mark.parametrize("missing", [updates.LAUNCH_NONCE_ENV, updates.LAUNCHER_OWNED_ENV])
+def test_automatic_restart_requires_each_launcher_identity_field(
+    session, tmp_path, monkeypatch, missing,
+):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    exe_a = tmp_path / "env-a" / "Scripts" / "python.exe"
+    updates.write_slot_marker("a" * 40, 1, executable=exe_a)
+    updates.write_slot_marker("b" * 40, 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
+    monkeypatch.setattr(updates.sys, "executable", str(exe_a))
+    env = {
+        updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
+        updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "child_nonce_123456",
+        updates.LAUNCH_PROTOCOL_ENV: "1",
+    }
+    env.pop(missing)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv(missing, raising=False)
+    assert TestClient(build_app(session)).get("/api/update").json()["automatic_restart"] is False
+
+
+def test_automatic_restart_rejects_real_pending_marker_needing_newer_protocol(
+    session, tmp_path, monkeypatch,
+):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    exe_a = tmp_path / "env-a" / "Scripts" / "python.exe"
+    updates.write_slot_marker("a" * 40, 1, executable=exe_a)
+    updates.write_slot_marker(
+        "b" * 40, 2, executable=tmp_path / "env-b" / "Scripts" / "python.exe",
+    )
+    monkeypatch.setattr(updates.sys, "executable", str(exe_a))
+    for key, value in {
+        updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
+        updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "child_nonce_123456",
+        updates.LAUNCH_PROTOCOL_ENV: "1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    assert TestClient(build_app(session)).get("/api/update").json()["automatic_restart"] is False
 
 
 def test_later_and_skip_are_scoped_to_one_commit(session, tmp_path, monkeypatch):
@@ -928,7 +992,7 @@ def test_serve_wires_confirm_and_flushes_startup_banner(monkeypatch):
     monkeypatch.setattr(
         webserve, "build_session", lambda args, config_result=None: fake,
     )
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    _stub_uvicorn_server(monkeypatch)
     printed = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append((a, k)))
 
@@ -1429,8 +1493,9 @@ def test_serve_hoists_one_snapshot_into_build_session(monkeypatch, tmp_path):
         webserve, "build_session",
         lambda args, config_result=None: received.append(config_result) or fake,
     )
-    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
-    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
+    app = types.SimpleNamespace(state=types.SimpleNamespace())
+    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: app)
+    servers = _stub_uvicorn_server(monkeypatch)
 
     webserve.serve(_args(
         host="127.0.0.1", safety_config=str(path), no_browser=True,
@@ -1438,6 +1503,7 @@ def test_serve_hoists_one_snapshot_into_build_session(monkeypatch, tmp_path):
 
     assert validations == [path]
     assert received == [snapshot]
+    assert app.state.uvicorn_server is servers[0]
 
 
 def test_serve_writes_launcher_health_immediately_before_build_session(monkeypatch, tmp_path):
@@ -1453,8 +1519,11 @@ def test_serve_writes_launcher_health_immediately_before_build_session(monkeypat
                         lambda: events.append("health"))
     monkeypatch.setattr(webserve, "build_session",
                         lambda *a, **k: events.append("build") or fake)
-    monkeypatch.setattr(webserve, "build_app", lambda *a, **k: object())
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *a, **k: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
+    _stub_uvicorn_server(monkeypatch)
     webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x"),
                          no_browser=True))
     assert events == ["validate", "health", "build"]
@@ -1482,8 +1551,11 @@ def test_serve_runs_update_check_without_blocking_and_honors_opt_out(monkeypatch
         return fake
 
     monkeypatch.setattr(webserve, "build_session", build)
-    monkeypatch.setattr(webserve, "build_app", lambda *a, **k: object())
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *a, **k: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
+    _stub_uvicorn_server(monkeypatch)
     webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x")))
     assert not release.is_set(), "serve waited for the background check"
     release.set()
@@ -1496,6 +1568,30 @@ def test_serve_runs_update_check_without_blocking_and_honors_opt_out(monkeypatch
         host="127.0.0.1", safety_config=str(tmp_path / "x"), no_update_check=True,
     ))
     assert calls == []
+
+
+@pytest.mark.parametrize("no_update_check,env_disabled", [
+    (False, False), (True, False), (False, True),
+])
+def test_serve_never_reads_stdin_for_update_prompt(
+    monkeypatch, tmp_path, no_update_check, env_disabled,
+):
+    if env_disabled:
+        monkeypatch.setenv("MICROCLAW_UPDATE_CHECK", "0")
+    fake = types.SimpleNamespace(confirm=lambda *a, **k: False, guard=_guard(),
+                                 ctrl=types.SimpleNamespace(core=None))
+    monkeypatch.setattr(webserve.config, "validate_safety_config", lambda path: object())
+    monkeypatch.setattr(webserve, "build_session", lambda *a, **k: fake)
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *a, **k: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("serve prompted"))
+    _stub_uvicorn_server(monkeypatch)
+    webserve.serve(_args(
+        host="127.0.0.1", safety_config=str(tmp_path / "x"), no_browser=True,
+        no_update_check=no_update_check,
+    ))
 
 
 def test_bridge_failure_after_health_leaves_nonce_marker(monkeypatch, tmp_path):
@@ -1777,9 +1873,12 @@ def _stub_serve_runtime(monkeypatch):
     monkeypatch.setattr(
         webserve, "build_session", lambda args, config_result=None: fake,
     )
-    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *args, **kwargs: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
     import uvicorn
-    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
+    _stub_uvicorn_server(monkeypatch)
     return fake
 
 

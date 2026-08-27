@@ -38,6 +38,7 @@ MANAGED_STATE_NAME = "update-state.json"
 
 #: Set by the .cmd wrapper. `main()` reads it to keep the console open on exit.
 FROM_SHORTCUT_ENV = "MICROCLAW_FROM_SHORTCUT"
+UPDATE_RESTART_ENV = "MICROCLAW_UPDATE_RESTART"
 
 # Paths arrive as $env: lookups, which PowerShell treats as data. Interpolating
 # them into the script text would break on an apostrophe and invite injection.
@@ -192,7 +193,7 @@ def pause_on_exit() -> None:
     import atexit
 
     def _wait():
-        if os.environ.get("MICROCLAW_UPDATE_RESTART") == "1":
+        if os.environ.get(UPDATE_RESTART_ENV) == "1":
             return
         try:
             input("\nPress Enter to close this window...")

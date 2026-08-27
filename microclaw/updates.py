@@ -129,16 +129,18 @@ def valid_pending_slot(root: str | Path, launcher_protocol: int) -> str | None:
 
 
 def _reconcile_installed_commit(base: Path, slot: str) -> None:
-    marker = read_slot_marker(executable=base / f"env-{slot}" / "Scripts" / "python.exe")
-    commit = marker.get("commit") if marker else None
-    if commit == "unknown":
+    """Best-effort bookkeeping; selector changes must never depend on it."""
+    try:
+        marker = read_slot_marker(executable=base / f"env-{slot}" / "Scripts" / "python.exe")
+        commit = marker.get("commit") if marker else None
+        if commit == "unknown" or not isinstance(commit, str) or not _SHA.fullmatch(commit):
+            return
+        state = load_state(base / STATE_NAME)
+        if state is not None:
+            state["installed_commit"] = commit.lower()
+            write_state(state, base / STATE_NAME)
+    except Exception:
         return
-    if not isinstance(commit, str) or not _SHA.fullmatch(commit):
-        raise UpdateError("active slot has no valid commit metadata")
-    state = load_state(base / STATE_NAME)
-    if state is not None:
-        state["installed_commit"] = commit.lower()
-        write_state(state, base / STATE_NAME)
 
 
 def activate_pending(root: str | Path, launcher_protocol: int) -> tuple[str, str | None]:
@@ -892,6 +894,21 @@ def start_due_check(no_update_check: bool = False):
     return thread
 
 
+def candidate_is_suppressed(
+    candidate: Candidate | dict[str, Any] | None, dismissal: Any, *, now: float | None = None,
+) -> bool:
+    if candidate is None or not isinstance(dismissal, dict):
+        return False
+    sha = candidate.sha if isinstance(candidate, Candidate) else candidate.get("sha")
+    if dismissal.get("commit") != sha:
+        return False
+    return dismissal.get("action") == "skip" or (
+        dismissal.get("action") == "later"
+        and isinstance(dismissal.get("until"), (int, float))
+        and (time.time() if now is None else now) < dismissal["until"]
+    )
+
+
 def terminal_update_notice(*, state_file: str | Path | None = None) -> tuple[str | None, Candidate | None]:
     """Read cached state only and return the REPL's single optional notice."""
     path = Path(state_file) if state_file is not None else state_path()
@@ -909,16 +926,13 @@ def terminal_update_notice(*, state_file: str | Path | None = None) -> tuple[str
             candidate = Candidate(**raw)
         except (TypeError, ValueError):
             pass
-    dismissal = state.get("dismissal")
-    if candidate and isinstance(dismissal, dict) and dismissal.get("commit") == candidate.sha:
-        if dismissal.get("action") == "skip" or (
-            dismissal.get("action") == "later"
-            and isinstance(dismissal.get("until"), (int, float))
-            and time.time() < dismissal["until"]
-        ):
-            candidate = None
+    if candidate_is_suppressed(candidate, state.get("dismissal")):
+        candidate = None
     if candidate:
-        return f"Update available: {candidate.sha[:7]} — {candidate.subject}", candidate
+        return (
+            f"A newer Microclaw commit is available: {candidate.sha[:7]} — "
+            f"{candidate.subject}.", candidate,
+        )
     if (state.get("provenance") == "public-head"
             and state.get("last_error") == "repository is not public (404)"):
         return "Automatic updates become available when the repository is public.", None
