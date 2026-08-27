@@ -372,12 +372,22 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
     )
     monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
     monkeypatch.setattr(updates, "stage_inactive_slot", lambda *args, **kwargs: None)
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *args: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
+    monkeypatch.setattr(
+        updates, "validate_launch_environment",
+        lambda: (tmp_path, "a", "child_nonce_123456"),
+    )
+    monkeypatch.setattr(updates, "write_restart_request", lambda *args: None)
     real_start = threading.Thread.start
     monkeypatch.setattr(
         threading.Thread, "start",
         lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
     )
-    app = TestClient(build_app(session))
+    built = build_app(session)
+    built.state.uvicorn_server = types.SimpleNamespace(should_exit=False)
+    app = TestClient(built)
     # Captured before the cycle: `_durable_history` prefers the store, so an
     # assertion on it alone cannot see a row written straight to `history` —
     # which is the list `run_turn` sends to the model. Both are checked.
@@ -387,6 +397,7 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
     assert app.post("/api/update/dismiss", json={
         "action": "later", "commit": candidate["sha"],
     }).status_code == 200
+    assert app.post("/api/update/restart").status_code == 200
     assert session.history == before
     assert not any("update" in name for name in tools.TOOL_REGISTRY)
     assert not any("update" in schema["name"] for schema in TOOLS_CACHED)
