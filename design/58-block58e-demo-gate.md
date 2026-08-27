@@ -165,6 +165,23 @@ itself, waits for readiness, then prompts you to click **Restart later**, stop
 the server, and launch the icon once. It records the pending selector before
 that launch and requires the next launch to activate and consume it.
 
+## Return to the branch slot before the diagnostic phases
+
+**Every phase from here on must run against the code under test.** `Restart` and
+`Later` deliberately activate the *staged* slot, which is built from
+`origin/main` and does not contain this block — so a phase run afterwards is
+testing the wrong build. Round 7 scored a real `build_error_detail` absence as a
+product failure for exactly this reason.
+
+Run this literal command, which reads the branch slot from the gate's own
+`prepare.json` and prints what it restored:
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; $evidence=(Get-Content "$root\58e-gate-evidence.txt" -Raw).Trim(); $prep=Get-Content (Join-Path $evidence 'prepare.json') -Raw | ConvertFrom-Json; Set-Content -LiteralPath "$root\active-slot.txt" -Value $prep.branch_active -Encoding ASCII; Remove-Item "$root\pending-slot.txt" -Force -ErrorAction SilentlyContinue; Write-Host "active slot is now $($prep.branch_active) (the branch build); pending selector cleared"
+```
+
+Then start Microclaw from the desktop icon again before continuing.
+
 ## Unreachable PyPI, session-scoped
 
 Close Microclaw and run:
@@ -279,6 +296,12 @@ cd $env:USERPROFILE\Documents\GitHub\microclaw
 ```
 
 ## Verify
+
+**One evidence directory scores one run.** `Verify` reads only the folder this
+gate's `Prepare` created, so limbs proved in an earlier folder do not carry
+forward. If a round stops early, the next round starts from `Prepare` and
+re-proves what came before it — with `Prepare` cheap and `Stage` about fifteen
+seconds, that is the intended cost.
 
 ```powershell
 .\design\58-block58e-demo-gate.ps1 -Mode Verify

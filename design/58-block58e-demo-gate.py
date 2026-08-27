@@ -215,6 +215,18 @@ def state_snapshot(root: Path) -> dict:
         "active_marker_hash": sha256(active_marker),
         "inactive_exe_hash": sha256(inactive_exe),
         "inactive_marker_hash": sha256(inactive_marker),
+        # Content hashes cannot prove a rebuild: staging the SAME commit twice
+        # produces a byte-identical console script and a byte-identical marker,
+        # which is exactly what round 7 saw after Direct and Stage both staged
+        # origin/main. The venv's own file timestamp is what moves.
+        "inactive_venv_mtime": (
+            (root / f"env-{inactive}" / "pyvenv.cfg").stat().st_mtime
+            if (root / f"env-{inactive}" / "pyvenv.cfg").is_file() else None
+        ),
+        "active_slot_commit": (
+            read_json(root / f"env-{active}" / SLOT_MARKER_NAME).get("commit")
+            if (root / f"env-{active}" / SLOT_MARKER_NAME).is_file() else None
+        ),
         "appdata_hash": tree_hash(Path(os.environ["APPDATA"]) / "microclaw"),
     }
 
@@ -495,6 +507,19 @@ def restart(out: Path, root: Path) -> int:
         if len(launch_lines(root)) >= len(before["launcher_lines"]) + 1:
             break
         time.sleep(0.25)
+    # The launcher writes its log line BEFORE it starts the child, so snapshotting
+    # here catches the health marker still absent -- which is what made rounds 5,
+    # 6 and 7 all report an empty `health` and blame the product. Wait for the
+    # marker to carry the new launch's own nonce.
+    new_lines = launch_lines(root)[len(before["launcher_lines"]):]
+    nonce = new_lines[0].rsplit("nonce=", 1)[-1].strip() if new_lines else None
+    health_deadline = time.time() + 120
+    while nonce and time.time() < health_deadline:
+        marker = root / "launch-health.txt"
+        if marker.is_file() and marker.read_text(encoding="ascii").strip() == nonce:
+            break
+        time.sleep(0.25)
+    health_wait = time.time() - started
     after = state_snapshot(root)
     processes = process_command_lines()
     running_marker = None
@@ -505,6 +530,8 @@ def restart(out: Path, root: Path) -> int:
             if marker.exists():
                 running_marker = read_json(marker)
     save_phase(out, "restart", {
+        "awaited_nonce": nonce,
+        "health_wait_s": health_wait,
         "before": before,
         "after": after,
         "elapsed_s": time.time() - started,
@@ -776,15 +803,23 @@ def verify(out: Path, root: Path) -> int:
                 raise AssertionError(
                     f"{field} changed: {before[field]!r} -> {after[field]!r}"
                 )
-        changed = [
-            field for field in ("inactive_exe_hash", "inactive_marker_hash")
-            if before[field] != after[field]
-        ]
-        if not changed:
-            raise AssertionError(
-                "inactive executable and marker are both byte-identical after staging"
+        # NOT a content comparison: staging the same commit twice produces a
+        # byte-identical console script and marker, so identical bytes are the
+        # expected result of a real rebuild, not evidence against one. The venv's
+        # own timestamp is what proves `uv venv --clear` ran.
+        if "inactive_venv_mtime" not in after:
+            raise NotExercised(
+                "this evidence predates the rebuild timestamp; re-run -Mode Stage"
             )
-        return f"active hashes unchanged; inactive changed fields={changed}"
+        rebuilt_at, was_at = after.get("inactive_venv_mtime"), before.get("inactive_venv_mtime")
+        if rebuilt_at is None:
+            raise AssertionError("the inactive slot has no pyvenv.cfg after staging")
+        if was_at is not None and rebuilt_at <= was_at:
+            raise AssertionError(
+                f"inactive slot was not rebuilt: pyvenv.cfg mtime {was_at} -> {rebuilt_at}"
+            )
+        return (f"active exe and marker byte-identical; inactive venv rebuilt "
+                f"({was_at} -> {rebuilt_at})")
 
     @limb(
         "Restart now performs one nonce-matched relaunch",
@@ -797,9 +832,20 @@ def verify(out: Path, root: Path) -> int:
         new_lines = after["launcher_lines"][len(before["launcher_lines"]):]
         if len(new_lines) != 1:
             raise AssertionError(f"new launch lines={new_lines!r}")
-        if after["health"] not in new_lines[0]:
+        if "awaited_nonce" not in data:
+            raise NotExercised(
+                "this evidence predates waiting for nonce-matched health; "
+                "re-run -Mode Restart"
+            )
+        health = after.get("health")
+        if not health:
             raise AssertionError(
-                f"health {after['health']!r} does not match {new_lines[0]!r}"
+                f"no health marker after {data.get('health_wait_s', 0):.1f}s; the "
+                f"relaunched slot never reported startup health (launch {new_lines[0]!r})"
+            )
+        if health != data.get("awaited_nonce"):
+            raise AssertionError(
+                f"health {health!r} is not this launch's nonce {data.get('awaited_nonce')!r}"
             )
         if after["restart_request_exists"]:
             raise AssertionError("restart-request.txt survives the relaunch")
@@ -922,7 +968,25 @@ def verify(out: Path, root: Path) -> int:
         # The diagnostic, not the user-facing sentence. Round 1 recorded only
         # "the update could not be built" and cost a second trip to learn that
         # `uv venv` had refused an existing slot.
+        # `build_error_detail` ships in this block, so it exists only when the
+        # slot that ran the staging job is the branch build. After the Restart
+        # phase the active slot is the *staged* commit, which predates it --
+        # round 7 scored that as a product failure when it was a phase-ordering
+        # one. State the precondition instead of asserting through it.
         detail = after["state"].get("build_error_detail")
+        prepared = need(out, "prepare")
+        if "active_slot_commit" not in after:
+            raise NotExercised(
+                "this evidence does not record which slot ran the staging job; "
+                "re-run -Mode Failure from the branch slot"
+            )
+        ran_branch_build = after.get("active_slot_commit") == prepared.get("active_slot_commit")
+        if not detail and not ran_branch_build:
+            raise NotExercised(
+                f"the staging job ran in slot commit {after.get('active_slot_commit')!r}, "
+                f"not the branch build {prepared.get('active_slot_commit')!r}; "
+                "return to the branch slot before this phase"
+            )
         if not detail or not str(detail).startswith("uv "):
             raise AssertionError(f"build_error_detail={detail!r}")
         if after["pending"] is not None:
