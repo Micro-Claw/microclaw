@@ -1825,6 +1825,120 @@ cannot explain, stop running the gate and write the probe** —
 and no staging, and the runbook now names it as the first thing to run after any
 failure.
 
+## Spike round 4 — 2026-08-27: staging completes, and the exit pause is suppressed
+
+Four spike rounds replaced what would otherwise have been four gate trips. The
+last one is the first evidence anywhere that the block's central mechanism works.
+
+**Full staging, end to end, on the demo machine.** The real `stage_inactive_slot`
+ran against a scratch root — `git archive` 0.45 s, `uv venv --clear` plus
+`uv pip install` **12.67 s**, slot marker written with the right commit, pending
+published, and `compare_slot_configurations` returning `proceed: true` with both
+sides `ready`. Nothing real was written: the scratch root held a **junction** to
+the live `env-a`, so the comparison's active side was the operator's own CLI
+exactly as production has it, and `live_env_a_intact` was true afterwards.
+Rounds 1 and 2 both died inside this function without ever completing it.
+
+**The exit pause is suppressed, and the control fired.** `MICROCLAW_UPDATE_RESTART=1`
+returned in 0.66 s; the control without it **timed out at 45 s**. A suppression
+probe whose control also passes has measured nothing — 58a shipped a limb like
+that — so the spike refuses to report a result when its control does not hang.
+
+**One timeout in that round is the *correct* answer, and it validates the shape
+of the fix.** The freshly built candidate came from `origin/main`, which does not
+carry the fix, so its own CLI still hung — **and the comparison succeeded
+anyway**, because the fix that matters lives in the *caller*:
+`classify_config_with_slot` closes stdin. That is why the block ships two
+changes rather than one. A machine running the fixed code can stage a candidate
+whose code is still broken, which is exactly the situation every update is in.
+
+**Three defects were found in the spike itself before it ever ran on the rig**,
+by building a local harness — a fake `uv`, a fake slot CLI, a real one-commit
+repository — instead of trusting that it parsed. `ClassificationComparison`
+carries only `proceed` and `reason`, so reading `.active`/`.candidate` would have
+raised and lost the whole dry run; the suppression verdict required exit 0, which
+`check-config` without `--json` never gives when a config is not `ready`; and the
+link/cleanup path needed exercising because it points at the live installation.
+**A probe written to diagnose a defect is code, and it earns the same treatment
+as the code it is diagnosing.** Its own fix-marker was wrong twice more —
+`args.command == "check-config"` and `getattr(args, "json", False)` both exist in
+the pre-fix source — which is worth stating plainly: **a marker that also matches
+the old version reports the fix installed everywhere**, and it did, for two slots
+that predate it.
+
+**Cleanup on a machine that can be bricked gets an explicit refusal.** The scratch
+root contains a junction to the live `env-a`; a recursive delete that followed it
+would destroy the running install. The spike removes the link first and **skips
+the delete entirely** if it survives, printing the `rmdir` to run by hand, and
+reports whether `env-a` is intact either way. That path was exercised off-rig,
+which is why link creation is a junction on Windows and a symlink elsewhere.
+
+**Still not reached by any probe, and genuinely the gate's job**: the launcher's
+relaunch loop, activation at the next desktop launch, rollback reporting, and the
+browser's banner states. Those need a real desktop lifecycle.
+
+## 58e demo gate round 3 — 2026-08-27, STOPPED at Restart, and four limbs finally have evidence
+
+**Staging works.** The Direct phase built and published a real pending slot —
+`staging: "staged"`, `pending: "b"`, `pending_staged: true`, and
+`automatic_restart: false`, which is the *correct* answer for a launch that is
+not launcher-owned. That is the first time the block's central mechanism has
+completed on hardware, and it is what four spike rounds bought.
+
+**What stopped the round was a third, different defect — a cascade with two
+poisons where the previous fix had cleared only one.**
+
+1. `NotReady` legitimately refuses a candidate and records
+   `comparison_refused_commit` plus its reason. It passed.
+2. `Stage` ran 30 seconds later. The gate's `clear_build_failure_cache` cleared
+   `build_error`, `build_failed_commit` and `build_error_detail` — **not**
+   `comparison_refused_commit`. So `/api/update` still reported
+   `comparison_refused: true`, and by item 9's own contract the banner showed
+   *"this update needs the maintainer"* rather than the Restart controls.
+3. The staging job then ran for 16 seconds, **failed, and recorded nothing at
+   all**: no `build_error`, no `staging: "error"`, status stuck on `"running"`,
+   no pending slot. The route's handler skipped its error record whenever
+   `comparison_refused_commit` matched the candidate — and that key is proof of
+   *some* refusal of that commit, never of *this* attempt.
+
+**The product defect is the serious half, and it is not about the gate.** For a
+real user: refuse one commit legitimately, repair the config, retry — and from
+then on every failure of that commit is invisible, with `staging` frozen on
+`"running"` and nothing to read. `stage_inactive_slot` now raises a typed
+`ComparisonRefused` and the route suppresses its record **only** for that type;
+every other failure is recorded unconditionally. The test fails on the old code
+with `KeyError: 'build_error'`.
+
+**The gate defect is mine, and it is the same shape as the one before it.**
+Round 2 taught that one failed build short-circuits later phases, and the fix
+cleared the build keys. There were two poison families, not one. **Clearing one
+of two poisons is clearing neither**, and the second one silently changed what
+the *browser* displayed — the operator was looking at a banner that was
+correctly rendering poisoned state. `clear_staging_verdict` now clears both, and
+**the NotReady phase cleans up the refusal it deliberately causes**, after
+capturing it as evidence. A phase that breaks state on purpose puts it back.
+
+**Four limbs now have rig evidence** — Direct staging, NotReady's refusal, the
+two-slot comparison (`proceed: true`, both `ready`, isolated imports resolving to
+each slot's own `site-packages`), and the **ordinary exit pause**: four server
+PIDs present while the prompt was displayed, none of them present after Enter.
+Restart, Restart later, activation, rollback and the banner's progress states
+still have none.
+
+**Said plainly, because it matters for round 4: the fix repaired the mechanism
+that *hid* the Stage failure, not necessarily the failure itself.** Direct staged
+successfully forty seconds earlier, so whatever went wrong is specific to running
+Stage immediately after NotReady's stub-swap. Round 4 will produce
+`build_error_detail` naming the failing `uv` subcommand and its stderr, which is
+the first time that question will be answerable from the artifacts. The
+recommendation given to the operator is to run **only through `-Mode Stage`** and
+stop — ten minutes instead of an evening, with a decisive answer either way.
+
+**A spike wart worth recording.** Round 5's suppression control held for 42.58 s
+and then exited 0 because the operator pressed Enter in the console; the verdict
+keyed off the `TIMED OUT` marker and would have called that inconclusive. **Judge
+a control by what it measured, not by how it was terminated.**
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1908,7 +2022,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `aabbe4e`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, + the stdin fix | rounds 1 and 2 **STOPPED** demo 2026-08-27 — `uv venv` refused an existing slot, then the slot CLI hung on the exit pause it inherited; both found and fixed, the second by a one-minute spike rather than a third gate round | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Staging, the refusal, the comparison and the exit pause now have rig evidence | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a

@@ -393,6 +393,16 @@ Generic, from design/58. The Windows layout details live in that document.
   interpreter that exists is not an interpreter that runs**, because a
   trampoline whose target is gone is still a file. Test by executing, not by
   `exists()`.
+- **The operator's shell is production state, and "session-scoped" is not a
+  containment argument.** 58e's failure phase set
+  `UV_INDEX_URL=https://127.0.0.1:1/unreachable` in the gate's own PowerShell
+  session — never `setx`, which felt safe — but that session is the window the
+  operator runs the whole gate from, so the next `install.bat` inherited it and
+  failed three times with an error naming the URL and nothing else. Set a
+  hostile variable for the **child process only** and remove it from the session
+  the instant the child is spawned; clear a stale one on entry to every other
+  phase. And where a tool's failure can be caused by an environment override,
+  **have the tool name the variable**, not just quote the URL back.
 - **A gate must not leave production state pointing into its own evidence
   folder.** Block 5b's gate redirected uv's Python install directory into a
   throwaway fixture; the environment recorded that path permanently and the demo
@@ -410,6 +420,14 @@ Generic, from design/58. The Windows layout details live in that document.
   for any tool you invoke, and never let a machine-readable mode register a
   pause. The suite cannot catch this: a test runner has no console to inherit,
   so the guard is asserted on the *argument*, deliberately.
+- **A record that some earlier attempt failed is not a record of this one.**
+  58e's staging route skipped writing its error whenever a *cached* refusal
+  matched the commit being staged, so after one legitimate refusal every later
+  failure of that commit vanished — no error, no status, `staging` frozen on
+  "running". Raise a typed exception for the case you mean to special-case; do
+  not re-read shared state and infer it. The same shape bites gates: **clearing
+  one of two poison keys is clearing neither**, and a phase that breaks state
+  deliberately must put it back rather than leave it for the next phase.
 - **When a gate fails twice for reasons its own artifacts cannot explain, stop
   running the gate and write a probe.** A gate is built to score a working
   mechanism, and every phase of one drags a full setup behind it; two rig trips
