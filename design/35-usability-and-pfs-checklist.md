@@ -505,12 +505,11 @@ a non-code prerequisite row **58-P**.
 - **Every gate is the demo machine, and no limb needs a microscope.** The Nikon
   is gone; M2 and M5 are not needed either. One optional read-only, zero-dose
   `check-config --json` on M2 or M5 is a convenience, not a debt.
-- **One thing blocks shipping and it is not code.** §"Decision" makes a protected
-  `main` with a required test check a prerequisite. Measured 2026-08-26, branch
-  protection and rulesets both return **HTTP 403 — "Upgrade to GitHub Pro or make
-  this repository public"**: `Micro-Claw` is a Free org and the repo is private.
-  There is also no `.github/` and no workflow, so there is no check to require.
-  It gates 58e's merge and nothing before it.
+- **Nothing outside the code blocks shipping** (operator decision 2026-08-27).
+  `main` is the release branch and the boundary in front of it is the block
+  workflow's own pre-merge testing on multiple machines. Branch protection and a
+  CI check are additions for the public flip, when the Free plan first allows
+  them; they are not preconditions for the private preview.
 - **The public provider has no positive path while the repo is private.** Its
   404, caching and silence are gated; a successful public install is recorded as
   owed evidence with two escapes, in that doc's §"Owed evidence that cannot be
