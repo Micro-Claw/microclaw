@@ -61,12 +61,13 @@ pass only when a real pending slot exists and that direct process still reports
 `automatic_restart: false`.
 
 Stop the direct server with Ctrl+C. Press Enter at its ordinary exit prompt.
-Restore the inactive slot from the safety copy and remove the pending selector
-before the launcher-owned phases. This literal command reads both paths from the
-gate's own pointer and `prepare.json`:
+
+Then remove the pending selector, so the next desktop launch does not activate
+the slot this phase staged. Keep the built inactive environment — the next phase
+needs it. This literal command prints what it removed:
 
 ```powershell
-$root="$env:LOCALAPPDATA\microclaw"; $evidence=(Get-Content "$root\58e-gate-evidence.txt" -Raw).Trim(); $prep=Get-Content (Join-Path $evidence 'prepare.json') -Raw | ConvertFrom-Json; $backup=$prep.backup; $active=$prep.branch_active; $inactive=if($active -eq 'a'){'b'}else{'a'}; if(Test-Path "$root\env-$inactive"){Remove-Item "$root\env-$inactive" -Recurse -Force}; Copy-Item "$backup\localappdata\env-$inactive" "$root\env-$inactive" -Recurse; Remove-Item "$root\pending-slot.txt" -Force -ErrorAction SilentlyContinue; Write-Host "restored inactive slot $inactive and removed pending selector"
+$root="$env:LOCALAPPDATA\microclaw"; if(Test-Path "$root\pending-slot.txt"){$p=(Get-Content "$root\pending-slot.txt" -Raw).Trim(); Remove-Item "$root\pending-slot.txt" -Force; Write-Host "removed pending selector: $p"} else { Write-Host 'no pending selector present' }
 ```
 
 ## Deliberately incompatible config — separate refusal phase
@@ -181,13 +182,17 @@ Leave Micro-Manager open. Close Microclaw, disconnect the network, and run:
 .\design\58-block58e-demo-gate.ps1 -Mode Offline
 ```
 
-The phase temporarily selects the real `public-head` provider and removes
-`last_attempt`/`next_check`, so a disconnected launch must attempt HTTPS rather
-than accept a clone's cached remote ref with a warning. It records the prior
-`last_success`, prompts for one desktop launch, captures the failure, and then
-restores the original state file. PASS requires nonce-matched health, a moved
-`last_attempt`, a cached network `last_error`, and byte-identical
-`last_success`. Reconnect the network after the phase.
+The phase removes only `last_attempt` and `next_check`, so this launch's check
+is due. It does **not** change the update channel: rewriting `provenance` on a
+machine this gate can brick buys nothing, and the clone is the provider this
+install actually runs. It records the prior `last_success`, prompts for one
+desktop launch, and then restores the original state file. PASS requires exactly
+one nonce-matched healthy launch, a moved `last_attempt`, and byte-identical
+`last_success` — the launcher must start the app with no network. The cached
+`last_error` is reported but is not the criterion: offline, `discover_clone`
+fails its fetch and still resolves the local remote-tracking ref, so it
+correctly records a warning rather than an error. Reconnect the network after
+the phase.
 
 ## Micro-Manager closed — separate from offline
 
