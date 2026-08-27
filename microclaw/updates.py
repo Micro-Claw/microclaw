@@ -55,6 +55,10 @@ LAUNCH_ROOT_ENV = "MICROCLAW_LAUNCH_ROOT"
 LAUNCH_PROTOCOL_ENV = "MICROCLAW_LAUNCHER_PROTOCOL"
 LAUNCHER_PROTOCOL_NAME = "launcher-protocol.txt"
 RESTART_REQUEST_NAME = "restart-request.txt"
+#: Shared state is written by the server, the launcher and the installer, and
+#: read by every /api/update poll. See write_state for why this needs retries.
+STATE_REPLACE_ATTEMPTS = 10
+STATE_REPLACE_BACKOFF_SECONDS = 0.05
 
 
 class UpdateError(Exception):
@@ -465,7 +469,22 @@ def write_state(state: dict[str, Any], path: str | Path | None = None) -> Path:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        # Windows refuses MoveFileEx onto a target another process has open --
+        # Python's open() does not pass FILE_SHARE_DELETE -- so any concurrent
+        # *reader* makes this fail with `[WinError 5] Access is denied`.  The
+        # browser polls GET /api/update every 2s while staging, and that route
+        # reads this file, so a staging job that writes it repeatedly loses the
+        # race often.  Block 58e's second demo gate died exactly there: the
+        # whole update failed on its first state write.  Retry briefly rather
+        # than surface a transient share violation as a failed update.
+        for attempt in range(STATE_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary, target)
+                break
+            except OSError:
+                if attempt == STATE_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(STATE_REPLACE_BACKOFF_SECONDS * (attempt + 1))
     finally:
         temporary.unlink(missing_ok=True)
     return target

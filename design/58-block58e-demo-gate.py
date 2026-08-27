@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 from microclaw import config, updates
 
 BASE = "http://127.0.0.1:8000"
+SLOT_MARKER_NAME = "microclaw-slot.json"
 RESULTS: list[dict[str, str]] = []
 MODES = (
     "prepare", "direct", "stage", "notready", "restart", "later",
@@ -222,12 +223,29 @@ def save_phase(out: Path, name: str, data: dict) -> None:
     write_json(out / f"{name}.json", data)
     record_phase(out, name)
 def prepare(repo: Path, out: Path, root: Path) -> int:
-    """Back up both roots and arrange a real origin/main candidate."""
+    """Back up the irreplaceable state and arrange a real origin/main candidate.
+
+    Deliberately **not** a copy of the two slot environments.  Round 2 spent
+    minutes here copying several hundred megabytes of `env-a` and `env-b` to a
+    Documents folder that is redirected to a network share, and the operator
+    paid that cost on every retry.  The environments are the one part of this
+    layout that `install.bat` rebuilds from scratch, and the runbook already
+    ends by reinstalling.  What cannot be rebuilt is `%APPDATA%\microclaw` --
+    config, API key, histories -- and the launcher root's own small files, so
+    those are what get copied, to a **local** path.
+    """
     roaming = Path(os.environ["APPDATA"]) / "microclaw"
-    backup = out.parent / f"{out.name}-SAFETY-BACKUP"
+    backup = Path(os.environ["LOCALAPPDATA"]) / f"{out.name}-SAFETY-BACKUP"
     backup.mkdir(parents=True, exist_ok=True)
     shutil.copytree(roaming, backup / "appdata", dirs_exist_ok=True)
-    shutil.copytree(root, backup / "localappdata", dirs_exist_ok=True)
+    (backup / "launcher-root").mkdir(exist_ok=True)
+    for item in sorted(root.iterdir()):
+        if item.is_file():
+            shutil.copy2(item, backup / "launcher-root" / item.name)
+    for slot in ("a", "b"):
+        marker = root / f"env-{slot}" / SLOT_MARKER_NAME
+        if marker.is_file():
+            shutil.copy2(marker, backup / "launcher-root" / f"env-{slot}-{SLOT_MARKER_NAME}")
 
     original = read_json(root / "update-state.json")
     write_json(out / "original-state.json", original)
@@ -245,6 +263,8 @@ def prepare(repo: Path, out: Path, root: Path) -> int:
     data["backup"] = str(backup)
     save_phase(out, "prepare", data)
     print(f"BACKUP COPIED TO: {backup}")
+    print("  (config, key, histories and the launcher's own files. The two slot "
+          "environments are NOT copied -- install.bat rebuilds those.)")
     return 0
 
 

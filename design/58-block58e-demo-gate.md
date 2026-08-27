@@ -1,8 +1,8 @@
 # Block 58e demo gate — restart and end-to-end update
 
 Run these commands unedited and in order in Windows PowerShell 5.1. Send the
-whole printed evidence directory back. The safety backup is deliberately its
-sibling, not inside the evidence sent for review.
+whole printed evidence directory back. The safety backup is deliberately kept
+out of it — see below.
 
 The branch is unmerged. `Prepare` records the
 branch slot, and temporarily changes only `installed_commit` to the real
@@ -10,14 +10,30 @@ branch slot, and temporarily changes only `installed_commit` to the real
 builds real `origin/main`, which does not contain 58e. That is expected: the
 branch slot requests the restart and the external launcher performs it.
 
-## Safety copy — the first literal command
+## Before anything: the one-minute spike
 
-This block can brick the managed install. Before checkout or installation,
-copy both production roots beside (not inside) the later evidence directory:
+If a phase has failed before, run this first. It needs no Prepare, no
+`install.bat` and no staging, touches no production state, and finishes in about
+a minute:
 
 ```powershell
-$stamp=Get-Date -Format 'yyyyMMdd-HHmmss'; $backup=Join-Path ([Environment]::GetFolderPath('MyDocuments')) "block58e-SAFETY-BACKUP-$stamp"; New-Item -ItemType Directory -Force -Path $backup | Out-Null; if(Test-Path "$env:APPDATA\microclaw"){Copy-Item "$env:APPDATA\microclaw" "$backup\appdata" -Recurse}; if(Test-Path "$env:LOCALAPPDATA\microclaw"){Copy-Item "$env:LOCALAPPDATA\microclaw" "$backup\localappdata" -Recurse}; Write-Host "SAFETY BACKUP COPIED TO: $backup"
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+uv run python design\58-block58e-spike.py
 ```
+
+It times each slot's `check-config --json` — the exact call staging makes — with
+and without an inherited stdin and with and without `MICROCLAW_FROM_SHORTCUT=1`,
+and measures how often an atomic state write loses to a concurrent reader. Send
+back `Documents\58e-spike.json`.
+
+## Safety copy — the first literal command
+
+`Prepare` copies `%APPDATA%\microclaw` (config, API key, histories) and the
+launcher root's own small files to a **local** backup under `%LOCALAPPDATA%`.
+It deliberately does **not** copy `env-a` and `env-b`: they are hundreds of
+megabytes, `Documents` here is redirected to a network share, and they are the
+one part of the layout `install.bat` rebuilds from scratch — which the last step
+of this runbook does anyway.
 
 ## Install the branch under test
 

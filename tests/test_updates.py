@@ -758,6 +758,39 @@ def test_build_failure_records_which_command_failed_and_why(tmp_path, monkeypatc
     assert detail.startswith("uv venv exit 2:")
     assert "no space left on device" in detail
 
+
+def test_write_state_retries_a_replace_a_concurrent_reader_is_blocking(tmp_path, monkeypatch):
+    """`[WinError 5] Access is denied` on os.replace killed 58e's second gate.
+
+    Windows refuses to replace a file another process holds open, and every
+    `GET /api/update` reads this one -- the browser polls it every 2s while
+    staging is running, which is precisely when the staging job writes it most.
+    """
+    target = tmp_path / updates.STATE_NAME
+    monkeypatch.setattr(updates.time, "sleep", lambda seconds: None)
+    real_replace = os.replace
+    attempts = []
+
+    def flaky(source, destination):
+        attempts.append(destination)
+        if len(attempts) < 4:
+            raise PermissionError(5, "Access is denied")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(updates.os, "replace", flaky)
+    updates.write_state({"provenance": "clone"}, target)
+    assert len(attempts) == 4
+    assert updates.load_state(target)["provenance"] == "clone"
+
+
+def test_write_state_still_raises_when_the_replace_never_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(updates.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(updates.os, "replace", lambda *a: (_ for _ in ()).throw(
+        PermissionError(5, "Access is denied")))
+    with pytest.raises(PermissionError):
+        updates.write_state({"provenance": "clone"}, tmp_path / updates.STATE_NAME)
+    assert not list(tmp_path.glob(".*"))
+
 def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
     exe = tmp_path / "env-a" / "Scripts" / "python.exe"
     updates.write_slot_marker("unknown", 1, executable=exe)
