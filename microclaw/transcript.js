@@ -279,6 +279,31 @@
     });
   }
 
+  function updateBannerView(state) {
+    const candidate = state && state.candidate;
+    if (!candidate && !(state && state.pending_staged)) return { visible: false, text: "", buttons: [] };
+    if (state.comparison_refused) return {
+      visible: true,
+      text: "This update needs the maintainer. " + (state.comparison_refusal_reason || ""),
+      buttons: ["later"], url: candidate && candidate.url,
+    };
+    if (state.staging) return {
+      visible: true, text: "Building the update…", buttons: ["progress"],
+      url: candidate && candidate.url,
+    };
+    if (state.pending_staged) return {
+      visible: true, text: "The update is ready to restart.",
+      buttons: state.automatic_restart ? ["restart-now", "restart-later"] : ["restart-later"],
+      url: candidate && candidate.url,
+    };
+    return {
+      visible: true,
+      text: "A newer Microclaw commit is available: " + String(candidate.sha || "").slice(0, 7) +
+        " — " + String(candidate.subject || ""),
+      buttons: ["update", "later", "view"], url: candidate.url,
+    };
+  }
+
   const setOpen = (tx, open) => tx.querySelectorAll("details.tool").forEach(d => d.open = open);
 
   /* Parse either legacy JSON-array history or append-only JSONL. A torn final
@@ -311,6 +336,7 @@
 
   global.Transcript = {
     esc, escAttr, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
+    updateBannerView,
     artifactOf, artifactChip, parseHistoryText,
     expandAll: (tx) => setOpen(tx, true),
     collapseAll: (tx) => setOpen(tx, false),

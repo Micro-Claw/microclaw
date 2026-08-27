@@ -36,6 +36,7 @@ RESTART_MESSAGE = (
 class SetupWriteCapability:
     enabled: bool = False
     consumed: bool = False
+    in_flight: bool = False
 
     def require_unused(self) -> None:
         if not self.enabled:
@@ -294,6 +295,14 @@ def write_security_config(ctrl, guard):
     """Validate and publish the setup draft to the sole permitted destination."""
     capability: SetupWriteCapability = ctrl._microclaw_setup_write_capability
     capability.require_unused()
+    capability.in_flight = True
+    try:
+        return _write_security_config(ctrl, capability)
+    finally:
+        capability.in_flight = False
+
+
+def _write_security_config(ctrl, capability: SetupWriteCapability):
     draft = _state(ctrl)
     document = _schema_3_document(draft)
     target = paths.default_safety_config().resolve()

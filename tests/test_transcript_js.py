@@ -33,6 +33,28 @@ def render_result(content):
     return out.stdout
 
 
+def update_view(state):
+    path = resources.files("microclaw").joinpath("transcript.js")
+    script = (
+        "global.window = {};\n"
+        f"require({json.dumps(str(path))});\n"
+        f"process.stdout.write(JSON.stringify(window.Transcript.updateBannerView({json.dumps(state)})));\n"
+    )
+    return json.loads(subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=True
+    ).stdout)
+
+
+def test_update_banner_offer_progress_and_restart_views_escape_via_text_contract():
+    candidate = {"sha": "abcdef123456", "subject": '<img onerror="boom">', "url": "https://github.com/x/y"}
+    offer = update_view({"candidate": candidate, "staging": False, "pending_staged": False})
+    assert offer["buttons"] == ["update", "later", "view"]
+    assert offer["text"] == 'A newer Microclaw commit is available: abcdef1 — <img onerror="boom">'
+    assert update_view({"candidate": candidate, "staging": True})["buttons"] == ["progress"]
+    restart = update_view({"candidate": candidate, "pending_staged": True, "automatic_restart": True})
+    assert restart["buttons"] == ["restart-now", "restart-later"]
+
+
 def test_a_string_result_renders_as_json():
     assert render_result('{"channels": ["DAPI"]}') == (
         '<pre class="json result">{\n  "channels": [\n    "DAPI"\n  ]\n}</pre>'

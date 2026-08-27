@@ -290,7 +290,8 @@ def write_launcher_health(
 
 def stage_inactive_slot(
     root: str | Path, source: str | Path, candidate: Candidate, *,
-    uv_executable: str | Path, now: float | None = None,
+    uv_executable: str | Path, config_path: str | Path | None = None,
+    now: float | None = None,
 ) -> Path:
     """Build only the managed inactive slot and publish pending after success.
 
@@ -332,6 +333,28 @@ def stage_inactive_slot(
     write_slot_marker(
         candidate.sha, required_launcher_protocol, executable=python,
     )
+    # Each slot must classify through its own interpreter.  This belongs before
+    # pending publish: pending-slot.txt is the launcher's activation command.
+    from microclaw import config
+    active_console = base / f"env-{active}" / "Scripts" / "microclaw.exe"
+    candidate_console = target / "Scripts" / "microclaw.exe"
+    comparison = config.compare_slot_configurations(
+        active_console, candidate_console,
+        config_path or config.default_safety_config(),
+    )
+    state = load_state(base / STATE_NAME) or {}
+    if not comparison.proceed:
+        state["comparison_refused_commit"] = candidate.sha
+        state["comparison_refusal_reason"] = comparison.reason
+        state["staging"] = {"status": "refused", "commit": candidate.sha}
+        write_state(state, base / STATE_NAME)
+        raise UpdateError(comparison.reason or "the update needs the maintainer")
+    state.pop("comparison_refused_commit", None)
+    state.pop("comparison_refusal_reason", None)
+    state["staging"] = {"status": "staged", "commit": candidate.sha}
+    state.pop("build_error", None)
+    state.pop("build_failed_commit", None)
+    write_state(state, base / STATE_NAME)
     temporary = base / f".{PENDING_SLOT_NAME}.tmp"
     temporary.write_text(inactive + "\n", encoding="ascii")
     os.replace(temporary, base / PENDING_SLOT_NAME)
@@ -812,7 +835,7 @@ def checks_enabled(no_update_check: bool = False) -> bool:
 def check_for_update(
     *, state_file: str | Path | None = None, no_update_check: bool = False,
     opener: URLopener = _default_opener, now: float | None = None,
-    jitter: Callable[[float, float], float] = random.uniform,
+    jitter: Callable[[float, float], float] = random.uniform, force: bool = False,
 ) -> Candidate | None:
     """Run one due managed check, caching success or failure atomically."""
     if sys.platform != "win32" or not checks_enabled(no_update_check):
@@ -831,7 +854,8 @@ def check_for_update(
     try:
         last_attempt = state.get("last_attempt")
         next_check = state.get("next_check")
-        if isinstance(last_attempt, (int, float)) and isinstance(next_check, (int, float)):
+        if (not force and isinstance(last_attempt, (int, float))
+                and isinstance(next_check, (int, float))):
             if current < next_check:
                 return None
         state["last_attempt"] = current

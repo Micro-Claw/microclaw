@@ -302,6 +302,21 @@ def test_writer_decline_preserves_draft_and_writes_nothing(monkeypatch, tmp_path
     assert ctrl._microclaw_setup_write_capability.consumed is False
 
 
+def test_setup_write_is_in_flight_for_the_whole_write_path(monkeypatch):
+    ctrl = types.SimpleNamespace(
+        _microclaw_setup_write_capability=setup_tools.SetupWriteCapability(True)
+    )
+
+    def observe(_ctrl, capability):
+        assert capability.in_flight is True
+        raise RuntimeError("stop after observing the write window")
+
+    monkeypatch.setattr(setup_tools, "_write_security_config", observe)
+    with pytest.raises(RuntimeError, match="observing the write window"):
+        setup_tools.write_security_config(ctrl, None)
+    assert ctrl._microclaw_setup_write_capability.in_flight is False
+
+
 def test_writer_refuses_existing_target_without_touching_it(monkeypatch, tmp_path):
     ctrl = _setup_ctrl(_inventory(focus="Z"))
     ctrl._microclaw_setup_write_capability = setup_tools.SetupWriteCapability(True)
@@ -535,7 +550,9 @@ def test_setup_session_offers_writer_only_with_explicit_capability(monkeypatch, 
 def test_valid_upgrade_builds_normal_session_without_write_authority(monkeypatch, tmp_path):
     path = tmp_path / "safety_config.yaml"
     path.write_text("valid", encoding="utf-8")
-    validation = types.SimpleNamespace(can_start_live_validation=True, parsed="parsed")
+    validation = types.SimpleNamespace(
+        can_start_live_validation=True, parsed="parsed", path=path,
+    )
     monkeypatch.setattr(webserve.config, "validate_safety_config", lambda p: validation)
     seen = []
 

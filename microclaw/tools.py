@@ -1915,6 +1915,15 @@ def _acquisition_ledger(ctrl) -> AcquisitionLedger:
         return ledger
 
 
+def _existing_acquisition_ledger(ctrl) -> AcquisitionLedger | None:
+    """Read the production weak-map or test-double fallback without creating one."""
+    try:
+        return _ACQUISITION_LEDGERS.get(ctrl)
+    except TypeError:
+        ledger = getattr(ctrl, "_microclaw_acquisition_ledger", None)
+        return ledger if isinstance(ledger, AcquisitionLedger) else None
+
+
 def _format_duration(seconds: float) -> str:
     """Render an estimated duration the way an operator reads a clock.
 

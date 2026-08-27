@@ -606,6 +606,73 @@ def test_staging_reads_candidate_protocol_and_refuses_old_installed_launcher(tmp
         )
 
 
+def test_config_comparison_refusal_is_before_pending_publish(tmp_path, monkeypatch):
+    updates.write_state({"provenance": "public-head"}, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+
+    commands = []
+
+    def run(command, **kwargs):
+        if command[1] == "venv":
+            (tmp_path / "env-b" / "Scripts").mkdir(parents=True)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[0] == "uv.exe":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        commands.append(command)
+        classification = "ready" if "env-a" in command[0] else "blocked"
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps({"classification": classification}), ""
+        )
+
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    candidate = updates.Candidate("d" * 40, "unsafe", "public-head")
+    with pytest.raises(updates.UpdateError, match="downgrade a reviewed config"):
+        updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe")
+    assert [command[0] for command in commands] == [
+        str(tmp_path / "env-a" / "Scripts" / "microclaw.exe"),
+        str(tmp_path / "env-b" / "Scripts" / "microclaw.exe"),
+    ]
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="ascii") == "a\n"
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert state["comparison_refused_commit"] == candidate.sha
+    assert "downgrade a reviewed config" in state["comparison_refusal_reason"]
+
+
+def test_successful_stage_clears_stale_build_failure(tmp_path, monkeypatch):
+    updates.write_state({
+        "provenance": "public-head", "build_error": "old failure",
+        "build_failed_commit": "c" * 40,
+    }, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+
+    def run(command, **kwargs):
+        if command[1] == "venv":
+            (tmp_path / "env-b" / "Scripts").mkdir(parents=True)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[0] == "uv.exe":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, '{"classification":"ready"}', "")
+
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(
+        tmp_path, source, updates.Candidate("d" * 40, "fixed", "public-head"),
+        uv_executable="uv.exe",
+    )
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert "build_error" not in state
+    assert "build_failed_commit" not in state
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="ascii") == "b\n"
+
+
 def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
     exe = tmp_path / "env-a" / "Scripts" / "python.exe"
     updates.write_slot_marker("unknown", 1, executable=exe)

@@ -28,7 +28,9 @@ import os
 import queue
 import secrets
 import socket
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -47,7 +49,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, tools
+from microclaw import config, credentials, tools, updates
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import AuditLog, ConversationStore, prune_transcripts
 from microclaw.agent import (
@@ -106,6 +108,7 @@ SESSION_TTL_S = 12 * 60 * 60
 RATE_WINDOW_S = 60.0
 RATE_MAX_FAILURES = 10
 RATE_MAX_PAIR_ATTEMPTS = 10
+RATE_MAX_UPDATE_CHECKS = 3
 RATE_CLIENTS_MAX = 256
 SESSIONS_MAX = 1024
 SESSION_COOKIE = "microclaw_session"
@@ -223,6 +226,11 @@ class Key(BaseModel):
 
 class Model(BaseModel):
     model: str
+
+
+class UpdateDismissal(BaseModel):
+    action: str
+    commit: str
 
 
 def _jsonable(history: list[dict]) -> list[dict]:
@@ -515,19 +523,26 @@ def build_session(args, config_result: ConfigValidationResult | None = None):
     path = Path(args.safety_config) if args.safety_config else config.default_safety_config()
     result = config_result if config_result is not None else config.validate_safety_config(path)
     if result.can_start_live_validation:
-        return Session(args, result.parsed)
+        session = Session(args, result.parsed)
+        session.safety_config_path = result.path
+        return session
     if result.classification == "blocked":
         print(
             f"Existing security bounds at {result.path} are not valid and reviewed. "
             "Restricted setup will open, but it will not overwrite or delete that "
             "file. Move it aside or repair it deliberately, then restart setup."
         )
-    return SetupSession(args, result)
+    session = SetupSession(args, result)
+    session.safety_config_path = result.path
+    return session
 
 
 def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
     app = FastAPI(title="Microclaw")
+    update_job_lock = threading.Lock()
+    update_job = {"running": False}
+    update_checks = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
     page = load_page("serve.html")
     if session.mode is SessionMode.SETUP:
         page = page.replace(
@@ -672,6 +687,161 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if session.mode is not SessionMode.SETUP:
             raise HTTPException(404, "Not found.")
         return JSONResponse(session.setup_draft.status())
+
+    def update_status() -> dict:
+        """Project cached managed state into the browser API; never discover here."""
+        path = updates.state_path()
+        try:
+            state = updates.load_state(path)
+        except updates.UpdateError as exc:
+            return {"managed": True, "last_error": str(exc), "staging": update_job["running"]}
+        if state is None:
+            return {"managed": False, "candidate": None, "staging": update_job["running"]}
+        success = state.get("last_success")
+        candidate = success.get("candidate") if isinstance(success, dict) else None
+        if not isinstance(candidate, dict):
+            candidate = None
+        elif isinstance(candidate.get("sha"), str):
+            candidate = dict(candidate)
+            repo = candidate.get("canonical_repo") or updates.REPO
+            candidate["url"] = f"https://github.com/{repo}/commit/{candidate['sha']}"
+        dismissal = state.get("dismissal")
+        now = time.time()
+        suppressed = False
+        if candidate and isinstance(dismissal, dict) and dismissal.get("commit") == candidate.get("sha"):
+            suppressed = dismissal.get("action") == "skip" or (
+                dismissal.get("action") == "later"
+                and isinstance(dismissal.get("until"), (int, float))
+                and now < dismissal["until"]
+            )
+        root = path.parent
+        pending = None
+        try:
+            pending = updates._read_slot_text(root / updates.PENDING_SLOT_NAME, required=False)
+        except updates.UpdateError:
+            pending = None
+        automatic_restart = False
+        if pending is not None:
+            try:
+                automatic_restart = updates.validate_launch_environment() is not None
+            except updates.UpdateError:
+                automatic_restart = False
+        refusal_commit = state.get("comparison_refused_commit")
+        refusal = refusal_commit == (candidate or {}).get("sha")
+        return {
+            "managed": True,
+            "candidate": None if suppressed else candidate,
+            "last_attempt": state.get("last_attempt"),
+            "last_error": state.get("last_error") or state.get("build_error"),
+            "staging": update_job["running"],
+            "pending_staged": pending is not None,
+            "comparison_refused": refusal,
+            "comparison_refusal_reason": state.get("comparison_refusal_reason") if refusal else None,
+            "automatic_restart": automatic_restart,
+            "dismissal": dismissal,
+        }
+
+    @app.get("/api/update")
+    async def get_update():
+        return JSONResponse(update_status())
+
+    @app.post("/api/update/check")
+    async def post_update_check(request: Request):
+        if not update_checks.allow(client_address(request)):
+            raise HTTPException(429, "Too many update checks.")
+        await run_in_threadpool(updates.check_for_update, state_file=updates.state_path(), force=True)
+        return JSONResponse(update_status())
+
+    @app.post("/api/update/stage")
+    async def post_update_stage():
+        with update_job_lock:
+            if update_job["running"]:
+                raise HTTPException(409, "An update staging job is already running.")
+            try:
+                state = updates.load_state()
+            except updates.UpdateError:
+                raise HTTPException(409, "Updates are unavailable in this installation.") from None
+            success = state.get("last_success") if state else None
+            raw = success.get("candidate") if isinstance(success, dict) else None
+            if not isinstance(raw, dict):
+                raise HTTPException(409, "No update candidate is cached.")
+            try:
+                candidate = updates.Candidate(**raw)
+            except (TypeError, ValueError):
+                raise HTTPException(409, "The cached update candidate is invalid.") from None
+            update_job["running"] = True
+
+        def stage():
+            state_path = updates.state_path()
+            root = state_path.parent
+            work = None
+            try:
+                state = updates.load_state(state_path) or {}
+                state["staging"] = {"status": "running", "commit": candidate.sha}
+                updates.write_state(state, state_path)
+                work = Path(tempfile.mkdtemp(prefix="microclaw-stage-", dir=root / "downloads"))
+                source = work / "source"
+                materialize = (updates.materialize_clone if candidate.source == "clone"
+                               else updates.materialize_public)
+                materialize(state, candidate, source)
+                uv = shutil.which("uv")
+                if not uv:
+                    raise updates.UpdateError("the update could not be built: uv was not found")
+                updates.stage_inactive_slot(
+                    root, source, candidate, uv_executable=uv,
+                    config_path=session.safety_config_path,
+                )
+            except Exception as exc:
+                latest = updates.load_state(state_path) or {}
+                if latest.get("comparison_refused_commit") != candidate.sha:
+                    latest["staging"] = {"status": "error", "commit": candidate.sha}
+                    latest["build_error"] = str(exc) or type(exc).__name__
+                    updates.write_state(latest, state_path)
+            finally:
+                if work is not None:
+                    shutil.rmtree(work, ignore_errors=True)
+                with update_job_lock:
+                    update_job["running"] = False
+
+        (updates.state_path().parent / "downloads").mkdir(parents=True, exist_ok=True)
+        threading.Thread(target=stage, name="microclaw-update-stage", daemon=True).start()
+        return JSONResponse({"staging": True}, status_code=202)
+
+    @app.post("/api/update/dismiss")
+    async def post_update_dismiss(value: UpdateDismissal):
+        if value.action not in {"later", "skip"}:
+            raise HTTPException(422, "action must be 'later' or 'skip'.")
+        try:
+            state = updates.load_state()
+        except updates.UpdateError:
+            raise HTTPException(409, "Updates are unavailable in this installation.") from None
+        if state is None:
+            raise HTTPException(409, "Updates are unavailable in this installation.")
+        record = {"action": value.action, "commit": value.commit}
+        if value.action == "later":
+            record["until"] = time.time() + 7 * 24 * 60 * 60
+        state["dismissal"] = record
+        updates.write_state(state)
+        return JSONResponse({"dismissed": True})
+
+    @app.post("/api/update/restart")
+    async def post_update_restart():
+        if session.lock.locked():
+            raise HTTPException(409, "An agent turn is in progress.")
+        ledger = tools._existing_acquisition_ledger(session.ctrl)
+        if ledger is not None and ledger.in_flight:
+            raise HTTPException(409, "An acquisition is in progress.")
+        if session.pending is not None:
+            raise HTTPException(409, "A confirmation is pending.")
+        capability = getattr(session.ctrl, "_microclaw_setup_write_capability", None)
+        if capability is not None and capability.in_flight:
+            raise HTTPException(409, "A setup write is in progress.")
+        status = update_status()
+        if not status.get("automatic_restart"):
+            raise HTTPException(409, "Automatic restart is not available; restart later.")
+        # 58e will request graceful shutdown here. Keep this response honest
+        # until that lifecycle seam is implemented.
+        return JSONResponse({"restart_requested": False, "pending_58e": True}, status_code=501)
 
     @app.post("/api/prompt")
     async def post_prompt(p: Prompt, request: Request):
@@ -1074,6 +1244,15 @@ def serve(args):
         updates.write_launcher_health()
     except updates.UpdateError as exc:
         sys.exit(f"Launcher startup refused: {exc}")
+    # One due check per server start, never on the startup/request path.
+    # check_for_update owns the interval, jitter, managed-install and opt-out rules.
+    no_update_check = getattr(args, "no_update_check", False)
+    if updates.checks_enabled(no_update_check):
+        threading.Thread(
+            target=updates.check_for_update,
+            kwargs={"no_update_check": no_update_check},
+            name="microclaw-update-check", daemon=True,
+        ).start()
     session = build_session(args, config_result=config_result)
     if token:
         _add_audit_secret(session, token)
