@@ -167,18 +167,32 @@ def health_matches(path: str | Path, nonce: str) -> bool:
 
 
 def _windows_process_alive(pid: int) -> bool:
-    """Whether a Windows child still has STILL_ACTIVE as its exit code."""
+    """Whether a Windows child still has STILL_ACTIVE as its exit code.
+
+    Every uncertain answer here is reported as *alive*.  Reporting a live child
+    as exited is the harmful direction: the launcher would roll back a slot
+    whose server is still running and still holding the port.  Only
+    ERROR_INVALID_PARAMETER — what Windows returns for a pid that no longer
+    exists — is treated as proof of exit.
+    """
     import ctypes
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
     handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
     if not handle:
-        return False
+        return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
     try:
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return False
+            return True
         return exit_code.value == 259  # STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)

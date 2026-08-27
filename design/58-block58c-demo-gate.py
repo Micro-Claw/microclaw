@@ -113,11 +113,40 @@ def wait_for_slot_processes_to_exit(timeout: float = 60) -> None:
     raise NotExercised("slot serve child did not exit; close its console or press Enter")
 
 
+def require_reviewed_config(appdata: Path) -> str:
+    """Refuse to start before install.bat would block on its own setup server.
+
+    `install.bat` only reaches `:installed_done` when a reviewed safety config is
+    already present; otherwise it runs the bridge-readiness loop and then starts
+    `serve` for browser setup, which never returns.  This phase drives the
+    installer three times with piped stdin, so that path would hang the gate
+    rather than fail it.  The two-slot limb classifies this same file.
+    """
+    document = appdata / "safety_config.yaml"
+    if not document.is_file():
+        raise RuntimeError(
+            f"no safety config at {document}. Complete Microclaw setup on this "
+            "machine first: install.bat would otherwise open a blocking setup "
+            "server and this gate would hang instead of failing."
+        )
+    completed = run([sys.executable, "-m", "microclaw", "--safety-config",
+                     str(document), "check-config", "--json"])
+    require_success(completed, "checkout CLI classification of the machine config")
+    classification = json.loads(completed.stdout)["classification"]
+    if classification != "ready":
+        raise RuntimeError(
+            f"{document} classifies as {classification!r}, not 'ready'. install.bat "
+            "would open a blocking setup server; repair or review the file first."
+        )
+    return classification
+
+
 def prepare(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     if out.exists():
         raise RuntimeError(f"evidence directory already exists: {out}")
     out.mkdir(parents=True)
     sys.stdout = sys.stderr = Tee(sys.__stdout__, out / "gate.txt", "w")
+    print(f"machine config classification: {require_reviewed_config(appdata)}")
     backup = out / "backup"
     backup.mkdir()
     if appdata.exists():

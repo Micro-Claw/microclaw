@@ -5,6 +5,13 @@ Run these commands, unedited and in order, in Windows PowerShell 5.1 from the
 installation, fixture-building, process inspection, and assertions. The human
 only operates the desktop icon and Micro-Manager when prompted.
 
+**Precondition, checked by the program before it touches anything:** this
+machine already has a reviewed `%APPDATA%\microclaw\safety_config.yaml`. The
+`Prepare` phase drives `install.bat` three times with piped input, and an
+installer that finds no reviewed config opens a blocking browser-setup server
+instead of finishing — the gate would hang rather than fail. `Prepare` refuses
+with that message if the file is missing or does not classify `ready`.
+
 Step zero is the literal backup command. It copies `%APPDATA%\microclaw` and the
 legacy `%LOCALAPPDATA%\microclaw\env`, prints the backup path, hashes roaming
 data, runs `install.bat` twice, and builds the real second slot and non-uv
