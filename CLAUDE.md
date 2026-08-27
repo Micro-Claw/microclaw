@@ -420,6 +420,15 @@ Generic, from design/58. The Windows layout details live in that document.
   for any tool you invoke, and never let a machine-readable mode register a
   pause. The suite cannot catch this: a test runner has no console to inherit,
   so the guard is asserted on the *argument*, deliberately.
+- **When you shell out to another version of your own program, its stdout is
+  untrusted framing.** `classify_config_with_slot` runs the *candidate* slot's
+  CLI — by definition code that predates whatever was just fixed — and demanded
+  that its whole stdout be JSON. A version still registering the exit pause
+  printed `Press Enter to close this window...` after its JSON, because
+  `input()` writes its prompt before it reads, and the update was reported
+  unbuildable. Closing the child's stdin had turned a hang into corrupted
+  output. Parse the payload out of the stream; never require the stream to be
+  the payload.
 - **A record that some earlier attempt failed is not a record of this one.**
   58e's staging route skipped writing its error whenever a *cached* refusal
   matched the commit being staged, so after one legitimate refusal every later
