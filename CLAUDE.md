@@ -400,6 +400,23 @@ Generic, from design/58. The Windows layout details live in that document.
   Nothing in the suite could have caught it. If a gate redirects an environment
   variable that something durable will write down, it has planted a delayed
   failure — and the gate should check the property afterwards.
+- **A subprocess inherits stdin even when you capture its output, and no test
+  can have a console.** `subprocess.run(capture_output=True)` redirects stdout
+  and stderr only. The desktop launcher exports `MICROCLAW_FROM_SHORTCUT=1`, so
+  a CLI the server spawns registers the `Press Enter to close this window...`
+  handler and blocks **after** printing its answer — measured on the demo
+  machine at 0.66 s with stdin closed and a hang with an inherited console,
+  which made staging impossible on every desktop launch. Pass `stdin` explicitly
+  for any tool you invoke, and never let a machine-readable mode register a
+  pause. The suite cannot catch this: a test runner has no console to inherit,
+  so the guard is asserted on the *argument*, deliberately.
+- **When a gate fails twice for reasons its own artifacts cannot explain, stop
+  running the gate and write a probe.** A gate is built to score a working
+  mechanism, and every phase of one drags a full setup behind it; two rig trips
+  went to a defect that a one-minute, state-free script found immediately
+  (`design/58-block58e-spike.py`). Relatedly, **a setup step's cost is paid on
+  every retry, and retries are the normal case** — 58e's `Prepare` was copying
+  two Python environments to a network-redirected folder each time.
 - **When a block inserts a step *before* an existing one, test the state it
   hands over.** 58c's first gate died because migration moved `env` to `env-a`
   and the next subroutine then asked `uv venv` to create `env-a`, which refuses
