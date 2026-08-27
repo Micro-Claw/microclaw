@@ -1939,6 +1939,54 @@ and then exited 0 because the operator pressed Enter in the console; the verdict
 keyed off the `TIMED OUT` marker and would have called that inconclusive. **Judge
 a control by what it measured, not by how it was terminated.**
 
+## 58e demo gate round 4 — 2026-08-27: the failure named itself
+
+The first round where a staging failure produced a diagnosis instead of silence,
+and the round-3 fixes are what made that possible. Every one of them worked:
+all six poison keys cleared, `comparison_refused` false throughout, and the
+staging job recorded `build_error: "slot emitted invalid config-classification
+JSON"` with `staging: {"status": "error"}`. **That was round 3's silent
+sixteen-second failure too** — the same defect, finally legible.
+
+**`input()` writes its prompt to stdout before it reads.** `pause_on_exit` calls
+`input("\nPress Enter to close this window...")`, so a candidate slot that still
+registers the pause emits
+
+```
+{"classification": "ready", ...}
+Press Enter to close this window...
+```
+
+and a whole-stream `json.loads` fails. **This is a defect I introduced.** The
+`stdin=DEVNULL` fix from round 2 stopped that call from *hanging*; it did not
+stop it from *printing*, and a hang became corrupted output. Every test in the
+suite fed the parser clean stdout, so nothing could see it.
+
+**The contract was wrong, not just the code.** `classify_config_with_slot`
+invokes **a different version of microclaw by design** — the candidate is, by
+definition, code that predates whatever we just fixed. Requiring its entire
+stdout to be JSON makes every future update hostage to the *old* version's
+politeness. It now lifts the first JSON object out of the stream with
+`raw_decode` and ignores what surrounds it, and still refuses output containing
+no usable object. The four new cases fail on the old code with the rig's exact
+error, `JSONDecodeError: Extra data: line 3 column 1`.
+
+**Generalise it, because this will recur**: *when you shell out to another
+version of your own program, treat its stdout as untrusted framing.* The one
+thing you may rely on is the payload you can find inside it.
+
+**Two fixes of mine were confirmed working on this round, which is worth stating
+separately from the failure**: the staging verdict is cleared per phase, so no
+phase inherits another's refusal; and a failure that is not a typed
+`ComparisonRefused` is always recorded. Round 3 had neither, and the operator
+had to `Ctrl-C` out of a phase that would never finish. Round 4 finished on its
+own.
+
+**Prediction recorded before the next run**, so it can be scored rather than
+rationalised afterwards: Stage will build, the comparison will return
+`ready`/`ready`, pending will publish, and the banner will offer **Restart now**.
+If it does not, `build_error` and `build_error_detail` will say why.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -2022,7 +2070,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Staging, the refusal, the comparison and the exit pause now have rig evidence | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 4 made the failure legible for the first time: a candidate slot's exit-pause prompt was corrupting the classification stdout | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
