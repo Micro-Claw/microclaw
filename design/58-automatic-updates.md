@@ -2158,11 +2158,11 @@ unchanged since `c46e2db`, and no rollback path in `updates.py`
 | Unreachable index cached, selector untouched | R8 | `build_error` + `uv pip exit 2: …`, no pending, active unchanged |
 | Restore returns production state | R7 | commit, selector, pending and `%APPDATA%` hash all back |
 | Public ZIP records `public-head`/`unknown`/404 | R7 | fresh ZIP install's cached state |
-| **Restart later activates at the next launch** | — | never run |
-| **Micro-Manager closed keeps the slot** | — | never run |
-| **Offline launch** | — | needs physical access |
+| **Micro-Manager closed keeps the slot** | R10 | staged slot activated and kept, no rollback, no relaunch |
+| **Restart later activates at the next launch** | — | owed; the activation path itself is evidenced by R8 and R9 |
+| **Offline launch** | — | owed; needs physical access |
 
-**Twelve of fifteen limbs have rig evidence.** Of the three that do not:
+**Thirteen of fifteen limbs have rig evidence** (twelve at the time this table was first written; round 10 added Micro-Manager closed). Of the remainder:
 `Restart later` exercises the *same* `activate_pending` call in the same
 launcher path that round 8 proved when the restart flipped `a` -> `b` at launch —
 what is untested is only that it happens on a manual launch rather than a
@@ -2180,6 +2180,59 @@ its check once, so a fresh install now reports NOT EXERCISED with the command
 that produces it. **A phase that polls without checking the request was accepted
 will always hang rather than fail**, and hanging is the most expensive failure
 mode a gate has: it costs the operator's evening, not a line in a report.
+
+## 58e demo gate round 10 — 2026-08-27: Micro-Manager closed passes, and the block closes
+
+The short close-out run. **`Micro-Manager closed` PASSES under the strengthened
+limb** — one healthy launch, the staged slot activated and *kept*, no rollback,
+no relaunch: `one healthy launch; active remained b`. That was the last genuine
+gap, and it is the limb §"Put the updater outside the environment it replaces"
+singles out as the one most likely to be built as a relaunch loop.
+
+It matters that this pass is trustworthy where round 9's was not. Round 9 passed
+the same limb while **nothing had been updated** — its staging had failed, so no
+slot was activated and an ordinary launch satisfied every condition. The limb now
+requires a `pending_staged` sample, a pending selector before the launch, that
+exact slot active afterwards, and no rollback report. Round 9's evidence would
+report NOT EXERCISED against it.
+
+**Three defects in the run instructions were found and fixed *before* this round
+rather than by it**, which is the only reason it took ten minutes:
+`Prepare` was not clearing `last_attempt`/`next_check`, so no candidate would
+have been cached and every staging phase would have been refused (round 9 had
+survived that only because a `Restore` happened to clear them first); the
+Micro-Manager-closed step said to close Micro-Manager *before* a phase that
+stages through the live server, which cannot start without a bridge; and both
+`Closed` and `Later` end with the `origin/main` slot active, so running one after
+the other tests the wrong build — which is exactly what wasted round 9.
+
+**`Restart later` was not run** and is recorded as owed. Its mechanism is not
+unevidenced: `activate_pending` consuming a pending selector at the start of a
+desktop launch is what round 8's restart proved when the selector flipped
+`a` -> `b`, and round 9 demonstrated it *accidentally* — the selector moved
+`a` -> `b` between `Prepare` and `Stage` because a leftover pending slot was
+activated by an ordinary icon launch. What has no direct limb is the operator
+clicking **Restart later** and seeing that same activation at the next manual
+launch.
+
+### Closing tally
+
+**Thirteen of fifteen limbs have rig evidence**, scored across rounds 6, 7, 8 and
+10 with the product-diff check in §"58e's combined rig evidence". Owed:
+`Restart later` (mechanism evidenced, the button path is not) and `offline`
+(needs physical access to the machine).
+
+**Ten gate rounds and five spike rounds.** The ratio is the story: **six product
+defects, every one of which would have shipped**, against roughly twice as many
+defects in the gate itself. In order — `uv venv` refusing an existing slot, so
+every update after a machine's first would fail; a slot CLI hanging on an
+inherited exit pause, so staging could never complete on a desktop launch; a
+stale refusal silencing every later failure of the same commit; a candidate's
+stdout framing breaking the classification parse; the missing `[serve]` extra,
+which meant **every update this design produced left the application unable to
+start**; and the absent smoke check that would have caught it. The last two were
+found only because the earlier four were fixed first — each defect was hiding the
+next one, which is why this took ten rounds and not three.
 
 ## Owed evidence that cannot be booked
 
@@ -2207,6 +2260,14 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
   testable.** §"Ship the public-head path" forbids a browser-supplied URL for a
   reason, and a test hook in the trust boundary is the same hole with a nicer
   name.
+- **`Restart later`'s button path was never gated.** Staging leaves a pending
+  selector and not restarting *is* Restart later, so the mechanism —
+  `activate_pending` consuming that selector at the start of the next desktop
+  launch — is evidenced twice over: deliberately in round 8's restart, and
+  accidentally in round 9, where the selector moved `a` -> `b` between two gate
+  phases because an ordinary icon launch consumed a leftover pending slot. What
+  is owed is the operator pressing the button and seeing that activation, which
+  is a UI path over a proven mechanism.
 - **The offline limb needs physical access to the demo machine.** The operator
   reaches it over Remote Desktop, and disconnecting the network ends the session
   that would observe the result. Booked for a visit rather than approximated:
