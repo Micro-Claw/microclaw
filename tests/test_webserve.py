@@ -200,6 +200,22 @@ def test_update_status_reads_cache_without_calling_provider(session, tmp_path, m
     assert response.json()["candidate"]["subject"] == "Remote <subject>"
 
 
+def test_check_now_uses_the_background_checker_with_force(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(updates, "check_for_update", lambda **kwargs: calls.append(kwargs))
+    assert TestClient(build_app(session)).post("/api/update/check").status_code == 200
+    assert calls == [{"state_file": tmp_path / updates.STATE_NAME, "force": True}]
+
+
+def test_serve_starts_due_check_off_path_before_building_hardware_session():
+    source = Path(webserve.__file__).read_text(encoding="utf-8")
+    serve_source = source[source.index("def serve(args):"):]
+    assert serve_source.index("target=updates.check_for_update") < serve_source.index(
+        "session = build_session"
+    )
+
+
 def test_update_banner_markup_and_local_browser_api_are_present(client):
     html = client.get("/").text
     assert 'class="banner hidden" id="update-banner"' in html
