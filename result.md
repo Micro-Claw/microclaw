@@ -70,8 +70,9 @@ Required command attempted from the worktree root:
 No test count was measurable: it exited 1 immediately with
 `No module named pytest`. The only installed alternative,
 `/Users/zachcm/miniforge3/bin/python -m pytest`, exits 139 before collection.
-Syntax compilation and `git diff --check` passed. This handoff does not claim a
-green suite or reproduce the 2244/99 baseline.
+Syntax compilation, `git diff --check`, and a direct activation/fresh-nonce/
+match/rollback state-machine smoke passed. This handoff does not claim a green
+suite or reproduce the 2244/99 baseline.
 
 New defect tests and expected pre-change failures:
 
