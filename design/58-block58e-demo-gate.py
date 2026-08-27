@@ -309,6 +309,20 @@ def clear_staging_verdict(root: Path) -> dict:
     return cleared
 
 
+def require_accepted(response: tuple[int, object], phase: str) -> None:
+    """A refused POST means there is no job; polling for one hangs for 15 minutes.
+
+    -Mode Closed did exactly that after the public-ZIP install left no cached
+    candidate: the stage request came back 409 and the phase then waited for a
+    terminal state that could never arrive.
+    """
+    if response[0] != 202:
+        raise NotExercised(
+            f"{phase}: /api/update/stage was refused ({response[0]} {response[1]!r}); "
+            "there is no candidate to stage, so nothing was built"
+        )
+
+
 def poll_stage_until_terminal() -> list[tuple[int, object]]:
     """Wait for THIS attempt to finish, not for a leftover verdict to be seen.
 
@@ -337,6 +351,7 @@ def direct(out: Path, root: Path) -> int:
     cleared_build_failure = clear_staging_verdict(root)
     before = state_snapshot(root)
     first = api("POST", "/api/update/stage")
+    require_accepted(first, "direct executable")
     samples = poll_stage_until_terminal()
     after = state_snapshot(root)
     status, payload = api("GET", "/api/update")
@@ -629,6 +644,7 @@ def closed(out: Path, root: Path) -> int:
     """Record exactly one launch with Micro-Manager closed and no relaunch."""
     cleared_build_failure = clear_staging_verdict(root)
     response = api("POST", "/api/update/stage")
+    require_accepted(response, "Micro-Manager closed")
     samples = poll_stage_until_terminal()
     initial = state_snapshot(root)
     print("Staged. Stop the current server, then launch the desktop icon once.")
@@ -656,6 +672,7 @@ def later(out: Path, root: Path) -> int:
     """Prove a pending selector activates only on the next desktop launch."""
     cleared_build_failure = clear_staging_verdict(root)
     response = api("POST", "/api/update/stage")
+    require_accepted(response, "Restart later")
     samples = poll_stage_until_terminal()
     before = state_snapshot(root)
     if before["pending"] is None:
@@ -1038,6 +1055,11 @@ def verify(out: Path, root: Path) -> int:
         if state.get("installed_commit") != "unknown":
             raise AssertionError(f"installed_commit={state.get('installed_commit')!r}")
         expected = "repository is not public (404)"
+        if state.get("last_error") is None and state.get("last_attempt") is None:
+            raise NotExercised(
+                "this install has never run its update check, so nothing could be "
+                "cached; start Microclaw once from the icon and re-run -Mode PublicZip"
+            )
         if state.get("last_error") != expected:
             raise AssertionError(f"last_error={state.get('last_error')!r}")
         return "public-head, unknown, repository is not public (404)"
