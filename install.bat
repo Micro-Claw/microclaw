@@ -250,6 +250,15 @@ set "MC_RC=%ERRORLEVEL%"
 if not defined MICROCLAW_SRC popd
 if not "%MC_RC%"=="0" (
     echo   ERROR: the update could not be built.
+    rem An index override in the environment is the one cause the messages above
+    rem describe by URL but never by name.  A demo-gate phase left
+    rem UV_INDEX_URL=https://127.0.0.1:1/unreachable in an operator's shell and
+    rem cost three failed installs before anyone connected the two.
+    if defined UV_INDEX_URL echo   NOTE: UV_INDEX_URL is set to %UV_INDEX_URL%
+    if defined UV_DEFAULT_INDEX echo   NOTE: UV_DEFAULT_INDEX is set to %UV_DEFAULT_INDEX%
+    if defined UV_EXTRA_INDEX_URL echo   NOTE: UV_EXTRA_INDEX_URL is set to %UV_EXTRA_INDEX_URL%
+    if defined PIP_INDEX_URL echo   NOTE: PIP_INDEX_URL is set to %PIP_INDEX_URL%
+    if defined UV_INDEX_URL echo   If that is not deliberate, clear it and run this installer again.
     exit /b 1
 )
 if not exist "%MC_EXE%" (

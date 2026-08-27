@@ -173,11 +173,19 @@ Close Microclaw and run:
 .\design\58-block58e-demo-gate.ps1 -Mode Failure
 ```
 
-This phase starts the actual active server as a child of the PowerShell process
-that holds `UV_INDEX_URL=https://127.0.0.1:1/unreachable`, posts Stage itself,
-waits for the real worker, and stops the child. It never calls `setx`. The
-scorer requires a cached build error, no pending selector, unchanged active
-slot, and a retained retry deadline.
+This phase starts the actual active server as a child of a PowerShell process
+holding `UV_INDEX_URL=https://127.0.0.1:1/unreachable`, posts Stage itself,
+waits for the real worker, and stops the child. The scorer requires a cached
+build error, no pending selector, unchanged active slot, and a retained retry
+deadline.
+
+**The variable is removed from this session the moment the child is spawned**,
+and every other mode clears a stale one on entry and says so. It never calls
+`setx`. That was not always true: an earlier version set it session-wide, and
+because the session is your working window for the whole gate, a later
+`install.bat` inherited the unreachable index and failed three times in a row.
+If you ever see an install fail with `https://127.0.0.1:1/unreachable`, run
+`Remove-Item Env:UV_INDEX_URL` — or just open a new PowerShell window.
 
 For the separate failed-start rollback, run this block unedited. It resolves the
 inactive slot's installed package with that slot's isolated interpreter, hides
