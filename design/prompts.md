@@ -7634,3 +7634,73 @@ preserved and committed by the coordinator with a message saying plainly that it
 was unreviewed and naming the one defect already known in it. Discard when a
 turn dies early; preserve when it dies late; either way say which in writing to
 the next turn.
+
+## design/58 block 58d — cached status, one staging job, the banner (2026-08-27)
+
+Merged `8529859`. **One** Codex round, eleven coordinator findings, **one** demo
+gate round: 12 PASS / 0 FAIL / 1 NOT EXERCISED by design. The cheapest block of
+this design so far, and the ratio held again — **three product defects found in
+review, two gate defects found on the rig, none the other way round.**
+
+**The three product defects were all reachability, and two of them were the exact
+shapes the prompt had warned about.** `compare_slot_configurations` and
+`check_for_update` each had no production caller at all when the block was
+assigned — grep before you write the prompt, because "wire the thing that exists"
+is a different instruction from "write the thing". The implementation then handed
+the comparison `env-{slot}\Scripts\python.exe` instead of `microclaw.exe`, so
+`classify_config_with_slot`'s `[exe, "--safety-config", …]` would have died on
+every real machine and been swallowed into `build_error` — an update that could
+never stage, reported as a build that failed. Its test monkeypatched
+`compare_slot_configurations` wholesale, so the one argument that mattered was
+never exercised. And the acquisition idle predicate read
+`ctrl._microclaw_acquisition_ledger`, which `_acquisition_ledger` sets **only** in
+its `except TypeError` fallback for non-weak-referenceable test doubles: the real
+ledger lives in a `WeakKeyDictionary`, so the guard was dead in production and
+green in tests against a hand-built `SimpleNamespace`. **Third time in design/58.
+Ask which fixtures produce the shape the guard needs, then grep for who
+constructs the object in production.**
+
+**A strengthened test can lose the assertion that had teeth.** Round 1's identity
+test compared `session.history` before and after and caught a mutation. The
+rewrite replaced it with `_durable_history(session) == []` — which prefers
+`session.store` and therefore cannot see a row written straight to
+`session.history`, the list actually sent to the model. I re-ran the same
+mutation, watched it pass, and put the comparison back. **Re-run the old mutation
+against the new test**, not just the new test against the code.
+
+**A dead parameter is a wrong answer, not an unused one.** `config_path` was
+added to `stage_inactive_slot` and never passed, so the promotion guard compared
+`default_safety_config()` on a machine started with `--safety-config`.
+
+**Two gate defects, both mine, both about scoring rather than mechanism.** The
+GitHub limb grepped the whole HAR — but a HAR exported "with content" carries
+response bodies, and `/api/update`'s body legitimately contains the
+View-on-GitHub link, so the product's correct behaviour scored as a violation
+while all seven requests sat on loopback. **Score the requests, never the file.**
+The idle-restart control assumed any 409 meant "not idle"; the session *was*
+idle and the route had refused on offerability, so the limb reported NOT
+EXERCISED with a misleading reason, and its intended 501 seam was unreachable
+without a pending slot — the same reason the button is. **Ask which branch of the
+route your control actually lands on.**
+
+**Replaying the operator's returned artifacts through the corrected scorer closed
+both**, with `git diff` over `microclaw/`, `install.bat`, `scripts/` and `tests/`
+since the gate's product commit **empty** — verified and written down before the
+result was accepted, as 58c requires. No second trip was booked for two scoring
+bugs.
+
+**Write the limb for evidence you are already collecting.** The background check
+had no limb, yet `probe.json` proved it outright: `Prepare` deletes
+`last_attempt`, so a timestamp present before the first Check now can only be
+`serve()`'s own thread. Added afterwards and scored from the same artifacts.
+
+**Numbers that agree are the point of step 6.** The banner text the operator
+copied out matched `prepare.json` and the API payload character for character —
+no screenshot needed. `last_attempt` held to thirteen decimal places across five
+GETs. "Later" recorded 604858 s, seven days plus the 58 s the operator took to
+click.
+
+**Process.** The revision turn was killed by an OpenAI usage limit — the sixth
+interruption across this design, the second from a usage limit. It died *at the
+end*, with all eleven fixes committed, so it was preserved and verified rather
+than rerun; the coordinator did the two remaining test corrections directly.

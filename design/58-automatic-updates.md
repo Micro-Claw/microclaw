@@ -409,6 +409,42 @@ Only one staging job may run. Update state and errors are operational UI state,
 not conversation history and not model tools: the agent cannot approve or
 trigger its own replacement.
 
+**What actually ships, reconciled against the code (2026-08-27, block 58d).** All
+five routes ship at those exact paths and sit inside `build_app`, so they inherit
+the existing bearer/cookie middleware and the cross-origin block with no new
+mechanism; the five cases are in
+`tests/test_webserve.py::test_every_remote_api_route_accepts_bearer_and_cookie`.
+`GET /api/update` returns `managed`, `candidate` (with a server-built `url`),
+`last_attempt`, `last_error`, `staging`, `pending_staged`, `comparison_refused`,
+`comparison_refusal_reason`, `automatic_restart` and `dismissal` — and nothing
+else; a suppressed candidate is reported as `null` rather than filtered in the
+browser. `POST /api/update/check` is **rate-limited to three per minute per
+client** through the existing `_RateLimiter`, because `force=True` bypasses the
+due interval and an unbounded button is a GitHub request per click; the fourth is
+429. `POST /api/update/restart` refuses `409` while any of the four idle
+conditions holds, `409` again when automatic restart cannot be offered, and
+`501 {"restart_requested": false}` on the idle offerable seam that **58e** fills.
+Dismissal is a single `{action, commit, until}` record — one candidate is current
+at a time, so a per-commit map would be state nobody reads. The banner copy is as
+written above, with *"Building the update…"*, *"The update is ready to restart."*
+and *"This update needs the maintainer. "* plus the escape sentence
+`compare_config_classifications` already writes. **Skip this commit and Check now
+ship as routes with no UI**: the settings surface this paragraph offers is not
+built, and 58d's gate drives Check now over HTTP, which is honest because there
+is no button to press. The pure `state -> view` function is
+`Transcript.updateBannerView` in `transcript.js`, beside the existing shared
+`initTheme`, so the node harness covers the three button states; the DOM wiring
+stays inline in `serve.html` and assigns the commit subject with `textContent`,
+because a subject is remote text. The page polls at 30 s, and at 2 s only while
+`staging` is true.
+
+**One caller the checklist never named.** `check_for_update` had no production
+caller at all, so nothing populated the cache the banner reads. `serve()` now
+starts one due check on a daemon thread before `build_session`, guarded by
+`checks_enabled`, so it never delays the interface and `--no-update-check` skips
+it outright. The rig proved it: `Prepare` deletes `last_attempt`, and a timestamp
+was present before any manual check.
+
 `--no-update-check` disables network checks for a launch, and
 `MICROCLAW_UPDATE_CHECK=0` supports managed offline machines. Neither disables
 using the installed version.
@@ -1050,60 +1086,85 @@ the user already is" (the API and banner halves), "Delivery" step 3.
 
 ### Items
 
-- [ ] **1. `GET /api/update` reads cached state only and never performs network
+- [x] **1. `GET /api/update` reads cached state only and never performs network
       I/O.** This is the route the browser polls.
-- [ ] **2. `POST /api/update/check`** is the explicit "Check now".
-- [ ] **3. `POST /api/update/stage`** begins **one** background staging job. A
+- [x] **2. `POST /api/update/check`** is the explicit "Check now".
+- [x] **3. `POST /api/update/stage`** begins **one** background staging job. A
       second request while one runs is refused, not queued.
-- [ ] **4. `POST /api/update/restart`** refuses unless the session is idle —
+- [x] **4. `POST /api/update/restart`** refuses unless the session is idle —
       no agent turn, acquisition, pending confirmation or setup write in flight.
       (The shutdown and relaunch it requests land in 58e.)
-- [ ] **5. `POST /api/update/dismiss`** carries "Later" (seven days for that
+- [x] **5. `POST /api/update/dismiss`** carries "Later" (seven days for that
       commit) and "Skip this commit".
-- [ ] **6. All mutating routes take the same remote authentication** as every
+- [x] **6. All mutating routes take the same remote authentication** as every
       other mutating route, and the same cross-origin block.
-- [ ] **7. The browser never calls GitHub.** It reads local update state only.
-- [ ] **8. The banner** goes at the top of the existing UI in `serve.html`,
+- [x] **7. The browser never calls GitHub.** It reads local update state only.
+- [x] **8. The banner** goes at the top of the existing UI in `serve.html`,
       alongside `#setup-banner`, `#pair-banner` and `#key-banner`, following their
       markup and CSS rather than introducing a new pattern. Short SHA and commit
       subject, **Update** · **Later** · **View on GitHub**; Update becomes
       progress, then **Restart now** / **Restart later**.
-- [ ] **9. When the candidate is not `ready` under 58b's comparison**, the banner
+- [x] **9. When the candidate is not `ready` under 58b's comparison**, the banner
       says the update needs the maintainer and carries the escape sentence.
-- [ ] **10. The agent cannot see or reach any of it.** Not a tool, not in
+- [x] **10. The agent cannot see or reach any of it.** Not a tool, not in
       conversation history, not in the context provider. Identity test.
 
 ### Tests
 
-- [ ] `GET /api/update` performs no network I/O — patch the provider and assert
+- [x] `GET /api/update` performs no network I/O — patch the provider and assert
       it is never called, rather than asserting on a timing.
-- [ ] A second `stage` while one runs is refused with a distinguishable status.
-- [ ] `restart` refuses during a turn, during an acquisition, with a pending
+- [x] A second `stage` while one runs is refused with a distinguishable status.
+- [x] `restart` refuses during a turn, during an acquisition, with a pending
       confirmation, and during a setup write — four cases, not one.
-- [ ] Every mutating route rejects an unauthenticated remote request, in the
-      style `tests/test_host_isolation.py` already uses.
-- [ ] "Later" suppresses the same commit for seven days and **does not** suppress
+- [x] Every mutating route rejects an unauthenticated remote request, in the
+      parameterized table
+      `tests/test_webserve.py::test_every_remote_api_route_accepts_bearer_and_cookie`.
+      (This row said `tests/test_host_isolation.py`, which is about the suite not
+      reading its host; corrected at the 58d design gate.)
+- [x] "Later" suppresses the same commit for seven days and **does not** suppress
       a different one; "Skip this commit" suppresses only that commit.
-- [ ] The serve page renders the banner from a fixture state, and the transcript
+- [x] The serve page renders the banner from a fixture state, and the transcript
       JS test file's existing harness covers the three button states.
-- [ ] `TOOL_REGISTRY`, the tool schemas and the model's context are unchanged.
+- [x] `TOOL_REGISTRY`, the tool schemas and the model's context are unchanged.
 
 ### Gate — demo machine, `design/58-block58d-demo-gate.md`
 
 Against a **real** discovered commit, not a fixture. Because the repository is
-private, the clone provider is the one that produces a candidate; to have
-something to discover, the runbook checks out a commit one behind `origin/main`
-into the managed slot first, as a literal command.
+private, the clone provider is the one that produces a candidate.
 
-- [ ] The banner appears with the real short SHA and subject, and matches
+**This paragraph originally said to install a commit one behind `origin/main`
+into the managed slot, and that cannot work** — the slot is the code under test,
+so it must carry the block. The arrangement that ships: install from the block
+branch, then `Prepare` sets the recorded `installed_commit` to `origin/main~1`, a
+real earlier commit. An unmerged branch is not an ancestor of `origin/main`, so
+`discover_clone` correctly reports `diverged` and offers nothing; the rewrite
+gives discovery something genuine to find while leaving the slot's code alone.
+It is real production state, so `Prepare` backs it up, a `Restore` phase puts it
+back, and a scored limb fails if it did not — CLAUDE.md's rule about a gate
+leaving production state altered. **58e inherits this problem** and will need the
+same arrangement, or a merge first.
+
+- [x] The banner appears with the real short SHA and subject, and matches
       `git log -1 --format=%h %s origin/main` printed beside it.
-- [ ] "Later" hides it; a restart of the server does not bring it back.
-- [ ] "Check now" re-checks and the attempt timestamp in `update-state.json`
-      moves.
-- [ ] "Restart now" **refuses** while a turn is running — start a long turn, then
-      click it, and capture the refusal.
-- [ ] The browser made no request to GitHub — from the browser devtools network
-      log, saved.
+- [x] "Later" hides it; a restart of the server does not bring it back.
+- [x] "Check now" re-checks and the attempt timestamp in `update-state.json`
+      moves. **Driven over HTTP, not from a button** — Check now ships as a route
+      with no UI, so there is nothing to click; the gate says so out loud.
+- [x] "Restart now" **refuses** while a turn is running — a real long turn ran
+      while the gate posted `/api/update/restart`, and the 409 named the turn.
+      **The route, not the button**: the button appears only once a slot is
+      staged, and 58d stages nothing on the rig. The *button* limb reports NOT
+      EXERCISED and is 58e's — see §"58d's gate reports INCOMPLETE by design".
+- [x] The browser made no request to GitHub — from the browser devtools network
+      log, saved. Seven requests, all to `127.0.0.1:8000`. **Score the requests,
+      never a grep of the file**: a HAR exported "with content" carries response
+      bodies, and `/api/update`'s body contains the View-on-GitHub link the
+      server builds, which round 1 read as a call to GitHub.
+
+**No rig evidence in this block for anything behind staging**: items 3 and 9,
+and the progress and restart banner states of item 8, are implemented and
+unit-tested but were never seen on the demo machine, because staging publishes a
+pending slot the next launch would act on. They are 58e's to gate.
 
 ## 58e — restart, the terminal line, and the end-to-end update
 
@@ -1598,9 +1659,11 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 - [x] Carried-forward register: **no row moves.** design/58 adds no tool, so the
       eleven-undecorated-tools row is untouched, and nothing else in the register
       is about the updater.
-- [ ] **After 58d/58e**: reconcile the `/api/update/*` route list and the banner
-      copy in §"Check quietly, ask where the user already is" against what
-      ships, the same way the field lists were reconciled here.
+- [x] **58d's half done**: the `/api/update/*` route list, the response field
+      list and the banner copy are reconciled in §"Check quietly, ask where the
+      user already is", including the two things that ship as routes without UI
+      and the one caller the checklist never named. **58e still owes** the
+      terminal line and the restart/relaunch half of that section.
 - [ ] **After 58e**: record whether the 30-second health **timeout** branch ever
       got rig evidence. 58c exercised only `child-exited`; the timeout path has
       unit coverage with an injected clock and nothing more.
@@ -1613,7 +1676,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
-| 58d | 58a, 58b | `design58/endpoints` | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51` | demo — **pushed, not yet run**; expect INCOMPLETE, see §"58d's gate reports INCOMPLETE by design" | — | — |
+| 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
@@ -1624,49 +1687,75 @@ different skip split. **Gate on zero failures, never the count.**
 
 Everything needed is on `main`.
 
-**State as of 2026-08-27. 58a, 58b and 58c are MERGED. 58d is ASSIGNED** — branch
-`design58/endpoints` from `5044ae9`, implementation delegated to a Codex runner in
-its own worktree. It depends only on 58a and 58b. 58e depends on 58d and on 58c.
+**State as of 2026-08-27. 58a, 58b, 58c and 58d are MERGED. Next block is 58e**,
+the last one, which depends on both 58c and 58d. Its branch is `design58/restart`.
+**58e is the second block that can leave a machine unable to start**, so read
+§"What made 58c different" below before assigning it.
 
-### Read these before assigning 58d, in this order
+### Read these before assigning 58e, in this order
 
 1. `CLAUDE.md` §"The block workflow" — authoritative; **58a rewrote step 6** and
    **58c added §"Four rules the updater block paid for"**. Read its §"six
-   contracts" preamble too, whose fixture rule 58a added.
-2. This file: §"58c demo gate rounds 2 and 3" (five gate defects, and why a
-   passing limb can prove less than its item claims), then the `## 58d`
-   checklist section. §"Check quietly, ask where the user already is" is 58d's
-   specification and is more precise than the checklist.
+   contracts" preamble too, whose fixture rule 58a added — 58d hit that same
+   fixture rule for the third time in this design.
+2. This file: §"58c demo gate rounds 2 and 3" and §"58d demo gate round 1"
+   (seven gate defects between them, and why a passing limb can prove less than
+   its item claims), then the `## 58e` checklist section. §"Check quietly, ask
+   where the user already is" is the specification for 58e's half too — the
+   terminal line and the restart — and is more precise than the checklist; its
+   reconciled "what actually ships" paragraph records what 58d already built.
 3. `design/prompts.md`, the design/58 entries — 58b's carries the runner
    interruption recovery and the `fails_if` idiom; **58c's carries the five gate
-   defects and the replay habit**, which is the part worth copying.
-4. **The three gate scripts on `main` are the template**, in ascending order of
-   quality: `design/58-block58a-demo-gate.py`, `-58b-`, `-58c-`, each with a thin
-   `.ps1`. Do not design 58d's gate from scratch. From 58b take the **mandatory
-   `fails_if`** argument on the `limb` decorator; from 58c take the phase ledger
-   (`phases.json`), the `Verify` preflight that names the commands still owed,
-   `need()` so absent evidence reports NOT EXERCISED rather than FAIL, and the
-   habit of **replaying returned evidence through a changed scorer** before
-   shipping it.
-5. Code 58d touches: `microclaw/updates.py` (`check_for_update`, `load_state` /
-   `write_state`, and `stage_inactive_slot`, which 58c shipped and 58d drives),
-   `microclaw/webserve.py`'s route table and `build_app`, and the packaged
-   `serve.html`. 58c's `update-state.json` field list is reconciled in
-   §"Put the updater outside the environment it replaces" — read it before
-   adding a field.
+   defects and the replay habit**, which is the part worth copying; **58d's
+   carries the two reachability defects and the warning that strengthening a test
+   can delete the assertion that had teeth**.
+4. **The four gate scripts on `main` are the template**, in ascending order of
+   quality: `design/58-block58a-demo-gate.py`, `-58b-`, `-58c-`, `-58d-`, each
+   with a thin `.ps1`. Do not design 58e's gate from scratch. From 58b take the
+   **mandatory `fails_if`** argument on the `limb` decorator; from 58c the phase
+   ledger (`phases.json`), the `Verify` preflight that names the commands still
+   owed, `need()` so absent evidence reports NOT EXERCISED rather than FAIL, and
+   the habit of **replaying returned evidence through a changed scorer** before
+   shipping it — 58d's round 1 was closed entirely by that replay. From 58d take
+   the split between a program that scores and a runbook that asks a person to
+   judge, and the habit of **writing a limb for evidence you are already
+   collecting**.
+5. Code 58e touches: `microclaw/updates.py` (`activate_pending`,
+   `fresh_launch`, `rollback_slot`, `wait_for_launcher_health`),
+   `scripts/updater-launcher.ps1`, `microclaw/webserve.py`'s
+   `POST /api/update/restart` — whose idle checks 58d shipped and whose
+   `501 {"restart_requested": false}` seam is the one line 58e replaces — and
+   `microclaw/__main__.py` for the terminal line. The `update-state.json` and
+   `microclaw-slot.json` field lists are reconciled in §"Put the updater outside
+   the environment it replaces", the route and banner contract in §"Check
+   quietly" — read both before adding a field or a route.
 
-### What 58d inherits, and the two traps in it
+### What 58e inherits, and the four traps in it
 
-- **`stage_inactive_slot` already exists and already refuses**: no managed
-  layout, a candidate needing a newer launcher protocol, and a rebuild of a
-  commit that failed to build inside the same check interval. 58d drives it from
-  one background job; it does not reimplement it.
+- **`POST /api/update/restart` already exists and already refuses.** Its four
+  idle checks, its offerability refusal and its `501` seam shipped in 58d, with
+  the seam marked in a comment. 58e replaces that one return; it does not
+  rewrite the route, and the four idle predicates are not to be re-derived —
+  each reads the object that owns the condition, and one of them (the
+  acquisition ledger) is reachable **only** through
+  `tools._existing_acquisition_ledger`, never through an attribute on `ctrl`.
+- **58e owes the rig evidence 58d could not take.** The Restart now *button*,
+  `/api/update/stage`'s one-job refusal, the not-`ready` banner of item 9, the
+  progress and restart banner states, and the config comparison **from a real
+  staging run** all exist and are unit-tested with no demo-machine evidence,
+  because staging publishes a pending slot the next launch acts on. 58e's gate
+  is where they land, and its limb list should name them explicitly rather than
+  assume the end-to-end run covers them.
+- **The gate needs the same `installed_commit` arrangement 58d used**, or a
+  merge first: an unmerged branch is not an ancestor of `origin/main`, so
+  discovery correctly reports `diverged` and there is nothing to update *to*.
+  See the note under §"Gate — demo machine, `design/58-block58d-demo-gate.md`".
 - **The agent must not be able to trigger its own replacement.** Update state is
-  operational UI state, not conversation history and not a model tool. Check
-  which callers exist before putting a refusal anywhere but the route.
-- **`/api/update` performs no network I/O.** It reads cached state only; the
-  check is the background one. A route that quietly does a fetch turns every
-  browser refresh into a GitHub request.
+  operational UI state, not conversation history and not a model tool. 58d's
+  identity test is `test_update_endpoints_do_not_enter_agent_state`; extend it
+  rather than writing a second one, and note that `_durable_history` prefers
+  `session.store`, so an assertion on it alone cannot see a row written straight
+  to `session.history`.
 
 ### What made 58c different from 58a and 58b — kept, because 58e inherits it
 
@@ -1709,6 +1798,13 @@ State:
   **and** a program" — and the program runs in five phases (`Prepare`,
   `Healthy`, `Closed`, `Rollback`, `Verify`), each one command, with the human
   only operating the desktop icon and Micro-Manager.
+- **58d is MERGED** (`8529859`, 2026-08-27), branch and worktree deleted. `main`
+  measures **2296 passed / 99 skipped / 3 warnings** (macOS,
+  coordinator-measured), from 2271. **One** demo-gate round, 12 PASS / 0 FAIL /
+  1 NOT EXERCISED by design; the machine reported one FAIL and one NOT
+  EXERCISED and **both were gate defects**, re-scored by replaying the returned
+  artifacts with `git diff` over the product tree empty. One Codex round,
+  eleven findings, three of them product defects. See §"58d demo gate round 1".
 - **58b left one debt for 58c**, and it is the only one: two real slot
   validators classifying one shared file. 58c creates the second slot, so its
   gate **must** close that limb. It is written into the carried-forward list
