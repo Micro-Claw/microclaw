@@ -117,7 +117,7 @@ exit /b 0
 rem ---------------------------------------------------------------------
 :resolve_source
 if defined MICROCLAW_SRC (
-    echo   [1/5] Source: %MICROCLAW_SRC%
+    echo   [1/7] Source: %MICROCLAW_SRC%
     set "MC_SPEC=microclaw[serve] @ %MICROCLAW_SRC%"
     exit /b 0
 )
@@ -129,7 +129,7 @@ if not exist "%~dp0pyproject.toml" (
     echo   or set MICROCLAW_SRC to a URL first.
     exit /b 1
 )
-echo   [1/5] Source: %~dp0
+echo   [1/7] Source: %~dp0
 set "MC_SPEC=.[serve]"
 exit /b 0
 
@@ -142,10 +142,10 @@ set "UV="
 for /f "delims=" %%I in ('where uv 2^>nul') do set "UV=%%I"
 if not defined UV if exist "%USERPROFILE%\.local\bin\uv.exe" set "UV=%USERPROFILE%\.local\bin\uv.exe"
 if defined UV (
-    echo   [2/5] Found uv: %UV%
+    echo   [2/7] Found uv: %UV%
     exit /b 0
 )
-echo   [2/5] Installing uv...
+echo   [2/7] Installing uv...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
 if errorlevel 1 exit /b 1
 set "UV=%USERPROFILE%\.local\bin\uv.exe"
@@ -158,7 +158,23 @@ exit /b 0
 
 rem ---------------------------------------------------------------------
 :make_env
-echo   [3/5] Creating an isolated Python environment...
+rem An upgrade and a migration both arrive here with the slot already present,
+rem and `uv venv` refuses to reuse an existing environment -- which is how the
+rem first migration this installer ever performed failed on the demo machine.
+rem The slot IS the known-good environment at that point, so reuse it and let
+rem `uv pip install --python` upgrade in place. --clear is deliberately not the
+rem default: it would delete the one environment the user still runs from.
+if exist "%MC_PY%" (
+    echo   [4/7] Reusing the existing environment at %MC_ENV%.
+    exit /b 0
+)
+if exist "%MC_ENV%" (
+    echo   [4/7] Replacing a directory with no Python at %MC_ENV%...
+    "%UV%" venv --clear --python 3.12 "%MC_ENV%"
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
+echo   [4/7] Creating an isolated Python environment...
 "%UV%" venv --python 3.12 "%MC_ENV%"
 if errorlevel 1 exit /b 1
 exit /b 0

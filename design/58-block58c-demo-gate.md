@@ -56,3 +56,23 @@ distinct; NOT EXERCISED produces INCOMPLETE and a nonzero exit. The program owns
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\design\58-block58c-demo-gate.ps1 -Mode Verify
 ```
+
+## If a phase fails: put the machine back
+
+`Prepare` migrates `%LOCALAPPDATA%\microclaw\env` to `env-a` before it installs
+anything, so a phase that fails after that point leaves the desktop icon
+pointing at a path that no longer exists. **That is expected during a failed
+gate and it is fully reversible** — the environment was moved, not rebuilt, and
+`Prepare` copied it as well.
+
+Run this to return the machine to exactly its pre-gate state. It runs unedited
+and prints what it did.
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; if((Test-Path "$root\env-a") -and -not (Test-Path "$root\env")){Move-Item "$root\env-a" "$root\env"; Write-Host "restored: $root\env"} else {Write-Host "nothing to restore"}; foreach($f in 'active-slot.txt','pending-slot.txt','launch-health.txt','rollback-report.txt','launcher-protocol.txt','launcher.log','update-state.json','Microclaw.cmd','updater-launcher.ps1','58c-gate-evidence.txt'){if(Test-Path "$root\$f"){Remove-Item "$root\$f" -Force; Write-Host "removed: $f"}}; if(Test-Path "$root\env-b"){Remove-Item "$root\env-b" -Recurse -Force; Write-Host "removed: env-b"}; & "$root\env\Scripts\microclaw.exe" install-shortcut
+```
+
+The last command rewrites the desktop shortcut and its wrapper against the
+restored environment, so the icon works again. `%APPDATA%\microclaw` is never
+touched by any of this; the gate's own copy of it is in the evidence folder
+under `backup\`.

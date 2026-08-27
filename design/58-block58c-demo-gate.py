@@ -54,10 +54,19 @@ def limb(name: str, fails_if: str):
     return decorate
 
 
-def run(command: list[str], *, env=None, timeout=900, input_text=None):
+def run(command: list[str], *, env=None, timeout=900, input_text=None, cwd=None):
+    """Run one command, optionally from a directory that is not this checkout.
+
+    `cwd` is load-bearing for any `python -c` that imports microclaw: `-c` puts
+    the working directory first on `sys.path`, so running from the repository
+    root imports the checkout's package no matter which interpreter was asked.
+    The gate's round-1 non-uv limb failed exactly that way — it reported the
+    fixture importing `D:\\Code\\microclaw\\microclaw` and called it a
+    changed environment. Those callers pass `cwd` *and* `-I`.
+    """
     try:
         return subprocess.run(command, capture_output=True, text=True, env=env,
-                              timeout=timeout, input=input_text, check=False)
+                              timeout=timeout, input=input_text, check=False, cwd=cwd)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise NotExercised(f"could not run {command[0]}: {exc}") from exc
 
@@ -163,8 +172,8 @@ def prepare(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     completed = run(["uv", "pip", "install", "--python",
                      str(nonuv / "Scripts" / "python.exe"), "--no-deps", str(repo)])
     require_success(completed, "non-uv fixture install")
-    purelib = run([str(nonuv / "Scripts" / "python.exe"), "-c",
-                   "import sysconfig; print(sysconfig.get_path('purelib'))"])
+    purelib = run([str(nonuv / "Scripts" / "python.exe"), "-I", "-c",
+                   "import sysconfig; print(sysconfig.get_path('purelib'))"], cwd=out)
     require_success(purelib, "non-uv site-packages resolution")
     site_packages = Path(purelib.stdout.strip())
     write_json(out / "nonuv.json", {
@@ -190,19 +199,19 @@ def prepare(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     require_success(second, "second install.bat idempotence")
     active_after = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
     env_a_python = managed / "env-a" / "Scripts" / "python.exe"
-    switch = run([str(env_a_python), "-c",
+    switch = run([str(env_a_python), "-I", "-c",
                   "from pathlib import Path; from microclaw.updates import "
                   "_write_slot_text; import sys; _write_slot_text(Path(sys.argv[1]), 'b')",
-                  str(managed / "active-slot.txt")])
+                  str(managed / "active-slot.txt")], cwd=out)
     require_success(switch, "controlled active-b installer fixture")
     third = run(["cmd", "/c", str(install)], env=install_env, input_text="\n" * 8)
     (out / "install-active-b.txt").write_text(third.stdout + third.stderr, encoding="utf-8")
     require_success(third, "install.bat with b active")
     env_b_python = managed / "env-b" / "Scripts" / "python.exe"
-    restore = run([str(env_b_python), "-c",
+    restore = run([str(env_b_python), "-I", "-c",
                    "from pathlib import Path; from microclaw.updates import "
                    "_write_slot_text; import sys; _write_slot_text(Path(sys.argv[1]), 'a')",
-                   str(managed / "active-slot.txt")])
+                   str(managed / "active-slot.txt")], cwd=out)
     require_success(restore, "restore active-a after active-b installer control")
     write_json(out / "install-state.json", {
         "before_second": active_before, "after_second": active_after,
@@ -388,7 +397,8 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     def _():
         data = json.loads((out / "nonuv.json").read_text(encoding="utf-8"))
         after = tree_manifest(Path(data["site_packages"]))
-        imported = run([data["python"], "-c", "import microclaw; print(microclaw.__file__)"])
+        imported = run([data["python"], "-I", "-c",
+                        "import microclaw; print(microclaw.__file__)"], cwd=out)
         require_success(imported, "non-uv import control")
         notice = (out / "install-first.txt").read_text(encoding="utf-8")
         if (data["before"] != after or data["site_packages"] not in imported.stdout

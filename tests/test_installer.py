@@ -83,6 +83,27 @@ def test_installer_declares_and_copies_launcher_protocol(bat):
     assert 'scripts\\launcher-protocol.txt" "%MC_HOME%\\launcher-protocol.txt' in bat
 
 
+def test_installer_reuses_an_existing_slot_instead_of_recreating_it(bat):
+    """`uv venv` refuses an existing environment, and migration always hands it one.
+
+    The demo gate's first migration died exactly here: `env` was moved to
+    `env-a`, then `uv venv` was asked to create `env-a` and reported "A virtual
+    environment already exists". The slot is the known-good environment at that
+    moment, so it must be reused, and it must not be cleared -- clearing deletes
+    what the user is still running from.
+    """
+    make_env = bat.split("\n:make_env\n", 1)[1].split("rem ---", 1)[0]
+    assert 'if exist "%MC_PY%" (' in make_env
+    reuse = make_env.split('if exist "%MC_PY%" (', 1)[1].split(")", 1)[0]
+    assert "exit /b 0" in reuse and "venv" not in reuse
+    # --clear may only appear where there is no interpreter left to lose.
+    commands = [line for line in make_env.splitlines()
+                if "--clear" in line and not line.strip().startswith("rem")]
+    assert commands == ['    "%UV%" venv --clear --python 3.12 "%MC_ENV%"']
+    guard = make_env.split(commands[0], 1)[0].splitlines()[-2]
+    assert guard.strip() == 'if exist "%MC_ENV%" ('
+
+
 def test_labels_and_calls_agree(bat):
     """A `call :typo` in batch prints an error and keeps going. Catch it here."""
     labels = set(re.findall(r"^:(\w+)", bat, re.M))
@@ -232,7 +253,9 @@ def test_batch_files_are_forced_to_crlf():
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only meaningful in a Windows checkout")
 def test_working_tree_copy_is_crlf():
+    """Every line, not merely one: a *label* read with a bare LF is the hazard."""
     assert b"\r\n" in BAT.read_bytes()
+    assert not re.search(rb"(?<!\r)\n", BAT.read_bytes())
 
 
 def test_installer_says_how_to_stop_the_setup_server(bat):
