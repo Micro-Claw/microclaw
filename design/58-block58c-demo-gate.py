@@ -183,6 +183,12 @@ def prepare(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
         "detection_control": "CONDA_PREFIX (fixture deliberately absent from PATH)",
     })
 
+    # The migration is the item under test, so record what it was handed. A
+    # machine where install.bat has already been run has no legacy `env` left,
+    # and the layout limb would otherwise pass on a move that never happened.
+    legacy_before = (managed / "env").is_dir()
+    slot_a_before = (managed / "env-a").is_dir()
+
     install_env = dict(os.environ)
     install_env["CONDA_PREFIX"] = str(nonuv)
     install_env["PATH"] = os.pathsep.join(
@@ -214,6 +220,9 @@ def prepare(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
                    str(managed / "active-slot.txt")], cwd=out)
     require_success(restore, "restore active-a after active-b installer control")
     write_json(out / "install-state.json", {
+        "legacy_env_before_first": legacy_before,
+        "slot_a_before_first": slot_a_before,
+        "legacy_env_after_first": (managed / "env").is_dir(),
         "before_second": active_before, "after_second": active_after,
         "active_b_log_named_env_b": "Installing into active slot b" in third.stdout
                                     and str(managed / "env-b") in third.stdout,
@@ -308,14 +317,28 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     checkout_sha = sha.stdout.strip()
 
     @limb("migrated layout and immutable commit",
-          "env-a is absent, active is invalid, or active metadata differs from checkout HEAD")
+          "env-a is absent, active is invalid, active metadata differs from checkout "
+          "HEAD, or no legacy env was actually migrated")
     def _():
+        state = json.loads((out / "install-state.json").read_text(encoding="utf-8"))
+        # A move that never happened must not read as a migration. This limb is
+        # NOT EXERCISED, never PASS, on a machine whose legacy `env` was already
+        # consumed by an install.bat run outside the gate.
+        if not state["legacy_env_before_first"] or state["slot_a_before_first"]:
+            raise NotExercised(
+                "no legacy env to migrate: this machine had "
+                f"env={state['legacy_env_before_first']}, "
+                f"env-a={state['slot_a_before_first']} before the first install. "
+                "Restore a legacy layout and rerun Prepare."
+            )
+        if state["legacy_env_after_first"]:
+            raise AssertionError("the legacy env survived the migration")
         active = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
         marker = json.loads((managed / f"env-{active}" / "microclaw-slot.json").read_text(
             encoding="utf-8"))
         if not (managed / "env-a").is_dir() or active not in {"a", "b"} or marker.get("commit") != checkout_sha:
             raise AssertionError(f"active={active}; marker={marker}; HEAD={checkout_sha}")
-        return f"env-a exists; active={active}; commit={checkout_sha}"
+        return f"env migrated to env-a; active={active}; commit={checkout_sha}"
 
     @limb("each slot stands on a Python outside every evidence folder",
           "a slot interpreter cannot start, or its base_prefix is missing or sits "

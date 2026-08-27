@@ -5,6 +5,12 @@ Run these commands, unedited and in order, in Windows PowerShell 5.1 from the
 installation, fixture-building, process inspection, and assertions. The human
 only operates the desktop icon and Micro-Manager when prompted.
 
+**Do not run `install.bat` yourself before the gate.** `Prepare` runs it three
+times, and the first run *is* the migration under test — it needs a legacy
+`%LOCALAPPDATA%\microclaw\env` to migrate. An installer run outside the gate
+consumes that fixture, and the layout limb then reports **NOT EXERCISED** rather
+than passing on a move that never happened.
+
 **Precondition, checked by the program before it touches anything:** this
 machine already has a reviewed `%APPDATA%\microclaw\safety_config.yaml`. The
 `Prepare` phase drives `install.bat` three times with piped input, and an
