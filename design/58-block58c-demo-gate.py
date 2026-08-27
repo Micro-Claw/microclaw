@@ -95,6 +95,34 @@ def read_lines(path: Path) -> list[str]:
         return []
 
 
+#: Which command produces each phase's artifacts. Verify needs all four.
+PHASE_COMMANDS = {
+    "prepare": "-Mode Prepare",
+    "healthy": "-Mode Healthy   (Micro-Manager OPEN)",
+    "closed": "-Mode Closed    (Micro-Manager CLOSED)",
+    "rollback": "-Mode Rollback",
+}
+
+
+def record_phase(out: Path, phase: str) -> None:
+    """Note that a phase finished, so Verify can say what is still owed."""
+    ledger = out / "phases.json"
+    try:
+        done = json.loads(ledger.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        done = {}
+    done[phase] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    ledger.write_text(json.dumps(done, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def missing_phases(out: Path) -> list[str]:
+    try:
+        done = json.loads((out / "phases.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        done = {}
+    return [phase for phase in PHASE_COMMANDS if phase not in done]
+
+
 def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -232,6 +260,7 @@ def prepare(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     sha = run(["git", "-C", str(repo), "rev-parse", "HEAD"])
     require_success(sha, "checkout commit resolution")
     write_json(out / "prepare.json", {"backup": str(backup), "commit": sha.stdout.strip()})
+    record_phase(out, "prepare")
     print("PREPARE COMPLETE. Continue with the human runbook.")
     return 0
 
@@ -251,6 +280,7 @@ def observe_healthy(out: Path, managed: Path) -> int:
     if process.returncode or not re.search(r"env-[ab].*microclaw\.exe.*serve",
                                            process.stdout, re.I | re.S):
         raise NotExercised("real desktop child command line was not captured")
+    record_phase(out, "healthy")
     write_json(out / "healthy-observation.json", {"nonce_line": lines[-1]})
     print("Healthy desktop child captured. Stop it with Ctrl+C before the next step.")
     return 0
@@ -276,6 +306,7 @@ def observe_closed(out: Path, managed: Path) -> int:
         health = (managed / "launch-health.txt").read_text(encoding="ascii").strip()
     except FileNotFoundError:
         health = None
+    record_phase(out, "closed")
     write_json(out / "closed-mm-observation.json", {
         "before_nonce_count": len([line for line in before_lines if " nonce=" in line]),
         "after_nonce_count": len(nonce_lines),
@@ -315,6 +346,7 @@ def observe_rollback(out: Path, managed: Path) -> int:
             "rollback-reported=" in line for line in read_lines(log)[len(middle):]):
         time.sleep(0.2)
     after = read_lines(log)
+    record_phase(out, "rollback")
     write_json(out / "rollback-observation.json", {
         "active": active, "failed": failed,
         "before": before, "after_failed": middle, "after_success": after,
@@ -328,6 +360,23 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     # against the commit Prepare recorded at that moment -- not against whatever
     # HEAD is now. Reading HEAD here made an ordinary `git pull` between phases
     # look like a marker defect and forced a whole gate to be rerun.
+    owed = missing_phases(out)
+    if owed:
+        # One list, up front. Discovering this one NOT EXERCISED limb at a time
+        # is how an operator ends up rerunning phases in the wrong order.
+        print("=" * 70)
+        print("VERIFY CANNOT SCORE THIS EVIDENCE DIRECTORY YET")
+        print("=" * 70)
+        print(f"Evidence directory: {out}")
+        print("Phases still owed here, each one command:")
+        for phase in owed:
+            print(f"  .\\design\\58-block58c-demo-gate.ps1 {PHASE_COMMANDS[phase]}")
+        print("")
+        print("If a phase already passed in an EARLIER evidence directory at the")
+        print("same product commit, that evidence still stands -- send both")
+        print("directories rather than rerunning it here.")
+        return 1
+
     prepared = json.loads((out / "prepare.json").read_text(encoding="utf-8"))
     installed_sha = prepared["commit"]
     live = run(["git", "-C", str(repo), "rev-parse", "HEAD"])

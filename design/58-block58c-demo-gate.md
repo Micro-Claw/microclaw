@@ -60,6 +60,12 @@ Ctrl+C.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\design\58-block58c-demo-gate.ps1 -Mode Rollback
 ```
 
+`Verify` scores one evidence directory and needs all four preceding phases in
+**that** directory. Run it against an incomplete one and it prints the exact
+commands still owed, once, and exits nonzero — it does not dribble them out one
+failing limb at a time. A phase that already passed in an earlier directory at
+the same product commit does not need rerunning: send both directories.
+
 Finally run every independent computing limb. PASS, FAIL, and NOT EXERCISED are
 distinct; NOT EXERCISED produces INCOMPLETE and a nonzero exit. The program owns
 `gate.txt` and `results.json`. Send the entire printed evidence folder back.
