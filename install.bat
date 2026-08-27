@@ -22,9 +22,7 @@ setlocal EnableExtensions
 title Microclaw installer
 
 set "MC_HOME=%LOCALAPPDATA%\microclaw"
-set "MC_ENV=%MC_HOME%\env"
-set "MC_PY=%MC_ENV%\Scripts\python.exe"
-set "MC_EXE=%MC_ENV%\Scripts\microclaw.exe"
+set "MC_SOURCE_DIR=%~dp0."
 
 echo.
 echo   Microclaw installer
@@ -35,8 +33,10 @@ echo.
 
 call :resolve_source || goto :fail
 call :find_uv        || goto :fail
+call :migrate_layout || goto :fail
 call :make_env       || goto :fail
 call :install_pkg    || goto :fail
+call :write_managed  || goto :fail
 call :finish         || goto :fail
 
 echo.
@@ -117,7 +117,7 @@ exit /b 0
 rem ---------------------------------------------------------------------
 :resolve_source
 if defined MICROCLAW_SRC (
-    echo   [1/5] Source: %MICROCLAW_SRC%
+    echo   [1/7] Source: %MICROCLAW_SRC%
     set "MC_SPEC=microclaw[serve] @ %MICROCLAW_SRC%"
     exit /b 0
 )
@@ -129,7 +129,7 @@ if not exist "%~dp0pyproject.toml" (
     echo   or set MICROCLAW_SRC to a URL first.
     exit /b 1
 )
-echo   [1/5] Source: %~dp0
+echo   [1/7] Source: %~dp0
 set "MC_SPEC=.[serve]"
 exit /b 0
 
@@ -142,10 +142,10 @@ set "UV="
 for /f "delims=" %%I in ('where uv 2^>nul') do set "UV=%%I"
 if not defined UV if exist "%USERPROFILE%\.local\bin\uv.exe" set "UV=%USERPROFILE%\.local\bin\uv.exe"
 if defined UV (
-    echo   [2/5] Found uv: %UV%
+    echo   [2/7] Found uv: %UV%
     exit /b 0
 )
-echo   [2/5] Installing uv...
+echo   [2/7] Installing uv...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
 if errorlevel 1 exit /b 1
 set "UV=%USERPROFILE%\.local\bin\uv.exe"
@@ -158,22 +158,100 @@ exit /b 0
 
 rem ---------------------------------------------------------------------
 :make_env
-echo   [3/5] Creating an isolated Python environment...
+rem An upgrade and a migration both arrive here with the slot already present,
+rem and `uv venv` refuses to reuse an existing environment -- which is how the
+rem first migration this installer ever performed failed on the demo machine.
+rem The slot IS the known-good environment at that point, so reuse it and let
+rem `uv pip install --python` upgrade in place.
+rem
+rem But an interpreter that EXISTS is not an interpreter that RUNS. A uv venv's
+rem python.exe is a trampoline onto a uv-managed CPython elsewhere on the disk;
+rem when that base is replaced or pruned, the file is still there and every
+rem attempt to spawn it fails with "uv trampoline failed to spawn Python child
+rem process". Reusing that environment would carry the fault forward into
+rem `uv pip install`. So the test is execution, not existence.
+rem
+rem --clear is reached only after the interpreter has failed to run, which is
+rem the one condition under which nothing is lost by replacing it: an
+rem environment that cannot start is not one the user is still running from.
+if exist "%MC_PY%" (
+    "%MC_PY%" -c "pass" >nul 2>&1
+    if not errorlevel 1 (
+        echo   [4/7] Reusing the working environment at %MC_ENV%.
+        exit /b 0
+    )
+    echo   [4/7] The environment at %MC_ENV% has a Python that cannot start.
+    echo         Rebuilding it. Your settings in %APPDATA%\microclaw are untouched.
+    "%UV%" venv --clear --python 3.12 "%MC_ENV%"
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
+if exist "%MC_ENV%" (
+    echo   [4/7] Replacing a directory with no Python at %MC_ENV%...
+    "%UV%" venv --clear --python 3.12 "%MC_ENV%"
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
+echo   [4/7] Creating an isolated Python environment...
 "%UV%" venv --python 3.12 "%MC_ENV%"
 if errorlevel 1 exit /b 1
 exit /b 0
 
 
 rem ---------------------------------------------------------------------
+:migrate_layout
+echo   [3/7] Preparing the managed two-slot layout...
+if not exist "%MC_HOME%" mkdir "%MC_HOME%"
+if exist "%MC_HOME%\env" if not exist "%MC_HOME%\env-a" (
+    echo   Migrating only %MC_HOME%\env to %MC_HOME%\env-a.
+    move "%MC_HOME%\env" "%MC_HOME%\env-a" >nul
+    if errorlevel 1 exit /b 1
+)
+if not exist "%MC_HOME%\active-slot.txt" (
+    >"%MC_HOME%\.active-slot.txt.tmp" echo a
+    move /Y "%MC_HOME%\.active-slot.txt.tmp" "%MC_HOME%\active-slot.txt" >nul
+    if errorlevel 1 exit /b 1
+)
+for /f "usebackq delims=" %%I in ("%MC_HOME%\active-slot.txt") do set "MC_ACTIVE_SLOT=%%I"
+if /i not "%MC_ACTIVE_SLOT%"=="a" if /i not "%MC_ACTIVE_SLOT%"=="b" (
+    echo   ERROR: active-slot.txt must contain exactly a or b.
+    exit /b 1
+)
+set "MC_ENV=%MC_HOME%\env-%MC_ACTIVE_SLOT%"
+set "MC_PY=%MC_ENV%\Scripts\python.exe"
+set "MC_EXE=%MC_ENV%\Scripts\microclaw.exe"
+echo   Installing into active slot %MC_ACTIVE_SLOT% at %MC_ENV%.
+for /f "delims=" %%I in ('where microclaw 2^>nul') do call :report_unmanaged "%%~fI" "PATH"
+if defined CONDA_PREFIX if exist "%CONDA_PREFIX%\Scripts\microclaw.exe" call :report_unmanaged "%CONDA_PREFIX%\Scripts\microclaw.exe" "CONDA_PREFIX"
+for %%R in (miniforge3 miniconda3 anaconda3) do for /d %%D in ("%USERPROFILE%\%%R\envs\*") do if exist "%%~fD\Scripts\microclaw.exe" call :report_unmanaged "%%~fD\Scripts\microclaw.exe" "common conda roots"
+echo   Detection covers PATH, CONDA_PREFIX, and common conda roots; an arbitrary
+echo   embedded Python cannot be discovered automatically and remains untouched.
+exit /b 0
+
+:report_unmanaged
+set "MC_OLD=%~1"
+echo %MC_OLD% | findstr /i /b /l /c:"%MC_HOME%\" >nul
+if not errorlevel 1 exit /b 0
+echo   Existing non-uv Microclaw environment left untouched at:
+echo     %MC_OLD%
+echo   Detected through %~2.
+echo   The desktop icon now moves to the managed installation at %MC_HOME%.
+exit /b 0
+
+
+rem ---------------------------------------------------------------------
 :install_pkg
-echo   [4/5] Installing Microclaw and its dependencies. This takes a few minutes.
+echo   [5/7] Installing Microclaw and its dependencies. This takes a few minutes.
 rem pushd so a relative ".[serve]" resolves against the source folder, and so a
 rem path containing spaces never reaches the command line unquoted.
 if not defined MICROCLAW_SRC pushd "%~dp0"
 "%UV%" pip install --python "%MC_PY%" "%MC_SPEC%"
 set "MC_RC=%ERRORLEVEL%"
 if not defined MICROCLAW_SRC popd
-if not "%MC_RC%"=="0" exit /b 1
+if not "%MC_RC%"=="0" (
+    echo   ERROR: the update could not be built.
+    exit /b 1
+)
 if not exist "%MC_EXE%" (
     echo   ERROR: microclaw.exe missing after install: %MC_EXE%
     exit /b 1
@@ -182,8 +260,24 @@ exit /b 0
 
 
 rem ---------------------------------------------------------------------
+:write_managed
+echo   [6/7] Writing the external launcher and managed state...
+copy /Y "%~dp0scripts\Microclaw.cmd" "%MC_HOME%\Microclaw.cmd" >nul
+if errorlevel 1 exit /b 1
+copy /Y "%~dp0scripts\updater-launcher.ps1" "%MC_HOME%\updater-launcher.ps1" >nul
+if errorlevel 1 exit /b 1
+copy /Y "%~dp0scripts\launcher-protocol.txt" "%MC_HOME%\launcher-protocol.txt" >nul
+if errorlevel 1 exit /b 1
+set "MC_COMMIT=unknown"
+if exist "%MC_SOURCE_DIR%\.git" for /f "delims=" %%I in ('git -C "%MC_SOURCE_DIR%" rev-parse HEAD 2^>nul') do set "MC_COMMIT=%%I"
+"%MC_PY%" -c "import sys; from pathlib import Path; from microclaw.updates import installer_provenance, write_slot_marker, write_state; state,note=installer_provenance(sys.argv[1],sys.argv[2]); print('  NOTE: '+note) if note else None; write_state(state,Path(sys.argv[3])/'update-state.json'); write_slot_marker(sys.argv[2],int(sys.argv[4]))" "%MC_SOURCE_DIR%" "%MC_COMMIT%" "%MC_HOME%" 1
+if errorlevel 1 exit /b 1
+exit /b 0
+
+
+rem ---------------------------------------------------------------------
 :finish
-echo   [5/5] Creating the desktop shortcut...
+echo   [7/7] Creating the desktop shortcut...
 "%MC_EXE%" install-shortcut
 if errorlevel 1 exit /b 1
 exit /b 0

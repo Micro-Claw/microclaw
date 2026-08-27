@@ -1067,6 +1067,13 @@ def serve(args):
 
     path = Path(args.safety_config) if args.safety_config else config.default_safety_config()
     config_result = config.validate_safety_config(path)
+    # Launcher health is the common pre-hardware boundary.  This validates the
+    # nonce and executing slot metadata; direct/unmanaged launches are a no-op.
+    from microclaw import updates
+    try:
+        updates.write_launcher_health()
+    except updates.UpdateError as exc:
+        sys.exit(f"Launcher startup refused: {exc}")
     session = build_session(args, config_result=config_result)
     if token:
         _add_audit_secret(session, token)

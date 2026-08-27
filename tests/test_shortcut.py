@@ -98,6 +98,28 @@ def test_dry_run_writes_nothing(local_dirs):
     assert not p["icon"].exists()
 
 
+def test_managed_install_writes_icon_and_lnk_but_leaves_launcher(local_dirs, monkeypatch):
+    data = local_dirs / "data"
+    data.mkdir()
+    (data / shortcut.MANAGED_STATE_NAME).write_text("{}", encoding="utf-8")
+    launcher = data / shortcut.CMD_NAME
+    launcher.write_bytes(b"installer-owned\r\n")
+    monkeypatch.setattr(shortcut, "_powershell", lambda *a, **k: None)
+    p = shortcut.install()
+    assert p["icon"].exists()
+    assert launcher.read_bytes() == b"installer-owned\r\n"
+    assert shortcut.managed_layout_present(data)
+
+
+def test_unmanaged_install_still_writes_legacy_launcher(local_dirs, monkeypatch):
+    monkeypatch.setattr(shortcut, "_powershell", lambda *a, **k: None)
+    p = shortcut.install()
+    assert p["cmd"].read_bytes() == shortcut._wrapper_text(
+        p["target"], p["args"]
+    ).encode("utf-8")
+    assert not shortcut.managed_layout_present(p["workdir"])
+
+
 # ---- the .cmd wrapper ----
 
 def test_wrapper_sets_the_env_var_and_quotes_the_target():

@@ -12,6 +12,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BAT = ROOT / "install.bat"
+CMD = ROOT / "scripts" / "Microclaw.cmd"
+PS1 = ROOT / "scripts" / "updater-launcher.ps1"
 
 
 @pytest.fixture(scope="module")
@@ -22,6 +24,95 @@ def bat() -> str:
 def test_installer_exists_at_the_repo_root():
     """Step 2 of the README tells the user to double-click it after extracting."""
     assert BAT.is_file()
+
+
+def test_external_launchers_are_installer_owned_only(bat):
+    assert CMD.is_file() and PS1.is_file()
+    assert 'scripts\\Microclaw.cmd" "%MC_HOME%\\Microclaw.cmd' in bat
+    assert 'scripts\\updater-launcher.ps1" "%MC_HOME%\\updater-launcher.ps1' in bat
+    for source in (ROOT / "microclaw").rglob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        assert "updater-launcher.ps1" not in text
+        assert not re.search(r"Microclaw\.cmd.*(?:write_text|open\()", text)
+
+
+def test_managed_cmd_is_slot_independent_and_bypasses_execution_policy():
+    text = CMD.read_text(encoding="utf-8")
+    assert "MICROCLAW_FROM_SHORTCUT=1" in text
+    assert "-NoProfile -ExecutionPolicy Bypass" in text
+    assert "updater-launcher.ps1" in text
+    assert "env-a" not in text and "env-b" not in text
+
+
+def test_powershell_launcher_has_activation_health_and_rollback_branches():
+    text = PS1.read_text(encoding="utf-8")
+    for mechanism in ("active-slot.txt", "activate_pending", "fresh_launch",
+                      "wait_for_launcher_health", "rollback_slot", "consume_rollback_report",
+                      "if (-not $healthy)", "$child.WaitForExit()"):
+        assert mechanism in text
+    assert "ConvertFrom-Json" not in text
+    assert "[Guid]::NewGuid()" not in text
+    assert "Set-Content -LiteralPath $activePath" not in text
+    assert "Remove-Item -LiteralPath $healthPath" not in text
+    assert "Start-Sleep" not in text
+
+
+def test_installer_migrates_only_localappdata_env_and_never_uses_editable_install(bat):
+    assert 'move "%MC_HOME%\\env" "%MC_HOME%\\env-a"' in bat
+    assert 'set "MC_ENV=%MC_HOME%\\env-%MC_ACTIVE_SLOT%"' in bat
+    assert 'set "MC_ENV=%CONDA_PREFIX%' not in bat
+    assert 'pip install --python "%CONDA_PREFIX%' not in bat
+    assert " pip install -e " not in bat
+    assert "Existing non-uv Microclaw environment left untouched" in bat
+    assert "The desktop icon now moves" in bat
+
+
+def test_installer_uses_package_provenance_and_slot_marker_contracts(bat):
+    assert "installer_provenance, write_slot_marker, write_state" in bat
+    assert "updates will follow public head" in (
+        ROOT / "microclaw" / "updates.py"
+    ).read_text(encoding="utf-8")
+    assert "ConvertTo-Json" not in bat
+    assert 'set "MC_SOURCE_DIR=%~dp0."' in bat
+    assert 'git -C "%MC_SOURCE_DIR%" rev-parse HEAD' in bat
+
+
+def test_installer_declares_and_copies_launcher_protocol(bat):
+    declaration = ROOT / "scripts" / "launcher-protocol.txt"
+    assert declaration.read_text(encoding="ascii").strip() == "1"
+    assert 'scripts\\launcher-protocol.txt" "%MC_HOME%\\launcher-protocol.txt' in bat
+
+
+def test_installer_reuses_a_slot_only_after_proving_its_python_runs(bat):
+    """`uv venv` refuses an existing environment, and migration always hands it one.
+
+    The demo gate's first migration died here: `env` was moved to `env-a`, then
+    `uv venv` was asked to create `env-a` and reported "A virtual environment
+    already exists". Round 2 found the other half on the same machine — a uv
+    venv's python.exe is a trampoline onto a uv-managed CPython, so when that
+    base is pruned the file still exists and every spawn fails. Existence is
+    therefore not the test; execution is. And --clear may only be reached after
+    that probe fails, because an environment that cannot start is the one case
+    where replacing it loses nothing.
+    """
+    make_env = bat.split("\n:make_env\n", 1)[1].split("rem ---", 1)[0]
+    body = "\n".join(line for line in make_env.splitlines()
+                     if not line.strip().startswith("rem"))
+    assert '"%MC_PY%" -c "pass"' in body
+    probe = body.index('"%MC_PY%" -c "pass"')
+    reuse = body.index("exit /b 0")
+    assert probe < reuse, "the reuse path must run the interpreter before trusting it"
+    # Every --clear is a command, and each one is guarded by a failure.
+    clears = [line for line in body.splitlines() if "--clear" in line]
+    assert clears and all('"%UV%" venv --clear --python 3.12 "%MC_ENV%"' in line
+                          for line in clears)
+    for line in clears:
+        preceding = [item.strip() for item in body.split(line, 1)[0].splitlines()
+                     if item.strip().startswith("if ")]
+        assert preceding[-1] in ("if not errorlevel 1 (", 'if exist "%MC_ENV%" ('), (
+            f"--clear reached under {preceding[-1]!r}: it may only follow a Python "
+            "that failed to run, or a directory with no Python at all"
+        )
 
 
 def test_labels_and_calls_agree(bat):
@@ -173,7 +264,9 @@ def test_batch_files_are_forced_to_crlf():
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only meaningful in a Windows checkout")
 def test_working_tree_copy_is_crlf():
+    """Every line, not merely one: a *label* read with a bare LF is the hazard."""
     assert b"\r\n" in BAT.read_bytes()
+    assert not re.search(rb"(?<!\r)\n", BAT.read_bytes())
 
 
 def test_installer_says_how_to_stop_the_setup_server(bat):

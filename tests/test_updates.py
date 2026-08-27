@@ -447,6 +447,184 @@ def test_slot_identity_follows_own_executable_through_activation_and_rollback(tm
     assert updates.read_slot_marker(executable=exe_a)["commit"] == sha_a  # rollback
 
 
+def _slot(root, name, sha="a" * 40, protocol=1):
+    exe = root / f"env-{name}" / "Scripts" / "python.exe"
+    updates.write_slot_marker(sha, protocol, executable=exe)
+    return exe
+
+
+def test_launcher_state_activates_and_consumes_pending(tmp_path):
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    _slot(tmp_path, "b")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "b"
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+
+
+def test_launcher_discards_pending_candidate_requiring_newer_protocol(tmp_path):
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    _slot(tmp_path, "b", protocol=updates.LAUNCHER_PROTOCOL + 1)
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    assert updates.activate_pending(tmp_path, 1) == ("a", None)
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "a"
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+
+
+def test_launcher_discards_pending_with_missing_metadata(tmp_path):
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    assert updates.activate_pending(tmp_path, 1) == ("a", None)
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+
+
+def test_launcher_discards_corrupt_pending_selector_and_runs_known_good(tmp_path):
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("not-a-slot\n", encoding="ascii")
+    assert updates.activate_pending(tmp_path, 1) == ("a", None)
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+
+
+def test_fresh_nonce_removes_stale_marker_and_only_matching_health_passes(tmp_path):
+    marker = tmp_path / updates.HEALTH_NAME
+    marker.write_text("old-nonce\n", encoding="ascii")
+    nonce, resolved = updates.fresh_launch(tmp_path, "a", nonce="new_nonce_123456")
+    assert resolved == marker and not marker.exists()
+    marker.write_text("old-nonce\n", encoding="ascii")
+    assert not updates.health_matches(marker, nonce)
+    marker.write_text(nonce + "\n", encoding="ascii")
+    assert updates.health_matches(marker, nonce)
+
+
+def test_health_wait_returns_child_exited_without_sleeping(tmp_path):
+    sleeps = []
+    verdict = updates.wait_for_launcher_health(
+        tmp_path / "missing", "nonce_abcdefghijkl", 42,
+        clock=lambda: 0, sleep=sleeps.append, alive=lambda pid: False,
+    )
+    assert verdict == "child-exited"
+    assert sleeps == []
+
+
+def test_health_wait_times_out_with_injected_clock(tmp_path):
+    now = [0.0]
+    sleeps = []
+
+    def sleep(interval):
+        sleeps.append(interval)
+        now[0] += interval
+
+    verdict = updates.wait_for_launcher_health(
+        tmp_path / "missing", "nonce_abcdefghijkl", 42, timeout=0.2,
+        poll_interval=0.1, clock=lambda: now[0], sleep=sleep, alive=lambda pid: True,
+    )
+    assert verdict == "timeout"
+    assert sleeps == [0.1, 0.1]
+
+
+def test_health_wait_accepts_marker_even_after_child_exits(tmp_path):
+    marker = tmp_path / updates.HEALTH_NAME
+    marker.write_text("nonce_abcdefghijkl\n", encoding="ascii")
+    assert updates.wait_for_launcher_health(
+        marker, "nonce_abcdefghijkl", 42, clock=lambda: 0,
+        sleep=lambda interval: pytest.fail("healthy marker must not sleep"),
+        alive=lambda pid: False,
+    ) == "healthy"
+
+
+def test_slot_metadata_for_other_slot_refuses_health(tmp_path):
+    exe = _slot(tmp_path, "b")
+    env = {updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
+           updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "nonce_abcdefghijkl"}
+    with pytest.raises(updates.UpdateError, match="does not match"):
+        updates.write_launcher_health(env, executable=exe)
+    assert not (tmp_path / updates.HEALTH_NAME).exists()
+
+
+@pytest.mark.parametrize("missing", [updates.LAUNCH_NONCE_ENV, updates.LAUNCH_SLOT_ENV])
+def test_missing_launcher_identity_writes_no_health(tmp_path, missing):
+    exe = _slot(tmp_path, "a")
+    env = {updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
+           updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "nonce_abcdefghijkl"}
+    del env[missing]
+    with pytest.raises(updates.UpdateError, match="incomplete"):
+        updates.write_launcher_health(env, executable=exe)
+    assert not (tmp_path / updates.HEALTH_NAME).exists()
+
+
+def test_rollback_restores_known_good_and_defers_report(tmp_path):
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("b\n", encoding="ascii")
+    assert updates.rollback_slot(tmp_path, "b", "a") == "a"
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "a"
+    assert "rolled back from slot b" in (tmp_path / updates.ROLLBACK_NAME).read_text(encoding="utf-8")
+    assert "rolled back" in updates.consume_rollback_report(tmp_path)
+    assert updates.consume_rollback_report(tmp_path) is None
+
+
+def test_failed_uv_stage_keeps_active_selector_and_publishes_no_pending(tmp_path, monkeypatch):
+    updates.write_state({"provenance": "public-head", "next_check": 100},
+                        tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    active_path = tmp_path / updates.ACTIVE_SLOT_NAME
+    active_path.write_bytes(b"a\n")
+    calls = []
+
+    def fail(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "PyPI unavailable")
+
+    monkeypatch.setattr(updates.subprocess, "run", fail)
+    candidate = updates.Candidate("b" * 40, "candidate", "public-head")
+    with pytest.raises(updates.UpdateError, match="the update could not be built"):
+        updates.stage_inactive_slot(tmp_path, source, candidate,
+                                    uv_executable="uv.exe", now=10)
+    assert calls and all(str(tmp_path / "env-b") in " ".join(call) for call in calls)
+    assert active_path.read_bytes() == b"a\n"
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["build_failed_commit"] == candidate.sha
+    calls.clear()
+    with pytest.raises(updates.UpdateError, match="the update could not be built"):
+        updates.stage_inactive_slot(tmp_path, source, candidate,
+                                    uv_executable="uv.exe", now=11)
+    assert calls == []
+
+
+def test_staging_reads_candidate_protocol_and_refuses_old_installed_launcher(tmp_path):
+    updates.write_state({"provenance": "public-head"}, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("2\n", encoding="ascii")
+    with pytest.raises(updates.UpdateError, match="bootstrap the launcher"):
+        updates.stage_inactive_slot(
+            tmp_path, source, updates.Candidate("c" * 40, "new", "clone"),
+            uv_executable="uv.exe",
+        )
+
+
+def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
+    exe = tmp_path / "env-a" / "Scripts" / "python.exe"
+    updates.write_slot_marker("unknown", 1, executable=exe)
+    assert updates.read_slot_marker(executable=exe)["commit"] == "unknown"
+
+
+def test_installer_provenance_degrades_visibly_when_git_is_unavailable(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        updates, "clone_provenance",
+        lambda *args, **kwargs: (_ for _ in ()).throw(updates.UpdateError("Git was not found")),
+    )
+    state, note = updates.installer_provenance(tmp_path, "d" * 40)
+    assert state["provenance"] == "public-head"
+    assert state["installed_commit"] == "d" * 40
+    assert "Git was not found" in note
+    assert "updates will follow public head" in note
+
+
 def test_interval_jitter_and_cached_failure_suppress_retry(tmp_path, monkeypatch):
     path = tmp_path / updates.STATE_NAME
     updates.write_state(updates.public_provenance(), path)

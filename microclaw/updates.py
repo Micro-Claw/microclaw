@@ -43,6 +43,17 @@ MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 256 * 1024 * 1024
 GITHUB_HOSTS = frozenset({"api.github.com", "codeload.github.com", "github.com"})
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+LAUNCHER_PROTOCOL = 1
+ACTIVE_SLOT_NAME = "active-slot.txt"
+PENDING_SLOT_NAME = "pending-slot.txt"
+HEALTH_NAME = "launch-health.txt"
+ROLLBACK_NAME = "rollback-report.txt"
+LAUNCHER_OWNED_ENV = "MICROCLAW_LAUNCHER_OWNED"
+LAUNCH_NONCE_ENV = "MICROCLAW_LAUNCH_NONCE"
+LAUNCH_SLOT_ENV = "MICROCLAW_LAUNCH_SLOT"
+LAUNCH_ROOT_ENV = "MICROCLAW_LAUNCH_ROOT"
+LAUNCH_PROTOCOL_ENV = "MICROCLAW_LAUNCHER_PROTOCOL"
+LAUNCHER_PROTOCOL_NAME = "launcher-protocol.txt"
 
 
 class UpdateError(Exception):
@@ -56,6 +67,275 @@ class Candidate:
     source: str
     canonical_repo: str = REPO
     warning: str | None = None
+
+
+def _read_slot_text(path: Path, *, required: bool) -> str | None:
+    """Read one launcher-owned slot selector; JSON is intentionally not accepted."""
+    try:
+        value = path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        if not required:
+            return None
+        raise UpdateError(f"missing launcher state: {path.name}") from None
+    except (OSError, UnicodeError) as exc:
+        raise UpdateError(f"invalid launcher state {path.name}: {exc}") from exc
+    if value not in {"a", "b"}:
+        raise UpdateError(f"{path.name} must contain exactly 'a' or 'b'")
+    return value
+
+
+def _write_slot_text(path: Path, slot: str) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(slot + "\n", encoding="ascii")
+    os.replace(temporary, path)
+
+
+def installed_launcher_protocol(root: str | Path) -> int:
+    path = Path(root) / LAUNCHER_PROTOCOL_NAME
+    try:
+        value = int(path.read_text(encoding="ascii").strip())
+    except (FileNotFoundError, OSError, UnicodeError, ValueError) as exc:
+        raise UpdateError(f"invalid installed launcher protocol: {exc}") from exc
+    if value < 1:
+        raise UpdateError("invalid installed launcher protocol")
+    return value
+
+
+def candidate_launcher_protocol(source: str | Path) -> int:
+    """Read the candidate's source-controlled minimum before building it."""
+    path = Path(source) / "scripts" / LAUNCHER_PROTOCOL_NAME
+    try:
+        value = int(path.read_text(encoding="ascii").strip())
+    except (FileNotFoundError, OSError, UnicodeError, ValueError) as exc:
+        raise UpdateError(f"candidate has no valid launcher protocol declaration: {exc}") from exc
+    if value < 1:
+        raise UpdateError("candidate has no valid launcher protocol declaration")
+    return value
+
+
+def activate_pending(root: str | Path, launcher_protocol: int) -> tuple[str, str | None]:
+    """Consume pending before launch; invalid candidates leave known-good active."""
+    base = Path(root)
+    active_path = base / ACTIVE_SLOT_NAME
+    active = _read_slot_text(active_path, required=True)
+    pending_path = base / PENDING_SLOT_NAME
+    try:
+        pending = _read_slot_text(pending_path, required=False)
+    except UpdateError:
+        pending_path.unlink(missing_ok=True)
+        return active, None
+    if pending is None:
+        return active, None
+    if pending == active:
+        pending_path.unlink()
+        return active, None
+    try:
+        marker = read_slot_marker(
+            executable=base / f"env-{pending}" / "Scripts" / "python.exe"
+        )
+        required = marker.get("required_launcher_protocol") if marker else None
+        if type(required) is not int or required > launcher_protocol:
+            raise UpdateError("pending slot is incompatible with the installed launcher")
+    except (UpdateError, OSError, UnicodeError):
+        pending_path.unlink(missing_ok=True)
+        return active, None
+    _write_slot_text(active_path, pending)
+    pending_path.unlink()
+    return pending, active
+
+
+def fresh_launch(root: str | Path, slot: str, *, nonce: str | None = None) -> tuple[str, Path]:
+    """Remove stale health and return the fresh nonce and marker path for one child."""
+    import secrets
+
+    if slot not in {"a", "b"}:
+        raise UpdateError("launch slot must be 'a' or 'b'")
+    token = nonce or secrets.token_hex(16)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", token):
+        raise UpdateError("invalid launch nonce")
+    marker = Path(root) / HEALTH_NAME
+    marker.unlink(missing_ok=True)
+    return token, marker
+
+
+def health_matches(path: str | Path, nonce: str) -> bool:
+    """A marker is healthy only when its complete contents match this child nonce."""
+    try:
+        return Path(path).read_text(encoding="ascii").strip() == nonce
+    except (FileNotFoundError, OSError, UnicodeError):
+        return False
+
+
+def _windows_process_alive(pid: int) -> bool:
+    """Whether a Windows child still has STILL_ACTIVE as its exit code.
+
+    Every uncertain answer here is reported as *alive*.  Reporting a live child
+    as exited is the harmful direction: the launcher would roll back a slot
+    whose server is still running and still holding the port.  Only
+    ERROR_INVALID_PARAMETER — what Windows returns for a pid that no longer
+    exists — is treated as proof of exit.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def wait_for_launcher_health(
+    path: str | Path, nonce: str, child_pid: int, *, timeout: float = 30,
+    poll_interval: float = 0.1, clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    alive: Callable[[int], bool] | None = None,
+) -> str:
+    """Wait in one Python process; return healthy, child-exited, or timeout."""
+    is_alive = alive or _windows_process_alive
+    deadline = clock() + timeout
+    while True:
+        if health_matches(path, nonce):
+            return "healthy"
+        if not is_alive(child_pid):
+            return "child-exited"
+        if clock() >= deadline:
+            return "timeout"
+        sleep(poll_interval)
+
+
+def rollback_slot(root: str | Path, failed: str, previous: str | None) -> str:
+    """Restore the retained known-good slot and defer the report to its next launch."""
+    if failed not in {"a", "b"} or previous not in {"a", "b"} or failed == previous:
+        raise UpdateError("rollback requires distinct valid failed and previous slots")
+    base = Path(root)
+    _write_slot_text(base / ACTIVE_SLOT_NAME, previous)
+    (base / ROLLBACK_NAME).write_text(
+        f"Microclaw rolled back from slot {failed} to slot {previous}.\n", encoding="utf-8"
+    )
+    return previous
+
+
+def consume_rollback_report(root: str | Path) -> str | None:
+    path = Path(root) / ROLLBACK_NAME
+    try:
+        report = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    path.unlink()
+    return report
+
+
+def validate_launch_environment(
+    environ: dict[str, str] | None = None, *, executable: str | Path | None = None,
+) -> tuple[Path, str, str] | None:
+    """Validate launcher nonce and the executing slot's immutable metadata."""
+    env = os.environ if environ is None else environ
+    if env.get(LAUNCHER_OWNED_ENV) != "1":
+        return None
+    root_text, slot, nonce, protocol_text = (
+        env.get(LAUNCH_ROOT_ENV), env.get(LAUNCH_SLOT_ENV), env.get(LAUNCH_NONCE_ENV),
+        env.get(LAUNCH_PROTOCOL_ENV),
+    )
+    if not root_text or slot not in {"a", "b"} or not nonce:
+        raise UpdateError("launcher health environment is incomplete")
+    root = Path(root_text).resolve()
+    exe = Path(executable or sys.executable).resolve()
+    expected = (root / f"env-{slot}").resolve()
+    marker_path = slot_marker_path(exe)
+    if marker_path.parent != expected:
+        raise UpdateError("launcher slot does not match the executing environment")
+    marker = read_slot_marker(executable=exe)
+    if not marker:
+        raise UpdateError("executing slot has no metadata")
+    try:
+        launcher_protocol = int(protocol_text or "")
+    except ValueError as exc:
+        raise UpdateError("launcher health environment is incomplete") from exc
+    required = marker.get("required_launcher_protocol")
+    if type(required) is not int or required > launcher_protocol:
+        raise UpdateError("executing slot requires a newer launcher protocol")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", nonce):
+        raise UpdateError("invalid launch nonce")
+    return root, slot, nonce
+
+
+def write_launcher_health(
+    environ: dict[str, str] | None = None, *, executable: str | Path | None = None,
+) -> Path | None:
+    """Write health only for a valid launcher-owned, metadata-matched process."""
+    launch = validate_launch_environment(environ, executable=executable)
+    if launch is None:
+        return None
+    root, _slot, nonce = launch
+    target = root / HEALTH_NAME
+    temporary = root / f".{HEALTH_NAME}.tmp"
+    temporary.write_text(nonce + "\n", encoding="ascii")
+    os.replace(temporary, target)
+    return target
+
+
+def stage_inactive_slot(
+    root: str | Path, source: str | Path, candidate: Candidate, *,
+    uv_executable: str | Path, now: float | None = None,
+) -> Path:
+    """Build only the managed inactive slot and publish pending after success.
+
+    This deliberately derives no target from the running interpreter, PATH, a
+    conda prefix, or clone provenance.  A failed dependency install leaves the
+    selector files untouched and is cached as this interval's build failure.
+    """
+    base = Path(root).resolve()
+    if not (base / STATE_NAME).is_file():
+        raise UpdateError("staging is available only in a managed installation")
+    state = load_state(base / STATE_NAME) or {}
+    current = time.time() if now is None else now
+    if (state.get("build_failed_commit") == candidate.sha
+            and isinstance(state.get("next_check"), (int, float))
+            and current < state["next_check"]):
+        raise UpdateError("the update could not be built")
+    required_launcher_protocol = candidate_launcher_protocol(source)
+    if required_launcher_protocol > installed_launcher_protocol(base):
+        raise UpdateError(
+            "installed launcher is too old for this update; run the installer once "
+            "to bootstrap the launcher"
+        )
+    active = _read_slot_text(base / ACTIVE_SLOT_NAME, required=True)
+    inactive = "b" if active == "a" else "a"
+    target = base / f"env-{inactive}"
+    python = target / "Scripts" / "python.exe"
+    commands = (
+        [str(uv_executable), "venv", "--python", "3.12", str(target)],
+        [str(uv_executable), "pip", "install", "--python", str(python), str(source)],
+    )
+    for command in commands:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode:
+            state = load_state(base / STATE_NAME) or {}
+            state["build_error"] = "the update could not be built"
+            state["build_failed_commit"] = candidate.sha
+            write_state(state, base / STATE_NAME)
+            raise UpdateError("the update could not be built")
+    write_slot_marker(
+        candidate.sha, required_launcher_protocol, executable=python,
+    )
+    temporary = base / f".{PENDING_SLOT_NAME}.tmp"
+    temporary.write_text(inactive + "\n", encoding="ascii")
+    os.replace(temporary, base / PENDING_SLOT_NAME)
+    return target
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -190,6 +470,21 @@ def public_provenance(installed_commit: str = "unknown") -> dict[str, Any]:
         "canonical_repo": REPO, "branch": BRANCH,
         "installed_commit": installed_commit,
     }
+
+
+def installer_provenance(
+    source: str | Path, installed_commit: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Prefer clone provenance, but never fail installation for its absence."""
+    root = Path(source).resolve()
+    if not (root / ".git").exists():
+        return public_provenance(installed_commit), None
+    try:
+        return clone_provenance(root, installed_commit), None
+    except Exception as exc:
+        return public_provenance(installed_commit), (
+            f"Git provenance was unavailable ({exc}); updates will follow public head."
+        )
 
 
 def _git(state: dict[str, Any], *args: str, timeout: float = GIT_TIMEOUT_SECONDS):
@@ -578,8 +873,8 @@ def slot_marker_path(executable: str | Path | None = None) -> Path:
 def write_slot_marker(
     commit: str, required_launcher_protocol: int, *, executable: str | Path | None = None,
 ) -> Path:
-    if not _SHA.fullmatch(commit):
-        raise UpdateError("slot commit is not a full SHA")
+    if commit != "unknown" and not _SHA.fullmatch(commit):
+        raise UpdateError("slot commit is neither a full SHA nor 'unknown'")
     if type(required_launcher_protocol) is not int or required_launcher_protocol < 1:
         raise UpdateError("required launcher protocol must be a positive integer")
     marker = slot_marker_path(executable)
