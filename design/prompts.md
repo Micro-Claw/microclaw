@@ -7704,3 +7704,73 @@ click.
 interruption across this design, the second from a usage limit. It died *at the
 end*, with all eleven fixes committed, so it was preserved and verified rather
 than rerun; the coordinator did the two remaining test corrections directly.
+
+## design/58 block 58e — restart, the terminal line, the end-to-end update (2026-08-27)
+
+Three Codex rounds, thirty-two findings, **ten demo-gate rounds and five spike
+rounds**. The last block of the design and by a wide margin the most expensive.
+The ratio is what to carry forward: **six product defects, every one of which
+would have shipped**, against roughly twice as many defects in the gate and the
+instructions around it.
+
+**Each defect was hiding the next one.** `uv venv` refusing an existing slot
+meant every update after a machine's first would fail — and until that was fixed,
+nothing could reach the slot CLI that hung on an inherited exit pause, which
+meant staging could never complete on a desktop launch, which meant nothing ever
+*started* a staged slot, which is why the missing `[serve]` extra — the defect
+that made **every update leave the application unable to run** — was not found
+until round 5. Ten rounds is what serial discovery costs. There is no version of
+this where three rounds would have done.
+
+**The spike is the lesson.** After two rounds died on causes the artifacts could
+not explain, the operator said: *"there is a huge time cost in running the
+Prepare command. Please consider writing a smaller spike to figure out what's
+going on before you waste my time again."* That was right, and the spike found in
+one minute what two gate rounds had not — the exit-pause hang, with a control
+that fired. **A gate is built to score a working mechanism; it is a poor
+instrument for finding out why one does not work**, because every phase drags a
+full setup behind it. Four spike rounds then replaced four gate trips.
+
+**And the spike is code.** Round 3 of it shipped with `.active`/`.candidate` on a
+dataclass that has only `proceed` and `reason`, a verdict requiring exit 0 from a
+command that legitimately exits 1, and a fix-marker matching the pre-fix source —
+twice, in two different ways. Building a local harness (a fake `uv`, a fake slot
+CLI, a real one-commit repository) caught all of them before it touched the rig.
+A probe written to diagnose a defect earns the same treatment as the code it
+diagnoses.
+
+**Gate defects that recurred, and are worth naming as shapes rather than
+instances.** *Clearing one of two poison keys is clearing neither* — round 2's
+fix cleared `build_failed_commit` and left `comparison_refused_commit`, which
+both hid the banner's controls and silenced the next phase's real failure.
+*A log line announcing an action is not the action* — the launcher writes its
+line before spawning the child, so three rounds read an absent health marker as a
+product failure. *Once a gate activates a staged slot it is testing the other
+build* — the last four phases ran against `origin/main` for two rounds. *A limb
+that passes when its mechanism did not run is not a criterion* — round 9's
+Micro-Manager-closed limb passed while nothing had been updated.
+
+**Two environment leaks, and the second was mine after the first was written into
+`CLAUDE.md`.** Block 5b redirected uv's Python directory into an evidence folder;
+58e set `UV_INDEX_URL` in the gate's own PowerShell session, reasoning that
+"session-scoped, never `setx`" was containment. The session is the operator's
+working window: three consecutive `install.bat` runs failed with an unreachable
+index before anyone connected the two. Set a hostile variable for the child
+process only, and clear a stale one on entry.
+
+**Replaying returned artifacts through a corrected scorer closed two rounds
+without another trip** (rounds 7 and 8), each time with `git diff` over the
+product tree verified empty first and written down — the habit 58c established
+and 58d proved. It is the single highest-leverage thing a coordinator does on a
+block like this.
+
+**Process.** One runner turn was killed early after `apply_patch` refused a patch
+with multiple operations on one path — the same refusal that cost 58b its gate
+script. It had committed nothing and had deleted the gate program, so it was
+discarded, the file restored, and the next turn told in writing that nothing
+survived. Seventh interruption across this design.
+
+**What closed unproven**: `Restart later`'s button path (the underlying
+activation is evidenced twice) and the offline launch, which cannot be gated over
+Remote Desktop because disconnecting the network ends the session that would
+observe it.
