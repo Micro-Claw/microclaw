@@ -1300,7 +1300,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | 58-P | public flip | n/a (repo config) | — | **not a blocker** — deferred to the flip by operator decision 2026-08-27 | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
-| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | **assigned 2026-08-27**, codex, worktree `../microclaw-58c` | demo — its own program, `design/58-block58c-demo-gate.ps1` | — | — |
+| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | `01b634f` → `1a01cdd`; coordinator `d96d3f3`, `a665a2a`, `1a01cdd`; codex, **2 rounds, 17 findings**, 1 turn killed mid-flight | **pushed 2026-08-27, awaiting demo** — five phases, `design/58-block58c-demo-gate.ps1` | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
 
@@ -1359,9 +1359,13 @@ State:
   demo gate ran 16 PASS / 0 FAIL / **1 NOT EXERCISED**, verdict INCOMPLETE — the
   correct result, not a failure. `main` measures **2244 passed / 99 skipped / 3
   warnings** (macOS, coordinator-measured), from 2220.
-- **58c is assigned** (2026-08-27) on `design58/two-slots` from `main` at
-  `83bbec7`, codex in worktree `../microclaw-58c`. Its gate ships as a runbook
-  **and** a program — see §"Gate — demo machine, a runbook **and** a program".
+- **58c is pushed and awaiting its demo gate** (2026-08-27) on
+  `design58/two-slots`, coordinator-measured at **2270 passed / 99 skipped / 3
+  warnings** (macOS), from 2244. Two review rounds, seventeen findings. Its gate
+  ships as a runbook **and** a program — see §"Gate — demo machine, a runbook
+  **and** a program" — and the program runs in five phases (`Prepare`,
+  `Healthy`, `Closed`, `Rollback`, `Verify`), each one command, with the human
+  only operating the desktop icon and Micro-Manager.
 - **58b left one debt for 58c**, and it is the only one: two real slot
   validators classifying one shared file. 58c creates the second slot, so its
   gate **must** close that limb. It is written into the carried-forward list
