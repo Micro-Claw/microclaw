@@ -65,11 +65,13 @@ def timed(label: str, command: list[str], *, env=None, stdin_null=True, cwd=None
 
 #: The two edits that fix the hang, looked for in the code a slot actually runs.
 FIX_MARKERS = {
-    # Must be strings the PRE-fix code does not contain.  Spike round 3 used
-    # `args.command == "check-config"`, which is also the old dispatch line, so
-    # it reported the fix present in two slots that predate it.
+    # Must be strings the PRE-fix code does not contain.  Two attempts got this
+    # wrong: `args.command == "check-config"` is also the old dispatch line, and
+    # `getattr(args, "json", False)` is already inside check_config() -- both
+    # reported the fix present in slots that predate it.  This needle is the
+    # guard expression itself, which exists nowhere else.
     "config.py": "stdin=subprocess.DEVNULL",
-    "__main__.py": 'getattr(args, "json", False)',
+    "__main__.py": 'if not (args.command == "check-config"',
 }
 
 
