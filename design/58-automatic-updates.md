@@ -2036,6 +2036,48 @@ is the first time it has cost anything. **The 30-second timeout branch now has
 rig evidence** — the row left open after 58c can be ticked, though not in the
 way it was meant to be earned.
 
+## 58e demo gate round 6 — 2026-08-27: rollback and the PyPI failure pass
+
+Run against a slot that predated the `[serve]` fix, so its downstream limbs were
+lost to the defect round 5 found. Two limbs it did prove outright, both for the
+first time:
+
+**Failed start rolls back, and reports on the *next* launch.** The deliberately
+broken slot launched (`slot=a nonce=568dd61a…`), failed, and
+`rollback-report.txt` appeared with **no `rollback-reported=` line on that
+launch**; the following launch (`slot=b nonce=0b7645dd…`) emitted
+`rollback-reported=Microclaw rolled back from slot a to slot b.` and reached
+nonce-matched health. The deferred-report contract is now evidenced end to end —
+58c only ever saw the `child-exited` half of it.
+
+**An unreachable index is cached without touching the selector**: `build_error`
+set, `staging: {"status": "error"}`, no pending published, active slot unchanged,
+retry deadline retained. The session-scoped `UV_INDEX_URL` reached the staging
+worker exactly as intended and left nothing behind this time.
+
+**`later` and `closed` reported NOT EXERCISED, and both are the same defect.**
+The active slot predated round 5's `[serve]` fix, so the staged slot again had no
+fastapi and no uvicorn: `restart.json` shows an empty `health`, nothing was
+answering on 8000 for `closed`, and the restart had already consumed the pending
+slot `later` needed. Worth stating because it is easy to misread as two more
+failures: **one product defect accounted for both**, and the fix does not depend
+on what the *source* commit contains — `[serve]` is a property of how staging
+installs, not of the code being installed.
+
+**Offline cannot be gated over Remote Desktop**, which is how the operator
+reaches the demo machine. Disconnecting the network ends the session that would
+observe the result. It needs physical access and is booked for that, not
+simulated: an approximation that breaks only the recorded `git_executable` would
+exercise a failed *check*, not a disconnected machine, and this design has been
+punished more than once for probes that measured something adjacent to the
+question. See §"Owed evidence that cannot be booked".
+
+**The gate's phase ledger assumes one continuous run**, and this round exposed
+the cost: `Verify` scores one evidence directory, so limbs proved in an earlier
+directory do not carry forward. With Prepare now cheap and Stage taking ~15 s,
+the answer is a single clean run rather than machinery to merge folders — but it
+is worth knowing before someone tries to resume a half-finished gate.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -2062,6 +2104,12 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
   testable.** §"Ship the public-head path" forbids a browser-supplied URL for a
   reason, and a test hook in the trust boundary is the same hole with a nicer
   name.
+- **The offline limb needs physical access to the demo machine.** The operator
+  reaches it over Remote Desktop, and disconnecting the network ends the session
+  that would observe the result. Booked for a visit rather than approximated:
+  breaking the recorded `git_executable` would exercise a failed *check*, not a
+  disconnected machine, and a probe that measures something adjacent to the
+  question is how this design lost two rig trips already.
 - **Nothing is owed to a microscope.** No limb of design/58 needs M2, M5 or a
   Nikon. 58b's optional fuller-config limb is a convenience, not a debt.
 
@@ -2120,7 +2168,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]` and could not start | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]`. Round 6 added **rollback with its deferred report** and the **unreachable-index** limb | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
