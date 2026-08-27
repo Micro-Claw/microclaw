@@ -317,6 +317,37 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
             raise AssertionError(f"active={active}; marker={marker}; HEAD={checkout_sha}")
         return f"env-a exists; active={active}; commit={checkout_sha}"
 
+    @limb("each slot stands on a Python outside every evidence folder",
+          "a slot interpreter cannot start, or its base_prefix is missing or sits "
+          "under a gate evidence directory")
+    def _():
+        proved = {}
+        for slot in ("a", "b"):
+            python = managed / f"env-{slot}" / "Scripts" / "python.exe"
+            if not python.exists():
+                continue
+            completed = run([str(python), "-I", "-c",
+                             "import sys, os; print(sys.base_prefix); "
+                             "print(os.path.isdir(sys.base_prefix))"], cwd=out)
+            if completed.returncode:
+                raise AssertionError(
+                    f"env-{slot} interpreter cannot start: "
+                    f"{(completed.stderr or completed.stdout).strip()}"
+                )
+            base, exists = completed.stdout.strip().splitlines()
+            if exists != "True":
+                raise AssertionError(f"env-{slot} base_prefix does not exist: {base}")
+            resolved = Path(base).resolve()
+            if resolved == out or out in resolved.parents:
+                raise AssertionError(
+                    f"env-{slot} depends on a directory inside this gate's own "
+                    f"evidence and will break when it is deleted: {resolved}"
+                )
+            proved[f"env-{slot}"] = base
+        if not proved:
+            raise NotExercised("no slot interpreter exists to interrogate")
+        return json.dumps(proved, sort_keys=True)
+
     @limb("desktop command line uses selected slot",
           "the captured real process does not name an env-a/env-b microclaw.exe serve child")
     def _():

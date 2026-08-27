@@ -72,6 +72,15 @@ and prints what it did.
 $root="$env:LOCALAPPDATA\microclaw"; if((Test-Path "$root\env-a") -and -not (Test-Path "$root\env")){Move-Item "$root\env-a" "$root\env"; Write-Host "restored: $root\env"} else {Write-Host "nothing to restore"}; foreach($f in 'active-slot.txt','pending-slot.txt','launch-health.txt','rollback-report.txt','launcher-protocol.txt','launcher.log','update-state.json','Microclaw.cmd','updater-launcher.ps1','58c-gate-evidence.txt'){if(Test-Path "$root\$f"){Remove-Item "$root\$f" -Force; Write-Host "removed: $f"}}; if(Test-Path "$root\env-b"){Remove-Item "$root\env-b" -Recurse -Force; Write-Host "removed: env-b"}; & "$root\env\Scripts\python.exe" -c "pass" 2>$null; if($LASTEXITCODE -eq 0){& "$root\env\Scripts\microclaw.exe" install-shortcut; Write-Host 'ICON RESTORED'} else {Write-Host 'ENVIRONMENT CANNOT START ITS PYTHON - the icon stays broken until the next install.bat run, which detects this and rebuilds the environment. Your settings in %APPDATA%\microclaw are untouched.'}
 ```
 
+A gate must not leave production state pointing into its own evidence folder.
+The demo machine's installed environment recorded
+`home = ...\block5b-20260804-124610\fresh-appdata\uv\python\...` in its
+`pyvenv.cfg` — an old gate redirected uv's Python install directory into a
+throwaway fixture, the venv wrote that path down permanently, and the install
+broke three weeks later when the fixture was deleted. This gate's `Verify` phase
+checks the property directly: every slot's interpreter must start, and its
+`sys.base_prefix` must exist and must not sit under the evidence directory.
+
 The last step rewrites the desktop shortcut and its wrapper against the restored
 environment — but only after proving that environment's Python can actually
 start. A uv venv's `python.exe` is a trampoline onto a uv-managed CPython
