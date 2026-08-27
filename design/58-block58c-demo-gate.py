@@ -324,13 +324,21 @@ def observe_rollback(out: Path, managed: Path) -> int:
 
 
 def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
-    sha = run(["git", "-C", str(repo), "rev-parse", "HEAD"])
-    require_success(sha, "checkout identity")
-    checkout_sha = sha.stdout.strip()
+    # The marker records the commit the installer BUILT FROM, so it is compared
+    # against the commit Prepare recorded at that moment -- not against whatever
+    # HEAD is now. Reading HEAD here made an ordinary `git pull` between phases
+    # look like a marker defect and forced a whole gate to be rerun.
+    prepared = json.loads((out / "prepare.json").read_text(encoding="utf-8"))
+    installed_sha = prepared["commit"]
+    live = run(["git", "-C", str(repo), "rev-parse", "HEAD"])
+    require_success(live, "checkout identity")
+    if live.stdout.strip() != installed_sha:
+        print(f"NOTE: HEAD is now {live.stdout.strip()}; this gate's slots were "
+              f"installed from {installed_sha} and are scored against that.")
 
     @limb("migrated layout and immutable commit",
-          "env-a is absent, active is invalid, active metadata differs from checkout "
-          "HEAD, or no legacy env was actually migrated")
+          "env-a is absent, active is invalid, active metadata differs from the "
+          "commit Prepare installed, or no legacy env was actually migrated")
     def _():
         state = json.loads((out / "install-state.json").read_text(encoding="utf-8"))
         # A move that never happened must not read as a migration. This limb is
@@ -348,9 +356,9 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
         active = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
         marker = json.loads((managed / f"env-{active}" / "microclaw-slot.json").read_text(
             encoding="utf-8"))
-        if not (managed / "env-a").is_dir() or active not in {"a", "b"} or marker.get("commit") != checkout_sha:
-            raise AssertionError(f"active={active}; marker={marker}; HEAD={checkout_sha}")
-        return f"env migrated to env-a; active={active}; commit={checkout_sha}"
+        if not (managed / "env-a").is_dir() or active not in {"a", "b"} or marker.get("commit") != installed_sha:
+            raise AssertionError(f"active={active}; marker={marker}; installed={installed_sha}")
+        return f"env migrated to env-a; active={active}; commit={installed_sha}"
 
     @limb("each slot stands on a Python outside every evidence folder",
           "a slot interpreter cannot start, or its base_prefix is missing or sits "

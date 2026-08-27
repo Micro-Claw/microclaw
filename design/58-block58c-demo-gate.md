@@ -5,6 +5,11 @@ Run these commands, unedited and in order, in Windows PowerShell 5.1 from the
 installation, fixture-building, process inspection, and assertions. The human
 only operates the desktop icon and Micro-Manager when prompted.
 
+**A `git pull` between phases is safe.** The slot marker is scored against the
+commit `Prepare` recorded when it ran the installer, not against whatever HEAD
+is at `Verify` time, and `Verify` prints a note when the two differ. Pulling does
+not oblige you to rerun `Prepare`.
+
 **Do not run `install.bat` yourself before the gate.** `Prepare` runs it three
 times, and the first run *is* the migration under test — it needs a legacy
 `%LOCALAPPDATA%\microclaw\env` to migrate. An installer run outside the gate
