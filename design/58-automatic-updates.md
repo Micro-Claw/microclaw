@@ -1625,6 +1625,64 @@ What the artifacts corroborate, cross-checked rather than taken from a verdict:
    501 seam moves to 58e. **A control that cannot fire is not a control**, and
    this one had been written to expect the wrong branch of its own route.
 
+## 58e is pushed for its gate — 2026-08-27
+
+Branch `design58/restart` at `aabbe4e`, implementation pinned at `43db9f0`.
+Suite **2322 passed / 99 skipped / 3 warnings** (macOS, coordinator-measured),
+from 2296. Three Codex rounds, thirty-two findings, and the pattern of this
+design held again: **the product needed one round, the gate needed three.**
+
+**Round 1 shipped a suite that did not run.** The runner's interpreter died with
+signal 139, so it reported "static compilation, smoke probes and diff checks
+passed" — and the change from `uvicorn.run(app, …)` to `uvicorn.Server.run()`
+left four tests that monkeypatch `uvicorn.run` binding a real port and blocking
+forever, plus three failing on `app.state` where `build_app` is stubbed as
+`object()`. **A runner that cannot run the suite has produced a handoff, not
+evidence**, and this is the clearest instance in the design.
+
+**The block's own coordinator addition nearly bricked the thing it protects.**
+`_reconcile_installed_commit` raised, and it ran *after* `active-slot.txt` was
+rewritten and pending unlinked. Reproduced off-rig: activation raised with the
+selector already moved to `b`, nothing left to retry, and the launcher then
+refusing to launch at all; in `rollback_slot` it raised before the report was
+written, so a rollback became silent. A plain `OSError` from `write_state` — a
+locked or read-only file — reaches the same place with a perfectly valid slot.
+**Bookkeeping added to a state machine must not be able to fail the state
+machine.**
+
+**Five of the gate's limbs could not fail**, which is the third distinct time
+this design has shipped one. The direct-executable limb asserted
+`automatic_restart is False` at a point where nothing had staged; the
+Ctrl-C limb asserted that the operator's own reaction time was positive; the
+offline limb scored the Micro-Manager-closed artifact; the locked-files limb
+restated the one-job limb. And two limbs **contradicted each other**:
+`stage_inactive_slot` either publishes a pending slot or refuses, never both, so
+a not-ready limb and a progress limb reading the same `stage.json` could not
+both pass. Ask of every limb not only *what would this look like if the
+mechanism had not run*, but *can this limb and its neighbour both be true at
+once*.
+
+**A limb that asserts a compound expression reports nothing when it fails.**
+Every limb in round 2 was `assert a and b and c`; the decorator stores
+`str(exc)`, which is empty for a bare assert, so a rig FAIL would have come back
+as `FAIL: Restart now button — ` with no numbers. That is the difference between
+one trip and two.
+
+**Interruption seven, and the second of its exact kind.** A revision turn was
+killed early, after `apply_patch` refused a patch with *multiple operations
+targeting one path* — the same refusal that cost 58b its gate script. It had
+committed nothing and had deleted `58-block58e-demo-gate.py`, so it was
+discarded, the file restored from `3f328d9`, and the next turn told in writing
+that nothing survived and that both files must be rewritten **in place**.
+
+Three coordinator corrections went in directly (`aabbe4e`): the not-ready limb
+now names its gate stub, per 58b's rule; the offline phase no longer rewrites
+`provenance`, because changing the update channel on a machine this gate can
+brick buys nothing and offline `discover_clone` correctly records a *warning*
+rather than an error, so the limb would have failed the product for behaving as
+designed; and the post-Direct step removes the pending selector instead of
+deleting `env-b` before a copy that could fail.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1704,7 +1762,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | assigned 2026-08-27 | demo — not run | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `aabbe4e`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e` | demo — **pushed, awaiting the run** | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
