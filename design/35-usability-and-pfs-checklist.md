@@ -13,7 +13,7 @@ either disagrees with a *design*, stop and reconcile the design first.
 > Nikon rig is remote" were written 2026-07-30 and describe an ordering that is
 > finished. Every track they set up has since closed or parked.
 >
-> **The live state note is `### State at the 2026-08-26 assignment of design/58`** — find it *by that heading*, not by position; it sits behind
+> **The live state note is `### State at the 2026-08-27 merge of design/58 block 58c`** — find it *by that heading*, not by position; it sits behind
 > several superseded notes that look just like it. It is the only section that
 > describes the repository as it is now.
 >
@@ -477,7 +477,7 @@ as a file and not necessarily as a classifier. A project drawn on M2 applied to 
 gave twice as much probability to the wrong class, and nothing in the file or the
 probability map announces it.
 
-### State at the 2026-08-26 assignment of design/58 — read this before assigning anything
+### State at the 2026-08-27 merge of design/58 block 58c — read this before assigning anything
 
 **This is the live note.** It supersedes every other State-at note in this
 section. Position is not recency — read the heading, not the order.
@@ -487,13 +487,14 @@ design/48 through design/57. This file does not track its blocks; it points at
 them. The doc is `design/58-automatic-updates.md`, five blocks, **58a–58e**, plus
 a non-code prerequisite row **58-P**.
 
-- **58a and 58b are MERGED** (`33028e9` and `3baec05`), branches and worktrees
-  deleted. 58a's demo gate passed on the **fourth** round — the first three
-  failed on defects in the *gate*, not the code. 58b's gate returned
-  **INCOMPLETE by design**: one limb needs the second slot that 58c builds, and
-  the gate refused to fabricate it. **58c, 58d and 58e are open and
-  unassigned.**
-- **`main` measures 2244 passed / 99 skipped / 3 warnings** (macOS,
+- **58a, 58b and 58c are MERGED** (`33028e9`, `3baec05`, `d1e08df`), branches
+  and worktrees deleted. 58a's demo gate passed on the **fourth** round and
+  58c's on the **third**; in both, most rounds died on defects in the *gate*
+  rather than the code. 58b's gate returned **INCOMPLETE by design** because one
+  limb needed the second slot 58c builds — **58c discharged that debt**: two
+  real slot validators classified one shared config, both `ready`. **58d and 58e
+  are open and unassigned**, and 58e depends on both.
+- **`main` measures 2271 passed / 99 skipped / 3 warnings** (macOS,
   coordinator-measured at the merge), against 2182 before design/58 started.
 - **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
   skipped / 3 warnings** (macOS). Gate on zero failures, never the count.
@@ -517,7 +518,7 @@ a non-code prerequisite row **58-P**.
 
 ### State at the 2026-08-26 close of design/55 — SUPERSEDED, kept for the round history
 
-**Not the live note.** Superseded by `### State at the 2026-08-26 assignment of
+**Not the live note.** Superseded by `### State at the 2026-08-27 merge of
 design/58` above. Everything below was true at the close of design/55.
 
 **`design/55` is CLOSED and owns its own checklist and ledger**, like design/48

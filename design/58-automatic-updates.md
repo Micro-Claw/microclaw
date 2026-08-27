@@ -192,9 +192,13 @@ application JSON. Managed installs use two package environments:
 %LOCALAPPDATA%\microclaw\
   Microclaw.cmd              stable launcher/updater entry point
   updater-launcher.ps1       slot selection, child wait, health and rollback
+  launcher-protocol.txt      the protocol THIS launcher implements
   active-slot.txt            exactly `a` or `b`
   pending-slot.txt           absent, `a` or `b`
-  update-state.json          discovery, dismissal and staging UI state
+  launch-health.txt          one nonce, written by the child, read by the launcher
+  rollback-report.txt        present only until the next healthy launch prints it
+  launcher.log               bounded; one line per launch, plus rollback reports
+  update-state.json          provenance, discovery, dismissal and staging state
   env-a\                     active or previous known-good environment
     microclaw-slot.json      immutable commit and launcher-protocol metadata
   env-b\                     inactive staging environment
@@ -297,6 +301,22 @@ required launcher protocol. Shared `update-state.json` describes discovery,
 dismissal and staging UI state; it is not authoritative about which code is
 executing. A running package resolves the marker beside its own interpreter, so
 activation and rollback cannot make one slot report the other slot's commit.
+
+**What actually ships, reconciled against the code (2026-08-27).**
+`microclaw-slot.json` carries exactly `commit` and `required_launcher_protocol`;
+`commit` is a full SHA **or the literal `unknown`**, which a ZIP install
+legitimately produces and `write_slot_marker` therefore accepts and validates.
+`update-state.json` is written by `clone_provenance` / `public_provenance` —
+never hand-rolled by the installer, which learned that the hard way — and carries
+`provenance`, `repo_id`, `repo`, `canonical_repo`, `branch`, `installed_commit`,
+plus for a clone `clone_path`, `upstream`, `remote`, `remote_url`,
+`remote_identity`, `clone_repository_note`, `tracked_branch` and
+`git_executable`. Checking and staging add `last_attempt`, `next_check`,
+`last_error`, `last_success`, `discovery`, `build_error` and
+`build_failed_commit`. **`git_executable` and `remote_identity` are load-bearing**:
+`_git()` refuses without the first and `_verify_clone_remote` without the second,
+which is why an installer that invented its own record broke every fresh clone's
+first check.
 Nothing in the tree records a commit today and `__version__` is `0.1.0` and
 stays there, because a channel that follows head has no version to compare — so
 the package does not carry its own identity and the smoke check has no marker to
@@ -305,6 +325,34 @@ staged source *is* the requested commit: the clone provider archives that exact
 fetched SHA, and the public provider downloads an archive pinned to the SHA the
 API returned. A ZIP a user downloaded themselves from `Code -> Download ZIP`
 has no Git metadata and correctly bootstraps as `unknown`.
+
+**Migration covers `%LOCALAPPDATA%\microclaw\env` and nothing else, and it says
+so out loud.** `shortcut.py:launcher()` supports a second layout on purpose — its
+comment names it: *"Under conda — what the lab machine runs — python.exe sits at
+the env root."* Such an install is not at the migrated path, so `install.bat`
+builds a second, uv-managed installation beside it and moves the desktop icon,
+leaving the old environment orphaned with old code in it. The installer therefore
+**detects and prints** any resolvable `microclaw` outside the managed root —
+through `PATH`, through `CONDA_PREFIX`, and through the common conda roots — names
+the route it was found by, and states plainly that an arbitrary embedded Python
+cannot be discovered automatically. It never imports from it, installs into it,
+or modifies it. On the demo machine this fired for two environments by two routes
+in one run.
+
+**The updater never installs into an environment it did not create.** Every
+target is constructed as `env-a` or `env-b` under `%LOCALAPPDATA%\microclaw`; no
+path derived from `sys.executable`, `CONDA_PREFIX`, `PATH` or recorded provenance
+can become one. **And an unmanaged install stays silent, not broken**: with no
+`update-state.json` it gets no check, no banner and no CLI line, and is left
+byte-untouched. That is the shipped behaviour for every conda and
+embedded-Python user who never runs the new `install.bat`.
+
+**An interpreter that exists is not an interpreter that runs.** A uv venv's
+`python.exe` is a trampoline onto an interpreter recorded in `pyvenv.cfg`, and
+when that base goes away the file remains while every spawn fails. `install.bat`
+reuses a slot only after `"%MC_PY%" -c "pass"` succeeds, and `--clear` is
+reachable only after that probe fails — the one condition where replacing an
+environment loses nothing.
 
 Safety bounds under `%APPDATA%`, API credentials, histories, and user data are
 outside both slots and are never migration inputs or deletion targets.
@@ -1322,6 +1370,71 @@ backup existed; the instruction to use it did not. The runbook now carries a
 literal restore command, because "expected during a failed gate and fully
 reversible" is only true if the operator is told how.
 
+## 58c demo gate rounds 2 and 3 — 2026-08-27, PASS
+
+**Round 2 passed all ten limbs at `e9bcb20`.** Scored from the artifacts:
+
+- the migration genuinely happened — `legacy_env_before_first: true`,
+  `slot_a_before_first: false`, `legacy_env_after_first: false`;
+- **all three `:make_env` branches ran on the rig in one Prepare**: rebuild (the
+  demo machine's dead interpreter), reuse (the second install), create (`env-b`).
+  Code written that morning with no rig evidence got all three paths in one trip;
+- the desktop child is `env-a\Scripts\microclaw.exe serve`, proven from
+  `Win32_Process`, and its health marker carried the launcher's own nonce;
+- the rollback sequence reads correctly in `launcher.log`: slot=b launch at
+  11:29:17 reaching no health, slot=a at 11:29:24, `rollback-reported=` at
+  11:29:26 — **on the successful launch, not the failing one**. Seven seconds
+  between them means the child *exited*, so the `child-exited` branch has rig
+  evidence and the 30-second `timeout` branch still has only unit coverage;
+- **58b's carried-forward debt is discharged**: `{"active": "ready",
+  "candidate": "ready"}` from two real slot CLIs on one config file.
+
+**A passing gate is a place to look for defects, and one limb proved less than
+its design item claims.** The Micro-Manager-closed limb checked one added nonce,
+an unchanged active slot, and no rollback report — but with no pending slot the
+launcher has nothing to roll back to, so it writes no report *whether or not
+health was reached*. "No rollback" was not evidence of health. Item 7 (a closed
+bridge is never evidence that new code is defective) and the first half of item 8
+(the marker **is** written) had no rig evidence at all, and the artifacts could
+not distinguish the two outcomes after the fact.
+
+**Round 3 closed it.** `observe_closed` now captures `launch-health.txt` after
+the child has gone, and the demo machine returned:
+
+```
+"launch_nonce":              "9c8b5d2abcf23c6d81bc5a3418864ea7"
+"health_after_child_exited": "9c8b5d2abcf23c6d81bc5a3418864ea7"
+```
+
+**The evidence is split across two directories on purpose.** Round 3 ran
+Prepare/Closed/Verify only, so its `Healthy` and `Rollback` limbs have no
+artifacts there. That is sound because **no product code changed between them** —
+`git diff e9bcb20..HEAD -- microclaw/ install.bat scripts/` is empty, and every
+commit in between is gate-side. Round 3 independently re-confirmed six of the
+other limbs. Do not read round 3's `FAILED` banner as a product failure; read the
+two directories together.
+
+### Three gate defects, no new product defects
+
+The ratio has held since 58a, and each of these is generic.
+
+1. **`Verify` compared the slot marker against a live `git rev-parse HEAD`.** The
+   marker records the commit the installer *built from*, so an ordinary `git pull`
+   between phases read as a marker defect and cost a whole gate rerun. It is
+   scored against the commit `Prepare` recorded, and prints a note when HEAD has
+   moved.
+2. **`Verify` needed all four preceding phases and said so nowhere**, surfacing
+   them one failing limb at a time in whatever order the limbs run. Every phase
+   records itself in `phases.json`; `Verify` preflights with the exact commands
+   still owed, once, and says that a phase already passed in an earlier directory
+   at the same product commit does not need rerunning.
+3. **Missing evidence reported `FAIL`.** A limb whose phase was never run has not
+   failed its mechanism — nothing ran it. They use `need()` now. `need()` did not
+   exist in the rewrite, so adding the calls without it would have shipped a
+   `NameError`; **replaying the real round-3 evidence through the scorer is what
+   caught that**, and replaying returned artifacts through a changed scorer is
+   worth doing every time.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1353,34 +1466,42 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 
 ## Post-merge design gate
 
-- [ ] Rewrite §"Decision"'s branch-protection paragraph in the past tense with
-      what was actually done, and record the ruleset id or the escape taken.
-- [ ] **Amend §"Track the private clone's upstream for now"**: it says the
-      bootstrap records the clone's *current branch*. Discovery must track
-      `<remote>/main`. See 58a item 6a for why our own gate machine is the case
-      that breaks it.
-- [ ] **Amend §"Put the updater outside the environment it replaces"** to say
-      what happens to a conda, miniforge or embedded-Python install. Today it
-      says only that `install.bat` "migrates the existing `env` install", which
-      is silent about the layout `shortcut.py` explicitly supports and the lab
-      machine actually runs. See 58c items 12a–12c.
-- [ ] Reconcile the `update-state.json` and `microclaw-slot.json` field lists in
-      this document against what shipped. A design doc that names fields the code
-      does not write is how 55b's `hasattr` misreading happened.
-- [ ] Fold into `CLAUDE.md` **only** what is generic. Two candidates are already
-      visible and neither is Micro-Manager-specific: *only the thing outside both
-      slots may write the thing outside both slots*, and *a health marker's
-      existence is not health — a nonce-matched, freshly written marker is.*
-      Do not fold Windows layout details there; they belong here.
-- [ ] Move the `design/35` boundary note off "nothing is assigned" and onto
-      design/58's state.
-- [ ] **Fold the evidence-independence rule into `CLAUDE.md`**: a gate must not
-      leave production state pointing into its own evidence folder. Block 5b's
-      gate redirected uv's Python install directory into a fixture and silently
-      broke the demo machine's install for three weeks. Generic, not
-      Micro-Manager-specific. See §"58c demo gate round 1".
-- [ ] Tick the carried-forward register rows this touches, if any. **The
-      eleven-undecorated-tools row does not move** — design/58 adds no tool.
+Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
+
+- [x] Branch protection: **the escape was taken, not the ruleset.** 58-P is
+      deferred to the public flip by operator decision 2026-08-27, and
+      §"`main` is the release branch" records the two 403s verbatim. There is no
+      ruleset id to record because the API refuses to create one on a Free
+      organization's private repository.
+- [x] §"Track the private clone's upstream for now" was amended during 58a: it
+      now says `branch.main.remote` and `tracked_branch: main`, not the clone's
+      current branch. The demo machine remains the case that proves it — its
+      checkout sat on the block branch while discovery correctly tracked
+      `origin/main`.
+- [x] §"Put the updater outside the environment it replaces" now says what
+      happens to a conda, miniforge or embedded-Python install, what the
+      detection can and cannot reach, and that an unmanaged install stays silent
+      rather than broken. It also records that an interpreter which exists is not
+      one that runs.
+- [x] `update-state.json` and `microclaw-slot.json` field lists reconciled
+      against the code, in that same section, including which two fields are
+      load-bearing and what broke when the installer invented its own record.
+- [x] Folded into `CLAUDE.md`: *only the thing outside both slots may write the
+      thing outside both slots*; *a marker's existence is not health*; *a gate
+      must not leave production state pointing into its own evidence folder*;
+      and *when a block inserts a step before an existing one, test the state
+      handed over*. Windows layout details stayed here.
+- [x] `design/35`'s live-state note moved onto design/58's state at the 58c
+      merge, and both pointers to it updated.
+- [x] Carried-forward register: **no row moves.** design/58 adds no tool, so the
+      eleven-undecorated-tools row is untouched, and nothing else in the register
+      is about the updater.
+- [ ] **After 58d/58e**: reconcile the `/api/update/*` route list and the banner
+      copy in §"Check quietly, ask where the user already is" against what
+      ships, the same way the field lists were reconciled here.
+- [ ] **After 58e**: record whether the 30-second health **timeout** branch ever
+      got rig evidence. 58c exercised only `child-exited`; the timeout path has
+      unit coverage with an injected clock and nothing more.
 
 ## Run ledger
 
@@ -1389,7 +1510,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | 58-P | public flip | n/a (repo config) | — | **not a blocker** — deferred to the flip by operator decision 2026-08-27 | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
-| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | `01b634f` → `7f640c7`; coordinator `d96d3f3`, `a665a2a`, `1a01cdd`, `f51b4bd`, `2f23854`, `c2dfae5`; codex, **2 rounds, 17 findings**, 1 turn killed mid-flight | **round 1 FAILED** demo 2026-08-27 — two product defects in `:make_env`, both fixed; awaiting round 2 | — | — |
+| 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | pending |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
 
@@ -1448,9 +1569,10 @@ State:
   demo gate ran 16 PASS / 0 FAIL / **1 NOT EXERCISED**, verdict INCOMPLETE — the
   correct result, not a failure. `main` measures **2244 passed / 99 skipped / 3
   warnings** (macOS, coordinator-measured), from 2220.
-- **58c failed its first demo gate and is fixed, awaiting round 2** (2026-08-27)
-  on `design58/two-slots`, coordinator-measured at **2271 passed / 99 skipped / 3
-  warnings** (macOS), from 2244. See §"58c demo gate round 1". Two review rounds, seventeen findings. Its gate
+- **58c is MERGED** (`d1e08df`, 2026-08-27), branch and worktree deleted. `main`
+  measures **2271 passed / 99 skipped / 3 warnings** (macOS,
+  coordinator-measured), from 2244. Three demo-gate rounds; see §"58c demo gate
+  round 1" and §"58c demo gate rounds 2 and 3". **58b's debt is discharged.** Two review rounds, seventeen findings. Its gate
   ships as a runbook **and** a program — see §"Gate — demo machine, a runbook
   **and** a program" — and the program runs in five phases (`Prepare`,
   `Healthy`, `Closed`, `Rollback`, `Verify`), each one command, with the human

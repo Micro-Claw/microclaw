@@ -7543,3 +7543,94 @@ item from the code, restore any file left in a broken intermediate state, and
 cannot lose them (`30b0d9b`, the snapshot fix). Discarding is right when a turn
 dies early; preserving is right when it dies at the end. Tell the next runner
 which one it is.
+
+## design/58 block 58c — two slots and a launcher outside them (2026-08-27)
+
+Merged `d1e08df`. Two Codex rounds, seventeen findings, **three demo-gate
+rounds**. The block that could brick an install, and the one where the ratio
+finally became legible: **two product defects found on the rig, five gate
+defects found on the rig.**
+
+**The instruction that mattered most was architectural, and the first round
+inverted it.** `updater-launcher.ps1` cannot execute on CI, macOS, or in the
+runner's sandbox, so the prompt said: put the state machine in Python where it
+is unit-testable and keep the `.ps1` thin. Round 1 came back with
+`fresh_launch`, `rollback_slot` and `health_matches` **called by nothing but
+their own tests**, while the `.ps1` generated the nonce, deleted the marker,
+compared health and wrote the selector itself, in two places. Every green test
+covered code the product never ran; the code that ran had none. Grep for callers
+outside `tests/` before believing a "tested state machine" claim.
+
+**The second finding is the one a reviewer nearly misses.** `install.bat`
+hand-rolled `update-state.json` in PowerShell with four fields. `_git()` refuses
+without `git_executable` and `_verify_clone_remote` without `remote_identity`,
+so **every fresh clone install would have failed its first update check**.
+`clone_provenance()` existed, was tested, and carried both. When an installer
+writes state that library code reads, make the library write it.
+
+**The rig found two more, and both were compositions.** `:migrate_layout` moves
+`env` to `env-a`; `:make_env` then asked `uv venv` to create `env-a`, which
+refuses an existing environment — so the first updater-capable installer failed
+on exactly the machine it was written for. Both subroutines were correct
+individually and 26 structural tests over that file passed. Then the fix itself
+was half-right: it reused the slot on `if exist "%MC_PY%"`, and the demo
+machine's interpreter was a uv trampoline onto a Python that had been deleted
+three weeks earlier — **existence is not execution**.
+
+**That deleted Python is worth its own paragraph.** It lived in
+`block5b-20260804-124610\fresh-appdata\`: an old gate had redirected uv's Python
+install directory into its own evidence folder, the venv wrote that path into
+`pyvenv.cfg` permanently, and the operator's install broke silently when the
+fixture was cleaned up. Nothing in the repository could have caught it. The gate
+now checks the property — every slot interpreter must start and its
+`base_prefix` must exist outside the evidence directory — and the rule is folded
+into `CLAUDE.md`.
+
+**Five gate defects, and the last three are process, not code.**
+
+1. A limb that only *reads* an artifact must not run the mechanism itself; and
+   the non-uv limb reported the fixture importing the *checkout*, because
+   `python -c` puts the working directory first on `sys.path`. Use `-I` and a
+   cwd outside the repo.
+2. The layout limb checked that `env-a` exists, `active` is valid and the marker
+   matches — **all true on a machine where the migration never happened**. It
+   now proves the move by recording the pre-install state, and reports NOT
+   EXERCISED rather than passing on a move that did not occur. The operator's
+   question — "should I run install.bat first?" — is what exposed it.
+3. `Verify` compared the marker against a live `git rev-parse HEAD`, so an
+   ordinary `git pull` between phases read as a marker defect and cost a whole
+   gate rerun. Score against what `Prepare` recorded installing.
+4. `Verify` needed all four preceding phases and said so nowhere, surfacing them
+   one failing limb at a time. It preflights now, with the exact commands owed.
+5. Missing evidence reported **FAIL**. Absent evidence is NOT EXERCISED; nothing
+   ran the mechanism. Fixing that introduced a `NameError` — `need()` did not
+   exist in the rewrite — and **replaying the returned round-3 evidence through
+   the changed scorer is what caught it**. Replay real artifacts through a
+   changed scorer every time.
+
+**A passing gate is a place to look for defects, and this is the clearest
+instance yet.** Round 2 passed all ten limbs. The Micro-Manager-closed limb
+checked one added nonce, an unchanged slot and no rollback — but with no pending
+slot the launcher has nothing to roll back to, so it writes no report *whether
+or not health was reached*. Item 7 and half of item 8 had no evidence at all and
+the artifacts could not distinguish the outcomes. Round 3 captured the marker
+after the child exited and returned `launch_nonce == health_after_child_exited`.
+**Ask of every green limb: what would this look like if the mechanism had not
+run?**
+
+**Evidence deliberately split across two directories.** Round 3 ran only
+Prepare/Closed/Verify, so its `Healthy` and `Rollback` limbs have no artifacts
+and its banner reads FAILED. That is sound because `git diff` over `microclaw/`,
+`install.bat` and `scripts/` between the two rounds is **empty** — every commit
+between them is gate-side. Verify that diff before accepting split evidence, and
+write down that you did.
+
+**58b's carried-forward debt is discharged**: two real slot validators
+classified one shared config file, both `ready`, through real subprocesses.
+
+**Process.** One runner turn was killed by the harness mid-flight — the fifth
+across this design. It died *at the end*, with every edit landed, so it was
+preserved and committed by the coordinator with a message saying plainly that it
+was unreviewed and naming the one defect already known in it. Discard when a
+turn dies early; preserve when it dies late; either way say which in writing to
+the next turn.

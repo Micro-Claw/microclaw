@@ -368,6 +368,37 @@ input, ask which fixtures produce that shape, and write one that does.
   `acquire()` call. Getting this wrong moves hardware while frames are still
   being taken.
 
+## Four rules the updater block paid for
+
+Generic, from design/58. The Windows layout details live in that document.
+
+- **Only the thing outside both slots may write the thing outside both slots.**
+  When code can be replaced and rolled back, whatever selects *which* copy runs
+  must be written by something that is never itself replaced. A staged copy that
+  can rewrite its own launcher can strand the machine, and a rollback then lands
+  on a launcher written by the version being rolled back.
+- **A marker's existence is not health.** Proof that new code started is a
+  freshly written marker carrying a nonce the supervisor generated *for this
+  start*, after deleting any previous one. A file that is merely present proves
+  the previous run, and a check that accepts it will report a dead version as
+  healthy. The same shape as the engine contract above: *a device that is not
+  busy is not a device that arrived*, and — measured on the demo machine — **an
+  interpreter that exists is not an interpreter that runs**, because a
+  trampoline whose target is gone is still a file. Test by executing, not by
+  `exists()`.
+- **A gate must not leave production state pointing into its own evidence
+  folder.** Block 5b's gate redirected uv's Python install directory into a
+  throwaway fixture; the environment recorded that path permanently and the demo
+  machine's install broke three weeks later when the fixture was deleted.
+  Nothing in the suite could have caught it. If a gate redirects an environment
+  variable that something durable will write down, it has planted a delayed
+  failure — and the gate should check the property afterwards.
+- **When a block inserts a step *before* an existing one, test the state it
+  hands over.** 58c's first gate died because migration moved `env` to `env-a`
+  and the next subroutine then asked `uv venv` to create `env-a`, which refuses
+  an existing environment. Both subroutines were correct; their composition was
+  not, and 26 structural tests over the same file all passed.
+
 ## Debugging checklist
 
 Before proposing code changes to fix pytest failures, import errors, or
