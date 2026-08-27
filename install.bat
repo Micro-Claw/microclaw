@@ -22,9 +22,7 @@ setlocal EnableExtensions
 title Microclaw installer
 
 set "MC_HOME=%LOCALAPPDATA%\microclaw"
-set "MC_ENV=%MC_HOME%\env-a"
-set "MC_PY=%MC_ENV%\Scripts\python.exe"
-set "MC_EXE=%MC_ENV%\Scripts\microclaw.exe"
+set "MC_SOURCE_DIR=%~dp0."
 
 echo.
 echo   Microclaw installer
@@ -175,8 +173,25 @@ if exist "%MC_HOME%\env" if not exist "%MC_HOME%\env-a" (
     move "%MC_HOME%\env" "%MC_HOME%\env-a" >nul
     if errorlevel 1 exit /b 1
 )
-if not exist "%MC_HOME%\active-slot.txt" >"%MC_HOME%\active-slot.txt" echo a
-for /f "delims=" %%I in ('where microclaw 2^>nul') do call :report_unmanaged "%%~fI"
+if not exist "%MC_HOME%\active-slot.txt" (
+    >"%MC_HOME%\.active-slot.txt.tmp" echo a
+    move /Y "%MC_HOME%\.active-slot.txt.tmp" "%MC_HOME%\active-slot.txt" >nul
+    if errorlevel 1 exit /b 1
+)
+for /f "usebackq delims=" %%I in ("%MC_HOME%\active-slot.txt") do set "MC_ACTIVE_SLOT=%%I"
+if /i not "%MC_ACTIVE_SLOT%"=="a" if /i not "%MC_ACTIVE_SLOT%"=="b" (
+    echo   ERROR: active-slot.txt must contain exactly a or b.
+    exit /b 1
+)
+set "MC_ENV=%MC_HOME%\env-%MC_ACTIVE_SLOT%"
+set "MC_PY=%MC_ENV%\Scripts\python.exe"
+set "MC_EXE=%MC_ENV%\Scripts\microclaw.exe"
+echo   Installing into active slot %MC_ACTIVE_SLOT% at %MC_ENV%.
+for /f "delims=" %%I in ('where microclaw 2^>nul') do call :report_unmanaged "%%~fI" "PATH"
+if defined CONDA_PREFIX if exist "%CONDA_PREFIX%\Scripts\microclaw.exe" call :report_unmanaged "%CONDA_PREFIX%\Scripts\microclaw.exe" "CONDA_PREFIX"
+for %%R in (miniforge3 miniconda3 anaconda3) do for /d %%D in ("%USERPROFILE%\%%R\envs\*") do if exist "%%~fD\Scripts\microclaw.exe" call :report_unmanaged "%%~fD\Scripts\microclaw.exe" "common conda roots"
+echo   Detection covers PATH, CONDA_PREFIX, and common conda roots; an arbitrary
+echo   embedded Python cannot be discovered automatically and remains untouched.
 exit /b 0
 
 :report_unmanaged
@@ -185,6 +200,7 @@ echo %MC_OLD% | findstr /i /b /l /c:"%MC_HOME%\" >nul
 if not errorlevel 1 exit /b 0
 echo   Existing non-uv Microclaw environment left untouched at:
 echo     %MC_OLD%
+echo   Detected through %~2.
 echo   The desktop icon now moves to the managed installation at %MC_HOME%.
 exit /b 0
 
@@ -216,17 +232,11 @@ copy /Y "%~dp0scripts\Microclaw.cmd" "%MC_HOME%\Microclaw.cmd" >nul
 if errorlevel 1 exit /b 1
 copy /Y "%~dp0scripts\updater-launcher.ps1" "%MC_HOME%\updater-launcher.ps1" >nul
 if errorlevel 1 exit /b 1
+copy /Y "%~dp0scripts\launcher-protocol.txt" "%MC_HOME%\launcher-protocol.txt" >nul
+if errorlevel 1 exit /b 1
 set "MC_COMMIT=unknown"
-set "MC_PROVENANCE=public-head"
-set "MC_CLONE_PATH="
-set "MC_UPSTREAM="
-if exist "%~dp0.git" (
-    for /f "delims=" %%I in ('git -C "%~dp0" rev-parse HEAD 2^>nul') do set "MC_COMMIT=%%I"
-    for /f "delims=" %%I in ('git -C "%~dp0" rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2^>nul') do set "MC_UPSTREAM=%%I"
-    set "MC_PROVENANCE=clone"
-    set "MC_CLONE_PATH=%~dp0"
-)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$utf8 = New-Object System.Text.UTF8Encoding($false); $slot = @{ commit=$env:MC_COMMIT; required_launcher_protocol=1 }; [IO.File]::WriteAllText((Join-Path $env:MC_ENV 'microclaw-slot.json'), ($slot | ConvertTo-Json), $utf8); if (-not (Test-Path (Join-Path $env:MC_HOME 'update-state.json'))) { $state = @{ provenance=$env:MC_PROVENANCE; installed_commit=$env:MC_COMMIT; clone_path=$env:MC_CLONE_PATH; upstream=$env:MC_UPSTREAM }; [IO.File]::WriteAllText((Join-Path $env:MC_HOME 'update-state.json'), ($state | ConvertTo-Json), $utf8) }"
+if exist "%MC_SOURCE_DIR%\.git" for /f "delims=" %%I in ('git -C "%MC_SOURCE_DIR%" rev-parse HEAD 2^>nul') do set "MC_COMMIT=%%I"
+"%MC_PY%" -c "import sys; from pathlib import Path; from microclaw.updates import clone_provenance, public_provenance, write_slot_marker, write_state; source=Path(sys.argv[1]).resolve(); commit=sys.argv[2]; state=clone_provenance(source, commit) if (source/'.git').is_dir() else public_provenance(commit); write_state(state, Path(sys.argv[3])/'update-state.json'); write_slot_marker(commit, int(sys.argv[4]))" "%MC_SOURCE_DIR%" "%MC_COMMIT%" "%MC_HOME%" 1
 if errorlevel 1 exit /b 1
 exit /b 0
 

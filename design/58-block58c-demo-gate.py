@@ -1,4 +1,4 @@
-"""Block 58c demo gate: inspect the state left by the human mechanisms."""
+"""Block 58c Windows gate: prepare evidence, observe human launches, verify."""
 from __future__ import annotations
 
 import argparse
@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -19,24 +21,28 @@ RESULTS: list[dict[str, str]] = []
 
 
 class NotExercised(Exception):
-    """The named mechanism could not run. This is never a pass."""
+    """The mechanism could not run. This is never a pass."""
 
 
 class Tee:
-    def __init__(self, stream, path: Path):
-        self.stream, self.file = stream, path.open("w", encoding="utf-8")
+    def __init__(self, stream, path: Path, mode: str = "a"):
+        self.stream = stream
+        self.file = path.open(mode, encoding="utf-8")
+
     def write(self, data):
-        self.stream.write(data); self.file.write(data); return len(data)
+        self.stream.write(data)
+        self.file.write(data)
+        return len(data)
+
     def flush(self):
-        self.stream.flush(); self.file.flush()
+        self.stream.flush()
+        self.file.flush()
 
 
 def limb(name: str, fails_if: str):
-    """Run independently and record the mandatory falsifying control."""
     def decorate(fn):
         try:
-            detail = fn() or ""
-            status = "PASS"
+            detail, status = fn() or "", "PASS"
         except NotExercised as exc:
             detail, status = str(exc), "NOT EXERCISED"
         except Exception as exc:
@@ -48,120 +54,350 @@ def limb(name: str, fails_if: str):
     return decorate
 
 
-def need(path: Path, mechanism: str) -> Path:
+def run(command: list[str], *, env=None, timeout=900, input_text=None):
+    try:
+        return subprocess.run(command, capture_output=True, text=True, env=env,
+                              timeout=timeout, input=input_text, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise NotExercised(f"could not run {command[0]}: {exc}") from exc
+
+
+def require_success(completed, mechanism: str):
+    if completed.returncode:
+        raise NotExercised(
+            f"{mechanism} did not complete (exit {completed.returncode}): "
+            f"{completed.stderr or completed.stdout}"
+        )
+
+
+def tree_manifest(path: Path) -> dict[str, str]:
     if not path.exists():
-        raise NotExercised(f"missing {path.name}; human mechanism not exercised: {mechanism}")
-    return path
+        return {}
+    return {
+        str(item.relative_to(path)): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in sorted(candidate for candidate in path.rglob("*") if candidate.is_file())
+    }
 
 
-def tree_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    for item in sorted(p for p in path.rglob("*") if p.is_file()):
-        digest.update(str(item.relative_to(path)).encode()); digest.update(item.read_bytes())
-    return digest.hexdigest()
+def read_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8-sig").splitlines()
+    except FileNotFoundError:
+        return []
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", required=True); parser.add_argument("--out", required=True)
-    args = parser.parse_args()
-    repo, out = Path(args.repo).resolve(), Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    sys.stdout = sys.stderr = Tee(sys.__stdout__, out / "gate.txt")
-    managed = Path(os.environ["LOCALAPPDATA"]) / "microclaw"
-    appdata = Path(os.environ["APPDATA"]) / "microclaw"
-    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                         capture_output=True, text=True, check=True).stdout.strip()
+def write_json(path: Path, value) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def wait_for_new_nonce(log: Path, old_count: int, timeout: float = 45) -> list[str]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        lines = [line for line in read_lines(log) if " nonce=" in line]
+        if len(lines) > old_count:
+            return lines
+        time.sleep(0.2)
+    raise NotExercised("desktop icon did not produce a launcher nonce within 45 seconds")
+
+
+def wait_for_slot_processes_to_exit(timeout: float = 60) -> None:
+    deadline = time.time() + timeout
+    command = ["powershell", "-NoProfile", "-Command",
+               "@(Get-CimInstance Win32_Process | Where-Object "
+               "{$_.CommandLine -match 'env-[ab].*microclaw.exe.*serve'}).Count"]
+    while time.time() < deadline:
+        completed = run(command, timeout=10)
+        if completed.returncode == 0 and completed.stdout.strip() in {"", "0"}:
+            return
+        time.sleep(0.5)
+    raise NotExercised("slot serve child did not exit; close its console or press Enter")
+
+
+def prepare(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
+    if out.exists():
+        raise RuntimeError(f"evidence directory already exists: {out}")
+    out.mkdir(parents=True)
+    sys.stdout = sys.stderr = Tee(sys.__stdout__, out / "gate.txt", "w")
+    backup = out / "backup"
+    backup.mkdir()
+    if appdata.exists():
+        shutil.copytree(appdata, backup / "appdata-microclaw")
+    legacy = managed / "env"
+    if legacy.exists():
+        shutil.copytree(legacy, backup / "legacy-env")
+    print(f"BACKUP COPY: {backup}")
+    write_json(out / "appdata-before.json", tree_manifest(appdata))
+
+    nonuv = out / "nonuv"
+    completed = run(["uv", "venv", "--python", "3.12", str(nonuv)])
+    require_success(completed, "non-uv fixture creation")
+    completed = run(["uv", "pip", "install", "--python",
+                     str(nonuv / "Scripts" / "python.exe"), "--no-deps", str(repo)])
+    require_success(completed, "non-uv fixture install")
+    purelib = run([str(nonuv / "Scripts" / "python.exe"), "-c",
+                   "import sysconfig; print(sysconfig.get_path('purelib'))"])
+    require_success(purelib, "non-uv site-packages resolution")
+    site_packages = Path(purelib.stdout.strip())
+    write_json(out / "nonuv.json", {
+        "python": str(nonuv / "Scripts" / "python.exe"),
+        "site_packages": str(site_packages),
+        "before": tree_manifest(site_packages),
+        "detection_control": "CONDA_PREFIX (fixture deliberately absent from PATH)",
+    })
+
+    install_env = dict(os.environ)
+    install_env["CONDA_PREFIX"] = str(nonuv)
+    install_env["PATH"] = os.pathsep.join(
+        part for part in install_env.get("PATH", "").split(os.pathsep)
+        if Path(part).resolve() != (nonuv / "Scripts").resolve()
+    )
+    install = repo / "install.bat"
+    first = run(["cmd", "/c", str(install)], env=install_env, input_text="\n" * 8)
+    (out / "install-first.txt").write_text(first.stdout + first.stderr, encoding="utf-8")
+    require_success(first, "first install.bat migration")
+    active_before = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
+    second = run(["cmd", "/c", str(install)], env=install_env, input_text="\n" * 8)
+    (out / "install-second.txt").write_text(second.stdout + second.stderr, encoding="utf-8")
+    require_success(second, "second install.bat idempotence")
+    active_after = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
+    env_a_python = managed / "env-a" / "Scripts" / "python.exe"
+    switch = run([str(env_a_python), "-c",
+                  "from pathlib import Path; from microclaw.updates import "
+                  "_write_slot_text; import sys; _write_slot_text(Path(sys.argv[1]), 'b')",
+                  str(managed / "active-slot.txt")])
+    require_success(switch, "controlled active-b installer fixture")
+    third = run(["cmd", "/c", str(install)], env=install_env, input_text="\n" * 8)
+    (out / "install-active-b.txt").write_text(third.stdout + third.stderr, encoding="utf-8")
+    require_success(third, "install.bat with b active")
+    env_b_python = managed / "env-b" / "Scripts" / "python.exe"
+    restore = run([str(env_b_python), "-c",
+                   "from pathlib import Path; from microclaw.updates import "
+                   "_write_slot_text; import sys; _write_slot_text(Path(sys.argv[1]), 'a')",
+                   str(managed / "active-slot.txt")])
+    require_success(restore, "restore active-a after active-b installer control")
+    write_json(out / "install-state.json", {
+        "before_second": active_before, "after_second": active_after,
+        "active_b_log_named_env_b": "Installing into active slot b" in third.stdout
+                                    and str(managed / "env-b") in third.stdout,
+        "final_active": (managed / "active-slot.txt").read_text(encoding="ascii").strip(),
+    })
+
+    sha = run(["git", "-C", str(repo), "rev-parse", "HEAD"])
+    require_success(sha, "checkout commit resolution")
+    write_json(out / "prepare.json", {"backup": str(backup), "commit": sha.stdout.strip()})
+    print("PREPARE COMPLETE. Continue with the human runbook.")
+    return 0
+
+
+def observe_healthy(out: Path, managed: Path) -> int:
+    log = managed / "launcher.log"
+    old = len([line for line in read_lines(log) if " nonce=" in line])
+    print("Double-click the Microclaw desktop icon now. Leave the server console open.")
+    lines = wait_for_new_nonce(log, old)
+    command = ["powershell", "-NoProfile", "-Command",
+               "Get-CimInstance Win32_Process | Where-Object "
+               "{$_.CommandLine -match 'env-[ab].*microclaw.exe.*serve'} | "
+               "Select-Object ProcessId,ExecutablePath,CommandLine | Format-List"]
+    process = run(command, timeout=20)
+    (out / "process-command.txt").write_text(process.stdout + process.stderr,
+                                               encoding="utf-8")
+    if process.returncode or not re.search(r"env-[ab].*microclaw\.exe.*serve",
+                                           process.stdout, re.I | re.S):
+        raise NotExercised("real desktop child command line was not captured")
+    write_json(out / "healthy-observation.json", {"nonce_line": lines[-1]})
+    print("Healthy desktop child captured. Stop it with Ctrl+C before the next step.")
+    return 0
+
+
+def observe_closed(out: Path, managed: Path) -> int:
+    log = managed / "launcher.log"
+    before_lines = read_lines(log)
+    active = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
+    (managed / "rollback-report.txt").unlink(missing_ok=True)
+    print("With Micro-Manager closed, double-click the Microclaw icon now. "
+          "After the bridge refusal appears, press Enter in that console.")
+    wait_for_new_nonce(log, len([line for line in before_lines if " nonce=" in line]))
+    wait_for_slot_processes_to_exit()
+    after_lines = read_lines(log)
+    write_json(out / "closed-mm-observation.json", {
+        "before_nonce_count": len([line for line in before_lines if " nonce=" in line]),
+        "after_nonce_count": len([line for line in after_lines if " nonce=" in line]),
+        "active_before": active,
+        "active_after": (managed / "active-slot.txt").read_text(encoding="ascii").strip(),
+        "rollback_report_exists": (managed / "rollback-report.txt").exists(),
+    })
+    return 0
+
+
+def observe_rollback(out: Path, managed: Path) -> int:
+    active = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
+    failed = "b" if active == "a" else "a"
+    package = managed / f"env-{failed}" / "Lib" / "site-packages" / "microclaw"
+    hidden = package.with_name("microclaw.block58c")
+    if not package.is_dir():
+        raise NotExercised(f"real candidate package missing: {package}")
+    (managed / "pending-slot.txt").write_text(failed + "\n", encoding="ascii")
+    package.rename(hidden)
+    log = managed / "launcher.log"
+    before = read_lines(log)
+    try:
+        print(f"Double-click the icon now. Slot {failed} will start but fail import before health.")
+        wait_for_new_nonce(log, len([line for line in before if " nonce=" in line]))
+        wait_for_slot_processes_to_exit()
+    finally:
+        hidden.rename(package)
+    middle = read_lines(log)
+    if (managed / "active-slot.txt").read_text(encoding="ascii").strip() != active:
+        raise AssertionError("failed launch did not atomically restore the known-good slot")
+    print("Double-click the icon once more. The successful launch must print the deferred rollback.")
+    wait_for_new_nonce(log, len([line for line in middle if " nonce=" in line]))
+    deadline = time.time() + 45
+    while time.time() < deadline and not any(
+            "rollback-reported=" in line for line in read_lines(log)[len(middle):]):
+        time.sleep(0.2)
+    after = read_lines(log)
+    write_json(out / "rollback-observation.json", {
+        "active": active, "failed": failed,
+        "before": before, "after_failed": middle, "after_success": after,
+    })
+    print("Rollback report captured. Stop the healthy server with Ctrl+C.")
+    return 0
+
+
+def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
+    sha = run(["git", "-C", str(repo), "rev-parse", "HEAD"])
+    require_success(sha, "checkout identity")
+    checkout_sha = sha.stdout.strip()
 
     @limb("migrated layout and immutable commit",
-          "env-a is absent, active is not a, or env-a metadata is not checkout HEAD")
+          "env-a is absent, active is invalid, or active metadata differs from checkout HEAD")
     def _():
-        need(managed / "env-a", "install.bat migration")
-        active = need(managed / "active-slot.txt", "install.bat migration").read_text().strip()
-        marker = json.loads(need(managed / "env-a" / "microclaw-slot.json",
-                                 "installer slot marker").read_text(encoding="utf-8-sig"))
-        if active != "a" or marker.get("commit") != sha:
-            raise AssertionError(f"active={active!r}, marker commit={marker.get('commit')!r}, HEAD={sha}")
-        return f"env-a exists; active=a; commit={sha}"
+        active = (managed / "active-slot.txt").read_text(encoding="ascii").strip()
+        marker = json.loads((managed / f"env-{active}" / "microclaw-slot.json").read_text(
+            encoding="utf-8"))
+        if not (managed / "env-a").is_dir() or active not in {"a", "b"} or marker.get("commit") != checkout_sha:
+            raise AssertionError(f"active={active}; marker={marker}; HEAD={checkout_sha}")
+        return f"env-a exists; active={active}; commit={checkout_sha}"
 
     @limb("desktop command line uses selected slot",
-          "the captured real process does not name env-a/env-b microclaw.exe serve")
+          "the captured real process does not name an env-a/env-b microclaw.exe serve child")
     def _():
-        text = need(out / "process-command.txt", "desktop icon plus Win32_Process capture").read_text()
+        text = (out / "process-command.txt").read_text(encoding="utf-8")
         if not re.search(r"env-[ab].*microclaw\.exe.*serve", text, re.I | re.S):
-            raise AssertionError("captured process was not the slot serve child")
+            raise AssertionError(text)
         return text.strip()
 
     @limb("nonce-matched health marker",
           "health is absent or differs from the last launcher-generated nonce")
     def _():
-        health = need(managed / "launch-health.txt", "desktop launcher health").read_text().strip()
-        log = need(managed / "launcher.log", "launcher nonce control").read_text().splitlines()
-        match = re.search(r"nonce=([0-9a-f]{32})", log[-1]) if log else None
+        health = (managed / "launch-health.txt").read_text(encoding="ascii").strip()
+        nonce_lines = [line for line in read_lines(managed / "launcher.log") if " nonce=" in line]
+        match = re.search(r"nonce=([0-9a-f]{32})", nonce_lines[-1]) if nonce_lines else None
         if not match or health != match.group(1):
-            raise AssertionError(f"health={health!r}; last launch={log[-1] if log else 'none'}")
+            raise AssertionError(f"health={health!r}; last={nonce_lines[-1] if nonce_lines else None}")
         return f"health equals fresh launcher nonce {health}"
 
-    @limb("roaming config, key, and histories unchanged",
-          "the sorted SHA256 manifests differ or either human hash step was skipped")
+    @limb("Micro-Manager-closed launch is final without rollback or relaunch",
+          "the launch adds other than one nonce, changes active, or writes rollback")
     def _():
-        before = need(out / "appdata-before.txt", "pre-install APPDATA hashes").read_bytes()
-        after = need(out / "appdata-after.txt", "post-mechanism APPDATA hashes").read_bytes()
+        data = json.loads((out / "closed-mm-observation.json").read_text(encoding="utf-8"))
+        if (data["after_nonce_count"] - data["before_nonce_count"] != 1
+                or data["active_before"] != data["active_after"]
+                or data["rollback_report_exists"]):
+            raise AssertionError(data)
+        return json.dumps(data, sort_keys=True)
+
+    @limb("rollback is reported once on the next successful launch",
+          "failed child does not start, active is not restored, or report is absent/duplicated/misordered")
+    def _():
+        data = json.loads((out / "rollback-observation.json").read_text(encoding="utf-8"))
+        before, middle, after = data["before"], data["after_failed"], data["after_success"]
+        failed_new = middle[len(before):]
+        success_new = after[len(middle):]
+        reports_failed = [line for line in failed_new if "rollback-reported=" in line]
+        reports_success = [line for line in success_new if "rollback-reported=" in line]
+        if (len([line for line in failed_new if " nonce=" in line]) != 1
+                or reports_failed or len(reports_success) != 1):
+            raise AssertionError({"failed": failed_new, "success": success_new})
+        return reports_success[0]
+
+    @limb("APPDATA config, key, and histories unchanged",
+          "the complete before/after byte-hash manifests differ")
+    def _():
+        before = json.loads((out / "appdata-before.json").read_text(encoding="utf-8"))
+        after = tree_manifest(appdata)
         if before != after:
             raise AssertionError("APPDATA manifests differ")
-        return f"byte-identical manifests; current tree hash={tree_hash(appdata) if appdata.exists() else 'empty'}"
+        return f"unchanged files={len(after)}"
 
-    @limb("installer is idempotent and retains active slot",
-          "either installer run failed or active selector changed on the second run")
+    @limb("installer twice retains active slot",
+          "either installer did not complete or the second run changed active-slot.txt")
     def _():
-        first = need(out / "install-first.txt", "first install.bat")
-        second = need(out / "install-second.txt", "second install.bat")
-        before = need(out / "active-before-second.txt", "pre-second selector").read_text().strip()
-        after = need(out / "active-after-second.txt", "post-second selector").read_text().strip()
-        if before != after or before not in {"a", "b"}:
-            raise AssertionError(f"active changed {before!r}->{after!r}")
-        return f"both logs exist ({first.stat().st_size}, {second.stat().st_size} bytes); active={after}"
+        data = json.loads((out / "install-state.json").read_text(encoding="utf-8"))
+        if (data["before_second"] != data["after_second"]
+                or not data["active_b_log_named_env_b"] or data["final_active"] != "a"):
+            raise AssertionError(data)
+        return json.dumps(data, sort_keys=True)
 
     @limb("two real slot validators classify one shared config",
-          "either real slot CLI cannot classify, classifications differ unsafely, or env-b is absent")
+          "either real CLI is absent, classification fails, or comparison refuses")
     def _():
         a = managed / "env-a" / "Scripts" / "microclaw.exe"
         b = managed / "env-b" / "Scripts" / "microclaw.exe"
         if not a.exists() or not b.exists():
-            raise NotExercised("a real second slot does not exist; 58b debt remains")
+            raise NotExercised("real second slot is absent; 58b debt remains")
         shared = appdata / "safety_config.yaml"
         active_class = config.classify_config_with_slot(a, shared)
         candidate_class = config.classify_config_with_slot(b, shared)
         comparison = config.compare_slot_configurations(a, b, shared)
-        detail = {"active": active_class, "candidate": candidate_class,
-                  "proceed": comparison.proceed}
         if not comparison.proceed:
-            raise AssertionError(detail)
-        return json.dumps(detail, sort_keys=True)
+            raise AssertionError(comparison.reason)
+        return json.dumps({"active": active_class, "candidate": candidate_class}, sort_keys=True)
 
-    @limb("non-uv environment remains byte-identical and importable",
-          "its pre/post site-packages hashes differ, import path moved, or installer notice is absent")
+    @limb("non-uv CONDA_PREFIX environment remains untouched",
+          "site-packages changes, import moves, or the explicit detection notice/control is absent")
     def _():
-        record = need(out / "nonuv.json", "throwaway non-uv environment setup")
-        data = json.loads(record.read_text())
-        path = Path(data["python"])
-        before = need(out / "nonuv-before.txt", "pre-install site-packages hash").read_text().strip()
-        after = tree_hash(Path(data["site_packages"]))
-        if before != after:
-            raise AssertionError("non-uv site-packages changed")
-        imported = subprocess.run([str(path), "-c", "import microclaw; print(microclaw.__file__)"],
-                                  capture_output=True, text=True, check=True).stdout.strip()
-        notice = need(out / "install-first.txt", "installer non-uv notice").read_text()
-        if str(Path(data["site_packages"])) not in imported or "left untouched" not in notice or "icon now moves" not in notice:
-            raise AssertionError(f"import={imported!r}; required installer notice missing")
-        return f"unchanged hash={after}; import={imported}"
+        data = json.loads((out / "nonuv.json").read_text(encoding="utf-8"))
+        after = tree_manifest(Path(data["site_packages"]))
+        imported = run([data["python"], "-c", "import microclaw; print(microclaw.__file__)"])
+        require_success(imported, "non-uv import control")
+        notice = (out / "install-first.txt").read_text(encoding="utf-8")
+        if (data["before"] != after or data["site_packages"] not in imported.stdout
+                or "Detected through CONDA_PREFIX" not in notice
+                or data["detection_control"] != "CONDA_PREFIX (fixture deliberately absent from PATH)"):
+            raise AssertionError({"import": imported.stdout, "control": data["detection_control"]})
+        return f"{data['detection_control']}; unchanged files={len(after)}"
 
-    (out / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n")
+    write_json(out / "results.json", RESULTS)
     for result in RESULTS:
-        print(f"{result['status']}: {result['name']} — {result['detail']}; FAILS IF: {result['fails_if']}")
-    passed = all(r["status"] == "PASS" for r in RESULTS)
-    print("BLOCK 58c DEMO GATE " + ("PASSED" if passed else "DID NOT PASS"))
-    return 0 if passed else 1
+        print(f"{result['status']}: {result['name']} — {result['detail']}; "
+              f"FAILS IF: {result['fails_if']}")
+    failed = any(result["status"] == "FAIL" for result in RESULTS)
+    incomplete = any(result["status"] == "NOT EXERCISED" for result in RESULTS)
+    banner = "FAILED" if failed else "INCOMPLETE" if incomplete else "PASSED"
+    print(f"BLOCK 58c DEMO GATE {banner}")
+    return 0 if banner == "PASSED" else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", required=True,
+                        choices=("prepare", "healthy", "closed", "rollback", "verify"))
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args()
+    repo, out = Path(args.repo).resolve(), Path(args.out).resolve()
+    managed = Path(os.environ["LOCALAPPDATA"]) / "microclaw"
+    appdata = Path(os.environ["APPDATA"]) / "microclaw"
+    if args.mode == "prepare":
+        return prepare(repo, out, managed, appdata)
+    if not out.is_dir():
+        raise NotExercised("prepare phase did not create the evidence directory")
+    sys.stdout = sys.stderr = Tee(sys.__stdout__, out / "gate.txt")
+    if args.mode == "verify":
+        return verify(repo, out, managed, appdata)
+    return {"healthy": observe_healthy, "closed": observe_closed,
+            "rollback": observe_rollback}[args.mode](out, managed)
 
 
 if __name__ == "__main__":

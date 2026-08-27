@@ -46,20 +46,37 @@ def test_managed_cmd_is_slot_independent_and_bypasses_execution_policy():
 
 def test_powershell_launcher_has_activation_health_and_rollback_branches():
     text = PS1.read_text(encoding="utf-8")
-    for mechanism in ("active-slot.txt", "pending-slot.txt", "[Guid]::NewGuid()",
-                      "Remove-Item -LiteralPath $healthPath", "-ceq $nonce",
-                      "if (-not $healthy)", "rolled back", "$child.WaitForExit()"):
+    for mechanism in ("active-slot.txt", "activate_pending", "fresh_launch",
+                      "health_matches", "rollback_slot", "consume_rollback_report",
+                      "if (-not $healthy)", "$child.WaitForExit()"):
         assert mechanism in text
     assert "ConvertFrom-Json" not in text
+    assert "[Guid]::NewGuid()" not in text
+    assert "Set-Content -LiteralPath $activePath" not in text
+    assert "Remove-Item -LiteralPath $healthPath" not in text
 
 
 def test_installer_migrates_only_localappdata_env_and_never_uses_editable_install(bat):
     assert 'move "%MC_HOME%\\env" "%MC_HOME%\\env-a"' in bat
-    assert 'set "MC_ENV=%MC_HOME%\\env-a"' in bat
-    assert "CONDA_PREFIX" not in bat
+    assert 'set "MC_ENV=%MC_HOME%\\env-%MC_ACTIVE_SLOT%"' in bat
+    assert 'set "MC_ENV=%CONDA_PREFIX%' not in bat
+    assert 'pip install --python "%CONDA_PREFIX%' not in bat
     assert " pip install -e " not in bat
     assert "Existing non-uv Microclaw environment left untouched" in bat
     assert "The desktop icon now moves" in bat
+
+
+def test_installer_uses_package_provenance_and_slot_marker_contracts(bat):
+    assert "clone_provenance, public_provenance, write_slot_marker, write_state" in bat
+    assert "ConvertTo-Json" not in bat
+    assert 'set "MC_SOURCE_DIR=%~dp0."' in bat
+    assert 'git -C "%MC_SOURCE_DIR%" rev-parse HEAD' in bat
+
+
+def test_installer_declares_and_copies_launcher_protocol(bat):
+    declaration = ROOT / "scripts" / "launcher-protocol.txt"
+    assert declaration.read_text(encoding="ascii").strip() == "1"
+    assert 'scripts\\launcher-protocol.txt" "%MC_HOME%\\launcher-protocol.txt' in bat
 
 
 def test_labels_and_calls_agree(bat):

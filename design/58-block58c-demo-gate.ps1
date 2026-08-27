@@ -1,13 +1,22 @@
+param([ValidateSet('Prepare','Healthy','Closed','Rollback','Verify')][string]$Mode)
 $ErrorActionPreference = 'Stop'
 $repo = (git rev-parse --show-toplevel).Trim()
 Set-Location $repo
-git merge-base --is-ancestor 01b634f HEAD
-if ($LASTEXITCODE -ne 0) { throw 'This checkout does not contain block 58c.' }
+git merge-base --is-ancestor BLOCK58C_IMPLEMENTATION_COMMIT HEAD
+if ($LASTEXITCODE -ne 0) { throw 'This checkout does not contain the complete block 58c implementation.' }
 $pointer = "$env:LOCALAPPDATA\microclaw\58c-gate-evidence.txt"
-if (-not (Test-Path $pointer)) { throw 'The human gate did not create its evidence pointer.' }
-$evidence = (Get-Content $pointer -Raw).Trim()
-uv run python (Join-Path $repo 'design\58-block58c-demo-gate.py') --repo $repo --out $evidence
+if ($Mode -eq 'Prepare') {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $evidence = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "block58c-$stamp"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pointer) | Out-Null
+    Set-Content -LiteralPath $pointer -Value $evidence -Encoding ASCII
+} else {
+    if (-not (Test-Path -LiteralPath $pointer)) { throw 'Run the Prepare phase first.' }
+    $evidence = (Get-Content -LiteralPath $pointer -Raw).Trim()
+}
+uv run python (Join-Path $repo 'design\58-block58c-demo-gate.py') `
+    --mode $Mode.ToLowerInvariant() --repo $repo --out $evidence
 $code = $LASTEXITCODE
 Write-Host "Evidence written to: $evidence"
-if ($code -ne 0) { Write-Host 'GATE DID NOT PASS - FAIL and NOT EXERCISED are never passes.' -ForegroundColor Red }
+if ($code -ne 0) { Write-Host "$Mode did not pass; send the evidence folder anyway." -ForegroundColor Red }
 exit $code

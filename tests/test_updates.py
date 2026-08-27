@@ -457,19 +457,32 @@ def test_launcher_state_activates_and_consumes_pending(tmp_path):
     (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
     _slot(tmp_path, "b")
     (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
-    assert updates.activate_pending(tmp_path) == ("b", "a")
-    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text().strip() == "b"
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "b"
     assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
 
 
-def test_launcher_rejects_candidate_requiring_newer_protocol(tmp_path):
+def test_launcher_discards_pending_candidate_requiring_newer_protocol(tmp_path):
     (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
     _slot(tmp_path, "b", protocol=updates.LAUNCHER_PROTOCOL + 1)
     (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
-    with pytest.raises(updates.UpdateError, match="bootstrap the launcher"):
-        updates.activate_pending(tmp_path)
-    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text().strip() == "a"
-    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text().strip() == "b"
+    assert updates.activate_pending(tmp_path, 1) == ("a", None)
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "a"
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+
+
+def test_launcher_discards_pending_with_missing_metadata(tmp_path):
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    assert updates.activate_pending(tmp_path, 1) == ("a", None)
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+
+
+def test_launcher_discards_corrupt_pending_selector_and_runs_known_good(tmp_path):
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("not-a-slot\n", encoding="ascii")
+    assert updates.activate_pending(tmp_path, 1) == ("a", None)
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
 
 
 def test_fresh_nonce_removes_stale_marker_and_only_matching_health_passes(tmp_path):
@@ -506,12 +519,19 @@ def test_missing_launcher_identity_writes_no_health(tmp_path, missing):
 def test_rollback_restores_known_good_and_defers_report(tmp_path):
     (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("b\n", encoding="ascii")
     assert updates.rollback_slot(tmp_path, "b", "a") == "a"
-    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text().strip() == "a"
-    assert "rolled back from slot b" in (tmp_path / updates.ROLLBACK_NAME).read_text()
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "a"
+    assert "rolled back from slot b" in (tmp_path / updates.ROLLBACK_NAME).read_text(encoding="utf-8")
+    assert "rolled back" in updates.consume_rollback_report(tmp_path)
+    assert updates.consume_rollback_report(tmp_path) is None
 
 
 def test_failed_uv_stage_keeps_active_selector_and_publishes_no_pending(tmp_path, monkeypatch):
-    updates.write_state({"provenance": "public-head"}, tmp_path / updates.STATE_NAME)
+    updates.write_state({"provenance": "public-head", "next_check": 100},
+                        tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
     active_path = tmp_path / updates.ACTIVE_SLOT_NAME
     active_path.write_bytes(b"a\n")
     calls = []
@@ -523,12 +543,37 @@ def test_failed_uv_stage_keeps_active_selector_and_publishes_no_pending(tmp_path
     monkeypatch.setattr(updates.subprocess, "run", fail)
     candidate = updates.Candidate("b" * 40, "candidate", "public-head")
     with pytest.raises(updates.UpdateError, match="the update could not be built"):
-        updates.stage_inactive_slot(tmp_path, tmp_path / "source", candidate,
-                                    uv_executable="uv.exe")
+        updates.stage_inactive_slot(tmp_path, source, candidate,
+                                    uv_executable="uv.exe", now=10)
     assert calls and all(str(tmp_path / "env-b") in " ".join(call) for call in calls)
     assert active_path.read_bytes() == b"a\n"
     assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
     assert updates.load_state(tmp_path / updates.STATE_NAME)["build_failed_commit"] == candidate.sha
+    calls.clear()
+    with pytest.raises(updates.UpdateError, match="the update could not be built"):
+        updates.stage_inactive_slot(tmp_path, source, candidate,
+                                    uv_executable="uv.exe", now=11)
+    assert calls == []
+
+
+def test_staging_reads_candidate_protocol_and_refuses_old_installed_launcher(tmp_path):
+    updates.write_state({"provenance": "public-head"}, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("2\n", encoding="ascii")
+    with pytest.raises(updates.UpdateError, match="bootstrap the launcher"):
+        updates.stage_inactive_slot(
+            tmp_path, source, updates.Candidate("c" * 40, "new", "clone"),
+            uv_executable="uv.exe",
+        )
+
+
+def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
+    exe = tmp_path / "env-a" / "Scripts" / "python.exe"
+    updates.write_slot_marker("unknown", 1, executable=exe)
+    assert updates.read_slot_marker(executable=exe)["commit"] == "unknown"
 
 
 def test_interval_jitter_and_cached_failure_suppress_retry(tmp_path, monkeypatch):

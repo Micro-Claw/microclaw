@@ -1229,7 +1229,8 @@ def test_bridge_failure_after_health_leaves_nonce_marker(monkeypatch, tmp_path):
     exe = tmp_path / "env-a" / "Scripts" / "python.exe"
     updates.write_slot_marker("a" * 40, 1, executable=exe)
     env = {updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
-           updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "nonce_abcdefghijkl"}
+           updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "nonce_abcdefghijkl",
+           updates.LAUNCH_PROTOCOL_ENV: "1"}
     write_health = updates.write_launcher_health
     monkeypatch.setattr(webserve.config, "validate_safety_config", lambda path: object())
     monkeypatch.setattr(updates, "write_launcher_health",
@@ -1239,7 +1240,7 @@ def test_bridge_failure_after_health_leaves_nonce_marker(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="bridge closed"):
         webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x"),
                              no_browser=True))
-    assert (tmp_path / updates.HEALTH_NAME).read_text().strip() == "nonce_abcdefghijkl"
+    assert (tmp_path / updates.HEALTH_NAME).read_text(encoding="ascii").strip() == "nonce_abcdefghijkl"
 
 
 def test_serve_opens_restricted_setup_for_an_unreviewed_config(tmp_path, monkeypatch, capsys):

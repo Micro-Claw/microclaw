@@ -52,10 +52,21 @@ LAUNCHER_OWNED_ENV = "MICROCLAW_LAUNCHER_OWNED"
 LAUNCH_NONCE_ENV = "MICROCLAW_LAUNCH_NONCE"
 LAUNCH_SLOT_ENV = "MICROCLAW_LAUNCH_SLOT"
 LAUNCH_ROOT_ENV = "MICROCLAW_LAUNCH_ROOT"
+LAUNCH_PROTOCOL_ENV = "MICROCLAW_LAUNCHER_PROTOCOL"
+LAUNCHER_PROTOCOL_NAME = "launcher-protocol.txt"
 
 
 class UpdateError(Exception):
     """An update source was unavailable or failed validation."""
+
+
+@dataclass(frozen=True)
+class Candidate:
+    sha: str
+    subject: str
+    source: str
+    canonical_repo: str = REPO
+    warning: str | None = None
 
 
 def _read_slot_text(path: Path, *, required: bool) -> str | None:
@@ -79,27 +90,55 @@ def _write_slot_text(path: Path, slot: str) -> None:
     os.replace(temporary, path)
 
 
-def activate_pending(root: str | Path) -> tuple[str, str | None]:
-    """Consume a valid pending selector before launch and return (active, previous)."""
+def installed_launcher_protocol(root: str | Path) -> int:
+    path = Path(root) / LAUNCHER_PROTOCOL_NAME
+    try:
+        value = int(path.read_text(encoding="ascii").strip())
+    except (FileNotFoundError, OSError, UnicodeError, ValueError) as exc:
+        raise UpdateError(f"invalid installed launcher protocol: {exc}") from exc
+    if value < 1:
+        raise UpdateError("invalid installed launcher protocol")
+    return value
+
+
+def candidate_launcher_protocol(source: str | Path) -> int:
+    """Read the candidate's source-controlled minimum before building it."""
+    path = Path(source) / "scripts" / LAUNCHER_PROTOCOL_NAME
+    try:
+        value = int(path.read_text(encoding="ascii").strip())
+    except (FileNotFoundError, OSError, UnicodeError, ValueError) as exc:
+        raise UpdateError(f"candidate has no valid launcher protocol declaration: {exc}") from exc
+    if value < 1:
+        raise UpdateError("candidate has no valid launcher protocol declaration")
+    return value
+
+
+def activate_pending(root: str | Path, launcher_protocol: int) -> tuple[str, str | None]:
+    """Consume pending before launch; invalid candidates leave known-good active."""
     base = Path(root)
     active_path = base / ACTIVE_SLOT_NAME
     active = _read_slot_text(active_path, required=True)
     pending_path = base / PENDING_SLOT_NAME
-    pending = _read_slot_text(pending_path, required=False)
+    try:
+        pending = _read_slot_text(pending_path, required=False)
+    except UpdateError:
+        pending_path.unlink(missing_ok=True)
+        return active, None
     if pending is None:
         return active, None
     if pending == active:
         pending_path.unlink()
         return active, None
-    marker = read_slot_marker(executable=base / f"env-{pending}" / "Scripts" / "python.exe")
-    if not marker:
-        raise UpdateError(f"pending slot {pending!r} has no slot metadata")
-    required = marker.get("required_launcher_protocol")
-    if type(required) is not int or required > LAUNCHER_PROTOCOL:
-        raise UpdateError(
-            "installed launcher is too old for this update; run the installer once "
-            "to bootstrap the launcher"
+    try:
+        marker = read_slot_marker(
+            executable=base / f"env-{pending}" / "Scripts" / "python.exe"
         )
+        required = marker.get("required_launcher_protocol") if marker else None
+        if type(required) is not int or required > launcher_protocol:
+            raise UpdateError("pending slot is incompatible with the installed launcher")
+    except (UpdateError, OSError, UnicodeError):
+        pending_path.unlink(missing_ok=True)
+        return active, None
     _write_slot_text(active_path, pending)
     pending_path.unlink()
     return pending, active
@@ -139,6 +178,16 @@ def rollback_slot(root: str | Path, failed: str, previous: str | None) -> str:
     return previous
 
 
+def consume_rollback_report(root: str | Path) -> str | None:
+    path = Path(root) / ROLLBACK_NAME
+    try:
+        report = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    path.unlink()
+    return report
+
+
 def validate_launch_environment(
     environ: dict[str, str] | None = None, *, executable: str | Path | None = None,
 ) -> tuple[Path, str, str] | None:
@@ -146,8 +195,9 @@ def validate_launch_environment(
     env = os.environ if environ is None else environ
     if env.get(LAUNCHER_OWNED_ENV) != "1":
         return None
-    root_text, slot, nonce = (
-        env.get(LAUNCH_ROOT_ENV), env.get(LAUNCH_SLOT_ENV), env.get(LAUNCH_NONCE_ENV)
+    root_text, slot, nonce, protocol_text = (
+        env.get(LAUNCH_ROOT_ENV), env.get(LAUNCH_SLOT_ENV), env.get(LAUNCH_NONCE_ENV),
+        env.get(LAUNCH_PROTOCOL_ENV),
     )
     if not root_text or slot not in {"a", "b"} or not nonce:
         raise UpdateError("launcher health environment is incomplete")
@@ -160,8 +210,12 @@ def validate_launch_environment(
     marker = read_slot_marker(executable=exe)
     if not marker:
         raise UpdateError("executing slot has no metadata")
+    try:
+        launcher_protocol = int(protocol_text or "")
+    except ValueError as exc:
+        raise UpdateError("launcher health environment is incomplete") from exc
     required = marker.get("required_launcher_protocol")
-    if type(required) is not int or required > LAUNCHER_PROTOCOL:
+    if type(required) is not int or required > launcher_protocol:
         raise UpdateError("executing slot requires a newer launcher protocol")
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", nonce):
         raise UpdateError("invalid launch nonce")
@@ -185,7 +239,7 @@ def write_launcher_health(
 
 def stage_inactive_slot(
     root: str | Path, source: str | Path, candidate: Candidate, *,
-    uv_executable: str | Path, required_launcher_protocol: int = 1,
+    uv_executable: str | Path, now: float | None = None,
 ) -> Path:
     """Build only the managed inactive slot and publish pending after success.
 
@@ -196,7 +250,14 @@ def stage_inactive_slot(
     base = Path(root).resolve()
     if not (base / STATE_NAME).is_file():
         raise UpdateError("staging is available only in a managed installation")
-    if required_launcher_protocol > LAUNCHER_PROTOCOL:
+    state = load_state(base / STATE_NAME) or {}
+    current = time.time() if now is None else now
+    if (state.get("build_failed_commit") == candidate.sha
+            and isinstance(state.get("next_check"), (int, float))
+            and current < state["next_check"]):
+        raise UpdateError("the update could not be built")
+    required_launcher_protocol = candidate_launcher_protocol(source)
+    if required_launcher_protocol > installed_launcher_protocol(base):
         raise UpdateError(
             "installed launcher is too old for this update; run the installer once "
             "to bootstrap the launcher"
@@ -224,15 +285,6 @@ def stage_inactive_slot(
     temporary.write_text(inactive + "\n", encoding="ascii")
     os.replace(temporary, base / PENDING_SLOT_NAME)
     return target
-
-
-@dataclass(frozen=True)
-class Candidate:
-    sha: str
-    subject: str
-    source: str
-    canonical_repo: str = REPO
-    warning: str | None = None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -755,8 +807,8 @@ def slot_marker_path(executable: str | Path | None = None) -> Path:
 def write_slot_marker(
     commit: str, required_launcher_protocol: int, *, executable: str | Path | None = None,
 ) -> Path:
-    if not _SHA.fullmatch(commit):
-        raise UpdateError("slot commit is not a full SHA")
+    if commit != "unknown" and not _SHA.fullmatch(commit):
+        raise UpdateError("slot commit is neither a full SHA nor 'unknown'")
     if type(required_launcher_protocol) is not int or required_launcher_protocol < 1:
         raise UpdateError("required launcher protocol must be a positive integer")
     marker = slot_marker_path(executable)

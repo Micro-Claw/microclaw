@@ -114,9 +114,9 @@ def test_managed_install_writes_icon_and_lnk_but_leaves_launcher(local_dirs, mon
 def test_unmanaged_install_still_writes_legacy_launcher(local_dirs, monkeypatch):
     monkeypatch.setattr(shortcut, "_powershell", lambda *a, **k: None)
     p = shortcut.install()
-    assert p["cmd"].read_text(encoding="utf-8") == shortcut._wrapper_text(
+    assert p["cmd"].read_bytes() == shortcut._wrapper_text(
         p["target"], p["args"]
-    )
+    ).encode("utf-8")
     assert not shortcut.managed_layout_present(p["workdir"])
 
 
