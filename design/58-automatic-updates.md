@@ -1987,6 +1987,55 @@ rationalised afterwards: Stage will build, the comparison will return
 `ready`/`ready`, pending will publish, and the banner will offer **Restart now**.
 If it does not, `build_error` and `build_error_detail` will say why.
 
+## 58e demo gate round 5 — 2026-08-27: Restart now works, and the slot it activated could not start
+
+**The prediction recorded before this round held exactly.** Stage built, the
+comparison returned `ready`/`ready`, pending published, `automatic_restart`
+turned true, and the Restart control appeared for the first time.
+
+**Restart now works.** One new launch line with a fresh nonce, the restart
+request consumed, `active` flipped `a` -> `b`, pending consumed,
+`installed_commit` reconciled to the staged commit, and the marker beside the
+running interpreter matching it — **8.1 seconds, with no stall on the exit
+pause**. Four limbs that had never run anywhere now have rig evidence: Restart
+now, the nonce-matched relaunch, activation, and the commit reconciliation this
+block added.
+
+**And then the update bricked the application.** The activated slot answered
+`` `microclaw serve` needs fastapi and uvicorn ``. Two defects, one enabling the
+other:
+
+- **`stage_inactive_slot` installed `str(source)`; `install.bat` installs
+  `.[serve]`.** Every staged slot has therefore always lacked fastapi and
+  uvicorn, and the desktop icon runs nothing but `serve`. **Every update this
+  design has ever produced would have broken the application on activation.**
+  Nothing caught it because no test and no gate had ever *started* a staged
+  slot — staging itself only began working two rounds ago.
+- **The bounded smoke check the design has specified since the beginning was
+  never implemented.** §"Put the updater outside the environment it replaces"
+  requires `import microclaw`, a CLI parse and packaged web assets before
+  pending is published; the code only ever ran the config classification. A
+  staged slot must now import `microclaw`, `microclaw.webserve` **and
+  `uvicorn`** — the last named explicitly because `serve` imports it lazily,
+  which is exactly the difference between catching a missing extra and shipping
+  one — and a slot that fails is refused, never published, and records why.
+
+**The rule this earns**: *an installer and an updater that build the same
+application must build it the same way.* Two independent specifications of what
+"install microclaw" means will diverge, and the one nobody watches is the one
+that runs unattended on a user's machine.
+
+**Rollback did not rescue the operator, and that is worth recording separately.**
+The failed child did not exit: it sat at `Press Enter to close this window...`,
+so the launcher waited its full 30-second health timeout. An operator who closes
+that console first kills the launcher too, and the machine stays on the broken
+slot — which is precisely what happened here, since the next desktop launch
+produced the same refusal. §"Put the updater outside the environment it
+replaces" already warns that closing the console may kill both processes; this
+is the first time it has cost anything. **The 30-second timeout branch now has
+rig evidence** — the row left open after 58c can be ticked, though not in the
+way it was meant to be earned.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -2057,9 +2106,10 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
       updater outside the environment it replaces" with `build_error_detail`,
       added at 58e gate round 1 so a staging failure names the command that
       failed rather than only the sentence the banner shows.
-- [ ] **After 58e**: record whether the 30-second health **timeout** branch ever
-      got rig evidence. 58c exercised only `child-exited`; the timeout path has
-      unit coverage with an injected clock and nothing more.
+- [x] **After 58e**: the 30-second health **timeout** branch got rig evidence in
+      round 5, though not as intended — a slot that could not start sat at the
+      exit pause instead of exiting, so the launcher took the timeout path
+      rather than `child-exited`. Recorded in §"58e demo gate round 5".
 
 ## Run ledger
 
@@ -2070,7 +2120,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 4 made the failure legible for the first time: a candidate slot's exit-pause prompt was corrupting the classification stdout | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]` and could not start | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a

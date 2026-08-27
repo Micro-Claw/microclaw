@@ -420,6 +420,15 @@ Generic, from design/58. The Windows layout details live in that document.
   for any tool you invoke, and never let a machine-readable mode register a
   pause. The suite cannot catch this: a test runner has no console to inherit,
   so the guard is asserted on the *argument*, deliberately.
+- **An installer and an updater that build the same application must build it
+  the same way.** `install.bat` installed `.[serve]`; `stage_inactive_slot`
+  installed the bare source, so every staged slot lacked fastapi and uvicorn and
+  the desktop icon — which runs nothing but `serve` — could not start after an
+  update. Two independent spellings of "install this program" will diverge, and
+  the one nobody watches is the one that runs unattended on a user's machine.
+  **And prove the built thing starts before anything points at it**: the design
+  had specified that smoke check from the beginning and the code never had it,
+  so a slot that could not import its own web server was published as pending.
 - **When you shell out to another version of your own program, its stdout is
   untrusted framing.** `classify_config_with_slot` runs the *candidate* slot's
   CLI — by definition code that predates whatever was just fixed — and demanded
