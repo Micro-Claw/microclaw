@@ -16,9 +16,10 @@ function Read-Slot([string]$path, [bool]$required) {
     return $value
 }
 
-$active = Read-Slot $activePath $true
 $launcherProtocol = (Get-Content -LiteralPath $protocolPath -Raw).Trim()
 if ($launcherProtocol -notmatch '^[1-9][0-9]*$') { throw 'Invalid installed launcher protocol.' }
+while ($true) {
+$active = Read-Slot $activePath $true
 $selectorPython = Join-Path $root "env-$active\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $selectorPython)) { throw "Active slot Python is missing: $selectorPython" }
 # The tested Python state machine owns pending validation, protocol checks,
@@ -71,4 +72,8 @@ if ($report.Trim()) {
 }
 # Health is final: even a later bridge failure keeps this slot and never relaunches.
 if (-not $child.HasExited) { $child.WaitForExit() }
+$restart = & $selectorPython -c "import sys; from microclaw.updates import consume_restart_request; print('1' if consume_restart_request(sys.argv[1],sys.argv[2]) else '0')" $root $nonce
+if ($LASTEXITCODE -ne 0) { throw 'Could not consume the restart request.' }
+if ($restart.Trim() -ceq '1') { continue }
 exit $child.ExitCode
+}

@@ -7,6 +7,7 @@ echoed back, and a refusal to bind beyond localhost without an opt-in.
 """
 import contextlib
 import json
+import os
 import socket
 import threading
 import time
@@ -21,6 +22,24 @@ from microclaw import config, credentials, tools, updates, webserve
 from microclaw.conversation import AuditLog, ConversationStore, load_history
 from microclaw.tools_schema import TOOLS_CACHED
 from microclaw.webserve import build_app, serve
+
+
+def _stub_uvicorn_server(monkeypatch, events=None):
+    import uvicorn
+    seen = []
+
+    class Server:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit = False
+            seen.append(self)
+
+        def run(self):
+            if events is not None:
+                events.append("run")
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    return seen
 
 
 class _FakeLock:
@@ -300,14 +319,154 @@ def test_update_restart_refuses_each_non_idle_condition(session, tmp_path, monke
     assert busy.split("-")[0] in response.json()["detail"].lower()
 
 
-def test_restart_seam_is_honest_when_idle_and_launcher_owned(session, tmp_path, monkeypatch):
+def test_restart_without_server_handle_refuses_instead_of_claiming_shutdown(session, tmp_path, monkeypatch):
     _managed_updates(tmp_path, monkeypatch)
     (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *args: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
     monkeypatch.setattr(updates, "validate_launch_environment", lambda: (tmp_path, "a", "nonce"))
     response = TestClient(build_app(session)).post("/api/update/restart")
-    assert response.status_code == 501
-    assert response.json() == {"restart_requested": False, "pending_58e": True}
+    assert response.status_code == 409
+    assert "restart later" in response.json()["detail"].lower()
 
+
+def test_restart_writes_request_then_flag_then_requests_shutdown(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *args: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
+    monkeypatch.setattr(
+        updates, "validate_launch_environment",
+        lambda: (tmp_path, "a", "child_nonce_123456"),
+    )
+    events = []
+    monkeypatch.setattr(
+        updates, "write_restart_request",
+        lambda root, nonce: events.append(("write", root, nonce)),
+    )
+
+    class Server:
+        @property
+        def should_exit(self):
+            return False
+
+        @should_exit.setter
+        def should_exit(self, value):
+            events.append(("shutdown", os.environ.get("MICROCLAW_UPDATE_RESTART"), value))
+
+    app = build_app(session)
+    app.state.uvicorn_server = Server()
+    response = TestClient(app).post("/api/update/restart")
+    assert response.status_code == 200
+    assert response.json() == {"restart_requested": True}
+    assert events == [
+        ("write", tmp_path, "child_nonce_123456"),
+        ("shutdown", "1", True),
+    ]
+
+
+@pytest.mark.parametrize("missing", [updates.LAUNCH_NONCE_ENV, updates.LAUNCHER_OWNED_ENV])
+def test_automatic_restart_requires_each_launcher_identity_field(
+    session, tmp_path, monkeypatch, missing,
+):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    exe_a = tmp_path / "env-a" / "Scripts" / "python.exe"
+    updates.write_slot_marker("a" * 40, 1, executable=exe_a)
+    updates.write_slot_marker("b" * 40, 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
+    monkeypatch.setattr(updates.sys, "executable", str(exe_a))
+    env = {
+        updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
+        updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "child_nonce_123456",
+        updates.LAUNCH_PROTOCOL_ENV: "1",
+    }
+    env.pop(missing)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv(missing, raising=False)
+    assert TestClient(build_app(session)).get("/api/update").json()["automatic_restart"] is False
+
+
+def test_automatic_restart_rejects_real_pending_marker_needing_newer_protocol(
+    session, tmp_path, monkeypatch,
+):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    exe_a = tmp_path / "env-a" / "Scripts" / "python.exe"
+    updates.write_slot_marker("a" * 40, 1, executable=exe_a)
+    updates.write_slot_marker(
+        "b" * 40, 2, executable=tmp_path / "env-b" / "Scripts" / "python.exe",
+    )
+    monkeypatch.setattr(updates.sys, "executable", str(exe_a))
+    for key, value in {
+        updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
+        updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "child_nonce_123456",
+        updates.LAUNCH_PROTOCOL_ENV: "1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    assert TestClient(build_app(session)).get("/api/update").json()["automatic_restart"] is False
+
+
+
+def test_staging_failure_is_recorded_even_after_an_earlier_refusal(session, tmp_path, monkeypatch):
+    """A stale refusal must not silence a later, unrelated staging failure.
+
+    Block 58e's third demo gate: the NotReady step legitimately refused commit
+    X, and the next staging attempt of X then failed and recorded *nothing* --
+    no build_error, no status -- because the handler read a refusal record for
+    that sha back out of shared state and took it for this attempt's own.
+    """
+    sha = "a" * 40
+    _managed_updates(tmp_path, monkeypatch, candidate_sha=sha)
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    state["comparison_refused_commit"] = sha
+    state["comparison_refusal_reason"] = "an earlier, legitimate refusal"
+    updates.write_state(state, tmp_path / updates.STATE_NAME)
+    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(updates, "materialize_clone", lambda *a, **k: None)
+    monkeypatch.setattr(updates, "materialize_public", lambda *a, **k: None)
+    monkeypatch.setattr(updates, "stage_cached_candidate", lambda *a, **k: (_ for _ in ()).throw(
+        updates.UpdateError("the update could not be built")))
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread, "start",
+        lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
+    )
+    assert TestClient(build_app(session)).post("/api/update/stage").status_code == 202
+    after = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert after["build_error"] == "the update could not be built"
+    assert after["staging"] == {"status": "error", "commit": sha}
+
+
+def test_a_comparison_refusal_keeps_its_own_reason(session, tmp_path, monkeypatch):
+    """The typed refusal is the one failure that must NOT be overwritten."""
+    sha = "a" * 40
+    _managed_updates(tmp_path, monkeypatch, candidate_sha=sha)
+    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+
+    def refuse(*args, **kwargs):
+        state = updates.load_state(tmp_path / updates.STATE_NAME)
+        state["comparison_refused_commit"] = sha
+        state["comparison_refusal_reason"] = "would downgrade a reviewed config"
+        state["staging"] = {"status": "refused", "commit": sha}
+        updates.write_state(state, tmp_path / updates.STATE_NAME)
+        raise updates.ComparisonRefused("would downgrade a reviewed config")
+
+    monkeypatch.setattr(updates, "stage_cached_candidate", refuse)
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread, "start",
+        lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
+    )
+    assert TestClient(build_app(session)).post("/api/update/stage").status_code == 202
+    after = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert after["staging"] == {"status": "refused", "commit": sha}
+    assert after["comparison_refusal_reason"] == "would downgrade a reviewed config"
+    assert "build_error" not in after
 
 def test_later_and_skip_are_scoped_to_one_commit(session, tmp_path, monkeypatch):
     path = _managed_updates(tmp_path, monkeypatch)
@@ -334,12 +493,22 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
     )
     monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
     monkeypatch.setattr(updates, "stage_inactive_slot", lambda *args, **kwargs: None)
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *args: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
+    monkeypatch.setattr(
+        updates, "validate_launch_environment",
+        lambda: (tmp_path, "a", "child_nonce_123456"),
+    )
+    monkeypatch.setattr(updates, "write_restart_request", lambda *args: None)
     real_start = threading.Thread.start
     monkeypatch.setattr(
         threading.Thread, "start",
         lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
     )
-    app = TestClient(build_app(session))
+    built = build_app(session)
+    built.state.uvicorn_server = types.SimpleNamespace(should_exit=False)
+    app = TestClient(built)
     # Captured before the cycle: `_durable_history` prefers the store, so an
     # assertion on it alone cannot see a row written straight to `history` —
     # which is the list `run_turn` sends to the model. Both are checked.
@@ -349,6 +518,7 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
     assert app.post("/api/update/dismiss", json={
         "action": "later", "commit": candidate["sha"],
     }).status_code == 200
+    assert app.post("/api/update/restart").status_code == 200
     assert session.history == before
     assert not any("update" in name for name in tools.TOOL_REGISTRY)
     assert not any("update" in schema["name"] for schema in TOOLS_CACHED)
@@ -879,7 +1049,7 @@ def test_serve_wires_confirm_and_flushes_startup_banner(monkeypatch):
     monkeypatch.setattr(
         webserve, "build_session", lambda args, config_result=None: fake,
     )
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    _stub_uvicorn_server(monkeypatch)
     printed = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append((a, k)))
 
@@ -1380,8 +1550,9 @@ def test_serve_hoists_one_snapshot_into_build_session(monkeypatch, tmp_path):
         webserve, "build_session",
         lambda args, config_result=None: received.append(config_result) or fake,
     )
-    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
-    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
+    app = types.SimpleNamespace(state=types.SimpleNamespace())
+    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: app)
+    servers = _stub_uvicorn_server(monkeypatch)
 
     webserve.serve(_args(
         host="127.0.0.1", safety_config=str(path), no_browser=True,
@@ -1389,6 +1560,7 @@ def test_serve_hoists_one_snapshot_into_build_session(monkeypatch, tmp_path):
 
     assert validations == [path]
     assert received == [snapshot]
+    assert app.state.uvicorn_server is servers[0]
 
 
 def test_serve_writes_launcher_health_immediately_before_build_session(monkeypatch, tmp_path):
@@ -1404,8 +1576,11 @@ def test_serve_writes_launcher_health_immediately_before_build_session(monkeypat
                         lambda: events.append("health"))
     monkeypatch.setattr(webserve, "build_session",
                         lambda *a, **k: events.append("build") or fake)
-    monkeypatch.setattr(webserve, "build_app", lambda *a, **k: object())
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *a, **k: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
+    _stub_uvicorn_server(monkeypatch)
     webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x"),
                          no_browser=True))
     assert events == ["validate", "health", "build"]
@@ -1433,8 +1608,11 @@ def test_serve_runs_update_check_without_blocking_and_honors_opt_out(monkeypatch
         return fake
 
     monkeypatch.setattr(webserve, "build_session", build)
-    monkeypatch.setattr(webserve, "build_app", lambda *a, **k: object())
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *a, **k: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
+    _stub_uvicorn_server(monkeypatch)
     webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x")))
     assert not release.is_set(), "serve waited for the background check"
     release.set()
@@ -1447,6 +1625,30 @@ def test_serve_runs_update_check_without_blocking_and_honors_opt_out(monkeypatch
         host="127.0.0.1", safety_config=str(tmp_path / "x"), no_update_check=True,
     ))
     assert calls == []
+
+
+@pytest.mark.parametrize("no_update_check,env_disabled", [
+    (False, False), (True, False), (False, True),
+])
+def test_serve_never_reads_stdin_for_update_prompt(
+    monkeypatch, tmp_path, no_update_check, env_disabled,
+):
+    if env_disabled:
+        monkeypatch.setenv("MICROCLAW_UPDATE_CHECK", "0")
+    fake = types.SimpleNamespace(confirm=lambda *a, **k: False, guard=_guard(),
+                                 ctrl=types.SimpleNamespace(core=None))
+    monkeypatch.setattr(webserve.config, "validate_safety_config", lambda path: object())
+    monkeypatch.setattr(webserve, "build_session", lambda *a, **k: fake)
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *a, **k: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("serve prompted"))
+    _stub_uvicorn_server(monkeypatch)
+    webserve.serve(_args(
+        host="127.0.0.1", safety_config=str(tmp_path / "x"), no_browser=True,
+        no_update_check=no_update_check,
+    ))
 
 
 def test_bridge_failure_after_health_leaves_nonce_marker(monkeypatch, tmp_path):
@@ -1728,9 +1930,12 @@ def _stub_serve_runtime(monkeypatch):
     monkeypatch.setattr(
         webserve, "build_session", lambda args, config_result=None: fake,
     )
-    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        webserve, "build_app",
+        lambda *args, **kwargs: types.SimpleNamespace(state=types.SimpleNamespace()),
+    )
     import uvicorn
-    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
+    _stub_uvicorn_server(monkeypatch)
     return fake
 
 

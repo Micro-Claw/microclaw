@@ -54,10 +54,26 @@ LAUNCH_SLOT_ENV = "MICROCLAW_LAUNCH_SLOT"
 LAUNCH_ROOT_ENV = "MICROCLAW_LAUNCH_ROOT"
 LAUNCH_PROTOCOL_ENV = "MICROCLAW_LAUNCHER_PROTOCOL"
 LAUNCHER_PROTOCOL_NAME = "launcher-protocol.txt"
+RESTART_REQUEST_NAME = "restart-request.txt"
+#: Shared state is written by the server, the launcher and the installer, and
+#: read by every /api/update poll. See write_state for why this needs retries.
+STATE_REPLACE_ATTEMPTS = 10
+STATE_REPLACE_BACKOFF_SECONDS = 0.05
 
 
 class UpdateError(Exception):
     """An update source was unavailable or failed validation."""
+
+
+class ComparisonRefused(UpdateError):
+    """Staging stopped because the candidate would weaken the reviewed config.
+
+    A distinct type because the caller must be able to tell *this* attempt's
+    refusal from any other failure.  webserve's staging job used to infer it by
+    reading `comparison_refused_commit` back out of shared state, which is a
+    record of *some* refusal for that commit, not this attempt's -- so once a
+    commit had been refused once, every later failure of it was recorded as
+    nothing at all: no error, no status, `staging` stuck on "running"."""
 
 
 @dataclass(frozen=True)
@@ -113,6 +129,35 @@ def candidate_launcher_protocol(source: str | Path) -> int:
     return value
 
 
+def valid_pending_slot(root: str | Path, launcher_protocol: int) -> str | None:
+    """Return the distinct pending slot only when its marker fits this launcher."""
+    base = Path(root)
+    active = _read_slot_text(base / ACTIVE_SLOT_NAME, required=True)
+    pending = _read_slot_text(base / PENDING_SLOT_NAME, required=False)
+    if pending is None or pending == active:
+        return None
+    marker = read_slot_marker(executable=base / f"env-{pending}" / "Scripts" / "python.exe")
+    required = marker.get("required_launcher_protocol") if marker else None
+    if type(required) is not int or required > launcher_protocol:
+        raise UpdateError("pending slot is incompatible with the installed launcher")
+    return pending
+
+
+def _reconcile_installed_commit(base: Path, slot: str) -> None:
+    """Best-effort bookkeeping; selector changes must never depend on it."""
+    try:
+        marker = read_slot_marker(executable=base / f"env-{slot}" / "Scripts" / "python.exe")
+        commit = marker.get("commit") if marker else None
+        if commit == "unknown" or not isinstance(commit, str) or not _SHA.fullmatch(commit):
+            return
+        state = load_state(base / STATE_NAME)
+        if state is not None:
+            state["installed_commit"] = commit.lower()
+            write_state(state, base / STATE_NAME)
+    except Exception:
+        return
+
+
 def activate_pending(root: str | Path, launcher_protocol: int) -> tuple[str, str | None]:
     """Consume pending before launch; invalid candidates leave known-good active."""
     base = Path(root)
@@ -126,21 +171,17 @@ def activate_pending(root: str | Path, launcher_protocol: int) -> tuple[str, str
         return active, None
     if pending is None:
         return active, None
-    if pending == active:
-        pending_path.unlink()
-        return active, None
     try:
-        marker = read_slot_marker(
-            executable=base / f"env-{pending}" / "Scripts" / "python.exe"
-        )
-        required = marker.get("required_launcher_protocol") if marker else None
-        if type(required) is not int or required > launcher_protocol:
-            raise UpdateError("pending slot is incompatible with the installed launcher")
+        pending = valid_pending_slot(base, launcher_protocol)
     except (UpdateError, OSError, UnicodeError):
+        pending_path.unlink(missing_ok=True)
+        return active, None
+    if pending is None:
         pending_path.unlink(missing_ok=True)
         return active, None
     _write_slot_text(active_path, pending)
     pending_path.unlink()
+    _reconcile_installed_commit(base, pending)
     return pending, active
 
 
@@ -155,7 +196,29 @@ def fresh_launch(root: str | Path, slot: str, *, nonce: str | None = None) -> tu
         raise UpdateError("invalid launch nonce")
     marker = Path(root) / HEALTH_NAME
     marker.unlink(missing_ok=True)
+    (Path(root) / RESTART_REQUEST_NAME).unlink(missing_ok=True)
     return token, marker
+
+
+def write_restart_request(root: str | Path, nonce: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", nonce):
+        raise UpdateError("invalid launch nonce")
+    target = Path(root) / RESTART_REQUEST_NAME
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_text(nonce + "\n", encoding="ascii")
+    os.replace(temporary, target)
+    return target
+
+
+def consume_restart_request(root: str | Path, nonce: str) -> bool:
+    """Consume one request, accepting it only for the child that just exited."""
+    path = Path(root) / RESTART_REQUEST_NAME
+    try:
+        requested = path.read_text(encoding="ascii").strip()
+    except (FileNotFoundError, OSError, UnicodeError):
+        return False
+    path.unlink(missing_ok=True)
+    return requested == nonce
 
 
 def health_matches(path: str | Path, nonce: str) -> bool:
@@ -223,6 +286,7 @@ def rollback_slot(root: str | Path, failed: str, previous: str | None) -> str:
         raise UpdateError("rollback requires distinct valid failed and previous slots")
     base = Path(root)
     _write_slot_text(base / ACTIVE_SLOT_NAME, previous)
+    _reconcile_installed_commit(base, previous)
     (base / ROLLBACK_NAME).write_text(
         f"Microclaw rolled back from slot {failed} to slot {previous}.\n", encoding="utf-8"
     )
@@ -319,8 +383,24 @@ def stage_inactive_slot(
     target = base / f"env-{inactive}"
     python = target / "Scripts" / "python.exe"
     commands = (
-        [str(uv_executable), "venv", "--python", "3.12", str(target)],
-        [str(uv_executable), "pip", "install", "--python", str(python), str(source)],
+        # --clear because the inactive slot is normally already an environment:
+        # every machine that has updated once has one here, and uv refuses to
+        # create over an existing venv (exit 2, "A virtual environment already
+        # exists at").  Staging always replaces rather than reuses -- the slot
+        # is being rebuilt at a different commit -- so this is not install.bat's
+        # probe-then-reuse case.  The known-good slot is the *active* one, which
+        # staging never touches, so clearing the inactive slot cannot remove the
+        # copy a rollback would return to.
+        [str(uv_executable), "venv", "--clear", "--python", "3.12", str(target)],
+        # `[serve]`, exactly as install.bat's MC_SPEC does.  Without the extra
+        # the slot has no fastapi and no uvicorn, so `microclaw serve` -- which
+        # is the only thing the desktop icon ever runs -- exits on its import
+        # guard.  Block 58e's fifth demo gate activated such a slot: the update
+        # succeeded, the restart succeeded, and the application could no longer
+        # start.  An updater that bricks the thing it updates is the worst
+        # failure this design can have.
+        [str(uv_executable), "pip", "install", "--python", str(python),
+         f"{source}[serve]"],
     )
     for command in commands:
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -328,8 +408,30 @@ def stage_inactive_slot(
             state = load_state(base / STATE_NAME) or {}
             state["build_error"] = "the update could not be built"
             state["build_failed_commit"] = candidate.sha
+            # The user-facing sentence stays deliberately plain; this is the
+            # diagnostic, because a rig that reports only "could not be built"
+            # cannot be debugged without another trip.
+            detail = (completed.stderr or completed.stdout or "").strip()
+            state["build_error_detail"] = f"uv {command[1]} exit {completed.returncode}: {detail[-2000:]}"
             write_state(state, base / STATE_NAME)
             raise UpdateError("the update could not be built")
+    # The bounded smoke check the design has always called for and the code
+    # never had: prove the staged slot can actually start before anything
+    # publishes it as pending.  `serve` imports uvicorn lazily, so naming it
+    # here is the difference between catching a missing extra and shipping it.
+    smoke = subprocess.run(
+        [str(python), "-I", "-c", "import microclaw, microclaw.webserve, uvicorn"],
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+    )
+    if smoke.returncode:
+        state = load_state(base / STATE_NAME) or {}
+        state["build_error"] = "the update could not be built"
+        state["build_failed_commit"] = candidate.sha
+        state["build_error_detail"] = (
+            f"staged slot failed its smoke check: {(smoke.stderr or smoke.stdout).strip()[-2000:]}"
+        )
+        write_state(state, base / STATE_NAME)
+        raise UpdateError("the update could not be built")
     write_slot_marker(
         candidate.sha, required_launcher_protocol, executable=python,
     )
@@ -348,12 +450,13 @@ def stage_inactive_slot(
         state["comparison_refusal_reason"] = comparison.reason
         state["staging"] = {"status": "refused", "commit": candidate.sha}
         write_state(state, base / STATE_NAME)
-        raise UpdateError(comparison.reason or "the update needs the maintainer")
+        raise ComparisonRefused(comparison.reason or "the update needs the maintainer")
     state.pop("comparison_refused_commit", None)
     state.pop("comparison_refusal_reason", None)
     state["staging"] = {"status": "staged", "commit": candidate.sha}
     state.pop("build_error", None)
     state.pop("build_failed_commit", None)
+    state.pop("build_error_detail", None)
     write_state(state, base / STATE_NAME)
     temporary = base / f".{PENDING_SLOT_NAME}.tmp"
     temporary.write_text(inactive + "\n", encoding="ascii")
@@ -379,12 +482,21 @@ def state_path() -> Path:
 
 def load_state(path: str | Path | None = None) -> dict[str, Any] | None:
     target = Path(path) if path is not None else state_path()
-    try:
-        value = json.loads(target.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise UpdateError(f"invalid update state: {exc}") from exc
+    for attempt in range(STATE_REPLACE_ATTEMPTS):
+        try:
+            value = json.loads(target.read_text(encoding="utf-8"))
+            break
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            # Measured on the demo machine: 581 transient read failures in a
+            # million reads while another process was replacing this file.  Rare
+            # -- but activate_pending treats a read failure as "no valid pending
+            # slot" and discards the update, so one unlucky launch would throw
+            # away a staged update the user had asked to install.
+            if attempt == STATE_REPLACE_ATTEMPTS - 1:
+                raise UpdateError(f"invalid update state: {exc}") from exc
+            time.sleep(STATE_REPLACE_BACKOFF_SECONDS * (attempt + 1))
     if not isinstance(value, dict):
         raise UpdateError("invalid update state: expected an object")
     return value
@@ -402,7 +514,22 @@ def write_state(state: dict[str, Any], path: str | Path | None = None) -> Path:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        # Windows refuses MoveFileEx onto a target another process has open --
+        # Python's open() does not pass FILE_SHARE_DELETE -- so any concurrent
+        # *reader* makes this fail with `[WinError 5] Access is denied`.  The
+        # browser polls GET /api/update every 2s while staging, and that route
+        # reads this file, so a staging job that writes it repeatedly loses the
+        # race often.  Block 58e's second demo gate died exactly there: the
+        # whole update failed on its first state write.  Retry briefly rather
+        # than surface a transient share violation as a failed update.
+        for attempt in range(STATE_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary, target)
+                break
+            except OSError:
+                if attempt == STATE_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(STATE_REPLACE_BACKOFF_SECONDS * (attempt + 1))
     finally:
         temporary.unlink(missing_ok=True)
     return target
@@ -830,6 +957,88 @@ def materialize_public(
 
 def checks_enabled(no_update_check: bool = False) -> bool:
     return not no_update_check and os.environ.get("MICROCLAW_UPDATE_CHECK") != "0"
+
+
+def start_due_check(no_update_check: bool = False):
+    """Start the shared non-blocking due check used by serve and the REPL."""
+    if not checks_enabled(no_update_check):
+        return None
+    import threading
+    thread = threading.Thread(
+        target=check_for_update, kwargs={"no_update_check": no_update_check},
+        name="microclaw-update-check", daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def candidate_is_suppressed(
+    candidate: Candidate | dict[str, Any] | None, dismissal: Any, *, now: float | None = None,
+) -> bool:
+    if candidate is None or not isinstance(dismissal, dict):
+        return False
+    sha = candidate.sha if isinstance(candidate, Candidate) else candidate.get("sha")
+    if dismissal.get("commit") != sha:
+        return False
+    return dismissal.get("action") == "skip" or (
+        dismissal.get("action") == "later"
+        and isinstance(dismissal.get("until"), (int, float))
+        and (time.time() if now is None else now) < dismissal["until"]
+    )
+
+
+def terminal_update_notice(*, state_file: str | Path | None = None) -> tuple[str | None, Candidate | None]:
+    """Read cached state only and return the REPL's single optional notice."""
+    path = Path(state_file) if state_file is not None else state_path()
+    try:
+        state = load_state(path)
+    except UpdateError:
+        return None, None
+    if state is None:
+        return None, None
+    success = state.get("last_success")
+    raw = success.get("candidate") if isinstance(success, dict) else None
+    candidate = None
+    if isinstance(raw, dict):
+        try:
+            candidate = Candidate(**raw)
+        except (TypeError, ValueError):
+            pass
+    if candidate_is_suppressed(candidate, state.get("dismissal")):
+        candidate = None
+    if candidate:
+        return (
+            f"A newer Microclaw commit is available: {candidate.sha[:7]} — "
+            f"{candidate.subject}.", candidate,
+        )
+    if (state.get("provenance") == "public-head"
+            and state.get("last_error") == "repository is not public (404)"):
+        return "Automatic updates become available when the repository is public.", None
+    return None, None
+
+
+def stage_cached_candidate(candidate: Candidate, *, config_path: str | Path | None = None) -> Path:
+    """Materialize and stage the cached candidate synchronously for the REPL."""
+    path = state_path()
+    state = load_state(path)
+    if state is None:
+        raise UpdateError("updates are unavailable in this installation")
+    root = path.parent
+    downloads = root / "downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="microclaw-stage-", dir=downloads))
+    try:
+        source = work / "source"
+        materialize = materialize_clone if candidate.source == "clone" else materialize_public
+        materialize(state, candidate, source)
+        uv = shutil.which("uv")
+        if not uv:
+            raise UpdateError("the update could not be built: uv was not found")
+        return stage_inactive_slot(
+            root, source, candidate, uv_executable=uv, config_path=config_path,
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def check_for_update(

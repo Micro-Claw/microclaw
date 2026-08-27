@@ -561,6 +561,51 @@ def test_rollback_restores_known_good_and_defers_report(tmp_path):
     assert updates.consume_rollback_report(tmp_path) is None
 
 
+
+def fake_uv(root, *, classification="ready", classifications=None, seen=None):
+    """A `uv` that behaves like the one on the demo machine (0.11.28).
+
+    `uv venv` **refuses an existing environment** with exit 2 unless `--clear`
+    is passed.  Every fake in this file used to return 0 unconditionally, which
+    is why block 58e's first demo gate was the first thing ever to run staging
+    against a slot that already existed -- on a machine that had updated once,
+    which is every machine after the first update.  The fake encodes the
+    hardware's behaviour now, not our assumption about it.
+    """
+    calls = seen if seen is not None else []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "venv":
+            target = Path(command[-1])
+            if (target / "pyvenv.cfg").exists() and "--clear" not in command:
+                return subprocess.CompletedProcess(
+                    command, 2, "",
+                    "error: Failed to create virtual environment\n"
+                    f"  Caused by: A virtual environment already exists at: {target}\n"
+                    "hint: Use the `--clear` flag or set `UV_VENV_CLEAR=1`",
+                )
+            (target / "Scripts").mkdir(parents=True, exist_ok=True)
+            (target / "pyvenv.cfg").write_text("home = python\n", encoding="ascii")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[1] == "pip":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "-c" in command:
+            # The staged slot's smoke check.  It succeeds only when the install
+            # asked for the [serve] extra -- which is what the real one proves.
+            served = any(str(arg).endswith("[serve]") for call in calls for arg in call)
+            if served:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(
+                command, 1, "", "ModuleNotFoundError: No module named 'fastapi'")
+        slot = "a" if "env-a" in command[0] else "b"
+        value = (classifications or {}).get(slot, classification)
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps({"classification": value}), ""
+        )
+
+    return run, calls
+
 def test_failed_uv_stage_keeps_active_selector_and_publishes_no_pending(tmp_path, monkeypatch):
     updates.write_state({"provenance": "public-head", "next_check": 100},
                         tmp_path / updates.STATE_NAME)
@@ -617,19 +662,17 @@ def test_config_comparison_refusal_is_before_pending_publish(tmp_path, monkeypat
 
     commands = []
 
-    def run(command, **kwargs):
-        if command[1] == "venv":
-            (tmp_path / "env-b" / "Scripts").mkdir(parents=True)
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[0] == "uv.exe":
-            return subprocess.CompletedProcess(command, 0, "", "")
-        commands.append(command)
-        classification = "ready" if "env-a" in command[0] else "blocked"
-        return subprocess.CompletedProcess(
-            command, 0, json.dumps({"classification": classification}), ""
-        )
+    run, _ = fake_uv(tmp_path, classifications={"a": "ready", "b": "blocked"})
 
-    monkeypatch.setattr(updates.subprocess, "run", run)
+    def recording(command, **kwargs):
+        # Only the classification calls. The staged slot's smoke check also runs
+        # a non-uv executable, and this test is about the order of the two
+        # classifications relative to the pending publish.
+        if command[0] != "uv.exe" and "-c" not in command:
+            commands.append(command)
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(updates.subprocess, "run", recording)
     candidate = updates.Candidate("d" * 40, "unsafe", "public-head")
     with pytest.raises(updates.UpdateError, match="downgrade a reviewed config"):
         updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe")
@@ -654,14 +697,7 @@ def test_successful_stage_clears_stale_build_failure(tmp_path, monkeypatch):
     (source / "scripts").mkdir(parents=True)
     (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
 
-    def run(command, **kwargs):
-        if command[1] == "venv":
-            (tmp_path / "env-b" / "Scripts").mkdir(parents=True)
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[0] == "uv.exe":
-            return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(command, 0, '{"classification":"ready"}', "")
-
+    run, _ = fake_uv(tmp_path)
     monkeypatch.setattr(updates.subprocess, "run", run)
     updates.stage_inactive_slot(
         tmp_path, source, updates.Candidate("d" * 40, "fixed", "public-head"),
@@ -672,6 +708,143 @@ def test_successful_stage_clears_stale_build_failure(tmp_path, monkeypatch):
     assert "build_failed_commit" not in state
     assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="ascii") == "b\n"
 
+
+
+def _staging_fixture(tmp_path):
+    updates.write_state({"provenance": "public-head"}, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    return source
+
+
+
+def test_staging_installs_the_serve_extra(tmp_path, monkeypatch):
+    """Without it the staged slot cannot run `microclaw serve`.
+
+    The desktop icon runs nothing else.  Block 58e's fifth demo gate staged,
+    activated and restarted into a slot with no fastapi and no uvicorn: the
+    update reported success and the application could not start afterwards.
+    """
+    source = _staging_fixture(tmp_path)
+    run, calls = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(
+        tmp_path, source, updates.Candidate("a" * 40, "x", "public-head"),
+        uv_executable="uv.exe",
+    )
+    install = next(call for call in calls if call[1] == "pip")
+    assert install[-1].endswith("[serve]"), install
+
+
+def test_a_slot_that_cannot_import_serve_is_never_published_as_pending(tmp_path, monkeypatch):
+    """The bounded smoke check the design always specified.
+
+    A slot that cannot start must not become pending, because the next desktop
+    launch would activate it and the application would be gone.
+    """
+    source = _staging_fixture(tmp_path)
+    run, calls = fake_uv(tmp_path)
+
+    def broken(command, **kwargs):
+        if "-c" in command:
+            return subprocess.CompletedProcess(
+                command, 1, "", "ModuleNotFoundError: No module named 'uvicorn'")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(updates.subprocess, "run", broken)
+    with pytest.raises(updates.UpdateError, match="the update could not be built"):
+        updates.stage_inactive_slot(
+            tmp_path, source, updates.Candidate("b" * 40, "x", "public-head"),
+            uv_executable="uv.exe",
+        )
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+    detail = updates.load_state(tmp_path / updates.STATE_NAME)["build_error_detail"]
+    assert "smoke check" in detail and "uvicorn" in detail
+
+def test_staging_replaces_an_inactive_slot_that_already_exists(tmp_path, monkeypatch):
+    """The second update a machine performs must not fail on its own first one.
+
+    Found on the demo machine, block 58e gate round 1: `uv venv` refuses an
+    existing environment (uv 0.11.28, exit 2), and after one update the inactive
+    slot always is one.  Every fake in this file returned 0 for `venv`
+    regardless, so the suite could not see it.
+    """
+    source = _staging_fixture(tmp_path)
+    run, calls = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+
+    first = updates.Candidate("a" * 40, "first update", "public-head")
+    updates.stage_inactive_slot(tmp_path, source, first, uv_executable="uv.exe")
+    assert (tmp_path / "env-b" / "pyvenv.cfg").exists()
+
+    # Exactly the state a machine is in when its second update arrives.
+    (tmp_path / updates.PENDING_SLOT_NAME).unlink()
+    calls.clear()
+    second = updates.Candidate("b" * 40, "second update", "public-head")
+    updates.stage_inactive_slot(tmp_path, source, second, uv_executable="uv.exe")
+
+    venv = next(call for call in calls if call[1] == "venv")
+    assert "--clear" in venv, venv
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="ascii") == "b\n"
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert "build_error" not in state
+    assert updates.read_slot_marker(
+        executable=tmp_path / "env-b" / "Scripts" / "python.exe"
+    )["commit"] == second.sha
+
+
+def test_build_failure_records_which_command_failed_and_why(tmp_path, monkeypatch):
+    """A rig that reports only "could not be built" costs another trip."""
+    source = _staging_fixture(tmp_path)
+
+    def refuse(command, **kwargs):
+        return subprocess.CompletedProcess(command, 2, "", "error: no space left on device")
+
+    monkeypatch.setattr(updates.subprocess, "run", refuse)
+    with pytest.raises(updates.UpdateError, match="the update could not be built"):
+        updates.stage_inactive_slot(
+            tmp_path, source, updates.Candidate("c" * 40, "doomed", "public-head"),
+            uv_executable="uv.exe",
+        )
+    detail = updates.load_state(tmp_path / updates.STATE_NAME)["build_error_detail"]
+    assert detail.startswith("uv venv exit 2:")
+    assert "no space left on device" in detail
+
+
+def test_write_state_retries_a_replace_a_concurrent_reader_is_blocking(tmp_path, monkeypatch):
+    """`[WinError 5] Access is denied` on os.replace killed 58e's second gate.
+
+    Windows refuses to replace a file another process holds open, and every
+    `GET /api/update` reads this one -- the browser polls it every 2s while
+    staging is running, which is precisely when the staging job writes it most.
+    """
+    target = tmp_path / updates.STATE_NAME
+    monkeypatch.setattr(updates.time, "sleep", lambda seconds: None)
+    real_replace = os.replace
+    attempts = []
+
+    def flaky(source, destination):
+        attempts.append(destination)
+        if len(attempts) < 4:
+            raise PermissionError(5, "Access is denied")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(updates.os, "replace", flaky)
+    updates.write_state({"provenance": "clone"}, target)
+    assert len(attempts) == 4
+    assert updates.load_state(target)["provenance"] == "clone"
+
+
+def test_write_state_still_raises_when_the_replace_never_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(updates.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(updates.os, "replace", lambda *a: (_ for _ in ()).throw(
+        PermissionError(5, "Access is denied")))
+    with pytest.raises(PermissionError):
+        updates.write_state({"provenance": "clone"}, tmp_path / updates.STATE_NAME)
+    assert not list(tmp_path.glob(".*"))
 
 def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
     exe = tmp_path / "env-a" / "Scripts" / "python.exe"
@@ -728,3 +901,131 @@ def test_update_facility_is_not_an_agent_tool_or_schema():
 def test_top_level_parser_defines_no_update_check_beside_safety_config():
     source = (Path(__file__).parents[1] / "microclaw" / "__main__.py").read_text(encoding="utf-8")
     assert source.index('"--safety-config"') < source.index('"--no-update-check"') < source.index("sub = parser.add_subparsers")
+
+
+def test_restart_request_is_consumed_only_by_matching_child(tmp_path):
+    nonce = "child_nonce_123456"
+    assert updates.consume_restart_request(tmp_path, nonce) is False
+    updates.write_restart_request(tmp_path, "different_nonce_1234")
+    assert updates.consume_restart_request(tmp_path, nonce) is False
+    assert not (tmp_path / updates.RESTART_REQUEST_NAME).exists()
+    updates.write_restart_request(tmp_path, nonce)
+    assert updates.consume_restart_request(tmp_path, nonce) is True
+    assert updates.consume_restart_request(tmp_path, nonce) is False
+
+
+def test_fresh_launch_removes_stale_restart_request(tmp_path):
+    stale = tmp_path / updates.RESTART_REQUEST_NAME
+    stale.write_text("stale_nonce_123456\n", encoding="ascii")
+    updates.fresh_launch(tmp_path, "a", nonce="fresh_nonce_123456")
+    assert not stale.exists()
+
+
+def test_activation_and_rollback_reconcile_commit_from_slot_marker(tmp_path):
+    old, new = "a" * 40, "b" * 40
+    updates.write_state(updates.public_provenance(old), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    updates.write_slot_marker(old, 1, executable=tmp_path / "env-a" / "Scripts" / "python.exe")
+    updates.write_slot_marker(new, 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == new
+    updates.rollback_slot(tmp_path, "b", "a")
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == old
+
+
+def test_unknown_slot_marker_does_not_replace_arranged_installed_commit(tmp_path):
+    arranged = "c" * 40
+    updates.write_state(updates.public_provenance(arranged), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    updates.write_slot_marker("unknown", 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
+    updates.activate_pending(tmp_path, 1)
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == arranged
+
+
+def test_malformed_marker_commit_does_not_block_pending_activation(tmp_path):
+    old = "a" * 40
+    updates.write_state(updates.public_provenance(old), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    marker = updates.slot_marker_path(tmp_path / "env-b" / "Scripts" / "python.exe")
+    marker.parent.mkdir(parents=True)
+    marker.write_text(
+        json.dumps({"commit": "malformed", "required_launcher_protocol": 1}),
+        encoding="utf-8",
+    )
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "b"
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == old
+
+
+def test_reconciliation_write_failure_does_not_block_rollback_report(tmp_path, monkeypatch):
+    updates.write_state(updates.public_provenance("b" * 40), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("b\n", encoding="ascii")
+    updates.write_slot_marker(
+        "a" * 40, 1, executable=tmp_path / "env-a" / "Scripts" / "python.exe",
+    )
+    monkeypatch.setattr(updates, "write_state", lambda *a, **k: (_ for _ in ()).throw(OSError("locked")))
+    assert updates.rollback_slot(tmp_path, "b", "a") == "a"
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "a"
+    assert "rolled back" in (tmp_path / updates.ROLLBACK_NAME).read_text(encoding="utf-8")
+
+
+def test_terminal_notice_reads_cached_candidate_and_public_404(tmp_path):
+    path = tmp_path / updates.STATE_NAME
+    candidate = updates.Candidate("a" * 40, "Useful change", "public-head")
+    state = updates.public_provenance()
+    state["last_success"] = {"candidate": candidate.__dict__}
+    updates.write_state(state, path)
+    assert updates.terminal_update_notice(state_file=path) == (
+        "A newer Microclaw commit is available: aaaaaaa — Useful change.", candidate,
+    )
+    state.pop("last_success")
+    state["last_error"] = "repository is not public (404)"
+    updates.write_state(state, path)
+    assert updates.terminal_update_notice(state_file=path) == (
+        "Automatic updates become available when the repository is public.", None,
+    )
+
+
+def test_terminal_notice_unmanaged_install_is_silent_and_untouched(tmp_path):
+    path = tmp_path / updates.STATE_NAME
+    assert updates.terminal_update_notice(state_file=path) == (None, None)
+    assert not path.exists()
+
+
+def test_start_due_check_is_shared_nonblocking_opt_out_boundary(monkeypatch):
+    started = []
+    monkeypatch.setattr(updates, "check_for_update", lambda **kwargs: started.append(kwargs))
+    thread = updates.start_due_check(False)
+    thread.join(timeout=1)
+    assert started == [{"no_update_check": False}]
+    assert updates.start_due_check(True) is None
+
+
+def test_stage_cached_candidate_uses_shared_materialize_and_slot_builder(tmp_path, monkeypatch):
+    path = tmp_path / updates.STATE_NAME
+    updates.write_state(updates.public_provenance(), path)
+    monkeypatch.setattr(updates, "state_path", lambda: path)
+    calls = []
+    monkeypatch.setattr(
+        updates, "materialize_public",
+        lambda state, candidate, source: calls.append(("materialize", candidate.sha)) or source.mkdir(),
+    )
+    monkeypatch.setattr(updates.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(
+        updates, "stage_inactive_slot",
+        lambda root, source, candidate, **kwargs: calls.append(
+            ("stage", root, candidate.sha, kwargs["config_path"])
+        ) or (root / "env-b"),
+    )
+    candidate = updates.Candidate("a" * 40, "Useful", "public-head")
+    config = tmp_path / "safety.yaml"
+    assert updates.stage_cached_candidate(candidate, config_path=config) == tmp_path / "env-b"
+    assert calls == [
+        ("materialize", candidate.sha),
+        ("stage", tmp_path, candidate.sha, config),
+    ]
+    assert list((tmp_path / "downloads").iterdir()) == []

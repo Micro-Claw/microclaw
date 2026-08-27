@@ -49,7 +49,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, tools, updates
+from microclaw import config, credentials, shortcut, tools, updates
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import AuditLog, ConversationStore, prune_transcripts
 from microclaw.agent import (
@@ -707,18 +707,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             candidate["url"] = f"https://github.com/{repo}/commit/{candidate['sha']}"
         dismissal = state.get("dismissal")
         now = time.time()
-        suppressed = False
-        if candidate and isinstance(dismissal, dict) and dismissal.get("commit") == candidate.get("sha"):
-            suppressed = dismissal.get("action") == "skip" or (
-                dismissal.get("action") == "later"
-                and isinstance(dismissal.get("until"), (int, float))
-                and now < dismissal["until"]
-            )
+        suppressed = updates.candidate_is_suppressed(candidate, dismissal, now=now)
         root = path.parent
         pending = None
         try:
-            pending = updates._read_slot_text(root / updates.PENDING_SLOT_NAME, required=False)
-        except updates.UpdateError:
+            pending = updates.valid_pending_slot(root, updates.installed_launcher_protocol(root))
+        except (updates.UpdateError, OSError):
             pending = None
         automatic_restart = False
         if pending is not None:
@@ -779,24 +773,25 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 state = updates.load_state(state_path) or {}
                 state["staging"] = {"status": "running", "commit": candidate.sha}
                 updates.write_state(state, state_path)
-                work = Path(tempfile.mkdtemp(prefix="microclaw-stage-", dir=root / "downloads"))
-                source = work / "source"
-                materialize = (updates.materialize_clone if candidate.source == "clone"
-                               else updates.materialize_public)
-                materialize(state, candidate, source)
-                uv = shutil.which("uv")
-                if not uv:
-                    raise updates.UpdateError("the update could not be built: uv was not found")
-                updates.stage_inactive_slot(
-                    root, source, candidate, uv_executable=uv,
-                    config_path=session.safety_config_path,
+                updates.stage_cached_candidate(
+                    candidate, config_path=session.safety_config_path,
                 )
+            except updates.ComparisonRefused:
+                # stage_inactive_slot already recorded the refusal and its
+                # reason; overwriting them with a generic build error would
+                # lose the sentence the banner shows.
+                pass
             except Exception as exc:
+                # Every other failure is recorded, unconditionally.  This used
+                # to be skipped whenever `comparison_refused_commit` matched
+                # this commit -- a record of *some* earlier refusal, not of this
+                # attempt -- so after one legitimate refusal every later failure
+                # of that commit vanished: no error, no status, `staging` stuck
+                # on "running".  Block 58e's third demo gate died there.
                 latest = updates.load_state(state_path) or {}
-                if latest.get("comparison_refused_commit") != candidate.sha:
-                    latest["staging"] = {"status": "error", "commit": candidate.sha}
-                    latest["build_error"] = str(exc) or type(exc).__name__
-                    updates.write_state(latest, state_path)
+                latest["staging"] = {"status": "error", "commit": candidate.sha}
+                latest["build_error"] = str(exc) or type(exc).__name__
+                updates.write_state(latest, state_path)
             finally:
                 if work is not None:
                     shutil.rmtree(work, ignore_errors=True)
@@ -825,7 +820,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         return JSONResponse({"dismissed": True})
 
     @app.post("/api/update/restart")
-    async def post_update_restart():
+    async def post_update_restart(request: Request):
         if session.lock.locked():
             raise HTTPException(409, "An agent turn is in progress.")
         ledger = tools._existing_acquisition_ledger(session.ctrl)
@@ -839,9 +834,17 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         status = update_status()
         if not status.get("automatic_restart"):
             raise HTTPException(409, "Automatic restart is not available; restart later.")
-        # 58e will request graceful shutdown here. Keep this response honest
-        # until that lifecycle seam is implemented.
-        return JSONResponse({"restart_requested": False, "pending_58e": True}, status_code=501)
+        server = getattr(request.app.state, "uvicorn_server", None)
+        if server is None:
+            raise HTTPException(409, "Automatic restart is not available; restart later.")
+        launch = updates.validate_launch_environment()
+        if launch is None:
+            raise HTTPException(409, "Automatic restart is not available; restart later.")
+        root, _slot, nonce = launch
+        updates.write_restart_request(root, nonce)
+        os.environ[shortcut.UPDATE_RESTART_ENV] = "1"
+        server.should_exit = True
+        return JSONResponse({"restart_requested": True})
 
     @app.post("/api/prompt")
     async def post_prompt(p: Prompt, request: Request):
@@ -1247,12 +1250,7 @@ def serve(args):
     # One due check per server start, never on the startup/request path.
     # check_for_update owns the interval, jitter, managed-install and opt-out rules.
     no_update_check = getattr(args, "no_update_check", False)
-    if updates.checks_enabled(no_update_check):
-        threading.Thread(
-            target=updates.check_for_update,
-            kwargs={"no_update_check": no_update_check},
-            name="microclaw-update-check", daemon=True,
-        ).start()
+    updates.start_due_check(no_update_check)
     session = build_session(args, config_result=config_result)
     if token:
         _add_audit_secret(session, token)
@@ -1265,6 +1263,10 @@ def serve(args):
     tools.CONFIRM_FN = session.confirm
     app = build_app(session, remote=remote, api_token=token,
                     behind_tls_proxy=behind_tls_proxy, auth_state=auth_state)
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=args.host, port=args.web_port, log_level="warning",
+    ))
+    app.state.uvicorn_server = server
 
     if remote:
         print(
@@ -1288,7 +1290,7 @@ def serve(args):
     # Audit records are already flushed message-by-message. Every exit path
     # reports declared illumination without changing rig state (design/38 F9).
     try:
-        uvicorn.run(app, host=args.host, port=args.web_port, log_level="warning")
+        server.run()
     finally:
         from microclaw.__main__ import report_declared_illumination_on_exit
         report_declared_illumination_on_exit(

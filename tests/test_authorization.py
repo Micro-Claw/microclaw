@@ -1123,6 +1123,67 @@ def test_repl_resolves_api_key_through_shared_loader(monkeypatch, capsys, source
     assert f"Anthropic API key: {shown}" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("tty,no_check,env_disabled,expects_prompt", [
+    (True, False, False, True),
+    (False, False, False, False),
+    (True, True, False, False),
+    (True, False, True, False),
+])
+def test_repl_update_prompt_respects_interactivity_and_both_opt_outs(
+    monkeypatch, capsys, tty, no_check, env_disabled, expects_prompt,
+):
+    from microclaw import __main__ as cli
+    from microclaw import agent, credentials, updates
+
+    candidate = updates.Candidate("a" * 40, "Useful change", "public-head")
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed())
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr(cli, "validate_live_rig", lambda *a, **k: None)
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("key", "env"))
+    monkeypatch.setattr(agent, "set_api_key", lambda key: None)
+    monkeypatch.setattr(updates, "start_due_check", lambda value: None)
+    monkeypatch.setattr(
+        updates, "terminal_update_notice",
+        lambda: ("A newer Microclaw commit is available: aaaaaaa — Useful change.", candidate),
+    )
+    monkeypatch.setattr(cli, "_repl", lambda *a, **k: None)
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "n")
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: tty))
+    if env_disabled:
+        monkeypatch.setenv("MICROCLAW_UPDATE_CHECK", "0")
+    args = SimpleNamespace(
+        safety_config=None, port=1, save_history=False,
+        history_retention_days=None, no_update_check=no_check,
+    )
+    cli.run_session(args)
+    assert bool(prompts) is expects_prompt
+    assert "A newer Microclaw commit is available" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("failure", [EOFError, KeyboardInterrupt])
+def test_repl_update_prompt_interruption_continues_to_repl(monkeypatch, failure):
+    from microclaw import __main__ as cli
+    from microclaw import agent, credentials, updates
+    candidate = updates.Candidate("a" * 40, "Useful", "public-head")
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda path: parsed())
+    monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
+    monkeypatch.setattr(cli, "validate_live_rig", lambda *a, **k: None)
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("key", "env"))
+    monkeypatch.setattr(agent, "set_api_key", lambda key: None)
+    monkeypatch.setattr(updates, "start_due_check", lambda value: None)
+    monkeypatch.setattr(updates, "terminal_update_notice", lambda: ("notice", candidate))
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(failure()))
+    reached = []
+    monkeypatch.setattr(cli, "_repl", lambda *a, **k: reached.append(True))
+    cli.run_session(SimpleNamespace(
+        safety_config=None, port=1, save_history=False,
+        history_retention_days=None, no_update_check=False,
+    ))
+    assert reached == [True]
+
+
 @pytest.mark.parametrize("route", ["exit", "ctrl_c", "exception"])
 def test_every_repl_exit_route_preserves_declared_illumination(
     monkeypatch, capsys, route

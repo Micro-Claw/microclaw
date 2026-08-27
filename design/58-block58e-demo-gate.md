@@ -1,0 +1,364 @@
+# Block 58e demo gate — restart and end-to-end update
+
+Run these commands unedited and in order in Windows PowerShell 5.1. Send the
+whole printed evidence directory back. The safety backup is deliberately kept
+out of it — see below.
+
+The branch is unmerged. `Prepare` records the
+branch slot, and temporarily changes only `installed_commit` to the real
+`origin/main~1`; otherwise discovery correctly reports `diverged`. Staging then
+builds real `origin/main`, which does not contain 58e. That is expected: the
+branch slot requests the restart and the external launcher performs it.
+
+## Before anything: the one-minute spike
+
+If a phase has failed before, run this first. It needs no Prepare, no
+`install.bat` and no staging, touches no production state, and finishes in about
+a minute:
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+uv run python design\58-block58e-spike.py
+```
+
+It times each slot's `check-config --json` — the exact call staging makes — with
+and without an inherited stdin and with and without `MICROCLAW_FROM_SHORTCUT=1`,
+and measures how often an atomic state write loses to a concurrent reader. Send
+back `Documents\58e-spike.json`.
+
+## Safety copy — the first literal command
+
+`Prepare` copies `%APPDATA%\microclaw` (config, API key, histories) and the
+launcher root's own small files to a **local** backup under `%LOCALAPPDATA%`.
+It deliberately does **not** copy `env-a` and `env-b`: they are hundreds of
+megabytes, `Documents` here is redirected to a network share, and they are the
+one part of the layout `install.bat` rebuilds from scratch — which the last step
+of this runbook does anyway.
+
+## Install the branch under test
+
+Close Microclaw, then run:
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+git fetch origin
+git checkout design58/restart
+git pull
+.\install.bat
+```
+
+## Prepare and back up
+
+The first gate command copies `%APPDATA%\microclaw` and the complete managed
+root, prints the backup path, and records hashes and selectors before mutation.
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Prepare
+```
+
+## If a phase reports "the update could not be built"
+
+Send the evidence folder and stop. `update-state.json` now carries
+`build_error_detail`, which names the failing `uv` subcommand, its exit code and
+its stderr tail — that is the field to read first, and every staging phase
+clears any cached build failure before it starts, so a failure reported by one
+phase is that phase's own and not an earlier one's cascading forward.
+
+## Direct executable: Restart later only
+
+Start the branch slot directly with this literal command:
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; $slot=(Get-Content "$root\active-slot.txt" -Raw).Trim(); & "$root\env-$slot\Scripts\microclaw.exe" serve --no-browser
+```
+
+Leave it running. In a second PowerShell window run:
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+.\design\58-block58e-demo-gate.ps1 -Mode Direct
+```
+
+The program itself posts `/api/update/stage`, waits until `pending_staged` is
+true, and then records `automatic_restart` and the process command line. It can
+pass only when a real pending slot exists and that direct process still reports
+`automatic_restart: false`.
+
+Stop the direct server with Ctrl+C. Press Enter at its ordinary exit prompt.
+
+Then remove the pending selector, so the next desktop launch does not activate
+the slot this phase staged. Keep the built inactive environment — the next phase
+needs it. This literal command prints what it removed:
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; if(Test-Path "$root\pending-slot.txt"){$p=(Get-Content "$root\pending-slot.txt" -Raw).Trim(); Remove-Item "$root\pending-slot.txt" -Force; Write-Host "removed pending selector: $p"} else { Write-Host 'no pending selector present' }
+```
+
+## Deliberately incompatible config — separate refusal phase
+
+Start the branch from the desktop icon. With the server running, execute:
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+.\design\58-block58e-demo-gate.ps1 -Mode NotReady
+```
+
+This phase invokes the production `updates.stage_inactive_slot` function. A
+gate-owned fake `uv` leaves the already-built inactive environment in place and
+temporarily substitutes a CLI that classifies the one shared reviewed config as
+`blocked`; the active real CLI classifies that same file normally. Production
+comparison must refuse, cache `comparison_refused` plus its reason, and publish
+no pending selector. The phase restores the original inactive executable and
+slot marker in `finally` and records their hashes.
+
+## Desktop staging, one-job refusal, progress and comparison
+
+Double-click the desktop icon. With the browser open, run:
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+.\design\58-block58e-demo-gate.ps1 -Mode Stage
+```
+
+The program posts Stage twice while the first job owns the build and polls
+cached status through `staging: true` and `pending_staged: true`. It imports
+`microclaw.config` from this checkout and calls
+`classify_config_with_slot` plus `compare_slot_configurations` on the two exact
+`env-{slot}\Scripts\microclaw.exe` paths and one shared config. Each slot also
+runs an isolated `python.exe -I` import from the evidence directory. Active
+executable and marker hashes are recorded before and after; the inactive slot
+must be the only one whose bytes change.
+
+## Restart now and the exit pause
+
+Start the observer, then click **Restart now** when it tells you:
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Restart
+```
+
+The observer times the operation and computes the two distinct launcher nonces,
+selector flip, matching second health marker, consumed request, reconciled
+commit, process command line, and marker beside the running executable. The one
+human judgment is whether the console stopped at `Press Enter to close this
+window...`; if it does, report the measured elapsed time and stop the gate.
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Ordinary
+```
+
+Follow the observer's prompts: Ctrl+C the relaunched child, wait until its
+`Press Enter to close this window...` prompt is visible, then press Enter in the
+observer. It records the process list while the prompt is displayed. Only then
+press Enter in the child console and return to the observer. PASS requires the
+same server PID to be present before Enter and absent afterwards; elapsed time
+is reported but is not the criterion.
+
+## Restart later
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Later
+```
+
+Run this with the desktop server open. The phase stages a fresh pending slot
+itself, waits for readiness, then prompts you to click **Restart later**, stop
+the server, and launch the icon once. It records the pending selector before
+that launch and requires the next launch to activate and consume it.
+
+## Return to the branch slot before the diagnostic phases
+
+**Every phase from here on must run against the code under test.** `Restart` and
+`Later` deliberately activate the *staged* slot, which is built from
+`origin/main` and does not contain this block — so a phase run afterwards is
+testing the wrong build. Round 7 scored a real `build_error_detail` absence as a
+product failure for exactly this reason.
+
+Run this literal command, which reads the branch slot from the gate's own
+`prepare.json` and prints what it restored:
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; $evidence=(Get-Content "$root\58e-gate-evidence.txt" -Raw).Trim(); $prep=Get-Content (Join-Path $evidence 'prepare.json') -Raw | ConvertFrom-Json; Set-Content -LiteralPath "$root\active-slot.txt" -Value $prep.branch_active -Encoding ASCII; Remove-Item "$root\pending-slot.txt" -Force -ErrorAction SilentlyContinue; Write-Host "active slot is now $($prep.branch_active) (the branch build); pending selector cleared"
+```
+
+Then start Microclaw from the desktop icon again before continuing.
+
+## Unreachable PyPI, session-scoped
+
+Close Microclaw and run:
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Failure
+```
+
+This phase starts the actual active server as a child of a PowerShell process
+holding `UV_INDEX_URL=https://127.0.0.1:1/unreachable`, posts Stage itself,
+waits for the real worker, and stops the child. The scorer requires a cached
+build error, no pending selector, unchanged active slot, and a retained retry
+deadline.
+
+**The variable is removed from this session the moment the child is spawned**,
+and every other mode clears a stale one on entry and says so. It never calls
+`setx`. That was not always true: an earlier version set it session-wide, and
+because the session is your working window for the whole gate, a later
+`install.bat` inherited the unreachable index and failed three times in a row.
+If you ever see an install fail with `https://127.0.0.1:1/unreachable`, run
+`Remove-Item Env:UV_INDEX_URL` — or just open a new PowerShell window.
+
+For the separate failed-start rollback, run this block unedited. It resolves the
+inactive slot's installed package with that slot's isolated interpreter, hides
+it while retaining the executable and marker, and publishes the slot pending:
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; $active=(Get-Content "$root\active-slot.txt" -Raw).Trim(); $failed=if($active -eq 'a'){'b'}else{'a'}; $py="$root\env-$failed\Scripts\python.exe"; $pkg=(& $py -I -c "import pathlib,microclaw; print(pathlib.Path(microclaw.__file__).parent)").Trim(); if($LASTEXITCODE -ne 0 -or -not (Test-Path $pkg)){throw 'inactive package is not runnable'}; $hidden="$pkg.58e-gate-hidden"; Move-Item -LiteralPath $pkg -Destination $hidden; Set-Content -LiteralPath "$root\pending-slot.txt" -Value $failed -Encoding ASCII; Write-Host "hidden for failed-start phase: $pkg"
+```
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Rollback
+```
+
+Now follow the observer's two prompts. First double-click the icon once and wait
+for the failing launch to exit; the observer snapshots the complete launcher
+log and restores the hidden package itself. Launch the icon once more and return
+to the observer after rollback is reported. PASS requires
+no `rollback-reported=` log line after failure, exactly one after the next
+healthy launch, and the original selector restored.
+
+## Offline launch — its own phase
+
+Leave Micro-Manager open. Close Microclaw, disconnect the network, and run:
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Offline
+```
+
+The phase removes only `last_attempt` and `next_check`, so this launch's check
+is due. It does **not** change the update channel: rewriting `provenance` on a
+machine this gate can brick buys nothing, and the clone is the provider this
+install actually runs. It records the prior `last_success`, prompts for one
+desktop launch, and then restores the original state file. PASS requires exactly
+one nonce-matched healthy launch, a moved `last_attempt`, and byte-identical
+`last_success` — the launcher must start the app with no network. The cached
+`last_error` is reported but is not the criterion: offline, `discover_clone`
+fails its fetch and still resolves the local remote-tracking ref, so it
+correctly records a warning rather than an error. Reconnect the network after
+the phase.
+
+## Micro-Manager closed — separate from offline
+
+**Micro-Manager must be RUNNING when you start this phase**, because it stages a
+real update through the live server first; you close it when the phase tells you
+to. An earlier version of this step said to close it first, which cannot work —
+the server has no bridge to start against.
+
+With the network connected and Micro-Manager running, run:
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Closed
+```
+
+The phase first stages a real update through the running server. When prompted,
+stop that server and double-click the desktop icon exactly once. The observer captures
+the selector after that child starts, then asks you to wait for the bridge
+refusal and exit. PASS requires exactly one new launcher line, matching health,
+and the selector unchanged between child start and child exit. A hidden relaunch
+or rollback therefore cannot look like success.
+
+## Restore — even after a failed phase
+
+Always run Restore. It restores the original `installed_commit` and active slot,
+removes pending state, and records the after hash of `%APPDATA%\microclaw` for
+comparison with Prepare.
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Restore
+```
+
+## Public ZIP last
+
+Public ZIP replaces the managed install, so it goes last. Download GitHub's
+**Download ZIP** into the normal Downloads folder, close Microclaw, then run
+this block. It selects exactly the newest `microclaw*.zip`, fails if none exists,
+extracts it, resolves the one `install.bat`, and runs it:
+
+```powershell
+$zip=Get-ChildItem "$env:USERPROFILE\Downloads\microclaw*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if($null -eq $zip){throw 'No microclaw ZIP in Downloads'}; $dest=Join-Path $env:TEMP 'block58e-publiczip'; if(Test-Path $dest){Remove-Item $dest -Recurse -Force}; Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest; $installer=Get-ChildItem $dest -Filter install.bat -Recurse; if($installer.Count -ne 1){throw "Expected one install.bat, found $($installer.Count)"}; & $installer.FullName; if($LASTEXITCODE -ne 0){throw "public ZIP install failed: $LASTEXITCODE"}
+```
+
+Launch it once and allow its first background check to cache the private 404.
+Then run:
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+.\design\58-block58e-demo-gate.ps1 -Mode PublicZip
+```
+
+The scorer requires `public-head`, installed commit `unknown`, and the cached
+`repository is not public (404)` state. Finally reinstall from the clone:
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+.\install.bat
+```
+
+## The short close-out run
+
+When every other limb already has evidence and only `Later` and `Closed` are
+outstanding, this is the whole sequence. **Order matters**: both phases end with
+the *staged* slot active, and that slot is built from `origin/main`, so anything
+run after one of them without returning to the branch slot is testing the wrong
+build.
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+git pull
+.\design\58-block58e-demo-gate.ps1 -Mode Restore
+.\install.bat
+```
+
+With Microclaw **not** running, arrange the candidate:
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Prepare
+```
+
+**Then** start Micro-Manager, and start Microclaw from the desktop icon. Its
+startup check is what caches the candidate every later phase stages — running
+`Prepare` after the server has already started leaves nothing to stage.
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Stage
+.\design\58-block58e-demo-gate.ps1 -Mode Closed
+```
+
+`Closed` leaves the staged slot active. Return to the branch build before
+`Later`, then start Microclaw from the icon again with Micro-Manager running:
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; $evidence=(Get-Content "$root\58e-gate-evidence.txt" -Raw).Trim(); $prep=Get-Content (Join-Path $evidence 'prepare.json') -Raw | ConvertFrom-Json; Set-Content -LiteralPath "$root\active-slot.txt" -Value $prep.branch_active -Encoding ASCII; Remove-Item "$root\pending-slot.txt" -Force -ErrorAction SilentlyContinue; Write-Host "active slot is now $($prep.branch_active) (the branch build); pending selector cleared"
+```
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Later
+.\design\58-block58e-demo-gate.ps1 -Mode Restore
+.\design\58-block58e-demo-gate.ps1 -Mode Verify
+```
+
+Expect `INCOMPLETE`: the limbs proved in earlier rounds have no artifacts in this
+folder, and `offline` needs physical access. Read the two limb lines that matter.
+
+## Verify
+
+**One evidence directory scores one run.** `Verify` reads only the folder this
+gate's `Prepare` created, so limbs proved in an earlier folder do not carry
+forward. If a round stops early, the next round starts from `Prepare` and
+re-proves what came before it — with `Prepare` cheap and `Stage` about fifteen
+seconds, that is the intended cost.
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Verify
+```
+
+Verify preflights `phases.json`, names every exact command still owed, scores
+independent falsifiable limbs with PASS/FAIL/NOT EXERCISED, writes its own
+`gate.txt`, prints `BLOCK 58e DEMO GATE PASSED`, `FAILED`, or `INCOMPLETE`, and
+exits nonzero for every non-pass.

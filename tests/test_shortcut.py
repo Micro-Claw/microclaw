@@ -194,6 +194,58 @@ def test_pause_survives_a_closed_stdin(monkeypatch):
     captured[0]()          # must not raise
 
 
+@pytest.mark.parametrize("restart_at_registration,restart_at_run,expected", [
+    (False, False, 1),
+    (True, False, 1),
+    (False, True, 0),
+])
+def test_shortcut_pause_consults_restart_flag_when_handler_runs(
+    monkeypatch, restart_at_registration, restart_at_run, expected,
+):
+    monkeypatch.setenv(shortcut.FROM_SHORTCUT_ENV, "1")
+    if restart_at_registration:
+        monkeypatch.setenv("MICROCLAW_UPDATE_RESTART", "1")
+    else:
+        monkeypatch.delenv("MICROCLAW_UPDATE_RESTART", raising=False)
+    handlers = []
+    prompts = []
+    monkeypatch.setattr("atexit.register", handlers.append)
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt))
+    shortcut.pause_on_exit()
+    if restart_at_run:
+        monkeypatch.setenv("MICROCLAW_UPDATE_RESTART", "1")
+    else:
+        monkeypatch.delenv("MICROCLAW_UPDATE_RESTART", raising=False)
+    handlers[0]()
+    assert len(prompts) == expected
+
+
+
+@pytest.mark.parametrize("argv,registers", [
+    (["microclaw", "check-config", "--json"], False),
+    (["microclaw", "check-config"], True),
+])
+def test_machine_readable_check_config_never_registers_the_exit_pause(
+    monkeypatch, argv, registers,
+):
+    """A JSON mode must not end by waiting for a keypress.
+
+    `compare_slot_configurations` runs one slot's CLI from inside another, and
+    the desktop launcher exports MICROCLAW_FROM_SHORTCUT=1 into the server, so
+    on the demo machine that child printed its JSON and then blocked forever on
+    "Press Enter to close this window..." -- 0.66s with stdin closed, a hang
+    with the console it inherited. Staging could never finish.
+    """
+    from microclaw import __main__ as cli
+
+    called = []
+    monkeypatch.setattr("microclaw.shortcut.pause_on_exit", lambda: called.append(True))
+    monkeypatch.setattr(cli, "check_config", lambda args: None)
+    monkeypatch.setattr(cli.sys, "argv", argv)
+    cli.main()
+    assert bool(called) is registers
+
+
 # ---- platform gate ----
 
 @pytest.mark.skipif(os.name == "nt", reason="checks the non-Windows branch")

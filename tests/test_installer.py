@@ -44,10 +44,26 @@ def test_managed_cmd_is_slot_independent_and_bypasses_execution_policy():
     assert "env-a" not in text and "env-b" not in text
 
 
+
+def test_failed_install_names_an_index_override_in_the_environment():
+    """The one cause the uv error describes by URL but never by name.
+
+    A demo-gate phase left UV_INDEX_URL=https://127.0.0.1:1/unreachable in the
+    operator's shell; install.bat then failed three times in a row saying only
+    "the update could not be built" while uv printed the URL with no hint of
+    where it came from.
+    """
+    text = BAT.read_text(encoding="utf-8", errors="replace")
+    failure = text.split("ERROR: the update could not be built.", 1)[1]
+    failure = failure.split("exit /b 1", 1)[0]
+    for variable in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL"):
+        assert f"if defined {variable}" in failure, variable
+
 def test_powershell_launcher_has_activation_health_and_rollback_branches():
     text = PS1.read_text(encoding="utf-8")
     for mechanism in ("active-slot.txt", "activate_pending", "fresh_launch",
                       "wait_for_launcher_health", "rollback_slot", "consume_rollback_report",
+                      "consume_restart_request", "while ($true)",
                       "if (-not $healthy)", "$child.WaitForExit()"):
         assert mechanism in text
     assert "ConvertFrom-Json" not in text
