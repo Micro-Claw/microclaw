@@ -226,7 +226,7 @@ if exist "%~dp0.git" (
     set "MC_PROVENANCE=clone"
     set "MC_CLONE_PATH=%~dp0"
 )
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$slot = @{ commit=$env:MC_COMMIT; required_launcher_protocol=1 }; $slot | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:MC_ENV 'microclaw-slot.json'); if (-not (Test-Path (Join-Path $env:MC_HOME 'update-state.json'))) { $state = @{ provenance=$env:MC_PROVENANCE; installed_commit=$env:MC_COMMIT; clone_path=$env:MC_CLONE_PATH; upstream=$env:MC_UPSTREAM }; $state | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:MC_HOME 'update-state.json') }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$utf8 = New-Object System.Text.UTF8Encoding($false); $slot = @{ commit=$env:MC_COMMIT; required_launcher_protocol=1 }; [IO.File]::WriteAllText((Join-Path $env:MC_ENV 'microclaw-slot.json'), ($slot | ConvertTo-Json), $utf8); if (-not (Test-Path (Join-Path $env:MC_HOME 'update-state.json'))) { $state = @{ provenance=$env:MC_PROVENANCE; installed_commit=$env:MC_COMMIT; clone_path=$env:MC_CLONE_PATH; upstream=$env:MC_UPSTREAM }; [IO.File]::WriteAllText((Join-Path $env:MC_HOME 'update-state.json'), ($state | ConvertTo-Json), $utf8) }"
 if errorlevel 1 exit /b 1
 exit /b 0
 
