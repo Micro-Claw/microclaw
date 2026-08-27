@@ -36,6 +36,7 @@ RESTART_MESSAGE = (
 class SetupWriteCapability:
     enabled: bool = False
     consumed: bool = False
+    in_flight: bool = False
 
     def require_unused(self) -> None:
         if not self.enabled:
@@ -329,7 +330,11 @@ def write_security_config(ctrl, guard):
             raise SetupRefusal(
                 f"SETUP REFUSAL: Security bounds appeared at {target}; refusing to overwrite them."
             )
-        os.replace(temporary, target)
+        capability.in_flight = True
+        try:
+            os.replace(temporary, target)
+        finally:
+            capability.in_flight = False
         temporary = None
     except (SafetyConfigError, OSError) as exc:
         raise SetupRefusal(

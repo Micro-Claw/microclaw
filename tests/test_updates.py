@@ -606,6 +606,37 @@ def test_staging_reads_candidate_protocol_and_refuses_old_installed_launcher(tmp
         )
 
 
+def test_config_comparison_refusal_is_before_pending_publish(tmp_path, monkeypatch):
+    from microclaw import config
+
+    updates.write_state({"provenance": "public-head"}, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+
+    def successful_uv(command, **kwargs):
+        if command[1] == "venv":
+            (tmp_path / "env-b" / "Scripts").mkdir(parents=True)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    reason = "Repair or re-review the file in setup until this version also classifies it `ready`, then the update proceeds."
+    monkeypatch.setattr(updates.subprocess, "run", successful_uv)
+    monkeypatch.setattr(
+        config, "compare_slot_configurations",
+        lambda *a, **k: config.ClassificationComparison(False, reason),
+    )
+    candidate = updates.Candidate("d" * 40, "unsafe", "public-head")
+    with pytest.raises(updates.UpdateError, match="Repair or re-review"):
+        updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe")
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="ascii") == "a\n"
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert state["comparison_refused_commit"] == candidate.sha
+    assert state["comparison_refusal_reason"] == reason
+
+
 def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
     exe = tmp_path / "env-a" / "Scripts" / "python.exe"
     updates.write_slot_marker("unknown", 1, executable=exe)

@@ -30,6 +30,12 @@ class AcquisitionLedger:
         self.frames = 0
         self.bytes = 0
         self._reserved_illuminated_ms = 0.0
+        self._active_reservations = 0
+
+    @property
+    def in_flight(self) -> bool:
+        with self._lock:
+            return self._active_reservations > 0
 
     def reserve(self, guard: SafetyGuard, plan: AcquisitionPlan) -> "Reservation":
         with self._lock:
@@ -43,6 +49,7 @@ class AcquisitionLedger:
                 ),
             )
             self._reserved_illuminated_ms += plan.illuminated_ms
+            self._active_reservations += 1
         return Reservation(self, plan)
 
 
@@ -81,6 +88,7 @@ class Reservation:
         with self.ledger._lock:
             if not self._closed:
                 self.ledger._reserved_illuminated_ms -= self.plan.illuminated_ms
+                self.ledger._active_reservations -= 1
                 self._closed = True
 
     def __enter__(self) -> "Reservation":

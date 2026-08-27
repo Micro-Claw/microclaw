@@ -124,6 +124,17 @@
 </header>
 
 <main>
+  <div class="banner hidden" id="update-banner">
+    <h2>Microclaw update</h2>
+    <p id="update-text"></p>
+    <div class="row" id="update-actions">
+      <button id="update-start" type="button">Update</button>
+      <button id="update-later" type="button">Later</button>
+      <button id="update-restart" type="button">Restart now</button>
+      <button id="update-restart-later" type="button">Restart later</button>
+      <a id="update-view" target="_blank" rel="noopener noreferrer">View on GitHub</a>
+    </div>
+  </div>
   <div class="banner hidden" id="setup-banner">
     <h2>Setup mode — hardware control locked</h2>
     <p>Record and review stage travel bounds before restarting MicroClaw.</p>
@@ -217,6 +228,48 @@
     $("pair-banner").classList.remove("hidden");
     $("pair-input").focus();
   }
+
+  let updateState = null;
+  function showUpdate(state) {
+    updateState = state;
+    const view = Transcript.updateBannerView(state);
+    $("update-banner").classList.toggle("hidden", !view.visible);
+    $("update-text").textContent = view.text;
+    const show = (id, action) => $(id).classList.toggle("hidden", !view.buttons.includes(action));
+    show("update-start", "update");
+    show("update-later", "later");
+    show("update-restart", "restart-now");
+    show("update-restart-later", "restart-later");
+    show("update-view", "view");
+    $("update-view").href = view.url || "#";
+  }
+
+  async function refreshUpdate() {
+    const res = await apiFetch("/api/update");
+    if (res.ok) showUpdate(await res.json());
+  }
+
+  $("update-start").addEventListener("click", async () => {
+    const res = await apiFetch("/api/update/stage", { method: "POST" });
+    if (!res.ok) { toast(await detail(res)); return; }
+    showUpdate({ ...updateState, staging: true });
+  });
+  $("update-later").addEventListener("click", async () => {
+    const commit = updateState && updateState.candidate && updateState.candidate.sha;
+    if (!commit) return;
+    const res = await apiFetch("/api/update/dismiss", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "later", commit }),
+    });
+    if (res.ok) $("update-banner").classList.add("hidden");
+  });
+  $("update-restart").addEventListener("click", async () => {
+    const res = await apiFetch("/api/update/restart", { method: "POST" });
+    if (!res.ok) toast(await detail(res));
+  });
+  $("update-restart-later").addEventListener("click", () => {
+    $("update-banner").classList.add("hidden");
+  });
 
   async function apiFetch(url, options = {}) {
     options.credentials = "include";
@@ -690,6 +743,8 @@
       if (keyRes.status === 401) return;
       showKey(await keyRes.json());
       showModel(await (await apiFetch("/api/model")).json());
+      await refreshUpdate();
+      setInterval(refreshUpdate, 2000);
       await refresh();
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.

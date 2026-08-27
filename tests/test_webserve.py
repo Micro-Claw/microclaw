@@ -17,7 +17,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from microclaw import config, credentials, tools, webserve
+from microclaw import config, credentials, tools, updates, webserve
 from microclaw.conversation import AuditLog, ConversationStore, load_history
 from microclaw.tools_schema import TOOLS_CACHED
 from microclaw.webserve import build_app, serve
@@ -165,6 +165,21 @@ def _settle(session, timeout=2.0):
     return not session.lock.locked()
 
 
+def _managed_updates(tmp_path, monkeypatch, *, candidate_sha="a" * 40):
+    state_path = tmp_path / updates.STATE_NAME
+    updates.write_state({
+        **updates.public_provenance("0" * 40),
+        "last_attempt": 10,
+        "last_success": {"checked_at": 10, "candidate": {
+            "sha": candidate_sha, "subject": "Remote <subject>",
+            "source": "public-head", "canonical_repo": updates.REPO,
+            "warning": None,
+        }},
+    }, state_path)
+    monkeypatch.setattr(updates, "state_path", lambda: state_path)
+    return state_path
+
+
 # ---- the page ----
 
 def test_index_is_self_contained(client):
@@ -174,6 +189,83 @@ def test_index_is_self_contained(client):
     assert 'src="transcript.js"' not in html
     assert "global.Transcript = {" in html      # transcript.js inlined
     assert "--tool-line:" in html               # transcript.css inlined
+
+
+def test_update_status_reads_cache_without_calling_provider(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    monkeypatch.setattr(updates, "discover_public", lambda *a, **k: pytest.fail("network provider called"))
+    monkeypatch.setattr(updates, "discover_clone", lambda *a, **k: pytest.fail("network provider called"))
+    response = TestClient(build_app(session)).get("/api/update")
+    assert response.status_code == 200
+    assert response.json()["candidate"]["subject"] == "Remote <subject>"
+
+
+def test_update_banner_markup_and_local_browser_api_are_present(client):
+    html = client.get("/").text
+    assert 'class="banner hidden" id="update-banner"' in html
+    assert 'apiFetch("/api/update")' in html
+    assert "api.github.com" not in html
+
+
+def test_second_staging_request_is_refused_not_queued(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread, "start",
+        lambda self: None if self.name == "microclaw-update-stage" else real_start(self),
+    )
+    app = TestClient(build_app(session))
+    assert app.post("/api/update/stage").status_code == 202
+    assert app.post("/api/update/stage").status_code == 409
+
+
+@pytest.mark.parametrize("busy", ["turn", "acquisition", "confirmation", "setup-write"])
+def test_update_restart_refuses_each_non_idle_condition(session, tmp_path, monkeypatch, busy):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "validate_launch_environment", lambda: (tmp_path, "a", "nonce"))
+    if busy == "turn":
+        session.lock._locked = True
+    elif busy == "acquisition":
+        session.ctrl = types.SimpleNamespace(_microclaw_acquisition_ledger=types.SimpleNamespace(in_flight=True))
+    elif busy == "confirmation":
+        session.pending = object()
+    else:
+        session.ctrl = types.SimpleNamespace(_microclaw_setup_write_capability=types.SimpleNamespace(in_flight=True))
+    response = TestClient(build_app(session)).post("/api/update/restart")
+    assert response.status_code == 409
+    assert busy.split("-")[0] in response.json()["detail"].lower()
+
+
+def test_restart_seam_is_honest_when_idle_and_launcher_owned(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "validate_launch_environment", lambda: (tmp_path, "a", "nonce"))
+    response = TestClient(build_app(session)).post("/api/update/restart")
+    assert response.status_code == 501
+    assert response.json() == {"restart_requested": False, "pending_58e": True}
+
+
+def test_later_and_skip_are_scoped_to_one_commit(session, tmp_path, monkeypatch):
+    path = _managed_updates(tmp_path, monkeypatch)
+    monkeypatch.setattr(webserve.time, "time", lambda: 100.0)
+    app = TestClient(build_app(session))
+    assert app.post("/api/update/dismiss", json={"action": "later", "commit": "a" * 40}).status_code == 200
+    assert app.get("/api/update").json()["candidate"] is None
+    state = updates.load_state(path)
+    state["last_success"]["candidate"]["sha"] = "b" * 40
+    updates.write_state(state, path)
+    assert app.get("/api/update").json()["candidate"]["sha"] == "b" * 40
+    assert app.post("/api/update/dismiss", json={"action": "skip", "commit": "b" * 40}).status_code == 200
+    assert app.get("/api/update").json()["candidate"] is None
+
+
+def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    before = (session.tool_registry, session.tool_schemas, list(session.history))
+    TestClient(build_app(session)).get("/api/update")
+    assert (session.tool_registry, session.tool_schemas, session.history) == before
+    assert not hasattr(session, "context_provider")
 
 
 def test_index_links_the_favicon(client):
@@ -1327,6 +1419,11 @@ def _paired_client(app_client, state):
     ("get", "/api/key", None, 200),
     ("post", "/api/key", {"key": "x"}, 403),
     ("get", "/api/artifact?path=none", None, 403),
+    ("get", "/api/update", None, 200),
+    ("post", "/api/update/check", None, 200),
+    ("post", "/api/update/stage", None, 409),
+    ("post", "/api/update/restart", None, 409),
+    ("post", "/api/update/dismiss", {"action": "later", "commit": "a" * 40}, 409),
 ])
 def test_every_remote_api_route_accepts_bearer_and_cookie(
     remote, method, path, body, accepted
