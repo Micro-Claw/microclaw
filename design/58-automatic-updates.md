@@ -1435,6 +1435,49 @@ The ratio has held since 58a, and each of these is generic.
    caught that**, and replaying returned artifacts through a changed scorer is
    worth doing every time.
 
+## 58d's gate reports INCOMPLETE by design, like 58b's
+
+Written before the trip, so the verdict is not misread — the same shape as
+§"58b's gate is expected to report INCOMPLETE".
+
+**One limb cannot run in 58d: the Restart now *button*.** It appears only when a
+pending slot is staged, and 58d deliberately stages nothing on the demo machine —
+staging publishes `pending-slot.txt`, which the *next* desktop launch acts on, so
+a 58d gate that staged would leave the machine set to activate a slot built from
+`origin/main`, which does not contain 58d. That is 58e's gate, which owns
+activation and rollback. The limb therefore reports **NOT EXERCISED**, which is
+never a pass, and the banner reads INCOMPLETE. The route's refusal *is* gated: a
+real long turn runs while the program posts `/api/update/restart` and the 409 is
+scored. Read the limb list, not the banner.
+
+Two consequences worth recording. The **config comparison has no rig evidence
+from a real staging run** in this block; the gate closes as much of it as it can
+without staging, by classifying the shared config through the two real slot CLIs
+at exactly the paths `stage_inactive_slot` constructs. And **`/api/update/stage`'s
+one-job refusal is unit-tested only** — a second concurrent request needs a first
+job that really builds.
+
+**The gate rewrites one field of production state, and puts it back.** The block
+branch is unmerged, so a real clone install records a commit that is not an
+ancestor of `origin/main`; `discover_clone` correctly reports `diverged`, and
+there is no candidate to show. `Prepare` therefore sets `installed_commit` to
+`origin/main~1` — a real earlier commit, not a fixture — so discovery has
+something genuine to find, and leaves the slot's code alone. It backs up
+`%APPDATA%\microclaw` and the original `update-state.json` first, a `Restore`
+phase puts the field back, and a scored limb fails if it did not. CLAUDE.md's
+rule that a gate must not leave production state pointing into its own evidence
+folder is what that limb is for.
+
+**Two coordinator additions to the block, for the post-merge reconciliation.**
+The ten checklist items do not name a caller for the background check, and
+`check_for_update` had none — without one the cache the banner reads is never
+populated and the gate's own "banner appears, *then* Check now moves the
+timestamp" step cannot run, so `serve()` now starts one due check off the startup
+path. And the checklist's auth test points at `tests/test_host_isolation.py`,
+which is about the suite not reading its host; the real pattern is
+`tests/test_webserve.py::test_every_remote_api_route_accepts_bearer_and_cookie`,
+where the five routes now sit. Fix that sentence at the design gate.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.

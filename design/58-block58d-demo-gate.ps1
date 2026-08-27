@@ -1,0 +1,22 @@
+param([ValidateSet('Prepare','Probe','Busy','After','Restore','Verify')][string]$Mode)
+$ErrorActionPreference = 'Stop'
+$repo = (git rev-parse --show-toplevel).Trim()
+Set-Location $repo
+git merge-base --is-ancestor a111ddf HEAD
+if ($LASTEXITCODE -ne 0) { throw 'This checkout does not contain the complete block 58d implementation.' }
+$pointer = "$env:LOCALAPPDATA\microclaw\58d-gate-evidence.txt"
+if ($Mode -eq 'Prepare') {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $evidence = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "block58d-$stamp"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pointer) | Out-Null
+    Set-Content -LiteralPath $pointer -Value $evidence -Encoding ASCII
+} else {
+    if (-not (Test-Path -LiteralPath $pointer)) { throw 'Run the Prepare phase first.' }
+    $evidence = (Get-Content -LiteralPath $pointer -Raw).Trim()
+}
+uv run python (Join-Path $repo 'design\58-block58d-demo-gate.py') `
+    --mode $Mode.ToLowerInvariant() --repo $repo --out $evidence
+$code = $LASTEXITCODE
+Write-Host "Evidence written to: $evidence"
+if ($code -ne 0) { Write-Host "$Mode did not pass; send the evidence folder anyway." -ForegroundColor Red }
+exit $code
