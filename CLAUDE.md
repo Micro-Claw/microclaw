@@ -420,6 +420,15 @@ Generic, from design/58. The Windows layout details live in that document.
   for any tool you invoke, and never let a machine-readable mode register a
   pause. The suite cannot catch this: a test runner has no console to inherit,
   so the guard is asserted on the *argument*, deliberately.
+- **A log line announcing an action is not the action.** 58e's gate waited for
+  the launcher's new log entry and snapshotted immediately — but the launcher
+  writes that line *before* it spawns the child, so the startup-health marker
+  could not exist yet, and two rounds read the empty marker as a product
+  failure. Wait for the thing itself, keyed to that attempt's own nonce.
+  Relatedly: **once a gate activates a staged slot it is testing the other
+  build**, so a phase that asserts on a feature of the code under test must
+  return to it first — and a scorer must report NOT EXERCISED, never FAIL, on
+  evidence that predates the field it reads.
 - **An installer and an updater that build the same application must build it
   the same way.** `install.bat` installed `.[serve]`; `stage_inactive_slot`
   installed the bare source, so every staged slot lacked fastapi and uvicorn and
