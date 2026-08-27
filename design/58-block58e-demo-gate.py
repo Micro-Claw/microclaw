@@ -267,6 +267,13 @@ def prepare(repo: Path, out: Path, root: Path) -> int:
     arranged = completed.stdout.strip()
     state = dict(original)
     state["installed_commit"] = arranged
+    # Make this launch's check DUE, exactly as 58d's Prepare did. Without it the
+    # server's startup check is skipped, nothing caches a candidate, and every
+    # staging phase is refused with "No update candidate is cached" -- which
+    # round 9 avoided only because a Restore had happened to clear these first.
+    state.pop("last_attempt", None)
+    state.pop("next_check", None)
+    state.pop("dismissal", None)   # a stale "Later" would hide the banner
     write_json(root / "update-state.json", state)
 
     data = state_snapshot(root)
@@ -274,6 +281,8 @@ def prepare(repo: Path, out: Path, root: Path) -> int:
     data["branch_active"] = data["active"]
     data["backup"] = str(backup)
     save_phase(out, "prepare", data)
+    print("Prepared. START MICROCLAW FROM THE DESKTOP ICON NOW -- its startup "
+          "check is what caches the candidate every later phase stages.")
     print(f"BACKUP COPIED TO: {backup}")
     print("  (config, key, histories and the launcher's own files. The two slot "
           "environments are NOT copied -- install.bat rebuilds those.)")
@@ -647,14 +656,16 @@ def closed(out: Path, root: Path) -> int:
     require_accepted(response, "Micro-Manager closed")
     samples = poll_stage_until_terminal()
     initial = state_snapshot(root)
-    print("Staged. Stop the current server, then launch the desktop icon once.")
+    print("Staged. NOW: close Micro-Manager, then stop this server, then launch "
+          "the desktop icon exactly once.")
     deadline = time.time() + 60
     while time.time() < deadline:
         if len(launch_lines(root)) == len(initial["launcher_lines"]) + 1:
             break
         time.sleep(0.25)
     during = state_snapshot(root)
-    print("After the bridge refusal, press Enter in its console and then here.")
+    print("Wait for the child to report it cannot reach Micro-Manager, press Enter "
+          "in its console, then press Enter here.")
     input()
     after = state_snapshot(root)
     save_phase(out, "closed", {

@@ -245,7 +245,12 @@ the phase.
 
 ## Micro-Manager closed — separate from offline
 
-With the network connected, close Micro-Manager and run:
+**Micro-Manager must be RUNNING when you start this phase**, because it stages a
+real update through the live server first; you close it when the phase tells you
+to. An earlier version of this step said to close it first, which cannot work —
+the server has no bridge to start against.
+
+With the network connected and Micro-Manager running, run:
 
 ```powershell
 .\design\58-block58e-demo-gate.ps1 -Mode Closed
@@ -294,6 +299,52 @@ The scorer requires `public-head`, installed commit `unknown`, and the cached
 cd $env:USERPROFILE\Documents\GitHub\microclaw
 .\install.bat
 ```
+
+## The short close-out run
+
+When every other limb already has evidence and only `Later` and `Closed` are
+outstanding, this is the whole sequence. **Order matters**: both phases end with
+the *staged* slot active, and that slot is built from `origin/main`, so anything
+run after one of them without returning to the branch slot is testing the wrong
+build.
+
+```powershell
+cd $env:USERPROFILE\Documents\GitHub\microclaw
+git pull
+.\design\58-block58e-demo-gate.ps1 -Mode Restore
+.\install.bat
+```
+
+With Microclaw **not** running, arrange the candidate:
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Prepare
+```
+
+**Then** start Micro-Manager, and start Microclaw from the desktop icon. Its
+startup check is what caches the candidate every later phase stages — running
+`Prepare` after the server has already started leaves nothing to stage.
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Stage
+.\design\58-block58e-demo-gate.ps1 -Mode Closed
+```
+
+`Closed` leaves the staged slot active. Return to the branch build before
+`Later`, then start Microclaw from the icon again with Micro-Manager running:
+
+```powershell
+$root="$env:LOCALAPPDATA\microclaw"; $evidence=(Get-Content "$root\58e-gate-evidence.txt" -Raw).Trim(); $prep=Get-Content (Join-Path $evidence 'prepare.json') -Raw | ConvertFrom-Json; Set-Content -LiteralPath "$root\active-slot.txt" -Value $prep.branch_active -Encoding ASCII; Remove-Item "$root\pending-slot.txt" -Force -ErrorAction SilentlyContinue; Write-Host "active slot is now $($prep.branch_active) (the branch build); pending selector cleared"
+```
+
+```powershell
+.\design\58-block58e-demo-gate.ps1 -Mode Later
+.\design\58-block58e-demo-gate.ps1 -Mode Restore
+.\design\58-block58e-demo-gate.ps1 -Mode Verify
+```
+
+Expect `INCOMPLETE`: the limbs proved in earlier rounds have no artifacts in this
+folder, and `offline` needs physical access. Read the two limb lines that matter.
 
 ## Verify
 
