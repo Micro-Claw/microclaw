@@ -410,6 +410,14 @@ Generic, from design/58. The Windows layout details live in that document.
   for any tool you invoke, and never let a machine-readable mode register a
   pause. The suite cannot catch this: a test runner has no console to inherit,
   so the guard is asserted on the *argument*, deliberately.
+- **A record that some earlier attempt failed is not a record of this one.**
+  58e's staging route skipped writing its error whenever a *cached* refusal
+  matched the commit being staged, so after one legitimate refusal every later
+  failure of that commit vanished — no error, no status, `staging` frozen on
+  "running". Raise a typed exception for the case you mean to special-case; do
+  not re-read shared state and infer it. The same shape bites gates: **clearing
+  one of two poison keys is clearing neither**, and a phase that breaks state
+  deliberately must put it back rather than leave it for the next phase.
 - **When a gate fails twice for reasons its own artifacts cannot explain, stop
   running the gate and write a probe.** A gate is built to score a working
   mechanism, and every phase of one drags a full setup behind it; two rig trips
