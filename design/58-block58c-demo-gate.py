@@ -266,12 +266,24 @@ def observe_closed(out: Path, managed: Path) -> int:
     wait_for_new_nonce(log, len([line for line in before_lines if " nonce=" in line]))
     wait_for_slot_processes_to_exit()
     after_lines = read_lines(log)
+    # The absence of a rollback proves nothing on its own here: with no pending
+    # slot the launcher has nothing to roll back to, so it writes no report
+    # whether or not health was ever reached. The half of item 8 that says "the
+    # marker IS written" needs the marker itself, read after the child has gone.
+    nonce_lines = [line for line in after_lines if " nonce=" in line]
+    match = re.search(r"nonce=([0-9a-f]{32})", nonce_lines[-1]) if nonce_lines else None
+    try:
+        health = (managed / "launch-health.txt").read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        health = None
     write_json(out / "closed-mm-observation.json", {
         "before_nonce_count": len([line for line in before_lines if " nonce=" in line]),
-        "after_nonce_count": len([line for line in after_lines if " nonce=" in line]),
+        "after_nonce_count": len(nonce_lines),
         "active_before": active,
         "active_after": (managed / "active-slot.txt").read_text(encoding="ascii").strip(),
         "rollback_report_exists": (managed / "rollback-report.txt").exists(),
+        "launch_nonce": match.group(1) if match else None,
+        "health_after_child_exited": health,
     })
     return 0
 
@@ -389,14 +401,25 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
             raise AssertionError(f"health={health!r}; last={nonce_lines[-1] if nonce_lines else None}")
         return f"health equals fresh launcher nonce {health}"
 
-    @limb("Micro-Manager-closed launch is final without rollback or relaunch",
-          "the launch adds other than one nonce, changes active, or writes rollback")
+    @limb("a closed rig still reaches health, and that launch is final",
+          "the launch adds other than one nonce, changes active, writes rollback, or "
+          "leaves no marker carrying that launch's own nonce")
     def _():
         data = json.loads((out / "closed-mm-observation.json").read_text(encoding="utf-8"))
+        if "health_after_child_exited" not in data:
+            raise NotExercised(
+                "this observation predates the health capture; rerun -Mode Closed"
+            )
         if (data["after_nonce_count"] - data["before_nonce_count"] != 1
                 or data["active_before"] != data["active_after"]
                 or data["rollback_report_exists"]):
             raise AssertionError(data)
+        # Item 7: a closed bridge is not evidence that new code is defective, so
+        # health must be reached before build_session ever contacts it.
+        if not data["launch_nonce"] or data["health_after_child_exited"] != data["launch_nonce"]:
+            raise AssertionError(
+                f"the child exited on the bridge without leaving its own health: {data}"
+            )
         return json.dumps(data, sort_keys=True)
 
     @limb("rollback is reported once on the next successful launch",
