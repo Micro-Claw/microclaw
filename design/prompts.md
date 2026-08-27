@@ -7492,3 +7492,54 @@ so every claim about activation, health and rollback will rest on exactly the
 kind of evidence that failed three times here. Put the state machine in Python
 where it can be unit-tested, keep the `.ps1` thin, and write the gate as a
 program from the start.
+
+## design/58 block 58b — classification and the single snapshot (2026-08-27)
+
+Merged `3baec05`. Two review rounds, six findings. The implementation was
+accepted essentially unchanged; **every finding but one was about the gate.**
+
+**The gate defect is 58a's, restated.** Round 1 resolved its "two slots" as the
+operator's real installed Microclaw
+(`%LOCALAPPDATA%\microclaw\env\Scripts\microclaw.exe`) and whatever `microclaw`
+was on `PATH`. Neither is the code under review, so the gate could have failed
+because the installed copy predated the block, or passed while exercising
+something else. And the nine "guard" limbs classified **three different files**
+with two executables and then called the **pure** comparison on classifications
+they had gathered themselves — re-implementing the mechanism instead of invoking
+it. Production compares **one file** classified by **two code versions**; that is
+the shipped signature, `compare_slot_configurations(active_exe, candidate_exe,
+path)`, one path. So the only new runtime behaviour in the block had **no gate
+coverage**, and its unit test monkeypatches `subprocess.run`, so no real process
+was spawned by anything, anywhere.
+
+**What the rewrite does instead** is the reusable part: the checkout's own CLI on
+one side (a generated `.cmd` wrapping the uv-resolved `python -m microclaw`), a
+**gate-written stub** on the other, and the real function driving all nine cells
+plus three failure paths through real subprocesses — real argparse, real JSON
+over a real pipe. The argument-order contract (top-level `--safety-config` before
+the subcommand) is now proven by a real parser rather than asserted against a
+mock. Every limb name and detail carries "(candidate = gate stub, not a second
+slot)".
+
+**And one limb reports NOT EXERCISED on purpose**, naming 58c, so the verdict is
+INCOMPLETE and the exit code nonzero. That is the honest state of the evidence.
+The temptation the first draft gave in to — synthesise a second slot from an
+unrelated install — produces a green gate that means nothing. **When the
+mechanism genuinely does not exist yet, say so in the artifact and carry the debt
+into the block that creates it.** 58c's checklist now names this limb explicitly.
+
+**The runner improved on the instruction.** Asked to state per limb what would
+make it fail, it made `fails_if` a **mandatory argument of the `limb`
+decorator**, recorded into every PASS and every NOT EXERCISED line. 58a's
+unfalsifiable opt-out limb could not have been written that way. Copy it forward.
+
+**Process, because three of five turns died.** One OpenAI usage limit, two
+harness kills — one leaving the gate script **deleted mid-rewrite** after
+`apply_patch` refused a combined delete-and-create on one path. None was a code
+problem. What worked: keep the interrupted work rather than discarding it, tell
+the next turn **in writing** that it is an unreviewed draft and must verify every
+item from the code, restore any file left in a broken intermediate state, and
+**commit the parts that are complete and correct** so a further interruption
+cannot lose them (`30b0d9b`, the snapshot fix). Discarding is right when a turn
+dies early; preserving is right when it dies at the end. Tell the next runner
+which one it is.

@@ -987,6 +987,12 @@ Step 1** — the runbook says so as a literal command, and prints the copy.
       before and after.
 - [ ] `install.bat` run twice in a row is idempotent and does not lose the
       active slot.
+- [ ] **58b's owed limb: two real slot validators classify one shared config
+      file.** 58b's gate drove all nine guard cells through a gate-written stub
+      and reported this NOT EXERCISED because no second slot existed. 58c builds
+      one — run `compare_slot_configurations(env-a CLI, env-b CLI, <one config>)`
+      and record both classifications. This is the only debt 58b carried
+      forward, and 58c is the block that discharges it.
 - [ ] **A non-uv environment is left alone.** Create a throwaway conda/venv
       environment with microclaw installed into it, run the updater-capable
       `install.bat`, and afterwards: that environment's `microclaw` still
@@ -1298,7 +1304,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
-| 58b | — | `design58/classification` | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **awaiting demo** — `design\58-block58b-demo-gate.ps1`; expect **INCOMPLETE**, see below | — | — |
+| 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
@@ -1317,11 +1323,14 @@ State as of 2026-08-26:
   `main` measures **2220 passed / 99 skipped / 3 warnings** (macOS,
   coordinator-measured). Its round history is §"58a demo gate round 1" and
   `design/prompts.md`.
-- **58b is implemented and pushed, awaiting its demo gate.** Branch
-  `design58/classification` from `main` at `1a582dc`, tip `f50fd82`. Suite
-  **2244 passed / 99 skipped / 3 warnings** (macOS, coordinator-measured), from
-  2220. Its gate is expected to report **INCOMPLETE** — see the section above
-  before treating that as a failure.
+- **58b is MERGED** (`3baec05`, 2026-08-27), branch and worktree deleted. Its
+  demo gate ran 16 PASS / 0 FAIL / **1 NOT EXERCISED**, verdict INCOMPLETE — the
+  correct result, not a failure. `main` measures **2244 passed / 99 skipped / 3
+  warnings** (macOS, coordinator-measured), from 2220.
+- **58b left one debt for 58c**, and it is the only one: two real slot
+  validators classifying one shared file. 58c creates the second slot, so its
+  gate **must** close that limb. It is written into the carried-forward list
+  below.
 - **Three of five runner turns on 58b were cut short** — one OpenAI usage limit,
   two harness kills, one of which left the gate script deleted mid-rewrite after
   an `apply_patch` refusal on a combined delete-and-create. None was a code
