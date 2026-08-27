@@ -87,6 +87,7 @@ def session():
         # `getattr` default, because the only safe default — the full hardware
         # registry — is the wrong answer for a setup session.
         mode=webserve.SessionMode.NORMAL,
+        safety_config_path=Path("configured-safety.yaml"),
         tool_schemas=TOOLS_CACHED,
         tool_registry=tools.TOOL_REGISTRY,
     )
@@ -208,12 +209,47 @@ def test_check_now_uses_the_background_checker_with_force(session, tmp_path, mon
     assert calls == [{"state_file": tmp_path / updates.STATE_NAME, "force": True}]
 
 
-def test_serve_starts_due_check_off_path_before_building_hardware_session():
-    source = Path(webserve.__file__).read_text(encoding="utf-8")
-    serve_source = source[source.index("def serve(args):"):]
-    assert serve_source.index("target=updates.check_for_update") < serve_source.index(
-        "session = build_session"
+def test_check_now_is_rate_limited(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    monkeypatch.setattr(updates, "check_for_update", lambda **kwargs: None)
+    app = TestClient(build_app(session))
+    assert [app.post("/api/update/check").status_code for _ in range(4)] == [200, 200, 200, 429]
+
+
+def test_staging_passes_the_session_config_path(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    chosen = tmp_path / "non-default.yaml"
+    session.safety_config_path = chosen
+    captured = []
+
+    def materialize(state, candidate, source):
+        (source / "scripts").mkdir(parents=True)
+        return source
+
+    monkeypatch.setattr(updates, "materialize_public", materialize)
+    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(
+        updates, "stage_inactive_slot",
+        lambda *args, **kwargs: captured.append(kwargs["config_path"]),
     )
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread, "start",
+        lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
+    )
+    assert TestClient(build_app(session)).post("/api/update/stage").status_code == 202
+    assert captured == [chosen]
+
+
+@pytest.mark.parametrize("route, body", [
+    ("/api/update/stage", None),
+    ("/api/update/dismiss", {"action": "later", "commit": "a" * 40}),
+])
+def test_mutating_update_routes_refuse_corrupt_state(session, tmp_path, monkeypatch, route, body):
+    path = tmp_path / updates.STATE_NAME
+    path.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(updates, "state_path", lambda: path)
+    assert TestClient(build_app(session)).post(route, json=body).status_code == 409
 
 
 def test_update_banner_markup_and_local_browser_api_are_present(client):
@@ -221,6 +257,8 @@ def test_update_banner_markup_and_local_browser_api_are_present(client):
     assert 'class="banner hidden" id="update-banner"' in html
     assert 'apiFetch("/api/update")' in html
     assert "api.github.com" not in html
+    assert "setInterval(refreshUpdate, 2000)" not in html
+    assert "fast ? 2000 : 30000" in html
 
 
 def test_second_staging_request_is_refused_not_queued(session, tmp_path, monkeypatch):
@@ -243,7 +281,16 @@ def test_update_restart_refuses_each_non_idle_condition(session, tmp_path, monke
     if busy == "turn":
         session.lock._locked = True
     elif busy == "acquisition":
-        session.ctrl = types.SimpleNamespace(_microclaw_acquisition_ledger=types.SimpleNamespace(in_flight=True))
+        from microclaw.acquisition import AcquisitionPlan
+
+        class Controller:
+            pass
+
+        session.ctrl = Controller()
+        ledger = tools._acquisition_ledger(session.ctrl)
+        reservation = ledger.reserve(
+            session.guard, AcquisitionPlan(1, 1.0, 0.001, 1)
+        )
     elif busy == "confirmation":
         session.pending = object()
     else:
@@ -277,11 +324,29 @@ def test_later_and_skip_are_scoped_to_one_commit(session, tmp_path, monkeypatch)
 
 
 def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatch):
-    _managed_updates(tmp_path, monkeypatch)
-    before = (session.tool_registry, session.tool_schemas, list(session.history))
-    TestClient(build_app(session)).get("/api/update")
-    assert (session.tool_registry, session.tool_schemas, session.history) == before
-    assert not hasattr(session, "context_provider")
+    path = _managed_updates(tmp_path, monkeypatch)
+    session.store = ConversationStore(AuditLog(None, enabled=False))
+    candidate = updates.load_state(path)["last_success"]["candidate"]
+    monkeypatch.setattr(updates, "check_for_update", lambda **kwargs: None)
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread, "start",
+        lambda thread: None if thread.name == "microclaw-update-stage" else real_start(thread),
+    )
+    app = TestClient(build_app(session))
+    assert app.post("/api/update/check").status_code == 200
+    assert app.post("/api/update/stage").status_code == 202
+    assert app.post("/api/update/dismiss", json={
+        "action": "later", "commit": candidate["sha"],
+    }).status_code == 200
+    assert not any("update" in name for name in tools.TOOL_REGISTRY)
+    assert not any("update" in schema["name"] for schema in TOOLS_CACHED)
+    assert all(fn.__module__ != updates.__name__ for fn in tools.TOOL_REGISTRY.values())
+    history = webserve._durable_history(session)
+    assert history == []
+    serialized = json.dumps(session.store.audit.records)
+    for forbidden in (candidate["sha"], candidate["subject"], "/api/update"):
+        assert forbidden not in serialized
 
 
 def test_index_links_the_favicon(client):
@@ -1087,7 +1152,7 @@ def test_post_key_is_refused_when_bound_beyond_localhost(session, monkeypatch):
 def _args(**kw):
     base = dict(host="0.0.0.0", web_port=8000, allow_remote=False, no_browser=True,
                 behind_tls_proxy=False, safety_config="x.yaml", port=4827,
-                model=None, save_history=False)
+                model=None, save_history=False, no_update_check=False)
     base.update(kw)
     return types.SimpleNamespace(**base)
 
@@ -1256,11 +1321,12 @@ def test_build_session_validates_once_on_both_routes(monkeypatch, ready):
         webserve.config, "validate_safety_config",
         lambda path: calls.append(path) or result,
     )
-    monkeypatch.setattr(webserve, "Session", lambda args, parsed: ("normal", parsed))
-    monkeypatch.setattr(webserve, "SetupSession", lambda args, snapshot: ("setup", snapshot))
+    monkeypatch.setattr(webserve, "Session", lambda args, parsed: types.SimpleNamespace(kind="normal", value=parsed))
+    monkeypatch.setattr(webserve, "SetupSession", lambda args, snapshot: types.SimpleNamespace(kind="setup", value=snapshot))
     session = webserve.build_session(_args(safety_config="snapshot.yaml"))
     assert len(calls) == 1
-    assert session[0] == ("normal" if ready else "setup")
+    assert session.kind == ("normal" if ready else "setup")
+    assert session.safety_config_path == result.path
 
 
 def test_build_session_uses_supplied_snapshot_after_file_is_replaced(tmp_path, monkeypatch):
@@ -1275,10 +1341,12 @@ def test_build_session_uses_supplied_snapshot_after_file_is_replaced(tmp_path, m
         webserve.config, "validate_safety_config",
         lambda path: pytest.fail("supplied snapshot was revalidated"),
     )
-    monkeypatch.setattr(webserve, "Session", lambda args, parsed: parsed)
-    assert webserve.build_session(
+    monkeypatch.setattr(webserve, "Session", lambda args, parsed: types.SimpleNamespace(value=parsed))
+    session = webserve.build_session(
         _args(safety_config=str(path)), config_result=snapshot,
-    ) == "snapshot constraints"
+    )
+    assert session.value == "snapshot constraints"
+    assert session.safety_config_path == path
 
 
 def test_serve_hoists_one_snapshot_into_build_session(monkeypatch, tmp_path):
@@ -1329,6 +1397,44 @@ def test_serve_writes_launcher_health_immediately_before_build_session(monkeypat
     webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x"),
                          no_browser=True))
     assert events == ["validate", "health", "build"]
+
+
+def test_serve_runs_update_check_without_blocking_and_honors_opt_out(monkeypatch, tmp_path):
+    import uvicorn
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    fake = types.SimpleNamespace(confirm=lambda *a, **k: False, guard=_guard(),
+                                 ctrl=types.SimpleNamespace(core=None))
+
+    def check(**kwargs):
+        calls.append(kwargs)
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(updates, "check_for_update", check)
+    monkeypatch.setattr(webserve.config, "validate_safety_config", lambda path: object())
+
+    def build(*args, **kwargs):
+        assert started.wait(timeout=1), "startup check thread never ran"
+        return fake
+
+    monkeypatch.setattr(webserve, "build_session", build)
+    monkeypatch.setattr(webserve, "build_app", lambda *a, **k: object())
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x")))
+    assert not release.is_set(), "serve waited for the background check"
+    release.set()
+    assert calls == [{"no_update_check": False}]
+
+    started.clear()
+    calls.clear()
+    monkeypatch.setattr(webserve, "build_session", lambda *a, **k: fake)
+    webserve.serve(_args(
+        host="127.0.0.1", safety_config=str(tmp_path / "x"), no_update_check=True,
+    ))
+    assert calls == []
 
 
 def test_bridge_failure_after_health_leaves_nonce_marker(monkeypatch, tmp_path):

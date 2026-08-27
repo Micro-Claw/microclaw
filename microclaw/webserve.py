@@ -108,6 +108,7 @@ SESSION_TTL_S = 12 * 60 * 60
 RATE_WINDOW_S = 60.0
 RATE_MAX_FAILURES = 10
 RATE_MAX_PAIR_ATTEMPTS = 10
+RATE_MAX_UPDATE_CHECKS = 3
 RATE_CLIENTS_MAX = 256
 SESSIONS_MAX = 1024
 SESSION_COOKIE = "microclaw_session"
@@ -522,14 +523,18 @@ def build_session(args, config_result: ConfigValidationResult | None = None):
     path = Path(args.safety_config) if args.safety_config else config.default_safety_config()
     result = config_result if config_result is not None else config.validate_safety_config(path)
     if result.can_start_live_validation:
-        return Session(args, result.parsed)
+        session = Session(args, result.parsed)
+        session.safety_config_path = result.path
+        return session
     if result.classification == "blocked":
         print(
             f"Existing security bounds at {result.path} are not valid and reviewed. "
             "Restricted setup will open, but it will not overwrite or delete that "
             "file. Move it aside or repair it deliberately, then restart setup."
         )
-    return SetupSession(args, result)
+    session = SetupSession(args, result)
+    session.safety_config_path = result.path
+    return session
 
 
 def build_app(session, *, remote: bool = False, api_token: str | None = None,
@@ -537,6 +542,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     app = FastAPI(title="Microclaw")
     update_job_lock = threading.Lock()
     update_job = {"running": False}
+    update_checks = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
     page = load_page("serve.html")
     if session.mode is SessionMode.SETUP:
         page = page.replace(
@@ -740,7 +746,9 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         return JSONResponse(update_status())
 
     @app.post("/api/update/check")
-    async def post_update_check():
+    async def post_update_check(request: Request):
+        if not update_checks.allow(client_address(request)):
+            raise HTTPException(429, "Too many update checks.")
         await run_in_threadpool(updates.check_for_update, state_file=updates.state_path(), force=True)
         return JSONResponse(update_status())
 
@@ -749,7 +757,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         with update_job_lock:
             if update_job["running"]:
                 raise HTTPException(409, "An update staging job is already running.")
-            state = updates.load_state()
+            try:
+                state = updates.load_state()
+            except updates.UpdateError:
+                raise HTTPException(409, "Updates are unavailable in this installation.") from None
             success = state.get("last_success") if state else None
             raw = success.get("candidate") if isinstance(success, dict) else None
             if not isinstance(raw, dict):
@@ -776,7 +787,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 uv = shutil.which("uv")
                 if not uv:
                     raise updates.UpdateError("the update could not be built: uv was not found")
-                updates.stage_inactive_slot(root, source, candidate, uv_executable=uv)
+                updates.stage_inactive_slot(
+                    root, source, candidate, uv_executable=uv,
+                    config_path=session.safety_config_path,
+                )
             except Exception as exc:
                 latest = updates.load_state(state_path) or {}
                 if latest.get("comparison_refused_commit") != candidate.sha:
@@ -797,7 +811,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def post_update_dismiss(value: UpdateDismissal):
         if value.action not in {"later", "skip"}:
             raise HTTPException(422, "action must be 'later' or 'skip'.")
-        state = updates.load_state()
+        try:
+            state = updates.load_state()
+        except updates.UpdateError:
+            raise HTTPException(409, "Updates are unavailable in this installation.") from None
         if state is None:
             raise HTTPException(409, "Updates are unavailable in this installation.")
         record = {"action": value.action, "commit": value.commit}
@@ -811,7 +828,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def post_update_restart():
         if session.lock.locked():
             raise HTTPException(409, "An agent turn is in progress.")
-        ledger = getattr(session.ctrl, "_microclaw_acquisition_ledger", None)
+        ledger = tools._existing_acquisition_ledger(session.ctrl)
         if ledger is not None and ledger.in_flight:
             raise HTTPException(409, "An acquisition is in progress.")
         if session.pending is not None:
@@ -1229,11 +1246,13 @@ def serve(args):
         sys.exit(f"Launcher startup refused: {exc}")
     # One due check per server start, never on the startup/request path.
     # check_for_update owns the interval, jitter, managed-install and opt-out rules.
-    threading.Thread(
-        target=updates.check_for_update,
-        kwargs={"no_update_check": getattr(args, "no_update_check", False)},
-        name="microclaw-update-check", daemon=True,
-    ).start()
+    no_update_check = getattr(args, "no_update_check", False)
+    if updates.checks_enabled(no_update_check):
+        threading.Thread(
+            target=updates.check_for_update,
+            kwargs={"no_update_check": no_update_check},
+            name="microclaw-update-check", daemon=True,
+        ).start()
     session = build_session(args, config_result=config_result)
     if token:
         _add_audit_secret(session, token)

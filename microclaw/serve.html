@@ -230,6 +230,11 @@
   }
 
   let updateState = null;
+  let updatePollTimer = null;
+  function scheduleUpdatePoll(fast) {
+    clearTimeout(updatePollTimer);
+    updatePollTimer = setTimeout(refreshUpdate, fast ? 2000 : 30000);
+  }
   function showUpdate(state) {
     updateState = state;
     const view = Transcript.updateBannerView(state);
@@ -246,13 +251,20 @@
 
   async function refreshUpdate() {
     const res = await apiFetch("/api/update");
-    if (res.ok) showUpdate(await res.json());
+    if (res.ok) {
+      const state = await res.json();
+      showUpdate(state);
+      scheduleUpdatePoll(!!state.staging);
+    } else {
+      scheduleUpdatePoll(false);
+    }
   }
 
   $("update-start").addEventListener("click", async () => {
     const res = await apiFetch("/api/update/stage", { method: "POST" });
     if (!res.ok) { toast(await detail(res)); return; }
     showUpdate({ ...updateState, staging: true });
+    scheduleUpdatePoll(true);
   });
   $("update-later").addEventListener("click", async () => {
     const commit = updateState && updateState.candidate && updateState.candidate.sha;
@@ -744,7 +756,6 @@
       showKey(await keyRes.json());
       showModel(await (await apiFetch("/api/model")).json());
       await refreshUpdate();
-      setInterval(refreshUpdate, 2000);
       await refresh();
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.

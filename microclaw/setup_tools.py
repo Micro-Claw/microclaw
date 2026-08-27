@@ -295,6 +295,14 @@ def write_security_config(ctrl, guard):
     """Validate and publish the setup draft to the sole permitted destination."""
     capability: SetupWriteCapability = ctrl._microclaw_setup_write_capability
     capability.require_unused()
+    capability.in_flight = True
+    try:
+        return _write_security_config(ctrl, capability)
+    finally:
+        capability.in_flight = False
+
+
+def _write_security_config(ctrl, capability: SetupWriteCapability):
     draft = _state(ctrl)
     document = _schema_3_document(draft)
     target = paths.default_safety_config().resolve()
@@ -330,11 +338,7 @@ def write_security_config(ctrl, guard):
             raise SetupRefusal(
                 f"SETUP REFUSAL: Security bounds appeared at {target}; refusing to overwrite them."
             )
-        capability.in_flight = True
-        try:
-            os.replace(temporary, target)
-        finally:
-            capability.in_flight = False
+        os.replace(temporary, target)
         temporary = None
     except (SafetyConfigError, OSError) as exc:
         raise SetupRefusal(

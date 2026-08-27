@@ -336,9 +336,11 @@ def stage_inactive_slot(
     # Each slot must classify through its own interpreter.  This belongs before
     # pending publish: pending-slot.txt is the launcher's activation command.
     from microclaw import config
-    active_python = base / f"env-{active}" / "Scripts" / "python.exe"
+    active_console = base / f"env-{active}" / "Scripts" / "microclaw.exe"
+    candidate_console = target / "Scripts" / "microclaw.exe"
     comparison = config.compare_slot_configurations(
-        active_python, python, config_path or config.default_safety_config(),
+        active_console, candidate_console,
+        config_path or config.default_safety_config(),
     )
     state = load_state(base / STATE_NAME) or {}
     if not comparison.proceed:
@@ -350,6 +352,8 @@ def stage_inactive_slot(
     state.pop("comparison_refused_commit", None)
     state.pop("comparison_refusal_reason", None)
     state["staging"] = {"status": "staged", "commit": candidate.sha}
+    state.pop("build_error", None)
+    state.pop("build_failed_commit", None)
     write_state(state, base / STATE_NAME)
     temporary = base / f".{PENDING_SLOT_NAME}.tmp"
     temporary.write_text(inactive + "\n", encoding="ascii")
