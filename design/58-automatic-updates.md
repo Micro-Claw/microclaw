@@ -2078,6 +2078,56 @@ directory do not carry forward. With Prepare now cheap and Stage taking ~15 s,
 the answer is a single clean run rather than machinery to merge folders — but it
 is worth knowing before someone tries to resume a half-finished gate.
 
+## 58e demo gate round 7 — 2026-08-27: 10 PASS, and all three failures were the scorer
+
+The first round to reach every phase but two. Reported 10 PASS / 3 FAIL / 3 NOT
+EXERCISED; **replaying the operator's artifacts through the corrected scorer
+turns all three failures into NOT EXERCISED**, with `git diff` over `microclaw/`,
+`install.bat`, `scripts/` and `tests/` **empty** since the round's build. No
+product defect was found in this round.
+
+**Four limbs passed for the first time**: the **public ZIP** (`public-head`,
+installed commit `unknown`, the private-repository 404 cached), **Restore**
+(commit, selector, pending state and the `%APPDATA%` hash all returned), the
+**progress-then-ready banner states**, and the **one-job refusal against a
+genuinely running build** — 269 `staging: true` samples with the second request
+refused 409.
+
+**The three scoring defects, because each is a distinct lesson.**
+
+1. **A rebuild is not a byte change.** The limb required the inactive slot's
+   executable and marker to differ after staging. Staging the *same* commit
+   twice produces a byte-identical console-script trampoline and a byte-identical
+   marker — so identical bytes are what a **successful** rebuild looks like when
+   `Direct` and `Stage` both stage `origin/main`. Scored on `pyvenv.cfg`'s mtime
+   now, which is what `uv venv --clear` actually moves.
+
+2. **The launcher logs its line before it starts the child.** The restart limb
+   waited for a new log line and snapshotted immediately, so the health marker
+   could not yet exist. **Rounds 5 and 6 reported an empty `health` for the same
+   reason and it was read as a product failure both times.** The phase now parses
+   the nonce out of that line and waits for `launch-health.txt` to carry it. A
+   probe that samples at the moment a *log entry* appears is measuring the log,
+   not the thing the log announces.
+
+3. **After an activation, the gate is testing the other build.** `Restart` and
+   `Later` activate the staged slot — built from `origin/main`, which does not
+   contain this block — so every phase after them ran against code without
+   `build_error_detail`, and its absence scored as a product failure. **The last
+   four phases of the gate were testing the wrong version.** The runbook now
+   returns to the branch slot with a literal command before the diagnostic
+   phases, and the limb reports NOT EXERCISED naming both commits rather than
+   asserting through the difference.
+
+**A scorer must degrade to NOT EXERCISED on evidence that predates it.** Two of
+these fixes read fields older artifacts do not carry; each limb now checks for
+the field and reports NOT EXERCISED with the command that would produce it. That
+is what let this round be re-scored from the returned folder instead of booking
+an eighth trip, exactly as 58d's round 1 was.
+
+**Remaining after this round**: `Restart later`, `Micro-Manager closed`, and
+`offline` — the last needing physical access to the machine.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -2168,7 +2218,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]`. Round 6 added **rollback with its deferred report** and the **unreachable-index** limb | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]`. Round 6 added **rollback with its deferred report** and the **unreachable-index** limb; round 7 reached 10 PASS with **all three failures re-scored as gate defects** from the returned artifacts. `Restart later`, `Micro-Manager closed` and `offline` remain | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
