@@ -392,7 +392,15 @@ def stage_inactive_slot(
         # staging never touches, so clearing the inactive slot cannot remove the
         # copy a rollback would return to.
         [str(uv_executable), "venv", "--clear", "--python", "3.12", str(target)],
-        [str(uv_executable), "pip", "install", "--python", str(python), str(source)],
+        # `[serve]`, exactly as install.bat's MC_SPEC does.  Without the extra
+        # the slot has no fastapi and no uvicorn, so `microclaw serve` -- which
+        # is the only thing the desktop icon ever runs -- exits on its import
+        # guard.  Block 58e's fifth demo gate activated such a slot: the update
+        # succeeded, the restart succeeded, and the application could no longer
+        # start.  An updater that bricks the thing it updates is the worst
+        # failure this design can have.
+        [str(uv_executable), "pip", "install", "--python", str(python),
+         f"{source}[serve]"],
     )
     for command in commands:
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -407,6 +415,23 @@ def stage_inactive_slot(
             state["build_error_detail"] = f"uv {command[1]} exit {completed.returncode}: {detail[-2000:]}"
             write_state(state, base / STATE_NAME)
             raise UpdateError("the update could not be built")
+    # The bounded smoke check the design has always called for and the code
+    # never had: prove the staged slot can actually start before anything
+    # publishes it as pending.  `serve` imports uvicorn lazily, so naming it
+    # here is the difference between catching a missing extra and shipping it.
+    smoke = subprocess.run(
+        [str(python), "-I", "-c", "import microclaw, microclaw.webserve, uvicorn"],
+        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+    )
+    if smoke.returncode:
+        state = load_state(base / STATE_NAME) or {}
+        state["build_error"] = "the update could not be built"
+        state["build_failed_commit"] = candidate.sha
+        state["build_error_detail"] = (
+            f"staged slot failed its smoke check: {(smoke.stderr or smoke.stdout).strip()[-2000:]}"
+        )
+        write_state(state, base / STATE_NAME)
+        raise UpdateError("the update could not be built")
     write_slot_marker(
         candidate.sha, required_launcher_protocol, executable=python,
     )

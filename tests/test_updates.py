@@ -590,6 +590,14 @@ def fake_uv(root, *, classification="ready", classifications=None, seen=None):
             return subprocess.CompletedProcess(command, 0, "", "")
         if command[1] == "pip":
             return subprocess.CompletedProcess(command, 0, "", "")
+        if "-c" in command:
+            # The staged slot's smoke check.  It succeeds only when the install
+            # asked for the [serve] extra -- which is what the real one proves.
+            served = any(str(arg).endswith("[serve]") for call in calls for arg in call)
+            if served:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(
+                command, 1, "", "ModuleNotFoundError: No module named 'fastapi'")
         slot = "a" if "env-a" in command[0] else "b"
         value = (classifications or {}).get(slot, classification)
         return subprocess.CompletedProcess(
@@ -657,7 +665,10 @@ def test_config_comparison_refusal_is_before_pending_publish(tmp_path, monkeypat
     run, _ = fake_uv(tmp_path, classifications={"a": "ready", "b": "blocked"})
 
     def recording(command, **kwargs):
-        if command[0] != "uv.exe":
+        # Only the classification calls. The staged slot's smoke check also runs
+        # a non-uv executable, and this test is about the order of the two
+        # classifications relative to the pending publish.
+        if command[0] != "uv.exe" and "-c" not in command:
             commands.append(command)
         return run(command, **kwargs)
 
@@ -708,6 +719,50 @@ def _staging_fixture(tmp_path):
     (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
     return source
 
+
+
+def test_staging_installs_the_serve_extra(tmp_path, monkeypatch):
+    """Without it the staged slot cannot run `microclaw serve`.
+
+    The desktop icon runs nothing else.  Block 58e's fifth demo gate staged,
+    activated and restarted into a slot with no fastapi and no uvicorn: the
+    update reported success and the application could not start afterwards.
+    """
+    source = _staging_fixture(tmp_path)
+    run, calls = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(
+        tmp_path, source, updates.Candidate("a" * 40, "x", "public-head"),
+        uv_executable="uv.exe",
+    )
+    install = next(call for call in calls if call[1] == "pip")
+    assert install[-1].endswith("[serve]"), install
+
+
+def test_a_slot_that_cannot_import_serve_is_never_published_as_pending(tmp_path, monkeypatch):
+    """The bounded smoke check the design always specified.
+
+    A slot that cannot start must not become pending, because the next desktop
+    launch would activate it and the application would be gone.
+    """
+    source = _staging_fixture(tmp_path)
+    run, calls = fake_uv(tmp_path)
+
+    def broken(command, **kwargs):
+        if "-c" in command:
+            return subprocess.CompletedProcess(
+                command, 1, "", "ModuleNotFoundError: No module named 'uvicorn'")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(updates.subprocess, "run", broken)
+    with pytest.raises(updates.UpdateError, match="the update could not be built"):
+        updates.stage_inactive_slot(
+            tmp_path, source, updates.Candidate("b" * 40, "x", "public-head"),
+            uv_executable="uv.exe",
+        )
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+    detail = updates.load_state(tmp_path / updates.STATE_NAME)["build_error_detail"]
+    assert "smoke check" in detail and "uvicorn" in detail
 
 def test_staging_replaces_an_inactive_slot_that_already_exists(tmp_path, monkeypatch):
     """The second update a machine performs must not fail on its own first one.
