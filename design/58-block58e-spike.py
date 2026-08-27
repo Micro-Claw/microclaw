@@ -103,7 +103,7 @@ def probe_checkout(repo: Path) -> list[dict]:
 
     This is the decisive probe: it exercises the fixed source directly, so it
     answers whether the fix works on this machine without reinstalling anything.
-    """
+    r"""
     print("\n0. The checkout's own CLI (no install needed)\n")
     command = [sys.executable, "-m", "microclaw",
                "--safety-config", str(CONFIG), "check-config", "--json"]
@@ -123,7 +123,7 @@ def probe_exit_pause(repo: Path) -> list[dict]:
     MUST hang.  A suppression probe whose control also passes has measured
     nothing -- 58a shipped an opt-out limb that could not fail, and this design
     is not repeating it.
-    """
+    r"""
     print("\n0b. Exit-pause suppression, with a control that must hang\n")
     command = [sys.executable, "-m", "microclaw",
                "--safety-config", str(CONFIG), "check-config"]
@@ -169,7 +169,7 @@ def probe_staging_dry_run(repo: Path) -> dict:
     will ever read it.  This is the one mechanism the block depends on that has
     never completed on any machine: round 1 died in `uv venv`, round 2 in the
     classifier it invokes.
-    """
+    r"""
     print("\n5. Full staging dry run into a scratch root (live install untouched)\n")
     sys.path.insert(0, str(repo))
     from microclaw import config as mc_config

@@ -2,7 +2,7 @@
 
 Each phase records raw state. Verify reads those artifacts and scores every
 mechanism independently. Missing evidence is NOT EXERCISED, never a pass.
-"""
+r"""
 from __future__ import annotations
 
 import argparse
@@ -235,7 +235,7 @@ def save_phase(out: Path, name: str, data: dict) -> None:
     write_json(out / f"{name}.json", data)
     record_phase(out, name)
 def prepare(repo: Path, out: Path, root: Path) -> int:
-    """Back up the irreplaceable state and arrange a real origin/main candidate.
+    r"""Back up the irreplaceable state and arrange a real origin/main candidate.
 
     Deliberately **not** a copy of the two slot environments.  Round 2 spent
     minutes here copying several hundred megabytes of `env-a` and `env-b` to a
@@ -438,7 +438,7 @@ def notready(out: Path, root: Path) -> int:
     swaps its CLI for a deterministic `blocked` classifier. The production
     `stage_inactive_slot` function performs the actual comparison and writes the
     refusal. The original executable and marker are restored in `finally`.
-    """
+    r"""
     cleared_build_failure = clear_staging_verdict(root)
     before = state_snapshot(root)
     state = before["state"]
