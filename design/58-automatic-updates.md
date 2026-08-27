@@ -313,7 +313,15 @@ plus for a clone `clone_path`, `upstream`, `remote`, `remote_url`,
 `remote_identity`, `clone_repository_note`, `tracked_branch` and
 `git_executable`. Checking and staging add `last_attempt`, `next_check`,
 `last_error`, `last_success`, `discovery`, `build_error` and
-`build_failed_commit`. **`git_executable` and `remote_identity` are load-bearing**:
+`build_failed_commit`, and **`build_error_detail`** — the failing `uv`
+subcommand, its exit code and a bounded stderr tail, added by 58e because a rig
+that reports only "the update could not be built" cannot be debugged without
+another trip. **Staging installs `<source>[serve]`, exactly as `install.bat`
+does**, and then runs the bounded smoke check this document always specified:
+the staged slot must import `microclaw`, `microclaw.webserve` **and `uvicorn`**
+before anything publishes it as pending. Both were added in 58e after an update
+activated a slot that could not start. **`git_executable` and `remote_identity`
+are load-bearing**:
 `_git()` refuses without the first and `_verify_clone_remote` without the second,
 which is why an installer that invented its own record broke every fresh clone's
 first check.
@@ -444,6 +452,23 @@ starts one due check on a daemon thread before `build_session`, guarded by
 `checks_enabled`, so it never delays the interface and `--no-update-check` skips
 it outright. The rig proved it: `Prepare` deletes `last_attempt`, and a timestamp
 was present before any manual check.
+
+**What actually ships for the terminal and the restart (2026-08-27, block 58e).**
+`POST /api/update/restart` writes a nonce-carrying restart request, sets
+`MICROCLAW_UPDATE_RESTART=1` on itself, asks the `uvicorn.Server` it now holds to
+shut down, and returns `200 {"restart_requested": true}`; a run with no server
+handle refuses `409` rather than claim a restart it cannot perform. The launcher
+loops: after the child exits it asks `consume_restart_request` whether *that*
+child's nonce requested a relaunch, and only then goes back to activation.
+`fresh_launch` deletes a stale request alongside the stale health marker.
+`activate_pending` and `rollback_slot` reconcile `installed_commit` from the
+newly active slot's own marker, best-effort — bookkeeping must never be able to
+fail a selector change. The REPL starts the same due check `serve()` does through
+the shared `updates.start_due_check`, prints **at most one** cached line after
+`Connected.`, and prompts `Update now? [y/N]` only with an interactive stdin and
+checks enabled; `y` stages in the foreground and says the update activates at the
+next desktop launch. The REPL never restarts itself — the launcher starts
+`serve`, not the REPL. `serve` never prompts.
 
 `--no-update-check` disables network checks for a launch, and
 `MICROCLAW_UPDATE_CHECK=0` supports managed offline machines. Neither disables
@@ -2314,10 +2339,22 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
       user already is", including the two things that ship as routes without UI
       and the one caller the checklist never named. **58e still owes** the
       terminal line and the restart/relaunch half of that section.
-- [ ] **After 58e**: reconcile `update-state.json`'s field list in §"Put the
-      updater outside the environment it replaces" with `build_error_detail`,
-      added at 58e gate round 1 so a staging failure names the command that
-      failed rather than only the sentence the banner shows.
+- [x] **After 58e**: `update-state.json`'s field list now carries
+      `build_error_detail`, and §"Put the updater outside the environment it
+      replaces" records that staging installs `[serve]` and runs the bounded
+      smoke check before publishing pending.
+- [x] **After 58e**: §"Check quietly, ask where the user already is" now records
+      what ships for the restart route, the launcher's relaunch loop, the
+      `installed_commit` reconciliation and the REPL line and prompt — the half
+      that section still owed at the 58d gate.
+- [x] **After 58e**: five rules folded into `CLAUDE.md` — a captured subprocess
+      still inherits stdin and no test can have a console; a record that some
+      earlier attempt failed is not a record of this one; an installer and an
+      updater must build the same application the same way, and prove the built
+      thing starts; another version of your own program has untrusted stdout; a
+      log line announcing an action is not the action. Plus the operator's shell
+      is production state, and when a gate fails twice inexplicably, write a
+      probe.
 - [x] **After 58e**: the 30-second health **timeout** branch got rig evidence in
       round 5, though not as intended — a slot that could not start sat at the
       exit pause instead of exiting, so the launcher took the timeout path
@@ -2332,20 +2369,43 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `d2b646d`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d` | rounds 1 and 2 **STOPPED** demo 2026-08-27 (`uv venv` refused an existing slot; then the slot CLI hung on the inherited exit pause). **Four spike rounds replaced four gate trips**; round 3 **STOPPED** at Restart on a stale `comparison_refused_commit` that both hid the banner's controls and silenced the staging job's own failure. Round 5: **Restart now works** (8.1 s, nonce-matched, reconciled) — and revealed that every staged slot was built without `[serve]`. Round 6 added **rollback with its deferred report** and the **unreachable-index** limb; round 7 reached 10 PASS re-scored from artifacts; **round 8 proved Restart now's nonce-matched relaunch in 5.60 s**. Scored across rounds, **12 of 15 limbs have rig evidence**; `Restart later`, `Micro-Manager closed` and `offline` remain | — | — |
+| 58e | 58c, 58d | ~~`design58/restart`~~ | `651218f` | `7e584af` → `7ab71c2`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, `c6c8802`, `0885a52`, `d2b646d`, `79b6b3e`, `6d6516b`, `09892d7`, `06a2520`, `cb9818d`, `7ab71c2` | **10 demo-gate rounds + 5 spike rounds**; **13 of 15 limbs** with rig evidence, scored across rounds 6/7/8/10; six product defects found, all would have shipped | `79f66c1` 2026-08-27 | done — this section |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
 different skip split. **Gate on zero failures, never the count.**
 
-## Resuming this block cold
+## design/58 is CLOSED — 2026-08-27
 
-Everything needed is on `main`.
+All five blocks merged: **58a** `33028e9`, **58b** `3baec05`, **58c** `d1e08df`,
+**58d** `8529859`, **58e** `79f66c1`. Branches and worktrees deleted. `main`
+measures **2341 passed / 99 skipped / 3 warnings** (macOS, coordinator-measured),
+from a 2182 baseline. **58-P** (branch protection and CI) is deferred to the day
+the repository goes public, by operator decision — do not re-raise it as a
+blocker.
 
-**State as of 2026-08-27. 58a, 58b, 58c and 58d are MERGED. Next block is 58e**,
-the last one, which depends on both 58c and 58d. Its branch is `design58/restart`.
-**58e is the second block that can leave a machine unable to start**, so read
-§"What made 58c different" below before assigning it.
+**What ships.** A managed two-slot install under `%LOCALAPPDATA%\microclaw` with
+a launcher outside both slots; discovery from an authenticated GitHub Desktop
+clone today and from public `main` the day the repository flips; staging into the
+inactive slot with an exact commit, a config-compatibility comparison and a
+bounded smoke check; a browser banner with Update / Later / Restart now / Restart
+later; nonce-matched startup health with rollback and a deferred rollback report;
+and a terminal line with an interactive-only prompt. An unmanaged install — conda,
+embedded Python, or anyone who never runs the new `install.bat` — gets no check,
+no banner and no CLI line, and is left byte-untouched.
+
+**Owed evidence**, both recorded in §"Owed evidence that cannot be booked": the
+**offline launch**, which cannot be gated over Remote Desktop and needs someone
+at the machine; **`Restart later`'s button path**, whose underlying activation is
+evidenced twice; and a **successful public-provider install**, which is
+impossible while the repository is private and is booked for the flip day.
+
+**If you are resuming design/58 cold**, read §"58e's combined rig evidence" for
+what is proven and how it was scored across rounds, and the design/58 entries in
+`design/prompts.md` for what each block cost and why. The sections below are the
+pre-58e assignment note, kept because the traps they describe are still real.
+
+## Resuming this block cold — the pre-58e note, kept for its traps
 
 ### Read these before assigning 58e, in this order
 
