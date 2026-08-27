@@ -2,7 +2,7 @@ param([ValidateSet('Prepare','Healthy','Closed','Rollback','Verify')][string]$Mo
 $ErrorActionPreference = 'Stop'
 $repo = (git rev-parse --show-toplevel).Trim()
 Set-Location $repo
-git merge-base --is-ancestor c2dfae5 HEAD
+git merge-base --is-ancestor df83d56 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'This checkout does not contain the complete block 58c implementation.' }
 $pointer = "$env:LOCALAPPDATA\microclaw\58c-gate-evidence.txt"
 if ($Mode -eq 'Prepare') {
