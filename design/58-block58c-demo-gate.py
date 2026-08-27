@@ -104,6 +104,18 @@ PHASE_COMMANDS = {
 }
 
 
+def need(path: Path, mechanism: str) -> Path:
+    """Absent evidence is NOT EXERCISED, never FAIL.
+
+    A limb whose phase was never run in this directory has not failed its
+    mechanism -- nothing ran it. Reporting that as FAIL is how a gate makes a
+    missing observation look like a broken product.
+    """
+    if not path.exists():
+        raise NotExercised(f"{path.name} is absent; run {mechanism}")
+    return path
+
+
 def record_phase(out: Path, phase: str) -> None:
     """Note that a phase finished, so Verify can say what is still owed."""
     ledger = out / "phases.json"
@@ -443,7 +455,9 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     @limb("desktop command line uses selected slot",
           "the captured real process does not name an env-a/env-b microclaw.exe serve child")
     def _():
-        text = (out / "process-command.txt").read_text(encoding="utf-8")
+        text = need(out / "process-command.txt",
+                    "-Mode Healthy in this evidence directory").read_text(
+                        encoding="utf-8")
         if not re.search(r"env-[ab].*microclaw\.exe.*serve", text, re.I | re.S):
             raise AssertionError(text)
         return text.strip()
@@ -451,18 +465,31 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     @limb("nonce-matched health marker",
           "health is absent or differs from the last launcher-generated nonce")
     def _():
-        health = (managed / "launch-health.txt").read_text(encoding="ascii").strip()
         nonce_lines = [line for line in read_lines(managed / "launcher.log") if " nonce=" in line]
-        match = re.search(r"nonce=([0-9a-f]{32})", nonce_lines[-1]) if nonce_lines else None
+        if not nonce_lines:
+            # No launcher-driven launch has ever happened here, so there is no
+            # marker to judge. Absent evidence, not a failed mechanism.
+            raise NotExercised(
+                "launcher.log records no launch; run -Mode Healthy or -Mode Closed"
+            )
+        try:
+            health = (managed / "launch-health.txt").read_text(encoding="ascii").strip()
+        except FileNotFoundError:
+            raise AssertionError(
+                f"a launch was recorded ({nonce_lines[-1]}) but left no health marker"
+            ) from None
+        match = re.search(r"nonce=([0-9a-f]{32})", nonce_lines[-1])
         if not match or health != match.group(1):
-            raise AssertionError(f"health={health!r}; last={nonce_lines[-1] if nonce_lines else None}")
+            raise AssertionError(f"health={health!r}; last={nonce_lines[-1]}")
         return f"health equals fresh launcher nonce {health}"
 
     @limb("a closed rig still reaches health, and that launch is final",
           "the launch adds other than one nonce, changes active, writes rollback, or "
           "leaves no marker carrying that launch's own nonce")
     def _():
-        data = json.loads((out / "closed-mm-observation.json").read_text(encoding="utf-8"))
+        data = json.loads(need(out / "closed-mm-observation.json",
+                               "-Mode Closed in this evidence directory").read_text(
+                                   encoding="utf-8"))
         if "health_after_child_exited" not in data:
             raise NotExercised(
                 "this observation predates the health capture; rerun -Mode Closed"
@@ -482,7 +509,9 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
     @limb("rollback is reported once on the next successful launch",
           "failed child does not start, active is not restored, or report is absent/duplicated/misordered")
     def _():
-        data = json.loads((out / "rollback-observation.json").read_text(encoding="utf-8"))
+        data = json.loads(need(out / "rollback-observation.json",
+                               "-Mode Rollback in this evidence directory").read_text(
+                                   encoding="utf-8"))
         before, middle, after = data["before"], data["after_failed"], data["after_success"]
         failed_new = middle[len(before):]
         success_new = after[len(middle):]
