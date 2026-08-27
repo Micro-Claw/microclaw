@@ -1510,8 +1510,8 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58-P | public flip | n/a (repo config) | — | **not a blocker** — deferred to the flip by operator decision 2026-08-27 | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
-| 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | pending |
-| 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
+| 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
+| 58d | 58a, 58b | `design58/endpoints` | `61f37a6` | assigned 2026-08-27 | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
@@ -1522,8 +1522,9 @@ different skip split. **Gate on zero failures, never the count.**
 
 Everything needed is on `main`.
 
-**State as of 2026-08-27. 58a, 58b and 58c are MERGED. Next block is 58d**, which
-depends only on 58a and 58b. 58e depends on 58d and on 58c.
+**State as of 2026-08-27. 58a, 58b and 58c are MERGED. 58d is ASSIGNED** — branch
+`design58/endpoints` from `61f37a6`, implementation delegated to a Codex runner in
+its own worktree. It depends only on 58a and 58b. 58e depends on 58d and on 58c.
 
 ### Read these before assigning 58d, in this order
 
