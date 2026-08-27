@@ -1751,6 +1751,80 @@ gate's own `.ps1` sets — turns the first stderr line into a terminating error,
 the exit code is never printed. Redirect inside `cmd` when you need both a native
 command's stderr and its exit status.
 
+## 58e demo gate round 2 — 2026-08-27, STOPPED, and the spike that should have come first
+
+Round 2 failed the same way round 1 did — no Restart control — and the operator
+stopped the gate and asked for **a small spike instead of another full trip**.
+That was the right call, and the spike found in one minute what two gate rounds
+had not.
+
+**The defect: a slot's CLI hangs forever when it inherits both
+`MICROCLAW_FROM_SHORTCUT=1` and a console stdin.** Measured on the demo machine,
+identically on both slots:
+
+| invocation of `check-config --json` | result |
+| --- | --- |
+| stdin = NUL | 0.66 s |
+| stdin inherited | 0.67 s |
+| `MICROCLAW_FROM_SHORTCUT=1`, stdin = NUL | 0.66 s |
+| `MICROCLAW_FROM_SHORTCUT=1`, **stdin inherited** | **timed out at 45 s** |
+
+`pause_on_exit` registers an atexit handler that blocks on
+`Press Enter to close this window...`. `Microclaw.cmd` sets that variable,
+`updater-launcher.ps1` inherits it into the server, and
+`subprocess.run(capture_output=True)` redirects **stdout and stderr only** — so
+the classifier child `compare_slot_configurations` spawns keeps the server's
+console. It printed its JSON and then blocked forever, and
+`classify_config_with_slot`'s 30-second timeout turned that into
+*"slot could not classify the safety config"*. **Staging could never complete on
+a desktop-launched server**, which is the whole point of the block. Two fixes,
+because two things were wrong: the call passes `stdin=subprocess.DEVNULL`, and
+`main()` does not register the exit pause for `check-config --json` at all — a
+mode whose entire output is JSON must never end by waiting for a keypress.
+
+**This is the fifth time in design/58 that a guard or a path was never executed
+by any fixture**, and the first where the unreachable thing was *the environment*
+rather than the code: nothing in 2 300 tests spawns a subprocess that inherits a
+console, and nothing can, because a test runner has no console to inherit. The
+test asserts the argument rather than the behaviour and says so in its docstring.
+
+**A theory of mine that the spike disproved, recorded because I acted on it.**
+Round 2's staging died with `[WinError 5] Access is denied` on `write_state`'s
+`os.replace`, and I attributed it to a concurrent reader holding the target open
+— the browser polls `GET /api/update` every 2 s while staging. The spike ran 300
+replaces against **1,071,721 concurrent reads and lost none of them**. The
+retry added for that reason is sound hardening and stays, but **it did not fix
+what it was written for, and that `WinError 5` remains unexplained.** What the
+probe did show is 581 transient *read* failures, which matters more than it
+looks: `activate_pending` treats a read failure as "no valid pending slot" and
+**discards the staged update**, so one unlucky launch would silently throw away
+an update the user had asked to install. `load_state` retries now.
+
+**The gate itself was costing the operator more than the evidence was worth.**
+`Prepare` copied both slot environments — hundreds of megabytes — into a
+`Documents` folder that is redirected to a network share, on every attempt. The
+environments are the one part of this layout `install.bat` rebuilds, and the
+runbook's last step reinstalls anyway. It now copies only `%APPDATA%\microclaw`
+and the launcher root's own small files, to a local path. **A gate step whose
+cost is paid on every retry has to be cheap, because retries are the normal
+case.**
+
+**What round 2 did prove.** The NotReady limb passed on real production code —
+`stage_inactive_slot` refused with *"The update would downgrade a reviewed config
+from `ready` to `blocked`"* through the real comparison, with `env-b` restored
+byte-identically afterwards. That mechanism had never run on hardware, and it is
+one of the five 58d handed forward.
+
+**The process lesson, and it is the block's most expensive one.** Two rig trips
+went to a defect a one-minute, state-free probe found immediately. The gate is
+built to *score* a working mechanism; it is a poor instrument for finding out why
+one does not work, because every phase drags a full Prepare, an install and a
+staging build behind it. **When a gate fails twice for reasons its own artifacts
+cannot explain, stop running the gate and write the probe** —
+`design/58-block58e-spike.py` is that probe, it needs no Prepare, no installer
+and no staging, and the runbook now names it as the first thing to run after any
+failure.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1834,7 +1908,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `aabbe4e`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `+uv --clear fix` | round 1 **STOPPED** demo 2026-08-27 — `uv venv` refused the existing inactive slot, so nothing staged and no Restart control could appear; fixed, awaiting round 2 | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | `7e584af` → `aabbe4e`; codex **3 rounds, 32 findings**, 1 turn killed early and discarded; coordinator `aabbe4e`, `c46e2db`, + the stdin fix | rounds 1 and 2 **STOPPED** demo 2026-08-27 — `uv venv` refused an existing slot, then the slot CLI hung on the exit pause it inherited; both found and fixed, the second by a one-minute spike rather than a third gate round | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
