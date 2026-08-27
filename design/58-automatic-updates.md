@@ -66,13 +66,24 @@ recorded remote/upstream disappears or history diverges, report it for the user
 to resolve in GitHub Desktop. Never install an editable package.
 
 This is deliberately a private-preview channel: every commit reaching the
-tracked upstream may be offered to users. A protected, green `main` is part of
-the updater's safety boundary — and it is a **prerequisite to ship, not a
-description of today.** The block workflow merges locally and pushes `main`
-directly, with no branch protection and no required check, so at this moment
-that boundary is one maintainer's discipline. Turn on branch protection with a
-required test run before the first update is offered to anyone. A release-note
-disclaimer does not substitute for this boundary.
+tracked upstream may be offered to users, so `main` needs a boundary in front of
+it.
+
+**Decided 2026-08-27 (operator): the boundary is the block workflow's own
+pre-merge testing, and `main` is the release branch.** Nothing merges without
+the full suite passing and a gate run on real hardware — the demo machine, and
+M2 or M5 where a block needs them. That is materially *more* than a required CI
+check would prove: CI would run the suite on two platforms, while this exercises
+the mechanism on the machines it ships to. An earlier draft of this paragraph
+called protected `main` a prerequisite to ship and said a release-note
+disclaimer could not substitute for it. Correct about disclaimers, wrong about
+this: a slower human gate is not a disclaimer, and treating it as one would have
+held the whole feature back from the users it exists for.
+
+Branch protection and a required CI check are **additions for the public flip**,
+not preconditions for the private preview — they become available on the Free
+plan the day the repository goes public. A `develop` branch, if the merge rate
+ever justifies one, is the same kind of later addition.
 
 ### Ship the public-head path at the same time
 
@@ -438,9 +449,10 @@ using the installed version.
    Micro-Manager closed, which must keep the new slot without rolling back or
    relaunching.
 
-One decision outside the code blocks the first shipped installer: protect `main`
-with a required test check. Moving the repository first is simpler but optional;
-immutable repository-ID verification covers a later rename or transfer.
+**Nothing outside the code blocks the first shipped installer.** The repository
+has already moved, and the pre-merge boundary is the block workflow's own
+testing — see §"Track the private clone's upstream for now". Immutable
+repository-ID verification covers a later rename or transfer.
 
 V1 ships both providers. After users perform the one-time updater bootstrap,
 authorized private clones update and private ZIPs wait harmlessly. On the day
@@ -482,11 +494,15 @@ skill, one linked worktree per block.
   what protects an existing reviewed config from being overwritten during an
   upgrade. 58b changes `check-config`; see its item 2.
 
-### The ship prerequisite is not merely undone — it is currently unavailable
+### `main` is the release branch, and nothing gates the first installer
 
-§"Decision" makes a protected `main` with a required test check a **prerequisite
-to ship**, not a description of today. Measured 2026-08-26, it cannot be turned
-on at all:
+**Decided 2026-08-27 (operator).** Users pull from `main`; the boundary in front
+of it is the block workflow's own pre-merge testing on multiple machines. See
+§"Track the private clone's upstream for now" for the reasoning and what changes
+at the public flip.
+
+For the record, since it will come up again: branch protection and rulesets are
+**unavailable on this repository today** —
 
 ```
 GET /repos/Micro-Claw/microclaw/rulesets            -> 403
@@ -494,14 +510,16 @@ GET /repos/Micro-Claw/microclaw/branches/main/protection -> 403
    "Upgrade to GitHub Pro or make this repository public to enable this feature."
 ```
 
-`Micro-Claw` is a **Free** organization and the repository is **private**;
-branch protection and rulesets are unavailable in that combination. And there is
-**no `.github/` directory and no workflow in the tree**, so there is no test
-check to require even if protection could be enabled.
+`Micro-Claw` is a Free organization and the repository is private. Both become
+available the day it goes public, which is when they get added. **That
+unavailability blocks nothing**, because it was never the boundary — it is an
+extra mechanical check to layer on later.
 
-This blocks **shipping the first updater-capable installer to a user** — 58e's
-merge — and blocks nothing before it. Three escapes, in 58-P below. A release
-note is explicitly not one of them; the design already rules that out.
+**And CI would build nothing.** The updater stages an exact commit and runs
+`uv pip install` **on the user's machine**; no artifact is produced centrally
+and Microclaw is not distributed through PyPI. A CI workflow's only possible
+role here is as a test gate, which is the role the pre-merge process already
+fills.
 
 ## The gate plan — every gate is the demo machine
 
@@ -531,65 +549,23 @@ reader is meant to substitute — 52c's strictest criterion produced no evidence
 because one shipped with `Select-String -Pattern "<t2>", "<t3>"` and was run
 verbatim. A step that prints nothing where a match is required has **failed**.
 
-## 58-P — a protected `main` with a required check
+## 58-P — branch protection and CI, at the public flip
 
-**Not a code block, and not assignable to a runner.** It is an operator decision
-plus a small amount of repository configuration, and it gates 58e's merge only.
+**Not a code block, not assignable to a runner, and — as of 2026-08-27 — not a
+blocker.** It was written as a prerequisite to shipping the first installer;
+that framing was wrong and is corrected above. These are additions to make on
+the day the repository goes public, when they first become possible.
 
-- [ ] **Decide the escape.** Exactly one of:
-      **(a)** upgrade `Micro-Claw` to GitHub Team, which makes rulesets available
-      on a private repository;
-      **(b)** hold the first shipped installer until the repository is public,
-      at which point protection is available on the Free plan;
-      **(c)** amend §"Decision" — *not* a release note — to state what boundary
-      replaces it and why that is acceptable for the preview channel.
-- [ ] **There must be a check to require.** Add `.github/workflows/tests.yml`.
-      It does not exist today; Actions itself is enabled on the repository
-      (`{"enabled": true}`, verified 2026-08-26).
-- [ ] **Linux and Windows, not macOS.** Runner minutes are billed with
-      multipliers — Linux 1x, **Windows 2x, macOS 10x** — against the 2,000
-      minutes a month GitHub Free includes for an organization's *private*
-      repositories. The suite is ~108 s locally, so call a job five minutes with
-      dependency install: Linux + Windows is ~15 charged minutes a run and
-      comfortably over a hundred runs a month, while adding macOS would cost ~50
-      a run on its own and cap the month near forty. **Windows is the only
-      platform this project ships on**, and the coordinator measures macOS
-      locally at every block anyway — that is where the recorded baseline comes
-      from. Public repositories get Actions free and unlimited, so this
-      constraint dissolves the day the repository flips.
-- [ ] **It must not run on our merges. Trigger on `pull_request` and
-      `workflow_dispatch`, and on nothing else.** This block workflow branches
-      and merges constantly and every block is tested locally first, so a
-      `push` trigger would burn the allowance on merges that were already green
-      on the coordinator's machine and on the operator's. With no `push:` key
-      the workflow runs **zero** times automatically today, because there is no
-      PR flow — it is a dormant file that costs nothing until the 58-P decision
-      creates the PR flow that needs it, and `workflow_dispatch` means it can
-      still be fired by hand whenever a run is actually wanted. **Adding it now
-      is therefore free of both money and noise**; that is the whole reason it
-      can land ahead of the protection decision.
-- [ ] **If a path filter is added, add the companion job with it.** Most merges
-      here are documentation — every `coord/*` branch in this design's own
-      history is docs-only — so `paths-ignore` on `design/**`, `docs/**` and
-      `**.md` is tempting. The trap: a **required** check skipped by a path
-      filter is never reported, and GitHub leaves the PR waiting on a status
-      that will never arrive. Pair any filter with a job of the same name that
-      reports success on the filtered paths, or do not filter at all.
-- [ ] **Confirm the spending limit reads $0** before enabling: Organization
-      settings -> Billing -> Spending limits. At $0 an exhausted allowance stops
-      queueing workflows rather than billing anything, and no overage is possible
-      without both raising that limit and attaching a payment method. Verify it;
-      do not assume it.
-- [ ] **Then require it** on `main`, with the maintainer included in the rule.
-      Record here that it is on, with the ruleset id.
-- [ ] **Requiring a check changes step 9 of the block workflow, and that is a
-      decision, not a side effect.** A required status check enforces **only on
-      pull requests**; protecting `main` blocks the direct push that
-      `CLAUDE.md` step 9 performs today ("merge the branch to `main`, push
-      `main`"). So protection converts every block merge into open-a-PR,
-      wait-for-green, merge — which also cuts against the standing "no PR until
-      integration" preference. Adding CI costs nothing and settles nothing here;
-      decide the PR flow deliberately before 58e, not at its merge.
+- [ ] On the flip: add `.github/workflows/tests.yml` — Linux and Windows, not
+      macOS (runner multipliers are 1x / 2x / 10x, and Windows is the only
+      platform this ships on). Public repositories get Actions free and
+      unlimited, so the private-repo minute budget stops mattering.
+- [ ] On the flip: protect `main` and require that check. **Note that a required
+      status check enforces only on pull requests**, so turning it on converts
+      every block merge into a PR — a real change to `CLAUDE.md` step 9 and to
+      the standing no-PR preference. Decide that deliberately at the time, not
+      by reflex.
+- [ ] A `develop` branch if the merge rate ever justifies one. Not now.
 
 ## 58a — provenance, discovery, and materializing an exact commit
 
@@ -1302,7 +1278,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 
 | Block | Depends on | Branch | Start commit | Implementation | Gate | Merged | Design reconciled |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 58-P | — | n/a (repo config) | — | operator decision | n/a | — | — |
+| 58-P | public flip | n/a (repo config) | — | **not a blocker** — deferred to the flip by operator decision 2026-08-27 | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | `design58/two-slots` | — | — | demo — not run | — | — |
@@ -1378,9 +1354,10 @@ State:
   verified against the API on 2026-08-26. No production install will ever have to
   follow the rename redirect; the redirect handling ships anyway, per §"Ship the
   public-head path".
-- **58-P is not a code block and cannot be done by a runner.** Branch protection
-  is currently *unavailable* — Free org, private repo, HTTP 403 — and there is no
-  workflow to require. Read §"The ship prerequisite is not merely undone" before
-  planning around it.
+- **58-P blocks nothing** (operator decision 2026-08-27). `main` is the release
+  branch; the boundary is the block workflow's own pre-merge testing on multiple
+  machines, which is more than a CI check would prove. Branch protection and CI
+  are additions for the day the repository goes public, when they first become
+  possible on the Free plan. **Do not re-raise this as a blocker.**
 - **Every gate is the demo machine.** The Nikon is gone and no limb of this
   design needs a microscope at all.
