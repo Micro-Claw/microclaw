@@ -1071,13 +1071,12 @@ def test_cli_and_web_validate_before_prompt_or_session_exposure(monkeypatch):
         cli.run_session(args)
     assert prompted == []
 
-    monkeypatch.setattr(webserve, "load_safety_config_or_exit", lambda path: incomplete)
     monkeypatch.setattr(webserve, "MicroscopeController", lambda port, guard: Controller())
     with pytest.raises(SystemExit, match="Live rig authorization failed"):
         webserve.Session(SimpleNamespace(
             safety_config=None, port=1, model=None, save_history=False,
             host="127.0.0.1",
-        ))
+        ), incomplete)
 
 
 def test_cli_and_web_fail_before_exposure_on_partial_direct_dose_policy(monkeypatch):
@@ -1095,13 +1094,12 @@ def test_cli_and_web_fail_before_exposure_on_partial_direct_dose_policy(monkeypa
         cli.run_session(SimpleNamespace(safety_config=None, port=1, save_history=False))
     assert prompted == []
 
-    monkeypatch.setattr(webserve, "load_safety_config_or_exit", lambda path: incomplete)
     monkeypatch.setattr(webserve, "MicroscopeController", lambda port, guard: Controller())
     with pytest.raises(SystemExit, match="acquisition.confirm_above_duration_s"):
         webserve.Session(SimpleNamespace(
             safety_config=None, port=1, model=None, save_history=False,
             host="127.0.0.1",
-        ))
+        ), incomplete)
 
 
 @pytest.mark.parametrize(("source", "key", "shown"), [

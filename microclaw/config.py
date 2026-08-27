@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from importlib import resources
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -30,6 +32,9 @@ class ConfigDiagnostic:
     blocking: bool
 
 
+ConfigClassification = Literal["missing", "blocked", "ready"]
+
+
 @dataclass(frozen=True)
 class ConfigValidationResult:
     """Document findings without contacting Micro-Manager."""
@@ -38,12 +43,104 @@ class ConfigValidationResult:
     parsed: ParsedSafetyConfig | None
     reviewed: bool | None
     diagnostics: tuple[ConfigDiagnostic, ...]
+    _missing: bool = field(default=False, repr=False)
+    classification: ConfigClassification = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.parsed is None and self._missing:
+            classification = "missing"
+        elif self.can_start_live_validation:
+            classification = "ready"
+        else:
+            classification = "blocked"
+        object.__setattr__(self, "classification", classification)
 
     @property
     def can_start_live_validation(self) -> bool:
         return self.parsed is not None and self.reviewed is True and not any(
             item.blocking for item in self.diagnostics
         )
+
+
+@dataclass(frozen=True)
+class ClassificationComparison:
+    proceed: bool
+    reason: str | None = None
+
+
+def validation_result_json(result: ConfigValidationResult) -> dict:
+    """Serialize the existing offline validation snapshot for a slot caller."""
+    return {
+        "classification": result.classification,
+        "path": str(result.path),
+        "diagnostics": [asdict(item) for item in result.diagnostics],
+    }
+
+
+def compare_config_classifications(
+    active: ConfigClassification, candidate: ConfigClassification,
+) -> ClassificationComparison:
+    """Decide whether an update preserves the active slot's config state."""
+    valid = {"missing", "blocked", "ready"}
+    if active not in valid or candidate not in valid:
+        raise ValueError("config classification must be missing, blocked, or ready")
+    if active == candidate:
+        return ClassificationComparison(True)
+    if candidate == "ready":
+        return ClassificationComparison(
+            False,
+            "The update cannot promote this config into normal hardware control. "
+            "Repair or re-review the file in setup until this version also "
+            "classifies it `ready`, then the update proceeds.",
+        )
+    if active == "ready":
+        return ClassificationComparison(
+            False,
+            f"The update would downgrade a reviewed config from `ready` to "
+            f"`{candidate}`.",
+        )
+    return ClassificationComparison(
+        False,
+        f"The update must preserve the restricted `{active}` classification; "
+        f"the candidate reported `{candidate}`.",
+    )
+
+
+def classify_config_with_slot(
+    executable: str | Path, path: str | Path, *, timeout: float = 30,
+) -> ConfigClassification:
+    """Ask one installed slot's own CLI to classify the shared config."""
+    command = [
+        str(executable), "--safety-config", str(path), "check-config", "--json",
+    ]
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"slot could not classify the safety config: {exc}") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"exit code {completed.returncode}"
+        raise RuntimeError(f"slot could not classify the safety config: {detail}")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("slot emitted invalid config-classification JSON") from exc
+    if not isinstance(payload, dict) or payload.get("classification") not in {
+        "missing", "blocked", "ready",
+    }:
+        raise RuntimeError("slot emitted an invalid config classification")
+    return payload["classification"]
+
+
+def compare_slot_configurations(
+    active_executable: str | Path, candidate_executable: str | Path,
+    path: str | Path, *, timeout: float = 30,
+) -> ClassificationComparison:
+    """Compare answers produced independently by the active and candidate slots."""
+    active = classify_config_with_slot(active_executable, path, timeout=timeout)
+    candidate = classify_config_with_slot(candidate_executable, path, timeout=timeout)
+    return compare_config_classifications(active, candidate)
 
 
 def validate_safety_config(path: str | Path | None = None) -> ConfigValidationResult:
@@ -58,6 +155,7 @@ def validate_safety_config(path: str | Path | None = None) -> ConfigValidationRe
         return ConfigValidationResult(
             p, None, None,
             (ConfigDiagnostic("schema", f"No safety config at {p}.", True),),
+            _missing=True,
         )
 
     try:

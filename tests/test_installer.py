@@ -111,6 +111,19 @@ def test_upgrade_preserves_existing_profile_and_skips_setup(bat):
     assert "goto :installed_done" in bat
 
 
+def test_installer_relies_on_bare_check_config_failure_to_protect_bounds(bat):
+    protected = re.search(
+        r'if exist "%APPDATA%\\microclaw\\safety_config\.yaml" \((.*?)\n\)',
+        bat, re.S,
+    ).group(1)
+    assert '"%MC_EXE%" check-config >nul 2>&1' in protected
+    assert "check-config --json" not in protected
+    check = protected.index('"%MC_EXE%" check-config >nul 2>&1')
+    refusal = protected.index("if errorlevel 1", check)
+    preserve = protected.index("Existing security bounds are invalid or unreviewed", refusal)
+    assert check < refusal < preserve
+
+
 def test_setup_authority_is_one_time_and_never_in_the_shortcut(bat):
     assert '"%MC_EXE%" --setup-write-security-config serve' in bat
     shortcut_call = re.search(r"^:finish$(.*?)(?=^:\w+)", bat, re.M | re.S).group(1)

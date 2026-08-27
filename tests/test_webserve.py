@@ -11,6 +11,7 @@ import socket
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -690,7 +691,9 @@ def test_serve_wires_confirm_and_flushes_startup_banner(monkeypatch):
         guard=_guard(), ctrl=types.SimpleNamespace(core=None),
         mode=webserve.SessionMode.NORMAL,
     )
-    monkeypatch.setattr(webserve, "build_session", lambda args: fake)
+    monkeypatch.setattr(
+        webserve, "build_session", lambda args, config_result=None: fake,
+    )
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
     printed = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append((a, k)))
@@ -1132,6 +1135,74 @@ def test_serve_without_a_safety_config_falls_back_to_the_per_user_default(tmp_pa
         assert "setup mode" in refusal["error"]
 
 
+@pytest.mark.parametrize("ready", [True, False], ids=["Session", "SetupSession"])
+def test_build_session_validates_once_on_both_routes(monkeypatch, ready):
+    result = types.SimpleNamespace(
+        can_start_live_validation=ready,
+        parsed="parsed" if ready else None,
+        classification="ready" if ready else "missing",
+        path=Path("missing.yaml"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        webserve.config, "validate_safety_config",
+        lambda path: calls.append(path) or result,
+    )
+    monkeypatch.setattr(webserve, "Session", lambda args, parsed: ("normal", parsed))
+    monkeypatch.setattr(webserve, "SetupSession", lambda args, snapshot: ("setup", snapshot))
+    session = webserve.build_session(_args(safety_config="snapshot.yaml"))
+    assert len(calls) == 1
+    assert session[0] == ("normal" if ready else "setup")
+
+
+def test_build_session_uses_supplied_snapshot_after_file_is_replaced(tmp_path, monkeypatch):
+    path = tmp_path / "safety.yaml"
+    path.write_text("reviewed: true\n", encoding="utf-8")
+    snapshot = types.SimpleNamespace(
+        can_start_live_validation=True, parsed="snapshot constraints",
+        classification="ready", path=path,
+    )
+    path.write_text("reviewed: false\n", encoding="utf-8")
+    monkeypatch.setattr(
+        webserve.config, "validate_safety_config",
+        lambda path: pytest.fail("supplied snapshot was revalidated"),
+    )
+    monkeypatch.setattr(webserve, "Session", lambda args, parsed: parsed)
+    assert webserve.build_session(
+        _args(safety_config=str(path)), config_result=snapshot,
+    ) == "snapshot constraints"
+
+
+def test_serve_hoists_one_snapshot_into_build_session(monkeypatch, tmp_path):
+    import uvicorn
+
+    path = tmp_path / "safety.yaml"
+    snapshot = object()
+    validations = []
+    received = []
+    fake = types.SimpleNamespace(
+        confirm=lambda *args, **kwargs: False,
+        guard=_guard(), ctrl=types.SimpleNamespace(core=None),
+    )
+    monkeypatch.setattr(
+        webserve.config, "validate_safety_config",
+        lambda supplied: validations.append(supplied) or snapshot,
+    )
+    monkeypatch.setattr(
+        webserve, "build_session",
+        lambda args, config_result=None: received.append(config_result) or fake,
+    )
+    monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
+
+    webserve.serve(_args(
+        host="127.0.0.1", safety_config=str(path), no_browser=True,
+    ))
+
+    assert validations == [path]
+    assert received == [snapshot]
+
+
 def test_serve_opens_restricted_setup_for_an_unreviewed_config(tmp_path, monkeypatch, capsys):
     """An unreviewed file is never policy and setup never replaces it."""
     cfg = tmp_path / "safety_config.yaml"
@@ -1383,7 +1454,9 @@ def _stub_serve_runtime(monkeypatch):
         ),
         ctrl=types.SimpleNamespace(core=object()),
     )
-    monkeypatch.setattr(webserve, "build_session", lambda args: fake)
+    monkeypatch.setattr(
+        webserve, "build_session", lambda args, config_result=None: fake,
+    )
     monkeypatch.setattr(webserve, "build_app", lambda *args, **kwargs: object())
     import uvicorn
     monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)

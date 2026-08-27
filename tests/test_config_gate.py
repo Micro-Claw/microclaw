@@ -4,7 +4,9 @@ After v3 a desktop shortcut launches `microclaw serve` with no arguments, so thi
 gate is the last thing between a double-click and a stage moving under the
 example config's fictional limits. Everything here is about failing closed.
 """
+import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,10 +185,9 @@ def test_cli_and_web_build_guard_from_retained_parsed_contract(monkeypatch):
     with pytest.raises(SystemExit, match="Could not connect"):
         cli.run_session(SimpleNamespace(safety_config=None, port=1))
 
-    monkeypatch.setattr(webserve, "load_safety_config_or_exit", lambda path: parsed)
     monkeypatch.setattr(webserve, "MicroscopeController", Disconnected)
     with pytest.raises(SystemExit, match="Could not connect"):
-        webserve.Session(SimpleNamespace(safety_config=None, port=1))
+        webserve.Session(SimpleNamespace(safety_config=None, port=1), parsed)
     assert cli_seen == [parsed.constraints]
     assert web_seen == [parsed.constraints]
 
@@ -386,6 +387,98 @@ def test_check_config_cli_is_thin_offline_presenter(tmp_path, monkeypatch, capsy
     assert "Schema: valid" in output
     assert "LIVE CHECK REQUIRED" in output
     assert "Offline checks passed" in output
+
+
+@pytest.mark.parametrize(
+    ("document", "classification"),
+    [
+        (None, "missing"),
+        ("reviewed: false\n", "blocked"),
+        (REAL, "ready"),
+    ],
+)
+def test_check_config_json_reports_each_classification_with_success(
+    tmp_path, document, classification,
+):
+    """The installed slot's real CLI is the machine-readable boundary."""
+    import subprocess
+
+    path = tmp_path / f"{classification}.yaml"
+    if document is not None:
+        path.write_text(document, encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-m", "microclaw", "--safety-config", str(path),
+         "check-config", "--json"],
+        capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["classification"] == classification
+    assert payload["path"] == str(path)
+    assert isinstance(payload["diagnostics"], list)
+    assert completed.stdout.count("\n") == 1
+
+
+def test_check_config_json_emits_no_partial_object_when_classification_fails(
+    monkeypatch, capsys,
+):
+    from microclaw import __main__ as cli
+
+    monkeypatch.setattr(
+        cli, "validate_safety_config",
+        lambda path: (_ for _ in ()).throw(RuntimeError("classification failed")),
+    )
+    with pytest.raises(RuntimeError, match="classification failed"):
+        cli.check_config(SimpleNamespace(path=None, safety_config=None, json=True))
+    assert capsys.readouterr().out == ""
+
+
+def test_check_config_json_process_exits_nonzero_when_classification_fails():
+    import subprocess
+
+    code = (
+        "from types import SimpleNamespace; from microclaw import __main__ as cli; "
+        "cli.validate_safety_config=lambda path: (_ for _ in ()).throw("
+        "RuntimeError('classification failed')); "
+        "cli.check_config(SimpleNamespace(path=None,safety_config=None,json=True))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+    )
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+
+
+def test_check_config_json_emits_no_partial_object_when_serialization_fails(
+    tmp_path, monkeypatch, capsys,
+):
+    from microclaw import __main__ as cli
+
+    monkeypatch.setattr(
+        cli, "validation_result_json",
+        lambda result: (_ for _ in ()).throw(TypeError("cannot emit JSON")),
+    )
+    with pytest.raises(TypeError, match="cannot emit JSON"):
+        cli.check_config(SimpleNamespace(
+            path=str(tmp_path / "missing.yaml"), safety_config=None, json=True,
+        ))
+    assert capsys.readouterr().out == ""
+
+
+def test_check_config_human_exit_codes_are_unchanged(tmp_path):
+    import subprocess
+
+    blocked = tmp_path / "blocked.yaml"
+    blocked.write_text(REAL.replace("reviewed: true", "reviewed: false"), encoding="utf-8")
+    ready = tmp_path / "ready.yaml"
+    ready.write_text(REAL, encoding="utf-8")
+    for path, expected in ((blocked, 1), (ready, 0)):
+        completed = subprocess.run(
+            [sys.executable, "-m", "microclaw", "--safety-config", str(path),
+             "check-config"],
+            capture_output=True, text=True,
+        )
+        assert completed.returncode == expected
 
 
 def test_offline_validator_warns_for_packaged_example_limit_values(tmp_path):

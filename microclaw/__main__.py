@@ -19,6 +19,7 @@ from microclaw.assets import load_page
 from microclaw.controller import MicroscopeController
 from microclaw.config import (
     load_safety_config, load_safety_config_or_exit, validate_safety_config,
+    validation_result_json,
 )
 from microclaw.conversation import (
     AuditLog,
@@ -355,6 +356,9 @@ def inspect_rig(args):
 def check_config(args):
     """Present the reusable offline validator without connecting to a rig."""
     result = validate_safety_config(args.path or args.safety_config)
+    if getattr(args, "json", False):
+        print(json.dumps(validation_result_json(result), sort_keys=True))
+        return
     print(f"Safety config: {result.path}")
     if result.parsed is not None:
         print("Schema: valid")
@@ -486,6 +490,10 @@ def main():
     cc.add_argument(
         "path", nargs="?", default=None,
         help="Config path (default: --safety-config or the per-user file).",
+    )
+    cc.add_argument(
+        "--json", action="store_true",
+        help="Write one machine-readable classification object.",
     )
     cb = sub.add_parser(
         "check-bridge",
