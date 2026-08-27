@@ -2,7 +2,7 @@ param([ValidateSet('Prepare','Direct','Stage','NotReady','Restart','Later','Ordi
 $ErrorActionPreference = 'Stop'
 $repo = (git rev-parse --show-toplevel).Trim()
 Set-Location $repo
-git merge-base --is-ancestor c46e2db HEAD
+git merge-base --is-ancestor c6c8802 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'This checkout does not contain the complete block 58e implementation.' }
 $pointer = "$env:LOCALAPPDATA\microclaw\58e-gate-evidence.txt"
 if ($Mode -eq 'Prepare') {
