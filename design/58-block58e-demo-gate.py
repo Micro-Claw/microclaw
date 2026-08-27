@@ -938,6 +938,31 @@ def verify(out: Path, root: Path) -> int:
         initial = data["initial"]
         during = data["during"]
         after = data["after"]
+        # Round 9 passed this limb while nothing had been updated: its staging
+        # failed, so no slot was ever activated and a plain launch satisfied
+        # every remaining condition. The item is "update once with Micro-Manager
+        # closed", so an update has to have happened.
+        staged = [sample for _, sample in data.get("samples", [])
+                  if sample.get("pending_staged")]
+        if not staged:
+            raise NotExercised(
+                "no slot was staged, so nothing was activated and this is not the "
+                "Micro-Manager-closed case -- it is an ordinary launch"
+            )
+        if initial["pending"] is None:
+            raise NotExercised(
+                "no pending selector before the launch; there was no update to keep"
+            )
+        if after["active"] != initial["pending"]:
+            raise AssertionError(
+                f"the staged slot {initial['pending']!r} was not activated; "
+                f"active is {after['active']!r}"
+            )
+        if after.get("rollback_report") or any(
+            "rollback-reported=" in line
+            for line in after["launcher_log"][len(initial["launcher_log"]):]
+        ):
+            raise AssertionError("the completed update was rolled back")
         new_lines = after["launcher_lines"][len(initial["launcher_lines"]):]
         if len(new_lines) != 1:
             raise AssertionError(f"closed-rig new launch lines={new_lines!r}")
