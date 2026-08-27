@@ -496,6 +496,42 @@ def test_fresh_nonce_removes_stale_marker_and_only_matching_health_passes(tmp_pa
     assert updates.health_matches(marker, nonce)
 
 
+def test_health_wait_returns_child_exited_without_sleeping(tmp_path):
+    sleeps = []
+    verdict = updates.wait_for_launcher_health(
+        tmp_path / "missing", "nonce_abcdefghijkl", 42,
+        clock=lambda: 0, sleep=sleeps.append, alive=lambda pid: False,
+    )
+    assert verdict == "child-exited"
+    assert sleeps == []
+
+
+def test_health_wait_times_out_with_injected_clock(tmp_path):
+    now = [0.0]
+    sleeps = []
+
+    def sleep(interval):
+        sleeps.append(interval)
+        now[0] += interval
+
+    verdict = updates.wait_for_launcher_health(
+        tmp_path / "missing", "nonce_abcdefghijkl", 42, timeout=0.2,
+        poll_interval=0.1, clock=lambda: now[0], sleep=sleep, alive=lambda pid: True,
+    )
+    assert verdict == "timeout"
+    assert sleeps == [0.1, 0.1]
+
+
+def test_health_wait_accepts_marker_even_after_child_exits(tmp_path):
+    marker = tmp_path / updates.HEALTH_NAME
+    marker.write_text("nonce_abcdefghijkl\n", encoding="ascii")
+    assert updates.wait_for_launcher_health(
+        marker, "nonce_abcdefghijkl", 42, clock=lambda: 0,
+        sleep=lambda interval: pytest.fail("healthy marker must not sleep"),
+        alive=lambda pid: False,
+    ) == "healthy"
+
+
 def test_slot_metadata_for_other_slot_refuses_health(tmp_path):
     exe = _slot(tmp_path, "b")
     env = {updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
@@ -574,6 +610,19 @@ def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
     exe = tmp_path / "env-a" / "Scripts" / "python.exe"
     updates.write_slot_marker("unknown", 1, executable=exe)
     assert updates.read_slot_marker(executable=exe)["commit"] == "unknown"
+
+
+def test_installer_provenance_degrades_visibly_when_git_is_unavailable(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        updates, "clone_provenance",
+        lambda *args, **kwargs: (_ for _ in ()).throw(updates.UpdateError("Git was not found")),
+    )
+    state, note = updates.installer_provenance(tmp_path, "d" * 40)
+    assert state["provenance"] == "public-head"
+    assert state["installed_commit"] == "d" * 40
+    assert "Git was not found" in note
+    assert "updates will follow public head" in note
 
 
 def test_interval_jitter_and_cached_failure_suppress_retry(tmp_path, monkeypatch):

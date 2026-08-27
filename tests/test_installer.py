@@ -47,13 +47,14 @@ def test_managed_cmd_is_slot_independent_and_bypasses_execution_policy():
 def test_powershell_launcher_has_activation_health_and_rollback_branches():
     text = PS1.read_text(encoding="utf-8")
     for mechanism in ("active-slot.txt", "activate_pending", "fresh_launch",
-                      "health_matches", "rollback_slot", "consume_rollback_report",
+                      "wait_for_launcher_health", "rollback_slot", "consume_rollback_report",
                       "if (-not $healthy)", "$child.WaitForExit()"):
         assert mechanism in text
     assert "ConvertFrom-Json" not in text
     assert "[Guid]::NewGuid()" not in text
     assert "Set-Content -LiteralPath $activePath" not in text
     assert "Remove-Item -LiteralPath $healthPath" not in text
+    assert "Start-Sleep" not in text
 
 
 def test_installer_migrates_only_localappdata_env_and_never_uses_editable_install(bat):
@@ -67,7 +68,10 @@ def test_installer_migrates_only_localappdata_env_and_never_uses_editable_instal
 
 
 def test_installer_uses_package_provenance_and_slot_marker_contracts(bat):
-    assert "clone_provenance, public_provenance, write_slot_marker, write_state" in bat
+    assert "installer_provenance, write_slot_marker, write_state" in bat
+    assert "updates will follow public head" in (
+        ROOT / "microclaw" / "updates.py"
+    ).read_text(encoding="utf-8")
     assert "ConvertTo-Json" not in bat
     assert 'set "MC_SOURCE_DIR=%~dp0."' in bat
     assert 'git -C "%MC_SOURCE_DIR%" rev-parse HEAD' in bat

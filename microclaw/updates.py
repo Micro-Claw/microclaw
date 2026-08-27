@@ -166,6 +166,43 @@ def health_matches(path: str | Path, nonce: str) -> bool:
         return False
 
 
+def _windows_process_alive(pid: int) -> bool:
+    """Whether a Windows child still has STILL_ACTIVE as its exit code."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def wait_for_launcher_health(
+    path: str | Path, nonce: str, child_pid: int, *, timeout: float = 30,
+    poll_interval: float = 0.1, clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    alive: Callable[[int], bool] | None = None,
+) -> str:
+    """Wait in one Python process; return healthy, child-exited, or timeout."""
+    is_alive = alive or _windows_process_alive
+    deadline = clock() + timeout
+    while True:
+        if health_matches(path, nonce):
+            return "healthy"
+        if not is_alive(child_pid):
+            return "child-exited"
+        if clock() >= deadline:
+            return "timeout"
+        sleep(poll_interval)
+
+
 def rollback_slot(root: str | Path, failed: str, previous: str | None) -> str:
     """Restore the retained known-good slot and defer the report to its next launch."""
     if failed not in {"a", "b"} or previous not in {"a", "b"} or failed == previous:
@@ -419,6 +456,21 @@ def public_provenance(installed_commit: str = "unknown") -> dict[str, Any]:
         "canonical_repo": REPO, "branch": BRANCH,
         "installed_commit": installed_commit,
     }
+
+
+def installer_provenance(
+    source: str | Path, installed_commit: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Prefer clone provenance, but never fail installation for its absence."""
+    root = Path(source).resolve()
+    if not (root / ".git").exists():
+        return public_provenance(installed_commit), None
+    try:
+        return clone_provenance(root, installed_commit), None
+    except Exception as exc:
+        return public_provenance(installed_commit), (
+            f"Git provenance was unavailable ({exc}); updates will follow public head."
+        )
 
 
 def _git(state: dict[str, Any], *args: str, timeout: float = GIT_TIMEOUT_SECONDS):

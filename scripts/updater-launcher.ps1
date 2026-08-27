@@ -53,24 +53,11 @@ $env:MICROCLAW_LAUNCH_SLOT = $active
 $env:MICROCLAW_LAUNCH_NONCE = $nonce
 $env:MICROCLAW_LAUNCHER_PROTOCOL = $launcherProtocol
 $child = Start-Process -FilePath $exe -ArgumentList 'serve' -PassThru -NoNewWindow
-$deadline = (Get-Date).AddSeconds(30)
-$healthy = $false
-while (-not $child.HasExited -and (Get-Date) -lt $deadline) {
-    $match = & $selectorPython -c "import sys; from microclaw.updates import health_matches; print(health_matches(sys.argv[1],sys.argv[2]))" $healthPath $nonce
-    if ($match.Trim() -ceq 'True') {
-        $healthy = $true
-        break
-    }
-    Start-Sleep -Milliseconds 100
-    $child.Refresh()
-}
-if (-not $healthy) {
-    $match = & $selectorPython -c "import sys; from microclaw.updates import health_matches; print(health_matches(sys.argv[1],sys.argv[2]))" $healthPath $nonce
-    $healthy = ($match.Trim() -ceq 'True')
-}
+$verdict = & $selectorPython -c "import sys; from microclaw.updates import wait_for_launcher_health; print(wait_for_launcher_health(sys.argv[1],sys.argv[2],int(sys.argv[3])))" $healthPath $nonce $child.Id
+$healthy = ($verdict.Trim() -ceq 'healthy')
 
 if (-not $healthy) {
-    if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force }
+    if ($verdict.Trim() -ceq 'timeout') { Stop-Process -Id $child.Id -Force }
     if ($null -ne $previous) {
         & $selectorPython -c "import sys; from microclaw.updates import rollback_slot; rollback_slot(sys.argv[1],sys.argv[2],sys.argv[3])" $root $active $previous
     }

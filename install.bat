@@ -236,7 +236,7 @@ copy /Y "%~dp0scripts\launcher-protocol.txt" "%MC_HOME%\launcher-protocol.txt" >
 if errorlevel 1 exit /b 1
 set "MC_COMMIT=unknown"
 if exist "%MC_SOURCE_DIR%\.git" for /f "delims=" %%I in ('git -C "%MC_SOURCE_DIR%" rev-parse HEAD 2^>nul') do set "MC_COMMIT=%%I"
-"%MC_PY%" -c "import sys; from pathlib import Path; from microclaw.updates import clone_provenance, public_provenance, write_slot_marker, write_state; source=Path(sys.argv[1]).resolve(); commit=sys.argv[2]; state=clone_provenance(source, commit) if (source/'.git').is_dir() else public_provenance(commit); write_state(state, Path(sys.argv[3])/'update-state.json'); write_slot_marker(commit, int(sys.argv[4]))" "%MC_SOURCE_DIR%" "%MC_COMMIT%" "%MC_HOME%" 1
+"%MC_PY%" -c "import sys; from pathlib import Path; from microclaw.updates import installer_provenance, write_slot_marker, write_state; state,note=installer_provenance(sys.argv[1],sys.argv[2]); print('  NOTE: '+note) if note else None; write_state(state,Path(sys.argv[3])/'update-state.json'); write_slot_marker(sys.argv[2],int(sys.argv[4]))" "%MC_SOURCE_DIR%" "%MC_COMMIT%" "%MC_HOME%" 1
 if errorlevel 1 exit /b 1
 exit /b 0
 
