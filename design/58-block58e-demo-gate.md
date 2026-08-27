@@ -40,6 +40,14 @@ root, prints the backup path, and records hashes and selectors before mutation.
 .\design\58-block58e-demo-gate.ps1 -Mode Prepare
 ```
 
+## If a phase reports "the update could not be built"
+
+Send the evidence folder and stop. `update-state.json` now carries
+`build_error_detail`, which names the failing `uv` subcommand, its exit code and
+its stderr tail — that is the field to read first, and every staging phase
+clears any cached build failure before it starts, so a failure reported by one
+phase is that phase's own and not an earlier one's cascading forward.
+
 ## Direct executable: Restart later only
 
 Start the branch slot directly with this literal command:

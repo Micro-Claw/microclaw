@@ -368,7 +368,15 @@ def stage_inactive_slot(
     target = base / f"env-{inactive}"
     python = target / "Scripts" / "python.exe"
     commands = (
-        [str(uv_executable), "venv", "--python", "3.12", str(target)],
+        # --clear because the inactive slot is normally already an environment:
+        # every machine that has updated once has one here, and uv refuses to
+        # create over an existing venv (exit 2, "A virtual environment already
+        # exists at").  Staging always replaces rather than reuses -- the slot
+        # is being rebuilt at a different commit -- so this is not install.bat's
+        # probe-then-reuse case.  The known-good slot is the *active* one, which
+        # staging never touches, so clearing the inactive slot cannot remove the
+        # copy a rollback would return to.
+        [str(uv_executable), "venv", "--clear", "--python", "3.12", str(target)],
         [str(uv_executable), "pip", "install", "--python", str(python), str(source)],
     )
     for command in commands:
@@ -377,6 +385,11 @@ def stage_inactive_slot(
             state = load_state(base / STATE_NAME) or {}
             state["build_error"] = "the update could not be built"
             state["build_failed_commit"] = candidate.sha
+            # The user-facing sentence stays deliberately plain; this is the
+            # diagnostic, because a rig that reports only "could not be built"
+            # cannot be debugged without another trip.
+            detail = (completed.stderr or completed.stdout or "").strip()
+            state["build_error_detail"] = f"uv {command[1]} exit {completed.returncode}: {detail[-2000:]}"
             write_state(state, base / STATE_NAME)
             raise UpdateError("the update could not be built")
     write_slot_marker(
@@ -403,6 +416,7 @@ def stage_inactive_slot(
     state["staging"] = {"status": "staged", "commit": candidate.sha}
     state.pop("build_error", None)
     state.pop("build_failed_commit", None)
+    state.pop("build_error_detail", None)
     write_state(state, base / STATE_NAME)
     temporary = base / f".{PENDING_SLOT_NAME}.tmp"
     temporary.write_text(inactive + "\n", encoding="ascii")

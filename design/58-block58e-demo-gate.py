@@ -248,6 +248,27 @@ def prepare(repo: Path, out: Path, root: Path) -> int:
     return 0
 
 
+def clear_build_failure_cache(root: Path) -> dict:
+    """Un-poison staging before a phase that intends to build.
+
+    `stage_inactive_slot`'s first check refuses immediately when
+    `build_failed_commit` matches the candidate and the interval has not
+    elapsed.  That is correct product behaviour -- and it means one failed build
+    silently short-circuits every later staging phase in this gate, which is
+    exactly what happened on round 1: four limbs produced no evidence because
+    the first phase had failed.  Each staging phase clears it and records what
+    it cleared, so a cascade cannot hide a mechanism that was never run.  The
+    Failure phase clears it too: it needs a genuine build attempt of its own.
+    """
+    path = root / "update-state.json"
+    state = read_json(path)
+    cleared = {key: state.pop(key, None)
+               for key in ("build_error", "build_failed_commit", "build_error_detail")}
+    if any(value is not None for value in cleared.values()):
+        write_json(path, state)
+    return cleared
+
+
 def poll_stage_until_terminal() -> list[tuple[int, object]]:
     samples = []
     deadline = time.time() + 900
@@ -267,12 +288,14 @@ def poll_stage_until_terminal() -> list[tuple[int, object]]:
 
 def direct(out: Path, root: Path) -> int:
     """Stage through a direct executable and leave its pending slot intact."""
+    cleared_build_failure = clear_build_failure_cache(root)
     before = state_snapshot(root)
     first = api("POST", "/api/update/stage")
     samples = poll_stage_until_terminal()
     after = state_snapshot(root)
     status, payload = api("GET", "/api/update")
     data = {
+        "cleared_build_failure": cleared_build_failure,
         "before": before,
         "after": after,
         "first_stage": first,
@@ -319,6 +342,7 @@ def slot_comparison(root: Path, out: Path, active: str) -> dict:
 
 def stage(out: Path, root: Path) -> int:
     """Stage successfully from a launcher-owned server and record locked files."""
+    cleared_build_failure = clear_build_failure_cache(root)
     before = state_snapshot(root)
     first = api("POST", "/api/update/stage")
     second = api("POST", "/api/update/stage")
@@ -326,6 +350,7 @@ def stage(out: Path, root: Path) -> int:
     after = state_snapshot(root)
     comparison = slot_comparison(root, out, before["active"])
     save_phase(out, "stage", {
+        "cleared_build_failure": cleared_build_failure,
         "before": before,
         "after": after,
         "first_stage": first,
@@ -344,6 +369,7 @@ def notready(out: Path, root: Path) -> int:
     `stage_inactive_slot` function performs the actual comparison and writes the
     refusal. The original executable and marker are restored in `finally`.
     """
+    cleared_build_failure = clear_build_failure_cache(root)
     before = state_snapshot(root)
     state = before["state"]
     success = state.get("last_success") or {}
@@ -407,6 +433,7 @@ def notready(out: Path, root: Path) -> int:
     status_code, payload = api("GET", "/api/update")
     after = state_snapshot(root)
     save_phase(out, "notready", {
+        "cleared_build_failure": cleared_build_failure,
         "before": before,
         "after": after,
         "refusal": refusal,
@@ -488,6 +515,7 @@ def rollback(out: Path, root: Path) -> int:
 
 def failure(out: Path, root: Path) -> int:
     """Stage under the PowerShell-owned unreachable index and cache failure."""
+    cleared_build_failure = clear_build_failure_cache(root)
     deadline = time.time() + 30
     while True:
         try:
@@ -502,6 +530,7 @@ def failure(out: Path, root: Path) -> int:
     samples = poll_stage_until_terminal()
     after = state_snapshot(root)
     save_phase(out, "failure", {
+        "cleared_build_failure": cleared_build_failure,
         "before": before,
         "after": after,
         "stage_response": response,
@@ -531,6 +560,7 @@ def offline(out: Path, root: Path) -> int:
 
 def closed(out: Path, root: Path) -> int:
     """Record exactly one launch with Micro-Manager closed and no relaunch."""
+    cleared_build_failure = clear_build_failure_cache(root)
     response = api("POST", "/api/update/stage")
     samples = poll_stage_until_terminal()
     initial = state_snapshot(root)
@@ -545,6 +575,7 @@ def closed(out: Path, root: Path) -> int:
     input()
     after = state_snapshot(root)
     save_phase(out, "closed", {
+        "cleared_build_failure": cleared_build_failure,
         "stage_response": response,
         "samples": samples,
         "initial": initial,
@@ -556,6 +587,7 @@ def closed(out: Path, root: Path) -> int:
 
 def later(out: Path, root: Path) -> int:
     """Prove a pending selector activates only on the next desktop launch."""
+    cleared_build_failure = clear_build_failure_cache(root)
     response = api("POST", "/api/update/stage")
     samples = poll_stage_until_terminal()
     before = state_snapshot(root)
@@ -565,6 +597,7 @@ def later(out: Path, root: Path) -> int:
     input()
     after = state_snapshot(root)
     save_phase(out, "later", {
+        "cleared_build_failure": cleared_build_failure,
         "stage_response": response,
         "samples": samples,
         "before": before,
@@ -838,7 +871,7 @@ def verify(out: Path, root: Path) -> int:
 
     @limb(
         "unreachable PyPI failure is cached without selector change",
-        fails_if="build error absent, pending published, active changed, or retry deadline moved",
+        fails_if="build error or its uv diagnostic absent, pending published, active changed, or retry deadline moved",
     )
     def _failure():
         data = need(out, "failure")
@@ -846,6 +879,12 @@ def verify(out: Path, root: Path) -> int:
         after = data["after"]
         if not after["state"].get("build_error"):
             raise AssertionError(f"build_error={after['state'].get('build_error')!r}")
+        # The diagnostic, not the user-facing sentence. Round 1 recorded only
+        # "the update could not be built" and cost a second trip to learn that
+        # `uv venv` had refused an existing slot.
+        detail = after["state"].get("build_error_detail")
+        if not detail or not str(detail).startswith("uv "):
+            raise AssertionError(f"build_error_detail={detail!r}")
         if after["pending"] is not None:
             raise AssertionError(f"pending published after failed build: {after['pending']!r}")
         if after["active"] != before["active"]:
@@ -857,7 +896,7 @@ def verify(out: Path, root: Path) -> int:
                 f"next_check moved: {before['state'].get('next_check')!r} -> "
                 f"{after['state'].get('next_check')!r}"
             )
-        return str(after["state"]["build_error"])
+        return f"{after['state']['build_error']} — {after['state']['build_error_detail']}"
 
     @limb(
         "Restore returns production state and APPDATA hash",

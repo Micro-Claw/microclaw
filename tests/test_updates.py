@@ -561,6 +561,43 @@ def test_rollback_restores_known_good_and_defers_report(tmp_path):
     assert updates.consume_rollback_report(tmp_path) is None
 
 
+
+def fake_uv(root, *, classification="ready", classifications=None, seen=None):
+    """A `uv` that behaves like the one on the demo machine (0.11.28).
+
+    `uv venv` **refuses an existing environment** with exit 2 unless `--clear`
+    is passed.  Every fake in this file used to return 0 unconditionally, which
+    is why block 58e's first demo gate was the first thing ever to run staging
+    against a slot that already existed -- on a machine that had updated once,
+    which is every machine after the first update.  The fake encodes the
+    hardware's behaviour now, not our assumption about it.
+    """
+    calls = seen if seen is not None else []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "venv":
+            target = Path(command[-1])
+            if (target / "pyvenv.cfg").exists() and "--clear" not in command:
+                return subprocess.CompletedProcess(
+                    command, 2, "",
+                    "error: Failed to create virtual environment\n"
+                    f"  Caused by: A virtual environment already exists at: {target}\n"
+                    "hint: Use the `--clear` flag or set `UV_VENV_CLEAR=1`",
+                )
+            (target / "Scripts").mkdir(parents=True, exist_ok=True)
+            (target / "pyvenv.cfg").write_text("home = python\n", encoding="ascii")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[1] == "pip":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        slot = "a" if "env-a" in command[0] else "b"
+        value = (classifications or {}).get(slot, classification)
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps({"classification": value}), ""
+        )
+
+    return run, calls
+
 def test_failed_uv_stage_keeps_active_selector_and_publishes_no_pending(tmp_path, monkeypatch):
     updates.write_state({"provenance": "public-head", "next_check": 100},
                         tmp_path / updates.STATE_NAME)
@@ -617,19 +654,14 @@ def test_config_comparison_refusal_is_before_pending_publish(tmp_path, monkeypat
 
     commands = []
 
-    def run(command, **kwargs):
-        if command[1] == "venv":
-            (tmp_path / "env-b" / "Scripts").mkdir(parents=True)
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[0] == "uv.exe":
-            return subprocess.CompletedProcess(command, 0, "", "")
-        commands.append(command)
-        classification = "ready" if "env-a" in command[0] else "blocked"
-        return subprocess.CompletedProcess(
-            command, 0, json.dumps({"classification": classification}), ""
-        )
+    run, _ = fake_uv(tmp_path, classifications={"a": "ready", "b": "blocked"})
 
-    monkeypatch.setattr(updates.subprocess, "run", run)
+    def recording(command, **kwargs):
+        if command[0] != "uv.exe":
+            commands.append(command)
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(updates.subprocess, "run", recording)
     candidate = updates.Candidate("d" * 40, "unsafe", "public-head")
     with pytest.raises(updates.UpdateError, match="downgrade a reviewed config"):
         updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe")
@@ -654,14 +686,7 @@ def test_successful_stage_clears_stale_build_failure(tmp_path, monkeypatch):
     (source / "scripts").mkdir(parents=True)
     (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
 
-    def run(command, **kwargs):
-        if command[1] == "venv":
-            (tmp_path / "env-b" / "Scripts").mkdir(parents=True)
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[0] == "uv.exe":
-            return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(command, 0, '{"classification":"ready"}', "")
-
+    run, _ = fake_uv(tmp_path)
     monkeypatch.setattr(updates.subprocess, "run", run)
     updates.stage_inactive_slot(
         tmp_path, source, updates.Candidate("d" * 40, "fixed", "public-head"),
@@ -672,6 +697,66 @@ def test_successful_stage_clears_stale_build_failure(tmp_path, monkeypatch):
     assert "build_failed_commit" not in state
     assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="ascii") == "b\n"
 
+
+
+def _staging_fixture(tmp_path):
+    updates.write_state({"provenance": "public-head"}, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    source = tmp_path / "source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "scripts" / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    return source
+
+
+def test_staging_replaces_an_inactive_slot_that_already_exists(tmp_path, monkeypatch):
+    """The second update a machine performs must not fail on its own first one.
+
+    Found on the demo machine, block 58e gate round 1: `uv venv` refuses an
+    existing environment (uv 0.11.28, exit 2), and after one update the inactive
+    slot always is one.  Every fake in this file returned 0 for `venv`
+    regardless, so the suite could not see it.
+    """
+    source = _staging_fixture(tmp_path)
+    run, calls = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+
+    first = updates.Candidate("a" * 40, "first update", "public-head")
+    updates.stage_inactive_slot(tmp_path, source, first, uv_executable="uv.exe")
+    assert (tmp_path / "env-b" / "pyvenv.cfg").exists()
+
+    # Exactly the state a machine is in when its second update arrives.
+    (tmp_path / updates.PENDING_SLOT_NAME).unlink()
+    calls.clear()
+    second = updates.Candidate("b" * 40, "second update", "public-head")
+    updates.stage_inactive_slot(tmp_path, source, second, uv_executable="uv.exe")
+
+    venv = next(call for call in calls if call[1] == "venv")
+    assert "--clear" in venv, venv
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="ascii") == "b\n"
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert "build_error" not in state
+    assert updates.read_slot_marker(
+        executable=tmp_path / "env-b" / "Scripts" / "python.exe"
+    )["commit"] == second.sha
+
+
+def test_build_failure_records_which_command_failed_and_why(tmp_path, monkeypatch):
+    """A rig that reports only "could not be built" costs another trip."""
+    source = _staging_fixture(tmp_path)
+
+    def refuse(command, **kwargs):
+        return subprocess.CompletedProcess(command, 2, "", "error: no space left on device")
+
+    monkeypatch.setattr(updates.subprocess, "run", refuse)
+    with pytest.raises(updates.UpdateError, match="the update could not be built"):
+        updates.stage_inactive_slot(
+            tmp_path, source, updates.Candidate("c" * 40, "doomed", "public-head"),
+            uv_executable="uv.exe",
+        )
+    detail = updates.load_state(tmp_path / updates.STATE_NAME)["build_error_detail"]
+    assert detail.startswith("uv venv exit 2:")
+    assert "no space left on device" in detail
 
 def test_slot_marker_deliberately_accepts_unknown_for_public_zip(tmp_path):
     exe = tmp_path / "env-a" / "Scripts" / "python.exe"
