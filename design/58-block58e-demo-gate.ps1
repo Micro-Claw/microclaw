@@ -1,4 +1,4 @@
-param([ValidateSet('Prepare','Direct','Stage','Restart','Later','Ordinary','Rollback','Failure','Closed','Restore','PublicZip','Verify')][string]$Mode)
+param([ValidateSet('Prepare','Direct','Stage','NotReady','Restart','Later','Ordinary','Rollback','Failure','Offline','Closed','Restore','PublicZip','Verify')][string]$Mode)
 $ErrorActionPreference = 'Stop'
 $repo = (git rev-parse --show-toplevel).Trim()
 Set-Location $repo
