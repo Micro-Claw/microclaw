@@ -39,6 +39,12 @@ if (-not (Test-Path -LiteralPath $exe)) {
 
 $nonce = [Guid]::NewGuid().ToString('N')
 Remove-Item -LiteralPath $healthPath -Force -ErrorAction SilentlyContinue
+$logPath = Join-Path $root 'launcher.log'
+Add-Content -LiteralPath $logPath -Value ("{0:o} slot={1} nonce={2}" -f (Get-Date), $active, $nonce)
+if ((Get-Item -LiteralPath $logPath).Length -gt 65536) {
+    $tail = Get-Content -LiteralPath $logPath -Tail 200
+    Set-Content -LiteralPath $logPath -Value $tail -Encoding UTF8
+}
 $env:MICROCLAW_LAUNCHER_OWNED = '1'
 $env:MICROCLAW_LAUNCH_ROOT = $root
 $env:MICROCLAW_LAUNCH_SLOT = $active
