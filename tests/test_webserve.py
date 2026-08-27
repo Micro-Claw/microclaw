@@ -340,11 +340,16 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
         lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
     )
     app = TestClient(build_app(session))
+    # Captured before the cycle: `_durable_history` prefers the store, so an
+    # assertion on it alone cannot see a row written straight to `history` —
+    # which is the list `run_turn` sends to the model. Both are checked.
+    before = list(session.history)
     assert app.post("/api/update/check").status_code == 200
     assert app.post("/api/update/stage").status_code == 202
     assert app.post("/api/update/dismiss", json={
         "action": "later", "commit": candidate["sha"],
     }).status_code == 200
+    assert session.history == before
     assert not any("update" in name for name in tools.TOOL_REGISTRY)
     assert not any("update" in schema["name"] for schema in TOOLS_CACHED)
     assert all(fn.__module__ != updates.__name__ for fn in tools.TOOL_REGISTRY.values())
