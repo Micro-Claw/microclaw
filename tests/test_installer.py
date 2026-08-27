@@ -12,6 +12,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BAT = ROOT / "install.bat"
+CMD = ROOT / "scripts" / "Microclaw.cmd"
+PS1 = ROOT / "scripts" / "updater-launcher.ps1"
 
 
 @pytest.fixture(scope="module")
@@ -22,6 +24,42 @@ def bat() -> str:
 def test_installer_exists_at_the_repo_root():
     """Step 2 of the README tells the user to double-click it after extracting."""
     assert BAT.is_file()
+
+
+def test_external_launchers_are_installer_owned_only(bat):
+    assert CMD.is_file() and PS1.is_file()
+    assert 'scripts\\Microclaw.cmd" "%MC_HOME%\\Microclaw.cmd' in bat
+    assert 'scripts\\updater-launcher.ps1" "%MC_HOME%\\updater-launcher.ps1' in bat
+    for source in (ROOT / "microclaw").rglob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        assert "updater-launcher.ps1" not in text
+        assert not re.search(r"Microclaw\.cmd.*(?:write_text|open\()", text)
+
+
+def test_managed_cmd_is_slot_independent_and_bypasses_execution_policy():
+    text = CMD.read_text(encoding="utf-8")
+    assert "MICROCLAW_FROM_SHORTCUT=1" in text
+    assert "-NoProfile -ExecutionPolicy Bypass" in text
+    assert "updater-launcher.ps1" in text
+    assert "env-a" not in text and "env-b" not in text
+
+
+def test_powershell_launcher_has_activation_health_and_rollback_branches():
+    text = PS1.read_text(encoding="utf-8")
+    for mechanism in ("active-slot.txt", "pending-slot.txt", "[Guid]::NewGuid()",
+                      "Remove-Item -LiteralPath $healthPath", "-ceq $nonce",
+                      "if (-not $healthy)", "rolled back", "$child.WaitForExit()"):
+        assert mechanism in text
+    assert "ConvertFrom-Json" not in text
+
+
+def test_installer_migrates_only_localappdata_env_and_never_uses_editable_install(bat):
+    assert 'move "%MC_HOME%\\env" "%MC_HOME%\\env-a"' in bat
+    assert 'set "MC_ENV=%MC_HOME%\\env-a"' in bat
+    assert "CONDA_PREFIX" not in bat
+    assert " pip install -e " not in bat
+    assert "Existing non-uv Microclaw environment left untouched" in bat
+    assert "The desktop icon now moves" in bat
 
 
 def test_labels_and_calls_agree(bat):

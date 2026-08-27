@@ -1203,6 +1203,45 @@ def test_serve_hoists_one_snapshot_into_build_session(monkeypatch, tmp_path):
     assert received == [snapshot]
 
 
+def test_serve_writes_launcher_health_immediately_before_build_session(monkeypatch, tmp_path):
+    import uvicorn
+    from microclaw import updates
+
+    events = []
+    fake = types.SimpleNamespace(confirm=lambda *a, **k: False, guard=_guard(),
+                                 ctrl=types.SimpleNamespace(core=None))
+    monkeypatch.setattr(webserve.config, "validate_safety_config",
+                        lambda path: events.append("validate") or object())
+    monkeypatch.setattr(updates, "write_launcher_health",
+                        lambda: events.append("health"))
+    monkeypatch.setattr(webserve, "build_session",
+                        lambda *a, **k: events.append("build") or fake)
+    monkeypatch.setattr(webserve, "build_app", lambda *a, **k: object())
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x"),
+                         no_browser=True))
+    assert events == ["validate", "health", "build"]
+
+
+def test_bridge_failure_after_health_leaves_nonce_marker(monkeypatch, tmp_path):
+    from microclaw import updates
+
+    exe = tmp_path / "env-a" / "Scripts" / "python.exe"
+    updates.write_slot_marker("a" * 40, 1, executable=exe)
+    env = {updates.LAUNCHER_OWNED_ENV: "1", updates.LAUNCH_ROOT_ENV: str(tmp_path),
+           updates.LAUNCH_SLOT_ENV: "a", updates.LAUNCH_NONCE_ENV: "nonce_abcdefghijkl"}
+    write_health = updates.write_launcher_health
+    monkeypatch.setattr(webserve.config, "validate_safety_config", lambda path: object())
+    monkeypatch.setattr(updates, "write_launcher_health",
+                        lambda: write_health(env, executable=exe))
+    monkeypatch.setattr(webserve, "build_session",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bridge closed")))
+    with pytest.raises(RuntimeError, match="bridge closed"):
+        webserve.serve(_args(host="127.0.0.1", safety_config=str(tmp_path / "x"),
+                             no_browser=True))
+    assert (tmp_path / updates.HEALTH_NAME).read_text().strip() == "nonce_abcdefghijkl"
+
+
 def test_serve_opens_restricted_setup_for_an_unreviewed_config(tmp_path, monkeypatch, capsys):
     """An unreviewed file is never policy and setup never replaces it."""
     cfg = tmp_path / "safety_config.yaml"

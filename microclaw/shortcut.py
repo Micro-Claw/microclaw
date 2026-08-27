@@ -34,6 +34,7 @@ from microclaw.paths import desktop_dir, user_data_dir
 LNK_NAME = "Microclaw.lnk"
 CMD_NAME = "Microclaw.cmd"
 ICO_NAME = "microclaw.ico"
+MANAGED_STATE_NAME = "update-state.json"
 
 #: Set by the .cmd wrapper. `main()` reads it to keep the console open on exit.
 FROM_SHORTCUT_ENV = "MICROCLAW_FROM_SHORTCUT"
@@ -90,6 +91,16 @@ def _wrapper_text(target: str, args: list[str]) -> str:
     )
 
 
+def managed_layout_present(data: Path | None = None) -> bool:
+    """Whether launcher ownership belongs to install.bat.
+
+    ``update-state.json`` is the single opt-in marker for managed updates.  Its
+    absence deliberately keeps conda, embedded-Python, and developer installs
+    on the legacy wrapper path.
+    """
+    return ((Path(data) if data is not None else user_data_dir()) / MANAGED_STATE_NAME).is_file()
+
+
 def plan(dest: Path | None = None) -> dict:
     """Everything `install` would write, without writing it. Pure; testable anywhere."""
     target, args = launcher()
@@ -120,7 +131,7 @@ def _powershell(script: str, env: dict) -> None:
 
 
 def install(dest: Path | None = None, dry_run: bool = False) -> dict:
-    """Write the icon, the .cmd wrapper and the .lnk. Returns the plan."""
+    """Write the icon and .lnk, plus the legacy wrapper for unmanaged installs."""
     p = plan(dest)
     if dry_run:
         return p
@@ -134,7 +145,8 @@ def install(dest: Path | None = None, dry_run: bool = False) -> dict:
     # shortcut whose target lives on a share breaks whenever the network does.
     materialize_icon(p["icon"])
     p["cmd"].parent.mkdir(parents=True, exist_ok=True)
-    p["cmd"].write_text(_wrapper_text(p["target"], p["args"]), encoding="utf-8")
+    if not managed_layout_present(p["workdir"]):
+        p["cmd"].write_text(_wrapper_text(p["target"], p["args"]), encoding="utf-8")
 
     _powershell(
         _PS_CREATE,
@@ -154,7 +166,8 @@ def remove(dest: Path | None = None) -> list[Path]:
     """Delete what `install` wrote. Missing files are not an error."""
     p = plan(dest)
     gone = []
-    for key in ("lnk", "cmd", "icon"):
+    keys = ("lnk", "icon") if managed_layout_present(p["workdir"]) else ("lnk", "cmd", "icon")
+    for key in keys:
         try:
             p[key].unlink()
             gone.append(p[key])

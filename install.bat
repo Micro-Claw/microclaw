@@ -22,7 +22,7 @@ setlocal EnableExtensions
 title Microclaw installer
 
 set "MC_HOME=%LOCALAPPDATA%\microclaw"
-set "MC_ENV=%MC_HOME%\env"
+set "MC_ENV=%MC_HOME%\env-a"
 set "MC_PY=%MC_ENV%\Scripts\python.exe"
 set "MC_EXE=%MC_ENV%\Scripts\microclaw.exe"
 
@@ -35,8 +35,10 @@ echo.
 
 call :resolve_source || goto :fail
 call :find_uv        || goto :fail
+call :migrate_layout || goto :fail
 call :make_env       || goto :fail
 call :install_pkg    || goto :fail
+call :write_managed  || goto :fail
 call :finish         || goto :fail
 
 echo.
@@ -165,15 +167,41 @@ exit /b 0
 
 
 rem ---------------------------------------------------------------------
+:migrate_layout
+echo   [3/7] Preparing the managed two-slot layout...
+if not exist "%MC_HOME%" mkdir "%MC_HOME%"
+if exist "%MC_HOME%\env" if not exist "%MC_HOME%\env-a" (
+    echo   Migrating only %MC_HOME%\env to %MC_HOME%\env-a.
+    move "%MC_HOME%\env" "%MC_HOME%\env-a" >nul
+    if errorlevel 1 exit /b 1
+)
+if not exist "%MC_HOME%\active-slot.txt" >"%MC_HOME%\active-slot.txt" echo a
+for /f "delims=" %%I in ('where microclaw 2^>nul') do call :report_unmanaged "%%~fI"
+exit /b 0
+
+:report_unmanaged
+set "MC_OLD=%~1"
+echo %MC_OLD% | findstr /i /b /l /c:"%MC_HOME%\" >nul
+if not errorlevel 1 exit /b 0
+echo   Existing non-uv Microclaw environment left untouched at:
+echo     %MC_OLD%
+echo   The desktop icon now moves to the managed installation at %MC_HOME%.
+exit /b 0
+
+
+rem ---------------------------------------------------------------------
 :install_pkg
-echo   [4/5] Installing Microclaw and its dependencies. This takes a few minutes.
+echo   [5/7] Installing Microclaw and its dependencies. This takes a few minutes.
 rem pushd so a relative ".[serve]" resolves against the source folder, and so a
 rem path containing spaces never reaches the command line unquoted.
 if not defined MICROCLAW_SRC pushd "%~dp0"
 "%UV%" pip install --python "%MC_PY%" "%MC_SPEC%"
 set "MC_RC=%ERRORLEVEL%"
 if not defined MICROCLAW_SRC popd
-if not "%MC_RC%"=="0" exit /b 1
+if not "%MC_RC%"=="0" (
+    echo   ERROR: the update could not be built.
+    exit /b 1
+)
 if not exist "%MC_EXE%" (
     echo   ERROR: microclaw.exe missing after install: %MC_EXE%
     exit /b 1
@@ -182,8 +210,30 @@ exit /b 0
 
 
 rem ---------------------------------------------------------------------
+:write_managed
+echo   [6/7] Writing the external launcher and managed state...
+copy /Y "%~dp0scripts\Microclaw.cmd" "%MC_HOME%\Microclaw.cmd" >nul
+if errorlevel 1 exit /b 1
+copy /Y "%~dp0scripts\updater-launcher.ps1" "%MC_HOME%\updater-launcher.ps1" >nul
+if errorlevel 1 exit /b 1
+set "MC_COMMIT=unknown"
+set "MC_PROVENANCE=public-head"
+set "MC_CLONE_PATH="
+set "MC_UPSTREAM="
+if exist "%~dp0.git" (
+    for /f "delims=" %%I in ('git -C "%~dp0" rev-parse HEAD 2^>nul') do set "MC_COMMIT=%%I"
+    for /f "delims=" %%I in ('git -C "%~dp0" rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2^>nul') do set "MC_UPSTREAM=%%I"
+    set "MC_PROVENANCE=clone"
+    set "MC_CLONE_PATH=%~dp0"
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$slot = @{ commit=$env:MC_COMMIT; required_launcher_protocol=1 }; $slot | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:MC_ENV 'microclaw-slot.json'); if (-not (Test-Path (Join-Path $env:MC_HOME 'update-state.json'))) { $state = @{ provenance=$env:MC_PROVENANCE; installed_commit=$env:MC_COMMIT; clone_path=$env:MC_CLONE_PATH; upstream=$env:MC_UPSTREAM }; $state | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $env:MC_HOME 'update-state.json') }"
+if errorlevel 1 exit /b 1
+exit /b 0
+
+
+rem ---------------------------------------------------------------------
 :finish
-echo   [5/5] Creating the desktop shortcut...
+echo   [7/7] Creating the desktop shortcut...
 "%MC_EXE%" install-shortcut
 if errorlevel 1 exit /b 1
 exit /b 0
