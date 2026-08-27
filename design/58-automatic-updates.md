@@ -1168,6 +1168,33 @@ pending slot the next launch would act on. They are 58e's to gate.
 
 ## 58e — restart, the terminal line, and the end-to-end update
 
+**Three coordinator additions, decided at assignment 2026-08-27**, recorded here
+the way 58d's two were, so the post-merge reconciliation has something to check
+them against. Each was found by reading the code on `main`, not by the runner.
+
+1. **Nothing reconciles `installed_commit` after an activation.** Grep is
+   conclusive: `stage_inactive_slot` writes the *slot marker*, and no code path
+   writes `installed_commit` into `update-state.json` after `install.bat`. So a
+   machine that completes an update keeps discovering, offering and rebuilding
+   the same commit forever, and the end-to-end gate limb below would show the
+   banner still offering the commit it just installed. The reconciliation
+   belongs in `activate_pending` and `rollback_slot` — the two functions that
+   change which slot is active — reading the newly active slot's own marker.
+   **Not at launcher-health time**, tempting as that is: 58d's gate arrangement
+   rewrites `installed_commit` and depends on that rewrite surviving an ordinary
+   launch, and 58e inherits the arrangement.
+2. **`serve()` calls `uvicorn.run(app, …)` and keeps no server object**, so
+   there is nothing for `/api/update/restart` to ask to shut down. It becomes a
+   `uvicorn.Server` whose handle the route can reach; a run with no handle
+   refuses rather than claiming a restart it cannot perform.
+3. **The launcher needs an explicit restart request, not a pending slot.**
+   "Restart later" also leaves `pending-slot.txt`, so the presence of a pending
+   slot cannot mean "relaunch me" — an ordinary exit would relaunch forever. The
+   request is its own launcher-file, carrying the launch nonce of the child that
+   wrote it, consumed once; a stale one is deleted by `fresh_launch` alongside
+   the health marker, for the reason 58c already knows — *a marker's existence
+   is not health*.
+
 **Branch:** `design58/restart`. **Design sections:** the `MICROCLAW_UPDATE_RESTART`
 paragraph and the "Restart now"/"Restart later" paragraph of "Put the updater
 outside the environment it replaces", the REPL half of "Check quietly", "Delivery"
@@ -1677,7 +1704,7 @@ Run after 58c, 2026-08-27. The rows that need 58d/58e are marked as such.
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
 | 58c | 58a, 58b | ~~`design58/two-slots`~~ | `83bbec7` | `01b634f` → `6492083`; codex **2 rounds, 17 findings**, 1 turn killed mid-flight; coordinator `d96d3f3`, `a665a2a`, `f51b4bd`, `2f23854`, `c2dfae5`, `df83d56`, `ea4fbc7`, `d70cb5c`, `07f177b`, `d5fa047` | **PASS** demo 2026-08-27, **3 rounds** — round 1 failed at limb 1 on two real `:make_env` defects; rounds 2+3 all eleven limbs at identical product code | `d1e08df` 2026-08-27 | done `d08433a` 2026-08-27 — §"Post-merge design gate", two rows left open for 58d/58e |
 | 58d | 58a, 58b | ~~`design58/endpoints`~~ | `5044ae9` | `f066718` → `a111ddf`; codex **1 round, 11 findings**, the revision turn killed by an OpenAI usage limit *after* landing every edit; coordinator `a111ddf`, `3e7ce51`, `65d1ded` | **PASS** demo 2026-08-27, **1 round** — 12 PASS / 0 FAIL / 1 NOT EXERCISED (the Restart now button, 58e's); both non-passes were gate defects, re-scored by replaying the returned artifacts | `8529859` 2026-08-27 | done — this section |
-| 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
+| 58e | 58c, 58d | `design58/restart` | `651218f` | assigned 2026-08-27 | demo — not run | — | — |
 
 **Baseline on `main` at `feb0565`, coordinator-measured: 2182 passed / 99
 skipped / 3 warnings** (macOS). Windows reads the same collected total with a
