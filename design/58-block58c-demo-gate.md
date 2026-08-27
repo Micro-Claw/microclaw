@@ -69,10 +69,15 @@ Run this to return the machine to exactly its pre-gate state. It runs unedited
 and prints what it did.
 
 ```powershell
-$root="$env:LOCALAPPDATA\microclaw"; if((Test-Path "$root\env-a") -and -not (Test-Path "$root\env")){Move-Item "$root\env-a" "$root\env"; Write-Host "restored: $root\env"} else {Write-Host "nothing to restore"}; foreach($f in 'active-slot.txt','pending-slot.txt','launch-health.txt','rollback-report.txt','launcher-protocol.txt','launcher.log','update-state.json','Microclaw.cmd','updater-launcher.ps1','58c-gate-evidence.txt'){if(Test-Path "$root\$f"){Remove-Item "$root\$f" -Force; Write-Host "removed: $f"}}; if(Test-Path "$root\env-b"){Remove-Item "$root\env-b" -Recurse -Force; Write-Host "removed: env-b"}; & "$root\env\Scripts\microclaw.exe" install-shortcut
+$root="$env:LOCALAPPDATA\microclaw"; if((Test-Path "$root\env-a") -and -not (Test-Path "$root\env")){Move-Item "$root\env-a" "$root\env"; Write-Host "restored: $root\env"} else {Write-Host "nothing to restore"}; foreach($f in 'active-slot.txt','pending-slot.txt','launch-health.txt','rollback-report.txt','launcher-protocol.txt','launcher.log','update-state.json','Microclaw.cmd','updater-launcher.ps1','58c-gate-evidence.txt'){if(Test-Path "$root\$f"){Remove-Item "$root\$f" -Force; Write-Host "removed: $f"}}; if(Test-Path "$root\env-b"){Remove-Item "$root\env-b" -Recurse -Force; Write-Host "removed: env-b"}; & "$root\env\Scripts\python.exe" -c "pass" 2>$null; if($LASTEXITCODE -eq 0){& "$root\env\Scripts\microclaw.exe" install-shortcut; Write-Host 'ICON RESTORED'} else {Write-Host 'ENVIRONMENT CANNOT START ITS PYTHON - the icon stays broken until the next install.bat run, which detects this and rebuilds the environment. Your settings in %APPDATA%\microclaw are untouched.'}
 ```
 
-The last command rewrites the desktop shortcut and its wrapper against the
-restored environment, so the icon works again. `%APPDATA%\microclaw` is never
-touched by any of this; the gate's own copy of it is in the evidence folder
-under `backup\`.
+The last step rewrites the desktop shortcut and its wrapper against the restored
+environment — but only after proving that environment's Python can actually
+start. A uv venv's `python.exe` is a trampoline onto a uv-managed CPython
+elsewhere on disk, and when that base is replaced or pruned the file is still
+there while every spawn fails with *"uv trampoline failed to spawn Python child
+process"*. That is not damage this gate caused and it is not lost work: the next
+`install.bat` run detects it and rebuilds the environment in place.
+`%APPDATA%\microclaw` is never touched by any of this; the gate's own copy of it
+is in the evidence folder under `backup\`.

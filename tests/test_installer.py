@@ -83,25 +83,36 @@ def test_installer_declares_and_copies_launcher_protocol(bat):
     assert 'scripts\\launcher-protocol.txt" "%MC_HOME%\\launcher-protocol.txt' in bat
 
 
-def test_installer_reuses_an_existing_slot_instead_of_recreating_it(bat):
+def test_installer_reuses_a_slot_only_after_proving_its_python_runs(bat):
     """`uv venv` refuses an existing environment, and migration always hands it one.
 
-    The demo gate's first migration died exactly here: `env` was moved to
-    `env-a`, then `uv venv` was asked to create `env-a` and reported "A virtual
-    environment already exists". The slot is the known-good environment at that
-    moment, so it must be reused, and it must not be cleared -- clearing deletes
-    what the user is still running from.
+    The demo gate's first migration died here: `env` was moved to `env-a`, then
+    `uv venv` was asked to create `env-a` and reported "A virtual environment
+    already exists". Round 2 found the other half on the same machine — a uv
+    venv's python.exe is a trampoline onto a uv-managed CPython, so when that
+    base is pruned the file still exists and every spawn fails. Existence is
+    therefore not the test; execution is. And --clear may only be reached after
+    that probe fails, because an environment that cannot start is the one case
+    where replacing it loses nothing.
     """
     make_env = bat.split("\n:make_env\n", 1)[1].split("rem ---", 1)[0]
-    assert 'if exist "%MC_PY%" (' in make_env
-    reuse = make_env.split('if exist "%MC_PY%" (', 1)[1].split(")", 1)[0]
-    assert "exit /b 0" in reuse and "venv" not in reuse
-    # --clear may only appear where there is no interpreter left to lose.
-    commands = [line for line in make_env.splitlines()
-                if "--clear" in line and not line.strip().startswith("rem")]
-    assert commands == ['    "%UV%" venv --clear --python 3.12 "%MC_ENV%"']
-    guard = make_env.split(commands[0], 1)[0].splitlines()[-2]
-    assert guard.strip() == 'if exist "%MC_ENV%" ('
+    body = "\n".join(line for line in make_env.splitlines()
+                     if not line.strip().startswith("rem"))
+    assert '"%MC_PY%" -c "pass"' in body
+    probe = body.index('"%MC_PY%" -c "pass"')
+    reuse = body.index("exit /b 0")
+    assert probe < reuse, "the reuse path must run the interpreter before trusting it"
+    # Every --clear is a command, and each one is guarded by a failure.
+    clears = [line for line in body.splitlines() if "--clear" in line]
+    assert clears and all('"%UV%" venv --clear --python 3.12 "%MC_ENV%"' in line
+                          for line in clears)
+    for line in clears:
+        preceding = [item.strip() for item in body.split(line, 1)[0].splitlines()
+                     if item.strip().startswith("if ")]
+        assert preceding[-1] in ("if not errorlevel 1 (", 'if exist "%MC_ENV%" ('), (
+            f"--clear reached under {preceding[-1]!r}: it may only follow a Python "
+            "that failed to run, or a directory with no Python at all"
+        )
 
 
 def test_labels_and_calls_agree(bat):

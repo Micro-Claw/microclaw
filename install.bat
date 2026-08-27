@@ -162,10 +162,28 @@ rem An upgrade and a migration both arrive here with the slot already present,
 rem and `uv venv` refuses to reuse an existing environment -- which is how the
 rem first migration this installer ever performed failed on the demo machine.
 rem The slot IS the known-good environment at that point, so reuse it and let
-rem `uv pip install --python` upgrade in place. --clear is deliberately not the
-rem default: it would delete the one environment the user still runs from.
+rem `uv pip install --python` upgrade in place.
+rem
+rem But an interpreter that EXISTS is not an interpreter that RUNS. A uv venv's
+rem python.exe is a trampoline onto a uv-managed CPython elsewhere on the disk;
+rem when that base is replaced or pruned, the file is still there and every
+rem attempt to spawn it fails with "uv trampoline failed to spawn Python child
+rem process". Reusing that environment would carry the fault forward into
+rem `uv pip install`. So the test is execution, not existence.
+rem
+rem --clear is reached only after the interpreter has failed to run, which is
+rem the one condition under which nothing is lost by replacing it: an
+rem environment that cannot start is not one the user is still running from.
 if exist "%MC_PY%" (
-    echo   [4/7] Reusing the existing environment at %MC_ENV%.
+    "%MC_PY%" -c "pass" >nul 2>&1
+    if not errorlevel 1 (
+        echo   [4/7] Reusing the working environment at %MC_ENV%.
+        exit /b 0
+    )
+    echo   [4/7] The environment at %MC_ENV% has a Python that cannot start.
+    echo         Rebuilding it. Your settings in %APPDATA%\microclaw are untouched.
+    "%UV%" venv --clear --python 3.12 "%MC_ENV%"
+    if errorlevel 1 exit /b 1
     exit /b 0
 )
 if exist "%MC_ENV%" (
