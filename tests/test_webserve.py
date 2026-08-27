@@ -328,10 +328,16 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
     session.store = ConversationStore(AuditLog(None, enabled=False))
     candidate = updates.load_state(path)["last_success"]["candidate"]
     monkeypatch.setattr(updates, "check_for_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        updates, "materialize_public",
+        lambda state, selected, source: source.mkdir(parents=True) or source,
+    )
+    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(updates, "stage_inactive_slot", lambda *args, **kwargs: None)
     real_start = threading.Thread.start
     monkeypatch.setattr(
         threading.Thread, "start",
-        lambda thread: None if thread.name == "microclaw-update-stage" else real_start(thread),
+        lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
     )
     app = TestClient(build_app(session))
     assert app.post("/api/update/check").status_code == 200
@@ -342,6 +348,7 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
     assert not any("update" in name for name in tools.TOOL_REGISTRY)
     assert not any("update" in schema["name"] for schema in TOOLS_CACHED)
     assert all(fn.__module__ != updates.__name__ for fn in tools.TOOL_REGISTRY.values())
+    assert all("updates" not in fn.__code__.co_names for fn in tools.TOOL_REGISTRY.values())
     history = webserve._durable_history(session)
     assert history == []
     serialized = json.dumps(session.store.audit.records)

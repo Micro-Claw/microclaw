@@ -250,13 +250,16 @@
   }
 
   async function refreshUpdate() {
-    const res = await apiFetch("/api/update");
-    if (res.ok) {
-      const state = await res.json();
-      showUpdate(state);
-      scheduleUpdatePoll(!!state.staging);
-    } else {
-      scheduleUpdatePoll(false);
+    let fast = false;
+    try {
+      const res = await apiFetch("/api/update");
+      if (res.ok) {
+        const state = await res.json();
+        showUpdate(state);
+        fast = !!state.staging;
+      }
+    } finally {
+      scheduleUpdatePoll(fast);
     }
   }
 
