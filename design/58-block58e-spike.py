@@ -32,14 +32,14 @@ CONFIG = Path(os.environ["APPDATA"]) / "microclaw" / "safety_config.yaml"
 TIMEOUT = 45
 
 
-def timed(label: str, command: list[str], *, env=None, stdin_null=True) -> dict:
+def timed(label: str, command: list[str], *, env=None, stdin_null=True, cwd=None) -> dict:
     full = dict(os.environ)
     full.update(env or {})
     started = time.monotonic()
     try:
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=TIMEOUT,
-            env=full, stdin=subprocess.DEVNULL if stdin_null else None,
+            env=full, stdin=subprocess.DEVNULL if stdin_null else None, cwd=cwd,
         )
         elapsed = time.monotonic() - started
         result = {
@@ -62,10 +62,59 @@ def timed(label: str, command: list[str], *, env=None, stdin_null=True) -> dict:
     return result
 
 
+#: The two edits that fix the hang, looked for in the code a slot actually runs.
+FIX_MARKERS = {
+    "config.py": "stdin=subprocess.DEVNULL",
+    "__main__.py": 'args.command == "check-config"',
+}
+
+
+def slot_code_identity(slot: str) -> dict:
+    """Which code is installed in this slot, and does it carry the fix?
+
+    Spike round 2 could not distinguish "the fix does not work" from "the slot
+    still holds the old build", because nothing recorded what was installed.
+    One run should answer that without a second trip.
+    """
+    site = ROOT / f"env-{slot}" / "Lib" / "site-packages" / "microclaw"
+    marker = ROOT / f"env-{slot}" / "microclaw-slot.json"
+    identity = {"slot": slot, "commit": None, "has_fix": {}}
+    try:
+        identity["commit"] = json.loads(marker.read_text(encoding="utf-8")).get("commit")
+    except (OSError, ValueError):
+        pass
+    for name, needle in FIX_MARKERS.items():
+        try:
+            identity["has_fix"][name] = needle in (site / name).read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            identity["has_fix"][name] = None
+    return identity
+
+
+def probe_checkout(repo: Path) -> list[dict]:
+    """Run the *checkout's* CLI in the configuration that hangs.
+
+    This is the decisive probe: it exercises the fixed source directly, so it
+    answers whether the fix works on this machine without reinstalling anything.
+    """
+    print("\n0. The checkout's own CLI (no install needed)\n")
+    command = [sys.executable, "-m", "microclaw",
+               "--safety-config", str(CONFIG), "check-config", "--json"]
+    return [
+        timed("checkout check-config --json  (MICROCLAW_FROM_SHORTCUT=1, stdin=NUL)",
+              command, env={"MICROCLAW_FROM_SHORTCUT": "1"}, cwd=repo),
+        timed("checkout check-config --json  (MICROCLAW_FROM_SHORTCUT=1, stdin inherited)",
+              command, env={"MICROCLAW_FROM_SHORTCUT": "1"}, stdin_null=False, cwd=repo),
+    ]
+
+
 def probe_slots() -> list[dict]:
     print("\n1-3. Slot CLI probes (read-only; check-config writes nothing)\n")
     results = []
     for slot in ("a", "b"):
+        identity = slot_code_identity(slot)
+        print(f"  env-{slot}: commit={identity['commit']} fix present={identity['has_fix']}")
         exe = ROOT / f"env-{slot}" / "Scripts" / "microclaw.exe"
         python = ROOT / f"env-{slot}" / "Scripts" / "python.exe"
         if not exe.is_file():
@@ -131,8 +180,24 @@ def main() -> int:
     print(f"config:       {CONFIG}  (exists: {CONFIG.is_file()})")
     active = (ROOT / "active-slot.txt")
     print(f"active slot:  {active.read_text().strip() if active.is_file() else 'unknown'}")
-    report = {"slots": probe_slots(), "replace": probe_replace_contention()}
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=False)
+    print(f"checkout:     {repo} @ {head.stdout.strip()[:12] or 'unknown'}")
+    report = {
+        "checkout": {"path": str(repo), "head": head.stdout.strip(),
+                     "probes": probe_checkout(repo)},
+        "slot_identity": [slot_code_identity(slot) for slot in ("a", "b")],
+        "slots": probe_slots(),
+        "replace": probe_replace_contention(),
+    }
     out = Path.home() / "Documents" / "58e-spike.json"
+    verdict = report["checkout"]["probes"][-1]
+    print("\nVERDICT: the fix " + (
+        "WORKS on this machine (the checkout answered in "
+        f"{verdict['seconds']}s in the configuration that used to hang)."
+        if verdict["returncode"] == 0 else
+        "DID NOT WORK: the checkout still hangs in that configuration."))
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\nWrote {out}. Send that file back.")
     return 0
