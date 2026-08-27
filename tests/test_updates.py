@@ -728,3 +728,44 @@ def test_update_facility_is_not_an_agent_tool_or_schema():
 def test_top_level_parser_defines_no_update_check_beside_safety_config():
     source = (Path(__file__).parents[1] / "microclaw" / "__main__.py").read_text(encoding="utf-8")
     assert source.index('"--safety-config"') < source.index('"--no-update-check"') < source.index("sub = parser.add_subparsers")
+
+
+def test_restart_request_is_consumed_only_by_matching_child(tmp_path):
+    nonce = "child_nonce_123456"
+    assert updates.consume_restart_request(tmp_path, nonce) is False
+    updates.write_restart_request(tmp_path, "different_nonce_1234")
+    assert updates.consume_restart_request(tmp_path, nonce) is False
+    assert not (tmp_path / updates.RESTART_REQUEST_NAME).exists()
+    updates.write_restart_request(tmp_path, nonce)
+    assert updates.consume_restart_request(tmp_path, nonce) is True
+    assert updates.consume_restart_request(tmp_path, nonce) is False
+
+
+def test_fresh_launch_removes_stale_restart_request(tmp_path):
+    stale = tmp_path / updates.RESTART_REQUEST_NAME
+    stale.write_text("stale_nonce_123456\n", encoding="ascii")
+    updates.fresh_launch(tmp_path, "a", nonce="fresh_nonce_123456")
+    assert not stale.exists()
+
+
+def test_activation_and_rollback_reconcile_commit_from_slot_marker(tmp_path):
+    old, new = "a" * 40, "b" * 40
+    updates.write_state(updates.public_provenance(old), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    updates.write_slot_marker(old, 1, executable=tmp_path / "env-a" / "Scripts" / "python.exe")
+    updates.write_slot_marker(new, 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == new
+    updates.rollback_slot(tmp_path, "b", "a")
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == old
+
+
+def test_unknown_slot_marker_does_not_replace_arranged_installed_commit(tmp_path):
+    arranged = "c" * 40
+    updates.write_state(updates.public_provenance(arranged), tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    updates.write_slot_marker("unknown", 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
+    updates.activate_pending(tmp_path, 1)
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == arranged

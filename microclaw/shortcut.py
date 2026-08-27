@@ -192,6 +192,8 @@ def pause_on_exit() -> None:
     import atexit
 
     def _wait():
+        if os.environ.get("MICROCLAW_UPDATE_RESTART") == "1":
+            return
         try:
             input("\nPress Enter to close this window...")
         except (EOFError, KeyboardInterrupt):

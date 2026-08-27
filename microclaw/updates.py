@@ -54,6 +54,7 @@ LAUNCH_SLOT_ENV = "MICROCLAW_LAUNCH_SLOT"
 LAUNCH_ROOT_ENV = "MICROCLAW_LAUNCH_ROOT"
 LAUNCH_PROTOCOL_ENV = "MICROCLAW_LAUNCHER_PROTOCOL"
 LAUNCHER_PROTOCOL_NAME = "launcher-protocol.txt"
+RESTART_REQUEST_NAME = "restart-request.txt"
 
 
 class UpdateError(Exception):
@@ -113,6 +114,33 @@ def candidate_launcher_protocol(source: str | Path) -> int:
     return value
 
 
+def valid_pending_slot(root: str | Path, launcher_protocol: int) -> str | None:
+    """Return the distinct pending slot only when its marker fits this launcher."""
+    base = Path(root)
+    active = _read_slot_text(base / ACTIVE_SLOT_NAME, required=True)
+    pending = _read_slot_text(base / PENDING_SLOT_NAME, required=False)
+    if pending is None or pending == active:
+        return None
+    marker = read_slot_marker(executable=base / f"env-{pending}" / "Scripts" / "python.exe")
+    required = marker.get("required_launcher_protocol") if marker else None
+    if type(required) is not int or required > launcher_protocol:
+        raise UpdateError("pending slot is incompatible with the installed launcher")
+    return pending
+
+
+def _reconcile_installed_commit(base: Path, slot: str) -> None:
+    marker = read_slot_marker(executable=base / f"env-{slot}" / "Scripts" / "python.exe")
+    commit = marker.get("commit") if marker else None
+    if commit == "unknown":
+        return
+    if not isinstance(commit, str) or not _SHA.fullmatch(commit):
+        raise UpdateError("active slot has no valid commit metadata")
+    state = load_state(base / STATE_NAME)
+    if state is not None:
+        state["installed_commit"] = commit.lower()
+        write_state(state, base / STATE_NAME)
+
+
 def activate_pending(root: str | Path, launcher_protocol: int) -> tuple[str, str | None]:
     """Consume pending before launch; invalid candidates leave known-good active."""
     base = Path(root)
@@ -126,21 +154,17 @@ def activate_pending(root: str | Path, launcher_protocol: int) -> tuple[str, str
         return active, None
     if pending is None:
         return active, None
-    if pending == active:
-        pending_path.unlink()
-        return active, None
     try:
-        marker = read_slot_marker(
-            executable=base / f"env-{pending}" / "Scripts" / "python.exe"
-        )
-        required = marker.get("required_launcher_protocol") if marker else None
-        if type(required) is not int or required > launcher_protocol:
-            raise UpdateError("pending slot is incompatible with the installed launcher")
+        pending = valid_pending_slot(base, launcher_protocol)
     except (UpdateError, OSError, UnicodeError):
+        pending_path.unlink(missing_ok=True)
+        return active, None
+    if pending is None:
         pending_path.unlink(missing_ok=True)
         return active, None
     _write_slot_text(active_path, pending)
     pending_path.unlink()
+    _reconcile_installed_commit(base, pending)
     return pending, active
 
 
@@ -155,7 +179,29 @@ def fresh_launch(root: str | Path, slot: str, *, nonce: str | None = None) -> tu
         raise UpdateError("invalid launch nonce")
     marker = Path(root) / HEALTH_NAME
     marker.unlink(missing_ok=True)
+    (Path(root) / RESTART_REQUEST_NAME).unlink(missing_ok=True)
     return token, marker
+
+
+def write_restart_request(root: str | Path, nonce: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", nonce):
+        raise UpdateError("invalid launch nonce")
+    target = Path(root) / RESTART_REQUEST_NAME
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_text(nonce + "\n", encoding="ascii")
+    os.replace(temporary, target)
+    return target
+
+
+def consume_restart_request(root: str | Path, nonce: str) -> bool:
+    """Consume one request, accepting it only for the child that just exited."""
+    path = Path(root) / RESTART_REQUEST_NAME
+    try:
+        requested = path.read_text(encoding="ascii").strip()
+    except (FileNotFoundError, OSError, UnicodeError):
+        return False
+    path.unlink(missing_ok=True)
+    return requested == nonce
 
 
 def health_matches(path: str | Path, nonce: str) -> bool:
@@ -223,6 +269,7 @@ def rollback_slot(root: str | Path, failed: str, previous: str | None) -> str:
         raise UpdateError("rollback requires distinct valid failed and previous slots")
     base = Path(root)
     _write_slot_text(base / ACTIVE_SLOT_NAME, previous)
+    _reconcile_installed_commit(base, previous)
     (base / ROLLBACK_NAME).write_text(
         f"Microclaw rolled back from slot {failed} to slot {previous}.\n", encoding="utf-8"
     )
@@ -830,6 +877,76 @@ def materialize_public(
 
 def checks_enabled(no_update_check: bool = False) -> bool:
     return not no_update_check and os.environ.get("MICROCLAW_UPDATE_CHECK") != "0"
+
+
+def start_due_check(no_update_check: bool = False):
+    """Start the shared non-blocking due check used by serve and the REPL."""
+    if not checks_enabled(no_update_check):
+        return None
+    import threading
+    thread = threading.Thread(
+        target=check_for_update, kwargs={"no_update_check": no_update_check},
+        name="microclaw-update-check", daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def terminal_update_notice(*, state_file: str | Path | None = None) -> tuple[str | None, Candidate | None]:
+    """Read cached state only and return the REPL's single optional notice."""
+    path = Path(state_file) if state_file is not None else state_path()
+    try:
+        state = load_state(path)
+    except UpdateError:
+        return None, None
+    if state is None:
+        return None, None
+    success = state.get("last_success")
+    raw = success.get("candidate") if isinstance(success, dict) else None
+    candidate = None
+    if isinstance(raw, dict):
+        try:
+            candidate = Candidate(**raw)
+        except (TypeError, ValueError):
+            pass
+    dismissal = state.get("dismissal")
+    if candidate and isinstance(dismissal, dict) and dismissal.get("commit") == candidate.sha:
+        if dismissal.get("action") == "skip" or (
+            dismissal.get("action") == "later"
+            and isinstance(dismissal.get("until"), (int, float))
+            and time.time() < dismissal["until"]
+        ):
+            candidate = None
+    if candidate:
+        return f"Update available: {candidate.sha[:7]} — {candidate.subject}", candidate
+    if (state.get("provenance") == "public-head"
+            and state.get("last_error") == "repository is not public (404)"):
+        return "Automatic updates become available when the repository is public.", None
+    return None, None
+
+
+def stage_cached_candidate(candidate: Candidate, *, config_path: str | Path | None = None) -> Path:
+    """Materialize and stage the cached candidate synchronously for the REPL."""
+    path = state_path()
+    state = load_state(path)
+    if state is None:
+        raise UpdateError("updates are unavailable in this installation")
+    root = path.parent
+    downloads = root / "downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="microclaw-stage-", dir=downloads))
+    try:
+        source = work / "source"
+        materialize = materialize_clone if candidate.source == "clone" else materialize_public
+        materialize(state, candidate, source)
+        uv = shutil.which("uv")
+        if not uv:
+            raise UpdateError("the update could not be built: uv was not found")
+        return stage_inactive_slot(
+            root, source, candidate, uv_executable=uv, config_path=config_path,
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def check_for_update(

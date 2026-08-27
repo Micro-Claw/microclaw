@@ -194,6 +194,32 @@ def test_pause_survives_a_closed_stdin(monkeypatch):
     captured[0]()          # must not raise
 
 
+@pytest.mark.parametrize("restart_at_registration,restart_at_run,expected", [
+    (False, False, 1),
+    (True, False, 1),
+    (False, True, 0),
+])
+def test_shortcut_pause_consults_restart_flag_when_handler_runs(
+    monkeypatch, restart_at_registration, restart_at_run, expected,
+):
+    monkeypatch.setenv(shortcut.FROM_SHORTCUT_ENV, "1")
+    if restart_at_registration:
+        monkeypatch.setenv("MICROCLAW_UPDATE_RESTART", "1")
+    else:
+        monkeypatch.delenv("MICROCLAW_UPDATE_RESTART", raising=False)
+    handlers = []
+    prompts = []
+    monkeypatch.setattr("atexit.register", handlers.append)
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt))
+    shortcut.pause_on_exit()
+    if restart_at_run:
+        monkeypatch.setenv("MICROCLAW_UPDATE_RESTART", "1")
+    else:
+        monkeypatch.delenv("MICROCLAW_UPDATE_RESTART", raising=False)
+    handlers[0]()
+    assert len(prompts) == expected
+
+
 # ---- platform gate ----
 
 @pytest.mark.skipif(os.name == "nt", reason="checks the non-Windows branch")

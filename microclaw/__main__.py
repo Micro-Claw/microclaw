@@ -130,6 +130,9 @@ def run_session(args):
     # which is what a desktop shortcut loads. Either way the file must carry
     # `reviewed: true`, so a session still cannot start under the example's
     # fictional limits (design/14 §6, design/17 v2).
+    from microclaw import updates
+    no_update_check = getattr(args, "no_update_check", False)
+    updates.start_due_check(no_update_check)
     parsed_safety = load_safety_config_or_exit(args.safety_config)
     guard = SafetyGuard(parsed_safety.constraints)
 
@@ -158,6 +161,18 @@ def run_session(args):
         sys.exit(str(exc))
 
     print("Connected. Type your instructions (type 'exit' or press Ctrl-C to quit).\n")
+    notice, candidate = updates.terminal_update_notice()
+    if notice:
+        print(notice)
+    if (candidate is not None and sys.stdin.isatty()
+            and updates.checks_enabled(no_update_check)):
+        if input("Update now? [y/N] ").strip().casefold() == "y":
+            try:
+                updates.stage_cached_candidate(candidate, config_path=args.safety_config)
+            except updates.UpdateError as exc:
+                print(f"Update could not be staged: {exc}")
+            else:
+                print("Update staged. It will activate at the next desktop launch.")
 
     history_fn_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_microclaw_history.jsonl"
     removed = prune_transcripts(".", getattr(args, "history_retention_days", None))

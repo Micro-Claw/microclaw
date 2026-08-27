@@ -7,6 +7,7 @@ echoed back, and a refusal to bind beyond localhost without an opt-in.
 """
 import contextlib
 import json
+import os
 import socket
 import threading
 import time
@@ -300,13 +301,50 @@ def test_update_restart_refuses_each_non_idle_condition(session, tmp_path, monke
     assert busy.split("-")[0] in response.json()["detail"].lower()
 
 
-def test_restart_seam_is_honest_when_idle_and_launcher_owned(session, tmp_path, monkeypatch):
+def test_restart_without_server_handle_refuses_instead_of_claiming_shutdown(session, tmp_path, monkeypatch):
     _managed_updates(tmp_path, monkeypatch)
     (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *args: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
     monkeypatch.setattr(updates, "validate_launch_environment", lambda: (tmp_path, "a", "nonce"))
     response = TestClient(build_app(session)).post("/api/update/restart")
-    assert response.status_code == 501
-    assert response.json() == {"restart_requested": False, "pending_58e": True}
+    assert response.status_code == 409
+    assert "restart later" in response.json()["detail"].lower()
+
+
+def test_restart_writes_request_then_flag_then_requests_shutdown(session, tmp_path, monkeypatch):
+    _managed_updates(tmp_path, monkeypatch)
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *args: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
+    monkeypatch.setattr(
+        updates, "validate_launch_environment",
+        lambda: (tmp_path, "a", "child_nonce_123456"),
+    )
+    events = []
+    monkeypatch.setattr(
+        updates, "write_restart_request",
+        lambda root, nonce: events.append(("write", root, nonce)),
+    )
+
+    class Server:
+        @property
+        def should_exit(self):
+            return False
+
+        @should_exit.setter
+        def should_exit(self, value):
+            events.append(("shutdown", os.environ.get("MICROCLAW_UPDATE_RESTART"), value))
+
+    app = build_app(session)
+    app.state.uvicorn_server = Server()
+    response = TestClient(app).post("/api/update/restart")
+    assert response.status_code == 200
+    assert response.json() == {"restart_requested": True}
+    assert events == [
+        ("write", tmp_path, "child_nonce_123456"),
+        ("shutdown", "1", True),
+    ]
 
 
 def test_later_and_skip_are_scoped_to_one_commit(session, tmp_path, monkeypatch):

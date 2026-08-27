@@ -48,6 +48,7 @@ def test_powershell_launcher_has_activation_health_and_rollback_branches():
     text = PS1.read_text(encoding="utf-8")
     for mechanism in ("active-slot.txt", "activate_pending", "fresh_launch",
                       "wait_for_launcher_health", "rollback_slot", "consume_rollback_report",
+                      "consume_restart_request", "while ($true)",
                       "if (-not $healthy)", "$child.WaitForExit()"):
         assert mechanism in text
     assert "ConvertFrom-Json" not in text

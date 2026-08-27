@@ -717,8 +717,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         root = path.parent
         pending = None
         try:
-            pending = updates._read_slot_text(root / updates.PENDING_SLOT_NAME, required=False)
-        except updates.UpdateError:
+            pending = updates.valid_pending_slot(root, updates.installed_launcher_protocol(root))
+        except (updates.UpdateError, OSError):
             pending = None
         automatic_restart = False
         if pending is not None:
@@ -825,7 +825,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         return JSONResponse({"dismissed": True})
 
     @app.post("/api/update/restart")
-    async def post_update_restart():
+    async def post_update_restart(request: Request):
         if session.lock.locked():
             raise HTTPException(409, "An agent turn is in progress.")
         ledger = tools._existing_acquisition_ledger(session.ctrl)
@@ -839,9 +839,17 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         status = update_status()
         if not status.get("automatic_restart"):
             raise HTTPException(409, "Automatic restart is not available; restart later.")
-        # 58e will request graceful shutdown here. Keep this response honest
-        # until that lifecycle seam is implemented.
-        return JSONResponse({"restart_requested": False, "pending_58e": True}, status_code=501)
+        server = getattr(request.app.state, "uvicorn_server", None)
+        if server is None:
+            raise HTTPException(409, "Automatic restart is not available; restart later.")
+        launch = updates.validate_launch_environment()
+        if launch is None:
+            raise HTTPException(409, "Automatic restart is not available; restart later.")
+        root, _slot, nonce = launch
+        updates.write_restart_request(root, nonce)
+        os.environ["MICROCLAW_UPDATE_RESTART"] = "1"
+        server.should_exit = True
+        return JSONResponse({"restart_requested": True})
 
     @app.post("/api/prompt")
     async def post_prompt(p: Prompt, request: Request):
@@ -1247,12 +1255,7 @@ def serve(args):
     # One due check per server start, never on the startup/request path.
     # check_for_update owns the interval, jitter, managed-install and opt-out rules.
     no_update_check = getattr(args, "no_update_check", False)
-    if updates.checks_enabled(no_update_check):
-        threading.Thread(
-            target=updates.check_for_update,
-            kwargs={"no_update_check": no_update_check},
-            name="microclaw-update-check", daemon=True,
-        ).start()
+    updates.start_due_check(no_update_check)
     session = build_session(args, config_result=config_result)
     if token:
         _add_audit_secret(session, token)
@@ -1265,6 +1268,10 @@ def serve(args):
     tools.CONFIRM_FN = session.confirm
     app = build_app(session, remote=remote, api_token=token,
                     behind_tls_proxy=behind_tls_proxy, auth_state=auth_state)
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=args.host, port=args.web_port, log_level="warning",
+    ))
+    app.state.uvicorn_server = server
 
     if remote:
         print(
@@ -1288,7 +1295,7 @@ def serve(args):
     # Audit records are already flushed message-by-message. Every exit path
     # reports declared illumination without changing rig state (design/38 F9).
     try:
-        uvicorn.run(app, host=args.host, port=args.web_port, log_level="warning")
+        server.run()
     finally:
         from microclaw.__main__ import report_declared_illumination_on_exit
         report_declared_illumination_on_exit(
