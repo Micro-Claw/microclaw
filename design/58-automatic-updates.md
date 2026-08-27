@@ -1238,6 +1238,60 @@ this limb fail" is answered structurally rather than by discipline. 58a's
 unfalsifiable opt-out limb could not have been written this way. Consider it for
 58c's gate.
 
+## 58c demo gate round 1 — 2026-08-27, FAILED at limb 1, and it was the product
+
+**The installer could not perform the migration it exists to perform.**
+`:migrate_layout` moves `%LOCALAPPDATA%\microclaw\env` to `env-a`; `:make_env`
+then asked `uv venv` to create `env-a`, which refuses an existing environment —
+*"A virtual environment already exists"*. So the **first updater-capable
+`install.bat` failed on exactly the machine it was written for**, an existing
+install being migrated, and every later phase failed behind it: no launcher
+files were written, the desktop icon still named the moved-away `env`, and the
+icon was dead until the operator restored.
+
+Two things make this worth writing down beyond the one-line fix (reuse the slot;
+`uv pip install --python` upgrades in place; `--clear` only where there is no
+interpreter left to lose).
+
+- **Every test in the block passed while this was true.** `install.bat` has 26
+  structural tests and not one of them reads `:make_env` in the light of what
+  `:migrate_layout` now leaves behind. The two subroutines were each correct and
+  their *composition* was not, which is a shape no amount of grepping one
+  subroutine finds. When a block adds a step **before** an existing one, test the
+  state the new step hands over, not just the new step.
+- **A gate whose first limb is the product's own first action is worth more than
+  its remaining limbs put together.** Nothing downstream ran, and that cost
+  nothing: the failure was in the first ninety seconds and it was unambiguous.
+
+**What the round did establish**, scored from the artifacts rather than the
+verdict:
+
+- the five phases each failed **independently** and none printed a pass — 58a's
+  cascade defect did not recur, and `results.json` separates FAIL from NOT
+  EXERCISED;
+- item 12a's notice fired on **two** environments by **two** different routes:
+  the operator's own `D:\Code\microclaw\.venv` through `PATH`, and the gate's
+  fixture through `CONDA_PREFIX`. That is the item's real evidence and it
+  survived the round;
+- the coordinator's pre-flight refusal ran and passed (`machine config
+  classification: ready`), so the gate did not hang on `install.bat`'s setup
+  server;
+- the one PASS — APPDATA unchanged — **proves little this round**, because the
+  installer never reached the code that writes anything. Recorded as weak, not as
+  evidence.
+
+**One gate defect, and it is the fixture rule again.** The non-uv limb reported
+the fixture importing `D:\Code\microclaw\microclaw` and called that a changed
+environment. `python -c` puts the working directory first on `sys.path` and the
+gate runs from the checkout, so the *interpreter* was the fixture's and the
+*package* was ours. Every `python -c` that imports microclaw now runs with `-I`
+from a cwd outside the checkout.
+
+**And the block that can brick an install shipped without a way back.** The
+backup existed; the instruction to use it did not. The runbook now carries a
+literal restore command, because "expected during a failed gate and fully
+reversible" is only true if the operator is told how.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
@@ -1300,7 +1354,7 @@ Recorded rather than inferred, the way design/56 records its Nikon limbs.
 | 58-P | public flip | n/a (repo config) | — | **not a blocker** — deferred to the flip by operator decision 2026-08-27 | n/a | — | — |
 | 58a | — | ~~`design58/discovery`~~ | `4103d36` | `84d49cb` → `7c3a71f`; coordinator `9c087e2`, `b2f1e58`, `70650f0`, `1ccb677`; codex, **4 rounds, 13 findings** | **PASS** demo, 2026-08-26, **4 rounds** — 3 failed on gate defects, all 9 limbs on the 4th | `33028e9` 2026-08-26 | done — this section |
 | 58b | — | ~~`design58/classification`~~ | `1a582dc` | `a462032` → `f50fd82`; coordinator `30b0d9b`; codex, **2 rounds, 6 findings**, 3 turns killed mid-flight | **PASS** demo 2026-08-27 — 16 PASS / 0 FAIL / 1 NOT EXERCISED; verdict INCOMPLETE **by design**, awaiting 58c | `3baec05` 2026-08-27 | done — this section |
-| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | `01b634f` → `1a01cdd`; coordinator `d96d3f3`, `a665a2a`, `1a01cdd`; codex, **2 rounds, 17 findings**, 1 turn killed mid-flight | **pushed 2026-08-27, awaiting demo** — five phases, `design/58-block58c-demo-gate.ps1` | — | — |
+| 58c | 58a, 58b | `design58/two-slots` | `83bbec7` | `01b634f` → `9f1b781`; coordinator `d96d3f3`, `a665a2a`, `1a01cdd`, `f51b4bd`, `9f1b781`; codex, **2 rounds, 17 findings**, 1 turn killed mid-flight | **round 1 FAILED** demo 2026-08-27 at limb 1 — `uv venv` refuses the migrated slot; fixed `f51b4bd`, awaiting round 2 | — | — |
 | 58d | 58a, 58b | `design58/endpoints` | — | — | demo — not run | — | — |
 | 58e | 58c, 58d | `design58/restart` | — | — | demo — not run | — | — |
 
@@ -1359,9 +1413,9 @@ State:
   demo gate ran 16 PASS / 0 FAIL / **1 NOT EXERCISED**, verdict INCOMPLETE — the
   correct result, not a failure. `main` measures **2244 passed / 99 skipped / 3
   warnings** (macOS, coordinator-measured), from 2220.
-- **58c is pushed and awaiting its demo gate** (2026-08-27) on
-  `design58/two-slots`, coordinator-measured at **2270 passed / 99 skipped / 3
-  warnings** (macOS), from 2244. Two review rounds, seventeen findings. Its gate
+- **58c failed its first demo gate and is fixed, awaiting round 2** (2026-08-27)
+  on `design58/two-slots`, coordinator-measured at **2271 passed / 99 skipped / 3
+  warnings** (macOS), from 2244. See §"58c demo gate round 1". Two review rounds, seventeen findings. Its gate
   ships as a runbook **and** a program — see §"Gate — demo machine, a runbook
   **and** a program" — and the program runs in five phases (`Prepare`,
   `Healthy`, `Closed`, `Rollback`, `Verify`), each one command, with the human
