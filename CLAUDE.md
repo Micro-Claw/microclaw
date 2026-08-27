@@ -190,14 +190,21 @@ because a block looks small.
    unavailable or its automatic approval review cannot authorize a required
    action, stop and report instead of doing the implementation inline.
 
-   **Two things the runner has not proved yet** (2026-08-24 — delete this
-   paragraph once the first real block has shown both). A revision turn's
-   automatic reviewer is *inherited* from the start turn's saved session, not
-   established by the wrapper's `-c` declaration; no probe has made a revision
-   actually request an escalation, so watch the first one that does and confirm
-   it is answered rather than left hanging. And `--strict-config` guards the
-   revise path only, so on a machine whose `config.toml` carries a field this
+   **Two things the runner still has not proved** (2026-08-24; rechecked after
+   58a, 58b and 58c, 2026-08-27 — three blocks and seven revision turns have not
+   produced either condition, so keep watching rather than deleting). A revision
+   turn's automatic reviewer is *inherited* from the start turn's saved session,
+   not established by the wrapper's `-c` declaration; no turn has yet made a
+   revision actually request an escalation, so watch the first one that does and
+   confirm it is answered rather than left hanging. And `--strict-config` guards
+   the revise path only, so on a machine whose `config.toml` carries a field this
    Codex version rejects, revisions fail while starts keep working.
+
+   **What three blocks did show**: turns get killed mid-flight — five so far. A
+   turn that dies *early* is discarded; one that dies *at the end*, with its
+   edits landed, is preserved, committed by the coordinator with a message
+   saying plainly that it is unreviewed, and handed to the next turn with that
+   said in writing. Verify it yourself before believing any of it.
 3. **Review what comes back.** Read the diff, not the summary. Re-run the suite
    yourself rather than accepting the reported count. Return findings to the
    implementer and repeat 2–3 until the code is right. Rejecting an

@@ -1522,30 +1522,56 @@ different skip split. **Gate on zero failures, never the count.**
 
 Everything needed is on `main`.
 
-**State as of 2026-08-27. 58c is ASSIGNED — see the ledger. 58d is next, and
-depends only on 58a and 58b.**
+**State as of 2026-08-27. 58a, 58b and 58c are MERGED. Next block is 58d**, which
+depends only on 58a and 58b. 58e depends on 58d and on 58c.
 
-### Read these before assigning 58c, in this order
+### Read these before assigning 58d, in this order
 
-1. `CLAUDE.md` §"The block workflow" — authoritative, and **58a rewrote step 6**.
-   Also its §"six contracts" preamble, whose fixture rule 58a added.
-2. This file: §"58a demo gate round 1", §"58b's gate is expected to report
-   INCOMPLETE", then the `## 58c` checklist section.
-3. `design/prompts.md`, the design/58 entries — the 58b one carries the runner
-   interruption recovery and the `fails_if` idiom.
-4. **The two gate scripts on `main` are the template**:
-   `design/58-block58a-demo-gate.py` and `design/58-block58b-demo-gate.py`, each
-   with its thin `.ps1`. Do not design 58c's gate from scratch — 58b's `limb`
-   decorator takes a **mandatory `fails_if`** argument recorded into every
-   result, which is the strongest thing either block produced. Copy it.
-5. Code 58c touches: `install.bat`, `microclaw/shortcut.py`, `microclaw/paths.py`,
-   `microclaw/webserve.py:serve`, and `microclaw/updates.py`'s slot-marker
-   functions (58a shipped `slot_marker_path` / `write_slot_marker` /
-   `read_slot_marker` already — 58c consumes them, it does not rewrite them).
+1. `CLAUDE.md` §"The block workflow" — authoritative; **58a rewrote step 6** and
+   **58c added §"Four rules the updater block paid for"**. Read its §"six
+   contracts" preamble too, whose fixture rule 58a added.
+2. This file: §"58c demo gate rounds 2 and 3" (five gate defects, and why a
+   passing limb can prove less than its item claims), then the `## 58d`
+   checklist section. §"Check quietly, ask where the user already is" is 58d's
+   specification and is more precise than the checklist.
+3. `design/prompts.md`, the design/58 entries — 58b's carries the runner
+   interruption recovery and the `fails_if` idiom; **58c's carries the five gate
+   defects and the replay habit**, which is the part worth copying.
+4. **The three gate scripts on `main` are the template**, in ascending order of
+   quality: `design/58-block58a-demo-gate.py`, `-58b-`, `-58c-`, each with a thin
+   `.ps1`. Do not design 58d's gate from scratch. From 58b take the **mandatory
+   `fails_if`** argument on the `limb` decorator; from 58c take the phase ledger
+   (`phases.json`), the `Verify` preflight that names the commands still owed,
+   `need()` so absent evidence reports NOT EXERCISED rather than FAIL, and the
+   habit of **replaying returned evidence through a changed scorer** before
+   shipping it.
+5. Code 58d touches: `microclaw/updates.py` (`check_for_update`, `load_state` /
+   `write_state`, and `stage_inactive_slot`, which 58c shipped and 58d drives),
+   `microclaw/webserve.py`'s route table and `build_app`, and the packaged
+   `serve.html`. 58c's `update-state.json` field list is reconciled in
+   §"Put the updater outside the environment it replaces" — read it before
+   adding a field.
 
-### What makes 58c different from 58a and 58b
+### What 58d inherits, and the two traps in it
 
-- **It is the only block that can brick an install.** Its gate replaces the
+- **`stage_inactive_slot` already exists and already refuses**: no managed
+  layout, a candidate needing a newer launcher protocol, and a rebuild of a
+  commit that failed to build inside the same check interval. 58d drives it from
+  one background job; it does not reimplement it.
+- **The agent must not be able to trigger its own replacement.** Update state is
+  operational UI state, not conversation history and not a model tool. Check
+  which callers exist before putting a refusal anywhere but the route.
+- **`/api/update` performs no network I/O.** It reads cached state only; the
+  check is the background one. A route that quietly does a fetch turns every
+  browser refresh into a GitHub request.
+
+### What made 58c different from 58a and 58b — kept, because 58e inherits it
+
+58e restarts the server and activates a pending slot, so it is the second block
+that can leave a machine unable to start. Everything below applied to 58c and
+applies again there.
+
+- **It is the only block so far that can brick an install.** Its gate replaces the
   managed environment, kills the server and forces rollbacks, repeatedly. The
   runbook must back up `%APPDATA%\microclaw` and the existing
   `%LOCALAPPDATA%\microclaw\env` first, as a literal command that prints the
@@ -1555,9 +1581,12 @@ depends only on 58a and 58b.**
   machine in Python where it is unit-testable — activation, pending consumption,
   nonce matching, stale-marker rejection, slot-metadata mismatch, rollback, the
   protocol-too-old refusal — and keep the `.ps1` thin.** Whatever remains only in
-  PowerShell is gated, structurally tested, or admitted as untested.
-- **It discharges 58b's one debt**: two real slot validators classifying one
-  shared config file. That limb is in its checklist.
+  PowerShell is gated, structurally tested, or admitted as untested. **Round 1
+  inverted this**: the tested functions were called by nothing but their own
+  tests while the `.ps1` reimplemented all of them. Grep for callers outside
+  `tests/` before believing a "tested state machine" claim.
+- **It discharged 58b's one debt**: two real slot validators classifying one
+  shared config file, both `ready` on the demo machine.
 
 State:
 
