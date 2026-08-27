@@ -1317,7 +1317,43 @@ different skip split. **Gate on zero failures, never the count.**
 
 Everything needed is on `main`.
 
-State as of 2026-08-26:
+**State as of 2026-08-27. Next block is 58c, and it is the heaviest one.**
+
+### Read these before assigning 58c, in this order
+
+1. `CLAUDE.md` §"The block workflow" — authoritative, and **58a rewrote step 6**.
+   Also its §"six contracts" preamble, whose fixture rule 58a added.
+2. This file: §"58a demo gate round 1", §"58b's gate is expected to report
+   INCOMPLETE", then the `## 58c` checklist section.
+3. `design/prompts.md`, the design/58 entries — the 58b one carries the runner
+   interruption recovery and the `fails_if` idiom.
+4. **The two gate scripts on `main` are the template**:
+   `design/58-block58a-demo-gate.py` and `design/58-block58b-demo-gate.py`, each
+   with its thin `.ps1`. Do not design 58c's gate from scratch — 58b's `limb`
+   decorator takes a **mandatory `fails_if`** argument recorded into every
+   result, which is the strongest thing either block produced. Copy it.
+5. Code 58c touches: `install.bat`, `microclaw/shortcut.py`, `microclaw/paths.py`,
+   `microclaw/webserve.py:serve`, and `microclaw/updates.py`'s slot-marker
+   functions (58a shipped `slot_marker_path` / `write_slot_marker` /
+   `read_slot_marker` already — 58c consumes them, it does not rewrite them).
+
+### What makes 58c different from 58a and 58b
+
+- **It is the only block that can brick an install.** Its gate replaces the
+  managed environment, kills the server and forces rollbacks, repeatedly. The
+  runbook must back up `%APPDATA%\microclaw` and the existing
+  `%LOCALAPPDATA%\microclaw\env` first, as a literal command that prints the
+  copy.
+- **Its `updater-launcher.ps1` cannot run on CI at all**, which is the exact
+  property that let 58a's defect through four review rounds. **Put the state
+  machine in Python where it is unit-testable — activation, pending consumption,
+  nonce matching, stale-marker rejection, slot-metadata mismatch, rollback, the
+  protocol-too-old refusal — and keep the `.ps1` thin.** Whatever remains only in
+  PowerShell is gated, structurally tested, or admitted as untested.
+- **It discharges 58b's one debt**: two real slot validators classifying one
+  shared config file. That limb is in its checklist.
+
+State:
 
 - **58a is MERGED** (`33028e9`) and its branch, worktree and gate are closed.
   `main` measures **2220 passed / 99 skipped / 3 warnings** (macOS,
