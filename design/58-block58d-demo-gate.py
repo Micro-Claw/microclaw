@@ -20,6 +20,7 @@ import sys
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -371,6 +372,25 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
             raise AssertionError(f"{candidate['subject']!r} != {prep['origin_main_subject']!r}")
         return f"{prep['origin_main_short']} — {prep['origin_main_subject']}"
 
+    @limb("the background check ran at startup, before any Check now",
+          "no check happened on launch, so the banner's cache was never populated")
+    def _():
+        """Airtight because Prepare deletes `last_attempt` and `next_check`: a
+        timestamp present before the first POST /api/update/check can only have
+        been written by serve()'s own startup check. This is the one item the
+        checklist's ten did not name a caller for."""
+        data = read_json(need(out / "probe.json", PHASE_COMMANDS["probe"]))
+        stamp = data["last_attempt_before_gets"]
+        discovery = data["discovery_before_gets"] or {}
+        if not isinstance(stamp, (int, float)):
+            raise AssertionError(
+                f"last_attempt is {stamp!r} before any Check now; Prepare cleared "
+                "it, so the startup check never ran"
+            )
+        if discovery.get("status") != "candidate":
+            raise AssertionError(f"startup discovery recorded {discovery!r}")
+        return f"startup check at {stamp!r}; discovery={discovery.get('status')!r}"
+
     @limb("GET /api/update performs no network I/O",
           "five GETs move last_attempt or change the discovery record")
     def _():
@@ -408,18 +428,23 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
             raise AssertionError(f"check statuses were {statuses}, expected [200,200,200,429]")
         return "200, 200, 200, 429"
 
-    @limb("CONTROL: an idle restart request is honest rather than fabricated",
-          "the idle seam claims a restart that 58d does not perform")
+    @limb("CONTROL: an idle session is not promised a relaunch that cannot happen",
+          "the route offers a restart with no pending slot, or refuses an idle session as busy")
     def _():
+        """The four idle checks run before the offerability one, so this 409 is
+        proof of both: the session was idle, and the route still refused rather
+        than claim a relaunch it cannot perform. The 501 seam itself is
+        unreachable here for the same reason the Restart now button is — no
+        pending slot — and belongs to 58e."""
         data = read_json(need(out / "probe.json", PHASE_COMMANDS["probe"]))
         idle = data["idle_restart"]
-        if idle["status"] == 409:
-            raise NotExercised(
-                f"the session was not idle when Probe ran: {idle['body']!r}"
-            )
-        if idle["status"] != 501 or idle["body"].get("restart_requested") is not False:
+        detail = str((idle["body"] or {}).get("detail", ""))
+        busy = ("turn", "acquisition", "confirmation", "setup write")
+        if idle["status"] == 409 and any(word in detail.lower() for word in busy):
+            raise NotExercised(f"the session was not idle when Probe ran: {detail!r}")
+        if idle["status"] != 409 or "Automatic restart is not available" not in detail:
             raise AssertionError(idle)
-        return f"{idle['status']} {idle['body']}"
+        return f"409 {detail} (all four idle checks passed first)"
 
     @limb("POST /api/update/restart refuses while an agent turn is running",
           "the route accepts a restart mid-turn, or the refusal names another condition")
@@ -471,15 +496,24 @@ def verify(repo: Path, out: Path, managed: Path, appdata: Path) -> int:
                 "network.har is absent; save it from the browser devtools "
                 "Network tab into the evidence folder"
             )
-        text = har.read_text(encoding="utf-8", errors="replace")
-        hosts = [host for host in ("api.github.com", "codeload.github.com",
-                                  "github.com") if host in text]
-        if hosts:
-            raise AssertionError(f"the browser talked to {hosts}")
+        # Score the REQUESTS, never a substring of the file. A HAR exported
+        # "with content" carries response bodies, and /api/update's body
+        # legitimately contains the View-on-GitHub link the server builds — a
+        # grep over the whole file reads that as a call to GitHub. Round 1
+        # failed this limb on exactly that, with every request on loopback.
+        try:
+            entries = json.loads(har.read_text(encoding="utf-8-sig"))["log"]["entries"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise NotExercised(f"network.har is not a readable HAR: {exc}") from exc
+        hosts = sorted({urllib.parse.urlparse(entry["request"]["url"]).netloc
+                        for entry in entries})
+        offenders = [host for host in hosts if "github" in host.lower()]
+        if offenders:
+            raise AssertionError(f"the browser requested {offenders}")
         # The control: an empty or unrelated log must not pass this limb.
-        if "/api/update" not in text:
+        if not any("/api/update" in entry["request"]["url"] for entry in entries):
             raise NotExercised("the saved log contains no /api/update request")
-        return f"{len(text)} bytes of network log, no GitHub host, /api/update present"
+        return f"{len(entries)} requests, all to {hosts}, /api/update present"
 
     @limb("both real slot CLIs classify the shared config through the paths staging builds",
           "either slot's microclaw.exe is absent, classification fails, or the comparison refuses")

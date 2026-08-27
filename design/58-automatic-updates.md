@@ -1478,6 +1478,65 @@ which is about the suite not reading its host; the real pattern is
 `tests/test_webserve.py::test_every_remote_api_route_accepts_bearer_and_cookie`,
 where the five routes now sit. Fix that sentence at the design gate.
 
+## 58d demo gate round 1 — 2026-08-27, PASS: 12 limbs, two gate defects, no product defects
+
+**Verdict INCOMPLETE, which is the expected result** (§"58d's gate reports
+INCOMPLETE by design"). Scored from the artifacts in
+`block58d-20260827-140049`: **12 PASS / 0 FAIL / 1 NOT EXERCISED**, the last
+being the Restart now *button*, which 58e owns.
+
+The machine's own run reported one FAIL and one NOT EXERCISED. **Both were
+defects in my gate, not the product**, and both were re-scored by replaying the
+operator's returned artifacts through the corrected scorer. `git diff 3e7ce51 --
+microclaw/ install.bat scripts/ tests/` is **empty**, so the replay scores the
+same product commit the slot was built from; only the scorer changed.
+
+What the artifacts corroborate, cross-checked rather than taken from a verdict:
+
+- the banner text the operator copied out — `05b2a89 — Merge coord/design58d-pushed:
+  58d ledger row updated for the gate` — matches `prepare.json`'s `origin_main`
+  and the `/api/update` payload's candidate **character for character**, from
+  three independent sources. No screenshot was taken and none is needed;
+- `last_attempt` held at `1787832075.0012193` across five GETs, to thirteen
+  decimal places, with the discovery record byte-identical either side. **The
+  cached route performs no network I/O**;
+- **the background check the checklist never named a caller for has rig
+  evidence.** `Prepare` deletes `last_attempt` and `next_check`, so a timestamp
+  present *before* the first Check now can only have been written by `serve()`'s
+  startup thread — it was, with `discovery.status == "candidate"`, and the banner
+  was on screen before any manual check. A limb was added afterwards to score
+  that, because the evidence was in the artifacts with nothing asserting on it;
+- "Later" recorded `until` **604858 s** after the previous timestamp — seven days
+  (604800 s) plus the 58 s the operator took to click. Suppression is measured
+  from the click, and the candidate stayed `null` across a real server restart
+  whose own startup check correctly did not re-run;
+- the mid-turn refusal named the right mechanism: `409 An agent turn is in
+  progress.` while `GET /api/confirm` returned `200 {"grants": []}`, so no stray
+  pending confirmation could have produced it;
+- **F1's fix has rig evidence without staging**: two real slot CLIs at
+  `env-a\Scripts\microclaw.exe` and `env-b\Scripts\microclaw.exe` — the exact
+  paths `stage_inactive_slot` constructs — both classified the shared config
+  `ready`.
+
+### Two gate defects, and the ratio holds again
+
+1. **The GitHub limb grepped the whole HAR, including response bodies.** Every
+   one of the seven requests went to `127.0.0.1:8000` and none to any GitHub
+   host; `github.com` appeared only inside `/api/update`'s response body, as the
+   View-on-GitHub link the server builds — which is exactly what item 7
+   requires. A HAR exported "with content" carries bodies, so a substring grep
+   reads the product's correct behaviour as a violation. **Score the requests,
+   never the file.**
+2. **The idle-restart control assumed any 409 meant "not idle".** The session
+   *was* idle: the route passed all four idle checks and refused on offerability
+   — `Automatic restart is not available; restart later.` The limb reported NOT
+   EXERCISED with a *misleading reason*, and its intended 501 seam is unreachable
+   in 58d for the same reason the button is. Rewritten to gate the offerability
+   refusal, which is a real design requirement — the UI must not claim it can
+   relaunch a process it does not own — and a control that actually fires. The
+   501 seam moves to 58e. **A control that cannot fire is not a control**, and
+   this one had been written to expect the wrong branch of its own route.
+
 ## Owed evidence that cannot be booked
 
 Recorded rather than inferred, the way design/56 records its Nikon limbs.
