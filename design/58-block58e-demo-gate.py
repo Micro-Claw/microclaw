@@ -268,7 +268,7 @@ def prepare(repo: Path, out: Path, root: Path) -> int:
     return 0
 
 
-def clear_build_failure_cache(root: Path) -> dict:
+def clear_staging_verdict(root: Path) -> dict:
     """Un-poison staging before a phase that intends to build.
 
     `stage_inactive_slot`'s first check refuses immediately when
@@ -282,14 +282,28 @@ def clear_build_failure_cache(root: Path) -> dict:
     """
     path = root / "update-state.json"
     state = read_json(path)
-    cleared = {key: state.pop(key, None)
-               for key in ("build_error", "build_failed_commit", "build_error_detail")}
+    # Both poisons, not one.  Round 3 cleared only the build keys, so the
+    # NotReady phase's `comparison_refused_commit` survived into the Stage
+    # phase: the banner showed "this update needs the maintainer" instead of
+    # the Restart controls, and -- worse -- the staging job's own failure was
+    # swallowed by a product guard that read that stale record as this
+    # attempt's. Clearing one of two poisons is clearing neither.
+    cleared = {key: state.pop(key, None) for key in (
+        "build_error", "build_failed_commit", "build_error_detail",
+        "comparison_refused_commit", "comparison_refusal_reason", "staging",
+    )}
     if any(value is not None for value in cleared.values()):
         write_json(path, state)
     return cleared
 
 
 def poll_stage_until_terminal() -> list[tuple[int, object]]:
+    """Wait for THIS attempt to finish, not for a leftover verdict to be seen.
+
+    Every staging phase clears the verdict keys first, so any refusal or error
+    observed here belongs to the attempt just started.  Round 3's version would
+    have returned immediately on a refusal cached by an earlier phase.
+    """
     samples = []
     deadline = time.time() + 900
     while time.time() < deadline:
@@ -308,7 +322,7 @@ def poll_stage_until_terminal() -> list[tuple[int, object]]:
 
 def direct(out: Path, root: Path) -> int:
     """Stage through a direct executable and leave its pending slot intact."""
-    cleared_build_failure = clear_build_failure_cache(root)
+    cleared_build_failure = clear_staging_verdict(root)
     before = state_snapshot(root)
     first = api("POST", "/api/update/stage")
     samples = poll_stage_until_terminal()
@@ -362,7 +376,7 @@ def slot_comparison(root: Path, out: Path, active: str) -> dict:
 
 def stage(out: Path, root: Path) -> int:
     """Stage successfully from a launcher-owned server and record locked files."""
-    cleared_build_failure = clear_build_failure_cache(root)
+    cleared_build_failure = clear_staging_verdict(root)
     before = state_snapshot(root)
     first = api("POST", "/api/update/stage")
     second = api("POST", "/api/update/stage")
@@ -389,7 +403,7 @@ def notready(out: Path, root: Path) -> int:
     `stage_inactive_slot` function performs the actual comparison and writes the
     refusal. The original executable and marker are restored in `finally`.
     """
-    cleared_build_failure = clear_build_failure_cache(root)
+    cleared_build_failure = clear_staging_verdict(root)
     before = state_snapshot(root)
     state = before["state"]
     success = state.get("last_success") or {}
@@ -452,7 +466,13 @@ def notready(out: Path, root: Path) -> int:
         (root / "pending-slot.txt").unlink(missing_ok=True)
     status_code, payload = api("GET", "/api/update")
     after = state_snapshot(root)
+    # Capture the refusal, then take it back out of production state.  This
+    # phase exists to *cause* a refusal; leaving it behind made the next phase's
+    # banner read "needs the maintainer" and silenced that phase's real failure.
+    # A phase cleans up the state it deliberately breaks.
+    left_behind = clear_staging_verdict(root)
     save_phase(out, "notready", {
+        "cleaned_up_after_itself": left_behind,
         "cleared_build_failure": cleared_build_failure,
         "before": before,
         "after": after,
@@ -535,7 +555,7 @@ def rollback(out: Path, root: Path) -> int:
 
 def failure(out: Path, root: Path) -> int:
     """Stage under the PowerShell-owned unreachable index and cache failure."""
-    cleared_build_failure = clear_build_failure_cache(root)
+    cleared_build_failure = clear_staging_verdict(root)
     deadline = time.time() + 30
     while True:
         try:
@@ -580,7 +600,7 @@ def offline(out: Path, root: Path) -> int:
 
 def closed(out: Path, root: Path) -> int:
     """Record exactly one launch with Micro-Manager closed and no relaunch."""
-    cleared_build_failure = clear_build_failure_cache(root)
+    cleared_build_failure = clear_staging_verdict(root)
     response = api("POST", "/api/update/stage")
     samples = poll_stage_until_terminal()
     initial = state_snapshot(root)
@@ -607,7 +627,7 @@ def closed(out: Path, root: Path) -> int:
 
 def later(out: Path, root: Path) -> int:
     """Prove a pending selector activates only on the next desktop launch."""
-    cleared_build_failure = clear_build_failure_cache(root)
+    cleared_build_failure = clear_staging_verdict(root)
     response = api("POST", "/api/update/stage")
     samples = poll_stage_until_terminal()
     before = state_snapshot(root)

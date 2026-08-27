@@ -776,12 +776,22 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 updates.stage_cached_candidate(
                     candidate, config_path=session.safety_config_path,
                 )
+            except updates.ComparisonRefused:
+                # stage_inactive_slot already recorded the refusal and its
+                # reason; overwriting them with a generic build error would
+                # lose the sentence the banner shows.
+                pass
             except Exception as exc:
+                # Every other failure is recorded, unconditionally.  This used
+                # to be skipped whenever `comparison_refused_commit` matched
+                # this commit -- a record of *some* earlier refusal, not of this
+                # attempt -- so after one legitimate refusal every later failure
+                # of that commit vanished: no error, no status, `staging` stuck
+                # on "running".  Block 58e's third demo gate died there.
                 latest = updates.load_state(state_path) or {}
-                if latest.get("comparison_refused_commit") != candidate.sha:
-                    latest["staging"] = {"status": "error", "commit": candidate.sha}
-                    latest["build_error"] = str(exc) or type(exc).__name__
-                    updates.write_state(latest, state_path)
+                latest["staging"] = {"status": "error", "commit": candidate.sha}
+                latest["build_error"] = str(exc) or type(exc).__name__
+                updates.write_state(latest, state_path)
             finally:
                 if work is not None:
                     shutil.rmtree(work, ignore_errors=True)

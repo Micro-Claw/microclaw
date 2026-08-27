@@ -136,17 +136,23 @@ def probe_exit_pause(repo: Path) -> list[dict]:
               command, env=shortcut, stdin_null=False, cwd=repo),
     ]
     suppressed, control = results
-    if control["returncode"] != "TIMED OUT":
+    # Judge the control by DURATION, not by the timeout marker: spike round 5's
+    # control hung for 42.58 s and then exited 0 because the operator pressed
+    # Enter in the console. It plainly fired, and the old check would have
+    # called that inconclusive.
+    control_hung = control["returncode"] == "TIMED OUT" or control["seconds"] >= 5
+    if not control_hung:
         print("  INCONCLUSIVE: the control did NOT hang, so this probe never "
               "reached the exit pause and the result above proves nothing. "
               "Expected when stdin is not a real console.")
         suppressed["inconclusive"] = True
-    elif suppressed["returncode"] != "TIMED OUT":
+    elif suppressed["seconds"] < 5:
         # Not `== 0`: `check-config` without --json exits 1 whenever the config
         # is not `ready`, which is an ordinary state on a real machine. What is
         # being measured is whether the process *returned*, not how it exited.
-        print(f"  Suppression works: the control hung and the suppressed run "
-              f"returned in {suppressed['seconds']}s (exit {suppressed['returncode']}).")
+        print(f"  Suppression works: the control held {control['seconds']}s and the "
+              f"suppressed run returned in {suppressed['seconds']}s "
+              f"(exit {suppressed['returncode']}).")
     else:
         print("  SUPPRESSION FAILED: both runs hung. MICROCLAW_UPDATE_RESTART=1 "
               "did not skip the exit pause.")

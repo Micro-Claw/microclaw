@@ -65,6 +65,17 @@ class UpdateError(Exception):
     """An update source was unavailable or failed validation."""
 
 
+class ComparisonRefused(UpdateError):
+    """Staging stopped because the candidate would weaken the reviewed config.
+
+    A distinct type because the caller must be able to tell *this* attempt's
+    refusal from any other failure.  webserve's staging job used to infer it by
+    reading `comparison_refused_commit` back out of shared state, which is a
+    record of *some* refusal for that commit, not this attempt's -- so once a
+    commit had been refused once, every later failure of it was recorded as
+    nothing at all: no error, no status, `staging` stuck on "running"."""
+
+
 @dataclass(frozen=True)
 class Candidate:
     sha: str
@@ -414,7 +425,7 @@ def stage_inactive_slot(
         state["comparison_refusal_reason"] = comparison.reason
         state["staging"] = {"status": "refused", "commit": candidate.sha}
         write_state(state, base / STATE_NAME)
-        raise UpdateError(comparison.reason or "the update needs the maintainer")
+        raise ComparisonRefused(comparison.reason or "the update needs the maintainer")
     state.pop("comparison_refused_commit", None)
     state.pop("comparison_refusal_reason", None)
     state["staging"] = {"status": "staged", "commit": candidate.sha}

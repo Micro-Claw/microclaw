@@ -411,6 +411,63 @@ def test_automatic_restart_rejects_real_pending_marker_needing_newer_protocol(
     assert TestClient(build_app(session)).get("/api/update").json()["automatic_restart"] is False
 
 
+
+def test_staging_failure_is_recorded_even_after_an_earlier_refusal(session, tmp_path, monkeypatch):
+    """A stale refusal must not silence a later, unrelated staging failure.
+
+    Block 58e's third demo gate: the NotReady step legitimately refused commit
+    X, and the next staging attempt of X then failed and recorded *nothing* --
+    no build_error, no status -- because the handler read a refusal record for
+    that sha back out of shared state and took it for this attempt's own.
+    """
+    sha = "a" * 40
+    _managed_updates(tmp_path, monkeypatch, candidate_sha=sha)
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    state["comparison_refused_commit"] = sha
+    state["comparison_refusal_reason"] = "an earlier, legitimate refusal"
+    updates.write_state(state, tmp_path / updates.STATE_NAME)
+    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(updates, "materialize_clone", lambda *a, **k: None)
+    monkeypatch.setattr(updates, "materialize_public", lambda *a, **k: None)
+    monkeypatch.setattr(updates, "stage_cached_candidate", lambda *a, **k: (_ for _ in ()).throw(
+        updates.UpdateError("the update could not be built")))
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread, "start",
+        lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
+    )
+    assert TestClient(build_app(session)).post("/api/update/stage").status_code == 202
+    after = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert after["build_error"] == "the update could not be built"
+    assert after["staging"] == {"status": "error", "commit": sha}
+
+
+def test_a_comparison_refusal_keeps_its_own_reason(session, tmp_path, monkeypatch):
+    """The typed refusal is the one failure that must NOT be overwritten."""
+    sha = "a" * 40
+    _managed_updates(tmp_path, monkeypatch, candidate_sha=sha)
+    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+
+    def refuse(*args, **kwargs):
+        state = updates.load_state(tmp_path / updates.STATE_NAME)
+        state["comparison_refused_commit"] = sha
+        state["comparison_refusal_reason"] = "would downgrade a reviewed config"
+        state["staging"] = {"status": "refused", "commit": sha}
+        updates.write_state(state, tmp_path / updates.STATE_NAME)
+        raise updates.ComparisonRefused("would downgrade a reviewed config")
+
+    monkeypatch.setattr(updates, "stage_cached_candidate", refuse)
+    real_start = threading.Thread.start
+    monkeypatch.setattr(
+        threading.Thread, "start",
+        lambda thread: thread.run() if thread.name == "microclaw-update-stage" else real_start(thread),
+    )
+    assert TestClient(build_app(session)).post("/api/update/stage").status_code == 202
+    after = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert after["staging"] == {"status": "refused", "commit": sha}
+    assert after["comparison_refusal_reason"] == "would downgrade a reviewed config"
+    assert "build_error" not in after
+
 def test_later_and_skip_are_scoped_to_one_commit(session, tmp_path, monkeypatch):
     path = _managed_updates(tmp_path, monkeypatch)
     monkeypatch.setattr(webserve.time, "time", lambda: 100.0)
