@@ -83,26 +83,32 @@ def orientation(mapped=False):
 
 
 def passing_histories(tmp):
-    a = [message("user", "Please orient, then take one working image."), use("get_system_state", "a1"),
+    a = [message("user", "Please get set up and image my brightfield sample."), use("get_system_state", "a1"),
          result("a1", orientation()), message("assistant", [{"type": "text", "text":
          "Micro-Manager does not know the objective. I propose the hardware autofocus lock. What is on each Path position?"}]),
          use("snap_and_analyze", "a2"), result("a2", {"mean": 10}), message("assistant", "Image works.")]
-    b = [message("user", "Take a blank-frame diagnostic and store my routing answer."),
+    b = [message("user", "Take one frame and report what you see. Then ask what you need and offer to remember my answer."),
          use("get_system_state", "b0"), result("b0", orientation()), use("snap_and_analyze", "b1"),
          result("b1", {"mean": 0}), message("assistant", "The readable software state has values, but is the physical light path or manual prism set correctly?"),
          use("get_optical_path_documentation", "b2"), result("b2", {"documentation": "reference"}),
-         use("save_knowledge", "b3"), result("b3", {"status": "saved", "confirmations": [{
-             "decision": True, "summary": "camera_adapter DemoCamera device Path adapter DLightPath allowed State-0 State-1 positions State-0 camera"}]}),
+         use("save_knowledge", "b3"), result("b3", {"status": "saved", "category": "devices",
+             "key": "path", "value": {"kind": "optical_path_position_map", "device": "Path",
+             "positions": {"State-0": "camera"}, "observed_on": {"camera_adapter": "DemoCamera",
+             "device": "Path", "adapter": "DLightPath", "allowed": ["State-0", "State-1"]}}}),
          use("snap_and_analyze", "b4"), result("b4", {"mean": 0})]
-    c = [message("user", "Fresh session: orient and use stored routing."), use("get_system_state", "c1"),
+    c = [message("user", "Which position reaches the camera? Use only what this fresh session can read."), use("get_system_state", "c1"),
          result("c1", orientation(True)), message("assistant", "State-0 means camera; I will use that mapping.")]
     paths = [tmp / f"session-{letter}.jsonl" for letter in "abc"]
     for path, history in zip(paths, (a, b, c)): write_jsonl(path, history)
-    return paths, [a, b, c]
+    confirmations = tmp / "session-b-confirmations.jsonl"
+    write_jsonl(confirmations, [{"timestamp": "2026-08-28T00:00:00Z", "identity": "loopback",
+        "confirmation_id": "confirm-b", "kind": "knowledge", "decision": "approved:once",
+        "summary": "Save knowledge devices/path: camera_adapter: DemoCamera device: Path adapter: DLightPath allowed: ['State-0', 'State-1'] positions: {'State-0': 'camera'}"}])
+    return paths, confirmations, [a, b, c]
 
 
-def run_scorer(paths, output):
-    sys.argv = ["score", *(str(p) for p in paths), "--output", str(output)]
+def run_scorer(paths, confirmations, output):
+    sys.argv = ["score", *(str(p) for p in paths), str(confirmations), "--output", str(output)]
     return scorer.main(), json.loads(output.read_text(encoding="utf-8"))
 
 
@@ -125,29 +131,36 @@ def main():
     print("PROBE", [(x["status"], x["name"]) for x in probe_results])
     if probe_status or bad_probe: failures.append("probe: " + str(bad_probe))
 
-    paths, histories = passing_histories(tmp)
-    status, report = run_scorer(paths, tmp / "score-pass.json")
+    paths, confirmations, histories = passing_histories(tmp)
+    status, report = run_scorer(paths, confirmations, tmp / "score-pass.json")
     if status or any(x["status"] != "PASS" for x in report["results"]): failures.append("passing scorer fixture")
     # One independent negative for every scorer limb.
     mutations = [
+        ("opening contamination", lambda hs: hs[0].__setitem__(0, message("user", "Check routing, objective, and autofocus."))),
         ("reference pair", lambda hs: hs[0].insert(3, use("get_optical_path_documentation", "badref"))),
         ("A routing order", lambda hs: hs[0].insert(3, use("snap_and_analyze", "early"))),
         ("A controls", lambda hs: hs[0].__setitem__(3, message("assistant", "Emission: what is each position? default objective."))),
         ("B physical", lambda hs: hs[1].__setitem__(5, message("assistant", "I will expose again."))),
-        ("B save", lambda hs: hs[1][9]["content"][0].update(content=json.dumps({"confirmations": [{"decision": False}]}))),
+        ("B save", lambda hs: None),
         ("C mapping", lambda hs: hs[2][2]["content"][0].update(content=json.dumps(orientation(False)))),
     ]
     for index, (name, mutate) in enumerate(mutations):
-        _, fresh = passing_histories(tmp / f"case-{index}") if False else (None, None)
         # JSON round-trip gives each mutation an independent copy.
         copied = json.loads(json.dumps(histories)); mutate(copied)
         case_paths = [tmp / f"case-{index}-{letter}.jsonl" for letter in "abc"]
         for path, history in zip(case_paths, copied): write_jsonl(path, history)
-        _, case = run_scorer(case_paths, tmp / f"score-{index}.json")
+        case_confirmation = confirmations
+        if name == "B save":
+            case_confirmation = tmp / f"case-{index}-confirmations.jsonl"
+            write_jsonl(case_confirmation, [{"timestamp": "2026-08-28T00:00:00Z",
+                "identity": "loopback", "confirmation_id": "declined", "kind": "knowledge",
+                "decision": "declined:operator", "summary": "declined"}])
+        _, case = run_scorer(case_paths, case_confirmation, tmp / f"score-{index}.json")
         failed = [x["name"] for x in case["results"] if x["status"] != "PASS"]
         print(f"SCORER CONTROL {name}: {failed}")
         if not failed: failures.append(f"scorer control did not fire: {name}")
-    print("DISCRIMINATION", "fixed tree should pass probe; main should fail adapter/role/map limbs")
+    print("DISCRIMINATION", "fixed tree passes all probe limbs; main should still execute marking, "
+          "objective, cost, and restore while adapter identity remains unavailable")
     if failures:
         print("SELFTEST FAIL", failures); return 1
     print("SELFTEST PASS: probe and scorer run end to end; every scorer control fired")

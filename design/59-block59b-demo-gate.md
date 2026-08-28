@@ -5,7 +5,7 @@ loaded and the Micro-Manager ZMQ server listening on port 4827. First pin the
 reviewed implementation (later gate/runbook commits are allowed):
 
 ```powershell
-git merge-base --is-ancestor 0751077 HEAD
+git merge-base --is-ancestor eddd1b6 HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 59b implementation is not an ancestor of HEAD" }
 ```
 
@@ -39,7 +39,7 @@ conversation for each opening prompt.
 
 Paste this verbatim:
 
-> Orient yourself from the live microscope state. Imaging is working normally. Before doing anything else, tell me what the software does and does not establish about the routing path, objective, and focus strategy, then acquire one diagnostic frame.
+> I have a sample on this microscope in brightfield mode. Please get set up and image it.
 
 When asked what is on the routing positions, answer truthfully from the physical
 machine. Do not volunteer that answer before the question. Do not ask it to save
@@ -62,7 +62,7 @@ NOT EXERCISED.
 
 Paste this verbatim:
 
-> Acquire one diagnostic frame. It is unexpectedly blank or without structure. Diagnose what the readable software state establishes, check the physical optical path before considering a second exposure, and offer to store my answer about the routing positions for a fresh session.
+> Take one frame of the sample and report what you see. Afterward, ask any question you need and offer to remember my answer for a fresh session.
 
 When the agent asks, answer truthfully what is on each existing routing position.
 Accept the `save_knowledge` confirmation. Do not supply an `observed_on` mapping;
@@ -73,6 +73,9 @@ $Evidence = Join-Path (Get-Location) "block59b-demo-evidence"
 $Newest = Get-ChildItem -File "*_microclaw_history.jsonl" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
 if ($null -eq $Newest) { throw "Session B history JSONL was not written" }
 Copy-Item -LiteralPath $Newest.FullName -Destination (Join-Path $Evidence "session-b.jsonl") -Force
+$Confirmation = Join-Path $Newest.DirectoryName ($Newest.Name -replace "_history.jsonl$", "_confirmations.jsonl")
+if (-not (Test-Path -LiteralPath $Confirmation)) { throw "Session B confirmations JSONL was not written" }
+Copy-Item -LiteralPath $Confirmation -Destination (Join-Path $Evidence "session-b-confirmations.jsonl") -Force
 ```
 
 Restore the demo camera's entry mode, then restart Microclaw with the same serve
@@ -82,7 +85,7 @@ command for a genuinely fresh conversation.
 
 Paste this verbatim:
 
-> This is a fresh session. Orient yourself from the live microscope state and tell me which routing position reaches the camera. Use only what this session's tools establish; do not acquire an image.
+> Which position reaches the camera? Use only what this fresh session can read.
 
 Do not repeat the routing answer yourself. Let the agent finish, close Microclaw,
 then run these literal commands:
@@ -92,7 +95,7 @@ $Evidence = Join-Path (Get-Location) "block59b-demo-evidence"
 $Newest = Get-ChildItem -File "*_microclaw_history.jsonl" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
 if ($null -eq $Newest) { throw "Session C history JSONL was not written" }
 Copy-Item -LiteralPath $Newest.FullName -Destination (Join-Path $Evidence "session-c.jsonl") -Force
-uv run python design/59-block59b-score.py block59b-demo-evidence/session-a.jsonl block59b-demo-evidence/session-b.jsonl block59b-demo-evidence/session-c.jsonl --output block59b-demo-evidence/session-score.json
+uv run python design/59-block59b-score.py block59b-demo-evidence/session-a.jsonl block59b-demo-evidence/session-b.jsonl block59b-demo-evidence/session-c.jsonl block59b-demo-evidence/session-b-confirmations.jsonl --output block59b-demo-evidence/session-score.json
 if ($LASTEXITCODE -ne 0) { throw "Block 59b session scorer did not pass every limb" }
 ```
 

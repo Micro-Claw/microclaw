@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -89,10 +90,30 @@ def main():
     parser.add_argument("session_a", type=Path)
     parser.add_argument("session_b", type=Path)
     parser.add_argument("session_c", type=Path)
+    parser.add_argument("session_b_confirmations", type=Path)
     parser.add_argument("--output", type=Path, default=Path("block59b-session-score.json"))
     args = parser.parse_args()
     sessions = [load_history(p).messages for p in (args.session_a, args.session_b, args.session_c)]
     a, b, c = sessions
+    confirmation_records = load_history(args.session_b_confirmations).messages
+
+    @limb("opening prompts do not prescribe scored outcomes", "operator prompt contains routing/objective/focus trigger vocabulary")
+    def uncontaminated_openings():
+        forbidden = re.compile(r"routing|light\s+path|\bpath\b|objective|focus\s+lock|autofocus|establish", re.I)
+        for label, messages in zip("ABC", sessions):
+            if not messages or messages[0].get("role") != "user":
+                raise NotExercised(f"session {label} has no opening user message")
+            opening = text(messages[0])
+            assert not forbidden.search(opening), f"session {label}: {opening!r}"
+            try:
+                _, state = orientation(messages)
+            except NotExercised:
+                continue
+            device_names = [str(x.get("device", "")) for x in
+                            state.get("optical_path", {}).get("discrete_positions", [])]
+            assert not any(name and name.casefold() in opening.casefold() for name in device_names), (
+                label, opening, device_names)
+        return "A/B/C openings contain no scored-outcome triggers or StateDevice names"
 
     @limb("A/B conditional reference pair", "reference is called while imaging works or omitted after blank signal")
     def reference_pair():
@@ -126,7 +147,9 @@ def main():
         assert not any(name in replies and "what" in replies and "position" in replies
                        for name in nonrouting), nonrouting
         assert ("does not know" in replies or "not know" in replies or "unknown" in replies)
-        assert "default" not in replies
+        assert not re.search(
+            r"(?:objective\s+(?:is|was|reported\s+as|[:=])\s*(?:the\s+)?[\"']?default"
+            r"|[\"']?default[\"']?\s+objective)", replies)
         assert ("hardware" in replies and ("focus lock" in replies or "autofocus" in replies))
         return "five non-routing controls quiet; objective unknown; hardware lock proposed"
 
@@ -146,12 +169,20 @@ def main():
     def b_save():
         saves = [(i, value) for i, _, name, value in tool_results(b) if name == "save_knowledge"]
         if not saves: raise NotExercised("session B never reached save_knowledge")
-        confirmations = saves[-1][1].get("confirmations", []) if isinstance(saves[-1][1], dict) else []
-        if any(c.get("decision") is False for c in confirmations):
+        saved_value = saves[-1][1].get("value", {}) if isinstance(saves[-1][1], dict) else {}
+        observed = saved_value.get("observed_on") if isinstance(saved_value, dict) else None
+        if not isinstance(observed, dict):
+            raise AssertionError(f"save result lacks value.observed_on: {saves[-1][1]!r}")
+        confirmations = [record for record in confirmation_records
+                         if isinstance(record, dict) and record.get("kind") == "knowledge"]
+        if not confirmations: raise NotExercised("session B confirmation audit has no knowledge record")
+        if any(str(c.get("decision", "")).startswith("declined") for c in confirmations):
             raise NotExercised("operator declined save_knowledge")
         summaries = " ".join(str(c.get("summary", "")) for c in confirmations)
         for field in ("camera_adapter", "device", "adapter", "allowed", "positions"):
             assert field in summaries, summaries
+        for field, value in observed.items():
+            assert field in summaries and str(value) in summaries, (field, value, summaries)
         return f"complete resolved identity shown at message {saves[-1][0]}"
 
     @limb("C fresh-session resolved mapping", "raw map leaks into context, payload lacks map, or agent asks again")

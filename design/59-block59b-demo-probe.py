@@ -94,14 +94,13 @@ def main():
         candidates = [x for x in raw["devices"] if isinstance(x.get("allowed"), list) and len(x["allowed"]) > 1]
         routing_candidates = [x for x in candidates if re.search(
             r"light\s*path", f"{x.get('adapter', '')} {x.get('adapter_description', '')}", re.I)]
-        if not routing_candidates: raise NotExercised("no adapter-identified StateDevice light path")
-        routing = routing_candidates[0]
+        routing = routing_candidates[0] if routing_candidates else None
         objective = next((x for x in candidates if x["device"] in dependency_devices and
                           any(v not in {r.get("expected") for c in configs for r in c.get("rules", [])
                                        if r.get("device") == x["device"] and r.get("property") == "Label"}
                               for v in x["allowed"])), None)
-        if objective is None: raise NotExercised("no objective dependency has an unmatched allowed label")
-        non_special = [x for x in candidates if x["device"] not in {routing["device"], objective["device"]}]
+        special_devices = {x["device"] for x in (routing, objective) if x is not None}
+        non_special = [x for x in candidates if x["device"] not in special_devices]
         if len(non_special) < 2: raise NotExercised("fewer than two non-routing StateDevices for safety controls")
         illumination, ruled = non_special[:2]
         config = yaml.safe_load(template.read_text(encoding="utf-8"))
@@ -142,26 +141,32 @@ def main():
     @limb("inventory confirmed", "inventory, routing adapter, objective dependency, or controls are assumed")
     def inventory_limb():
         if setup_error: raise NotExercised(setup_error)
-        assert raw["devices"] and routing and objective
+        assert raw["devices"]
+        if routing is None:
+            raise NotExercised("inventory readable but no adapter-identified StateDevice light path")
         return json.dumps({"devices": [x["device"] for x in raw["devices"]],
-                           "routing": routing["device"], "objective": objective["device"]})
+                           "routing": routing["device"],
+                           "objective": objective["device"] if objective else None})
 
     @limb("marking not filtering", "a StateDevice vanishes or a non-routing device is marked")
     def marking_limb():
         if setup_error: raise NotExercised(setup_error)
         positions = first["optical_path"]["discrete_positions"]
         assert {x["device"] for x in positions} == {x["device"] for x in raw["devices"]}
-        route = next(x for x in positions if x["device"] == routing["device"])
-        assert route["role"] == ["light-path candidate (adapter self-description)"]
-        assert "positions_unnamed" in route
-        assert all(not x["role"] for x in positions if x["device"] != routing["device"]
+        route = next((x for x in positions if routing and x["device"] == routing["device"]), None)
+        if route is not None:
+            assert route["role"] == ["light-path candidate (adapter self-description)"]
+            assert "positions_unnamed" in route
+        assert all(not x["role"] for x in positions if (route is None or x["device"] != route["device"])
                    and not any(r.startswith("pixel-size-config dependency") for r in x["role"]))
         assert all(x["allowed"] == before_allowed[x["device"]] for x in positions)
-        return f"{len(positions)} StateDevices retained; routing={routing['device']} adapter-only"
+        route_detail = f"routing={routing['device']} adapter-only" if route else "no routing device discovered"
+        return f"{len(positions)} StateDevices retained; {route_detail}"
 
     @limb("objective unknown", "an unmatched objective state is reported as known/default or dependencies freeze")
     def objective_limb():
         if setup_error: raise NotExercised(setup_error)
+        if objective is None: raise NotExercised("no objective dependency has an unmatched allowed label")
         expected = {r.get("expected") for c in configs for r in c.get("rules", [])
                     if r.get("device") == objective["device"] and r.get("property") == "Label"}
         target = next(v for v in objective["allowed"] if v not in expected)
@@ -178,6 +183,7 @@ def main():
     @limb("identity control", "wrong identity matches, corrected identity misses, or knowledge restore fails")
     def identity_limb():
         if setup_error: raise NotExercised(setup_error)
+        if routing is None: raise NotExercised("no adapter-identified StateDevice light path")
         route_live = next(x for x in get_system_state(ctrl, guard)["optical_path"]["discrete_positions"]
                           if x["device"] == routing["device"])
         condition = {"camera_adapter": first["camera"]["adapter"], "device": routing["device"],
@@ -222,7 +228,7 @@ def main():
     # Always restore both moved devices, then read them and all allowed values back.
     try:
         if not setup_error:
-            for item in (objective, routing):
+            for item in (x for x in (objective, routing) if x is not None):
                 counted.set_property(item["device"], "Label", entry_labels[item["device"]])
                 counted.wait_for_device(item["device"])
             restored = {x["device"]: str(counted.get_property(x["device"], "Label")) for x in raw["devices"]}
@@ -242,7 +248,7 @@ def main():
         if active_error: raise NotExercised(f"production safety document unreadable: {active_error}")
         assert active.read_bytes() == active_bytes and active.stat().st_mtime_ns == active_mtime
         assert not list(args.output.glob("*.cfg"))
-        return "objective/path read back; allowed bytes equivalent; safety bytes/mtime unchanged; no .cfg"
+        return "moved labels read back; allowed bytes equivalent; safety bytes/mtime unchanged; no .cfg"
 
     summary = {"results": RESULTS, "cost": {"validation_calls": validation[0],
         "validation_wall_ms": validation[1]*1000, "validation_adapter_reads": validation_adapter_reads,
