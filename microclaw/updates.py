@@ -143,6 +143,31 @@ def valid_pending_slot(root: str | Path, launcher_protocol: int) -> str | None:
     return pending
 
 
+def retract_pending_slot(root: str | Path) -> str | None:
+    """Discard a staged-but-never-restarted slot.  The installer alone does this.
+
+    `install.bat` builds the *active* slot and records its commit.  A
+    `pending-slot.txt` left standing by an update that was staged and never
+    restarted makes the very next launch switch away from that slot and
+    reconcile `installed_commit` from its marker -- so the reinstall is
+    silently discarded, at whatever commit the other slot happens to hold.
+    Reinstalling is the documented recovery path from a broken update, and the
+    state a broken update leaves behind must not be able to defeat it.
+
+    The installer is outside both slots, which is what makes it the one thing
+    allowed to retract a pending answer.  An unreadable file is removed too: a
+    pending selector nobody can parse is not a pending update.  Returns the
+    slot discarded, or None.
+    """
+    path = Path(root) / PENDING_SLOT_NAME
+    try:
+        pending = path.read_text(encoding="ascii").strip() or None
+    except (FileNotFoundError, OSError, UnicodeError):
+        pending = None
+    path.unlink(missing_ok=True)
+    return pending
+
+
 def _reconcile_installed_commit(base: Path, slot: str) -> None:
     """Best-effort bookkeeping; selector changes must never depend on it."""
     try:

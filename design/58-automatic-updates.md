@@ -2598,9 +2598,20 @@ leave it stale.
   may write the thing outside both slots*: `install.bat` is that outside thing
   and must retract a pending answer, not leave one standing. **Found on M5,
   2026-08-28**, in the precheck for defect 7's gate: `active=b, pending=a`
-  standing from an update staged and never restarted. Unfixed as of this note;
-  its own check is *reinstall with a pending slot standing → the next launch
-  must stay on the installed slot*.
+  standing from an update staged and never restarted. **Fixed**:
+  `retract_pending_slot`, called from `:write_managed` before the state write.
+  Its check is *reinstall with a pending slot standing → the next launch must
+  stay on the installed slot*, and the mutation shows what it prevents — the
+  installer writes `3333333`, the next launch activates the other slot and
+  `installed_commit` becomes `ddddddd`.
+
+  The installer's `python -c` payload had **no test that ran it**, only greps
+  over the batch text. A quoting or import slip there breaks every installation
+  on every machine, so it is now executed in-process from the file
+  (`test_write_managed_payload_runs_and_retracts_a_staged_slot`), with only
+  `write_slot_marker` stubbed because it resolves against the running
+  interpreter. Deleting one name from the import list makes it fail with
+  `NameError`; the grep-based test beside it stays green.
 - **`POST /api/update/check` has no caller.** The route exists with a rate
   limiter and two tests; nothing in `serve.html` invokes it. So the only way to
   retire a 24-hour interval early is to rerun `install.bat`, which rewrites the
