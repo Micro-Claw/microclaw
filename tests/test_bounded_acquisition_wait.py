@@ -233,7 +233,7 @@ def test_acquire_on_hit_handler_does_not_close_waiter_owned_reservation(monkeypa
             fallback_ceiling=False,
         )),
     )
-    with pytest.raises(tools.AcquisitionUnterminated):
+    with pytest.raises(tools.AcquisitionUnterminated) as caught:
         tools.run_adaptive_survey(
             _ctrl(False), _guard(), protocol="timelapse", save_dir="/data",
             hook_strategy="saved", positions=[{"name": "p0", "x_um": 0, "y_um": 0}],
@@ -244,12 +244,34 @@ def test_acquire_on_hit_handler_does_not_close_waiter_owned_reservation(monkeypa
             },
         )
     assert reservation.ledger.in_flight is True
+    # D3a: the survey phase finished before the acquire phase expired, so its
+    # dataset is named and called readable. The path is the one the survey call
+    # returned, never one discovered on disk.
+    assert caught.value.positions_completed == [
+        {"phase": "survey", "dataset_path": "/data/survey",
+         "status": "survey complete"}
+    ]
+    report = tools._unterminated_result(caught.value)
+    assert report["dataset_path"] == "/data/acquire"
+    assert report["positions_completed"] == [
+        {"phase": "survey", "dataset_path": "/data/survey",
+         "status": "survey complete"}
+    ]
+    assert "readable now: /data/survey" in report["next"][0]
 
 
 SUPERVISED_TOOL_NAMES = [
     name for name, fn in tools.TOOL_REGISTRY.items()
     if getattr(fn, "_microclaw_acquisition_entry_point", False) and name != "run_mda"
 ]
+
+# The entry points whose acquisition is a per-position loop, so an expiry at
+# position 2 leaves position 1 finished on disk. run_tile_acquisition and
+# run_multiposition_with_autofocus both delegate to
+# run_multiposition_acquisition, but the autofocus wrapper always forwards a
+# hook_strategy, which runs ONE Acquisition spanning every position -- there is
+# no completed sibling dataset for it to name.
+LOOPING_COMPOSITES = {"run_multiposition_acquisition", "run_tile_acquisition"}
 
 
 @pytest.mark.parametrize("name", SUPERVISED_TOOL_NAMES)
@@ -268,16 +290,18 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
             self._acq.is_finished.return_value = False
         def acquire(self, events):
             super().acquire(events)
-            first_child_completes = name in {
-                "run_multiposition_acquisition", "run_tile_acquisition",
-            } and self.number == 1
-            if not first_child_completes:
+            if not self.completes:
                 self._exception = RuntimeError("engine died")
         def __exit__(self, *_exc):
-            if name in {"run_multiposition_acquisition", "run_tile_acquisition"} \
-                    and self.number == 1:
+            # The looping composites finish their first position, so the report
+            # has a completed dataset to name (D3a); every other entry point
+            # runs one Acquisition and dies in it.
+            if self.completes:
                 return None
             return super().__exit__(*_exc)
+        @property
+        def completes(self):
+            return name in LOOPING_COMPOSITES and self.number == 1
 
     monkeypatch.setattr(tools, "Acquisition", FatalCountingAcquisition)
     monkeypatch.setattr(tools, "ERROR_TEARDOWN_GRACE_S", 0.01)
@@ -299,9 +323,12 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
         return reservation
     monkeypatch.setattr(tools, "_authorize_acquisition", authorize)
 
+    # Three positions, not two: expiry lands on the second, so the count below
+    # distinguishes "the loop stopped" from "the loop ran out of positions".
     positions = [
         {"name": "p0", "x_um": 0, "y_um": 0},
         {"name": "p1", "x_um": 1, "y_um": 1},
+        {"name": "p2", "x_um": 2, "y_um": 2},
     ]
     common = {"save_dir": str(tmp_path)}
     inputs = {
@@ -316,7 +343,7 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
             "protocol_params": {"n_frames": 1, "interval_s": 0},
         },
         "run_tile_acquisition": {
-            **common, "rows": 1, "cols": 2, "step_um": 1,
+            **common, "rows": 1, "cols": 3, "step_um": 1,
             "protocol": "timelapse",
             "protocol_params": {"n_frames": 1, "interval_s": 0},
         },
@@ -342,30 +369,79 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
 
     result = json.loads(tools.execute_tool(name, inputs[name], ctrl, _guard()))
     assert result.get("acquisition") == "unterminated", result
-    expected_failed_path = (
-        "/data/run_2" if name in {
-            "run_multiposition_acquisition", "run_tile_acquisition",
-        } else "/data/run_1"
-    )
-    assert result["dataset_path"] == expected_failed_path
+    looping = name in LOOPING_COMPOSITES
+    assert result["dataset_path"] == ("/data/run_2" if looping else "/data/run_1")
     assert "frames_accounted" in result
-    if name in {"run_multiposition_acquisition", "run_tile_acquisition"}:
+    if looping:
+        # D3a: the first position finished, so its dataset is named and called
+        # readable. The failed acquisition's own path is run_2, above.
         assert result["positions_completed"] == [{
-            "x_um": (0 if name == "run_multiposition_acquisition" else -0.5),
-            "y_um": 0,
             "position": ("p0" if name == "run_multiposition_acquisition"
                          else "tile_r0_c0"),
-            "status": "Timelapse complete.",
             "dataset_path": "/data/run_1",
+            "status": "Timelapse complete.",
+            "x_um": (0.0 if name == "run_multiposition_acquisition" else -1.0),
+            "y_um": 0.0,
         }]
-        assert "/data/run_1" in result["next"][0]
+        assert "readable now: /data/run_1" in result["next"][0]
     else:
+        # A single acquisition finished nothing, and an empty list would be a
+        # claim rather than a silence, so the key is absent entirely.
         assert "positions_completed" not in result
     assert reservations and reservations[0].ledger.in_flight is True
-    assert FatalCountingAcquisition.constructions == (
-        2 if name in {"run_multiposition_acquisition", "run_tile_acquisition"} else 1
-    )
+    assert FatalCountingAcquisition.constructions == (2 if looping else 1)
     BlockingAcquisition.release.set()
+
+
+def test_completed_positions_are_projected_not_copied_so_the_report_survives():
+    """A child result carries live objects; the report must still serialize.
+
+    _unterminated_result is called from execute_tool's `except` clause and its
+    return is json.dumps'd there, so anything non-serializable in the payload
+    raises out of a function documented as never raising -- and the operator
+    loses the whole unterminated report, dataset path included. Copying the
+    child dict did exactly that: _acquire_survey_with_detector puts a live
+    Reservation into a result under _acquire_reservation.
+    """
+    reservation = AcquisitionLedger().reserve(MagicMock(), AcquisitionPlan(1, 1, 1, 1))
+    exc = tools.AcquisitionUnterminated(
+        dataset_path="/data/p1", frames_planned=2, frames_accounted=1,
+        engine_exception=None, camera_sequence_running=False,
+        teardown_running=True, expired_bound="runtime_ceiling", bound_s=1,
+        fallback_ceiling=False,
+        positions_completed=[{
+            "position": "p0", "x_um": 0.0, "y_um": 1.5,
+            "status": "Timelapse complete.", "dataset_path": "/data/p0",
+            "_acquire_reservation": reservation,
+            "declared_illumination_properties": MagicMock(),
+        }],
+    )
+    payload = json.loads(json.dumps(tools._unterminated_result(exc)))
+    assert payload["positions_completed"] == [{
+        "position": "p0", "dataset_path": "/data/p0",
+        "status": "Timelapse complete.", "x_um": 0.0, "y_um": 1.5,
+    }]
+    assert "readable now: /data/p0" in payload["next"][0]
+    assert payload["dataset_path"] == "/data/p1"
+
+
+def test_unterminated_result_tolerates_every_partial_payload_it_can_receive():
+    """It runs on the error path, so no input may make it raise."""
+    def _exc(positions_completed):
+        return tools.AcquisitionUnterminated(
+            dataset_path="/data/run", frames_planned=None, frames_accounted=0,
+            engine_exception=None, camera_sequence_running=None,
+            teardown_running=True, expired_bound="error_grace", bound_s=90,
+            fallback_ceiling=True, positions_completed=positions_completed,
+        )
+    for payload in (None, [], [{}], [None], ["not a dict"],
+                    [{"dataset_path": None, "x_um": "not a number"}]):
+        result = tools._unterminated_result(_exc(payload))
+        assert "positions_completed" not in result, payload
+        json.dumps(result)
+    # A record with nothing but a path is still worth reporting.
+    result = tools._unterminated_result(_exc([{"dataset_path": "/data/p0"}]))
+    assert result["positions_completed"] == [{"dataset_path": "/data/p0"}]
 
 
 def test_position_dominated_run_keeps_producing_past_ceiling_and_completes(monkeypatch):

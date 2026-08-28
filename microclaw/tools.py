@@ -1912,7 +1912,7 @@ class AcquisitionUnterminated(RuntimeError):
                  frames_accounted: int, engine_exception: BaseException | None,
                  camera_sequence_running: bool | None, teardown_running: bool,
                  expired_bound: str, bound_s: float, fallback_ceiling: bool,
-                 partial: dict[str, Any] | None = None) -> None:
+                 positions_completed: list[dict[str, Any]] | None = None) -> None:
         super().__init__("pycro-manager teardown did not complete")
         self.dataset_path = dataset_path
         self.frames_planned = frames_planned
@@ -1923,7 +1923,12 @@ class AcquisitionUnterminated(RuntimeError):
         self.expired_bound = expired_bound
         self.bound_s = bound_s
         self.fallback_ceiling = fallback_ceiling
-        self.partial = partial
+        # design/60 D3a: a composite that expires part-way through has already
+        # finished datasets on disk, and D3's single dataset_path names only the
+        # one that died. A composite assigns the child results it already holds
+        # here on its way out; nothing is ever discovered from the filesystem,
+        # because guessing a dataset path is design/38 F7's original defect.
+        self.positions_completed = positions_completed
 
 
 def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
@@ -1941,6 +1946,34 @@ def _camera_sequence_running(ctrl: Any) -> bool | None:
         return bool(ctrl.core.is_sequence_running())
     except Exception:
         return None
+
+
+def _completed_position_record(item: Any) -> dict[str, Any]:
+    """Project one finished child result onto JSON-safe reporting fields.
+
+    Never copy the child dict. A per-position result is a whole tool payload —
+    it carries reservation reports, hook restoration records and whatever a
+    later field adds — and `_unterminated_result` runs on the error path of
+    `execute_tool`, which `json.dumps` its return from inside an `except`
+    clause. A single non-serializable value there (`_acquire_survey_with_detector`
+    really does put a live `Reservation` into a result under
+    `_acquire_reservation`) raises out of a function documented as never
+    raising, and the whole report is lost. Projecting is also the better report:
+    the operator wants which positions finished and where their data is, not the
+    child tool's payload.
+    """
+    if not isinstance(item, dict):
+        return {}
+    record: dict[str, Any] = {}
+    for key in ("position", "phase", "dataset_path", "status"):
+        if item.get(key) is not None:
+            record[key] = str(item[key])
+    for key in ("x_um", "y_um", "z_um"):
+        try:
+            record[key] = float(item[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return record
 
 
 def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
@@ -1977,17 +2010,24 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
         "expired_bound": exc.expired_bound, "ceiling_fallback": exc.fallback_ceiling,
         "hardware": hardware, "next": next_steps,
     }
-    if exc.partial:
-        result.update(exc.partial)
-        completed = exc.partial.get("positions_completed")
-        paths = [
-            item["dataset_path"] for item in completed or []
-            if isinstance(item, dict) and item.get("dataset_path")
-        ]
+    completed = [
+        record for record in (
+            _completed_position_record(item)
+            for item in (exc.positions_completed or [])
+        ) if record
+    ]
+    if completed:
+        # Only when there is something to report. An empty positions_completed
+        # on a single acquisition would be a claim, not a silence (D3a), so a
+        # run_zstack or run_timelapse report carries no such key at all.
+        result["positions_completed"] = completed
+        paths = [record["dataset_path"] for record in completed
+                 if record.get("dataset_path")]
         if paths:
-            result["next"].insert(0, (
-                "These completed datasets are finished and independent of the "
-                "failed acquisition, so they are readable now: " + ", ".join(paths)
+            next_steps.insert(0, (
+                f"{len(paths)} dataset(s) finished before this failure and are "
+                "written by Micro-Manager independently of it, so they are "
+                "readable now: " + ", ".join(paths)
             ))
     return result
 
@@ -5917,13 +5957,14 @@ def run_multiposition_acquisition(
                     )
                     results.append({**where, **result})
                 except AcquisitionUnterminated as exc:
-                    completed = [
-                        dict(item) for item in results if item.get("dataset_path")
+                    # Positions 1..n-1 have finished datasets on disk and this
+                    # loop is holding their results (design/60 D3a). Attach only
+                    # what those child calls recorded — never a sibling path
+                    # inferred from the filesystem, which is design/38 F7's
+                    # original defect. _unterminated_result projects them.
+                    exc.positions_completed = [
+                        item for item in results if item.get("dataset_path")
                     ]
-                    if completed:
-                        # These paths came from completed child tool results;
-                        # never infer siblings by inspecting the filesystem.
-                        exc.partial = {"positions_completed": completed}
                     unterminated = True
                     raise
                 except Exception as e:
@@ -7437,15 +7478,17 @@ def run_adaptive_survey(
             elif acquire_reservation is not None:
                 acquire_reservation.close()
         except AcquisitionUnterminated as exc:
+            # The survey phase completed before the acquire-on-hit phase
+            # expired, so its dataset is finished and independent of the
+            # failure (design/60 D3a, F7). It is the path this call already
+            # recorded, not one discovered on disk.
             survey_path = result.get("dataset_path")
             if survey_path:
-                exc.partial = {
-                    "positions_completed": [{
-                        "phase": "survey",
-                        "dataset_path": survey_path,
-                        **({"status": result["status"]} if result.get("status") else {}),
-                    }],
-                }
+                exc.positions_completed = [{
+                    "phase": "survey",
+                    "dataset_path": survey_path,
+                    "status": result.get("status"),
+                }]
             raise
         except Exception:
             if acquire_reservation is not None:
