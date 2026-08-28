@@ -95,16 +95,29 @@ def main():
 
     active_path = args.active_safety_config.resolve()
     template_path = (ROOT / "design/59-block59a-demo-safety-config.yaml").resolve()
-    active_bytes = active_path.read_bytes()
-    active_mtime_ns = active_path.stat().st_mtime_ns
-    print(f"Active safety document (not installed or replaced): {active_path} sha256={sha256(active_path)}")
+    # Read, never require. A machine that keeps its safety document elsewhere
+    # still has every other limb to run; dying here would spend the trip on the
+    # one limb that is about this gate rather than about the feature.
+    try:
+        active_bytes = active_path.read_bytes()
+        active_mtime_ns = active_path.stat().st_mtime_ns
+        active_error = None
+        print(f"Active safety document (not installed or replaced): {active_path} sha256={sha256(active_path)}")
+    except OSError as exc:
+        active_bytes = active_mtime_ns = None
+        active_error = f"{type(exc).__name__}: {exc}"
+        print(f"Active safety document unreadable at {active_path}: {active_error}")
 
-    ctrl = MicroscopeController(port=args.port)
-    counted = CountingCore(ctrl.core)
-    ctrl._core = counted
     setup_error = None
     generated_path = args.output / "generated-safety-config.yaml"
     try:
+        # Inside the try: a Micro-Manager whose ZMQ server was never enabled is
+        # the likeliest first-run failure on the rig, and it must arrive as a
+        # named reason on every limb rather than as a traceback with no
+        # results.json behind it.
+        ctrl = MicroscopeController(port=args.port)
+        counted = CountingCore(ctrl.core)
+        ctrl._core = counted
         loaded = list(counted.get_loaded_devices())
         raw_inventory = _build_state_device_inventory(counted, loaded)
         discovered_configs = _config_mismatches(ctrl)
@@ -149,6 +162,11 @@ def main():
         second_calls = counted.calls - before
     except Exception as exc:
         setup_error = f"{type(exc).__name__}: {exc}"
+        # 58e: when a gate fails for a reason its own artifacts cannot explain,
+        # the next trip is spent finding out why. Keep the whole traceback.
+        (args.output / "setup-error.txt").write_text(
+            traceback.format_exc(), encoding="utf-8"
+        )
         first = second = {}
         first_s = second_s = 0.0
         first_calls = second_calls = 0
@@ -178,6 +196,9 @@ def main():
     def keys_present():
         if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         assert {"optical_path", "objective", "focus"} <= set(first)
+        # 59b reaches its reference tool from this hint and from nowhere else.
+        assert isinstance(first["optical_path"], dict), first["optical_path"]
+        assert first["optical_path"].get("hint", "").strip()
 
     @limb("port vocabulary marks without filtering", "an unmarked discrete device vanishes")
     def marks_not_filters():
@@ -276,6 +297,10 @@ def main():
 
     @limb("production safety document untouched", "the gate changes production safety bytes/mtime or writes generated safety outside evidence")
     def safety_untouched():
+        if active_error:
+            raise NotExercised(
+                f"no readable production safety document at {active_path}: {active_error}"
+            )
         assert active_path.read_bytes() == active_bytes
         assert active_path.stat().st_mtime_ns == active_mtime_ns
         assert generated_path.parent.resolve() == args.output.resolve()

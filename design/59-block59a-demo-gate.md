@@ -35,3 +35,9 @@ failed gate: report its reason and return the existing evidence directory; do
 not rename devices, edit the generated safety file, or retry. If the program
 dies before producing every artifact, return the directory it did create plus
 the complete console error and stop rather than rerunning.
+
+If every limb reports NOT EXERCISED with `Couldn't create Core`, the gate never
+reached Micro-Manager: check that the ZMQ server is enabled on port 4827 in
+Micro-Manager's options, then run the command again. That is the one retry this
+runbook asks for; `setup-error.txt` in the evidence directory carries the full
+traceback either way.
