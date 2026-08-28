@@ -7831,9 +7831,15 @@ calls / 36 ms**, then **27 / 8 ms** — the §3 ceiling of 1.5 s is nowhere near
 binding.
 
 **Three facts about the demo machine that 59b needs.** Its light-path device
-`Path` carries `State-0/1/2`, so the port vocabulary correctly marks **nothing**
-— which is why 59b must rename those labels over the bridge with
-`define_state_label` to have any control that can fail. The Core shutter is
+`Path` carries `State-0/1/2`, so the port vocabulary correctly marks **nothing**.
+~~Which is why 59b must rename those labels over the bridge with
+`define_state_label` to have any control that can fail.~~ **Struck 2026-08-28**:
+microclaw never writes a state label, on any rig, for any reason — a tool that
+renames a microscope's hardware to make its own gate scoreable has broken the
+thing it was measuring. 59b's control that can fail comes from the **adapter**
+instead (`DLightPath` / `Demo light path`), which identifies the routing device
+with no writes at all, and the non-routing control is a filter wheel that must
+*not* draw the routing question. The Core shutter is
 `White Light Shutter`. And the demo `Autofocus` device exposes no status
 property at all: `status_properties` came back `Description`, `HubID`, `Name`,
 while `probe_hint` invited a probe against "one of the properties above". That

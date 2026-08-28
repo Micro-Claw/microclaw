@@ -498,7 +498,11 @@ a pattern, not a new layer. Contents, all generic:
   reflecting surface.
 - **The Nikon PFS offset-range/immersion numbers currently in `SYSTEM_PROMPT`**
   (`agent.py:407–412`) move here, as one worked example of the general shape,
-  clearly marked as Nikon-specific. The prompt keeps only the generic procedure:
+  clearly marked as Nikon-specific. **This bullet is block 59c, not 59b**
+  (operator decision, 2026-08-28): no reachable machine can drive the rewritten
+  prompt procedure, so the move waits for a Ti rather than shipping behind a
+  grep. Until then this file carries the generic material above and names no
+  Nikon identifier. The prompt keeps only the generic procedure:
   inspect the reported lock state, use the lock's property probe to locate its
   capture band, verify signal, and jog after engagement to reject a wrong-surface
   lock. The Nikon heading and the identifiers `PFS`, `TIPFSStatus`, and
@@ -629,7 +633,7 @@ adds the one thing the demo machine cannot produce: M5 has no Core shutter, so
 `get_shutter_device()` returns empty rather than raising, which is the *other*
 half of the shutter-exclusion branch. It is not a precondition of merging.
 
-### 59b — the reference, the adapter, and the prompt loses its hardware names
+### 59b — the reference, the adapter, and the identity-scoped position map
 
 Items:
 
@@ -640,10 +644,11 @@ Items:
    now killed three gates.
 2. `optical_path.hint` names the tool; the tool is not named in `SYSTEM_PROMPT`'s
    always-paid prose.
-3. Move the Nikon heading, PFS identifiers, and PFS offset-range/immersion
-   numbers out of `SYSTEM_PROMPT` into the reference. Keep the procedure in
-   hardware-neutral language (inspect/probe/engage, then jog + image check on
-   every lock; never substitute an offset range for the capture band).
+3. **Held back to block 59c** (operator decision, 2026-08-28). Emptying
+   `SYSTEM_PROMPT`'s Nikon section into the reference rewrites working,
+   rig-proven focus procedure that no available machine can drive; see 59c.
+   59b's reference file therefore carries §4's generic material only, and
+   `SYSTEM_PROMPT` keeps its Nikon section unchanged apart from item 4's line.
 4. Add one prompt line to the blank-frame guidance: after a blank frame, read
    `optical_path` before considering another exposure — alongside the existing
    `declared_illumination_properties` instruction, which is the same shape.
@@ -795,9 +800,10 @@ block. This checklist names *what* each block owes; that section owns *how*.
 Where the two disagree, `CLAUDE.md` wins and this document gets fixed.
 
 **Machine availability, 2026-08-28: the demo machine only.** The operator has
-lost access to the Nikon; M2 and M5 are reachable if free. Both gates are
-therefore designed for the demo machine, and what the demo machine cannot settle
-is written down as owed rather than quietly dropped.
+lost access to the Nikon; M2 and M5 are reachable if free. 59a's and 59b's gates
+are therefore designed for the demo machine, and what the demo machine cannot
+settle is written down as owed rather than quietly dropped — in 59c's case as a
+whole block that does not start until a Ti exists.
 
 **Order: 59a, then 59b.** 59b's reference tool is reached from
 `optical_path.hint`, which 59a creates, and its gate reads the payload 59a
@@ -920,7 +926,7 @@ Owed, recorded rather than waived:
   `get_shutter_device()` returns empty rather than raising — the other half of
   limb 18. Run it if M5 is free.
 
-### Block 59b — the reference, the adapter, and the prompt loses its hardware names
+### Block 59b — the reference, the adapter, and the identity-scoped position map
 
 Implementation (§2, §4):
 
@@ -928,6 +934,9 @@ Implementation (§2, §4):
   splits; what Micro-Manager cannot see (the manual prism named as the **first**
   thing to check on a blank frame with a valid lock); objectives, working
   distance and search windows; hardware focus locks and the wrong-surface lock.
+  §4's final bullet — the Nikon PFS worked example — is **not** written here;
+  it arrives with block 59c, and a test asserts `optics_docs.py` names no Nikon
+  identifier while 59b stands, so the split cannot half-happen either.
 - [ ] 29a. The reference is framed as *how light paths usually work*, in those
   words, and the path ordering carries the caveat that stands differ — inverted,
   epi-illuminated, TIRF, spinning-disk and multi-camera rigs all depart from it.
@@ -939,21 +948,9 @@ Implementation (§2, §4):
   `raise RuntimeError` in every exported script that recorded it, which has now
   killed three gates.
 - [ ] 31. `optical_path.hint` names the tool; `SYSTEM_PROMPT` does not.
-- [ ] 32. The Nikon PFS **offset-range** and immersion numbers move out of
-  `SYSTEM_PROMPT` (`agent.py:407–412`) into the reference, marked
-  Nikon-specific. So do the Nikon heading and the identifiers `PFS`,
-  `TIPFSStatus`, and `PFSOffset`. The prompt keeps the generic procedure: inspect
-  live lock state, locate the capture band with the reported property probe,
-  engage, image-check and jog every lock, and never substitute an offset range
-  for the capture band. **Score this MOVED, not VERIFIED — see row 44a:** no
-  available machine can drive the rewritten procedure, so item 34's grep proves
-  the text moved and nothing proves it still works.
 - [ ] 33. One prompt line: after a blank frame, read `optical_path` before
   considering another exposure — alongside the existing
   `declared_illumination_properties` instruction, which is the same shape.
-- [ ] 34. A test that the moved numbers and Nikon identifiers are no longer in
-  the prompt **and** are in the reference, while the generic engage/image/jog
-  procedure remains, so the move cannot half-happen in either direction.
 - [ ] 34a. `_build_state_device_inventory` retains `get_device_name` and
   `get_device_description` per StateDevice, each failing to `"unknown"` with the
   error recorded rather than dropping the entry — the same rule `allowed` already
@@ -1099,21 +1096,43 @@ Gate — demo machine, a driven session plus two programs:
   label-matching source of the light-path role** — no demo device carries port
   vocabulary in its labels, so that half is fixture-only until a Ti is available.
   The demo gate tests the mechanism, not the 2026-08-23 scene.
-- [ ] 44a. **Owed, and the sharpest debt in this block: item 32's rewritten focus
-  procedure is unexercised by any available machine.** `agent.py:381–410` is
-  working, rig-proven text — sweep semantics, the steady-vs-transient in-range
-  warning, the mandatory jog and image check, the air-bubble diagnosis — and 32
-  rewrites it hardware-neutral. The Nikon is gone, and 59a established that the
-  demo `Autofocus` exposes no status property at all (row 28b), so the demo
-  machine cannot exercise probe, engage or jog. Limb 41 checks only that the lock
-  is *proposed*. Item 34 greps that the text moved; **nothing proves the
-  moved-to version still drives a lock.** Score item 32 as MOVED, never as
-  VERIFIED, and re-run the procedure end to end on the first Ti available.
-  If the operator would rather not carry an unexercised prompt rewrite at all,
-  item 32 is separable from the rest of 59b — every other item here is
-  demo-testable — and can be held as its own block until a Ti exists.
+### Block 59c — the prompt loses its hardware names
 
-### Post-merge design gate (step 10, both blocks)
+Split out of 59b by operator decision, 2026-08-28, on row 44a's own argument.
+`agent.py:381–410` is working, rig-proven focus text — sweep semantics, the
+steady-vs-transient in-range warning, the mandatory jog and image check, the
+air-bubble diagnosis. Rewriting it hardware-neutral is right, and **no machine
+now reachable can drive the rewritten version**: the Nikon is gone, and 59a
+measured that the demo `Autofocus` exposes no status property at all (row 28b),
+so probe, engage and jog cannot be exercised. Shipping it inside 59b would put
+an unexercised prompt rewrite on `main` behind a grep. It waits for a Ti.
+
+Nothing else in 59b depends on it. 59b's reference file is generic; 59c appends
+the Nikon worked example to it and empties the prompt's Nikon section in the
+same commit, so the two halves of the move cannot separate.
+
+- [ ] 32. The Nikon PFS **offset-range** and immersion numbers move out of
+  `SYSTEM_PROMPT` (`agent.py:407–412`) into `optics_docs.py`, marked
+  Nikon-specific. So do the Nikon heading and the identifiers `PFS`,
+  `TIPFSStatus`, and `PFSOffset`. The prompt keeps the generic procedure: inspect
+  live lock state, locate the capture band with the reported property probe,
+  engage, image-check and jog every lock, and never substitute an offset range
+  for the capture band.
+- [ ] 34. A test that the moved numbers and Nikon identifiers are no longer in
+  the prompt **and** are in the reference, while the generic engage/image/jog
+  procedure remains, so the move cannot half-happen in either direction. It
+  replaces 59b's test that the reference names no Nikon identifier (item 29);
+  both cannot stand at once, and that is the point.
+- [ ] 44b. **Gate: a Nikon Ti, and there is no substitute.** The whole reason
+  this is its own block is that item 34's grep proves the text moved and nothing
+  proves the moved-to version still drives a lock. Run the rewritten procedure
+  end to end — inspect, locate the capture band with the property probe, engage,
+  image-check, jog — on the first Ti available. Until then 59c does not start.
+  Row 44's other Ti debts (a real routing-caused blank field, the manual prism,
+  a `4-Unknown` turret, the label-matching source of the light-path role) should
+  be collected on the same trip.
+
+### Post-merge design gate (step 10, all blocks)
 
 - [x] 45. (59a) Reconcile this document to what was measured — especially §3's cost
   table against the gate's real bridge-call count and wall time.
@@ -1121,8 +1140,9 @@ Gate — demo machine, a driven session plus two programs:
   rows below.
 - [x] 47. (59a) `git log --oneline origin/main..main` empty for each block; branch
   deleted locally and on `origin`.
-- [ ] 48. Carry the owed-to-a-Ti rows (27, 44, 44a) forward into design/35's
-  register, so losing Nikon access does not lose the evidence debt.
+- [ ] 48. Carry the owed-to-a-Ti rows (27, 44) and block 59c itself forward into
+  design/35's register, so losing Nikon access does not lose the evidence debt.
+  59c is a whole block waiting on a machine, not a footnote inside a merged one.
 - [ ] 49. Carry the port-token false positives as their own register row, not as
   a line inside a feature block: `_PORT_LABEL_WORDS.search()` is substring
   matching on `main` today, and any rig with a `Photoactivation`, `Brightfield`,
@@ -1136,4 +1156,5 @@ Gate — demo machine, a driven session plus two programs:
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; the product half was a silent `available_configs: []`. Round 2 **PASS 11/11**, 39 calls/36 ms then 27/8 ms; restore read-back added afterwards | `e314927` merged 2026-08-28, branch deleted |
-| 59b | — | — | — | — | — (design amended 2026-08-28: no renames, adapter identity, identity-scoped `devices/` map, compound port tokens; not started) |
+| 59b | `design59/optics-reference` | `906fac8` (2026-08-28) | — | — | — (design amended 2026-08-28: no renames, adapter identity, identity-scoped `devices/` map, compound port tokens; item 32 split out to 59c) |
+| 59c | — | — | — | — | — (not started, and does not start: gated on a Nikon Ti) |
