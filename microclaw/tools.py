@@ -3064,8 +3064,9 @@ def _optical_path_state(
             "A discrete-position device whose labels name ports routes light to the "
             "camera or the eyepiece. Micro-Manager sees only the motorized part of "
             "the path; a manual prism or slider can send light elsewhere with every "
-            "value above unchanged. Call get_optical_path_documentation before "
-            "interpreting these."
+            "value above unchanged. If the camera is not getting the signal you "
+            "expect, call get_optical_path_documentation before interpreting these; "
+            "when imaging is working there is nothing here to look up."
         ),
     }
     if position_map_error is not None:

@@ -183,8 +183,10 @@ present even as `"unknown"`, because *an omitted key is an invitation*
   "hint": "A discrete-position device whose labels name ports routes light to
            the camera or the eyepiece. Micro-Manager sees only the motorized
            part of the path; a manual prism or slider can send light elsewhere
-           with every value above unchanged. Call
-           get_optical_path_documentation before interpreting these."
+           with every value above unchanged. If the camera is not getting the
+           signal you expect, call get_optical_path_documentation before
+           interpreting these; when imaging is working there is nothing here to
+           look up."
 },
 "objective": {
   "pixel_size_config": null,
@@ -520,6 +522,16 @@ a pattern, not a new layer. Contents, all generic:
 
 The prompt is not grown to carry this. `optical_path.hint` names the tool in the
 orientation payload itself, the way `probe_hint` already names `run_autofocus`.
+
+**And the hint conditions the call on a signal problem** (operator, 2026-08-28).
+The reference is a whole document, and an unconditional *"call this before
+interpreting these"* pulls it into context in every session that ever reads
+orientation — which is all of them. There is nothing in it to act on while
+imaging is working: it exists for the case where light is not reaching the
+camera. So the hint names the tool **inside** the condition, in the same
+sentence, and a test pins that the two cannot separate. The prompt's blank-frame
+line (item 33) is what routes an agent to `optical_path` in the first place; the
+hint is what routes it onward to the reference, and only then.
 That way a rig with no discrete-position devices and no focus lock pays no
 per-device reads or documentation-token cost. It still pays the small fixed
 focus-discovery cost: on the non-EMU path, the autofocus-device and
@@ -955,7 +967,11 @@ Implementation (§2, §4):
   `TOOL_REGISTRY` **and decorated** — an undecorated tool plants a
   `raise RuntimeError` in every exported script that recorded it, which has now
   killed three gates.
-- [ ] 31. `optical_path.hint` names the tool; `SYSTEM_PROMPT` does not.
+- [ ] 31. `optical_path.hint` names the tool; `SYSTEM_PROMPT` does not. The hint
+  **conditions the call on the camera not getting the expected signal** and says
+  so in the sentence that names the tool, so it cannot be read as a
+  read-me-every-session instruction; a test asserts the condition and the tool
+  name occupy the same sentence.
 - [ ] 33. One prompt line: after a blank frame, read `optical_path` before
   considering another exposure — alongside the existing
   `declared_illumination_properties` instruction, which is the same shape.
@@ -1092,7 +1108,12 @@ Gate — demo machine, a driven session plus two programs:
 - [ ] 41. Focus: the hardware lock proposed before any image-based sweep, from
   orientation alone, unprompted.
 - [ ] 42. `get_optical_path_documentation` reached from the hint; the shipped
-  prompt greps clean of its name.
+  prompt greps clean of its name. **Scored as a pair, because the hint is now
+  conditional (item 31) and a limb that cannot fail is not a criterion**: the
+  tool is reached in the blank-frame round, where the camera is not getting the
+  signal the agent expects, and is **not** reached in a round where imaging is
+  working. A session that pulls the whole reference into context every time it
+  reads orientation fails this limb even though it "used the tool".
 - [ ] 42a. Cost measured with the adapter reads in place in three separate
   phases: live-rig validation, first `get_system_state`, and second
   `get_system_state`. Report the latter two against §3's 39/36 ms and 27/8 ms,

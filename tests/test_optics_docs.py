@@ -27,6 +27,21 @@ def test_hint_names_documentation_tool_but_system_prompt_does_not():
     assert agent.SYSTEM_PROMPT.count("before considering another exposure") == 1
 
 
+def test_hint_asks_for_the_reference_only_when_signal_is_missing():
+    # The reference is a whole document; an unconditional "call this before
+    # interpreting these" pulls it into context on every session that ever reads
+    # orientation. It earns its tokens only when the camera is not getting
+    # signal (operator, 2026-08-28), so the hint must condition the call and
+    # must say so in the same sentence that names the tool.
+    hint = inspect.getsource(tools._optical_path_state)
+    sentence = next(
+        part for part in hint.replace("\n", " ").split(".")
+        if "get_optical_path_documentation" in part
+    )
+    assert "not getting the signal" in sentence
+    assert "when imaging is working" in hint
+
+
 def test_scoped_modules_do_not_define_state_labels():
     scoped_modules = (
         ("microclaw/authorization.py", authorization),
