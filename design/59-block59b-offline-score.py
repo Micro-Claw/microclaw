@@ -434,6 +434,17 @@ def run() -> tuple[Score, dict]:
             def must_not_confirm(*a, **k): raise AssertionError("CONFIRM_FN reached on refusal")
             tools.CONFIRM_FN = must_not_confirm
             cases = []
+            session_c_shape = {
+                "description": "Motorized light-path selector", "device": "Path",
+                "property": "Label", "observed_on": "DemoCamera",
+                "position_map": {"State-0": "eyepiece", "State-1": "left camera",
+                                 "State-2": "right camera"},
+            }
+            missing_kind = tools.save_knowledge(
+                ctrl, guard, "devices", "session-c", session_c_shape)
+            if "optical_path_position_map" not in missing_kind.get("error", ""):
+                raise AssertionError(f"missing-kind refusal lacks correct shape: {missing_kind}")
+            cases.append(missing_kind)
             wrong = {**base, "observed_on": {**condition, "adapter": "Wrong"}}
             cases.append(tools.save_knowledge(ctrl, guard, "devices", "wrong", wrong))
             ctrl._state_device_inventory["devices"][-1]["adapter"] = "unknown"
@@ -445,6 +456,13 @@ def run() -> tuple[Score, dict]:
             ctrl._state_device_inventory = saved_inventory
             cases.append(tools.save_knowledge(ctrl, guard, "devices", "bad-label",
                                               {**base, "positions": {"State-9": "camera"}}))
+            tools.CONFIRM_FN = lambda *a, **k: True
+            ordinary = tools.save_knowledge(ctrl, guard, "devices", "path-note", {
+                "description": "Selector detent is stiff", "device": "Path",
+                "observed_on": "DemoCamera", "caveat": {"service": "inspect annually"},
+            })
+            if "status" not in ordinary:
+                raise AssertionError(f"ordinary StateDevice note over-refused: {ordinary}")
             return score.check(all("error" in case for case in cases), str(cases))
         finally:
             tools.CONFIRM_FN, km.KNOWLEDGE_PATH = old_confirm, old_path
@@ -502,7 +520,7 @@ M5_CAPABILITY = {
 NEEDS_RIG = [
     "Wall-time cost: a fake can count calls but cannot measure pyjavaz and adapter latency.",
     "Real bridge behavior: confirm the retained adapter metadata and bridge-shaped collections through pyjavaz.",
-    "Driven-session behavior: verify the agent reads optical_path before exposure, asks routing only when unnamed, uses a stored map without asking again, handles a blank frame physically, reports the objective unknown, proposes the hardware lock, and calls the reference only when signal is missing.",
+    "Driven-session behavior: verify the agent reads optical_path before exposure, asks routing only when unnamed, uses a stored map without asking again, handles a blank frame physically, proposes the hardware lock before an image sweep, and calls the reference only when signal is missing.",
 ]
 
 

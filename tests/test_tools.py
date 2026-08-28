@@ -4526,6 +4526,51 @@ class TestReadHookFromFile:
 
 
 class TestSaveKnowledgeConfirmation:
+    def test_session_c_position_map_shape_without_discriminator_is_refused_with_shape(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        mock_ctrl._state_device_inventory = {"devices": [{
+            "device": "Path", "adapter": "DLightPath",
+            "allowed": ["State-0", "State-1", "State-2"],
+        }]}
+        monkeypatch.setattr(tools, "CONFIRM_FN",
+                            lambda *a, **k: pytest.fail("confirmation must not run"))
+        result = tools.save_knowledge(mock_ctrl, unconstrained_guard, "devices",
+                                      "Path_light_path_selector", {
+            "description": "Motorized light-path selector",
+            "device": "Path",
+            "property": "Label",
+            "position_map": {"State-0": "eyepiece", "State-1": "left camera",
+                             "State-2": "right camera"},
+            "observed_on": "DCam",
+        })
+        assert "missing the structured discriminator" in result["error"]
+        assert "'kind': 'optical_path_position_map'" in result["error"]
+        assert "'device': <StateDevice config label>" in result["error"]
+        assert "'positions':" in result["error"]
+        assert "Do not send observed_on" in result["error"]
+
+    def test_ordinary_note_about_same_state_device_still_saves(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        mock_ctrl._state_device_inventory = {"devices": [{
+            "device": "Path", "adapter": "DLightPath",
+            "allowed": ["State-0", "State-1", "State-2"],
+        }]}
+        prompted, saved = [], []
+        monkeypatch.setattr(tools, "CONFIRM_FN",
+                            lambda summary, kind="action": prompted.append(summary) or True)
+        monkeypatch.setattr("microclaw.knowledge_manager.save_entry",
+                            lambda *args: saved.append(args))
+        value = {"description": "Selector detent is stiff", "device": "Path",
+                 "observed_on": "DCam", "caveat": {"service": "inspect annually"}}
+        result = tools.save_knowledge(mock_ctrl, unconstrained_guard,
+                                      "devices", "path_note", value)
+        assert result["value"] == value
+        assert prompted and saved == [("devices", "path_note", value)]
+
     @pytest.mark.parametrize("inventory", [None, "absent"])
     def test_structured_map_refuses_unbuilt_inventory_with_actual_cause(
         self, mock_ctrl, unconstrained_guard, monkeypatch, inventory

@@ -83,9 +83,9 @@ def orientation(mapped=False):
 
 
 def passing_histories(tmp):
-    a = [message("user", "Please get set up and image my brightfield sample."), use("get_system_state", "a1"),
+    a = [message("user", "I have a sample on this microscope in brightfield mode. Can you find the focus?"), use("get_system_state", "a1"),
          result("a1", orientation()), message("assistant", [{"type": "text", "text":
-         "Micro-Manager does not know the objective. I propose the hardware autofocus lock. What is on each Path position?"}]),
+         "I propose the hardware autofocus lock. What is on each Path position?"}]),
          use("snap_and_analyze", "a2"), result("a2", {"mean": 10}), message("assistant", "Image works.")]
     b = [message("user", "Take one frame and report what you see. Then ask what you need and offer to remember my answer."),
          use("get_system_state", "b0"), result("b0", orientation()), use("snap_and_analyze", "b1"),
@@ -139,7 +139,7 @@ def main():
         ("opening contamination", lambda hs: hs[0].__setitem__(0, message("user", "Check routing, objective, and autofocus."))),
         ("reference pair", lambda hs: hs[0].insert(3, use("get_optical_path_documentation", "badref"))),
         ("A routing order", lambda hs: hs[0].insert(3, use("snap_and_analyze", "early"))),
-        ("A controls", lambda hs: hs[0].__setitem__(3, message("assistant", "Emission: what is each position? default objective."))),
+        ("A controls", lambda hs: hs[0].__setitem__(3, message("assistant", "Emission: what is each position? I will use an image sweep."))),
         ("B physical", lambda hs: hs[1].__setitem__(5, message("assistant", "I will expose again."))),
         ("B save", lambda hs: None),
         ("C mapping", lambda hs: hs[2][2]["content"][0].update(content=json.dumps(orientation(False)))),

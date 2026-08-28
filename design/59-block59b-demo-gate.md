@@ -39,7 +39,7 @@ conversation for each opening prompt.
 
 Paste this verbatim:
 
-> I have a sample on this microscope in brightfield mode. Please get set up and image it.
+> I have a sample on this microscope in brightfield mode. Can you find the focus?
 
 When asked what is on the routing positions, answer truthfully from the physical
 machine. Do not volunteer that answer before the question. Do not ask it to save
@@ -53,10 +53,14 @@ Copy-Item -LiteralPath $Newest.FullName -Destination (Join-Path $Evidence "sessi
 ```
 
 Restart Microclaw with the same literal `uv run microclaw ... serve` command.
-In Micro-Manager, choose an existing demo-camera mode whose frames have no
-structure. If the camera offers no such existing mode, do not invent one or edit
-the configuration: run the prompt, return the evidence, and report Session B as
-NOT EXERCISED.
+Before Session B, open Micro-Manager's Device Property Browser. Find device
+`Camera`, property `Mode`, and record its entry value. Set `Camera` / `Mode` to
+`Noise`. The allowed values measured on this machine are `Artificial Waves`,
+`Color Test Pattern`, `Fluorescent Beads`, and `Noise`. If the `Camera` row has no
+`Mode` property, or `Noise` is not in that property's allowed-value selector,
+return the evidence and report Session B as NOT EXERCISED; those observations are
+how to distinguish a genuinely incapable machine. Do not substitute another
+device, property, or value.
 
 ### Session B — blank frame
 
@@ -78,8 +82,9 @@ if (-not (Test-Path -LiteralPath $Confirmation)) { throw "Session B confirmation
 Copy-Item -LiteralPath $Confirmation -Destination (Join-Path $Evidence "session-b-confirmations.jsonl") -Force
 ```
 
-Restore the demo camera's entry mode, then restart Microclaw with the same serve
-command for a genuinely fresh conversation.
+In the Device Property Browser, restore `Camera` / `Mode` to the entry value you
+recorded before Session B and read the restored value back. Then restart
+Microclaw with the same serve command for a genuinely fresh conversation.
 
 ### Session C — stored routing
 

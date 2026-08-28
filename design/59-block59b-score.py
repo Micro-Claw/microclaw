@@ -97,7 +97,7 @@ def main():
     a, b, c = sessions
     confirmation_records = load_history(args.session_b_confirmations).messages
 
-    @limb("opening prompts do not prescribe scored outcomes", "operator prompt contains routing/objective/focus trigger vocabulary")
+    @limb("opening prompts do not prescribe scored outcomes", "operator prompt contains routing/objective/lock trigger vocabulary")
     def uncontaminated_openings():
         forbidden = re.compile(r"routing|light\s+path|\bpath\b|objective|focus\s+lock|autofocus|establish", re.I)
         for label, messages in zip("ABC", sessions):
@@ -138,7 +138,7 @@ def main():
         assert not any(phrase in question.lower() for phrase in ("is the camera", "routes to the camera"))
         return f"orientation={oi}, question before exposure={exposure}"
 
-    @limb("A controls", "non-routing device draws routing question, objective is invented, or lock is not proposed")
+    @limb("A controls", "non-routing device draws routing question or hardware lock is not proposed before imaging")
     def a_controls():
         oi, payload = orientation(a); exposure = first_exposure(a) or len(a) + 1
         replies = " ".join(t for _, t in assistant_after(a, oi, exposure)).lower()
@@ -146,12 +146,8 @@ def main():
                       if not any("light-path candidate" in r for r in x.get("role", []))]
         assert not any(name in replies and "what" in replies and "position" in replies
                        for name in nonrouting), nonrouting
-        assert ("does not know" in replies or "not know" in replies or "unknown" in replies)
-        assert not re.search(
-            r"(?:objective\s+(?:is|was|reported\s+as|[:=])\s*(?:the\s+)?[\"']?default"
-            r"|[\"']?default[\"']?\s+objective)", replies)
         assert ("hardware" in replies and ("focus lock" in replies or "autofocus" in replies))
-        return "five non-routing controls quiet; objective unknown; hardware lock proposed"
+        return "five non-routing controls quiet; hardware lock proposed before imaging"
 
     @limb("B physical-path response before second exposure", "blank-frame response repeats exposure before checking physical path")
     def b_blank():

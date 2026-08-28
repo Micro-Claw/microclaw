@@ -2339,7 +2339,14 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "object",
                     "description": (
                         "Structured data for the entry. Use descriptive field names. "
-                        "Always include a 'description' field summarizing the entry."
+                        "For entries other than an optical-path position map, include a "
+                        "'description' field summarizing the entry. For an optical-path "
+                        "position map, supply exactly the structured "
+                        "shape {'kind': 'optical_path_position_map', 'device': <StateDevice "
+                        "config label>, 'positions': {<exact state label>: <operator "
+                        "meaning>, ...}}. The caller supplies kind, device, and positions; "
+                        "save_knowledge resolves observed_on from live identity, so do not "
+                        "send observed_on."
                     ),
                     "additionalProperties": True,
                 },

@@ -260,6 +260,8 @@ def test_adapter_and_label_roles_are_independent_and_device_name_is_never_a_sign
     assert entries["Path"]["role"] == ["light-path candidate (adapter self-description)"]
     assert "positions_unnamed" in entries["Path"]
     assert "identity-scoped devices/" in entries["Path"]["positions_unnamed"]
+    assert "kind: 'optical_path_position_map'" in entries["Path"]["positions_unnamed"]
+    assert "Do not send observed_on" in entries["Path"]["positions_unnamed"]
     assert "does not rename" in entries["Path"]["positions_unnamed"]
     assert entries["LabelsOnly"]["role"] == ["light-path candidate (position labels name ports)"]
     assert "positions_unnamed" not in entries["LabelsOnly"]

@@ -18,6 +18,14 @@ def test_registry_and_schema_cover_the_same_tools():
     assert set(TOOL_REGISTRY) == set(_SCHEMA_BY_NAME)
 
 
+def test_save_knowledge_value_teaches_optical_path_map_shape_at_point_of_use():
+    description = _SCHEMA_BY_NAME["save_knowledge"]["input_schema"]["properties"]["value"]["description"]
+    assert "'kind': 'optical_path_position_map'" in description
+    assert "'device': <StateDevice config label>" in description
+    assert "'positions': {<exact state label>: <operator meaning>" in description
+    assert "do not send observed_on" in description
+
+
 @pytest.mark.parametrize("name", sorted(TOOL_REGISTRY))
 def test_schema_matches_signature(name):
     fn = TOOL_REGISTRY[name]

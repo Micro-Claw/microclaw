@@ -3037,8 +3037,11 @@ def _optical_path_state(
             entry["positions_unnamed"] = (
                 "This device routes light, but its position labels carry no port vocabulary. "
                 "Ask the operator what each position means and offer to store the answer with "
-                "save_knowledge as an identity-scoped devices/ entry. Microclaw does not rename "
-                "state labels; the operator may label the hardware in Micro-Manager."
+                "save_knowledge as an identity-scoped devices/ entry with kind: "
+                "'optical_path_position_map', device: this device's config label, and positions: "
+                "{each exact state label: operator meaning}. Do not send observed_on; the tool "
+                "resolves it from live identity. Microclaw does not rename state labels; the "
+                "operator may label the hardware in Micro-Manager."
             )
         positions.append(entry)
     try:
@@ -8287,6 +8290,33 @@ def save_knowledge(
         rig_profile_gaps,
         save_entry,
     )
+    if category == "devices" and value.get("kind") != _POSITION_MAP_KIND:
+        inventory = getattr(ctrl, "_state_device_inventory", None)
+        retained = None
+        if isinstance(inventory, dict):
+            retained = next(
+                (item for item in inventory.get("devices", [])
+                 if item.get("device") == value.get("device")),
+                None,
+            )
+        allowed = retained.get("allowed") if isinstance(retained, dict) else None
+        map_shaped = (
+            isinstance(allowed, list)
+            and any(
+                isinstance(candidate, dict)
+                and len(candidate) >= 2
+                and all(label in allowed for label in candidate)
+                for candidate in value.values()
+            )
+        )
+        if map_shaped:
+            return {"error": (
+                "This devices/ entry is a StateDevice position map but is missing the "
+                "structured discriminator. Send value as {'kind': "
+                "'optical_path_position_map', 'device': <StateDevice config label>, "
+                "'positions': {<exact state label>: <operator meaning>, ...}}. Do not "
+                "send observed_on; save_knowledge resolves it from live identity."
+            )}
     if category == "devices" and value.get("kind") == _POSITION_MAP_KIND:
         device = value.get("device")
         inventory = getattr(ctrl, "_state_device_inventory", None)
