@@ -1319,10 +1319,10 @@ same commit, so the two halves of the move cannot separate.
   rows below.
 - [x] 47. (59a) `git log --oneline origin/main..main` empty for each block; branch
   deleted locally and on `origin`.
-- [ ] 48. Carry the owed-to-a-Ti rows (27, 44) and block 59c itself forward into
+- [x] 48. Carry the owed-to-a-Ti rows (27, 44) and block 59c itself forward into
   design/35's register, so losing Nikon access does not lose the evidence debt.
   59c is a whole block waiting on a machine, not a footnote inside a merged one.
-- [ ] 49. Carry the port-token false positives as their own register row, not as
+- [x] 49. Carry the port-token false positives as their own register row, not as
   a line inside a feature block: `_PORT_LABEL_WORDS.search()` is substring
   matching on `main` today, and any rig with a `Photoactivation`, `Brightfield`,
   `Portrait`, `Outside` or `Sideport` state label is currently being told a

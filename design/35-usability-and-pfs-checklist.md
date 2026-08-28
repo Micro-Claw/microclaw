@@ -8935,6 +8935,59 @@ hint cannot be keyed to a name — which is the same reason `_lock_status_proper
 shows values instead of choosing. Needs a rig with a real lock to settle, and the
 operator has no Nikon at present.
 
+### Block 59c — the prompt loses its hardware names — added 2026-08-28 **(BLOCK, gated on a Nikon Ti)**
+
+Not an inventory row: a written, unstarted block. Split out of 59b by operator
+decision because `agent.py:381–410` is working, rig-proven PFS focus procedure —
+sweep semantics, the steady-vs-transient in-range warning, the mandatory jog and
+image check, the air-bubble diagnosis — and **no reachable machine can drive the
+rewritten hardware-neutral version.** The Nikon is gone; 59a measured that the
+demo `Autofocus` exposes no status property at all (the row above), so probe,
+engage and jog cannot be exercised. Shipping it would put an unexercised prompt
+rewrite on `main` behind a grep.
+
+Its items are 32, 34 and 44b in `design/59-orientation-must-name-the-optical-path.md`.
+It does not start until a Ti exists. Collect row 44's Ti debts on the same trip.
+
+### Owed to a Nikon Ti by design/59 — added 2026-08-28 **(no block)**
+
+design/59 blocks 59a and 59b are merged; five things could not be settled on the
+demo machine or M5 and are **owed, not waived**:
+
+1. A real blank field **caused by routing**, and the manual-prism configuration
+   of 2026-08-23. The demo camera's frames do not depend on the light path.
+2. A `4-Unknown` turret label and a live PFS status string.
+3. **The label-matching source of the light-path role.** No demo or M5 device
+   carries port vocabulary in its labels, so that half of `role` is fixture-only.
+   The adapter source is rig-proven; the label source is not.
+4. The positive half of the reference limb — *"and the documentation IS reached
+   once signal is missing"*. On the demo machine a blank frame always has an
+   obvious explanation (the agent names the synthetic test pattern, correctly),
+   so requiring the call there would demand context it does not need. A blank
+   frame whose cause is genuinely unknown is a Ti stimulus.
+5. Block 59c's rewritten focus procedure, above.
+
+M5 was ruled out for this work **from its own archived inventory** rather than
+from a trip (`block4d-m5-20260803-170259/m5-inventory/inventory.json`): four
+StateDevices — two filter wheels, an ELL6 slider, the laser engine — no adapter
+or label routing signal, and an empty core autofocus assignment.
+
+### Port-label matching was substring matching on `main` — added 2026-08-28 **(no block, FIXED)**
+
+Recorded as its own row rather than left inside a feature block, because it was a
+live defect on `main` for the life of 59a. `_PORT_LABEL_WORDS.search()` was a
+substring test, so any rig with a `Photoactivation`, `Brightfield`, `Portrait`,
+`Outside` or `Sideport` state label was being told a filter wheel might be its
+light path — `Photoactivation` is not hypothetical on an SMLM rig, which is what
+microclaw is for. **Block 59b fixed it** with an ASCII-boundary tokenizer whose
+compound tokens precede their own prefixes.
+
+The part worth keeping: **59a's demo gate scored `Path` as "correctly unmarked —
+no false positive across six devices", and that limb could not fail.** Measured
+2026-08-28, neither the demo config's real labels nor M5's produce a match under
+*either* matcher, so no available machine discriminates the fix. Its unit
+fixtures are the whole evidence and no future gate limb may claim otherwise.
+
 ### Two from the Nikon session of 2026-08-23 — added 2026-08-28 **(no block)**
 
 Both are recorded in `design/59` §"Out of scope" and belong here, not in a
