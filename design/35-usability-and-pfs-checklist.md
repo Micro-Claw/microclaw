@@ -8972,6 +8972,15 @@ from a trip (`block4d-m5-20260803-170259/m5-inventory/inventory.json`): four
 StateDevices — two filter wheels, an ELL6 slider, the laser engine — no adapter
 or label routing signal, and an empty core autofocus assignment.
 
+### M5's empty Core shutter — added 2026-08-28 **(no block, opportunistic)**
+
+`get_shutter_device()` returns an empty string on M5 rather than raising, which
+is the other half of the inventory's shutter-exclusion branch and the one the
+demo machine (`White Light Shutter`) structurally cannot produce. design/59's
+off-rig scorer exercises it against an M5-shaped fake built from that machine's
+archived inventory; a live confirmation costs one read-only run and is worth
+taking if M5 is free. Not a precondition for anything.
+
 ### Port-label matching was substring matching on `main` — added 2026-08-28 **(no block, FIXED)**
 
 Recorded as its own row rather than left inside a feature block, because it was a

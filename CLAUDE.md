@@ -266,6 +266,30 @@ because a block looks small.
    owns its own log, because PowerShell 5.1's `Start-Transcript` does not capture
    a native child process's stdout and the transcript came back empty twice.
 
+   **A gate's operator prompts are part of its instrument, and they are the half
+   nobody tests.** design/59 block 59b spent **four demo rounds and only one went
+   to a product defect**: one prompt said "choose an existing demo-camera mode
+   whose frames have no structure" instead of naming `Camera`/`Mode`/`Noise`, so
+   that limb never ran; another asked "Which position reaches the camera?", which
+   a microscopy agent reads as *stage* position — it answered about `Z` and
+   `Aux Z` and never called `get_system_state`. Replay a driven session's opening
+   against a recorded payload before the runbook ships; one sample finds both.
+   **But weigh that against the operator's time, which is the real budget.**
+   Applied without judgement it backfires: the same block then built a replay
+   harness to avoid asking for one more three-minute session and cost more than
+   the run it replaced — *"this is more gates than if you had just told me to redo
+   session B."* Dry-run a prompt when the gate is long, repeated, or the operator
+   is not standing at the rig. Otherwise ask for the session.
+
+   **Do not tick a limb whose only rig observation was the failure.** 59b's
+   session A exposed while holding a payload that named the routing device. The
+   honest close-out is not a green tick and not a defect either: replaying that
+   machine's own payload measured it at **20/24 correct, an 8% tail**, and the
+   checklist row says so. A single gate session is a data point — and so is a
+   single underpowered probe: two runs of the *same* wording gave 5/8 then 15/16.
+   Size the sample before reading a difference, and say when a run measured
+   nothing rather than reporting its null as a result.
+
    **And run that program against a bridge-shaped fake before you push it.** A
    gate is code, and handing an operator code nobody executed is the defect this
    workflow keeps paying for. The instrument already exists
