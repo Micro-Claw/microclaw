@@ -2667,7 +2667,7 @@ and it is what someone opens the state file to consult.
 
 Run on M5 rather than the demo machine — the limb needs a person at the
 keyboard, not a particular rig. All six offline limbs and all three recovery
-limbs scored PASS (`design/58-offline-gate.py`, artifacts retained).
+limbs scored PASS (`design/58-gate.py`, artifacts retained).
 
 The decisive number is not in the script's own output. `last_attempt` advanced
 **7.3 s after the offline launch**, and it can only have been the manual check:

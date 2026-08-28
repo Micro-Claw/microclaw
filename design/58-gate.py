@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""design/58 offline limb: does a managed install launch and check with no network?
+"""design/58 rig gate: the limbs that need a person at the machine.
 
 Stdlib only, and it imports nothing from ``microclaw`` -- it reads the managed
 install's own files, so it scores the build under test rather than participating
 in it. Run it with any Python on the machine.
 
-    python design\\58-offline-gate.py arm        # online, with a candidate offered
-    python design\\58-offline-gate.py offline    # after launching + checking offline
-    python design\\58-offline-gate.py restored   # after reconnecting + checking
+    python design\\58-gate.py arm        # online, with a candidate offered
+    python design\\58-gate.py offline    # after launching + checking offline
+    python design\\58-gate.py restored   # after reconnecting + checking
+
+    python design\\58-gate.py staged     # after pressing "Restart later"
+    python design\\58-gate.py activated  # after the next ordinary desktop launch
 
 Each phase compares against the snapshot the previous one saved. Every limb is
 reported independently -- one FAIL must not hide the limbs after it -- and the
@@ -27,6 +30,8 @@ import sys
 from pathlib import Path
 
 PASS, FAIL, NOT_EXERCISED = "PASS", "FAIL", "NOT EXERCISED"
+PHASE_PREDECESSOR = {"offline": "arm", "restored": "offline", "activated": "staged"}
+PHASES = ("arm", "offline", "restored", "staged", "activated")
 
 
 def default_root() -> Path:
@@ -71,6 +76,23 @@ def snapshot(root: Path) -> dict:
     }
 
 
+def _started(snap: dict, previous: dict) -> tuple[str, str]:
+    """Did the application itself start since `previous`?
+
+    Never scored on a new launcher.log line: updater-launcher.ps1 writes that at
+    line 46 and spawns the child at line 56, so the line proves the launcher
+    ran.  launch-health.txt carries the nonce the launcher minted for *this*
+    start and is written by the child once it is up.
+    """
+    if len(snap["launcher_lines"]) - len(previous["launcher_lines"]) <= 0:
+        return FAIL, "no new launcher.log line: the launcher itself never ran"
+    nonce, health = _launch_nonce(snap), snap.get("health")
+    if nonce is None:
+        return NOT_EXERCISED, "the last launcher.log line carries no nonce to match"
+    return (PASS if health == nonce else FAIL,
+            f"launch-health.txt={health!r} vs this start's nonce={nonce!r}")
+
+
 def _launch_nonce(snap: dict) -> str | None:
     """The nonce on the most recent launcher.log line."""
     for line in reversed(snap.get("launcher_lines") or []):
@@ -95,18 +117,7 @@ def score_offline(arm: dict, now: dict) -> list[tuple[str, str, str]]:
     limbs: list[tuple[str, str, str]] = []
     add = lambda *row: limbs.append(row)
 
-    launched = len(now["launcher_lines"]) - len(arm["launcher_lines"])
-    nonce, health = _launch_nonce(now), now.get("health")
-    if launched <= 0:
-        add("the application started while offline", FAIL,
-            "no new launcher.log line: the launcher itself never ran")
-    elif nonce is None:
-        add("the application started while offline", NOT_EXERCISED,
-            "the last launcher.log line carries no nonce to match")
-    else:
-        add("the application started while offline",
-            PASS if health == nonce else FAIL,
-            f"launch-health.txt={health!r} vs this start's nonce={nonce!r}")
+    add("the application started while offline", *_started(now, arm))
 
     before, after = _attempt(arm), _attempt(now)
     if after is None or before is None:
@@ -171,6 +182,46 @@ def score_restored(offline: dict, now: dict) -> list[tuple[str, str, str]]:
     return limbs
 
 
+def score_activated(staged: dict, now: dict) -> list[tuple[str, str, str]]:
+    """`Restart later`: an ordinary desktop launch must consume the selector.
+
+    The mechanism is evidenced many times over by launcher-driven restarts. What
+    this scores is the button path -- the operator declining the restart and the
+    *next manual launch* activating what was staged.
+    """
+    limbs: list[tuple[str, str, str]] = []
+    pending = staged.get("pending")
+    if not pending or pending == staged.get("active"):
+        limbs.append(("Restart later left a distinct pending slot", NOT_EXERCISED,
+                      f"at the staged phase: active={staged.get('active')} "
+                      f"pending={pending or '<none>'} -- nothing was staged to activate"))
+        return limbs
+    limbs.append(("Restart later left a distinct pending slot", PASS,
+                  f"active={staged['active']} pending={pending}"))
+    limbs.append(("the application started on the next ordinary launch", *_started(now, staged)))
+    limbs.append(("that launch activated the staged slot",
+                  PASS if now.get("active") == pending else FAIL,
+                  f"active {staged['active']} -> {now.get('active')}, expected {pending}"))
+    limbs.append(("the pending selector was consumed",
+                  PASS if not now.get("pending") else FAIL,
+                  f"pending={now.get('pending') or '<none>'}"))
+    marker = (staged["markers"].get(pending) or {}).get("commit")
+    installed = (now.get("state") or {}).get("installed_commit")
+    if not marker:
+        limbs.append(("installed_commit was reconciled from the activated slot",
+                      NOT_EXERCISED, f"env-{pending} had no readable slot marker when staged"))
+    else:
+        limbs.append(("installed_commit was reconciled from the activated slot",
+                      PASS if installed == marker else FAIL,
+                      f"env-{pending} marker={marker[:7]}, installed_commit={str(installed)[:7]}"))
+    previous = staged.get("active")
+    kept = (now["markers"].get(previous) or {}).get("commit")
+    limbs.append(("the previous slot is preserved as a rollback target",
+                  PASS if kept else FAIL,
+                  f"env-{previous} marker={str(kept)[:7] if kept else '<missing>'}"))
+    return limbs
+
+
 def run(phase: str, root: Path, work: Path) -> int:
     work.mkdir(parents=True, exist_ok=True)
     now = snapshot(root)
@@ -186,7 +237,15 @@ def run(phase: str, root: Path, work: Path) -> int:
     lines.append(f"discovery={json.dumps(state.get('discovery'))}")
 
     failed = 0
-    if phase == "arm":
+    if phase == "staged":
+        lines.append("")
+        if now["pending"] and now["pending"] != now["active"]:
+            lines.append(f"{PASS}: staged into slot {now['pending']}. Now quit Microclaw and "
+                         "launch it from the desktop icon. Do NOT run install.bat.")
+        else:
+            lines.append(f"{NOT_EXERCISED}: no distinct pending slot. Press Update, wait for "
+                         "'ready to restart', then press Restart later before running this.")
+    elif phase == "arm":
         lines.append("")
         if candidate is None:
             lines.append(f"{NOT_EXERCISED}: no candidate is offered, so the offline phase "
@@ -195,14 +254,15 @@ def run(phase: str, root: Path, work: Path) -> int:
             lines.append(f"{PASS}: armed with candidate {str(candidate.get('sha'))[:7]}. "
                          "Now quit, disconnect the network, and relaunch.")
     else:
-        previous_name = "arm" if phase == "offline" else "offline"
+        previous_name = PHASE_PREDECESSOR[phase]
         previous_path = work / f"{previous_name}.json"
         if not previous_path.is_file():
             lines.append(f"\nCANNOT SCORE: {previous_path} is missing; run the {previous_name} phase first.")
             failed = 1
         else:
             previous = json.loads(previous_path.read_text(encoding="utf-8"))
-            scorer = score_offline if phase == "offline" else score_restored
+            scorer = {"offline": score_offline, "restored": score_restored,
+                      "activated": score_activated}[phase]
             lines.append("")
             for name, verdict, detail in scorer(previous, now):
                 lines.append(f"  {verdict:<13} {name}\n                {detail}")
@@ -221,9 +281,13 @@ def run(phase: str, root: Path, work: Path) -> int:
 
 
 def _fake(tmp: Path, *, active="a", pending=None, attempt=100.0, commit="a" * 40,
-          candidate=None, lines=1, error=None, healthy=True) -> Path:
+          candidate=None, lines=1, error=None, healthy=True, markers=None) -> Path:
     root = tmp
     (root / "env-a").mkdir(parents=True, exist_ok=True)
+    for slot, slot_commit in (markers or {}).items():
+        (root / f"env-{slot}").mkdir(parents=True, exist_ok=True)
+        (root / f"env-{slot}" / "microclaw-slot.json").write_text(
+            json.dumps({"commit": slot_commit, "required_launcher_protocol": 1}), encoding="utf-8")
     (root / "active-slot.txt").write_text(active + "\n", encoding="ascii")
     if pending:
         (root / "pending-slot.txt").write_text(pending + "\n", encoding="ascii")
@@ -295,6 +359,32 @@ def selftest() -> int:
         if set(verdicts.values()) != {PASS}:
             problems.append(f"clean restored tree did not pass: {verdicts}")
 
+        # --- Restart later ---
+        old, new = "a" * 40, "b" * 40
+        both = {"a": old, "b": new}
+        staged = snapshot(_fake(tmp / "staged", active="a", pending="b", commit=old,
+                                lines=1, markers=both))
+        activated = snapshot(_fake(tmp / "activated", active="b", pending=None, commit=new,
+                                   lines=2, markers=both))
+        verdicts = {n: v for n, v, _ in score_activated(staged, activated)}
+        if set(verdicts.values()) != {PASS}:
+            problems.append(f"a clean Restart later did not pass: {verdicts}")
+
+        # The launch happened but the selector was not consumed: the limb's point.
+        not_activated = snapshot(_fake(tmp / "notactivated", active="a", pending="b",
+                                       commit=old, lines=2, markers=both))
+        verdicts = {n: v for n, v, _ in score_activated(staged, not_activated)}
+        if verdicts["that launch activated the staged slot"] != FAIL:
+            problems.append("a launch that did not activate the staged slot must FAIL")
+        if verdicts["the pending selector was consumed"] != FAIL:
+            problems.append("an unconsumed pending selector must FAIL")
+
+        # Nothing staged at all is NOT EXERCISED, and must not report five more limbs.
+        nothing = snapshot(_fake(tmp / "nothingstaged", active="a", pending=None, markers=both))
+        rows = score_activated(nothing, activated)
+        if len(rows) != 1 or rows[0][1] != NOT_EXERCISED:
+            problems.append(f"an unstaged tree must report one NOT EXERCISED row, got {rows}")
+
     for problem in problems:
         print("SELFTEST FAILURE:", problem)
     print("selftest:", "FAILED" if problems else "ok")
@@ -303,7 +393,7 @@ def selftest() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("phase", nargs="?", choices=("arm", "offline", "restored"))
+    parser.add_argument("phase", nargs="?", choices=PHASES)
     parser.add_argument("--root", type=Path, default=None)
     parser.add_argument("--work", type=Path, default=None)
     parser.add_argument("--selftest", action="store_true")
@@ -311,7 +401,7 @@ def main() -> int:
     if args.selftest:
         return selftest()
     if not args.phase:
-        parser.error("a phase is required (arm, offline, restored) unless --selftest")
+        parser.error(f"a phase is required ({', '.join(PHASES)}) unless --selftest")
     root = args.root or default_root()
     if not (root / "update-state.json").is_file():
         print(f"No managed installation at {root} (no update-state.json).")
