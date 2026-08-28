@@ -813,5 +813,5 @@ costs more than the session, ask for the session.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 60a | `design60/bounded-wait` | — | — | — | — |
+| 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | — | — | — |
 | 60b | — | — | — | — | — (not started; depends on 60a's event sink) |
