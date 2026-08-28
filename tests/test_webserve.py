@@ -2058,3 +2058,43 @@ def test_installing_an_update_clears_the_banner_that_offered_it(session, tmp_pat
     settled = updates.load_state(state_path)
     assert "next_check" not in settled
     assert "discovery" not in settled
+
+
+def test_check_for_updates_control_is_reachable_from_the_page(client):
+    """The route had a rate limiter, two tests and no caller for its whole life.
+
+    It sits in the header rather than the update banner, because the banner is
+    hidden precisely when there is no candidate -- which is when a user wants
+    to check.  Without it the only way to retire the 24-hour interval is to
+    rerun install.bat.
+    """
+    html = client.get("/").text
+    assert 'id="update-check"' in html
+    assert 'apiFetch("/api/update/check", { method: "POST" })' in html
+    assert "state.check_error" in html
+    assert "Microclaw is up to date." in html
+
+
+def test_check_control_is_hidden_on_an_unmanaged_install(session, tmp_path, monkeypatch):
+    """`managed` is false when there is no state file; offering the button then
+    would promise a check that `check_for_update` returns None from."""
+    monkeypatch.setattr(updates, "state_path", lambda: tmp_path / updates.STATE_NAME)
+    assert TestClient(build_app(session)).get("/api/update").json()["managed"] is False
+    html = TestClient(build_app(session)).get("/").text
+    assert 'classList.toggle("hidden", !(state && state.managed))' in html
+
+
+def test_a_stale_build_error_does_not_report_a_failed_check(session, tmp_path, monkeypatch):
+    """`build_error` outlives the staging that set it, until the next success.
+
+    Merged into one field it would tell a user whose check just succeeded that
+    the check failed, naming a build they may have run days ago.
+    """
+    state_path = _managed_updates(tmp_path, monkeypatch)
+    state = updates.load_state(state_path)
+    state["last_error"] = None
+    state["build_error"] = "the update could not be built"
+    updates.write_state(state, state_path)
+    payload = TestClient(build_app(session)).get("/api/update").json()
+    assert payload["check_error"] is None
+    assert payload["last_error"] == "the update could not be built"

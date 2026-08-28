@@ -298,8 +298,12 @@
     };
     return {
       visible: true,
+      // `warning` is set when the fetch failed but a stale local ref still
+      // resolved, so the offer is real but may not be the newest commit.
+      // Unrendered, an offline check presents stale history as current.
       text: "A newer Microclaw commit is available: " + String(candidate.sha || "").slice(0, 7) +
-        " — " + String(candidate.subject || ""),
+        " — " + String(candidate.subject || "") +
+        (candidate.warning ? " " + String(candidate.warning) : ""),
       buttons: ["update", "later", "view"], url: candidate.url,
     };
   }

@@ -1118,3 +1118,18 @@ def test_reinstalling_over_a_staged_slot_is_not_undone_by_the_next_launch(tmp_pa
     assert updates.activate_pending(tmp_path, 1) == ("b", None)
     assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "b"
     assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == reinstalled
+
+
+def test_terminal_notice_carries_a_fetch_warning(tmp_path):
+    path = tmp_path / updates.STATE_NAME
+    state = updates.public_provenance()
+    state["last_success"] = {"candidate": updates.Candidate(
+        "a" * 40, "Useful change", "clone",
+        warning="Open GitHub Desktop, Fetch origin, then Check again.",
+    ).__dict__}
+    updates.write_state(state, path)
+    notice, _ = updates.terminal_update_notice(state_file=path)
+    assert notice == (
+        "A newer Microclaw commit is available: aaaaaaa — Useful change. "
+        "Open GitHub Desktop, Fetch origin, then Check again."
+    )
