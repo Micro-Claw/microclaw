@@ -371,6 +371,42 @@ producing data. In the M2 incident it changes nothing: `_exception` appears at
 The error grace is **not** so qualified — once the engine has reported a fatal
 error, continued frame arrival is not evidence of health.
 
+**The quiet window is self-calibrating, and the ceiling is only a
+precondition** (operator challenge, 2026-08-28: *"we've done several overnight
+acquisitions on the Nikon systems that worked"*). Those runs worked because
+nothing bounded them — that is F2, not evidence against it — but they are the
+right thing to protect, and a fixed quiet constant does not protect them.
+Measured against the two shapes:
+
+* An **interval-driven** overnight timelapse is estimated *well*. `interval_s`
+  reaches pycro-manager's `time_interval_s`, which writes `min_start_time` on
+  every event, and `plan_events` reads it. A 16-hour run plans at ~16 hours and
+  D1's ceiling lands at ~25. Never at risk.
+* A **position-dominated** run is estimated badly, and this is the whole
+  hazard. 500 positions x 11 slices at 100 ms plans 550 s, so the ceiling is
+  ~14 minutes against a real hour once stage settling and per-tile autofocus
+  are counted — none of which `plan_events` estimates, as its own comment says.
+  A fixed quiet window fails here too: a hook running a focus search
+  legitimately leaves minutes between frames.
+
+So the trigger is **quiet time, self-calibrated from the run's own frames**:
+
+    STALL_QUIET_S = max(STALL_QUIET_FLOOR_S, 5 * largest observed inter-frame gap)
+
+with `STALL_QUIET_FLOOR_S = 900`. Expiry of the non-error path requires the
+runtime ceiling to have passed **and** that window to have elapsed with no saved
+frame. The ceiling stops being the trigger and becomes a precondition; erring
+long on it costs nothing now, because the error grace already covers the failure
+we actually measured.
+
+Two consequences worth stating. **The floor must cover legitimate end-of-run
+teardown**, because after the last frame a healthy run is also quiet and its
+camera is also idle — time is the only separator, which is why the floor is
+15 minutes and not 2. And **camera state is reported, never used as the
+predicate**: `is_sequence_running()` is false between frames in any
+software-triggered acquisition, so inferring "dead" from it would be the same
+class of error as inferring arrival from a busy flag.
+
 **And the frame counter must exist on every path.** `account_saved_frame` is
 installed only when `reservation is not None`, and two call sites pass `None`
 (the survey runner with `adaptive=false`, and the deferred acquire phase). Count
