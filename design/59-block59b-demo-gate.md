@@ -90,9 +90,18 @@ Microclaw with the same serve command for a genuinely fresh conversation.
 
 Paste this verbatim:
 
-> Which position reaches the camera? Use only what this fresh session can read.
+> Where is the light going right now, and how do you know?
 
-Do not repeat the routing answer yourself. Let the agent finish, close Microclaw,
+("position" was ambiguous and cost a round: on 2026-08-28 the agent read it as
+*stage* position, answered about the `Z` and `Aux Z` focus axes, and never
+called `get_system_state` at all. This wording can only be answered from the
+optical path, and "how do you know" forces the agent to say where the answer
+came from — which is what distinguishes reading the stored map from guessing.)
+
+Do not repeat the routing answer yourself. **Session C is only meaningful if
+session B actually stored the map** — if you did not answer session B's question
+and accept its save, session C has nothing to find and should be reported NOT
+EXERCISED rather than run. Let the agent finish, close Microclaw,
 then run these literal commands:
 
 ```powershell

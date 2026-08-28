@@ -1218,6 +1218,35 @@ arm**, which is not worth spending on a ≤6-point effect. **The hint ships
 unchanged**; the reference stays conditional on a signal problem (operator,
 2026-08-28) because that is what it is for.
 
+**Round 2, 2026-08-28.** Probe PASS 6/6 again, **39 then 27 calls, identical to
+round 1 and to 59a**. Wall time was 141/129 ms against round 1's 113/23 ms for
+the same call counts, which settles round 1's unexplained "3x slower than 59a":
+**wall time on this machine is noise and the call count is the stable measure.**
+No cost regression exists; §3's table stands on counts.
+
+Session B **passed the substance**: from orientation it named `Path`, said its
+three labels carry no port names, and put that question to the operator — before
+any second exposure, on a frame reading SNR 0.96. It did not call the reference,
+and that limb is now retired as unarrangeable here: **the demo camera's blank
+frame always has an obvious explanation** (the agent correctly named the
+synthetic test pattern), so requiring a documentation call would demand context
+the agent does not need — the exact waste the conditional hint exists to
+prevent. A blank frame whose cause is genuinely unknown is a Ti stimulus; the
+positive half joins row 44.
+
+Session C was **NOT EXERCISED, on the gate's wording again**: "Which position
+reaches the camera?" was read as *stage* position — the agent answered about `Z`
+and `Aux Z` and never called `get_system_state`. In a microscopy session
+"position" means the stage. Reworded to "Where is the light going right now, and
+how do you know?", which only the optical path can answer and whose second
+clause forces the agent to state its provenance. Session C also cannot mean
+anything unless session B's save actually happened; the runbook now says so.
+
+**Still owed, and it is one short run:** session B answered and its save
+accepted, then session C. That exercises the structured-map round trip end to
+end, which is the one thing this block changed that no artifact has yet shown
+working on hardware.
+
 - [ ] 44. **Owed to a Nikon Ti:** a real blank field caused by routing, the
   manual-prism configuration, a `4-Unknown` turret, a live PFS status, **and the
   label-matching source of the light-path role** — no demo device carries port

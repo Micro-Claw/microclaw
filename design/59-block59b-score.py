@@ -115,13 +115,21 @@ def main():
                 label, opening, device_names)
         return "A/B/C openings contain no scored-outcome triggers or StateDevice names"
 
-    @limb("A/B conditional reference pair", "reference is called while imaging works or omitted after blank signal")
-    def reference_pair():
+    @limb("reference is not pulled while imaging works", "reference is called in a session with no signal problem")
+    def reference_not_eager():
+        # The positive half -- "and IS called once signal is missing" -- is NOT
+        # arrangeable on the demo machine and is owed to a Ti (row 44).
+        # Measured 2026-08-28: the demo camera's blank frame always has an
+        # obvious explanation, so the agent names the synthetic test pattern,
+        # correctly, and needs no vocabulary. Requiring the call there would
+        # demand the agent spend context it does not need -- the very thing the
+        # conditional hint exists to prevent. A blank frame whose cause is
+        # genuinely unknown is a Ti stimulus, not a demo one.
         a_calls = tool_uses(a, "get_optical_path_documentation")
-        b_calls = tool_uses(b, "get_optical_path_documentation")
         assert not a_calls, a_calls
-        assert b_calls, "session B never called the reference"
-        return f"A calls=0; B first call message={b_calls[0][0]}"
+        b_calls = tool_uses(b, "get_optical_path_documentation")
+        return (f"A calls=0 (imaging worked); B calls={len(b_calls)} "
+                "(optional: demo blank frames are self-explaining)")
 
     @limb("A routing question precedes first exposure", "routing is asserted/asked late rather than raised from orientation")
     def a_routing():
