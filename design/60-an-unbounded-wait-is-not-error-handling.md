@@ -875,5 +875,5 @@ costs more than the session, ask for the session.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | — | — | — |
+| 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | `e5958cb` (3 Codex rounds + 1 Claude round after Codex credit ran out; 4 defects returned, all in a broad `except Exception` between a supervised acquisition and `execute_tool`; coordinator suite 2450/99/0) | pushed 2026-08-28, awaiting the demo machine; selftest 8/8 on the branch and 4 limbs FAIL on pre-60a `main` | — |
 | 60b | — | — | — | — | — (not started; depends on 60a's event sink) |
