@@ -84,7 +84,7 @@ def test_installer_migrates_only_localappdata_env_and_never_uses_editable_instal
 
 
 def test_installer_uses_package_provenance_and_slot_marker_contracts(bat):
-    assert "installer_provenance, write_slot_marker, write_state" in bat
+    assert "installer_provenance, retract_pending_slot, write_slot_marker, write_state" in bat
     assert "updates will follow public head" in (
         ROOT / "microclaw" / "updates.py"
     ).read_text(encoding="utf-8")
@@ -292,3 +292,57 @@ def test_installer_says_how_to_stop_the_setup_server(bat):
     guidance = bat[launch - 400:launch + 400].lower()
     assert "ctrl+c" in guidance
     assert "desktop icon" in guidance
+
+
+def _write_managed_payload(bat: str) -> str:
+    """The exact `python -c` string :write_managed runs."""
+    # :make_env probes the interpreter with `-c "pass"`; this is the other one.
+    matches = [m for m in re.findall(r'"%MC_PY%" -c "([^"]+)"', bat) if "write_state" in m]
+    assert len(matches) == 1, f"expected one :write_managed payload, found {len(matches)}"
+    return matches[0]
+
+
+def test_write_managed_payload_runs_and_retracts_a_staged_slot(bat, tmp_path, monkeypatch):
+    """Execute the installer's Python, not just grep it.
+
+    A quoting or import slip in this one line breaks every installation on
+    every machine, and nothing else in the suite runs it.  `write_slot_marker`
+    is the only part stubbed: it resolves against the *running* interpreter, so
+    a real call would write outside tmp_path.
+    """
+    from microclaw import updates
+
+    payload = _write_managed_payload(bat)
+    home, source = tmp_path / "home", tmp_path / "source"
+    home.mkdir()
+    source.mkdir()                              # no .git -> public provenance
+    (home / updates.PENDING_SLOT_NAME).write_text("a\n", encoding="ascii")
+    commit = "3" * 40
+    markers: list[tuple] = []
+    monkeypatch.setattr(updates, "write_slot_marker", lambda *a, **k: markers.append(a))
+    monkeypatch.setattr(sys, "argv", ["-c", str(source), commit, str(home), "1"])
+
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    exec(compile(payload, "install.bat:write_managed", "exec"), {})
+
+    assert not (home / updates.PENDING_SLOT_NAME).exists()
+    assert any("never restarted: slot a" in line for line in printed)
+    assert updates.load_state(home / updates.STATE_NAME)["installed_commit"] == commit
+    assert markers == [(commit, 1)]
+
+
+def test_write_managed_payload_is_silent_when_nothing_is_pending(bat, tmp_path, monkeypatch):
+    """The retraction must not announce itself on an ordinary first install."""
+    from microclaw import updates
+
+    payload = _write_managed_payload(bat)
+    home, source = tmp_path / "home", tmp_path / "source"
+    home.mkdir()
+    source.mkdir()
+    monkeypatch.setattr(updates, "write_slot_marker", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "argv", ["-c", str(source), "4" * 40, str(home), "1"])
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    exec(compile(payload, "install.bat:write_managed", "exec"), {})
+    assert not any("never restarted" in line for line in printed)

@@ -1076,3 +1076,45 @@ def test_activation_invalidates_the_cached_candidate_and_the_check_interval(tmp_
     # The interval was measured against the previous install; the next launch
     # must be free to discover whatever main holds now.
     assert "next_check" not in after
+
+
+def test_retract_pending_slot_removes_and_reports_it(tmp_path):
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("a\n", encoding="ascii")
+    assert updates.retract_pending_slot(tmp_path) == "a"
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+    assert updates.retract_pending_slot(tmp_path) is None
+
+
+def test_retract_pending_slot_removes_an_unreadable_selector(tmp_path):
+    """A pending selector nobody can parse is not a pending update."""
+    (tmp_path / updates.PENDING_SLOT_NAME).write_bytes(b"\xff\xfe not ascii")
+    assert updates.retract_pending_slot(tmp_path) is None
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+
+
+def test_reinstalling_over_a_staged_slot_is_not_undone_by_the_next_launch(tmp_path):
+    """The M5 state of 2026-08-28: active=b with pending=a left standing.
+
+    `install.bat` builds the active slot and writes its commit.  Without the
+    retraction the next launch activates the staged slot instead and
+    `_reconcile_installed_commit` overwrites the installer's record from *that*
+    slot's marker -- so the reinstall is discarded and the machine runs the
+    commit it was reinstalled to escape.  Reinstalling is the documented
+    recovery path from a broken update.
+    """
+    old, reinstalled = "d" * 40, "3" * 40
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("b\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("a\n", encoding="ascii")
+    updates.write_slot_marker(old, 1, executable=tmp_path / "env-a" / "Scripts" / "python.exe")
+
+    # What install.bat's :write_managed does, in its order.
+    discarded = updates.retract_pending_slot(tmp_path)
+    updates.write_state(updates.public_provenance(reinstalled), tmp_path / updates.STATE_NAME)
+    updates.write_slot_marker(
+        reinstalled, 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe",
+    )
+    assert discarded == "a"
+
+    assert updates.activate_pending(tmp_path, 1) == ("b", None)
+    assert (tmp_path / updates.ACTIVE_SLOT_NAME).read_text(encoding="ascii").strip() == "b"
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["installed_commit"] == reinstalled

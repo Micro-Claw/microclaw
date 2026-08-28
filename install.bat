@@ -279,7 +279,12 @@ copy /Y "%~dp0scripts\launcher-protocol.txt" "%MC_HOME%\launcher-protocol.txt" >
 if errorlevel 1 exit /b 1
 set "MC_COMMIT=unknown"
 if exist "%MC_SOURCE_DIR%\.git" for /f "delims=" %%I in ('git -C "%MC_SOURCE_DIR%" rev-parse HEAD 2^>nul') do set "MC_COMMIT=%%I"
-"%MC_PY%" -c "import sys; from pathlib import Path; from microclaw.updates import installer_provenance, write_slot_marker, write_state; state,note=installer_provenance(sys.argv[1],sys.argv[2]); print('  NOTE: '+note) if note else None; write_state(state,Path(sys.argv[3])/'update-state.json'); write_slot_marker(sys.argv[2],int(sys.argv[4]))" "%MC_SOURCE_DIR%" "%MC_COMMIT%" "%MC_HOME%" 1
+rem retract_pending_slot runs first and deliberately: a slot staged but never
+rem restarted would otherwise be activated on the very next launch, switching
+rem away from the slot just installed and overwriting the installed_commit
+rem written two statements later.  Measured on M5 2026-08-28: active=b with
+rem pending=a standing from an update that was staged and never restarted.
+"%MC_PY%" -c "import sys; from pathlib import Path; from microclaw.updates import installer_provenance, retract_pending_slot, write_slot_marker, write_state; home=Path(sys.argv[3]); discarded=retract_pending_slot(home); print('  Discarded a staged update that was never restarted: slot '+discarded) if discarded else None; state,note=installer_provenance(sys.argv[1],sys.argv[2]); print('  NOTE: '+note) if note else None; write_state(state,home/'update-state.json'); write_slot_marker(sys.argv[2],int(sys.argv[4]))" "%MC_SOURCE_DIR%" "%MC_COMMIT%" "%MC_HOME%" 1
 if errorlevel 1 exit /b 1
 exit /b 0
 
