@@ -397,9 +397,38 @@ input, ask which fixtures produce that shape, and write one that does.
   `acquire()` call. Getting this wrong moves hardware while frames are still
   being taken.
 
-## Four rules the updater block paid for
+## Rules the updater block paid for
 
 Generic, from design/58. The Windows layout details live in that document.
+
+- **A cache computed against the previous install is not evidence about this
+  one.** `last_success` was written by exactly one function, due once every 24
+  hours, and nothing cleared it — so for a whole day after an update the state
+  file still named the commit that had just become the running one, both readers
+  handed it back, and staging it rebuilt the *other* slot at the same SHA.
+  Measured on three machines: **both slots built at the same commit.** Same
+  family as the two below — a device that is not busy is not a device that
+  arrived; a marker's existence is not health. Whenever state records the result
+  of comparing A to B, a change in B must invalidate it **at the transition**,
+  not at the next scheduled recomputation. And a diagnostic nobody reads is the
+  one an operator opens when things go wrong: it must not lie either.
+- **A recovery path must survive the state that made recovery necessary.**
+  Reinstalling is the documented way out of a broken update, and `install.bat`
+  did not retract `pending-slot.txt` — so a slot staged but never restarted was
+  activated on the very next launch and overwrote the `installed_commit` the
+  installer had just written. The reinstall was discarded by exactly the
+  leftovers it was run to clear. Ask what the failure leaves behind, then check
+  the recovery against it.
+- **Score a green gate from its artifacts, and audit the instrument as hard as
+  the product.** design/58's offline gate passed every limb while scoring "the
+  app started" on a new `launcher.log` line — which `updater-launcher.ps1`
+  writes ten statements *before* `Start-Process`. It would have passed a
+  launcher that logged its intent and spawned nothing: this document's own rule,
+  reproduced inside the tool written to check it. Score startup on a marker the
+  subject writes about itself, carrying that start's nonce. And derive a number
+  the report does not state: the proof that the cache fix worked was not the
+  banner clearing, it was `last_attempt` landing 24.5 hours before `next_check`
+  was due.
 
 - **Only the thing outside both slots may write the thing outside both slots.**
   When code can be replaced and rolled back, whatever selects *which* copy runs
