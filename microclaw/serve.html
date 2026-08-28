@@ -119,6 +119,7 @@
     <button id="key-btn" class="hidden"></button>
     <button id="expand" class="hidden">Expand all</button>
     <button id="collapse" class="hidden">Collapse all</button>
+    <button id="update-check" class="hidden" title="Check for a newer Microclaw now">Check for updates</button>
     <button id="theme" title="Toggle theme">◐</button>
   </div>
 </header>
@@ -247,6 +248,9 @@
     show("update-restart-later", "restart-later");
     show("update-view", "view");
     $("update-view").href = view.url || "#";
+    // Lives in the header, not the banner: the banner is hidden exactly when
+    // there is no candidate, which is when someone wants to check.
+    $("update-check").classList.toggle("hidden", !(state && state.managed));
   }
 
   async function refreshUpdate() {
@@ -262,6 +266,26 @@
       scheduleUpdatePoll(fast);
     }
   }
+
+  $("update-check").addEventListener("click", async () => {
+    const button = $("update-check");
+    button.disabled = true;
+    button.textContent = "Checking…";
+    try {
+      // The only way to retire the 24h interval without reinstalling. It runs a
+      // real fetch, so it is slow enough to need the disabled state.
+      const res = await apiFetch("/api/update/check", { method: "POST" });
+      if (!res.ok) { toast(await detail(res)); return; }
+      const state = await res.json();
+      showUpdate(state);
+      if (state.check_error) toast("Could not check: " + state.check_error);
+      else if (!state.candidate && !state.pending_staged) toast("Microclaw is up to date.");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Check for updates";
+      scheduleUpdatePoll(false);
+    }
+  });
 
   $("update-start").addEventListener("click", async () => {
     const res = await apiFetch("/api/update/stage", { method: "POST" });

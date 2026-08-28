@@ -729,6 +729,11 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             "candidate": None if suppressed else candidate,
             "last_attempt": state.get("last_attempt"),
             "last_error": state.get("last_error") or state.get("build_error"),
+            # Distinct from the merged field above: a *staging* failure must not
+            # make a successful check report "could not check". `build_error`
+            # survives until the next successful staging, so the merge is not
+            # an answer to "did this check work".
+            "check_error": state.get("last_error"),
             "staging": update_job["running"],
             "pending_staged": pending is not None,
             "comparison_refused": refusal,

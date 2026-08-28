@@ -301,3 +301,17 @@ def test_an_assistant_turn_that_is_a_plain_string_renders():
 def test_an_empty_assistant_string_is_not_a_turn():
     result = rendered_turns([{"role": "assistant", "content": "   "}])
     assert result["counts"]["asstTurns"] == 0
+
+
+def test_a_fetch_warning_reaches_the_banner_text():
+    """discover_clone sets `warning` when the fetch failed but a stale local ref
+    resolved -- the offline case.  Unrendered, the banner would present a
+    possibly-superseded commit as if it were the newest."""
+    view = update_view({"candidate": {
+        "sha": "abcdef123456", "subject": "Some change",
+        "warning": "Open GitHub Desktop, Fetch origin, then Check again.",
+    }, "staging": False, "pending_staged": False})
+    assert view["text"] == (
+        "A newer Microclaw commit is available: abcdef1 — Some change "
+        "Open GitHub Desktop, Fetch origin, then Check again."
+    )

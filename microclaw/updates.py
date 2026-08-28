@@ -1072,9 +1072,10 @@ def terminal_update_notice(*, state_file: str | Path | None = None) -> tuple[str
     ):
         candidate = None
     if candidate:
+        warning = f" {candidate.warning}" if candidate.warning else ""
         return (
             f"A newer Microclaw commit is available: {candidate.sha[:7]} — "
-            f"{candidate.subject}.", candidate,
+            f"{candidate.subject}.{warning}", candidate,
         )
     if (state.get("provenance") == "public-head"
             and state.get("last_error") == "repository is not public (404)"):
