@@ -599,6 +599,12 @@ Gate — demo machine, shipped as a program:
   only in a fixture. The program records the machine's active safety document
   before it starts and checks it back afterwards — a gate must not leave
   production state pointing into its own evidence folder.
+- [x] 24a. **Run the gate end to end against a bridge-shaped fake before it is
+  pushed** — `design/59-block59a-gate-selftest.py`, on both trees so its failure
+  discriminates. A `MagicMock` is not a bridge: its collections must expose
+  `size()`/`get(i)` and raise on iteration. Added after demo gate round 1 was
+  spent on `TypeError: 'mmcorej_StrVector' object is not iterable`; now in
+  `CLAUDE.md` step 6 for every block.
 - [ ] 24. Bridge-call count **and** measured wall time reported for the first and
   second `get_system_state` call. §3: if the first call exceeds ~1.5 s the
   caching boundary is wrong, not the feature.
@@ -666,6 +672,8 @@ Gate — demo machine, a driven session plus two programs:
 - [ ] 43. `design/59-score-gate.py` scores each limb independently over the
   history JSONL, reports NOT EXERCISED where the stimulus could not be arranged,
   and exits nonzero.
+- [ ] 43a. 59b's setup program and scorer are likewise run against a
+  bridge-shaped fake before the operator sees them, on both trees.
 - [ ] 44. **Owed to a Nikon Ti:** a real blank field caused by routing, the
   manual-prism configuration, a `4-Unknown` turret, and a live PFS status. The
   demo gate tests the mechanism, not the 2026-08-23 scene.
@@ -685,5 +693,5 @@ Gate — demo machine, a driven session plus two programs:
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `0aefea4` (2 Codex rounds, 8 findings; coordinator suite 2355/99/0) | — | — |
+| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; product half was a silent `available_configs: []`. Round 2 pending | — |
 | 59b | — | — | — | — | — |
