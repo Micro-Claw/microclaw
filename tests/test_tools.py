@@ -4526,6 +4526,24 @@ class TestReadHookFromFile:
 
 
 class TestSaveKnowledgeConfirmation:
+    @pytest.mark.parametrize("inventory", [None, "absent"])
+    def test_structured_map_refuses_unbuilt_inventory_with_actual_cause(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, inventory
+    ):
+        from microclaw import tools
+        if inventory is None:
+            mock_ctrl._state_device_inventory = None
+        else:
+            del mock_ctrl._state_device_inventory
+        monkeypatch.setattr(tools, "CONFIRM_FN",
+                            lambda *a, **k: pytest.fail("confirmation must not run"))
+        result = tools.save_knowledge(mock_ctrl, unconstrained_guard, "devices", "path", {
+            "kind": "optical_path_position_map", "device": "Path",
+            "positions": {"State-0": "camera"},
+        })
+        assert "inventory is unavailable" in result["error"]
+        assert "validation did not build it" in result["error"]
+
     def test_structured_position_map_resolves_identity_before_confirmation(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):

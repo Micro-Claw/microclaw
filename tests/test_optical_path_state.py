@@ -311,6 +311,15 @@ def test_structured_position_map_matches_only_complete_live_identity(monkeypatch
     payload, ctrl = state(core)
     entry = payload["optical_path"]["discrete_positions"][0]
     assert entry["position_map"] == saved["positions"]
+    assert "positions_unnamed" not in entry
+    # Adapter-description prose may change across adapter releases; it is not identity.
+    ctrl._state_device_inventory["devices"][0]["adapter_description"] = "Reworded selector"
+    entry = get_system_state(ctrl, GUARD)["optical_path"]["discrete_positions"][0]
+    assert entry["position_map"] == saved["positions"]
+    # The StateDevice adapter itself is identity, independently of camera and labels.
+    ctrl._state_device_inventory["devices"][0]["adapter"] = "OtherRouteAdapter"
+    assert "position_map" not in get_system_state(ctrl, GUARD)["optical_path"]["discrete_positions"][0]
+    ctrl._state_device_inventory["devices"][0]["adapter"] = "RouteAdapter"
     core.adapters["Camera"] = ("CamB", "")
     assert "position_map" not in get_system_state(ctrl, GUARD)["optical_path"]["discrete_positions"][0]
     core.adapters["Camera"] = ("CamA", "")
@@ -321,13 +330,24 @@ def test_structured_position_map_matches_only_complete_live_identity(monkeypatch
 def test_mapping_shaped_ordinary_entry_never_enters_structured_path(monkeypatch):
     core = OpticalCore({"Path": ("State-0", ["State-0"])})
     core.adapters["Path"] = ("RouteAdapter", "Light path selector")
+    core.camera = "Camera"
+    core.adapters["Camera"] = ("CamA", "")
     ordinary = {"device": "Path", "positions": {"State-0": "camera"},
-                "observed_on": {"camera_adapter": "unknown", "device": "Path",
+                "observed_on": {"camera_adapter": "CamA", "device": "Path",
                                 "adapter": "RouteAdapter", "allowed": ["State-0"]}}
     monkeypatch.setattr("microclaw.knowledge_manager.load_knowledge",
                         lambda: {"devices": {"ordinary": ordinary}})
     payload, _ = state(core)
     assert "position_map" not in payload["optical_path"]["discrete_positions"][0]
+
+
+def test_knowledge_load_failure_is_reported_in_optical_path(monkeypatch):
+    core = OpticalCore({"Path": ("State-0", ["State-0"])})
+    monkeypatch.setattr("microclaw.knowledge_manager.load_knowledge",
+                        lambda: (_ for _ in ()).throw(ValueError("malformed knowledge")))
+    payload, _ = state(core)
+    assert "ValueError" in payload["optical_path"]["position_map_error"]
+    assert "malformed knowledge" in payload["optical_path"]["position_map_error"]
 
 
 def test_dependency_live_value_moves_with_discrete_label_without_a_duplicate_read():

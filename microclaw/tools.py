@@ -3044,8 +3044,10 @@ def _optical_path_state(
     try:
         from microclaw.knowledge_manager import load_knowledge
         stored = load_knowledge().get("devices", {})
-    except Exception:
+        position_map_error = None
+    except Exception as exc:
         stored = {}
+        position_map_error = f"{type(exc).__name__}: {exc}"
     for saved in stored.values():
         if not isinstance(saved, dict) or saved.get("kind") != _POSITION_MAP_KIND:
             continue
@@ -3055,6 +3057,7 @@ def _optical_path_state(
         actual = _position_map_condition(camera_adapter, target)
         if _identity_problem(actual) is None and saved.get("observed_on") == actual:
             target["position_map"] = dict(saved.get("positions", {}))
+            target.pop("positions_unnamed", None)
     result = {
         "discrete_positions": positions,
         "hint": (
@@ -3065,6 +3068,8 @@ def _optical_path_state(
             "interpreting these."
         ),
     }
+    if position_map_error is not None:
+        result["position_map_error"] = position_map_error
     shutter_exclusion = inventory.get("shutter_exclusion")
     if isinstance(shutter_exclusion, dict):
         result["shutter_exclusion"] = shutter_exclusion
@@ -3202,6 +3207,8 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state["lasers"] = _laser_state(ctrl)
     try:
         camera_label = str(ctrl.core.get_camera_device())
+        # The label is whatever the config author typed; the adapter is the
+        # hardware. F4 keys knowledge entries on the adapter for that reason.
         camera_adapter = str(ctrl.core.get_device_name(camera_label)) if camera_label else "unknown"
         state["camera"] = {"label": camera_label or "unknown", "adapter": camera_adapter}
     except Exception:
@@ -8282,10 +8289,15 @@ def save_knowledge(
     if category == "devices" and value.get("kind") == _POSITION_MAP_KIND:
         device = value.get("device")
         inventory = getattr(ctrl, "_state_device_inventory", None)
+        if not isinstance(inventory, dict):
+            return {"error": (
+                "The retained StateDevice inventory is unavailable because live-rig "
+                "validation did not build it; cannot resolve an optical-path identity."
+            )}
         retained = next(
             (item for item in inventory.get("devices", []) if item.get("device") == device),
             None,
-        ) if isinstance(inventory, dict) else None
+        )
         if retained is None:
             return {"error": f"StateDevice '{device}' is missing from the retained inventory."}
         try:

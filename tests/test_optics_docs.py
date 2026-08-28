@@ -23,7 +23,8 @@ def test_reference_has_no_nikon_identifiers_or_rig_claims():
 def test_hint_names_documentation_tool_but_system_prompt_does_not():
     assert "get_optical_path_documentation" in inspect.getsource(tools._optical_path_state)
     assert "get_optical_path_documentation" not in agent.SYSTEM_PROMPT
-    assert "optical_path before considering another exposure" in agent.SYSTEM_PROMPT
+    assert "optical_path and any declared_illumination_properties" in agent.SYSTEM_PROMPT
+    assert agent.SYSTEM_PROMPT.count("before considering another exposure") == 1
 
 
 def test_scoped_modules_do_not_define_state_labels():
