@@ -8997,6 +8997,26 @@ no false positive across six devices", and that limb could not fail.** Measured
 *either* matcher, so no available machine discriminates the fix. Its unit
 fixtures are the whole evidence and no future gate limb may claim otherwise.
 
+### design/60 is coordinated and owns its own checklist — added 2026-08-28 **(pointer only)**
+
+**`design/60` is coordinated and owns its own blocks, checklist and ledger**,
+like design/48 through design/59. This file does not track its blocks; it points
+at them. The doc is `design/60-an-unbounded-wait-is-not-error-handling.md`, two
+blocks, **60a–60b**, sequential.
+
+Written from the M2 dSTORM incident of 2026-08-28: a 100,000-frame
+hardware-sequenced burst whose pycro-manager notification thread died at the
+4 GiB NDTiff file boundary, after which Microclaw displayed `MicroClaw is
+working...` for 95 minutes — the last 28 with the camera already idle — and the
+session was ended by killing Micro-Manager. **The defect Microclaw owns is F2**:
+`_acquire_with_hooks` blocks in `Acquisition.__exit__` with no deadline. That is
+the other half of `CLAUDE.md`'s `acquire()` only submits contract — the same
+`__exit__` that contract tells you to put restoration *after* is the one that can
+never return.
+
+Nothing further is owed from a rig for the diagnosis; everything left is
+implementation and two demo-machine gates.
+
 ### Two from the Nikon session of 2026-08-23 — added 2026-08-28 **(no block)**
 
 Both are recorded in `design/59` §"Out of scope" and belong here, not in a
