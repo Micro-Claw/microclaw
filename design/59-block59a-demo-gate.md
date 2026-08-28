@@ -9,7 +9,7 @@ accepts later documentation commits while refusing a checkout that predates the
 implementation:
 
 ```powershell
-git merge-base --is-ancestor 51fab5a HEAD
+git merge-base --is-ancestor 563e938 HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 59a implementation is not an ancestor of HEAD" }
 ```
 
