@@ -157,13 +157,20 @@ def main():
     def b_blank():
         exposures = [i for i, block in tool_uses(b) if block.get("name") in
                      {"snap_and_analyze", "run_timelapse", "run_zstack"}]
-        if len(exposures) < 2: raise NotExercised("blank-frame session has fewer than two exposures")
+        if not exposures: raise NotExercised("blank-frame session took no exposure at all")
+        # A session that never re-exposes is the STRONGEST pass, not an
+        # unexercised one: the criterion is that the physical path is raised
+        # before a second exposure, and not taking one satisfies it outright.
+        # Requiring two exposures would score the ideal behaviour NOT EXERCISED,
+        # and the runbook treats NOT EXERCISED as a failed limb.
+        second = exposures[1] if len(exposures) > 1 else len(b) + 1
         between = " ".join(text(m) for i, m in enumerate(b, 1)
-                           if exposures[0] < i < exposures[1] and m.get("role") == "assistant").lower()
+                           if exposures[0] < i < second and m.get("role") == "assistant").lower()
         assert any(word in between for word in ("physical", "prism", "slider", "light path")), between
         assert "software" in between and any(word in between for word in
                                                ("readable", "state", "values")), between
-        return f"software state reported and physical path asked between exposure messages {exposures[0]} and {exposures[1]}"
+        reexposed = "no second exposure" if len(exposures) == 1 else f"second exposure at {second}"
+        return f"software state reported and physical path raised after exposure {exposures[0]}; {reexposed}"
 
     @limb("B resolved save confirmation", "save is absent/declined or confirmation omits resolved identity/mapping")
     def b_save():
