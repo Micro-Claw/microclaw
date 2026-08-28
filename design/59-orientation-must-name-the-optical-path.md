@@ -262,6 +262,14 @@ pyjavaz serializes every bridge call, so these are paid in sequence. That is the
 trade being accepted: a light path nobody reads is a light path nobody can
 check.
 
+**Measured on the demo machine, 2026-08-28** (six StateDevices, three
+pixel-size configs, one autofocus device): the first `get_system_state` costs
+**39 bridge calls / 36 ms**, the second **27 calls / 8 ms**. The 1.5 s ceiling
+this section set is not close to binding, and the retention is real — twelve
+calls are paid once. The cost table above is therefore accepted as written; the
+open question it raised (whether the caching boundary was drawn in the right
+place) is closed on the machine rather than by argument.
+
 ### §4 — A reference file: how light paths usually work
 
 New `microclaw/optics_docs.py` and tool `get_optical_path_documentation`, in the
@@ -605,12 +613,26 @@ Gate — demo machine, shipped as a program:
   `size()`/`get(i)` and raise on iteration. Added after demo gate round 1 was
   spent on `TypeError: 'mmcorej_StrVector' object is not iterable`; now in
   `CLAUDE.md` step 6 for every block.
-- [ ] 24. Bridge-call count **and** measured wall time reported for the first and
+- [x] 24. Bridge-call count **and** measured wall time reported for the first and
   second `get_system_state` call. §3: if the first call exceeds ~1.5 s the
-  caching boundary is wrong, not the feature.
+  caching boundary is wrong, not the feature. **39 calls / 36 ms, then 27 / 8 ms.**
+- [x] 24b. The gate leaves the rig as it found it, **read back**. Round 2 moved
+  `Objective.Label` and restored it in a `finally` with nothing reading the
+  result, so no artifact could answer whether the axis came back. The limb now
+  re-reads and compares against the entry label and the entry pixel-size config;
+  mutating the restore so it silently does not land makes it FAIL.
 - [x] 25. Runbook committed **on the block's branch**, implementation pinned with
   `git merge-base --is-ancestor`, branch pushed to `origin`.
-- [ ] 26. Gate scored from the artifacts, not the verdict (step 6).
+- [x] 26. Gate scored from the artifacts, not the verdict (step 6). Round 2
+  passed 11/11 and the cross-checks agree: `pixel_size_config` `Res10x` -> `None`
+  with `pixel_size_um` 1.0 -> 0.0 when the turret moves to `Objective-2`, all
+  three dependencies' `live` follow the device, and the discrete label agrees
+  with the dependency value in the same payload — the staleness defect closed on
+  hardware. `Dichroic` (illumination-declared) and `Emission` (denied) both
+  remain listed, so the read inventory is demonstrably not the authorization
+  map. Core shutter `White Light Shutter` excluded and named. `Path` carries
+  `State-0/1/2` and is correctly **unmarked** — no false positive across six
+  devices, and the reason 59b must rename those labels to test the vocabulary.
 
 Owed, recorded rather than waived:
 
@@ -693,5 +715,5 @@ Gate — demo machine, a driven session plus two programs:
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; product half was a silent `available_configs: []`. Round 2 pending | — |
+| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; the product half was a silent `available_configs: []`. Round 2 **PASS 11/11**, 39 calls/36 ms then 27/8 ms; restore read-back added afterwards | — |
 | 59b | — | — | — | — | — |

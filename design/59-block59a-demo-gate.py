@@ -23,6 +23,7 @@ from microclaw.safety import SafetyGuard
 from microclaw.tools import get_system_state
 
 RESULTS = []
+RESTORED: dict = {}
 
 
 class NotExercised(Exception):
@@ -309,6 +310,32 @@ def main():
         finally:
             counted.set_property(device, "Label", entry)
             counted.wait_for_device(device)
+            restored = get_system_state(ctrl, gate_guard)
+            (args.output / "system-state-restored.json").write_text(
+                json.dumps(restored, indent=2, sort_keys=True, default=str) + "\n",
+                encoding="utf-8",
+            )
+            RESTORED.update({
+                "device": device, "entry": entry, "target": target,
+                "read_back": next(
+                    (item["label"] for item in
+                     restored["optical_path"]["discrete_positions"]
+                     if item["device"] == device), None
+                ),
+                "pixel_size_config": restored["objective"]["pixel_size_config"],
+            })
+
+    @limb("the gate left the rig as it found it", "the moved device is not read back at its entry label")
+    def restored_read_back():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
+        if not RESTORED:
+            raise NotExercised("no device was moved, so there is nothing to restore")
+        # CLAUDE.md: a device that is not busy is not a device that arrived, and
+        # a restoration nothing reads back is a claim, not evidence.
+        assert RESTORED["read_back"] == RESTORED["entry"], RESTORED
+        assert RESTORED["pixel_size_config"] == first["objective"]["pixel_size_config"], RESTORED
+        return (f"{RESTORED['device']}.Label read back at {RESTORED['entry']!r} "
+                f"and {RESTORED['pixel_size_config']!r} is active again")
 
     @limb("Core shutter exclusion is named", "the Core shutter appears among discrete devices or is silently omitted")
     def shutter_excluded():
