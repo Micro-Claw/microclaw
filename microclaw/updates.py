@@ -167,6 +167,11 @@ def _reconcile_installed_commit(base: Path, slot: str) -> None:
             success["candidate"] = None
         state.pop("next_check", None)
         state.pop("staging", None)
+        # `discovery` is a diagnostic nothing in the product reads -- which is
+        # exactly why it must not lie: it is what someone opens the state file
+        # to consult, and after activation "A newer main commit is available"
+        # names the commit now running.
+        state.pop("discovery", None)
         write_state(state, base / STATE_NAME)
     except Exception:
         return
