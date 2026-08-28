@@ -343,6 +343,49 @@ caught this run: pycro-manager `continue`s past the bad notification, so later
 good notifications keep flowing and the counter keeps advancing. Frame arrival is
 a *progress signal* (D4), not the stall detector.
 
+### D1a — the runtime ceiling is qualified by frame arrival, and no path is left unbounded. (coordinator amendment to D1, 2026-08-28)
+
+Two gaps in D1 as written, both found by reading the call sites rather than the
+incident. Recorded here so the implementer builds the amended shape, not D1's.
+
+**The runtime ceiling as stated has a false-positive hazard that the incident
+could not show.** `plan.estimated_duration_s` deliberately counts exposure and
+`min_start_time` only — `plan_events` says so: "camera readout, stage settling,
+autofocus, and filter switching are rig-dependent and unmeasured". For the M2
+burst that estimate was excellent (5,000 s planned against 5,175 s real), because
+a hardware-sequenced burst *is* nothing but exposures. It is bad exactly where
+runs are position-dominated: a 1,000-position tile scan at 10 ms plans 10 s, so
+`max(1.5 x, x + 300)` gives a 310 s ceiling against a healthy run of half an
+hour. D1 would then declare a working acquisition unterminated, return the D3
+dict, and set the session flag that refuses further acquisitions — mid-run, on
+the rig, for no defect.
+
+So: **expiry of the runtime ceiling additionally requires that no frame has been
+saved for `STALL_QUIET_S`.** This does not contradict D1's "do not make the
+deadline a frame-arrival watchdog on its own", which is about *detection* — frame
+arrival cannot detect this incident, because pycro-manager `continue`s past the
+bad notification and later good notifications keep the counter moving. Here it is
+used only to *withhold* a false positive from a run that is demonstrably still
+producing data. In the M2 incident it changes nothing: `_exception` appears at
+~13:35:45 and the 90 s error grace fires first, at ~13:37:15, exactly as D1 says.
+The error grace is **not** so qualified — once the engine has reported a fatal
+error, continued frame arrival is not evidence of health.
+
+**And the frame counter must exist on every path.** `account_saved_frame` is
+installed only when `reservation is not None`, and two call sites pass `None`
+(the survey runner with `adaptive=false`, and the deferred acquire phase). Count
+saved frames unconditionally — `image_saved_fn` receives no pixel array, so this
+keeps the Java-side streaming fast path either way — so that `frames_accounted`
+in the D3 report and the qualification above are available on every supervised
+run, not only budgeted ones.
+
+**No reservation must not mean no bound.** `_acquire_with_hooks` reads its plan
+from `reservation.plan` today; on the reservation-less paths there is nothing to
+read. Pass the plan explicitly from the call sites that already compute one, and
+where none exists fall back to a named constant ceiling and **say in the result
+that the ceiling was a fallback**. An unbounded wait is the defect this document
+is about; it must not survive on the paths nobody was looking at.
+
 ### D2 — Poll `acq._exception` and record it the moment it appears. (fixes F3)
 
 `abort(e)` sets `acq._exception` synchronously. In this run it became observable
@@ -527,3 +570,248 @@ plan whose estimated bytes exceed `MAX_FILE_SIZE` produces the boundary
 disclosure. And the rollover itself is now reproducible off-rig at any time —
 write 4 GiB through a `SingleNDTiffWriter` and watch `newFile()` — which is where
 an upstream report to pycro-manager should start if we choose to file one.
+
+## Blocks
+
+design/60 owns its own blocks, checklist and run ledger, as design/58 and
+design/59 do. It is not a design/35 row. Two blocks, in order — 60b's progress
+reporting rides the diagnostic event sink 60a builds, so they are sequential.
+
+### 60a — Microclaw bounds its own wait and returns a usable session
+
+D1 (as amended by D1a), D2, D3, D7. This is the defect Microclaw owns; nothing
+else in this document matters if a run can still hang forever.
+
+### 60b — the operator can see the run, and is told what it costs
+
+D4, D5, D6. Progress, the un-interruptibility disclosure, the magnitude-bounded
+grant, and the NDTiff file-boundary disclosure. All of it is decided *before* the
+first exposure or rendered *during* the run; none of it changes the acquisition.
+
+
+## Implementation checklist
+
+### Block 60a — the bounded wait, the exception the session can see, and the recovery
+
+Items:
+
+1. **A typed `AcquisitionUnterminated`**, beside `_HookedAcquisitionFailure` in
+   `tools.py` (it is internal, like that one, and is converted at the boundary —
+   move it to `errors.py` only if an import cycle forces it). It carries every
+   field D3's dict needs: `dataset_path`, `frames_planned`, `frames_accounted`,
+   `engine_exception`, `camera_sequence_running`, `teardown_running`, and which
+   bound expired.
+2. **`_acquire_with_hooks` runs `acq.__exit__` on a daemon thread**
+   (`microclaw-acq-teardown`) and polls it at 1 s, per D1's stub. The
+   construction, `_acq_dataset_path` read, hook binding and `acq.acquire(events)`
+   stay in the foreground: an error before the waiter starts must still restore
+   hardware in the foreground exactly as today.
+3. **Two bounds, module constants with no config path** (the precedent is
+   `STAGE_MOVE_TOLERANCE_UM`): `ERROR_TEARDOWN_GRACE_S = 90` and a runtime
+   ceiling `max(estimated_duration_s * 1.5, estimated_duration_s + 300)`. Do not
+   tune the grace to F1's 4 min 46 s — D1 says why, and D3's session flag is what
+   makes returning while the camera is live safe.
+4. **The runtime ceiling is qualified by frame arrival; the error grace is not**
+   (D1a). Expiry of the runtime ceiling requires *both* that the deadline has
+   passed *and* that no frame has been saved for `STALL_QUIET_S`.
+5. **Count saved frames on every path** (D1a): install the `image_saved_fn`
+   counter whether or not there is a reservation, wrapping `commit_frame()` when
+   there is. It receives no pixel array, so the Java-side streaming fast path is
+   unaffected.
+6. **Every path is bounded** (D1a): `_acquire_with_hooks` takes the plan
+   explicitly from the call sites that already compute one; where none exists it
+   falls back to a named constant ceiling and the result says the ceiling was a
+   fallback. Audit all five call sites (`tools.py` ~3531, ~3722, ~6482, ~6902,
+   ~7161) — two of them pass `reservation=None`.
+7. **Poll `acq._exception` and record it the moment it appears** (D2), guarded
+   with `getattr(acq, "_exception", None)` and carrying the same
+   re-verify-on-upgrade comment `_dataset_disk_location` already carries.
+8. **A thread-safe acquisition-event sink on the tool execution context** (D2).
+   Diagnostic events only in this block; 60b adds progress. The browser
+   implementation forwards through the active turn's SSE emitter
+   (`webserve.py` `_emit`, set per turn, `None` between turns — a sink that
+   raises when no turn is bound is a defect, it must drop or buffer); the CLI
+   implementation writes timestamped lines to stderr. Do **not** append a row to
+   conversation history: a tool call without its tool result is deliberately one
+   atomic history operation.
+9. **The waiter owns cleanup** (D1): reservation close and hook hardware
+   restoration move into `finish_owned_cleanup()` on the waiter thread. The
+   foreground must not close the reservation or restore while the waiter is
+   live. On the ordinary path the waiter has finished before the foreground
+   reads `outcome`, so today's semantics are preserved — including folding
+   restoration failures into the raised error, and `_HookedAcquisitionFailure`'s
+   `frames_exposed` / `last_hardware_state`.
+10. **One shared conversion at the boundary** (D3): `execute_tool` catches
+    `AcquisitionUnterminated` and returns D3's dict. Individual tools must not
+    each grow a slightly different catch.
+11. **The session flag refuses further acquisitions** (D3) while *either* the
+    camera sequence is running *or* a teardown waiter is alive, re-probing both
+    each time. `camera_sequence_running` is a real `core.is_sequence_running()`
+    read, never an inference, and the `hardware`/`next` text is selected from
+    what was measured — a report claiming a live camera after it went idle is
+    the same class of defect as this document's subject. Key the refusal on
+    `_microclaw_acquisition_entry_point`, which is the complete set and includes
+    `run_mda`; do not reuse `execute_tool`'s `run_mda` exemption from
+    `authorize_path`. Read-only work and dataset analysis stay available.
+12. **D7: the emitters do not change.** No watchdog is inlined into an exported
+    script. Carry a regression test that a hookless timelapse still emits a bare
+    `with Acquisition(...)`.
+
+Tests — the fake is the whole problem here, so build it first. Every existing
+`FakeAcquisition` in the suite returns promptly from `__exit__`, which is
+precisely why 2,216 green tests never came near this defect.
+
+- **The reproduction**: a fake `Acquisition` whose `__exit__` blocks forever and
+  whose `_exception` becomes set, driven through the shared boundary. Assert the
+  tool *returns* D3's dict within the error grace, with every field populated
+  from measured state.
+- The still-live waiter **retains the reservation and has not restored
+  hardware** at the moment the foreground returns.
+- Blocks forever, no `_exception`, **frames still arriving** past the runtime
+  deadline → does **not** expire (D1a's false-positive guard). Mutate
+  `STALL_QUIET_S` rather than watching this fail; its subject is the
+  qualification, not the bound.
+- Blocks forever, no `_exception`, no frames → expires at the runtime ceiling.
+- A reservation-less call site gets the fallback ceiling and **says so** in the
+  result; assert no path can wait unbounded.
+- `camera_sequence_running` true and false produce different `hardware` and
+  `next` text, both written and both asserted.
+- The refusal is **parameterized over every tool carrying
+  `_microclaw_acquisition_entry_point`**, so a tool added later is covered
+  without a new test; assert the refusal lifts when both conditions read false.
+- The ordinary path is unchanged: a normal completion still returns the same
+  result dict, and a mid-run hook failure still raises
+  `_HookedAcquisitionFailure` with its restoration failures folded in.
+- The sink drops cleanly when no turn is bound.
+- D7's emitter regression test.
+
+Gate — **the demo machine**, as a program
+(`design/60-block60a-demo-gate.py`) that reports each limb independently, owns
+its own log, and exits nonzero. Every limb is a computation or an acquisition the
+program drives; none needs an operator judgement, so it is not a runbook of
+pasted blocks (58a). Run it against the **bridge-shaped fake** in
+`design/55-gate-probe-selftest.py` on **both** trees before pushing — Core
+collections must be `size()`/`get(i)` vectors whose `__iter__` raises, or the
+gate reproduces 59a's rig trip.
+
+Limbs:
+
+1. Inventory: the camera supports sequence acquisition; report ROI, bytes/pixel
+   and the measured per-frame period. A machine that cannot hardware-sequence
+   reports **NOT EXERCISED** for limbs 2–4, and that is never a pass.
+2. A short hardware-sequenced burst (`interval_s=0`) through `run_timelapse`
+   completes through the threaded teardown and reports its dataset path; frames
+   on disk equal frames planned. This is the no-regression limb and it is the
+   one that would catch a waiter that never joins.
+3. **The load-bearing measurement**: while that burst is in flight, a second
+   thread issues `core.is_sequence_running()` and the limb reports whether it
+   answers and how long it took. D3's report field depends on this being true,
+   and it is not obviously true — pyjavaz serialises every bridge call under one
+   lock. If it blocks until the burst ends, D3's `camera_sequence_running` is
+   not obtainable at expiry and that is a finding, not a failed limb.
+4. A hooked run with a named-stage envelope: restoration happens after teardown,
+   exactly once, and the reservation closes once.
+5. Free-disk and cleanup: the program records the machine's safety config before
+   it starts and checks it back afterwards, and removes its own datasets.
+
+The stall itself is **not** gated on a machine — it is upstream, not reproducible
+on demand, and the fake above reproduces it exactly. Say that in the runbook
+rather than leaving a limb that cannot run.
+
+### Block 60b — progress, disclosure, and the bounded grant
+
+Items:
+
+1. **D4 — publish `reservation.completed_frames` as rate-limited progress**
+   through 60a's sink, so the browser's existing SSE stream can render
+   `frames 41,203 / 100,000` and the CLI can print the same periodically. Do not
+   couple `tools.py` to `Session`. Use 60a's unconditional counter so a
+   reservation-less run reports progress too.
+2. **D5 — disclose un-interruptibility at the gate.** `_authorize_acquisition`
+   adds a clause when the plan is a single sequenced burst (`interval_s == 0`
+   and `frames > 1`), naming that Microclaw's Stop button and the engine abort
+   cannot be relied on to stop it promptly and that thousands of further
+   exposures may occur. The same constraint goes in the **parameter**
+   descriptions for `interval_s` and `n_frames`, per the standing rule that a
+   statically-knowable refusal or constraint belongs in the parameter, not the
+   tool's prose.
+3. **D5 — bound the grant by magnitude.** `SessionGrants` records the granted
+   plan's `(frames, duration_s, illuminated_ms)`; `_authorize_acquisition`
+   re-asks when a later plan exceeds any of them. The key stays
+   `(kind, subject)`. This needs structured grant metadata on
+   `CONFIRM_FN`/`Session.confirm`, not a comparison against the human-readable
+   `granted_on` summary — and both the CLI and the browser grant lookup must
+   compare it. Existing non-acquisition confirmations pass no metadata and keep
+   their current behaviour; `setup_tools.py:329` is one such caller.
+4. **D6 — the guaranteed-crossing disclosure, from the field that already
+   exists.** `plan.estimated_bytes` is raw pixels; `MAX_FILE_SIZE // (w*h*bpp)`
+   is therefore an *upper bound* on frames per NDTiff file, so `frames > bound`
+   is a guaranteed crossing. Ship that first, with D6's wording, including the
+   segmenting advice and its measured ~6 s per-segment cost. Import
+   `MAX_FILE_SIZE` from `ndstorage.ndtiff_file` with a documented 2**32 fallback;
+   do not silently hard-code it. Keep raw image bytes separately visible, and do
+   not quote a frame number the estimate cannot stand behind — the raw bound put
+   this run's crossing at 95,443 and it was 72,056.
+5. **D6 refinement, optional in this block**: a conservative per-frame metadata
+   and IFD model catches the band between the true crossing and the raw bound.
+   It is a refinement, not a prerequisite. **Do not add a cap** — rejecting a
+   100,000-frame dSTORM stack would be rejecting the experiment.
+
+Tests:
+
+- A plan whose estimated bytes exceed `MAX_FILE_SIZE` produces the boundary
+  disclosure; one just under does not. This costs nothing and would have caught
+  F8.
+- The burst clause appears for `interval_s == 0, frames > 1` and not for a
+  nonzero interval or a single frame.
+- A grant created on a 500-frame plan does **not** auto-approve a 100,000-frame
+  plan, and does still auto-approve a smaller one — the incident, exactly.
+  Assert on each of frames, duration and illuminated ms independently.
+- A non-acquisition confirmation with no metadata behaves as it does today.
+- Progress events are rate-limited, are emitted through the sink rather than a
+  `Session` reference, and are emitted on a reservation-less run.
+
+Gate — **the demo machine**, one program plus one short driven session.
+
+Program (`design/60-block60b-demo-gate.py`, same rules as 60a's):
+
+1. Compute this machine's real crossing bound from its ROI and bytes/pixel, and
+   check free disk before anything runs. Report the numbers.
+2. Assert the D6 disclosure fires for a plan just over that bound and not for
+   one just under — **before the first exposure**.
+3. **Actually cross 4 GiB.** Run a burst just past the bound and confirm a second
+   `NDTiffStack_1.tif` exists and the run completes. On a 512x512x16-bit demo
+   camera that is ~8,200 frames and ~5 GB. Either outcome is evidence: a clean
+   rollover shows the demo camera's storage does what M2's did not, and a
+   reproduction of the truncated notification is a much larger finding and goes
+   upstream.
+4. Progress events observed during that burst, with their rate measured.
+
+Driven session (operator, ~5 minutes): approve-for-session on a small
+acquisition, then ask for a much larger one and confirm it is **re-asked**;
+read back the burst un-interruptibility clause. **Dry-run those two prompts
+against a recorded payload before the runbook ships** — 59b lost three rig rounds
+to prompt defects and none to product defects. Two prompts is a small sample and
+the session is short, so weigh that against the operator's time: if the dry-run
+costs more than the session, ask for the session.
+
+### Post-merge design gate (step 10, both blocks)
+
+- Reconcile design/60 to what was measured, in particular limb 3 of 60a's gate
+  (whether `is_sequence_running()` answers mid-burst) and limb 3 of 60b's
+  (whether the demo camera's rollover is clean). If either contradicts a
+  decision above, amend the decision here rather than leaving the prose.
+- Add the generic lessons to `CLAUDE.md` beside the existing "`acquire()` only
+  submits" contract, which this document's F2 is the other half of.
+- Record coordination notes in `design/prompts.md`; close both ledger rows.
+- Decide, explicitly, whether to file the upstream pycro-manager/NDTiffStorage
+  report. The rollover is reproducible off-rig by writing 4 GiB through a
+  `SingleNDTiffWriter`; the notification mechanism is still unproven and no fix
+  here depends on it.
+
+## Run ledger
+
+| block | branch | start | implementation | gate | merge |
+| --- | --- | --- | --- | --- | --- |
+| 60a | `design60/bounded-wait` | — | — | — | — |
+| 60b | — | — | — | — | — (not started; depends on 60a's event sink) |
