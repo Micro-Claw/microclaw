@@ -1436,6 +1436,24 @@ def test_explicit_categorical_declarations_still_work_and_stay_distinguishable()
     assert ("FilterWheel", "State") not in categorical_entries(report)
 
 
+def test_read_inventory_keeps_ruled_denied_and_illumination_state_devices():
+    core = state_device_core(Allowed="StateDevice", Denied="StateDevice", Light="StateDevice")
+    ctrl = Controller(core)
+    validate_live_rig(
+        ctrl,
+        parsed(
+            categorical={("Allowed", "Label")},
+            excluded={("Denied", "Label")},
+            illumination=IlluminationConstraints(shutters=[
+                IlluminationProperty("Light", "Label", "1", "0")
+            ]),
+        ),
+    )
+    assert {item["device"] for item in ctrl._state_device_inventory["devices"]} == {
+        "Allowed", "Denied", "Light"
+    }
+
+
 def test_non_state_devices_are_unaffected_by_auto_classification():
     core = state_device_core(
         Sensor="GenericDevice", Hub="HubDevice", Port="SerialDevice",

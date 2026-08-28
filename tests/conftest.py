@@ -18,6 +18,7 @@ def mock_core():
     core.get_xy_stage_device.return_value = "DXYStage"
     core.get_focus_device.return_value = "DStage"
     core.get_available_configs.return_value = ["DAPI", "FITC", "Cy5"]
+    core.get_available_pixel_size_configs.return_value = []
     core.get_loaded_devices.return_value = ["DCam", "DXYStage", "DStage"]
     return core
 
