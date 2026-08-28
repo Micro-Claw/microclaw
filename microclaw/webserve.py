@@ -705,6 +705,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             candidate = dict(candidate)
             repo = candidate.get("canonical_repo") or updates.REPO
             candidate["url"] = f"https://github.com/{repo}/commit/{candidate['sha']}"
+        if updates.candidate_is_installed(candidate, state):
+            candidate = None
         dismissal = state.get("dismissal")
         now = time.time()
         suppressed = updates.candidate_is_suppressed(candidate, dismissal, now=now)
@@ -759,6 +761,11 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raw = success.get("candidate") if isinstance(success, dict) else None
             if not isinstance(raw, dict):
                 raise HTTPException(409, "No update candidate is cached.")
+            if updates.candidate_is_installed(raw, state):
+                # Staging the running commit rebuilds the inactive slot at the
+                # same SHA and republishes pending, so the restart lands back on
+                # the same banner.  Refuse rather than spend the build.
+                raise HTTPException(409, "That commit is already installed.")
             try:
                 candidate = updates.Candidate(**raw)
             except (TypeError, ValueError):

@@ -1994,3 +1994,20 @@ def test_remote_confirmation_audit_carries_identity(session, remote, fast_confir
     assert session.audit_records[-1]["kind"] == "illumination"
     assert session.audit_records[-1]["decision"] == "approved"
     assert session.audit_records[-1]["timestamp"]
+
+
+def test_update_status_does_not_offer_the_installed_commit(session, tmp_path, monkeypatch):
+    """The banner reads the same day-old cache the REPL notice does."""
+    _managed_updates(tmp_path, monkeypatch, candidate_sha="0" * 40)  # == installed_commit
+    assert TestClient(build_app(session)).get("/api/update").json()["candidate"] is None
+
+
+def test_staging_refuses_the_commit_already_installed(session, tmp_path, monkeypatch):
+    """Staging the running commit rebuilds the other slot at the same SHA and
+    re-arms the same banner: the update loop the demo machines were stuck in."""
+    _managed_updates(tmp_path, monkeypatch, candidate_sha="0" * 40)
+    monkeypatch.setattr(
+        updates, "stage_cached_candidate",
+        lambda *a, **k: pytest.fail("staged a commit that is already installed"),
+    )
+    assert TestClient(build_app(session)).post("/api/update/stage").status_code == 409
