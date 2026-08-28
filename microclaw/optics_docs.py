@@ -40,4 +40,21 @@ Hardware focus locks generally use reflection from the coverslip, acquire only
 inside a capture band, and hold a chosen offset after capture. A lock can remain
 engaged on the wrong reflecting surface. Treat its reported engagement as a lock
 reading, not proof that the specimen plane or optical route is correct.
+
+## Illumination angle, and other continuous light-path adjusters
+
+Not every light-path element has discrete positions. A TIRF illuminator sets the
+angle at which excitation meets the coverslip by translating a mirror or lens
+along a continuous axis, and orientation reports such an axis as an ordinary
+named stage — a bare number, with nothing in it to say what is normal for this
+rig. Far enough from its usual value the beam can miss the sample altogether and
+the field goes dark while every discrete device above still reads correctly.
+
+Treat this as the last thing to check, not an early one. It is rare, and the
+number is evidence only when it sits a long way outside the range this rig
+normally uses — which microclaw does not know and must not guess. Ask the
+operator what the usual value is before drawing any conclusion from it. Check
+the ordinary causes first: illumination and any declared illumination
+properties, the discrete devices in `optical_path`, the manual components named
+above, focus, and whether the stage is on the sample at all.
 """

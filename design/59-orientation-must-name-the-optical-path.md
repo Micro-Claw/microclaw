@@ -506,6 +506,26 @@ a pattern, not a new layer. Contents, all generic:
 - **Focus hardware.** Hardware focus locks in general (reflection off the
   coverslip, capture band, offset), and that a lock can hold on the wrong
   reflecting surface.
+- **Continuous light-path adjusters, and why they are checked last** (operator,
+  2026-08-28). Not every light-path element has discrete positions, so
+  `optical_path.discrete_positions` does not see all of them. A TIRF
+  illuminator sets the incidence angle by translating a mirror or lens along a
+  **continuous** axis; orientation already reports such an axis as an ordinary
+  named stage — the 2026-08-23 Nikon payload carried `"TITIRF": 0.0` in
+  `named_stages` — so the gap is not that the number is missing, it is that
+  nothing in the payload says what normal is. Far enough off, the beam misses
+  the sample and the field goes dark with every discrete device reading
+  correctly.
+
+  The reference carries this as the **last** thing to check, in those words,
+  because the operator's judgement is that it is rare and only worth
+  considering when the axis is a long way outside the range that rig normally
+  uses. Microclaw does not know that range and the reference is forbidden from
+  naming one: a stated number here would be exactly the sourced-but-wrong table
+  design/20 and design/21 are about. It sends the reader to the operator, and
+  lists the ordinary causes to exhaust first. A test pins the ordering, the
+  referral, and the absence of any numeric range.
+
 - **The Nikon PFS offset-range/immersion numbers currently in `SYSTEM_PROMPT`**
   (`agent.py:407–412`) move here, as one worked example of the general shape,
   clearly marked as Nikon-specific. **This bullet is block 59c, not 59b**
@@ -553,6 +573,16 @@ Stated plainly so no gate scores it as a success it is not:
 - It does not label an unnamed turret position. `4-Unknown` stays unknown; the
   change is that it is reported as unknown at orientation rather than presented
   as `"default"` or asked of the operator as though microclaw had no way to look.
+- **It does not report continuous light-path elements at all.**
+  `discrete_positions` is discrete by construction, and a TIRF angle axis, a
+  motorised iris or a continuously-driven optic is a light-path element it never
+  lists. Such an axis surfaces only as a bare number in `named_stages`, which is
+  where it already was. Naming what is *normal* for one would be a rig fact
+  microclaw does not have; §4's reference therefore teaches the failure mode and
+  the priority — last, and only when far out — rather than adding a check. Doing
+  better than that needs a per-rig normal range, which is a `devices/` entry and
+  its own block, not a widening of this one.
+
 - It does not name unnamed light-path positions either. Where the adapter says a
   device routes light and the labels say nothing, `positions_unnamed` states that
   and invites the operator to answer it into the knowledge base. Microclaw never

@@ -1,4 +1,5 @@
 import inspect
+import re
 
 from microclaw import agent, authorization, optics_docs, tools
 
@@ -62,3 +63,24 @@ def test_documentation_tool_needs_no_bridge_writes():
         type("Ctrl", (), {"core": WriteRejectingCore()})(), object()
     )
     assert "how light paths usually work" in result["documentation"].lower()
+
+def test_continuous_angle_adjuster_is_last_resort_and_never_asserts_a_normal_range():
+    # A TIRF illuminator moves the incidence angle on a continuous axis, so it is
+    # a light-path element with no discrete positions; orientation already shows
+    # it as a bare named-stage number. Far enough off, it extinguishes the field
+    # with every discrete device still correct -- but that is rare, and it is the
+    # LAST thing to check (operator, 2026-08-28). The text must carry that
+    # ordering itself, and must send the reader to the operator for what "normal"
+    # is, because microclaw cannot know it and a guessed range would be the
+    # sourced-but-wrong table design/20 and design/21 are about.
+    text = optics_docs.OPTICS_REFERENCE
+    section = " ".join(text.split("## Illumination angle", 1)[1].split())
+    assert "last thing to check" in section
+    assert "Ask the operator what the usual value is" in section
+    assert "must not guess" in section
+    # Priority is positional as well as stated: the manual prism is named as the
+    # first thing to check and must precede this section.
+    assert text.index("manual prism first") < text.index("## Illumination angle")
+    # No numeric range may appear here -- naming one would invent the rig fact
+    # the section exists to say microclaw does not have.
+    assert not re.search(r"\d+\s*(?:degrees?|deg|mm|um|\u00b5m)", section)
