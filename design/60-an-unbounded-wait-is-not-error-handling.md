@@ -915,4 +915,4 @@ costs more than the session, ask for the session.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | `e5958cb` (3 Codex rounds + 1 Claude round after Codex credit ran out mid-turn; 4 defects returned, all in a broad `except Exception` between a supervised acquisition and `execute_tool`; coordinator suite 2450/99/0) | **PASSED 8/8, round 1**, demo machine 2026-08-28. 62/62 probes read `is_sequence_running()` True mid-burst, median 0.0 ms; teardown after camera-idle <=203 ms derived from probe timestamps; ceiling used 4.2% | `daedc83` merged 2026-08-28, branch deleted; design gate below |
-| 60b | — | — | — | — | — (not started; depends on 60a's event sink) |
+| 60b | `design60/progress-and-disclosure` | `4ed79c4` (2026-08-29) | — | — | — |
