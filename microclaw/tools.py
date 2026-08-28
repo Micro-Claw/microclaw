@@ -5964,6 +5964,13 @@ def run_multiposition_acquisition(
                     # what those child calls recorded — never a sibling path
                     # inferred from the filesystem, which is design/38 F7's
                     # original defect. _unterminated_result projects them.
+                    # A `dataset_path` means completed, with no "error" test,
+                    # and that holds only because protocol_params refuses
+                    # hook_strategy and every HOOK_CAPABILITY_ARGS above: no
+                    # child here can raise _HookedAcquisitionFailure, which is
+                    # the one result shape carrying both an error and a path.
+                    # Relax that refusal and this needs an "error" filter, or a
+                    # failed position gets reported as readable data.
                     exc.positions_completed = [
                         item for item in results if item.get("dataset_path")
                     ]
