@@ -170,6 +170,19 @@ def test_dependency_live_value_moves_with_discrete_label_without_a_duplicate_rea
     assert core.property_calls.count(("Objective", "Label")) == 1
 
 
+def test_repeated_non_state_dependency_is_read_once_per_call():
+    core = OpticalCore({}, {
+        "ResA": [("Camera", "Binning", "1")],
+        "ResB": [("Camera", "Binning", "2")],
+    })
+    core.devices["Camera"] = ("1", [])
+    payload, _ = state(core)
+    dependencies = [config["dependencies"][0] for config in
+                    payload["objective"]["available_configs"]]
+    assert [rule["live"] for rule in dependencies] == ["1", "1"]
+    assert core.property_calls.count(("Camera", "Binning")) == 1
+
+
 def test_multikey_pixel_config_preserves_every_dependency_without_measuring_objective():
     core = OpticalCore({"Objective": ("10x", ["10x"]), "Camera": ("2", ["1", "2"])},
                        {"Res10": [("Objective", "Label", "10x"), ("Camera", "Binning", "2")]})

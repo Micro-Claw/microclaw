@@ -507,6 +507,7 @@ def _config_mismatches(
                         live = str(ctrl.core.get_property(*pair))
                     except Exception as error:
                         live = f"ERROR: {error}"
+                    shared[pair] = live
                 rule["live"] = live
                 rule["matches"] = live == rule["expected"]
             rules.append(rule)
