@@ -9,12 +9,9 @@ accepts later documentation commits while refusing a checkout that predates the
 implementation:
 
 ```powershell
-git merge-base --is-ancestor fd3688e HEAD
+git merge-base --is-ancestor 51fab5a HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 59a implementation is not an ancestor of HEAD" }
 ```
-
-The ancestor pin deliberately permits later documentation commits on this
-branch while refusing a checkout that predates the implementation.
 
 Close Microclaw, leave Micro-Manager and its ZMQ server running, then run:
 
@@ -23,10 +20,18 @@ uv run python design/59-block59a-demo-gate.py
 if ($LASTEXITCODE -ne 0) { throw "Block 59a demo gate did not pass every limb" }
 ```
 
-Return the whole `block59a-demo-evidence` directory. `gate.txt` is owned by the
-program (not `Start-Transcript`), `system-state.json` is the payload scored, and
-`results.json` contains every independent PASS / FAIL / NOT EXERCISED verdict
-plus both bridge-call counts and wall times. NOT EXERCISED makes the program
-exit nonzero. The final limb revalidates the safety document that was active
-before the gate and checks its hash, so the gate does not leave production
-pointing at its evidence safety file.
+The gate does not install or replace the active safety document. It discovers
+two suitable StateDevices and their real labels, writes a generated safety file
+only inside `block59a-demo-evidence`, and verifies the production document's
+bytes and modification time did not change. One limb temporarily moves a
+discovered objective dependency to a non-matching discrete position and always
+restores its entry label.
+
+Return the entire `block59a-demo-evidence` directory, including
+`discovery.json`, `generated-safety-config.yaml`, `gate.txt`, both numbered
+system-state payloads, the non-matching payload, and `results.json`. `gate.txt`
+is owned by the program, not `Start-Transcript`. A NOT EXERCISED result is a
+failed gate: report its reason and return the existing evidence directory; do
+not rename devices, edit the generated safety file, or retry. If the program
+dies before producing every artifact, return the directory it did create plus
+the complete console error and stop rather than rerunning.
