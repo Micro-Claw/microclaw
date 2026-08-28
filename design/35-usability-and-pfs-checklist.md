@@ -8911,6 +8911,30 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### One from block 59a's demo gate — added 2026-08-28 **(no block)**
+
+**A focus lock with no status property still gets a probe hint pointing at
+whatever it does expose.** `get_focus_lock_state` (block 56b) returns
+`status_properties` for every read-only property on the autofocus device, and
+emits `probe_hint` whenever that dict is non-empty. On the demo machine's
+`Autofocus` the dict is `{"Description": "Demo auto-focus adapter", "HubID": "",
+"Name": "DAutoFocus"}` — nothing a probe could use — and the hint still invited
+`run_autofocus` against "one of the properties above".
+
+Measured 2026-08-28 in `block59a-demo-evidence/system-state-1.json`. It was
+invisible until block 59a put `get_focus_lock_state` into the orientation
+payload, where it is now read by every session on every rig rather than only when
+asked for.
+
+**Not a 59a defect** — 59a embeds that payload verbatim, which is what the design
+asked for, and the values shown are exactly what makes the difference obvious.
+The question is whether `probe_hint` should be emitted when no candidate property
+plausibly carries a status, or should say that none does. The Nikon Ti and the
+Dragonfly both have real status properties and disagree about their names, so the
+hint cannot be keyed to a name — which is the same reason `_lock_status_properties`
+shows values instead of choosing. Needs a rig with a real lock to settle, and the
+operator has no Nikon at present.
+
 ### Two from the Nikon session of 2026-08-23 — added 2026-08-28 **(no block)**
 
 Both are recorded in `design/59` §"Out of scope" and belong here, not in a
