@@ -7774,3 +7774,74 @@ survived. Seventh interruption across this design.
 activation is evidenced twice) and the offline launch, which cannot be gated over
 Remote Desktop because disconnecting the network ends the session that would
 observe it.
+
+## design/59 block 59a — orientation names the optical path (merged 2026-08-28)
+
+Merged `e314927`. Three Codex rounds, twelve review findings, **two demo-gate
+rounds**. The block's own lesson is not in the code: **the gate went to the rig
+having never been executed against anything shaped like the bridge**, and the
+trip was spent on `TypeError: 'mmcorej_StrVector' object is not iterable`.
+
+**The defect had two halves and only one was visible.** The gate's own
+`list(core.get_loaded_devices())` raised. The identical mistake in
+`calibration._config_mismatches` — `list(get_available_pixel_size_configs())`
+and an iterated affine vector, both inside a bare `except Exception` — was
+*swallowed*, and 59a had just promoted that walk into the orientation payload.
+On the demo machine it would have reported `available_configs: []` for a rig
+with `Res10x/20x/40x`, dropped the dependency role from the objective, and still
+printed "Micro-Manager does not know which objective is in the path". That is
+design/59's own Gap 2 — a diagnosis that reads like an answer — rebuilt inside
+the fix for Gap 2. The gate would not have caught it either: its limb said
+`NOT EXERCISED: no pixel-size config has a dependency`, which reads as a fact
+about the machine. **A limb reporting NOT EXERCISED as a machine limitation is a
+place to suspect the product**, and an enumeration that fails must say so — both
+now in `CLAUDE.md`.
+
+**The instrument.** `design/59-block59a-gate-selftest.py` drives the real gate
+end to end against a fake whose collections expose `size()`/`get(i)` and raise
+on iteration. design/55's selftest existed and I did not use it; worse, **it
+would not have caught this**, because it replaces the controller with a
+`MagicMock`, which hands back Python-friendly objects. Discrimination measured on
+three trees: fixed → PASS 11/11; pre-fix → the demo machine's nine NOT EXERCISED
+limbs with its exact TypeError; **fixed gate over pre-fix package → 3 FAIL**,
+which is the silent half. Reproducing a rig trip off-rig took twenty lines.
+
+**The harness has to be faithful or its PASS means nothing.** Modelling the
+controller as a `MagicMock` made `ctrl.core` a plain attribute, so the gate's
+counting wrapper was bypassed and the cost limb reported 0 bridge calls for both
+invocations while every other limb passed. `core` is a *property* over `_core`.
+The two cache slots must also start as real `None`: `getattr(ctrl, name, None)`
+against a mock returns a truthy mock and poisons the retention check.
+
+**A passing gate is still a place to look.** Round 2 passed 11/11, and scoring
+the artifacts found an unverified claim: the gate moves `Objective.Label` and
+restores it in a `finally`, but the last payload written is the **moved** one.
+Nothing read the axis back, so no artifact could answer whether the rig was left
+as it was found. Added a read-back limb, then mutated the restore so it silently
+does not land and confirmed the limb FAILs.
+
+**What the rig established**, cross-checked rather than taken from the verdict:
+`pixel_size_config` `Res10x` → `None` and `pixel_size_um` 1.0 → 0.0 when the
+turret moves to `Objective-2`; all three dependencies' `live` follow the device;
+the discrete label agrees with the dependency value **in the same payload**,
+which is the staleness defect closed on hardware. `Dichroic`
+(illumination-declared) and `Emission` (denied) both remain listed, so the read
+inventory is demonstrably not `_auto_classified_state_pairs`. Cost **39 bridge
+calls / 36 ms**, then **27 / 8 ms** — the §3 ceiling of 1.5 s is nowhere near
+binding.
+
+**Three facts about the demo machine that 59b needs.** Its light-path device
+`Path` carries `State-0/1/2`, so the port vocabulary correctly marks **nothing**
+— which is why 59b must rename those labels over the bridge with
+`define_state_label` to have any control that can fail. The Core shutter is
+`White Light Shutter`. And the demo `Autofocus` device exposes no status
+property at all: `status_properties` came back `Description`, `HubID`, `Name`,
+while `probe_hint` invited a probe against "one of the properties above". That
+is block 56b behaviour, not 59a's, and it is now on design/35's register.
+
+**Two corrections were made by the coordinator rather than sent back**: the gate
+died writing its evidence when a payload value was not JSON-serialisable, again
+outside the `try` (no limb ran, no `results.json`); and removing the swallow from
+`_config_mismatches` was right for the payload but wrong for two callers that
+interpolate that walk *into* an error message, where a raise replaces the
+diagnosis with the failure that produced it.

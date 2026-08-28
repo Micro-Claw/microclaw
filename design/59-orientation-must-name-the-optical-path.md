@@ -638,7 +638,11 @@ Owed, recorded rather than waived:
 
 - [ ] 27. **Owed to a Nikon Ti:** one live payload from a rig with an unnamed
   turret position, a real `TILightPath`, and a PFS status device. Covered by
-  fixture only until the operator has a Ti again.
+  fixture only until the operator has a Ti again. **Still owed after the merge**
+  — the demo machine settled the mechanism, not the scene.
+- [ ] 28b. **Owed, opened by this gate:** the demo `Autofocus` exposes no status
+  property, and `probe_hint` still invited a probe against `Description`/`HubID`/
+  `Name`. On design/35's register; needs a rig with a real lock.
 - [ ] 28. **Opportunistic, not a precondition:** M5 has no Core shutter, so
   `get_shutter_device()` returns empty rather than raising — the other half of
   limb 18. Run it if M5 is free.
@@ -702,11 +706,11 @@ Gate — demo machine, a driven session plus two programs:
 
 ### Post-merge design gate (step 10, both blocks)
 
-- [ ] 45. Reconcile this document to what was measured — especially §3's cost
+- [x] 45. (59a) Reconcile this document to what was measured — especially §3's cost
   table against the gate's real bridge-call count and wall time.
-- [ ] 46. Record coordination notes in `design/prompts.md` and close the ledger
+- [x] 46. (59a) Record coordination notes in `design/prompts.md` and close the ledger
   rows below.
-- [ ] 47. `git log --oneline origin/main..main` empty for each block; branch
+- [x] 47. (59a) `git log --oneline origin/main..main` empty for each block; branch
   deleted locally and on `origin`.
 - [ ] 48. Carry the two owed-to-a-Ti rows (27, 44) forward into design/35's
   register, so losing Nikon access does not lose the evidence debt.
@@ -715,5 +719,5 @@ Gate — demo machine, a driven session plus two programs:
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; the product half was a silent `available_configs: []`. Round 2 **PASS 11/11**, 39 calls/36 ms then 27/8 ms; restore read-back added afterwards | — |
+| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; the product half was a silent `available_configs: []`. Round 2 **PASS 11/11**, 39 calls/36 ms then 27/8 ms; restore read-back added afterwards | `e314927` merged 2026-08-28, branch deleted |
 | 59b | — | — | — | — | — |
