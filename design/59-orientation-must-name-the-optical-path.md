@@ -685,5 +685,5 @@ Gate — demo machine, a driven session plus two programs:
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 59a | `design59/optical-path` | `82ee539` | — | — | — |
+| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | — | — | — |
 | 59b | — | — | — | — | — |
