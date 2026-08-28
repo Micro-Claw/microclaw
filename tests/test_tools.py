@@ -3638,7 +3638,7 @@ class TestAcquisitionsRespectTheWorkspace:
         from microclaw import tools
 
         with pytest.raises(SafetyViolation, match="escapes"):
-            tools._acquire_with_hooks(ws_guard, "/somewhere/else", "n", [])
+            tools._acquire_with_hooks(ws_guard, "/somewhere/else", "n", [], ctrl=mock_ctrl)
 
     def test_an_adaptive_hook_log_is_confined_too(self, mock_ctrl, ws_guard, monkeypatch):
         """Same bug one layer down: the hook writes the log itself, unguarded,

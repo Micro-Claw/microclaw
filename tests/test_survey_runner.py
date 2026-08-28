@@ -406,7 +406,7 @@ class TestAcquireWithHooksFactory:
     and the real is_finished() observable (prompt aborts)."""
 
     def test_a_callable_events_is_called_with_the_live_acquisition(
-        self, unconstrained_guard, tmp_path, monkeypatch
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
     ):
         from microclaw import tools
         monkeypatch.setattr(tools, "Acquisition", _FakeAcquisition)
@@ -418,18 +418,18 @@ class TestAcquireWithHooksFactory:
             seen["acq"] = acq
             return marker
 
-        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", factory)
+        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", factory, ctrl=mock_ctrl)
         assert seen["acq"] is _FakeAcquisition.last
         assert _FakeAcquisition.last.acquired is marker
 
     def test_a_plain_event_list_is_acquired_unchanged(
-        self, unconstrained_guard, tmp_path, monkeypatch
+        self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
     ):
         from microclaw import tools
         monkeypatch.setattr(tools, "Acquisition", _FakeAcquisition)
 
         events = _survey(3)
-        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", events)
+        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", events, ctrl=mock_ctrl)
         assert _FakeAcquisition.last.acquired is events
 
 

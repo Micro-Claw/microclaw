@@ -9,6 +9,7 @@ import math
 import queue
 import os
 import re
+import sys
 import tempfile
 import textwrap
 import threading
@@ -69,6 +70,43 @@ from microclaw.calibration import resolve_calibration
 from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_stage_coordinate_mosaic
 
 logger = logging.getLogger(__name__)
+
+# An engine-side fatal error is already known; 90 seconds gives pycro-manager
+# a short orderly-teardown opportunity without recreating the silent hang.
+ERROR_TEARDOWN_GRACE_S = 90.0
+# After its final frame a healthy run is both quiet and camera-idle. Fifteen
+# minutes covers legitimate large-dataset teardown; two minutes does not.
+STALL_QUIET_FLOOR_S = 15 * 60.0
+# A focus search or slow tile establishes its own cadence as frames arrive.
+STALL_GAP_MULTIPLIER = 5.0
+# Only callers with no computable plan use this last-resort bound. A day is
+# deliberately generous, but finite: absence of a plan must never mean forever.
+FALLBACK_RUNTIME_CEILING_S = 24 * 60 * 60.0
+_ACQUISITION_POLL_S = 1.0
+_ACQUISITION_EVENT_CONTEXT = threading.local()
+
+
+def _acquisition_monotonic() -> float:
+    """Clock seam for deterministic acquisition-supervisor tests."""
+    return time.monotonic()
+
+
+def _join_acquisition_waiter(waiter: threading.Thread, timeout_s: float) -> None:
+    waiter.join(timeout_s)
+
+
+def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool]:
+    if plan is None:
+        return FALLBACK_RUNTIME_CEILING_S, True
+    estimate = plan.estimated_duration_s
+    return max(estimate * 1.5, estimate + 300.0), False
+
+
+def _stall_quiet_s(largest_observed_gap_s: float) -> float:
+    return max(
+        STALL_QUIET_FLOOR_S,
+        STALL_GAP_MULTIPLIER * largest_observed_gap_s,
+    )
 
 #: Every run argument a hook -- or, under 55b, a plan-only coordinator -- must
 #: be present to carry. Canonical on purpose: parameterized tests drive every
@@ -1867,6 +1905,135 @@ class _HookedAcquisitionFailure(RuntimeError):
         self.last_hardware_state = last_hardware_state
 
 
+class AcquisitionUnterminated(RuntimeError):
+    """pycro-manager teardown exceeded a supervised acquisition bound."""
+
+    def __init__(self, *, dataset_path: str, frames_planned: int | None,
+                 frames_accounted: int, engine_exception: BaseException | None,
+                 camera_sequence_running: bool | None, teardown_running: bool,
+                 expired_bound: str, bound_s: float, fallback_ceiling: bool,
+                 positions_completed: list[dict[str, Any]] | None = None) -> None:
+        super().__init__("pycro-manager teardown did not complete")
+        self.dataset_path = dataset_path
+        self.frames_planned = frames_planned
+        self.frames_accounted = frames_accounted
+        self.engine_exception = engine_exception
+        self.camera_sequence_running = camera_sequence_running
+        self.teardown_running = teardown_running
+        self.expired_bound = expired_bound
+        self.bound_s = bound_s
+        self.fallback_ceiling = fallback_ceiling
+        # design/60 D3a: a composite that expires part-way through has already
+        # finished datasets on disk, and D3's single dataset_path names only the
+        # one that died. A composite assigns the child results it already holds
+        # here on its way out; nothing is ever discovered from the filesystem,
+        # because guessing a dataset path is design/38 F7's original defect.
+        self.positions_completed = positions_completed
+
+
+def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
+    sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+    if sink is not None:
+        sink(event)
+        return
+    stamp = datetime.now(timezone.utc).isoformat()
+    print(f"[microclaw acquisition {stamp}] {json.dumps(event, default=str)}",
+          file=sys.stderr)
+
+
+def _camera_sequence_running(ctrl: Any) -> bool | None:
+    try:
+        return bool(ctrl.core.is_sequence_running())
+    except Exception:
+        return None
+
+
+def _completed_position_record(item: Any) -> dict[str, Any]:
+    """Project one finished child result onto JSON-safe reporting fields.
+
+    Never copy the child dict. A per-position result is a whole tool payload —
+    it carries reservation reports, hook restoration records and whatever a
+    later field adds — and `_unterminated_result` runs on the error path of
+    `execute_tool`, which `json.dumps` its return from inside an `except`
+    clause. A single non-serializable value there (`_acquire_survey_with_detector`
+    really does put a live `Reservation` into a result under
+    `_acquire_reservation`) raises out of a function documented as never
+    raising, and the whole report is lost. Projecting is also the better report:
+    the operator wants which positions finished and where their data is, not the
+    child tool's payload.
+    """
+    if not isinstance(item, dict):
+        return {}
+    record: dict[str, Any] = {}
+    for key in ("position", "phase", "dataset_path", "status"):
+        if item.get(key) is not None:
+            record[key] = str(item[key])
+    for key in ("x_um", "y_um", "z_um"):
+        try:
+            record[key] = float(item[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return record
+
+
+def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
+    camera = exc.camera_sequence_running
+    if camera is True:
+        hardware = ("The camera sequence was still running when Microclaw stopped "
+                    "waiting. Acquisition tools are refused until the camera is idle "
+                    "and the background teardown has finished.")
+        next_steps = ["Wait for the camera sequence to become idle before reading the dataset.",
+                      "Do not start another acquisition until camera_sequence_running "
+                      "and teardown_running are both false."]
+    elif camera is False:
+        hardware = ("The camera sequence was measured idle when Microclaw stopped "
+                    "waiting, but background teardown was still running. Acquisition "
+                    "tools are refused until teardown and its owned restoration finish.")
+        next_steps = ["The dataset may be read while teardown finishes.",
+                      "Do not start another acquisition until teardown_running is false."]
+    else:
+        hardware = ("Microclaw could not read whether the camera sequence was running. "
+                    "Background teardown was still running, so acquisitions are refused.")
+        next_steps = ["Check the camera state directly before reading the dataset.",
+                      "Do not start another acquisition until camera state is readable "
+                      "and idle and teardown_running is false."]
+    engine = (f"{type(exc.engine_exception).__name__}: {exc.engine_exception}"
+              if exc.engine_exception is not None else None)
+    result = {
+        "error": (("The acquisition engine reported a fatal error and " if engine else "")
+                  + f"pycro-manager teardown did not complete within {exc.bound_s:g} s. "
+                  "Microclaw stopped waiting."),
+        "acquisition": "unterminated", "engine_exception": engine,
+        "dataset_path": exc.dataset_path, "frames_planned": exc.frames_planned,
+        "frames_accounted": exc.frames_accounted,
+        "camera_sequence_running": camera, "teardown_running": exc.teardown_running,
+        "expired_bound": exc.expired_bound, "ceiling_fallback": exc.fallback_ceiling,
+        "hardware": hardware, "next": next_steps,
+    }
+    completed = [
+        record for record in (
+            _completed_position_record(item)
+            for item in (exc.positions_completed or [])
+        ) if record
+    ]
+    if completed:
+        # Only when there is something to report. An empty positions_completed
+        # on a single acquisition would be a claim, not a silence (D3a), so a
+        # run_zstack or run_timelapse report carries no such key at all.
+        result["positions_completed"] = completed
+        paths = [record["dataset_path"] for record in completed
+                 if record.get("dataset_path")]
+        if paths:
+            one = len(paths) == 1
+            next_steps.insert(0, (
+                f"{len(paths)} position{'' if one else 's'} finished before this "
+                f"failure. {'That dataset is' if one else 'Those datasets are'} "
+                "written by Micro-Manager independently of it and readable now: "
+                + ", ".join(paths)
+            ))
+    return result
+
+
 def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None) -> dict:
     """Report a mid-acquisition hook failure without hiding what was written.
 
@@ -3275,10 +3442,18 @@ def _acquire_with_hooks(
     hook: Any | None = None,
     reservation: Reservation | None = None,
     close_reservation: bool = True,
+    *,
+    ctrl: MicroscopeController,
+    plan: AcquisitionPlan | None = None,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
 
-    Returns the on-disk dataset path. A hook is any object exposing
+    Returns the on-disk dataset path. `ctrl` is required because expiry must
+    measure camera state and attach the session refusal. `plan` supplies the
+    normal duration-derived ceiling; all five production callers pass one. A
+    missing plan uses the finite named fallback and is disclosed in the result.
+
+    A hook is any object exposing
     post_hardware_hook_fn and/or image_process_fn; both are optional and are
     wired in only if present, so the same runner serves plain and adaptive
     acquisitions of any event shape.
@@ -3295,6 +3470,11 @@ def _acquire_with_hooks(
     cannot be cancelled mid-run, and never could; generator feeding was
     measured at 3.14x the list cost and removed (design/32 §2). Adaptive
     factories remain generators because their later events do not yet exist.
+
+    Construction, dataset-path resolution, binding and submission remain on
+    the foreground thread. Once the teardown waiter starts, it exclusively owns
+    pycro-manager exit, hook restoration and reservation closure. The foreground
+    may return an unterminated result, but must never race that owned cleanup.
 
     The one place an acquisition touches the filesystem, and so the one place
     `save_dir` is confined to a configured workspace. Without this the guard is
@@ -3317,8 +3497,25 @@ def _acquire_with_hooks(
         if hasattr(hook, "image_process_fn"):
             hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
-    if reservation is not None:
-        def account_saved_frame(axes, dataset):
+    started = _acquisition_monotonic()
+    frame_state = {
+        "count": 0, "last_saved": started, "previous_saved": None,
+        "largest_gap": 0.0,
+    }
+    frame_lock = threading.Lock()
+
+    def account_saved_frame(axes, dataset):
+        with frame_lock:
+            saved_at = _acquisition_monotonic()
+            previous = frame_state["previous_saved"]
+            if previous is not None:
+                frame_state["largest_gap"] = max(
+                    frame_state["largest_gap"], saved_at - previous
+                )
+            frame_state["count"] += 1
+            frame_state["last_saved"] = saved_at
+            frame_state["previous_saved"] = saved_at
+        if reservation is not None:
             # pycro-manager 1.0.2 calls this after the image is on disk. Unlike
             # image_process_fn, its arguments contain no pixel array, so plain
             # acquisitions retain the Java-side streaming fast path.
@@ -3329,7 +3526,7 @@ def _acquire_with_hooks(
                     overrun_frames=reservation.overrun_frames,
                 )
 
-        hook_fn_kwargs["image_saved_fn"] = account_saved_frame
+    hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
     dataset_path = None
     restoration_attempted = {"named-stage": False, "property": False}
@@ -3352,33 +3549,127 @@ def _acquire_with_hooks(
                 failures.append(f"{label} restoration failed: {restore_exc}")
         return failures
 
+    waiter_started = False
+    cleanup_done = False
+    waiter_must_close_reservation = False
+
+    def finish_owned_cleanup() -> list[str]:
+        nonlocal cleanup_done
+        if cleanup_done:
+            return []
+        cleanup_done = True
+        failures = restore_hardware()
+        if reservation is not None and (
+            close_reservation or waiter_must_close_reservation
+        ):
+            reservation.close()
+        return failures
+
     try:
-        with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
-            # Resolve collision suffixes before dispatching the first event: a
-            # first-frame hook failure must still report the data already owned
-            # by this acquisition. This is safe to read here because
-            # pycro-manager 1.0.2 sets `_dataset_disk_location` inside
-            # Acquisition.__init__ from the Java storage's real disk location
-            # (java_backend_acquisitions.py:301), before acquire() dispatches
-            # anything. If that moves, the fallback in _acq_dataset_path returns
-            # the UNSUFFIXED path — which is precisely the wrong guess design/38
-            # F7 is about, so re-verify this on any pycro-manager upgrade.
-            dataset_path = _acq_dataset_path(acq, save_dir, name)
-            if hook is not None and hasattr(hook, "bind_artifact_directory"):
-                hook.bind_artifact_directory(
-                    Path(dataset_path) / "artifacts"
+        acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
+        # Resolve collision suffixes before dispatching the first event: a
+        # first-frame hook failure must still report the data already owned
+        # by this acquisition. This is safe to read here because
+        # pycro-manager 1.0.2 sets `_dataset_disk_location` inside
+        # Acquisition.__init__ from the Java storage's real disk location
+        # (java_backend_acquisitions.py:301), before acquire() dispatches
+        # anything. If that moves, the fallback in _acq_dataset_path returns
+        # the UNSUFFIXED path — which is precisely the wrong guess design/38
+        # F7 is about, so re-verify this on any pycro-manager upgrade.
+        dataset_path = _acq_dataset_path(acq, save_dir, name)
+        if hook is not None and hasattr(hook, "bind_artifact_directory"):
+            hook.bind_artifact_directory(Path(dataset_path) / "artifacts")
+        if callable(events):
+            events = events(acq)
+        acq.acquire(events)
+
+        outcome: dict[str, Any] = {}
+        event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+
+        def finish() -> None:
+            previous = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+            _ACQUISITION_EVENT_CONTEXT.sink = event_sink
+            try:
+                try:
+                    acq.__exit__(None, None, None)
+                except BaseException as exc:
+                    outcome["exc"] = exc
+                failures = finish_owned_cleanup()
+                if failures:
+                    prior = outcome.get("exc")
+                    detail = "; ".join(failures)
+                    outcome["exc"] = RuntimeError(
+                        f"{prior}; {detail}" if prior is not None else detail
+                    )
+                flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                if isinstance(flag, dict) and outcome.get("exc") is not None:
+                    late = outcome["exc"]
+                    _emit_acquisition_diagnostic({
+                        "type": "acquisition_diagnostic",
+                        "message": f"Late teardown/cleanup failure: {type(late).__name__}: {late}",
+                        "dataset_path": dataset_path,
+                    })
+            finally:
+                flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                if isinstance(flag, dict):
+                    flag["teardown_running"] = False
+                _ACQUISITION_EVENT_CONTEXT.sink = previous
+
+        waiter = threading.Thread(target=finish, name="microclaw-acq-teardown", daemon=True)
+        waiter_started = True
+        waiter.start()
+        runtime_bound, fallback = _runtime_ceiling_s(plan)
+        runtime_deadline = started + runtime_bound
+        error_deadline = None
+        engine_exc = None
+        while waiter.is_alive():
+            # pycro-manager 1.0.2 abort() stores the fatal exception here.
+            # This private API and _dataset_disk_location below must both be
+            # re-verified whenever pycro-manager is upgraded.
+            observed = getattr(acq, "_exception", None)
+            if observed is not None and error_deadline is None:
+                engine_exc = observed
+                error_deadline = _acquisition_monotonic() + ERROR_TEARDOWN_GRACE_S
+                _emit_acquisition_diagnostic({
+                    "type": "acquisition_diagnostic",
+                    "message": f"{type(observed).__name__}: {observed}",
+                    "dataset_path": dataset_path,
+                })
+            _join_acquisition_waiter(waiter, _ACQUISITION_POLL_S)
+            now = _acquisition_monotonic()
+            with frame_lock:
+                quiet_window = _stall_quiet_s(frame_state["largest_gap"])
+                quiet = now - frame_state["last_saved"] >= quiet_window
+                frames_accounted = frame_state["count"]
+            error_expired = error_deadline is not None and now >= error_deadline
+            runtime_expired = now >= runtime_deadline and quiet
+            if waiter.is_alive() and (error_expired or runtime_expired):
+                # A composite caller normally owns a shared reservation across
+                # positions. Expiry ends that composite immediately, so the
+                # still-live waiter inherits final closure after its callbacks.
+                waiter_must_close_reservation = True
+                expired_bound = "error_grace" if error_expired else "runtime_ceiling"
+                bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
+                camera = _camera_sequence_running(ctrl)
+                setattr(ctrl, "_microclaw_unterminated_acquisition", {
+                    "waiter": waiter, "teardown_running": True,
+                    "camera_sequence_running": camera, "dataset_path": dataset_path,
+                })
+                raise AcquisitionUnterminated(
+                    dataset_path=dataset_path,
+                    frames_planned=(plan.frames if plan is not None else
+                                    reservation.plan.frames if reservation is not None else None),
+                    frames_accounted=frames_accounted, engine_exception=engine_exc,
+                    camera_sequence_running=camera, teardown_running=True,
+                    expired_bound=expired_bound, bound_s=bound_s,
+                    fallback_ceiling=fallback,
                 )
-            if callable(events):
-                events = events(acq)
-            acq.acquire(events)
-        # Acquisition.acquire() only submits work. __exit__ marks the stream
-        # finished and awaits completion, so named-stage restoration is safe
-        # only after the context has exited and all callbacks have run.
-        restoration_failures = restore_hardware()
-        if restoration_failures:
-            raise RuntimeError("; ".join(restoration_failures))
+        if "exc" in outcome:
+            raise outcome["exc"]
+    except AcquisitionUnterminated:
+        raise
     except Exception as exc:
-        restoration_failures = restore_hardware()
+        restoration_failures = [] if waiter_started else finish_owned_cleanup()
         if restoration_failures:
             exc = RuntimeError(f"{exc}; {'; '.join(restoration_failures)}")
         if hook is not None and dataset_path is not None:
@@ -3423,8 +3714,8 @@ def _acquire_with_hooks(
             ) from exc
         raise
     finally:
-        if reservation is not None and close_reservation:
-            reservation.close()
+        if not waiter_started:
+            finish_owned_cleanup()
 
     return _acq_dataset_path(acq, save_dir, name)
 
@@ -3531,6 +3822,7 @@ def run_zstack(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
+            ctrl=ctrl, plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -3722,6 +4014,7 @@ def run_timelapse(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
+            ctrl=ctrl, plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -5604,6 +5897,8 @@ def run_multiposition_acquisition(
                     artifact_limits=artifact_limits,
                     **shape,
                 )
+            except AcquisitionUnterminated:
+                raise
             except SafetyViolation as exc:
                 if not added_labels:
                     raise
@@ -5645,6 +5940,7 @@ def run_multiposition_acquisition(
         )
         if protocol != "snap" else None
     )
+    unterminated = False
     with _pause_live(ctrl, restore=False) as live_state:
         try:
             for pos_label, x_um, y_um, z_um in resolved:
@@ -5662,10 +5958,28 @@ def run_multiposition_acquisition(
                         reservation=reservation,
                     )
                     results.append({**where, **result})
+                except AcquisitionUnterminated as exc:
+                    # Positions 1..n-1 have finished datasets on disk and this
+                    # loop is holding their results (design/60 D3a). Attach only
+                    # what those child calls recorded — never a sibling path
+                    # inferred from the filesystem, which is design/38 F7's
+                    # original defect. _unterminated_result projects them.
+                    # A `dataset_path` means completed, with no "error" test,
+                    # and that holds only because protocol_params refuses
+                    # hook_strategy and every HOOK_CAPABILITY_ARGS above: no
+                    # child here can raise _HookedAcquisitionFailure, which is
+                    # the one result shape carrying both an error and a path.
+                    # Relax that refusal and this needs an "error" filter, or a
+                    # failed position gets reported as readable data.
+                    exc.positions_completed = [
+                        item for item in results if item.get("dataset_path")
+                    ]
+                    unterminated = True
+                    raise
                 except Exception as e:
                     results.append({"position": pos_label, **where, "error": str(e)})
         finally:
-            if reservation is not None:
+            if reservation is not None and not unterminated:
                 reservation.close()
 
     total = len(position_names or positions)
@@ -6480,7 +6794,8 @@ def _acquire_positions_with_hook(
     started = time.monotonic()
     try:
         dataset_path = _acquire_with_hooks(
-            guard, save_dir, name, events, hook, reservation=reservation
+            guard, save_dir, name, events, hook, reservation=reservation,
+            ctrl=ctrl, plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -6877,11 +7192,12 @@ def _acquire_survey_with_detector(
                                   adaptive=adaptive,
                                   max_events=(len(survey_events) + autofocus_reexposures)
                                   if adaptive else None)
+    survey_plan = _plan_with_hook_dose(
+        plan_events(ctrl, survey_events, exposure_ms), hook
+    )
     reservation = (
         _authorize_acquisition(
-            ctrl, guard, _plan_with_hook_dose(
-                plan_events(ctrl, survey_events, exposure_ms), hook
-            )
+            ctrl, guard, survey_plan
         )
         if adaptive else None
     )
@@ -6900,7 +7216,8 @@ def _acquire_survey_with_detector(
                 ctrl, guard, search_phase_channel
             )
         dataset_path = _acquire_with_hooks(
-            guard, save_dir, name, events, hook, reservation=reservation
+            guard, save_dir, name, events, hook, reservation=reservation,
+            ctrl=ctrl, plan=survey_plan,
         )
     except _HookedAcquisitionFailure as exc:
         # The two fixed runners already translate this; the survey runner did
@@ -6914,6 +7231,8 @@ def _acquire_survey_with_detector(
         if reservation is not None:
             reservation.close()
         return _hooked_failure_result(exc, getattr(hook, "log_path", None))
+    except AcquisitionUnterminated:
+        raise
     except Exception:
         if acquire_reservation is not None:
             acquire_reservation.close()
@@ -7161,11 +7480,25 @@ def run_adaptive_survey(
                 acquire_path = _acquire_with_hooks(
                     guard, save_dir, f"{name}_acquire", acquire_events,
                     reservation=acquire_reservation,
+                    ctrl=ctrl, plan=acquire_plan,
                 )
                 hits_acquired = len(hits)
                 result["acquire_dataset_path"] = acquire_path
             elif acquire_reservation is not None:
                 acquire_reservation.close()
+        except AcquisitionUnterminated as exc:
+            # The survey phase completed before the acquire-on-hit phase
+            # expired, so its dataset is finished and independent of the
+            # failure (design/60 D3a, F7). It is the path this call already
+            # recorded, not one discovered on disk.
+            survey_path = result.get("dataset_path")
+            if survey_path:
+                exc.positions_completed = [{
+                    "phase": "survey",
+                    "dataset_path": survey_path,
+                    "status": result.get("status"),
+                }]
+            raise
         except Exception:
             if acquire_reservation is not None:
                 acquire_reservation.close()
@@ -9130,6 +9463,7 @@ def execute_tool(
     setup_mode: bool = False,
     cancel=None,
     records=None,
+    acquisition_event_sink=None,
 ) -> str | list:
     """Execute a tool and return content for the tool_result block.
 
@@ -9147,7 +9481,34 @@ def execute_tool(
         # A registry whose advertised key has no callable is malformed. Keep
         # this model-visible and non-throwing like every other dispatch error.
         return json.dumps({"error": f"Tool '{name}' has no implementation."})
+    previous_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+    if acquisition_event_sink is not None:
+        _ACQUISITION_EVENT_CONTEXT.sink = acquisition_event_sink
     try:
+        if getattr(fn, "_microclaw_acquisition_entry_point", False):
+            pending = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+            if isinstance(pending, dict):
+                camera = _camera_sequence_running(ctrl)
+                waiter = pending.get("waiter")
+                teardown = bool(waiter.is_alive()) if waiter is not None else bool(
+                    pending.get("teardown_running")
+                )
+                pending["camera_sequence_running"] = camera
+                pending["teardown_running"] = teardown
+                if camera is False and not teardown:
+                    delattr(ctrl, "_microclaw_unterminated_acquisition")
+                else:
+                    state = ("unknown" if camera is None else str(camera).lower())
+                    return json.dumps({
+                        "error": "A previous acquisition has not fully terminated; "
+                                 "starting another could collide with its teardown or hardware.",
+                        "acquisition": "refused",
+                        "camera_sequence_running": camera,
+                        "teardown_running": teardown,
+                        "hardware": f"Camera sequence running is {state}; background "
+                                    f"teardown running is {str(teardown).lower()}.",
+                        "next": "Retry only after the camera is measured idle and teardown finishes.",
+                    })
         if (
             name != "run_mda"
             and getattr(fn, "_microclaw_acquisition_entry_point", False)
@@ -9161,6 +9522,8 @@ def execute_tool(
         else:
             result = fn(ctrl, guard, **tool_input)
         return result if isinstance(result, list) else json.dumps(result)
+    except AcquisitionUnterminated as e:
+        return json.dumps(_unterminated_result(e))
     except SafetyViolation as e:
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
@@ -9172,3 +9535,5 @@ def execute_tool(
             "error": f"{type(e).__name__}: {humanize_java_error(e)}",
             "hint": hint_for_error(e),
         })
+    finally:
+        _ACQUISITION_EVENT_CONTEXT.sink = previous_sink
