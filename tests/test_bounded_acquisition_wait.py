@@ -600,7 +600,15 @@ def test_reservationless_progress_is_rate_limited_and_delivered_through_sink(
             return None
 
     monkeypatch.setattr(tools, "Acquisition", CallbackAcquisition)
-    monkeypatch.setattr(tools, "_acquisition_monotonic", lambda: 10.0)
+    class AdvancingClock:
+        def __init__(self):
+            self.now = 0.0
+
+        def __call__(self):
+            self.now += 0.04
+            return self.now
+
+    monkeypatch.setattr(tools, "_acquisition_monotonic", AdvancingClock())
     events = [{"axes": {"time": i}} for i in range(100)]
     plan = AcquisitionPlan(100, 1, 0.1, 100)
     received = []
@@ -614,7 +622,13 @@ def test_reservationless_progress_is_rate_limited_and_delivered_through_sink(
     finally:
         tools._ACQUISITION_EVENT_CONTEXT.sink = previous
     assert result == "/data/progress"
-    assert [event["frames_accounted"] for event in received] == [1, 100]
+    counts = [event["frames_accounted"] for event in received]
+    assert counts[0] == 1
+    assert counts[-1] == 100
+    assert 4 <= len(counts) <= 6
+    assert len(counts[1:-1]) >= 2
+    assert all(later - earlier >= 20 for earlier, later in zip(counts, counts[1:-1]))
+    assert len(counts) < len(events) / 10
     assert all(event["type"] == "acquisition_progress" for event in received)
 
 

@@ -2163,13 +2163,18 @@ def _authorize_acquisition(
         NDTIFF_MAX_FILE_SIZE // raw_bytes_per_frame if raw_bytes_per_frame else None
     )
     if raw_frame_bound is not None and plan.frames > raw_frame_bound:
-        segments = math.ceil(plan.frames / raw_frame_bound)
+        segment_frames = max(1, raw_frame_bound)
+        segments = math.ceil(plan.frames / segment_frames)
+        crossing_text = (
+            f"before frame {raw_frame_bound:,}"
+            if raw_frame_bound >= 1 else "before the first frame is complete"
+        )
         clauses.append(
             f"This acquisition writes at least {plan.estimated_bytes / 1e9:.3g} GB "
             f"of raw image data against NDTiff's 4 GiB per-file limit, so it will "
-            f"roll to a second file before frame {raw_frame_bound:,} — and earlier "
+            f"roll to a second file {crossing_text} — and earlier "
             "once per-frame metadata is counted. Consider segmenting the acquisition "
-            f"into {segments} runs of at most {raw_frame_bound:,} frames to keep each "
+            f"into {segments} runs of at most {segment_frames:,} frames to keep each "
             "file whole and bound each burst. Measured start/stop overhead is about "
             f"6 s per segment (about {segments * 6} s across this run); for example, "
             "ten 10,000-frame segments of a 100,000-frame run cost about 60 s."

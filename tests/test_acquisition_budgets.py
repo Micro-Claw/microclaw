@@ -171,12 +171,83 @@ def test_ndtiff_guaranteed_crossing_disclosure_uses_raw_pixel_bound(monkeypatch)
     monkeypatch.setattr(tools, "CONFIRM_FN",
                         lambda summary, **kwargs: calls.append(summary) or True)
     ctrl = MagicMock()
-    crossing = AcquisitionPlan(2, 1, 1, tools.NDTIFF_MAX_FILE_SIZE + 2)
+    bytes_per_frame = 512 * 512 * 2
+    frame_bound = tools.NDTIFF_MAX_FILE_SIZE // bytes_per_frame
+    crossing = AcquisitionPlan(
+        frame_bound + 1, 1, 1, (frame_bound + 1) * bytes_per_frame
+    )
     tools._authorize_acquisition(ctrl, _guard(), crossing).close()
-    assert "roll to a second file before frame 1" in calls.pop()
-    just_under = AcquisitionPlan(2, 1, 1, tools.NDTIFF_MAX_FILE_SIZE)
+    assert frame_bound == 8192
+    assert "roll to a second file before frame 8,192" in calls.pop()
+    just_under = AcquisitionPlan(frame_bound, 1, 1, frame_bound * bytes_per_frame)
     tools._authorize_acquisition(ctrl, _guard(), just_under).close()
     assert calls == []
+
+
+def test_ndtiff_disclosure_never_claims_rollover_before_frame_zero(monkeypatch):
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    plan = AcquisitionPlan(1, 1, 1, tools.NDTIFF_MAX_FILE_SIZE + 1)
+    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    assert "before the first frame is complete" in calls[0]
+    assert "before frame 0" not in calls[0]
+
+
+@pytest.mark.parametrize(
+    ("n_frames", "interval_s", "appears"),
+    [(2, 0, True), (2, 1, False), (1, 0, False)],
+)
+def test_run_timelapse_arguments_drive_burst_disclosure(
+    monkeypatch, tmp_path, n_frames, interval_s, appears,
+):
+    from microclaw import tools
+
+    ctrl = MagicMock()
+    ctrl.core.get_exposure.return_value = 10
+    ctrl.core.get_image_width.return_value = 16
+    ctrl.core.get_image_height.return_value = 16
+    ctrl.core.get_bytes_per_pixel.return_value = 2
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/run")
+    tools.run_timelapse(
+        ctrl, _guard(), n_frames=n_frames, interval_s=interval_s,
+        save_dir=str(tmp_path),
+    )
+    assert any("hardware-sequenced burst" in summary for summary in calls) is appears
+
+
+def test_hook_dose_reconstruction_preserves_burst_disclosure(
+    monkeypatch, tmp_path,
+):
+    from microclaw import tools
+
+    class DoseHook:
+        def planned_extra_exposures(self):
+            return 1
+
+        def planned_extra_exposures_per_event(self):
+            return 0
+
+    ctrl = MagicMock()
+    ctrl.core.get_exposure.return_value = 10
+    ctrl.core.get_image_width.return_value = 16
+    ctrl.core.get_image_height.return_value = 16
+    ctrl.core.get_bytes_per_pixel.return_value = 2
+    calls = []
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: DoseHook())
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/run")
+    tools.run_timelapse(
+        ctrl, _guard(), n_frames=2, interval_s=0, save_dir=str(tmp_path),
+        hook_strategy="dose_hook",
+    )
+    assert any("hardware-sequenced burst" in summary for summary in calls)
 
 
 @pytest.mark.parametrize(
