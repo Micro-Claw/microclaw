@@ -13,7 +13,10 @@ exits nonzero if any limb failed. `--selftest` proves the scoring discriminates.
 ## What is under test
 
 1. **A managed install launches and works with no network.** The only limb
-   design/58 ever booked for a visit.
+   design/58 ever booked for a visit. Scored on `launch-health.txt` carrying
+   *this* start's nonce, never on a new `launcher.log` line: the launcher
+   writes that line ten statements before `Start-Process`, so it proves the
+   launcher ran and not that the application did.
 2. **`Check for updates` completes offline rather than hanging.** It runs a real
    `git fetch`, capped at 15 s.
 3. **An offline offer carries its warning.** Offline, `discover_clone`'s fetch

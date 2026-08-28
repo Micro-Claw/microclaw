@@ -59,10 +59,25 @@ def snapshot(root: Path) -> dict:
     return {
         "active": _read(root / "active-slot.txt"),
         "pending": _read(root / "pending-slot.txt"),
+        # The child writes this after it starts, carrying the nonce the launcher
+        # generated for *this* start. launcher.log is written ten lines before
+        # Start-Process, so a new log line proves the launcher ran, not that the
+        # application did -- design/58's own rule, and the first version of this
+        # script broke it.
+        "health": _read(root / "launch-health.txt"),
         "state": state,
         "markers": markers,
         "launcher_lines": [line for line in log.splitlines() if line.strip()],
     }
+
+
+def _launch_nonce(snap: dict) -> str | None:
+    """The nonce on the most recent launcher.log line."""
+    for line in reversed(snap.get("launcher_lines") or []):
+        for field in line.split():
+            if field.startswith("nonce="):
+                return field[len("nonce="):]
+    return None
 
 
 def _candidate(snap: dict) -> dict | None:
@@ -81,9 +96,17 @@ def score_offline(arm: dict, now: dict) -> list[tuple[str, str, str]]:
     add = lambda *row: limbs.append(row)
 
     launched = len(now["launcher_lines"]) - len(arm["launcher_lines"])
-    add("the launcher started a session while offline",
-        PASS if launched > 0 else FAIL,
-        f"{launched} new launcher.log line(s); last: {now['launcher_lines'][-1] if now['launcher_lines'] else '<none>'}")
+    nonce, health = _launch_nonce(now), now.get("health")
+    if launched <= 0:
+        add("the application started while offline", FAIL,
+            "no new launcher.log line: the launcher itself never ran")
+    elif nonce is None:
+        add("the application started while offline", NOT_EXERCISED,
+            "the last launcher.log line carries no nonce to match")
+    else:
+        add("the application started while offline",
+            PASS if health == nonce else FAIL,
+            f"launch-health.txt={health!r} vs this start's nonce={nonce!r}")
 
     before, after = _attempt(arm), _attempt(now)
     if after is None or before is None:
@@ -198,7 +221,7 @@ def run(phase: str, root: Path, work: Path) -> int:
 
 
 def _fake(tmp: Path, *, active="a", pending=None, attempt=100.0, commit="a" * 40,
-          candidate=None, lines=1, error=None) -> Path:
+          candidate=None, lines=1, error=None, healthy=True) -> Path:
     root = tmp
     (root / "env-a").mkdir(parents=True, exist_ok=True)
     (root / "active-slot.txt").write_text(active + "\n", encoding="ascii")
@@ -210,8 +233,11 @@ def _fake(tmp: Path, *, active="a", pending=None, attempt=100.0, commit="a" * 40
              "last_success": {"candidate": candidate}}
     (root / "update-state.json").write_text(json.dumps(state), encoding="utf-8")
     (root / "launcher.log").write_text(
-        "".join(f"2026-08-28T10:0{i}:00+02:00 slot={active} nonce=x\n" for i in range(lines)),
+        "".join(f"2026-08-28T10:0{i}:00+02:00 slot={active} nonce=n{i}\n" for i in range(lines)),
         encoding="utf-8")
+    # The child's marker matches this start's nonce only when it actually ran.
+    (root / "launch-health.txt").write_text(
+        (f"n{lines - 1}" if healthy else "n-stale") + "\n", encoding="ascii")
     return root
 
 
@@ -230,12 +256,20 @@ def selftest() -> int:
         if set(verdicts.values()) != {PASS}:
             problems.append(f"good tree did not pass cleanly: {verdicts}")
 
+        # A launcher that logged its intent and spawned nothing must FAIL: the
+        # defect this limb originally had, now the thing it discriminates.
+        spawned_nothing = snapshot(_fake(tmp / "nospawn", candidate=warned, attempt=200.0,
+                                         lines=2, healthy=False))
+        verdicts = {n: v for n, v, _ in score_offline(arm, spawned_nothing)}
+        if verdicts["the application started while offline"] != FAIL:
+            problems.append("a launcher that spawned nothing must FAIL, not pass on its own log line")
+
         # Bad tree: never launched, never checked, slot flipped, no warning.
         bad = snapshot(_fake(tmp / "bad", active="b", pending="a", candidate=offered,
                              attempt=100.0, commit="c" * 40, lines=1))
         verdicts = {name: verdict for name, verdict, _ in score_offline(arm, bad)}
         expected = {
-            "the launcher started a session while offline": FAIL,
+            "the application started while offline": FAIL,
             "the offline check completed rather than hanging": NOT_EXERCISED,
             "the active slot did not change while offline": FAIL,
             "installed_commit is unchanged": FAIL,

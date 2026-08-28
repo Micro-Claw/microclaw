@@ -2185,7 +2185,7 @@ unchanged since `c46e2db`, and no rollback path in `updates.py`
 | Public ZIP records `public-head`/`unknown`/404 | R7 | fresh ZIP install's cached state |
 | **Micro-Manager closed keeps the slot** | R10 | staged slot activated and kept, no rollback, no relaunch |
 | **Restart later activates at the next launch** | — | owed; the activation path itself is evidenced by R8 and R9 |
-| **Offline launch** | — | owed; needs physical access |
+| **Offline launch** | M5 2026-08-28 | offline launch, offline check in 7.3 s, warning rendered, recovery on reconnect |
 
 **Thirteen of fifteen limbs have rig evidence** (twelve at the time this table was first written; round 10 added Micro-Manager closed). Of the remainder:
 `Restart later` exercises the *same* `activate_pending` call in the same
@@ -2639,3 +2639,35 @@ flip and the relaunches that followed it (`slot=a` ×4, then `slot=b` ×3 within
 The operator read `discovery.message` as the banner's text, which is the reason
 that field is now invalidated too: it is one word from the banner's own sentence
 and it is what someone opens the state file to consult.
+
+### The offline limb, closed on M5 2026-08-28
+
+Run on M5 rather than the demo machine — the limb needs a person at the
+keyboard, not a particular rig. All six offline limbs and all three recovery
+limbs scored PASS (`design/58-offline-gate.py`, artifacts retained).
+
+The decisive number is not in the script's own output. `last_attempt` advanced
+**7.3 s after the offline launch**, and it can only have been the manual check:
+`next_check` stood 24 h out, so the startup due check returned early without
+touching it. `POST /api/update/check` requires a running, serving,
+browser-paired Microclaw — so the application demonstrably started and served
+with no network inside 7.3 s. The offline `git fetch` failed fast and well
+inside its 15 s cap; `last_error` stayed `None`, correctly, because
+`rev-parse` still resolved the stale ref.
+
+`Candidate.warning` was rendered on the rig for the first time, offline, and
+cleared on reconnect — the offer stayed `b567abb` across both, so the only
+difference between a fetched offer and a stale one was the sentence that had
+been unrendered since the field was introduced.
+
+**The gate's own defect, found by scoring it rather than reading its verdict.**
+Limb 1 was `the launcher started a session while offline`, scored on a new
+`launcher.log` line — and `updater-launcher.ps1` writes that line at line 46,
+ten statements before `Start-Process` at line 56. It would have passed a
+launcher that logged its intent and spawned nothing. This is design/58's own
+rule — *a log line announcing an action is not the action* — reproduced inside
+the instrument written to check it. Now scored on `launch-health.txt` matching
+this start's nonce, with a selftest tree that logs a launch and writes a stale
+marker; reverting the limb to the old logic makes that tree pass and the
+selftest fail. The M5 run cannot be re-scored on it, because the snapshot did
+not capture the marker — the pass stands on the corroboration above instead.
