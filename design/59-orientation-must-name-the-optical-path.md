@@ -118,6 +118,15 @@ all three:
 - **It cannot be authored before the first session.** The operator's first
   session is exactly the one that needs the orientation, and the KB is empty.
 
+There is one thing the KB *is* right for, and §2 uses it: **what each position
+is**, on a rig whose configuration never recorded it. That is a static fact about
+an installation, not live state — `State-1` is the left camera port whether or
+not it is selected — and it is authored after the first orientation rather than
+before it, which is exactly when the operator can answer. The division is: which
+position is live now comes from the hardware on every call and is never cached;
+what the positions *mean* comes from the labels when the config author wrote
+them, and from the operator via `save_knowledge` when they did not.
+
 And the prompt is the wrong home too. `SYSTEM_PROMPT` carries a `Nikon rigs:`
 section (`agent.py:381–410`) that names `TIPFS` hardware and gives real,
 hard-won PFS procedure. It works — and it is also the reason the light path got
@@ -137,14 +146,19 @@ present even as `"unknown"`, because *an omitted key is an invitation*
 ```json
 "optical_path": {
   "discrete_positions": [
-    {"device": "TINosePiece",        "label": "4-Unknown",
+    {"device": "TINosePiece", "adapter": "TINosePiece",
+     "adapter_description": "Objective Turret", "label": "4-Unknown",
      "allowed": ["1-Unknown","2-Unknown","3-Unknown","4-Unknown","5-Unknown","6-Unknown"],
-     "role": "pixel-size-config dependency (not proof of objective)"},
-    {"device": "TILightPath",        "label": "2-Left100",
+     "role": ["pixel-size-config dependency (not proof of objective)"]},
+    {"device": "TILightPath", "adapter": "TILightPath",
+     "adapter_description": "Light Path Drive", "label": "2-Left100",
      "allowed": ["1-Eye100","2-Left100","3-Right100","4-Left80"],
-     "role": "light-path candidate"},
-    {"device": "TIFilterBlock1",     "label": "3-GFP",  "allowed": [...]},
-    {"device": "TICondenserCassette","label": "1-BF",   "allowed": [...]}
+     "role": ["light-path candidate (position labels name ports)",
+              "light-path candidate (adapter self-description)"]},
+    {"device": "TIFilterBlock1", "adapter": "TIFilterBlock1", "label": "3-GFP",
+     "allowed": [...]},
+    {"device": "TICondenserCassette", "adapter": "TICondenserCassette",
+     "label": "1-BF", "allowed": [...]}
   ],
   "hint": "A discrete-position device whose labels name ports routes light to
            the camera or the eyepiece. Micro-Manager sees only the motorized
@@ -167,6 +181,24 @@ present even as `"unknown"`, because *an omitted key is an invitation*
              which objective is seated; do not report one."
 },
 "focus": { … get_focus_lock_state's payload, verbatim … }
+```
+
+The Nikon above is the easy case: its config author named the ports, so the
+labels answer the question on their own. A rig whose author did not is the case
+this design has to handle without inventing an answer — the demo config's
+light path is `State-0/1/2`, which names nothing:
+
+```json
+{"device": "Path", "adapter": "DLightPath",
+ "adapter_description": "Demo light path", "label": "State-0",
+ "allowed": ["State-0", "State-1", "State-2"],
+ "role": ["light-path candidate (adapter self-description)"],
+ "positions_unnamed": "This device routes light, but its position labels carry
+   no port vocabulary: the Micro-Manager configuration does not record what
+   State-0/1/2 are. Ask the operator what sits on each position and offer to
+   store the answer with save_knowledge under rig/device_roles. Do not guess,
+   and do not rename the labels — naming this rig's hardware is the operator's
+   to do in Micro-Manager, not microclaw's to do behind their back."}
 ```
 
 The three fields are one idea seen from three sides, and each is derived
@@ -213,14 +245,47 @@ about the objective; it never promotes a dependency into a measured objective.
 When no config is active, the same walk produces the diagnosis above instead of
 the string `"default"`.
 
-**`role: "light-path candidate"`** is the only annotation with a vocabulary
-(`eye|ocular|binocular|camera|port|side|left|right|front|bottom|photo|tube`),
-and it is applied to the **state labels**, never the device name — CLAUDE.md's
-rule that shutter-ness comes from the device type and never from the name
-applies with equal force here. The vocabulary **marks** entries; it never
-filters one out. Every discrete-position device is listed either way. This is
-`_lock_status_properties`' precedent restated: *showing the values is what makes
-the difference obvious without a single extra tool call.*
+**`role: "light-path candidate …"`** is the only annotation with a vocabulary,
+and it has **two independent sources**, each naming itself in the role string so
+the reader can see which one fired.
+
+*The position labels.* `eye|ocular|binocular|camera|port|side|left|right|front|
+bottom|photo|tube`, applied to the **state labels**, never the device label —
+CLAUDE.md's rule that shutter-ness comes from the device type and never from the
+name applies with equal force here. This is the source that answered the
+2026-08-23 session, at message 52, from `TILightPath.Label`'s allowed values.
+
+*The adapter.* `get_device_name` and `get_device_description` are what
+Micro-Manager's own adapter says it is, not what the config author typed — the
+distinction `camera` already draws four lines away (`tools.py:3178–3181`: *"the
+label is whatever the config author typed; the adapter is the hardware. F4 keys
+knowledge entries on the adapter for that reason"*). `TILightPath` describes
+itself as `Light Path Drive`; `DLightPath` as `Demo light path`. Matching
+`light\s*path` against the adapter name and description is therefore **not** the
+device-name heuristic the rule above forbids; it is the same class of fact as
+`device_type_name`, read from the driver rather than from a string a human chose.
+It is retained with the inventory, so it costs nothing per orientation call.
+
+Two sources, because either can be absent: a rig can name its ports on a device
+whose adapter is generic (`Arduino-Switch`), and a rig can run a named adapter
+whose labels were never filled in. Both signals **mark**; neither filters. Every
+discrete-position device is listed either way, and a false positive is survivable
+precisely because marking is all that happens — this is `_lock_status_properties`'
+precedent restated: *showing the values is what makes the difference obvious
+without a single extra tool call.*
+
+**`positions_unnamed`** is present only when the adapter identifies a light path
+and the labels carry no port vocabulary — the state in which microclaw knows a
+routing choice exists and cannot say what the choices are. It is the honest
+report of that gap, and it routes the answer to where a rig fact belongs. The
+mechanism already exists end to end and this design adds none of it:
+`save_knowledge` is human-gated (`tools.py:8252`), `rig` is an existing category
+with `device_roles` and `illumination_path` among its tracked topics
+(`knowledge_manager.py:7–14`), and `format_for_prompt` puts a stored answer back
+in front of the agent on every later session. **Nothing writes to the
+microscope.** If the operator would rather label the positions properly in
+Micro-Manager's configuration, that is the better fix and the payload says so;
+microclaw does not do it for them.
 
 **`focus`** calls `get_focus_lock_state` and embeds its result unchanged. Fold
 into what exists; do not re-derive the roles.
@@ -236,6 +301,7 @@ Weighed:
 | --- | --- |
 | device enumeration + `get_device_type` per device | **0 in `get_system_state`** — paid at session start by `validate_live_rig`; a residual startup cost remains, below |
 | `get_allowed_property_values` per discrete device | N on inventory construction, then **0** — retained with the inventory |
+| `get_device_name` + `get_device_description` per discrete device | 2N on inventory construction, then **0** — retained with the inventory |
 | current label per discrete device | N, where N = 4 on the Nikon Ti, 4 on the demo config |
 | active pixel-size config + pixel size | 2 |
 | pixel-size config rules | 0 after the first call — cached; config data cannot change without a reload |
@@ -270,16 +336,31 @@ calls are paid once. The cost table above is therefore accepted as written; the
 open question it raised (whether the caching boundary was drawn in the right
 place) is closed on the machine rather than by argument.
 
+Those numbers predate the adapter reads added to §2, which cost 2N once at
+startup and nothing per call — twelve more startup calls on that machine, none
+in `get_system_state`. 59b's gate re-measures both calls rather than assuming
+the addition is free.
+
 ### §4 — A reference file: how light paths usually work
 
 New `microclaw/optics_docs.py` and tool `get_optical_path_documentation`, in the
 existing `smlm_docs` / `hook_docs` / `dna_paint_docs` mould — a fifth instance of
 a pattern, not a new layer. Contents, all generic:
 
-- **What a light path is.** Ports (eyepiece, side/left/right, bottom/base,
-  front), splits (100/80/20 — that `4-Left80` sends 80% to the camera and 20% to
-  the eyepiece), and that a port label naming a percentage is a split, not a
-  position index.
+- **What a light path is.** The order of the path — lamphouse, filters, field
+  diaphragm, condenser, specimen, objective, beam splitter/prism, then out to
+  the eyepieces or the trinocular/camera port. Ports (eyepiece, side/left/right,
+  bottom/base, front), splits (100/80/20 — that `4-Left80` sends 80% to the
+  camera and 20% to the eyepiece), and that a port label naming a percentage is
+  a split, not a position index.
+
+  Source for the ordering and the beam-splitter/trinocular routing:
+  microscopyu.com/microscopy-basics/components (checked 2026-08-28). It supplies
+  the path and the two destinations and **nothing else this section needs** — no
+  split ratios, no motorized-vs-manual distinction, no turret or focus-lock
+  material. Those come from the 2026-08-23 session and the rig configs in the
+  evidence archive; do not pad the reference with generic optics the agent will
+  never act on.
 - **What Micro-Manager can and cannot see.** The motorized path only. A manual
   prism slider, a filter cube pulled to a detent, a closed field diaphragm and a
   condenser out of position all produce a dark camera with every readable value
@@ -320,6 +401,12 @@ Stated plainly so no gate scores it as a success it is not:
 - It does not label an unnamed turret position. `4-Unknown` stays unknown; the
   change is that it is reported as unknown at orientation rather than presented
   as `"default"` or asked of the operator as though microclaw had no way to look.
+- It does not name unnamed light-path positions either. Where the adapter says a
+  device routes light and the labels say nothing, `positions_unnamed` states that
+  and invites the operator to answer it into the knowledge base. Microclaw never
+  writes a state label, on any rig, for any reason — an unlabelled configuration
+  is the operator's to fix in Micro-Manager, and a tool that silently renamed
+  their hardware would be a worse defect than the gap it papered over.
 
 ## Blocks
 
@@ -413,7 +500,8 @@ carries it as an owed row. If M2 or M5 is free, the M5 pass costs nothing and
 adds the one thing the demo machine cannot produce: M5 has no Core shutter, so
 `get_shutter_device()` returns empty rather than raising, which is the *other*
 half of the shutter-exclusion branch. It is not a precondition of merging.
-### 59b — the reference, and the prompt loses its hardware names
+
+### 59b — the reference, the adapter, and the prompt loses its hardware names
 
 Items:
 
@@ -430,6 +518,26 @@ Items:
 4. Add one prompt line to the blank-frame guidance: after a blank frame, read
    `optical_path` before considering another exposure — alongside the existing
    `declared_illumination_properties` instruction, which is the same shape.
+5. The adapter half of §2: retain `get_device_name` and `get_device_description`
+   per StateDevice in the inventory, mark a light-path candidate from either the
+   labels or the adapter, and emit `positions_unnamed` where the adapter
+   identifies a routing device whose labels name nothing.
+
+**Nothing in this block writes to the microscope, and neither does its gate.**
+An earlier draft had the gate rename the demo config's `State-0/1/2` over the
+bridge with `define_state_label` and restore them afterwards. That is struck
+(operator decision, 2026-08-28) on the principle and on the evidence. The
+principle: an unlabelled configuration is the operator's to fix, and a tool that
+renames a microscope's hardware to make its own gate scoreable has broken the
+thing it was measuring. The evidence: the rename was never needed for the fault
+this design is about. In
+`pfs-nikon-design56-4/20260823_095336_954938_microclaw_history.jsonl`, messages
+51–52, `get_device_property_info(TILightPath, Label)` returned
+`allowed_values: ["1-Eye100", "2-Left100", "3-Right100", "4-Left80"]` — the port
+vocabulary was already on the rig, already readable, and 59a already reads it
+(`authorization.py:791–793` into `tools.py:3002`). Every rig whose author named
+its ports is served with no writes at all; the demo machine is served by the
+adapter, which says `Demo light path` whatever the labels say.
 
 Gate — **the demo machine**, replaying the 2026-08-23 opening on the demo config.
 The Nikon is unavailable (operator, 2026-08-28) and this gate does not wait for
@@ -438,32 +546,40 @@ it; what the demo machine cannot settle is listed at the end and owed.
 Every device name below is discovered, never assumed: a setup program
 (`design/59-block59b-demo-setup.py`) enumerates the machine's StateDevices,
 picks the light-path device by adapter/type rather than by the string `Path`,
-and refuses with NOT EXERCISED if the machine has none.
-
-**Two things the setup program arranges over the bridge, and both are reversible
-without touching the saved configuration.** The demo config's light-path labels
-are expected to be generic (`State-0…`), which carries no port vocabulary at all,
-so the setup program records the stock labels, calls `define_state_label` to name
-them `1-Eye100` / `2-Left100` / `3-Right100`, and restores the recorded labels
-afterwards. Nothing is written to a `.cfg`; a Micro-Manager restart also restores
-them. And the objective is driven to a state that **no pixel-size config
-matches**, which reproduces the Nikon's `4-Unknown` situation exactly.
+and refuses with NOT EXERCISED if the machine has none. Its only hardware
+actions are **moves**, to positions the device already has: the objective is
+driven to a state that **no pixel-size config matches**, which reproduces the
+Nikon's `4-Unknown` situation exactly, and the light-path device is driven
+between its own existing positions. It records entry state, restores it, and
+**reads the restore back** — 59a's gate restored `Objective.Label` in a `finally`
+with nothing reading it, and no artifact could answer whether the rig was left as
+it was found until a read-back limb was added.
 
 The criterion names the mechanism, not the outcome (52b: an outcome-shaped step
 gets satisfied by a better route and the mechanism under test never fires):
 
-- **Control that can fail** (58a: a limb that cannot fail is not a criterion):
-  before the session, set the light-path device to the eyepiece label. The limb
-  is that the agent names the eyepiece routing **from message 2's payload, before
-  its first `snap_and_analyze`**. Scored on the message index of the naming versus
-  the message index of the first exposure — not on whether it eventually got
-  there. The control fires because the same session run with the device at a
-  camera label must **not** produce that naming.
-- **Round with the labels left stock** (`State-0…`): the port vocabulary matches
-  nothing, and the limb is that the device is still listed in
-  `discrete_positions` and the agent still reports the route as unverifiable
-  rather than silently absent. This is the marking-not-filtering rule seen from
-  the session side.
+- **Control that can fail** (58a: a limb that cannot fail is not a criterion).
+  Two rounds, scored on the message index of the naming versus the message index
+  of the first `snap_and_analyze` — not on whether the agent eventually got
+  there. Round A: the light-path device, whose adapter identifies it and whose
+  labels name nothing. The agent must raise the routing question **from message
+  2's payload, before its first exposure**, and must ask the operator what is on
+  each position rather than assert one. Round B, the control: the same opening
+  with the light-path device absent from the config, or — if the machine's config
+  cannot be varied — with the scorer checking that no *non*-routing StateDevice
+  (`Objective`, a filter wheel) drew the same routing question. The control fires
+  because a session that asks the routing question about a filter wheel is
+  pattern-matching the prompt, not reading `role`.
+- **Marking, not filtering.** The stock-label device is still listed in
+  `discrete_positions` with its `allowed` values shown, and the route is reported
+  as unverifiable rather than absent. This is the marking-not-filtering rule seen
+  from the session side.
+- **The knowledge-base round trip.** When the agent offers to store the
+  operator's answer, `save_knowledge` is reached and human-gated, and a **second
+  session** on the same machine has the stored answer in front of it via
+  `format_for_prompt` and does not ask again. Scored across two history files.
+  Nothing is written to the microscope in either session; the scorer asserts the
+  device's `allowed` values are byte-identical in both.
 - **The blank frame.** Put the demo camera into a mode whose frames carry no
   structure (the setup program reads the camera's own allowed values and reports
   NOT EXERCISED if this machine's camera offers none). The pass condition is *not*
@@ -479,6 +595,8 @@ gets satisfied by a better route and the mechanism under test never fires):
 - The agent calls `get_optical_path_documentation` when it needs the vocabulary,
   and the tool is reachable **from `optical_path.hint`** — `SYSTEM_PROMPT` must
   not name it. Scored by grepping the shipped prompt as well as the transcript.
+- Cost re-measured with the adapter reads in place: bridge calls and wall time
+  for the first and second `get_system_state`, against §3's 39/36 ms and 27/8 ms.
 
 Scoring is a computation over the history JSONL and ships as
 `design/59-score-gate.py` — the operator drives the session and returns the
@@ -490,9 +608,12 @@ Per step 6, score from the artifacts and not the verdict.
 on the light path, so no demo round reproduces a *real* blank field caused by
 routing; the manual-prism configuration of 2026-08-23 cannot be staged at all;
 and no demo device produces the `4-Unknown` turret label or a PFS status string.
-The demo gate tests the mechanism — payload, ordering, refusal to claim an
-objective, and the reachability of the reference — on the machine that is
-available.
+**And the labelled-port half of the light-path read is owed too**: no demo device
+carries port vocabulary in its labels, so the label-matching source — the one
+that answered the real session at message 52 — is exercised on the demo machine
+only by fixture. The demo gate tests the adapter source, the payload, the
+ordering, the refusal to claim an objective, the knowledge-base route, and the
+reachability of the reference, on the machine that is available.
 
 ## Out of scope, recorded so it is not lost
 
@@ -632,7 +753,9 @@ Gate — demo machine, shipped as a program:
   remain listed, so the read inventory is demonstrably not the authorization
   map. Core shutter `White Light Shutter` excluded and named. `Path` carries
   `State-0/1/2` and is correctly **unmarked** — no false positive across six
-  devices, and the reason 59b must rename those labels to test the vocabulary.
+  devices — correct, and the reason 59b adds the adapter as a second source:
+  `DLightPath` self-describes as `Demo light path` while its labels say nothing,
+  so the device is identifiable without anything being renamed.
 
 Owed, recorded rather than waived:
 
@@ -647,9 +770,9 @@ Owed, recorded rather than waived:
   `get_shutter_device()` returns empty rather than raising — the other half of
   limb 18. Run it if M5 is free.
 
-### Block 59b — the reference, and the prompt loses its hardware names
+### Block 59b — the reference, the adapter, and the prompt loses its hardware names
 
-Implementation (§4):
+Implementation (§2, §4):
 
 - [ ] 29. `microclaw/optics_docs.py` with §4's contents, all generic: ports and
   splits; what Micro-Manager cannot see (the manual prism named as the **first**
@@ -669,22 +792,54 @@ Implementation (§4):
   `declared_illumination_properties` instruction, which is the same shape.
 - [ ] 34. A test that the moved numbers are no longer in the prompt **and** are
   in the reference, so the move cannot half-happen.
+- [ ] 34a. `_build_state_device_inventory` retains `get_device_name` and
+  `get_device_description` per StateDevice, each failing to `"unknown"` with the
+  error recorded rather than dropping the entry — the same rule `allowed` already
+  follows. Paid once at inventory construction; **zero** added to
+  `get_system_state`, asserted by a test that counts calls on the second
+  invocation.
+- [ ] 34b. `role` is a list and each entry names its source:
+  `light-path candidate (position labels name ports)` and
+  `light-path candidate (adapter self-description)`. A device matched by both
+  carries both. Fixtures: the Nikon `TILightPath` (both), the demo `Path`
+  (adapter only), and a labels-only device on a generic adapter.
+- [ ] 34c. `positions_unnamed` present **only** when the adapter identifies a
+  light path and no label matches the port vocabulary; it names the
+  `save_knowledge` route and says explicitly that microclaw does not rename
+  labels. A test asserts it is absent on the Nikon fixture and present on the
+  demo one.
+- [ ] 34d. **A test that no code path writes a state label.** `define_state_label`
+  / `defineStateLabel` appears nowhere in `microclaw/`, asserted over the source,
+  and the bridge-shaped fake used by 34a–34c raises on any attempt to call it.
+  This is the block's own guard against the struck design.
+- [ ] 34e. Adapter matching is on `light\s*path` against the adapter name and
+  description only, never the device label. A fixture whose *device label* is
+  `LightPath` but whose adapter is a filter wheel must **not** be marked — the
+  device-name heuristic CLAUDE.md forbids, caught by a test rather than by
+  review.
 - [ ] 35. Schema parity and the export decorator tests green; full suite re-run
   by the coordinator.
 
 Gate — demo machine, a driven session plus two programs:
 
 - [ ] 36. `design/59-block59b-demo-setup.py` discovers the light-path device by
-  type rather than by name, records the stock state labels, renames them over the
-  bridge with `define_state_label`, drives the objective to a state no pixel-size
-  config matches, and **restores every label it changed**. Nothing written to a
-  `.cfg`.
-- [ ] 37. Control that can fail: with the light-path device at the eyepiece
-  label, the agent names the eyepiece routing from message 2's payload **before
-  its first exposure**; with it at a camera label, the same session does not.
-  Scored on message indices.
-- [ ] 38. Stock-label round: the vocabulary matches nothing, the device is still
-  listed, and the route is reported as unverifiable rather than absent.
+  adapter/type rather than by name, drives the objective to a state no pixel-size
+  config matches, drives the light-path device between positions it already has,
+  restores entry state and **reads the restore back**. It writes no state label
+  and no `.cfg`; the scorer asserts every device's `allowed` values are
+  byte-identical before and after.
+- [ ] 37. Control that can fail, scored on message indices: round A, the
+  adapter-identified light path with unnamed labels — the agent raises the
+  routing question from message 2's payload **before its first exposure** and
+  asks what is on each position rather than asserting one; round B, the control —
+  no *non*-routing StateDevice draws the same question.
+- [ ] 37a. Knowledge-base round trip across two sessions: `save_knowledge` is
+  reached and human-gated in the first, and the second does not ask again because
+  `format_for_prompt` carried the answer. NOT EXERCISED if the operator declines
+  the save — declining is their right and is not a product failure.
+- [ ] 38. Marking, not filtering: the stock-label device is still listed with its
+  `allowed` values shown, and the route is reported as unverifiable rather than
+  absent.
 - [ ] 39. Blank-frame round: the agent asks about the **physical** path before
   its second exposure. NOT EXERCISED if this machine's camera offers no
   structureless mode.
@@ -695,14 +850,19 @@ Gate — demo machine, a driven session plus two programs:
   orientation alone, unprompted.
 - [ ] 42. `get_optical_path_documentation` reached from the hint; the shipped
   prompt greps clean of its name.
+- [ ] 42a. Cost re-measured with the adapter reads in place: bridge calls and
+  wall time for the first and second `get_system_state`, reported against §3's
+  39/36 ms and 27/8 ms.
 - [ ] 43. `design/59-score-gate.py` scores each limb independently over the
   history JSONL, reports NOT EXERCISED where the stimulus could not be arranged,
   and exits nonzero.
 - [ ] 43a. 59b's setup program and scorer are likewise run against a
   bridge-shaped fake before the operator sees them, on both trees.
 - [ ] 44. **Owed to a Nikon Ti:** a real blank field caused by routing, the
-  manual-prism configuration, a `4-Unknown` turret, and a live PFS status. The
-  demo gate tests the mechanism, not the 2026-08-23 scene.
+  manual-prism configuration, a `4-Unknown` turret, a live PFS status, **and the
+  label-matching source of the light-path role** — no demo device carries port
+  vocabulary in its labels, so that half is fixture-only until a Ti is available.
+  The demo gate tests the mechanism, not the 2026-08-23 scene.
 
 ### Post-merge design gate (step 10, both blocks)
 
