@@ -500,6 +500,32 @@ read properties without allowing an old teardown to collide with a new run. No
 process restart, no `microclaw session` state a second launch could trip over.
 
 
+### D3a — a composite acquisition must report what already completed. (coordinator amendment, 2026-08-28; F7 applied to D3)
+
+D3's dict was written for one acquisition and names one `dataset_path`. Four of
+the six supervised entry points are composites — `run_multiposition_acquisition`,
+`run_tile_acquisition`, `run_multiposition_with_autofocus` and
+`run_adaptive_survey`'s acquire-on-hit phase — and they run the longest
+unattended. When one expires at position 3 of 20, positions 1 and 2 have finished
+datasets on disk, and D3 as written reports only the third.
+
+That is **F7 happening again inside the fix for F2**: *the data survived, and
+Microclaw did not say so.* The operator would be told a run is unterminated and
+left to guess that two-thirds of nothing, or two of twenty positions, is what
+they have.
+
+So `AcquisitionUnterminated` carries an optional partial payload, and a composite
+attaches what it had already collected before the exception leaves it: the
+per-position results it holds anyway, including each completed `dataset_path`.
+`_unterminated_result` renders it when present and omits it otherwise — an empty
+`positions_completed` on a single-acquisition tool would be a claim, not a
+silence. The `next` text then names those datasets as readable, since they are
+finished and independent of the failed one.
+
+Keep it to what is already in hand. Do not go looking on disk for datasets the
+call did not record; a report that guesses at paths is design/38 F7's original
+defect.
+
 ### D4 — Surface `reservation.completed_frames` as progress. (fixes F4)
 
 The counter already exists and is already updated per saved frame. Publish
