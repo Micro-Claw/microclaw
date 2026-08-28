@@ -294,13 +294,21 @@ boundary rule alone drops `Eyepiece`, `Trinocular`, `Sideport`, `Leftport`,
 `Frontport`, `Bottomport`, `Camport` and `Phototube` — measured — and
 `eyepiece` and `trinocular` are the two most ordinary English names for the two
 destinations this whole design is about; §4's own source calls the camera head
-the trinocular extension tube. The asymmetry decides it: a false positive is
+the trinocular extension tube. (`Trinocular` is the one compound `main` already
+matches, and by accident — its substring matcher finds `ocular` inside it. So it
+is not evidence for the boundary rule; it is evidence that `main` passes for the
+wrong reason. Measured 2026-08-28.) The asymmetry decides it: a false positive is
 **visible and survivable**, because marking is all that happens and the entry's
 `allowed` values are shown beside it, while a false negative is **silent** — the
 device goes unmarked, `positions_unnamed` never fires, the agent never asks, and
-that is Gap 1 again. Precision here is worth less than recall. And a longer
-alternate must precede its own prefix in the pattern, or `eye` consumes the
-front of `Eyepiece` and the trailing `p` fails the lookahead.
+that is Gap 1 again. Precision here is worth less than recall. The alternates are written compounds-first. **That ordering is a
+representation choice, not a correctness requirement** — measured 2026-08-28:
+Python's alternation backtracks past a failed lookahead, so
+`(?<![A-Za-z])(?:eye|eyepiece)(?![A-Za-z])` still matches `Eyepiece` in full.
+An earlier draft of this section claimed `eye` would consume the front of
+`Eyepiece` and strand the trailing `p`; it does not. Keep the ordering because
+it makes the vocabulary readable and because a structural test pins it, and do
+not defend it as the thing that makes the matcher work.
 
 **Substring matching is a live defect on `main`, not merely a 59b design
 choice.** 59a shipped `_PORT_LABEL_WORDS.search()` (`tools.py:3002`), which is a
@@ -974,9 +982,13 @@ Implementation (§2, §4):
   live gate depends on this distinction.
   **This is a fix to shipped behaviour, so watch it fail**: run the new fixtures
   against `main`'s `_PORT_LABEL_WORDS.search()` and confirm each false positive
-  is produced before the tokenizer lands. `trinocular` is absent from `main`'s
-  vocabulary entirely, so its fixture fails there for a second, different
-  reason — record which.
+  is produced before the tokenizer lands. Measured 2026-08-28: `Brightfield` →
+  `right`, `Photoactivation` → `photo`, `Portrait` → `port`, `Outside` → `side`,
+  `Photobleach` → `photo`. An earlier draft added that `trinocular` is absent
+  from `main`'s vocabulary so its fixture fails there for a second reason —
+  **struck, it does not**: `main` finds the substring `ocular` inside
+  `Trinocular` and the positive fixture passes there for the wrong reason.
+  Nothing in the new-fixture set fails on `main` for a second reason.
 - [ ] 34c. `positions_unnamed` present **only** when the adapter identifies a
   light path and no label matches the port vocabulary; it names the
   identity-scoped `devices/` route and says explicitly that microclaw does not
