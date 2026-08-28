@@ -776,7 +776,8 @@ def _build_state_device_inventory(core: Any, loaded_devices: Iterable[str]) -> d
         inventory["shutter_exclusion_error"] = _clean_exception_message(exc)
     else:
         inventory["shutter_exclusion"] = (
-            {"device": core_shutter} if core_shutter else "no shutter device configured"
+            {"device": core_shutter, "reason": "Core shutter is reported separately"}
+            if core_shutter else "no shutter device configured"
         )
     for device in sorted({str(item) for item in loaded_devices if item}):
         if core_shutter and device == core_shutter:

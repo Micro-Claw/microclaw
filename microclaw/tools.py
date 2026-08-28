@@ -2978,16 +2978,20 @@ _PORT_LABEL_WORDS = re.compile(
 )
 
 
-def _optical_path_state(ctrl: MicroscopeController, config_dependencies: set[tuple[str, str]]) -> Any:
+def _optical_path_state(
+    ctrl: MicroscopeController, config_dependencies: set[tuple[str, str]],
+) -> tuple[Any, dict[tuple[str, str], str]]:
     inventory = getattr(ctrl, "_state_device_inventory", None)
     if not isinstance(inventory, dict):
-        return "unknown"
+        return "unknown", {}
     positions = []
+    live_values = {}
     for retained in inventory.get("devices", []):
         entry = dict(retained)
         device = entry["device"]
         try:
             entry["label"] = str(ctrl.core.get_property(device, "Label"))
+            live_values[(device, "Label")] = entry["label"]
         except Exception as exc:
             entry["label"] = "unknown"
             entry["label_error"] = f"{type(exc).__name__}: {exc}"
@@ -2998,8 +3002,7 @@ def _optical_path_state(ctrl: MicroscopeController, config_dependencies: set[tup
         labels = allowed if isinstance(allowed, list) else []
         if any(_PORT_LABEL_WORDS.search(str(label)) for label in labels):
             roles.append("light-path candidate")
-        if roles:
-            entry["role"] = roles[0] if len(roles) == 1 else roles
+        entry["role"] = roles
         positions.append(entry)
     result = {
         "discrete_positions": positions,
@@ -3010,26 +3013,28 @@ def _optical_path_state(ctrl: MicroscopeController, config_dependencies: set[tup
             "value above unchanged."
         ),
     }
-    if inventory.get("shutter_exclusion") == "unknown":
+    shutter_exclusion = inventory.get("shutter_exclusion")
+    if isinstance(shutter_exclusion, dict):
+        result["shutter_exclusion"] = shutter_exclusion
+    elif shutter_exclusion == "unknown":
         result["shutter_exclusion"] = "unknown"
         result["shutter_exclusion_error"] = inventory.get("shutter_exclusion_error", "unknown")
-    return result
+    return result, live_values
 
 
-def _objective_state(ctrl: MicroscopeController) -> tuple[Any, set[tuple[str, str]]]:
+def _objective_state(
+    ctrl: MicroscopeController,
+    live_values: dict[tuple[str, str], str],
+) -> Any:
     from microclaw.calibration import _config_mismatches
 
     try:
-        configs = _config_mismatches(ctrl, cached=True)
+        configs = _config_mismatches(ctrl, cached=True, live_values=live_values)
     except Exception as exc:
-        return {"reason": f"Pixel-size configurations are unreadable: {type(exc).__name__}: {exc}"}, set()
+        return {"reason": f"Pixel-size configurations are unreadable: {type(exc).__name__}: {exc}"}
     available = []
-    dependencies: set[tuple[str, str]] = set()
     for config in configs:
         rules = list(config.get("rules", []))
-        for rule in rules:
-            if "device" in rule and "property" in rule:
-                dependencies.add((rule["device"], rule["property"]))
         available.append({"config": config["config"], "dependencies": rules})
     try:
         active = str(ctrl.core.get_current_pixel_size_config() or "") or None
@@ -3064,7 +3069,7 @@ def _objective_state(ctrl: MicroscopeController) -> tuple[Any, set[tuple[str, st
         "pixel_size_um": pixel_size,
         "available_configs": available,
         "reason": reason,
-    }, dependencies
+    }
 
 
 @emits_nothing
@@ -3127,9 +3132,16 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     # enabled" has to be sourced from here or not made at all (design/20 F2).
     state["shutter"] = _shutter_state(ctrl)
     state["lasers"] = _laser_state(ctrl)
-    objective, dependencies = _objective_state(ctrl)
-    state["optical_path"] = _optical_path_state(ctrl, dependencies)
-    state["objective"] = objective
+    from microclaw.calibration import _config_mismatches
+    static_configs = _config_mismatches(ctrl, cached=True, read_live=False)
+    dependencies = {
+        (rule["device"], rule["property"])
+        for config in static_configs for rule in config.get("rules", [])
+        if "device" in rule and "property" in rule
+    }
+    optical_path, shared_live = _optical_path_state(ctrl, dependencies)
+    state["optical_path"] = optical_path
+    state["objective"] = _objective_state(ctrl, shared_live)
     try:
         state["focus"] = get_focus_lock_state(ctrl, guard)
     except Exception as exc:
@@ -4274,9 +4286,10 @@ def _load_current_affine(ctrl: MicroscopeController):
     from microclaw.calibration import load_affine
 
     objective = _current_objective(ctrl)
-    if objective is None:
-        return None
-    return load_affine(objective, _current_binning(ctrl))
+    # The empty identity deliberately retains the historical storage alias
+    # used by affine_key ("default") without reporting that alias as an
+    # objective name to the operator.
+    return load_affine(objective or "", _current_binning(ctrl))
 
 
 def _calibration_pixel_size_hint(

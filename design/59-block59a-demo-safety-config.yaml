@@ -1,12 +1,14 @@
-# Stock MMConfig_demo.cfg only. The gate revalidates the operator's production
-# safety document afterwards and verifies that this file never replaces it.
+# Template only. The gate replaces the fictional device/value entries below
+# with two StateDevices and their real allowed labels discovered at run time,
+# then writes the generated document inside the evidence directory. This file
+# is never installed or used directly against a rig.
 schema_version: 3
 reviewed: true
 property_authorization:
   mode: guaranteed
   allowed_categorical: []
   denied:
-    - device: Path
+    - device: GateRuledCandidate
       property: Label
 stage:
   x_min: -10000.0
@@ -32,10 +34,10 @@ illumination:
   max_power_percent: 100.0
   max_power_step_factor: 3.0
   shutters:
-    - device: Objective
+    - device: GateIlluminationCandidate
       property: Label
-      on_value: State-1
-      off_value: State-0
+      on_value: GateOnValue
+      off_value: GateOffValue
   power_properties: []
 channels:
   allowed: []

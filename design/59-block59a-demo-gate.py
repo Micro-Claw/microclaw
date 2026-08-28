@@ -9,10 +9,13 @@ import time
 import traceback
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from microclaw.authorization import validate_live_rig
+from microclaw.authorization import _build_state_device_inventory, validate_live_rig
+from microclaw.calibration import _config_mismatches
 from microclaw.config import load_safety_config
 from microclaw.controller import MicroscopeController
 from microclaw.paths import default_safety_config
@@ -32,7 +35,9 @@ class Tee:
         self.file = path.open("w", encoding="utf-8")
 
     def write(self, data):
-        self.stream.write(data)
+        # Windows PowerShell 5.1 consoles commonly use a legacy code page.
+        # Keep the evidence UTF-8 while making native-child stdout ASCII-safe.
+        self.stream.write(data.encode("ascii", "backslashreplace").decode("ascii"))
         self.file.write(data)
         return len(data)
 
@@ -52,7 +57,7 @@ def limb(name, fails_if):
             traceback.print_exc()
         RESULTS.append({"name": name, "status": status, "detail": detail,
                         "fails_if": fails_if})
-        print(f"{status}: {name} — {detail}")
+        print(f"{status}: {name} - {detail}")
         return fn
     return decorate
 
@@ -89,18 +94,48 @@ def main():
     sys.stdout = sys.stderr = Tee(sys.__stdout__, args.output / "gate.txt")
 
     active_path = args.active_safety_config.resolve()
-    gate_path = (ROOT / "design/59-block59a-demo-safety-config.yaml").resolve()
-    active_hash = sha256(active_path)
-    print(f"Active safety document before gate: {active_path} sha256={active_hash}")
+    template_path = (ROOT / "design/59-block59a-demo-safety-config.yaml").resolve()
+    active_bytes = active_path.read_bytes()
+    active_mtime_ns = active_path.stat().st_mtime_ns
+    print(f"Active safety document (not installed or replaced): {active_path} sha256={sha256(active_path)}")
 
     ctrl = MicroscopeController(port=args.port)
     counted = CountingCore(ctrl.core)
     ctrl._core = counted
-    production = load_safety_config(active_path)
-    gate_config = load_safety_config(gate_path)
-    gate_guard = SafetyGuard(gate_config.constraints)
     setup_error = None
+    generated_path = args.output / "generated-safety-config.yaml"
     try:
+        loaded = list(counted.get_loaded_devices())
+        raw_inventory = _build_state_device_inventory(counted, loaded)
+        discovered_configs = _config_mismatches(ctrl)
+        autofocus_device = str(counted.get_auto_focus_device() or "")
+        (args.output / "discovery.json").write_text(json.dumps({
+            "state_device_inventory": raw_inventory,
+            "pixel_size_configs": discovered_configs,
+            "autofocus_device": autofocus_device or None,
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        candidates = [item for item in raw_inventory["devices"]
+                      if isinstance(item.get("allowed"), list) and len(item["allowed"]) >= 2]
+        if len(candidates) < 2:
+            raise NotExercised("fewer than two StateDevices have two readable allowed labels")
+        dependency_devices = {
+            rule["device"] for config in discovered_configs for rule in config.get("rules", [])
+            if "device" in rule
+        }
+        candidates.sort(key=lambda item: (item["device"] in dependency_devices, item["device"]))
+        illumination_device, ruled_device = candidates[:2]
+        template = yaml.safe_load(template_path.read_text(encoding="utf-8"))
+        template["property_authorization"]["denied"] = [{
+            "device": ruled_device["device"], "property": "Label",
+        }]
+        template["illumination"]["shutters"] = [{
+            "device": illumination_device["device"], "property": "Label",
+            "on_value": str(illumination_device["allowed"][1]),
+            "off_value": str(illumination_device["allowed"][0]),
+        }]
+        generated_path.write_text(yaml.safe_dump(template, sort_keys=False), encoding="utf-8")
+        gate_config = load_safety_config(generated_path)
+        gate_guard = SafetyGuard(gate_config.constraints)
         validate_live_rig(ctrl, gate_config, guard=gate_guard)
         before = counted.calls
         started = time.perf_counter()
@@ -117,8 +152,11 @@ def main():
         first = second = {}
         first_s = second_s = 0.0
         first_calls = second_calls = 0
-    (args.output / "system-state.json").write_text(
+    (args.output / "system-state-1.json").write_text(
         json.dumps(first, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (args.output / "system-state-2.json").write_text(
+        json.dumps(second, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
     positions = first.get("optical_path", {}).get("discrete_positions", [])
@@ -131,7 +169,8 @@ def main():
         if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         if not positions: raise NotExercised("this machine reports no StateDevice")
         if not configs: raise NotExercised("this machine reports no pixel-size configs")
-        if not focus.get("device"): raise NotExercised("this machine reports no autofocus device")
+        if not autofocus_device or not focus.get("device"):
+            raise NotExercised("this machine reports no autofocus device")
         return json.dumps({"state_devices": positions, "pixel_size_configs": configs,
                            "autofocus_device": focus.get("device")}, sort_keys=True)
 
@@ -143,17 +182,18 @@ def main():
     @limb("port vocabulary marks without filtering", "an unmarked discrete device vanishes")
     def marks_not_filters():
         if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
-        unmarked = [item for item in positions if item.get("role") != "light-path candidate"]
+        unmarked = [item for item in positions if "light-path candidate" not in item.get("role", [])]
         if not unmarked: raise NotExercised("this machine has no unmarked StateDevice")
         return "unmarked devices retained: " + ", ".join(item["device"] for item in unmarked)
 
     @limb("safety-ruled devices remain visible", "the read inventory inherits write authorization exclusions")
     def ruled_visible():
         if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
-        required = {"Objective", "Path"}
+        required = {illumination_device["device"], ruled_device["device"]}
         missing = sorted(required - set(by_device))
         if missing: raise NotExercised("configured demo devices absent: " + ", ".join(missing))
-        return "Objective is illumination-declared and Path is denied; both are present"
+        return (f"{illumination_device['device']} is illumination-declared and "
+                f"{ruled_device['device']} is denied; both are present")
 
     @limb("multi-key dependencies preserved", "a pixel-size config dependency is dropped")
     def dependencies_preserved():
@@ -178,17 +218,68 @@ def main():
         assert set(first) == set(second)
         assert len(positions) == len(second["optical_path"]["discrete_positions"])
 
-    # Restore the production guard/authorization map and prove the safety file
-    # itself was not changed. This is the state handed back after the gate.
-    after_hash = sha256(active_path)
+    @limb("unmatched objective diagnosis follows live motion", "a moved dependency stays frozen or is promoted to a measured objective")
+    def unmatched_objective():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
+        dependency = None
+        for config in configs:
+            for rule in config.get("dependencies", []):
+                device = rule.get("device")
+                item = by_device.get(device)
+                if rule.get("property") != "Label" or not item:
+                    continue
+                if item.get("label") == "unknown":
+                    continue
+                expected = {
+                    candidate.get("expected")
+                    for available in configs for candidate in available.get("dependencies", [])
+                    if candidate.get("device") == device and candidate.get("property") == "Label"
+                }
+                target = next((value for value in item.get("allowed", []) if value not in expected), None)
+                if target is not None:
+                    dependency = device, item["label"], str(target)
+                    break
+            if dependency: break
+        if dependency is None:
+            raise NotExercised("no StateDevice Label dependency has an allowed non-matching value")
+        device, entry, target = dependency
+        try:
+            counted.set_property(device, "Label", target)
+            counted.wait_for_device(device)
+            moved = get_system_state(ctrl, gate_guard)
+            moved_item = next(item for item in moved["optical_path"]["discrete_positions"]
+                              if item["device"] == device)
+            moved_rules = [rule for config in moved["objective"]["available_configs"]
+                           for rule in config["dependencies"]
+                           if rule.get("device") == device and rule.get("property") == "Label"]
+            assert moved_item["label"] == target
+            assert moved_rules and all(rule["live"] == target and not rule["matches"]
+                                       for rule in moved_rules)
+            assert moved["objective"]["pixel_size_config"] is None
+            assert "does not know which objective" in moved["objective"]["reason"]
+            (args.output / "system-state-nonmatching.json").write_text(
+                json.dumps(moved, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            return f"moved {device}.Label from {entry!r} to unmatched {target!r}"
+        finally:
+            counted.set_property(device, "Label", entry)
+            counted.wait_for_device(device)
 
-    @limb("production safety document restored", "the gate leaves its evidence config active or changes production safety")
-    def safety_restored():
-        production_guard = SafetyGuard(production.constraints)
-        validate_live_rig(ctrl, production, guard=production_guard)
-        assert after_hash == active_hash
-        assert active_path != gate_path
-        return f"restored and revalidated {active_path}; sha256={after_hash}"
+    @limb("Core shutter exclusion is named", "the Core shutter appears among discrete devices or is silently omitted")
+    def shutter_excluded():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
+        shutter = str(counted.get_shutter_device() or "")
+        if not shutter: raise NotExercised("this machine has no Core shutter")
+        assert shutter not in by_device
+        assert first["optical_path"].get("shutter_exclusion", {}).get("device") == shutter
+        return f"excluded Core shutter {shutter}"
+
+    @limb("production safety document untouched", "the gate changes production safety bytes/mtime or writes generated safety outside evidence")
+    def safety_untouched():
+        assert active_path.read_bytes() == active_bytes
+        assert active_path.stat().st_mtime_ns == active_mtime_ns
+        assert generated_path.parent.resolve() == args.output.resolve()
+        return f"bytes and mtime unchanged for {active_path}; generated config stayed in evidence"
 
     summary = {"results": RESULTS, "cost": {
         "first_bridge_calls": first_calls, "first_wall_s": first_s,

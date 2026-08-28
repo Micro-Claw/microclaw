@@ -438,58 +438,83 @@ def _read_artifact(path: str, guard) -> dict:
     return identity
 
 
-def _config_mismatches(ctrl, *, cached: bool = False) -> list[dict]:
+def _config_mismatches(
+    ctrl, *, cached: bool = False, read_live: bool = True,
+    live_values: dict[tuple[str, str], str] | None = None,
+) -> list[dict]:
     if ctrl is None:
         return []
+    static_results = None
     if cached:
-        existing = getattr(ctrl, "_pixel_size_config_inventory", None)
-        if existing is not None:
-            return existing
+        static_results = getattr(ctrl, "_pixel_size_config_inventory", None)
+    if static_results is None:
+        static_results = []
+        try:
+            configs = list(ctrl.core.get_available_pixel_size_configs())
+        except Exception:
+            configs = []
+        for config in configs:
+            rules = []
+            try:
+                data = ctrl.core.get_pixel_size_config_data(config)
+                for index in range(int(data.size())):
+                    setting = data.get_setting(index)
+                    rules.append({
+                        "device": str(setting.get_device_label()),
+                        "property": str(setting.get_property_name()),
+                        "expected": str(setting.get_property_value()),
+                    })
+            except Exception as error:
+                rules.append({"error": str(error)})
+            try:
+                pixel_size_um = float(ctrl.core.get_pixel_size_um_by_id(config))
+            except Exception:
+                pixel_size_um = None
+            try:
+                raw_affine = ";".join(
+                    str(value) for value in ctrl.core.get_pixel_size_affine_by_id(config)
+                )
+                affine_verdict = (
+                    "usable" if parse_mm_pixel_size_affine(
+                        raw_affine, objective=str(config), binning=1
+                    ) is not None else "sentinel_or_invalid"
+                )
+            except Exception:
+                affine_verdict = "unavailable"
+            static_results.append({
+                "config": str(config), "pixel_size_um": pixel_size_um,
+                "affine_verdict": affine_verdict, "rules": rules,
+            })
+        if cached:
+            ctrl._pixel_size_config_inventory = static_results
+    if not read_live:
+        return static_results
+
     results = []
-    try:
-        configs = list(ctrl.core.get_available_pixel_size_configs())
-    except Exception:
-        return results
-    for config in configs:
+    shared = live_values or {}
+    for config in static_results:
         rules = []
-        try:
-            data = ctrl.core.get_pixel_size_config_data(config)
-            for index in range(int(data.size())):
-                setting = data.get_setting(index)
-                device = str(setting.get_device_label())
-                prop = str(setting.get_property_name())
-                expected = str(setting.get_property_value())
-                try:
-                    live = str(ctrl.core.get_property(device, prop))
-                except Exception as error:
-                    live = f"ERROR: {error}"
-                rules.append({"device": device, "property": prop,
-                              "expected": expected, "live": live,
-                              "matches": live == expected})
-        except Exception as error:
-            rules.append({"error": str(error), "matches": False})
-        try:
-            pixel_size_um = float(ctrl.core.get_pixel_size_um_by_id(config))
-        except Exception:
-            pixel_size_um = None
-        try:
-            raw_affine = ";".join(
-                str(value) for value in ctrl.core.get_pixel_size_affine_by_id(config)
-            )
-            affine_verdict = (
-                "usable" if parse_mm_pixel_size_affine(
-                    raw_affine, objective=str(config), binning=1
-                ) is not None else "sentinel_or_invalid"
-            )
-        except Exception:
-            affine_verdict = "unavailable"
+        for retained in config["rules"]:
+            rule = dict(retained)
+            if "device" not in rule:
+                rule["matches"] = False
+            else:
+                pair = (rule["device"], rule["property"])
+                if pair in shared:
+                    live = shared[pair]
+                else:
+                    try:
+                        live = str(ctrl.core.get_property(*pair))
+                    except Exception as error:
+                        live = f"ERROR: {error}"
+                rule["live"] = live
+                rule["matches"] = live == rule["expected"]
+            rules.append(rule)
         results.append({
-            "config": str(config), "pixel_size_um": pixel_size_um,
-            "affine_verdict": affine_verdict, "rules": rules,
+            **{key: value for key, value in config.items() if key != "rules"},
+            "rules": rules,
             "would_activate": all(rule["matches"] for rule in rules),
         })
-    if cached:
-        ctrl._pixel_size_config_inventory = results
     return results
 
 

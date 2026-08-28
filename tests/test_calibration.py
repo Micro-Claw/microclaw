@@ -61,6 +61,19 @@ class TestPersistence:
         assert key == affine_key("20x Air", 2)
         assert load_affine("20x Air", 2) == aff
 
+    def test_no_active_pixel_config_measure_save_and_current_load_roundtrip(self):
+        from types import SimpleNamespace
+        from microclaw.tools import _load_current_affine
+
+        affine = solve_affine((0.0, 40.0), (40.0, 0.0), 20.0, "", 1)
+        save_affine(affine)
+        core = SimpleNamespace(
+            get_current_pixel_size_config=lambda: "",
+            get_camera_device=lambda: "Camera",
+            get_property=lambda device, prop: "1",
+        )
+        assert _load_current_affine(SimpleNamespace(core=core)) == affine
+
     def test_keyed_by_objective_and_binning(self):
         save_affine(solve_affine((0.0, 40.0), (40.0, 0.0), 20.0, "20x", 1))
         assert load_affine("20x", 2) is None

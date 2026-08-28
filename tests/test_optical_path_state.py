@@ -34,6 +34,7 @@ class OpticalCore:
         self.label_failures = set()
         self.autofocus = ""
         self.engaged = False
+        self.property_calls = []
 
     def _call(self): self.calls += 1
     def get_loaded_devices(self): self._call(); return list(self.devices)
@@ -42,12 +43,15 @@ class OpticalCore:
         self._call()
         if isinstance(self.shutter, Exception): raise self.shutter
         return self.shutter
+    def get_shutter_open(self): self._call(); return False
+    def get_auto_shutter(self): self._call(); return False
     def get_allowed_property_values(self, device, prop):
         self._call()
         if device in self.allowed_failures: raise RuntimeError(f"allowed read failed for {device}")
         return self.devices[device][1]
     def get_property(self, device, prop):
         self._call()
+        self.property_calls.append((device, prop))
         if device in self.label_failures: raise RuntimeError(f"label read failed for {device}")
         return self.devices[device][0]
     def get_available_pixel_size_configs(self): self._call(); return list(self.configs)
@@ -79,9 +83,9 @@ GUARD = SafetyGuard(SafetyConstraints(stage=StageConstraints(
 
 def state(core):
     ctrl = SimpleNamespace(core=core, studio=Studio(), get_mm_app_dir=None)
-    build = getattr(authorization, "_build_state_device_inventory", None)
-    if build is not None:
-        ctrl._state_device_inventory = build(core, core.get_loaded_devices())
+    ctrl._state_device_inventory = authorization._build_state_device_inventory(
+        core, core.get_loaded_devices()
+    )
     return get_system_state(ctrl, GUARD), ctrl
 
 
@@ -106,6 +110,11 @@ def test_ti_shaped_fake_reports_path_dependency_and_focus_without_claiming_objec
     assert payload["objective"]["available_configs"][0]["dependencies"][0]["device"] == "TINosePiece"
     assert "measured objective" not in str(payload).lower()
     assert payload["focus"]["status_properties"]["Status"] == "Out of focus search range"
+    positions = {item["device"]: item for item in payload["optical_path"]["discrete_positions"]}
+    assert positions["TILightPath"]["role"] == ["light-path candidate"]
+    assert positions["TINosePiece"]["role"] == [
+        "pixel-size-config dependency (not proof of objective)"
+    ]
 
 
 def test_demo_shaped_fake_uses_the_same_generic_payload():
@@ -140,19 +149,25 @@ def test_second_call_uses_retained_inventory_and_config_walk():
 def test_port_vocabulary_marks_but_never_filters():
     payload, _ = state(OpticalCore({"Opaque": ("Alpha", ["Alpha", "Beta"])}))
     assert payload["optical_path"]["discrete_positions"] == [
-        {"device": "Opaque", "allowed": ["Alpha", "Beta"], "label": "Alpha"}
+        {"device": "Opaque", "allowed": ["Alpha", "Beta"], "label": "Alpha", "role": []}
     ]
 
 
-def test_write_policy_exclusions_do_not_remove_read_inventory():
-    core = OpticalCore({name: ("A", ["A", "B"]) for name in ("Allowed", "Denied", "Light")})
-    inventory = authorization._build_state_device_inventory(core, core.get_loaded_devices())
-    # These declarations are intentionally irrelevant to the read inventory.
-    declared = {"allowed_categorical": {("Allowed", "Label")},
-                "denied": {("Denied", "Label")},
-                "illumination": {("Light", "Label")}}
-    assert declared
-    assert {item["device"] for item in inventory["devices"]} == {"Allowed", "Denied", "Light"}
+def test_dependency_live_value_moves_with_discrete_label_without_a_duplicate_read():
+    core = OpticalCore({"Objective": ("10x", ["10x", "60x"])},
+                       {"Res10x": [("Objective", "Label", "10x")]})
+    first, ctrl = state(core)
+    first_rule = first["objective"]["available_configs"][0]["dependencies"][0]
+    assert first_rule["live"] == "10x"
+    assert first_rule["matches"] is True
+    core.devices["Objective"] = ("60x", ["10x", "60x"])
+    core.property_calls.clear()
+    second = get_system_state(ctrl, GUARD)
+    second_position = second["optical_path"]["discrete_positions"][0]
+    second_rule = second["objective"]["available_configs"][0]["dependencies"][0]
+    assert second_position["label"] == second_rule["live"] == "60x"
+    assert second_rule["matches"] is False
+    assert core.property_calls.count(("Objective", "Label")) == 1
 
 
 def test_multikey_pixel_config_preserves_every_dependency_without_measuring_objective():
@@ -175,6 +190,16 @@ def test_unreadable_or_empty_core_shutter_never_hides_state_devices(shutter):
         assert "shutter unavailable" in payload["optical_path"]["shutter_exclusion_error"]
     else:
         assert "shutter_exclusion" not in payload["optical_path"]
+
+
+def test_configured_core_shutter_is_excluded_and_named():
+    payload, _ = state(OpticalCore({
+        "Wheel": ("A", ["A", "B"]), "Blocker": ("Closed", ["Open", "Closed"]),
+    }, shutter="Blocker"))
+    assert [item["device"] for item in payload["optical_path"]["discrete_positions"]] == ["Wheel"]
+    assert payload["optical_path"]["shutter_exclusion"] == {
+        "device": "Blocker", "reason": "Core shutter is reported separately",
+    }
 
 
 def test_per_device_read_failures_preserve_entries_and_errors():
