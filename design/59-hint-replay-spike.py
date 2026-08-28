@@ -72,7 +72,12 @@ HINT_HEAD = (
     "the path; a manual prism or slider can send light elsewhere with every "
     "value above unchanged. "
 )
+SHIPPED = "<the payload's own hint, unmodified>"
+
 VARIANTS = {
+    # The hint exactly as the recorded payload carries it. Use this variant to
+    # dry-run an OPERATOR PROMPT rather than to compare hint wordings.
+    "shipped": SHIPPED,
     # What shipped, and what session A ran against.
     "conditional": HINT_HEAD + (
         "If the camera is not getting the signal you expect, call "
@@ -95,11 +100,12 @@ VARIANTS = {
 }
 
 
-def build(payload: dict, hint: str) -> list[dict]:
+def build(payload: dict, hint: str, opening: str) -> list[dict]:
     payload = json.loads(json.dumps(payload))
-    payload["optical_path"]["hint"] = hint
+    if hint != SHIPPED:
+        payload["optical_path"]["hint"] = hint
     return [
-        {"role": "user", "content": OPENING},
+        {"role": "user", "content": opening},
         {"role": "assistant", "content": [
             {"type": "text", "text": "Let me read the current system state."},
             {"type": "tool_use", "id": "s1", "name": "get_system_state", "input": {}},
@@ -185,7 +191,8 @@ def classify(message, devices: list[str]) -> str:
     return "EXPOSED_FIRST" if exposed else "NEITHER"
 
 
-def run_one(client, model, payload, hint, devices, table, max_turns):
+def run_one(client, model, payload, hint, devices, table, max_turns,
+            opening=None, watch="save_knowledge"):
     """Drive the conversation until a decision, answering only from recorded data.
 
     A single turn is NOT enough. Session A gathered for two more turns before it
@@ -195,8 +202,8 @@ def run_one(client, model, payload, hint, devices, table, max_turns):
     raises routing or reaches for an exposure, and report the trajectory either
     way.
     """
-    messages = build(payload, hint)
-    trail = []
+    messages = build(payload, hint, opening or OPENING)
+    trail, watched = [], []
     for _ in range(max_turns):
         response = client.messages.create(
             model=model, max_tokens=2000, system=SYSTEM_PROMPT,
@@ -204,12 +211,14 @@ def run_one(client, model, payload, hint, devices, table, max_turns):
         )
         verdict = classify(response, devices)
         calls = [b.name for b in response.content if b.type == "tool_use"]
+        watched += [b.input for b in response.content
+                    if b.type == "tool_use" and b.name == watch]
         trail.append("+".join(calls) if calls else "say")
         if verdict in ("RAISED_BEFORE", "EXPOSED_FIRST"):
-            return verdict, trail
+            return verdict, trail, watched
         if response.stop_reason != "tool_use":
             # It stopped to talk without raising routing and without exposing.
-            return "STOPPED_SILENT", trail
+            return "STOPPED_SILENT", trail, watched
         messages = messages + [
             {"role": "assistant", "content": [b.model_dump() for b in response.content]},
             {"role": "user", "content": [
@@ -219,7 +228,7 @@ def run_one(client, model, payload, hint, devices, table, max_turns):
                      json.dumps({"error": f"{b.name} is not available in this replay"}))}
                 for b in response.content if b.type == "tool_use"]},
         ]
-    return "NO_DECISION", trail
+    return "NO_DECISION", trail, watched
 
 
 def main() -> int:
@@ -229,6 +238,11 @@ def main() -> int:
     ap.add_argument("--sessions", type=Path, nargs="*", default=None,
                     help="history JSONL files supplying REAL recorded tool results "
                          "(default: session-a.jsonl and session-c.jsonl beside --payload)")
+    ap.add_argument("--opening", default=None,
+                    help="operator prompt to dry-run (default: session A's). Use "
+                         "with --variants shipped to test a runbook prompt.")
+    ap.add_argument("--watch", default="save_knowledge",
+                    help="print the input the agent sends to this tool")
     ap.add_argument("--samples", type=int, default=8)
     ap.add_argument("--max-turns", type=int, default=6)
     ap.add_argument("--model", default=None)
@@ -264,15 +278,25 @@ def main() -> int:
 
     order = ("RAISED_BEFORE", "EXPOSED_FIRST", "STOPPED_SILENT", "NO_DECISION")
     for name in [v.strip() for v in args.variants.split(",") if v.strip()]:
-        counts, trails = Counter(), Counter()
+        counts, trails, seen = Counter(), Counter(), []
         for _ in range(args.samples):
-            verdict, trail = run_one(client, model, payload, VARIANTS[name],
-                                     devices, table, args.max_turns)
+            verdict, trail, watched = run_one(
+                client, model, payload, VARIANTS[name], devices, table,
+                args.max_turns, opening=args.opening, watch=args.watch)
             counts[verdict] += 1
             trails[" -> ".join(trail)] += 1
+            seen += watched
         print(f"{name:<14} " + "  ".join(f"{k}={counts[k]}" for k in order))
         for trail, n in trails.most_common(3):
             print(f"{'':<14}   {n}x  {trail}")
+        for payload_sent in seen[:3]:
+            print(f"{'':<14}   {args.watch} <- {json.dumps(payload_sent)[:300]}")
+        if seen:
+            ok = sum(1 for x in seen
+                     if isinstance(x.get("value"), dict)
+                     and x["value"].get("kind") == "optical_path_position_map")
+            print(f"{'':<14}   {ok}/{len(seen)} {args.watch} calls used the "
+                  "structured optical_path_position_map shape")
 
     print("\nRAISED_BEFORE is the block's central claim: routing put to the "
           "operator from orientation, before any exposure.")
