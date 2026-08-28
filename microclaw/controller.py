@@ -404,6 +404,7 @@ class MicroscopeController:
         # Populated once by authorization.validate_live_rig.  This is tied to
         # this Core connection, unlike the process-wide EMU discovery cache.
         self._state_device_inventory: dict | None = None
+        self._pixel_size_config_inventory: list[dict] | None = None
         # Python-native position store. Use import_from_mm_position_list() to
         # pull in positions the user has marked in MM's GUI.
         self._positions: list[dict] = []

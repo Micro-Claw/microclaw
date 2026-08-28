@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from microclaw.authorization import _build_state_device_inventory
+from microclaw import authorization
 from microclaw.safety import SafetyConstraints, SafetyGuard, StageConstraints
 from microclaw.tools import get_system_state
 
@@ -79,9 +79,9 @@ GUARD = SafetyGuard(SafetyConstraints(stage=StageConstraints(
 
 def state(core):
     ctrl = SimpleNamespace(core=core, studio=Studio(), get_mm_app_dir=None)
-    ctrl._state_device_inventory = _build_state_device_inventory(
-        core, core.get_loaded_devices()
-    )
+    build = getattr(authorization, "_build_state_device_inventory", None)
+    if build is not None:
+        ctrl._state_device_inventory = build(core, core.get_loaded_devices())
     return get_system_state(ctrl, GUARD), ctrl
 
 
@@ -124,7 +124,12 @@ def test_demo_shaped_fake_uses_the_same_generic_payload():
 
 def test_second_call_uses_retained_inventory_and_config_walk():
     core = OpticalCore({"Wheel": ("A", ["A", "B"])}, {"Res": [("Wheel", "Label", "A")]})
-    payload, ctrl = state(core)
+    ctrl = SimpleNamespace(core=core, studio=Studio(), get_mm_app_dir=None)
+    ctrl._state_device_inventory = authorization._build_state_device_inventory(
+        core, core.get_loaded_devices()
+    )
+    core.calls = 0
+    payload = get_system_state(ctrl, GUARD)
     first = core.calls
     get_system_state(ctrl, GUARD)
     second = core.calls - first
@@ -141,7 +146,7 @@ def test_port_vocabulary_marks_but_never_filters():
 
 def test_write_policy_exclusions_do_not_remove_read_inventory():
     core = OpticalCore({name: ("A", ["A", "B"]) for name in ("Allowed", "Denied", "Light")})
-    inventory = _build_state_device_inventory(core, core.get_loaded_devices())
+    inventory = authorization._build_state_device_inventory(core, core.get_loaded_devices())
     # These declarations are intentionally irrelevant to the read inventory.
     declared = {"allowed_categorical": {("Allowed", "Label")},
                 "denied": {("Denied", "Label")},

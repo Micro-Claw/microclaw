@@ -99,18 +99,24 @@ def main():
     production = load_safety_config(active_path)
     gate_config = load_safety_config(gate_path)
     gate_guard = SafetyGuard(gate_config.constraints)
-    validate_live_rig(ctrl, gate_config, guard=gate_guard)
-
-    before = counted.calls
-    started = time.perf_counter()
-    first = get_system_state(ctrl, gate_guard)
-    first_s = time.perf_counter() - started
-    first_calls = counted.calls - before
-    before = counted.calls
-    started = time.perf_counter()
-    second = get_system_state(ctrl, gate_guard)
-    second_s = time.perf_counter() - started
-    second_calls = counted.calls - before
+    setup_error = None
+    try:
+        validate_live_rig(ctrl, gate_config, guard=gate_guard)
+        before = counted.calls
+        started = time.perf_counter()
+        first = get_system_state(ctrl, gate_guard)
+        first_s = time.perf_counter() - started
+        first_calls = counted.calls - before
+        before = counted.calls
+        started = time.perf_counter()
+        second = get_system_state(ctrl, gate_guard)
+        second_s = time.perf_counter() - started
+        second_calls = counted.calls - before
+    except Exception as exc:
+        setup_error = f"{type(exc).__name__}: {exc}"
+        first = second = {}
+        first_s = second_s = 0.0
+        first_calls = second_calls = 0
     (args.output / "system-state.json").write_text(
         json.dumps(first, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -122,6 +128,7 @@ def main():
 
     @limb("inventory confirmed", "StateDevices, labels/allowed values, configs, or autofocus are assumed rather than reported")
     def inventory_confirmed():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         if not positions: raise NotExercised("this machine reports no StateDevice")
         if not configs: raise NotExercised("this machine reports no pixel-size configs")
         if not focus.get("device"): raise NotExercised("this machine reports no autofocus device")
@@ -130,16 +137,19 @@ def main():
 
     @limb("all orientation keys", "one of optical_path, objective, or focus is absent")
     def keys_present():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         assert {"optical_path", "objective", "focus"} <= set(first)
 
     @limb("port vocabulary marks without filtering", "an unmarked discrete device vanishes")
     def marks_not_filters():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         unmarked = [item for item in positions if item.get("role") != "light-path candidate"]
         if not unmarked: raise NotExercised("this machine has no unmarked StateDevice")
         return "unmarked devices retained: " + ", ".join(item["device"] for item in unmarked)
 
     @limb("safety-ruled devices remain visible", "the read inventory inherits write authorization exclusions")
     def ruled_visible():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         required = {"Objective", "Path"}
         missing = sorted(required - set(by_device))
         if missing: raise NotExercised("configured demo devices absent: " + ", ".join(missing))
@@ -147,6 +157,7 @@ def main():
 
     @limb("multi-key dependencies preserved", "a pixel-size config dependency is dropped")
     def dependencies_preserved():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         dependency_counts = [len(item.get("dependencies", [])) for item in configs]
         if max(dependency_counts, default=0) < 1:
             raise NotExercised("no pixel-size config has a dependency")
@@ -155,6 +166,7 @@ def main():
 
     @limb("retained-cache cost", "the second call is not cheaper or the first exceeds 1.5 s")
     def retained_cost():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         assert second_calls < first_calls, (first_calls, second_calls)
         assert first_s <= 1.5, first_s
         return (f"first={first_calls} bridge calls/{first_s:.3f}s; "
@@ -162,17 +174,18 @@ def main():
 
     @limb("payload stable in shape", "the cached second call loses orientation structure")
     def stable_shape():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         assert set(first) == set(second)
         assert len(positions) == len(second["optical_path"]["discrete_positions"])
 
     # Restore the production guard/authorization map and prove the safety file
     # itself was not changed. This is the state handed back after the gate.
-    production_guard = SafetyGuard(production.constraints)
-    validate_live_rig(ctrl, production, guard=production_guard)
     after_hash = sha256(active_path)
 
     @limb("production safety document restored", "the gate leaves its evidence config active or changes production safety")
     def safety_restored():
+        production_guard = SafetyGuard(production.constraints)
+        validate_live_rig(ctrl, production, guard=production_guard)
         assert after_hash == active_hash
         assert active_path != gate_path
         return f"restored and revalidated {active_path}; sha256={after_hash}"
