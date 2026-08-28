@@ -442,6 +442,13 @@ def test_unterminated_result_tolerates_every_partial_payload_it_can_receive():
     # A record with nothing but a path is still worth reporting.
     result = tools._unterminated_result(_exc([{"dataset_path": "/data/p0"}]))
     assert result["positions_completed"] == [{"dataset_path": "/data/p0"}]
+    assert result["next"][0].startswith("1 position finished before this failure. "
+                                        "That dataset is")
+    result = tools._unterminated_result(_exc([{"dataset_path": "/data/p0"},
+                                              {"dataset_path": "/data/p1"}]))
+    assert result["next"][0].startswith("2 positions finished before this failure. "
+                                        "Those datasets are")
+    assert result["next"][0].endswith("readable now: /data/p0, /data/p1")
 
 
 def test_position_dominated_run_keeps_producing_past_ceiling_and_completes(monkeypatch):

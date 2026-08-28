@@ -2024,10 +2024,12 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
         paths = [record["dataset_path"] for record in completed
                  if record.get("dataset_path")]
         if paths:
+            one = len(paths) == 1
             next_steps.insert(0, (
-                f"{len(paths)} dataset(s) finished before this failure and are "
-                "written by Micro-Manager independently of it, so they are "
-                "readable now: " + ", ".join(paths)
+                f"{len(paths)} position{'' if one else 's'} finished before this "
+                f"failure. {'That dataset is' if one else 'Those datasets are'} "
+                "written by Micro-Manager independently of it and readable now: "
+                + ", ".join(paths)
             ))
     return result
 
