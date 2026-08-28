@@ -1175,6 +1175,49 @@ config template rather than writing second copies.
   available machine produces a match under either matcher — so the unit fixtures
   are the whole evidence for 34b1 and no gate limb may claim otherwise.
 
+### What the demo gate established, 2026-08-28
+
+Evidence: `block59b-demo-evidence` in the rig archive. **Probe 6/6 PASS.**
+
+- **The retention claim is proved on hardware.** Orientation cost **39 calls then
+  27** — identical to 59a's counts — while live-rig validation paid a **12 = 2N**
+  adapter delta once, exactly as §3 predicted. The adapter reads add nothing per
+  orientation call on a real bridge. Wall time was 113 ms then 23 ms against
+  59a's 36/8 at the same call count; unexplained, nowhere near the 1.5 s ceiling,
+  and worth a look at the per-call `load_knowledge()` disk read if it recurs.
+- **The payload is right on the machine.** `Path` marked adapter-only with
+  `positions_unnamed`; **zero port-token false positives across all six real
+  devices**; `Objective` marked dependency-not-objective; `focus` naming the
+  `Autofocus` device. The identity control passed both ways on live state.
+- **The structured position map was unreachable, and the legacy path swallowed
+  the mistake.** Session C: the agent sent a position map with no `kind`, was
+  refused by the *legacy* `observed_on` rule, **invented `observed_on: "DCam"`**,
+  and the save succeeded — producing an entry that would render into every later
+  system prompt and never be resolved against live identity. Nothing named the
+  discriminator anywhere the agent reads. Fixed by putting the shape in
+  `save_knowledge`'s **parameter** description and in `positions_unnamed`, and by
+  refusing a position-map-shaped `devices/` entry that lacks the discriminator —
+  detected from the live inventory, not from a field name. Both real session-C
+  payloads are refused now; ordinary notes about the same device still save.
+- **Session B was not exercised, and that was the runbook's fault.** It said
+  "choose an existing demo-camera mode whose frames have no structure" instead of
+  naming `Camera` / `Mode` / `Noise`, which that machine has had since
+  2026-08-02. A step written as a criterion does not get run — three times now.
+
+**Session A's failure is a tail, not a defect** (measured, `design/59-hint-replay-spike.py`).
+The agent exposed before raising routing while holding a payload that named it.
+Replaying that exact payload against the shipped hint: **20/24 raised routing
+before any exposure; the session-A failure mode appears in 2/24 (8%)**. Two runs
+of the *same* wording gave 5/8 and 15/16 (p=0.09), so the first eight samples
+were noise about their own arm — a reminder that one gate session is a data
+point. The hint's conditional tail was suspected of suppressing the question and
+is **exonerated**: conditional 5/8 vs 59a's unconditional 6/8, p=1.000. A variant
+adding an explicit "raise `positions_unnamed` before relying on an image"
+instruction scored 8/8, but separating 100% from 94% needs **~128 samples per
+arm**, which is not worth spending on a ≤6-point effect. **The hint ships
+unchanged**; the reference stays conditional on a signal problem (operator,
+2026-08-28) because that is what it is for.
+
 - [ ] 44. **Owed to a Nikon Ti:** a real blank field caused by routing, the
   manual-prism configuration, a `4-Unknown` turret, a live PFS status, **and the
   label-matching source of the light-path role** — no demo device carries port
@@ -1240,5 +1283,5 @@ same commit, so the two halves of the move cannot separate.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; the product half was a silent `available_configs: []`. Round 2 **PASS 11/11**, 39 calls/36 ms then 27/8 ms; restore read-back added afterwards | `e314927` merged 2026-08-28, branch deleted |
-| 59b | `design59/optics-reference` | `906fac8` (2026-08-28) | `eddd1b6` (2 Codex rounds, 10 findings; coordinator suite 2415/99/0; off-rig scorer 22/22, 15 discriminating on `main`) | — (reduced to one probe + three driven sessions after off-rig scoring; M5 ruled out from its own archived inventory — no routing device, no autofocus) | — |
+| 59b | `design59/optics-reference` | `906fac8` (2026-08-28) | `944d728` (4 Codex rounds, 20 findings; coordinator suite 2418/99/0; off-rig scorer 22/22, 15 discriminating on `main`) | round 1 2026-08-28: **probe PASS 6/6** (39→27 calls, 2N=12 adapter delta); session A product PASS / agent tail failure (8%, measured off-rig); **session B NOT EXERCISED — runbook named no camera mode**; session C found the unreachable structured map. Sessions B and C **owed** after the fixes | — |
 | 59c | — | — | — | — | — (not started, and does not start: gated on a Nikon Ti) |
