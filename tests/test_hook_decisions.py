@@ -290,7 +290,7 @@ def test_preexposure_failure_reports_partial_path_frames_and_last_state(
         tools._acquire_with_hooks(
             guard, str(tmp_path), "data",
             [{"axes": {"time": 0}, "hook_event_index": 0}], adapter,
-            reservation=reservation,
+            reservation=reservation, ctrl=core,
         )
     result = tools._hooked_failure_result(caught.value, str(tmp_path / "hook.json"))
     assert result["dataset_path"] == str(tmp_path / "data_1")
@@ -309,7 +309,7 @@ def test_preexposure_failure_reports_partial_path_frames_and_last_state(
         tools._acquire_with_hooks(
             guard, str(tmp_path), "data",
             [{"axes": {"time": 0}, "hook_event_index": 0}], adapter,
-            reservation=None,
+            reservation=None, ctrl=core,
         )
     unreserved_result = tools._hooked_failure_result(unreserved.value, None)
     assert unreserved_result["dataset_path"] == str(tmp_path / "data_1")
@@ -346,7 +346,7 @@ def test_restorations_are_independent_and_mixed_failure_reports_both_states(
     hook = Hook()
     with pytest.raises(tools._HookedAcquisitionFailure) as caught:
         tools._acquire_with_hooks(
-            MagicMock(), str(tmp_path), "data", [], hook, reservation=None,
+            MagicMock(), str(tmp_path), "data", [], hook, reservation=None, ctrl=MagicMock(),
         )
     assert hook.property_restored is True
     assert "named-stage restoration failed: stage stuck" in str(caught.value)
@@ -376,7 +376,7 @@ def test_property_only_restoration_failure_is_named_as_property(monkeypatch, tmp
     monkeypatch.setattr(tools, "Acquisition", Acquisition)
     with pytest.raises(tools._HookedAcquisitionFailure) as caught:
         tools._acquire_with_hooks(
-            MagicMock(), str(tmp_path), "data", [], Hook(), reservation=None,
+            MagicMock(), str(tmp_path), "data", [], Hook(), reservation=None, ctrl=MagicMock(),
         )
     assert "property restoration failed: wheel stuck" in str(caught.value)
     assert "named-stage" not in str(caught.value)

@@ -9,6 +9,7 @@ import math
 import queue
 import os
 import re
+import sys
 import tempfile
 import textwrap
 import threading
@@ -73,14 +74,39 @@ logger = logging.getLogger(__name__)
 # An engine-side fatal error is already known; 90 seconds gives pycro-manager
 # a short orderly-teardown opportunity without recreating the silent hang.
 ERROR_TEARDOWN_GRACE_S = 90.0
-# A passed runtime estimate omits rig-dependent motion. Saved frames within
-# five minutes prove useful work is still arriving and suppress a false alarm.
-STALL_QUIET_S = 300.0
+# After its final frame a healthy run is both quiet and camera-idle. Fifteen
+# minutes covers legitimate large-dataset teardown; two minutes does not.
+STALL_QUIET_FLOOR_S = 15 * 60.0
+# A focus search or slow tile establishes its own cadence as frames arrive.
+STALL_GAP_MULTIPLIER = 5.0
 # Only callers with no computable plan use this last-resort bound. A day is
 # deliberately generous, but finite: absence of a plan must never mean forever.
 FALLBACK_RUNTIME_CEILING_S = 24 * 60 * 60.0
 _ACQUISITION_POLL_S = 1.0
 _ACQUISITION_EVENT_CONTEXT = threading.local()
+
+
+def _acquisition_monotonic() -> float:
+    """Clock seam for deterministic acquisition-supervisor tests."""
+    return time.monotonic()
+
+
+def _join_acquisition_waiter(waiter: threading.Thread, timeout_s: float) -> None:
+    waiter.join(timeout_s)
+
+
+def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool]:
+    if plan is None:
+        return FALLBACK_RUNTIME_CEILING_S, True
+    estimate = plan.estimated_duration_s
+    return max(estimate * 1.5, estimate + 300.0), False
+
+
+def _stall_quiet_s(largest_observed_gap_s: float) -> float:
+    return max(
+        STALL_QUIET_FLOOR_S,
+        STALL_GAP_MULTIPLIER * largest_observed_gap_s,
+    )
 
 #: Every run argument a hook -- or, under 55b, a plan-only coordinator -- must
 #: be present to carry. Canonical on purpose: parameterized tests drive every
@@ -1905,7 +1931,7 @@ def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
         return
     stamp = datetime.now(timezone.utc).isoformat()
     print(f"[microclaw acquisition {stamp}] {json.dumps(event, default=str)}",
-          file=__import__("sys").stderr)
+          file=sys.stderr)
 
 
 def _camera_sequence_running(ctrl: Any) -> bool | None:
@@ -3359,12 +3385,18 @@ def _acquire_with_hooks(
     hook: Any | None = None,
     reservation: Reservation | None = None,
     close_reservation: bool = True,
+    *,
+    ctrl: MicroscopeController,
     plan: AcquisitionPlan | None = None,
-    ctrl: MicroscopeController | None = None,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
 
-    Returns the on-disk dataset path. A hook is any object exposing
+    Returns the on-disk dataset path. `ctrl` is required because expiry must
+    measure camera state and attach the session refusal. `plan` supplies the
+    normal duration-derived ceiling; all five production callers pass one. A
+    missing plan uses the finite named fallback and is disclosed in the result.
+
+    A hook is any object exposing
     post_hardware_hook_fn and/or image_process_fn; both are optional and are
     wired in only if present, so the same runner serves plain and adaptive
     acquisitions of any event shape.
@@ -3381,6 +3413,11 @@ def _acquire_with_hooks(
     cannot be cancelled mid-run, and never could; generator feeding was
     measured at 3.14x the list cost and removed (design/32 §2). Adaptive
     factories remain generators because their later events do not yet exist.
+
+    Construction, dataset-path resolution, binding and submission remain on
+    the foreground thread. Once the teardown waiter starts, it exclusively owns
+    pycro-manager exit, hook restoration and reservation closure. The foreground
+    may return an unterminated result, but must never race that owned cleanup.
 
     The one place an acquisition touches the filesystem, and so the one place
     `save_dir` is confined to a configured workspace. Without this the guard is
@@ -3403,13 +3440,24 @@ def _acquire_with_hooks(
         if hasattr(hook, "image_process_fn"):
             hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
-    frame_state = {"count": 0, "last_saved": time.monotonic()}
+    started = _acquisition_monotonic()
+    frame_state = {
+        "count": 0, "last_saved": started, "previous_saved": None,
+        "largest_gap": 0.0,
+    }
     frame_lock = threading.Lock()
 
     def account_saved_frame(axes, dataset):
         with frame_lock:
+            saved_at = _acquisition_monotonic()
+            previous = frame_state["previous_saved"]
+            if previous is not None:
+                frame_state["largest_gap"] = max(
+                    frame_state["largest_gap"], saved_at - previous
+                )
             frame_state["count"] += 1
-            frame_state["last_saved"] = time.monotonic()
+            frame_state["last_saved"] = saved_at
+            frame_state["previous_saved"] = saved_at
         if reservation is not None:
             # pycro-manager 1.0.2 calls this after the image is on disk. Unlike
             # image_process_fn, its arguments contain no pixel array, so plain
@@ -3459,8 +3507,7 @@ def _acquire_with_hooks(
 
     try:
         acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
-        try:
-            # Resolve collision suffixes before dispatching the first event: a
+        # Resolve collision suffixes before dispatching the first event: a
             # first-frame hook failure must still report the data already owned
             # by this acquisition. This is safe to read here because
             # pycro-manager 1.0.2 sets `_dataset_disk_location` inside
@@ -3469,16 +3516,12 @@ def _acquire_with_hooks(
             # anything. If that moves, the fallback in _acq_dataset_path returns
             # the UNSUFFIXED path — which is precisely the wrong guess design/38
             # F7 is about, so re-verify this on any pycro-manager upgrade.
-            dataset_path = _acq_dataset_path(acq, save_dir, name)
-            if hook is not None and hasattr(hook, "bind_artifact_directory"):
-                hook.bind_artifact_directory(
-                    Path(dataset_path) / "artifacts"
-                )
-            if callable(events):
-                events = events(acq)
-            acq.acquire(events)
-        except Exception:
-            raise
+        dataset_path = _acq_dataset_path(acq, save_dir, name)
+        if hook is not None and hasattr(hook, "bind_artifact_directory"):
+            hook.bind_artifact_directory(Path(dataset_path) / "artifacts")
+        if callable(events):
+            events = events(acq)
+        acq.acquire(events)
 
         outcome: dict[str, Any] = {}
         event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
@@ -3498,7 +3541,6 @@ def _acquire_with_hooks(
                     outcome["exc"] = RuntimeError(
                         f"{prior}; {detail}" if prior is not None else detail
                     )
-                outcome["done"] = True
                 flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
                 if isinstance(flag, dict) and outcome.get("exc") is not None:
                     late = outcome["exc"]
@@ -3516,11 +3558,8 @@ def _acquire_with_hooks(
         waiter = threading.Thread(target=finish, name="microclaw-acq-teardown", daemon=True)
         waiter_started = True
         waiter.start()
-        fallback = plan is None
-        runtime_bound = (FALLBACK_RUNTIME_CEILING_S if fallback else
-                         max(plan.estimated_duration_s * 1.5,
-                             plan.estimated_duration_s + 300.0))
-        runtime_deadline = time.monotonic() + runtime_bound
+        runtime_bound, fallback = _runtime_ceiling_s(plan)
+        runtime_deadline = started + runtime_bound
         error_deadline = None
         engine_exc = None
         while waiter.is_alive():
@@ -3530,16 +3569,17 @@ def _acquire_with_hooks(
             observed = getattr(acq, "_exception", None)
             if observed is not None and error_deadline is None:
                 engine_exc = observed
-                error_deadline = time.monotonic() + ERROR_TEARDOWN_GRACE_S
+                error_deadline = _acquisition_monotonic() + ERROR_TEARDOWN_GRACE_S
                 _emit_acquisition_diagnostic({
                     "type": "acquisition_diagnostic",
                     "message": f"{type(observed).__name__}: {observed}",
                     "dataset_path": dataset_path,
                 })
-            waiter.join(_ACQUISITION_POLL_S)
-            now = time.monotonic()
+            _join_acquisition_waiter(waiter, _ACQUISITION_POLL_S)
+            now = _acquisition_monotonic()
             with frame_lock:
-                quiet = now - frame_state["last_saved"] >= STALL_QUIET_S
+                quiet_window = _stall_quiet_s(frame_state["largest_gap"])
+                quiet = now - frame_state["last_saved"] >= quiet_window
                 frames_accounted = frame_state["count"]
             error_expired = error_deadline is not None and now >= error_deadline
             runtime_expired = now >= runtime_deadline and quiet
@@ -3718,7 +3758,7 @@ def run_zstack(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
-            plan=plan, ctrl=ctrl,
+            ctrl=ctrl, plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -3910,7 +3950,7 @@ def run_timelapse(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
-            plan=plan, ctrl=ctrl,
+            ctrl=ctrl, plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -6670,7 +6710,7 @@ def _acquire_positions_with_hook(
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
-            plan=plan, ctrl=ctrl,
+            ctrl=ctrl, plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -7092,7 +7132,7 @@ def _acquire_survey_with_detector(
             )
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
-            plan=survey_plan, ctrl=ctrl,
+            ctrl=ctrl, plan=survey_plan,
         )
     except _HookedAcquisitionFailure as exc:
         # The two fixed runners already translate this; the survey runner did
@@ -7106,6 +7146,8 @@ def _acquire_survey_with_detector(
         if reservation is not None:
             reservation.close()
         return _hooked_failure_result(exc, getattr(hook, "log_path", None))
+    except AcquisitionUnterminated:
+        raise
     except Exception:
         if acquire_reservation is not None:
             acquire_reservation.close()
@@ -7353,12 +7395,14 @@ def run_adaptive_survey(
                 acquire_path = _acquire_with_hooks(
                     guard, save_dir, f"{name}_acquire", acquire_events,
                     reservation=acquire_reservation,
-                    plan=acquire_plan, ctrl=ctrl,
+                    ctrl=ctrl, plan=acquire_plan,
                 )
                 hits_acquired = len(hits)
                 result["acquire_dataset_path"] = acquire_path
             elif acquire_reservation is not None:
                 acquire_reservation.close()
+        except AcquisitionUnterminated:
+            raise
         except Exception:
             if acquire_reservation is not None:
                 acquire_reservation.close()

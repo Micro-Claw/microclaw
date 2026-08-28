@@ -48,6 +48,39 @@ def _entry(fn):
     return fn
 
 
+def _call_acquire(ctrl, *args, **kwargs):
+    parameters = inspect.signature(tools._acquire_with_hooks).parameters
+    if next(iter(parameters)) == "ctrl":
+        return tools._acquire_with_hooks(ctrl, *args, **kwargs)
+    return tools._acquire_with_hooks(*args, ctrl=ctrl, **kwargs)
+
+
+class SimulatedClock:
+    def __init__(self, *, step=100.0, saved_at=(), release_at=None):
+        self.now = 0.0
+        self.step = step
+        self.saved_at = list(saved_at)
+        self.release_at = release_at
+
+    def __call__(self):
+        return self.now
+
+    def join(self, waiter, _timeout):
+        target = self.now + self.step
+        while self.saved_at and self.saved_at[0] <= target:
+            self.now = self.saved_at.pop(0)
+            BlockingAcquisition.instance.kwargs["image_saved_fn"]({}, object())
+        self.now = target
+        if self.release_at is not None and self.now >= self.release_at:
+            BlockingAcquisition.release.set()
+        waiter.join(0.01)
+
+
+def _install_clock(monkeypatch, clock):
+    monkeypatch.setattr(tools, "_acquisition_monotonic", clock)
+    monkeypatch.setattr(tools, "_join_acquisition_waiter", clock.join)
+
+
 def test_fatal_engine_error_returns_complete_unterminated_result_and_waiter_owns_cleanup(
     monkeypatch,
 ):
@@ -68,10 +101,9 @@ def test_fatal_engine_error_returns_complete_unterminated_result_and_waiter_owns
             acq.kwargs["image_saved_fn"]({}, object())
             return [{"axes": {"time": 0}}]
         supervised = inspect.signature(tools._acquire_with_hooks).parameters
-        kwargs = ({"plan": reservation.plan, "ctrl": ctrl}
-                  if "plan" in supervised else {})
-        return tools._acquire_with_hooks(
-            guard, "/data", "run", events, hook, reservation, **kwargs
+        kwargs = ({"plan": reservation.plan} if "plan" in supervised else {})
+        return _call_acquire(
+            ctrl, guard, "/data", "run", events, hook, reservation, **kwargs
         )
 
     started = time.monotonic()
@@ -96,49 +128,204 @@ def test_fatal_engine_error_returns_complete_unterminated_result_and_waiter_owns
     BlockingAcquisition.release.set()
 
 
-def test_runtime_ceiling_requires_a_quiet_saved_frame_counter(monkeypatch):
-    monkeypatch.setattr(tools, "Acquisition", BlockingAcquisition)
-    monkeypatch.setattr(tools, "STALL_QUIET_S", 0.04)
-    monkeypatch.setattr(tools, "_ACQUISITION_POLL_S", 0.002)
-    ctrl = _ctrl(False)
-    done = {}
+def test_real_run_timelapse_returns_unterminated_result(monkeypatch):
+    class FatalAcquisition(BlockingAcquisition):
+        def acquire(self, events):
+            super().acquire(events)
+            self._exception = RuntimeError("engine died")
 
-    def run():
-        done["path"] = tools._acquire_with_hooks(
-            _guard(), "/data", "run", [],
-            plan=AcquisitionPlan(1, 1, -299.99, 1), ctrl=ctrl,
+    monkeypatch.setattr(tools, "Acquisition", FatalAcquisition)
+    monkeypatch.setattr(tools, "ERROR_TEARDOWN_GRACE_S", 0.02)
+    monkeypatch.setattr(tools, "_ACQUISITION_POLL_S", 0.002)
+    monkeypatch.setattr("microclaw.authorization.authorize_path", lambda *_: None)
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **_: [{"axes": {"time": 0}}])
+    reservation = AcquisitionLedger().reserve(
+        MagicMock(), AcquisitionPlan(1, 1, 1, 1)
+    )
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *_: reservation)
+    ctrl = _ctrl(True)
+    result = json.loads(tools.execute_tool(
+        "run_timelapse",
+        {"n_frames": 1, "interval_s": 0, "save_dir": "/data"},
+        ctrl, _guard(),
+    ))
+    assert result["acquisition"] == "unterminated"
+    assert result["engine_exception"] == "RuntimeError: engine died"
+    assert result["frames_planned"] == 1
+    assert reservation.ledger.in_flight is True
+    BlockingAcquisition.release.set()
+
+
+def test_normal_completion_restoration_failure_is_folded_on_waiter(monkeypatch):
+    class PromptAcquisition(BlockingAcquisition):
+        def __exit__(self, *_exc):
+            return None
+
+    class Hook:
+        _named_stage_context = {"device": "Z", "last_known": 12.0}
+        _property_context = None
+        def restore_named_stage(self):
+            assert threading.current_thread().name == "microclaw-acq-teardown"
+            raise RuntimeError("restore stuck")
+
+    monkeypatch.setattr(tools, "Acquisition", PromptAcquisition)
+    with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+        _call_acquire(_ctrl(False), _guard(), "/data", "run", [], Hook())
+    assert "named-stage restoration failed: restore stuck" in str(caught.value)
+    assert caught.value.last_hardware_state == {"device": "Z", "position_um": 12.0}
+
+
+def test_survey_handler_does_not_close_waiter_owned_reservations(monkeypatch):
+    search = AcquisitionLedger().reserve(MagicMock(), AcquisitionPlan(1, 1, 1, 1))
+    acquire = AcquisitionLedger().reserve(MagicMock(), AcquisitionPlan(1, 1, 1, 1))
+    reservations = iter([search, acquire])
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *_: next(reservations))
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **_: [{"axes": {"position": 0}}])
+    monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook: plan)
+    monkeypatch.setattr(
+        tools, "_acquire_with_hooks",
+        lambda *a, **k: (_ for _ in ()).throw(tools.AcquisitionUnterminated(
+            dataset_path="/data/run", frames_planned=1, frames_accounted=0,
+            engine_exception=None, camera_sequence_running=False,
+            teardown_running=True, expired_bound="runtime_ceiling", bound_s=1,
+            fallback_ceiling=False,
+        )),
+    )
+    with pytest.raises(tools.AcquisitionUnterminated):
+        tools._acquire_survey_with_detector(
+            _ctrl(False), _guard(), [{"name": "p0", "x_um": 0, "y_um": 0}],
+            "/data", "run", hook=MagicMock(), progress=tools.SurveyProgress(1),
+            candidates=__import__("queue").Queue(), adaptive=True,
+            acquire_plan=AcquisitionPlan(1, 1, 1, 1),
+        )
+    assert search.ledger.in_flight is True
+    assert acquire.ledger.in_flight is True
+
+
+def test_acquire_on_hit_handler_does_not_close_waiter_owned_reservation(monkeypatch):
+    from microclaw.hook_decisions import UntrustedHookAdapter
+
+    reservation = AcquisitionLedger().reserve(MagicMock(), AcquisitionPlan(1, 1, 1, 1))
+    adapter = UntrustedHookAdapter(object())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: adapter)
+    monkeypatch.setattr(tools, "_prepare_log_path", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_plan_protocol_repetitions", lambda *a, **k: reservation.plan)
+    monkeypatch.setattr(tools, "_channel_effects_for_later_phase", lambda *a, **k: {})
+    monkeypatch.setattr(tools, "_set_channel_for_composite", lambda *a, **k: {})
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **k: [{"axes": {}}])
+
+    def survey(*args, **kwargs):
+        kwargs["acquire_hits"].append({"name": "hit", "x_um": 0, "y_um": 0, "z_um": 0})
+        return {
+            "status": "survey complete", "dataset_path": "/data/survey",
+            "_acquire_reservation": reservation,
+        }
+
+    monkeypatch.setattr(tools, "_acquire_survey_with_detector", survey)
+    monkeypatch.setattr(
+        tools, "_acquire_with_hooks",
+        lambda *a, **k: (_ for _ in ()).throw(tools.AcquisitionUnterminated(
+            dataset_path="/data/acquire", frames_planned=1, frames_accounted=0,
+            engine_exception=None, camera_sequence_running=False,
+            teardown_running=True, expired_bound="runtime_ceiling", bound_s=1,
+            fallback_ceiling=False,
+        )),
+    )
+    with pytest.raises(tools.AcquisitionUnterminated):
+        tools.run_adaptive_survey(
+            _ctrl(False), _guard(), protocol="timelapse", save_dir="/data",
+            hook_strategy="saved", positions=[{"name": "p0", "x_um": 0, "y_um": 0}],
+            protocol_params={"n_frames": 1, "interval_s": 0, "channel": "DAPI"},
+            acquire_on_hit={
+                "channel": "DAPI", "protocol": "timelapse",
+                "protocol_params": {"n_frames": 1, "interval_s": 0}, "max_hits": 1,
+            },
+        )
+    assert reservation.ledger.in_flight is True
+
+
+def test_position_dominated_run_keeps_producing_past_ceiling_and_completes(monkeypatch):
+    monkeypatch.setattr(tools, "Acquisition", BlockingAcquisition)
+    clock = SimulatedClock(saved_at=range(120, 1081, 120), release_at=1200)
+    _install_clock(monkeypatch, clock)
+    plan = AcquisitionPlan(5500, 100, 550, 5500)
+    assert tools._runtime_ceiling_s(plan) == (850, False)
+    assert _call_acquire(_ctrl(False), _guard(), "/data", "run", [], plan=plan) == "/data/run_1"
+    assert clock.now >= 1200  # the 850 s unamended ceiling was crossed
+
+
+def test_minutes_between_frames_self_calibrate_beyond_the_floor(monkeypatch):
+    monkeypatch.setattr(tools, "Acquisition", BlockingAcquisition)
+    clock = SimulatedClock(saved_at=[250, 500], release_at=1500)
+    _install_clock(monkeypatch, clock)
+    plan = AcquisitionPlan(2, 1, 0, 2)
+    assert tools._stall_quiet_s(250) == 1250
+    assert tools._stall_quiet_s(250) > tools.STALL_QUIET_FLOOR_S
+    assert _call_acquire(_ctrl(False), _guard(), "/data", "run", [], plan=plan) == "/data/run_1"
+
+
+def test_stall_fires_only_after_ceiling_and_observed_gap_window(monkeypatch):
+    monkeypatch.setattr(tools, "Acquisition", BlockingAcquisition)
+    monkeypatch.setattr("microclaw.authorization.authorize_path", lambda *_: None)
+    clock = SimulatedClock(saved_at=[100, 350])
+    _install_clock(monkeypatch, clock)
+
+    @_entry
+    def run(ctrl, guard):
+        return _call_acquire(
+            ctrl, guard, "/data", "run", [],
+            plan=AcquisitionPlan(2, 1, 0, 2),
         )
 
-    foreground = threading.Thread(target=run)
-    foreground.start()
-    deadline = time.monotonic() + 0.15
-    while BlockingAcquisition.instance is None and time.monotonic() < deadline:
-        time.sleep(0.001)
-    saved = BlockingAcquisition.instance.kwargs["image_saved_fn"]
-    for _ in range(5):
-        time.sleep(0.015)
-        saved({}, object())
-    assert foreground.is_alive()
+    result = json.loads(tools.execute_tool("run", {}, _ctrl(False), _guard(), {"run": run}))
+    assert result["acquisition"] == "unterminated"
+    assert result["expired_bound"] == "runtime_ceiling"
+    assert result["frames_accounted"] == 2
+    assert clock.now == 1600  # last frame 350 + 5 * observed 250 s gap
     BlockingAcquisition.release.set()
-    foreground.join(0.3)
-    assert done["path"] == "/data/run_1"
+
+
+def test_floor_and_gap_multiplier_are_each_load_bearing(monkeypatch):
+    assert tools._stall_quiet_s(100) == 900
+    monkeypatch.setattr(tools, "STALL_QUIET_FLOOR_S", 400)
+    assert tools._stall_quiet_s(100) == 500
+    monkeypatch.setattr(tools, "STALL_GAP_MULTIPLIER", 3)
+    assert tools._stall_quiet_s(100) == 400
 
 
 def test_runtime_and_fallback_ceiling_expire_without_frames(monkeypatch):
     monkeypatch.setattr(tools, "Acquisition", BlockingAcquisition)
-    monkeypatch.setattr(tools, "STALL_QUIET_S", 0.0, raising=False)
-    monkeypatch.setattr(tools, "FALLBACK_RUNTIME_CEILING_S", 0.02, raising=False)
-    monkeypatch.setattr(tools, "_ACQUISITION_POLL_S", 0.002, raising=False)
-    kwargs = ({"ctrl": _ctrl(False)}
-              if "ctrl" in inspect.signature(tools._acquire_with_hooks).parameters
-              else {})
+    monkeypatch.setattr(tools, "STALL_QUIET_FLOOR_S", 30, raising=False)
+    monkeypatch.setattr(tools, "FALLBACK_RUNTIME_CEILING_S", 20, raising=False)
+    clock = SimulatedClock(step=10)
+    if hasattr(tools, "_acquisition_monotonic"):
+        _install_clock(monkeypatch, clock)
     expected = getattr(tools, "AcquisitionUnterminated", Exception)
     with pytest.raises(expected) as caught:
-        tools._acquire_with_hooks(_guard(), "/data", "run", [], **kwargs)
+        _call_acquire(_ctrl(False), _guard(), "/data", "run", [])
     assert caught.value.expired_bound == "runtime_ceiling"
     assert caught.value.fallback_ceiling is True
     assert tools._unterminated_result(caught.value)["ceiling_fallback"] is True
     BlockingAcquisition.release.set()
+
+
+def test_interval_driven_plan_ceiling_tracks_real_duration():
+    ctrl = MagicMock()
+    ctrl.core.get_image_width.return_value = 1
+    ctrl.core.get_image_height.return_value = 1
+    ctrl.core.get_bytes_per_pixel.return_value = 2
+    events = [
+        {"min_start_time": 0},
+        {"min_start_time": 8 * 60 * 60},
+        {"min_start_time": 16 * 60 * 60},
+    ]
+    plan = tools.plan_events(ctrl, events, exposure_ms=100)
+    ceiling, fallback = tools._runtime_ceiling_s(plan)
+    assert plan.estimated_duration_s == pytest.approx(16 * 60 * 60 + 0.1)
+    assert ceiling == pytest.approx(plan.estimated_duration_s * 1.5)
+    assert fallback is False
+    assert tools._stall_quiet_s(8 * 60 * 60) == 40 * 60 * 60
 
 
 @pytest.mark.parametrize("camera", [True, False])
@@ -182,11 +369,12 @@ def test_acquisition_refusal_lifts_only_when_camera_and_teardown_are_clear(monke
     assert not hasattr(ctrl, "_microclaw_unterminated_acquisition")
 
 
-def test_browser_acquisition_sink_drops_when_no_turn_is_bound():
+def test_browser_acquisition_sink_records_to_stderr_when_no_turn_is_bound(capsys):
     from microclaw.webserve import Session
     session = object.__new__(Session)
     session._emit = None
     session.emit_acquisition_event({"type": "acquisition_diagnostic"})
+    assert "acquisition_diagnostic" in capsys.readouterr().err
 
 
 def test_hookless_timelapse_emitter_remains_a_bare_acquisition_context():

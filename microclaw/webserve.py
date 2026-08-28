@@ -400,10 +400,16 @@ class Session:
         return decision.startswith("approved") or decision.startswith("auto-approved")
 
     def emit_acquisition_event(self, event: dict) -> None:
-        """Forward diagnostics to the active turn, or harmlessly drop them."""
+        """Forward diagnostics to the turn, retaining late ones on stderr."""
         emit = self._emit
         if emit is not None:
             emit(event)
+        else:
+            stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            print(
+                f"[microclaw acquisition {stamp}] {json.dumps(event, default=str)}",
+                file=sys.stderr,
+            )
 
     def confirm(
         self, summary: str, kind: str = "action", subject: str | None = None
@@ -917,13 +923,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             # second emit to confuse.
             session._emit = emit
             session.current_identity = turn_identity
-            def acquisition_event_sink(event):
-                bound = getattr(session, "_emit", None)
-                if bound is not None:
-                    bound(event)
-            acquisition_event_sink = getattr(
-                session, "emit_acquisition_event", acquisition_event_sink
-            )
+            acquisition_event_sink = Session.emit_acquisition_event.__get__(session)
             try:
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
