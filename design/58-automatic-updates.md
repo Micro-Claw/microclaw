@@ -2589,11 +2589,42 @@ leave it stale.
 - **`install.bat` does not clear `pending-slot.txt`.** Neither `:migrate_layout`
   nor `:write_managed` touches it, so a slot staged but never restarted survives
   a reinstall and is activated on the very next launch — replacing what the
-  installer just built, at whatever commit it happens to hold. A fresh install
-  is an authoritative statement about what should run and should retract any
-  pending answer. Untested, unfixed as of this note.
+  installer just built, at whatever commit it happens to hold. Worse than stale
+  state: `activate_pending` then calls `_reconcile_installed_commit`, so the
+  installer's `installed_commit` is overwritten by that slot's marker. **A
+  reinstall is defeated by exactly the state a failed update leaves behind**,
+  and reinstalling is the documented recovery path (`"run the installer once to
+  bootstrap the launcher"`). Same family as *only the thing outside both slots
+  may write the thing outside both slots*: `install.bat` is that outside thing
+  and must retract a pending answer, not leave one standing. **Found on M5,
+  2026-08-28**, in the precheck for defect 7's gate: `active=b, pending=a`
+  standing from an update staged and never restarted. Unfixed as of this note;
+  its own check is *reinstall with a pending slot standing → the next launch
+  must stay on the installed slot*.
 - **`POST /api/update/check` has no caller.** The route exists with a rate
   limiter and two tests; nothing in `serve.html` invokes it. So the only way to
   retire a 24-hour interval early is to rerun `install.bat`, which rewrites the
   whole state file. It cannot live in the update banner, which is hidden exactly
   when there is no candidate.
+
+### M5 evidence for defect 7, 2026-08-28
+
+The precheck, taken before the fix was installed, is the loop as a physical
+artifact rather than an inference:
+
+```
+env-a : { "commit": "d41fa094f5ce5f6e2de30eb68507ccd05c502ea7", ... }
+env-b : { "commit": "d41fa094f5ce5f6e2de30eb68507ccd05c502ea7", ... }
+```
+
+**Both slots built at the same commit.** Each "Update" had rebuilt the inactive
+slot at the SHA already running in the active one. The state file agreed with
+itself four separate ways — `installed_commit`, `last_success.candidate.sha`,
+`discovery.message` and `staging.commit` all naming `d41fa094…`, the commit the
+operator was being offered and had already installed. `launcher.log` shows the
+flip and the relaunches that followed it (`slot=a` ×4, then `slot=b` ×3 within
+31 s) — an operator restarting repeatedly to see whether the banner would clear.
+
+The operator read `discovery.message` as the banner's text, which is the reason
+that field is now invalidated too: it is one word from the banner's own sentence
+and it is what someone opens the state file to consult.
