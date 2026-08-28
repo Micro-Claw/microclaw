@@ -2008,9 +2008,8 @@ def _note_budget_exhausted(
 
 def _str_vector(sv) -> list[str]:
     """Convert a pycro-manager mmcorej_StrVector (or plain iterable) to a Python list."""
-    if hasattr(sv, "size"):
-        return [str(sv.get(i)) for i in range(sv.size())]
-    return [str(x) for x in sv]
+    from microclaw.authorization import _strings
+    return _strings(sv)
 
 
 def _wait(ctrl: MicroscopeController, device: str | None = None) -> None:
@@ -3025,17 +3024,27 @@ def _optical_path_state(
 def _objective_state(
     ctrl: MicroscopeController,
     live_values: dict[tuple[str, str], str],
+    config_error: str | None = None,
 ) -> Any:
     from microclaw.calibration import _config_mismatches
 
-    try:
-        configs = _config_mismatches(ctrl, cached=True, live_values=live_values)
-    except Exception as exc:
-        return {"reason": f"Pixel-size configurations are unreadable: {type(exc).__name__}: {exc}"}
+    if config_error is None:
+        try:
+            configs = _config_mismatches(ctrl, cached=True, live_values=live_values)
+        except Exception as exc:
+            configs = []
+            config_error = f"{type(exc).__name__}: {exc}"
+    else:
+        configs = []
     available = []
     for config in configs:
         rules = list(config.get("rules", []))
-        available.append({"config": config["config"], "dependencies": rules})
+        available.append({
+            "config": config["config"],
+            "pixel_size_um": config.get("pixel_size_um"),
+            "affine_verdict": config.get("affine_verdict", "unavailable"),
+            "dependencies": rules,
+        })
     try:
         active = str(ctrl.core.get_current_pixel_size_config() or "") or None
     except Exception:
@@ -3044,7 +3053,13 @@ def _objective_state(
         pixel_size = float(ctrl.core.get_pixel_size_um())
     except Exception:
         pixel_size = "unknown"
-    if active is None:
+    if config_error is not None:
+        reason = (
+            "Pixel-size configuration enumeration failed: " + config_error + ". "
+            "Available configurations and their dependencies are unknown, so "
+            "Micro-Manager does not establish which objective is in the path."
+        )
+    elif active is None:
         reason = (
             "No pixel-size configuration is active: Micro-Manager does not know "
             "which objective is in the path, so neither does microclaw. Available "
@@ -3067,7 +3082,7 @@ def _objective_state(
     return {
         "pixel_size_config": active,
         "pixel_size_um": pixel_size,
-        "available_configs": available,
+        "available_configs": "unknown" if config_error is not None else available,
         "reason": reason,
     }
 
@@ -3133,7 +3148,12 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state["shutter"] = _shutter_state(ctrl)
     state["lasers"] = _laser_state(ctrl)
     from microclaw.calibration import _config_mismatches
-    static_configs = _config_mismatches(ctrl, cached=True, read_live=False)
+    try:
+        static_configs = _config_mismatches(ctrl, cached=True, read_live=False)
+        config_error = None
+    except Exception as exc:
+        static_configs = []
+        config_error = f"{type(exc).__name__}: {exc}"
     dependencies = {
         (rule["device"], rule["property"])
         for config in static_configs for rule in config.get("rules", [])
@@ -3141,7 +3161,7 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     }
     optical_path, shared_live = _optical_path_state(ctrl, dependencies)
     state["optical_path"] = optical_path
-    state["objective"] = _objective_state(ctrl, shared_live)
+    state["objective"] = _objective_state(ctrl, shared_live, config_error)
     try:
         state["focus"] = get_focus_lock_state(ctrl, guard)
     except Exception as exc:

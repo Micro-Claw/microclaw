@@ -234,13 +234,13 @@ def _strings(value: Any) -> list[str]:
         return []
     if isinstance(value, (str, bytes)):
         return [str(value)]
+    size = getattr(value, "size", None)
+    get = getattr(value, "get", None)
+    if callable(size) and callable(get):
+        return [str(get(i)) for i in range(int(size()))]
     try:
         return [str(item) for item in value]
     except TypeError:
-        size = getattr(value, "size", None)
-        get = getattr(value, "get", None)
-        if callable(size) and callable(get):
-            return [str(get(i)) for i in range(int(size()))]
         return []
 
 

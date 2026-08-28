@@ -24,8 +24,20 @@ class ConfigData:
     def get_setting(self, index): return self.rules[index]
 
 
+class BridgeVector:
+    def __init__(self, values, java_type="mmcorej_StrVector"):
+        self.values = list(values)
+        self.java_type = java_type
+
+    def __iter__(self):
+        raise TypeError(f"'{self.java_type}' object is not iterable")
+
+    def size(self): return len(self.values)
+    def get(self, index): return self.values[index]
+
+
 class OpticalCore:
-    def __init__(self, devices=(), configs=None, *, shutter=""):
+    def __init__(self, devices=(), configs=None, *, shutter="", bridge_vectors=False):
         self.devices = dict(devices)
         self.configs = configs or {}
         self.shutter = shutter
@@ -35,9 +47,14 @@ class OpticalCore:
         self.autofocus = ""
         self.engaged = False
         self.property_calls = []
+        self.bridge_vectors = bridge_vectors
+        self.config_enumeration_error = None
+
+    def _vector(self, values, java_type="mmcorej_StrVector"):
+        return BridgeVector(values, java_type) if self.bridge_vectors else list(values)
 
     def _call(self): self.calls += 1
-    def get_loaded_devices(self): self._call(); return list(self.devices)
+    def get_loaded_devices(self): self._call(); return self._vector(self.devices)
     def get_device_type(self, device): self._call(); return 4
     def get_shutter_device(self):
         self._call()
@@ -48,16 +65,22 @@ class OpticalCore:
     def get_allowed_property_values(self, device, prop):
         self._call()
         if device in self.allowed_failures: raise RuntimeError(f"allowed read failed for {device}")
-        return self.devices[device][1]
+        return self._vector(self.devices[device][1])
     def get_property(self, device, prop):
         self._call()
         self.property_calls.append((device, prop))
         if device in self.label_failures: raise RuntimeError(f"label read failed for {device}")
         return self.devices[device][0]
-    def get_available_pixel_size_configs(self): self._call(); return list(self.configs)
+    def get_available_pixel_size_configs(self):
+        self._call()
+        if self.config_enumeration_error is not None:
+            raise self.config_enumeration_error
+        return self._vector(self.configs)
     def get_pixel_size_config_data(self, config): self._call(); return ConfigData(self.configs[config])
     def get_pixel_size_um_by_id(self, config): self._call(); return 1.0
-    def get_pixel_size_affine_by_id(self, config): self._call(); return [1, 0, 0, 1, 0, 0]
+    def get_pixel_size_affine_by_id(self, config):
+        self._call()
+        return self._vector([0.5, 0, 0, 0, 0.5, 0], "mmcorej_DoubleVector")
     def get_current_pixel_size_config(self): self._call(); return ""
     def get_pixel_size_um(self): self._call(); return 0.0
     def get_auto_focus_device(self): self._call(); return self.autofocus
@@ -84,7 +107,7 @@ GUARD = SafetyGuard(SafetyConstraints(stage=StageConstraints(
 def state(core):
     ctrl = SimpleNamespace(core=core, studio=Studio(), get_mm_app_dir=None)
     ctrl._state_device_inventory = authorization._build_state_device_inventory(
-        core, core.get_loaded_devices()
+        core, authorization._strings(core.get_loaded_devices())
     )
     return get_system_state(ctrl, GUARD), ctrl
 
@@ -117,25 +140,43 @@ def test_ti_shaped_fake_reports_path_dependency_and_focus_without_claiming_objec
     ]
 
 
-def test_demo_shaped_fake_uses_the_same_generic_payload():
+@pytest.mark.parametrize("bridge_vectors", [False, True])
+def test_demo_shaped_fake_uses_the_same_generic_payload(bridge_vectors):
     core = OpticalCore({"Objective": ("State-1", ["State-0", "State-1"]),
                         "Path": ("State-0", ["State-0", "State-1"]),
                         "Autofocus": ("Ready", [])},
                        {name: [("Objective", "Label", value)] for name, value in
-                        (("Res10x", "State-0"), ("Res20x", "State-1"), ("Res40x", "State-2"))})
+                        (("Res10x", "State-0"), ("Res20x", "State-1"), ("Res40x", "State-2"))},
+                       bridge_vectors=bridge_vectors)
     core.autofocus = "Autofocus"
     payload, _ = state(core)
     assert len(payload["objective"]["available_configs"]) == 3
     assert {item["device"] for item in payload["optical_path"]["discrete_positions"]} == {
         "Autofocus", "Objective", "Path"
     }
+    objective = next(item for item in payload["optical_path"]["discrete_positions"]
+                     if item["device"] == "Objective")
+    assert "pixel-size-config dependency (not proof of objective)" in objective["role"]
+    assert {item["affine_verdict"] for item in payload["objective"]["available_configs"]} == {
+        "usable"
+    }
+
+
+def test_pixel_config_enumeration_failure_is_reported_not_rewritten_as_empty():
+    core = OpticalCore({"Objective": ("10x", ["10x", "60x"])})
+    core.config_enumeration_error = RuntimeError("pixel configs unavailable")
+    payload, _ = state(core)
+    assert payload["objective"]["available_configs"] == "unknown"
+    assert "enumeration failed" in payload["objective"]["reason"]
+    assert "pixel configs unavailable" in payload["objective"]["reason"]
+    assert "No pixel-size configuration is active" not in payload["objective"]["reason"]
 
 
 def test_second_call_uses_retained_inventory_and_config_walk():
     core = OpticalCore({"Wheel": ("A", ["A", "B"])}, {"Res": [("Wheel", "Label", "A")]})
     ctrl = SimpleNamespace(core=core, studio=Studio(), get_mm_app_dir=None)
     ctrl._state_device_inventory = authorization._build_state_device_inventory(
-        core, core.get_loaded_devices()
+        core, authorization._strings(core.get_loaded_devices())
     )
     core.calls = 0
     payload = get_system_state(ctrl, GUARD)

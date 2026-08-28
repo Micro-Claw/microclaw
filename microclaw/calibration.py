@@ -449,10 +449,8 @@ def _config_mismatches(
         static_results = getattr(ctrl, "_pixel_size_config_inventory", None)
     if static_results is None:
         static_results = []
-        try:
-            configs = list(ctrl.core.get_available_pixel_size_configs())
-        except Exception:
-            configs = []
+        from microclaw.authorization import _strings
+        configs = _strings(ctrl.core.get_available_pixel_size_configs())
         for config in configs:
             rules = []
             try:
@@ -471,9 +469,9 @@ def _config_mismatches(
             except Exception:
                 pixel_size_um = None
             try:
-                raw_affine = ";".join(
-                    str(value) for value in ctrl.core.get_pixel_size_affine_by_id(config)
-                )
+                raw_affine = ";".join(_strings(
+                    ctrl.core.get_pixel_size_affine_by_id(config)
+                ))
                 affine_verdict = (
                     "usable" if parse_mm_pixel_size_affine(
                         raw_affine, objective=str(config), binning=1

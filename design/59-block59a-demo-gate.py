@@ -14,7 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from microclaw.authorization import _build_state_device_inventory, validate_live_rig
+from microclaw.authorization import _build_state_device_inventory, _strings, validate_live_rig
 from microclaw.calibration import _config_mismatches
 from microclaw.config import load_safety_config
 from microclaw.controller import MicroscopeController
@@ -118,12 +118,14 @@ def main():
         ctrl = MicroscopeController(port=args.port)
         counted = CountingCore(ctrl.core)
         ctrl._core = counted
-        loaded = list(counted.get_loaded_devices())
+        loaded = _strings(counted.get_loaded_devices())
         raw_inventory = _build_state_device_inventory(counted, loaded)
+        discovered_config_names = _strings(counted.get_available_pixel_size_configs())
         discovered_configs = _config_mismatches(ctrl)
         autofocus_device = str(counted.get_auto_focus_device() or "")
         (args.output / "discovery.json").write_text(json.dumps({
             "state_device_inventory": raw_inventory,
+            "pixel_size_config_names": discovered_config_names,
             "pixel_size_configs": discovered_configs,
             "autofocus_device": autofocus_device or None,
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -186,7 +188,10 @@ def main():
     def inventory_confirmed():
         if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
         if not positions: raise NotExercised("this machine reports no StateDevice")
-        if not configs: raise NotExercised("this machine reports no pixel-size configs")
+        if not discovered_config_names:
+            raise NotExercised("direct Core discovery reports no pixel-size configs")
+        assert isinstance(configs, list), configs
+        assert len(configs) == len(discovered_config_names)
         if not autofocus_device or not focus.get("device"):
             raise NotExercised("this machine reports no autofocus device")
         return json.dumps({"state_devices": positions, "pixel_size_configs": configs,
@@ -199,6 +204,17 @@ def main():
         # 59b reaches its reference tool from this hint and from nowhere else.
         assert isinstance(first["optical_path"], dict), first["optical_path"]
         assert first["optical_path"].get("hint", "").strip()
+
+    @limb("pixel-config discovery agrees with payload", "bridge-vector conversion silently empties available_configs")
+    def config_count_agrees():
+        if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
+        if not discovered_config_names:
+            raise NotExercised("direct discovery reports no pixel-size configurations")
+        assert isinstance(configs, list), configs
+        assert len(configs) == len(discovered_config_names), (
+            len(configs), len(discovered_config_names)
+        )
+        return f"discovery={len(discovered_config_names)} payload={len(configs)}"
 
     @limb("port vocabulary marks without filtering", "an unmarked discrete device vanishes")
     def marks_not_filters():
@@ -219,9 +235,17 @@ def main():
     @limb("multi-key dependencies preserved", "a pixel-size config dependency is dropped")
     def dependencies_preserved():
         if setup_error: raise NotExercised(f"orientation call could not run: {setup_error}")
+        if not discovered_config_names:
+            raise NotExercised("direct discovery reports no pixel-size configurations")
+        assert isinstance(configs, list), configs
+        assert len(configs) == len(discovered_config_names), (
+            len(configs), len(discovered_config_names)
+        )
         dependency_counts = [len(item.get("dependencies", [])) for item in configs]
         if max(dependency_counts, default=0) < 1:
-            raise NotExercised("no pixel-size config has a dependency")
+            raise AssertionError(
+                f"{len(configs)} pixel-size configurations exist but none reports a dependency"
+            )
         assert all("measured objective" not in str(item).lower() for item in configs)
         return f"dependency counts per config: {dependency_counts}"
 
