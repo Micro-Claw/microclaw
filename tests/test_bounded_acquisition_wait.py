@@ -260,13 +260,24 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
         constructions = 0
         def __init__(self, **kwargs):
             type(self).constructions += 1
+            self.number = type(self).constructions
             super().__init__(**kwargs)
+            self._dataset_disk_location = f"/data/run_{self.number}"
             self._event_queue = MagicMock()
             self._acq = MagicMock()
             self._acq.is_finished.return_value = False
         def acquire(self, events):
             super().acquire(events)
-            self._exception = RuntimeError("engine died")
+            first_child_completes = name in {
+                "run_multiposition_acquisition", "run_tile_acquisition",
+            } and self.number == 1
+            if not first_child_completes:
+                self._exception = RuntimeError("engine died")
+        def __exit__(self, *_exc):
+            if name in {"run_multiposition_acquisition", "run_tile_acquisition"} \
+                    and self.number == 1:
+                return None
+            return super().__exit__(*_exc)
 
     monkeypatch.setattr(tools, "Acquisition", FatalCountingAcquisition)
     monkeypatch.setattr(tools, "ERROR_TEARDOWN_GRACE_S", 0.01)
@@ -331,10 +342,29 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
 
     result = json.loads(tools.execute_tool(name, inputs[name], ctrl, _guard()))
     assert result.get("acquisition") == "unterminated", result
-    assert result["dataset_path"] == "/data/run_1"
+    expected_failed_path = (
+        "/data/run_2" if name in {
+            "run_multiposition_acquisition", "run_tile_acquisition",
+        } else "/data/run_1"
+    )
+    assert result["dataset_path"] == expected_failed_path
     assert "frames_accounted" in result
+    if name in {"run_multiposition_acquisition", "run_tile_acquisition"}:
+        assert result["positions_completed"] == [{
+            "x_um": (0 if name == "run_multiposition_acquisition" else -0.5),
+            "y_um": 0,
+            "position": ("p0" if name == "run_multiposition_acquisition"
+                         else "tile_r0_c0"),
+            "status": "Timelapse complete.",
+            "dataset_path": "/data/run_1",
+        }]
+        assert "/data/run_1" in result["next"][0]
+    else:
+        assert "positions_completed" not in result
     assert reservations and reservations[0].ledger.in_flight is True
-    assert FatalCountingAcquisition.constructions == 1
+    assert FatalCountingAcquisition.constructions == (
+        2 if name in {"run_multiposition_acquisition", "run_tile_acquisition"} else 1
+    )
     BlockingAcquisition.release.set()
 
 

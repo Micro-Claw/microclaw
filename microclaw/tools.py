@@ -1911,7 +1911,8 @@ class AcquisitionUnterminated(RuntimeError):
     def __init__(self, *, dataset_path: str, frames_planned: int | None,
                  frames_accounted: int, engine_exception: BaseException | None,
                  camera_sequence_running: bool | None, teardown_running: bool,
-                 expired_bound: str, bound_s: float, fallback_ceiling: bool) -> None:
+                 expired_bound: str, bound_s: float, fallback_ceiling: bool,
+                 partial: dict[str, Any] | None = None) -> None:
         super().__init__("pycro-manager teardown did not complete")
         self.dataset_path = dataset_path
         self.frames_planned = frames_planned
@@ -1922,6 +1923,7 @@ class AcquisitionUnterminated(RuntimeError):
         self.expired_bound = expired_bound
         self.bound_s = bound_s
         self.fallback_ceiling = fallback_ceiling
+        self.partial = partial
 
 
 def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
@@ -1964,7 +1966,7 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
                       "and idle and teardown_running is false."]
     engine = (f"{type(exc.engine_exception).__name__}: {exc.engine_exception}"
               if exc.engine_exception is not None else None)
-    return {
+    result = {
         "error": (("The acquisition engine reported a fatal error and " if engine else "")
                   + f"pycro-manager teardown did not complete within {exc.bound_s:g} s. "
                   "Microclaw stopped waiting."),
@@ -1975,6 +1977,19 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
         "expired_bound": exc.expired_bound, "ceiling_fallback": exc.fallback_ceiling,
         "hardware": hardware, "next": next_steps,
     }
+    if exc.partial:
+        result.update(exc.partial)
+        completed = exc.partial.get("positions_completed")
+        paths = [
+            item["dataset_path"] for item in completed or []
+            if isinstance(item, dict) and item.get("dataset_path")
+        ]
+        if paths:
+            result["next"].insert(0, (
+                "These completed datasets are finished and independent of the "
+                "failed acquisition, so they are readable now: " + ", ".join(paths)
+            ))
+    return result
 
 
 def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None) -> dict:
@@ -3511,14 +3526,14 @@ def _acquire_with_hooks(
     try:
         acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
         # Resolve collision suffixes before dispatching the first event: a
-            # first-frame hook failure must still report the data already owned
-            # by this acquisition. This is safe to read here because
-            # pycro-manager 1.0.2 sets `_dataset_disk_location` inside
-            # Acquisition.__init__ from the Java storage's real disk location
-            # (java_backend_acquisitions.py:301), before acquire() dispatches
-            # anything. If that moves, the fallback in _acq_dataset_path returns
-            # the UNSUFFIXED path — which is precisely the wrong guess design/38
-            # F7 is about, so re-verify this on any pycro-manager upgrade.
+        # first-frame hook failure must still report the data already owned
+        # by this acquisition. This is safe to read here because
+        # pycro-manager 1.0.2 sets `_dataset_disk_location` inside
+        # Acquisition.__init__ from the Java storage's real disk location
+        # (java_backend_acquisitions.py:301), before acquire() dispatches
+        # anything. If that moves, the fallback in _acq_dataset_path returns
+        # the UNSUFFIXED path — which is precisely the wrong guess design/38
+        # F7 is about, so re-verify this on any pycro-manager upgrade.
         dataset_path = _acq_dataset_path(acq, save_dir, name)
         if hook is not None and hasattr(hook, "bind_artifact_directory"):
             hook.bind_artifact_directory(Path(dataset_path) / "artifacts")
@@ -5901,7 +5916,14 @@ def run_multiposition_acquisition(
                         reservation=reservation,
                     )
                     results.append({**where, **result})
-                except AcquisitionUnterminated:
+                except AcquisitionUnterminated as exc:
+                    completed = [
+                        dict(item) for item in results if item.get("dataset_path")
+                    ]
+                    if completed:
+                        # These paths came from completed child tool results;
+                        # never infer siblings by inspecting the filesystem.
+                        exc.partial = {"positions_completed": completed}
                     unterminated = True
                     raise
                 except Exception as e:
@@ -7414,7 +7436,16 @@ def run_adaptive_survey(
                 result["acquire_dataset_path"] = acquire_path
             elif acquire_reservation is not None:
                 acquire_reservation.close()
-        except AcquisitionUnterminated:
+        except AcquisitionUnterminated as exc:
+            survey_path = result.get("dataset_path")
+            if survey_path:
+                exc.partial = {
+                    "positions_completed": [{
+                        "phase": "survey",
+                        "dataset_path": survey_path,
+                        **({"status": result["status"]} if result.get("status") else {}),
+                    }],
+                }
             raise
         except Exception:
             if acquire_reservation is not None:
