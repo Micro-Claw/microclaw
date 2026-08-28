@@ -2612,11 +2612,34 @@ leave it stale.
   `write_slot_marker` stubbed because it resolves against the running
   interpreter. Deleting one name from the import list makes it fail with
   `NameError`; the grep-based test beside it stays green.
-- **`POST /api/update/check` has no caller.** The route exists with a rate
-  limiter and two tests; nothing in `serve.html` invokes it. So the only way to
-  retire a 24-hour interval early is to rerun `install.bat`, which rewrites the
-  whole state file. It cannot live in the update banner, which is hidden exactly
-  when there is no candidate.
+- **`POST /api/update/check` had no caller. Fixed** (`9db7726`). The route had
+  shipped with a rate limiter, two tests and nothing in `serve.html` invoking
+  it, so the only way to retire a 24-hour interval early was to rerun
+  `install.bat` — the workaround the operator found by accident and reported as
+  "it only sees the new commit after I reinstall". The control is in the header,
+  not the update banner, which is hidden exactly when there is no candidate.
+  Exercised on M5 2026-08-28 online ("Microclaw is up to date", under 15 s) and
+  offline (7.3 s, warning rendered).
+
+## design/58 status, 2026-08-28
+
+Closed today: the **offline limb** (the last one booked for physical access),
+defects **7** and **8**, and the **check-for-updates** carried-forward row.
+
+**Still owed, one limb:** `Restart later`'s *button* path — the operator
+pressing it and seeing activation at the next ordinary launch. The mechanism is
+evidenced three times over (R8, R9, and the defect-7 gate's restart), so what is
+missing is only that a manual launch consumes the selector rather than a
+launcher-driven one. It costs nothing to collect: stage an update, press
+`Restart later`, and launch from the icon **without running `install.bat` in
+between** — the installer now retracts the pending slot, which is exactly what
+prevented this limb from closing incidentally on 2026-08-28.
+
+**Deliberately deferred, not owed:** everything under "on the flip" — CI,
+branch protection, and the public-repo install path — which become possible only
+when the repository goes public. Per the 2026-08-27 operator decision these
+block nothing; `main` is the release branch and pre-merge testing on multiple
+machines is the boundary.
 
 ### M5 evidence for defect 7, 2026-08-28
 
