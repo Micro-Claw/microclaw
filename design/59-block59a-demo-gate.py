@@ -128,7 +128,7 @@ def main():
             "pixel_size_config_names": discovered_config_names,
             "pixel_size_configs": discovered_configs,
             "autofocus_device": autofocus_device or None,
-        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        }, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         candidates = [item for item in raw_inventory["devices"]
                       if isinstance(item.get("allowed"), list) and len(item["allowed"]) >= 2]
         if len(candidates) < 2:
@@ -173,10 +173,10 @@ def main():
         first_s = second_s = 0.0
         first_calls = second_calls = 0
     (args.output / "system-state-1.json").write_text(
-        json.dumps(first, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(first, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
     )
     (args.output / "system-state-2.json").write_text(
-        json.dumps(second, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(second, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
     )
 
     positions = first.get("optical_path", {}).get("discrete_positions", [])
@@ -195,7 +195,7 @@ def main():
         if not autofocus_device or not focus.get("device"):
             raise NotExercised("this machine reports no autofocus device")
         return json.dumps({"state_devices": positions, "pixel_size_configs": configs,
-                           "autofocus_device": focus.get("device")}, sort_keys=True)
+                           "autofocus_device": focus.get("device")}, sort_keys=True, default=str)
 
     @limb("all orientation keys", "one of optical_path, objective, or focus is absent")
     def keys_present():
@@ -303,7 +303,7 @@ def main():
             assert moved["objective"]["pixel_size_config"] is None
             assert "does not know which objective" in moved["objective"]["reason"]
             (args.output / "system-state-nonmatching.json").write_text(
-                json.dumps(moved, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                json.dumps(moved, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
             )
             return f"moved {device}.Label from {entry!r} to unmatched {target!r}"
         finally:
@@ -335,7 +335,7 @@ def main():
         "second_bridge_calls": second_calls, "second_wall_s": second_s,
     }}
     (args.output / "results.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
     )
     failed = [item for item in RESULTS if item["status"] != "PASS"]
     print("BLOCK 59a DEMO GATE " + ("FAILED" if failed else "PASSED"))

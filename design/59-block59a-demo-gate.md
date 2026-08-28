@@ -13,6 +13,11 @@ git merge-base --is-ancestor e9962e6 HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 59a implementation is not an ancestor of HEAD" }
 ```
 
+This program was run end to end against a bridge-shaped fake before it was
+pushed (`design/59-block59a-gate-selftest.py`, SELFTEST PASS on this tree and
+SELFTEST FAIL on the tree before the fix). That is the gate's own check that it
+works; it is not evidence about your rig, which is what the run below is for.
+
 Close Microclaw, leave Micro-Manager and its ZMQ server running, then run:
 
 ```powershell

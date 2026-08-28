@@ -438,6 +438,20 @@ def _read_artifact(path: str, guard) -> dict:
     return identity
 
 
+def _config_mismatches_for_message(ctrl) -> list[dict] | str:
+    """The config walk, for interpolation into another error's message.
+
+    `_config_mismatches` deliberately no longer swallows an enumeration failure:
+    an empty list is a statement, not a silence (design/59, demo gate round 1).
+    But the two callers below put it inside a `raise`, where an exception would
+    replace the diagnosis the operator needed with the failure that produced it.
+    """
+    try:
+        return _config_mismatches(ctrl)
+    except Exception as exc:
+        return f"unavailable ({type(exc).__name__}: {exc})"
+
+
 def _config_mismatches(
     ctrl, *, cached: bool = False, read_live: bool = True,
     live_values: dict[tuple[str, str], str] | None = None,
@@ -535,7 +549,7 @@ def resolve_calibration(
     if calibration_ref is None:
         if acquisition is not None:
             return acquisition
-        configs = _config_mismatches(ctrl)
+        configs = _config_mismatches_for_message(ctrl)
         detail = f" Available pixel-size configs: {configs}" if configs else ""
         raise CalibrationResolutionError(
             f"Dataset does not record a usable calibration ({acquisition_fallthrough}); "
@@ -594,7 +608,7 @@ def resolve_calibration(
             if not isinstance(alias, dict) or not alias.get("current_version"):
                 raise CalibrationResolutionError(
                     f"No current calibration for {objective!r} binning {binning}. "
-                    f"Available pixel-size configs: {_config_mismatches(ctrl)}"
+                    f"Available pixel-size configs: {_config_mismatches_for_message(ctrl)}"
                 )
             version = str(alias["current_version"])
         affine, stored = load_affine_version(version)
