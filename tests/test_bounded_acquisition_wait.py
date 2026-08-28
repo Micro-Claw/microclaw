@@ -2,6 +2,7 @@ import json
 import inspect
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -243,6 +244,98 @@ def test_acquire_on_hit_handler_does_not_close_waiter_owned_reservation(monkeypa
             },
         )
     assert reservation.ledger.in_flight is True
+
+
+SUPERVISED_TOOL_NAMES = [
+    name for name, fn in tools.TOOL_REGISTRY.items()
+    if getattr(fn, "_microclaw_acquisition_entry_point", False) and name != "run_mda"
+]
+
+
+@pytest.mark.parametrize("name", SUPERVISED_TOOL_NAMES)
+def test_every_supervised_entry_propagates_unterminated_without_continuing(
+    name, monkeypatch, tmp_path,
+):
+    class FatalCountingAcquisition(BlockingAcquisition):
+        constructions = 0
+        def __init__(self, **kwargs):
+            type(self).constructions += 1
+            super().__init__(**kwargs)
+            self._event_queue = MagicMock()
+            self._acq = MagicMock()
+            self._acq.is_finished.return_value = False
+        def acquire(self, events):
+            super().acquire(events)
+            self._exception = RuntimeError("engine died")
+
+    monkeypatch.setattr(tools, "Acquisition", FatalCountingAcquisition)
+    monkeypatch.setattr(tools, "ERROR_TEARDOWN_GRACE_S", 0.01)
+    monkeypatch.setattr(tools, "_ACQUISITION_POLL_S", 0.001)
+    monkeypatch.setattr("microclaw.authorization.authorize_path", lambda *_: None)
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **_: [{"axes": {}}])
+    monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook: plan)
+    hook = SimpleNamespace()
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: hook)
+    monkeypatch.setattr(tools, "_resolve_hooks", lambda *a, **k: hook)
+    monkeypatch.setattr(tools, "_prepare_log_path", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_wait", lambda *a, **k: None)
+
+    reservations = []
+    def authorize(_ctrl, _guard, plan):
+        reservation = AcquisitionLedger().reserve(MagicMock(), plan)
+        reservations.append(reservation)
+        return reservation
+    monkeypatch.setattr(tools, "_authorize_acquisition", authorize)
+
+    positions = [
+        {"name": "p0", "x_um": 0, "y_um": 0},
+        {"name": "p1", "x_um": 1, "y_um": 1},
+    ]
+    common = {"save_dir": str(tmp_path)}
+    inputs = {
+        "run_zstack": {
+            **common, "z_start_um": 0, "z_end_um": 1, "z_step_um": 1,
+        },
+        "run_timelapse": {
+            **common, "n_frames": 1, "interval_s": 0,
+        },
+        "run_multiposition_acquisition": {
+            **common, "protocol": "timelapse", "positions": positions,
+            "protocol_params": {"n_frames": 1, "interval_s": 0},
+        },
+        "run_tile_acquisition": {
+            **common, "rows": 1, "cols": 2, "step_um": 1,
+            "protocol": "timelapse",
+            "protocol_params": {"n_frames": 1, "interval_s": 0},
+        },
+        "run_multiposition_with_autofocus": {
+            **common, "positions": positions, "z_range_um": 2, "z_step_um": 1,
+            "protocol": "timelapse",
+            "protocol_params": {"n_frames": 1, "interval_s": 0},
+        },
+        "run_adaptive_survey": {
+            **common, "protocol": "timelapse", "hook_strategy": "probe",
+            "positions": positions,
+            "protocol_params": {"n_frames": 1, "interval_s": 0},
+        },
+    }
+    assert set(SUPERVISED_TOOL_NAMES) == set(inputs)
+    ctrl = _ctrl(True)
+    ctrl.core.get_image_width.return_value = 1
+    ctrl.core.get_image_height.return_value = 1
+    ctrl.core.get_bytes_per_pixel.return_value = 1
+    ctrl.core.get_exposure.return_value = 1
+    ctrl.core.get_x_position.return_value = 0
+    ctrl.core.get_y_position.return_value = 0
+
+    result = json.loads(tools.execute_tool(name, inputs[name], ctrl, _guard()))
+    assert result.get("acquisition") == "unterminated", result
+    assert result["dataset_path"] == "/data/run_1"
+    assert "frames_accounted" in result
+    assert reservations and reservations[0].ledger.in_flight is True
+    assert FatalCountingAcquisition.constructions == 1
+    BlockingAcquisition.release.set()
 
 
 def test_position_dominated_run_keeps_producing_past_ceiling_and_completes(monkeypatch):

@@ -3494,6 +3494,7 @@ def _acquire_with_hooks(
 
     waiter_started = False
     cleanup_done = False
+    waiter_must_close_reservation = False
 
     def finish_owned_cleanup() -> list[str]:
         nonlocal cleanup_done
@@ -3501,7 +3502,9 @@ def _acquire_with_hooks(
             return []
         cleanup_done = True
         failures = restore_hardware()
-        if reservation is not None and close_reservation:
+        if reservation is not None and (
+            close_reservation or waiter_must_close_reservation
+        ):
             reservation.close()
         return failures
 
@@ -3584,6 +3587,10 @@ def _acquire_with_hooks(
             error_expired = error_deadline is not None and now >= error_deadline
             runtime_expired = now >= runtime_deadline and quiet
             if waiter.is_alive() and (error_expired or runtime_expired):
+                # A composite caller normally owns a shared reservation across
+                # positions. Expiry ends that composite immediately, so the
+                # still-live waiter inherits final closure after its callbacks.
+                waiter_must_close_reservation = True
                 expired_bound = "error_grace" if error_expired else "runtime_ceiling"
                 bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
                 camera = _camera_sequence_running(ctrl)
@@ -5833,6 +5840,8 @@ def run_multiposition_acquisition(
                     artifact_limits=artifact_limits,
                     **shape,
                 )
+            except AcquisitionUnterminated:
+                raise
             except SafetyViolation as exc:
                 if not added_labels:
                     raise
@@ -5874,6 +5883,7 @@ def run_multiposition_acquisition(
         )
         if protocol != "snap" else None
     )
+    unterminated = False
     with _pause_live(ctrl, restore=False) as live_state:
         try:
             for pos_label, x_um, y_um, z_um in resolved:
@@ -5891,10 +5901,13 @@ def run_multiposition_acquisition(
                         reservation=reservation,
                     )
                     results.append({**where, **result})
+                except AcquisitionUnterminated:
+                    unterminated = True
+                    raise
                 except Exception as e:
                     results.append({"position": pos_label, **where, "error": str(e)})
         finally:
-            if reservation is not None:
+            if reservation is not None and not unterminated:
                 reservation.close()
 
     total = len(position_names or positions)
