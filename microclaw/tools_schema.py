@@ -562,7 +562,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Return a summary of the current microscope state: stage positions, "
             "active channel, exposure time, whether live view is running, and the "
-            "shutter and per-slot laser state. "
+            "shutter, per-slot laser, optical-path, objective-calibration, and "
+            "focus-lock state. "
             "When illumination shutters are declared, also returns each declared "
             "illumination property with its current and configured off values, "
             "without judging which values are required. "

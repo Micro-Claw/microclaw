@@ -401,6 +401,9 @@ class MicroscopeController:
         # when None the controller behaves as before (tool layer still guards).
         self._guard = guard
         self._plugins: PluginAccess | None = None
+        # Populated once by authorization.validate_live_rig.  This is tied to
+        # this Core connection, unlike the process-wide EMU discovery cache.
+        self._state_device_inventory: dict | None = None
         # Python-native position store. Use import_from_mm_position_list() to
         # pull in positions the user has marked in MM's GUI.
         self._positions: list[dict] = []

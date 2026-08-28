@@ -765,6 +765,39 @@ def _auto_classified_state_pairs(
     return admitted
 
 
+def _build_state_device_inventory(core: Any, loaded_devices: Iterable[str]) -> dict:
+    """Describe every readable StateDevice without applying write policy."""
+    inventory: dict[str, Any] = {"devices": []}
+    try:
+        core_shutter = str(core.get_shutter_device() or "")
+    except Exception as exc:
+        core_shutter = ""
+        inventory["shutter_exclusion"] = "unknown"
+        inventory["shutter_exclusion_error"] = _clean_exception_message(exc)
+    else:
+        inventory["shutter_exclusion"] = (
+            {"device": core_shutter} if core_shutter else "no shutter device configured"
+        )
+    for device in sorted({str(item) for item in loaded_devices if item}):
+        if core_shutter and device == core_shutter:
+            continue
+        try:
+            if device_type_name(core, device) != "StateDevice":
+                continue
+        except Exception:
+            continue
+        entry: dict[str, Any] = {"device": device}
+        try:
+            entry["allowed"] = list(_strings(
+                core.get_allowed_property_values(device, "Label")
+            ))
+        except Exception as exc:
+            entry["allowed"] = "unknown"
+            entry["allowed_error"] = _clean_exception_message(exc)
+        inventory["devices"].append(entry)
+    return inventory
+
+
 def validate_live_rig(
     ctrl: Any, parsed_config: ParsedSafetyConfig, guard: Any = None
 ) -> AuthorizationMap:
@@ -918,6 +951,10 @@ def validate_live_rig(
     except Exception as exc:
         loaded_devices = []
         loaded_devices_error = f"Could not enumerate connected devices: {exc}"
+
+    # Read-only orientation inventory.  It intentionally precedes and ignores
+    # every write-authorization exclusion below.
+    ctrl._state_device_inventory = _build_state_device_inventory(core, loaded_devices)
 
     emu_lasers, emu_focus_lock, emu_discovery_problems = _live_emu_lasers(
         ctrl, loaded_devices

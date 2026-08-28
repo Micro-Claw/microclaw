@@ -438,9 +438,13 @@ def _read_artifact(path: str, guard) -> dict:
     return identity
 
 
-def _config_mismatches(ctrl) -> list[dict]:
+def _config_mismatches(ctrl, *, cached: bool = False) -> list[dict]:
     if ctrl is None:
         return []
+    if cached:
+        existing = getattr(ctrl, "_pixel_size_config_inventory", None)
+        if existing is not None:
+            return existing
     results = []
     try:
         configs = list(ctrl.core.get_available_pixel_size_configs())
@@ -484,6 +488,8 @@ def _config_mismatches(ctrl) -> list[dict]:
             "affine_verdict": affine_verdict, "rules": rules,
             "would_activate": all(rule["matches"] for rule in rules),
         })
+    if cached:
+        ctrl._pixel_size_config_inventory = results
     return results
 
 

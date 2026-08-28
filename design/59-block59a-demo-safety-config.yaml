@@ -1,0 +1,44 @@
+# Stock MMConfig_demo.cfg only. The gate revalidates the operator's production
+# safety document afterwards and verifies that this file never replaces it.
+schema_version: 3
+reviewed: true
+property_authorization:
+  mode: guaranteed
+  allowed_categorical: []
+  denied:
+    - device: Path
+      property: Label
+stage:
+  x_min: -10000.0
+  x_max: 10000.0
+  y_min: -10000.0
+  y_max: 10000.0
+  z_min: 0.0
+  z_max: 200.0
+camera:
+  max_exposure_ms: 1000.0
+acquisition:
+  max_frames: 10000
+  max_duration_s: 3600
+  max_bytes: 50000000000
+  max_illuminated_ms: 600000
+  max_session_illuminated_ms: 1800000
+  confirm_above_frames: 500
+  confirm_above_duration_s: 300
+  confirm_above_bytes: 5000000000
+  confirm_above_illuminated_ms: 60000
+illumination:
+  require_confirm_on_enable: true
+  max_power_percent: 100.0
+  max_power_step_factor: 3.0
+  shutters:
+    - device: Objective
+      property: Label
+      on_value: State-1
+      off_value: State-0
+  power_properties: []
+channels:
+  allowed: []
+plugins:
+  blocked: []
+  allow_hardware_motion: false

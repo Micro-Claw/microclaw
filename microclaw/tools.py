@@ -8,6 +8,7 @@ import logging
 import math
 import queue
 import os
+import re
 import tempfile
 import textwrap
 import threading
@@ -2971,6 +2972,101 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
     return out
 
 
+_PORT_LABEL_WORDS = re.compile(
+    r"(?:eye|ocular|binocular|camera|port|side|left|right|front|bottom|photo|tube)",
+    re.IGNORECASE,
+)
+
+
+def _optical_path_state(ctrl: MicroscopeController, config_dependencies: set[tuple[str, str]]) -> Any:
+    inventory = getattr(ctrl, "_state_device_inventory", None)
+    if not isinstance(inventory, dict):
+        return "unknown"
+    positions = []
+    for retained in inventory.get("devices", []):
+        entry = dict(retained)
+        device = entry["device"]
+        try:
+            entry["label"] = str(ctrl.core.get_property(device, "Label"))
+        except Exception as exc:
+            entry["label"] = "unknown"
+            entry["label_error"] = f"{type(exc).__name__}: {exc}"
+        roles = []
+        if (device, "Label") in config_dependencies:
+            roles.append("pixel-size-config dependency (not proof of objective)")
+        allowed = entry.get("allowed")
+        labels = allowed if isinstance(allowed, list) else []
+        if any(_PORT_LABEL_WORDS.search(str(label)) for label in labels):
+            roles.append("light-path candidate")
+        if roles:
+            entry["role"] = roles[0] if len(roles) == 1 else roles
+        positions.append(entry)
+    result = {
+        "discrete_positions": positions,
+        "hint": (
+            "A discrete-position device whose labels name ports routes light to the "
+            "camera or the eyepiece. Micro-Manager sees only the motorized part of "
+            "the path; a manual prism or slider can send light elsewhere with every "
+            "value above unchanged."
+        ),
+    }
+    if inventory.get("shutter_exclusion") == "unknown":
+        result["shutter_exclusion"] = "unknown"
+        result["shutter_exclusion_error"] = inventory.get("shutter_exclusion_error", "unknown")
+    return result
+
+
+def _objective_state(ctrl: MicroscopeController) -> tuple[Any, set[tuple[str, str]]]:
+    from microclaw.calibration import _config_mismatches
+
+    try:
+        configs = _config_mismatches(ctrl, cached=True)
+    except Exception as exc:
+        return {"reason": f"Pixel-size configurations are unreadable: {type(exc).__name__}: {exc}"}, set()
+    available = []
+    dependencies: set[tuple[str, str]] = set()
+    for config in configs:
+        rules = list(config.get("rules", []))
+        for rule in rules:
+            if "device" in rule and "property" in rule:
+                dependencies.add((rule["device"], rule["property"]))
+        available.append({"config": config["config"], "dependencies": rules})
+    try:
+        active = str(ctrl.core.get_current_pixel_size_config() or "") or None
+    except Exception:
+        active = "unknown"
+    try:
+        pixel_size = float(ctrl.core.get_pixel_size_um())
+    except Exception:
+        pixel_size = "unknown"
+    if active is None:
+        reason = (
+            "No pixel-size configuration is active: Micro-Manager does not know "
+            "which objective is in the path, so neither does microclaw. Available "
+            "calibrations list dependencies only; no dependency by itself proves "
+            "which device is an objective turret. Ask the operator which objective "
+            "is seated; do not report one."
+        )
+    elif active == "unknown":
+        reason = (
+            "The active pixel-size configuration is unreadable, so Micro-Manager "
+            "does not establish which objective is in the path. Config dependencies "
+            "are not measured objectives."
+        )
+    else:
+        reason = (
+            f"Micro-Manager reports active pixel-size configuration {active!r}. "
+            "Its device/property rules are calibration dependencies, not proof that "
+            "any one device is an objective turret or a measured objective identity."
+        )
+    return {
+        "pixel_size_config": active,
+        "pixel_size_um": pixel_size,
+        "available_configs": available,
+        "reason": reason,
+    }, dependencies
+
+
 @emits_nothing
 def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     state: dict[str, Any] = {}
@@ -3031,6 +3127,16 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     # enabled" has to be sourced from here or not made at all (design/20 F2).
     state["shutter"] = _shutter_state(ctrl)
     state["lasers"] = _laser_state(ctrl)
+    objective, dependencies = _objective_state(ctrl)
+    state["optical_path"] = _optical_path_state(ctrl, dependencies)
+    state["objective"] = objective
+    try:
+        state["focus"] = get_focus_lock_state(ctrl, guard)
+    except Exception as exc:
+        state["focus"] = {
+            "engaged": None,
+            "reason": f"Focus-lock state is unreadable: {type(exc).__name__}: {exc}",
+        }
     illumination = guard.declared_illumination_state(ctrl.core)
     if illumination:
         state["declared_illumination_properties"] = illumination
@@ -4145,7 +4251,7 @@ def snap_and_analyze(
 
 # --- Stage↔camera calibration (design/14 §8) ---
 
-def _current_objective(ctrl: MicroscopeController) -> str:
+def _current_objective(ctrl: MicroscopeController) -> str | None:
     """Best available label for the current optical path (pixel-size config)."""
     try:
         name = str(ctrl.core.get_current_pixel_size_config())
@@ -4153,7 +4259,7 @@ def _current_objective(ctrl: MicroscopeController) -> str:
             return name
     except Exception:
         pass
-    return "default"
+    return None
 
 
 def _current_binning(ctrl: MicroscopeController) -> int:
@@ -4167,7 +4273,10 @@ def _current_binning(ctrl: MicroscopeController) -> int:
 def _load_current_affine(ctrl: MicroscopeController):
     from microclaw.calibration import load_affine
 
-    return load_affine(_current_objective(ctrl), _current_binning(ctrl))
+    objective = _current_objective(ctrl)
+    if objective is None:
+        return None
+    return load_affine(objective, _current_binning(ctrl))
 
 
 def _calibration_pixel_size_hint(
@@ -4300,7 +4409,7 @@ def calibrate_stage_to_camera(
             (float(shift_x[0]), float(shift_x[1])),
             (float(shift_y[0]), float(shift_y[1])),
             step_um,
-            objective=_current_objective(ctrl),
+            objective=_current_objective(ctrl) or "",
             binning=_current_binning(ctrl),
         )
     except ValueError as e:
