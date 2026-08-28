@@ -331,10 +331,11 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — six contracts we got wrong
+## The pycro-manager acquisition engine — seven contracts we got wrong
 
 The first three were found on a rig by block 52a, the fourth by block 56, the
-fifth by design/56, and the sixth by design/55 — each after a full green suite.
+fifth by design/56, the sixth by design/55, and the seventh by an operator's M2
+dSTORM run — each after a full green suite.
 The first five were missed because a test fake encoded our assumption instead of
 the hardware's behaviour; the sixth because every test that could have caught it
 supplied the one argument whose absence was the defect. Check code against these
@@ -420,6 +421,45 @@ input, ask which fixtures produce that shape, and write one that does.
   read-back, an exit report — belongs **after the `with` block**, not after the
   `acquire()` call. Getting this wrong moves hardware while frames are still
   being taken.
+
+- **And that `__exit__` can never return.** The other half of the same contract,
+  found by design/60 after an operator's 100,000-frame dSTORM run: the block you
+  were told to put restoration *after* is a blocking call into third-party code
+  with no deadline. `await_completion`'s `finally` joins four threads
+  unconditionally, two of which exit only on a `data_sink_finished` notification
+  that a dead notification thread will never send. The `timeout=2500` constructor
+  argument is not a completion timeout — it is pyjavaz's object-construction
+  timeout. Measured: **95 minutes of "MicroClaw is working…", the last 28 with
+  the camera already idle**, and the session ended by killing Micro-Manager. Run
+  teardown on a daemon waiter that owns restoration and reservation closure, and
+  bound the foreground's wait (block 60a, merged 2026-08-28).
+
+  **Bound it on a signal, not on a clock, and never on an estimate built for a
+  different shape.** `plan_events` counts exposure and `min_start_time` only, and
+  says so. That is excellent for a hardware-sequenced burst — 5,000 s planned
+  against 5,175 s real on M2 — and badly wrong for a position-dominated run,
+  where a 1,000-position tile scan at 10 ms plans 10 s. A ceiling derived from it
+  would have declared healthy overnight runs dead. The trigger is quiet time
+  **self-calibrated from the run's own frames**, `max(900, 5 × largest observed
+  gap)`, because a fixed window fails too when a hook runs a focus search between
+  frames. A device that is not busy is not a device that arrived; an estimate
+  that fits one shape is not a bound on another.
+
+- **A typed exception is only as good as the handlers between it and its
+  boundary.** Block 60a returned four defects in review and **not one** was found
+  by a runner's own tests. All four were the same shape: a broad
+  `except Exception` sitting between a supervised acquisition and `execute_tool`,
+  eating the typed `AcquisitionUnterminated`. Two closed a reservation the
+  teardown waiter still owned; one flattened the failure into a per-position
+  error and **kept acquiring**, with the session refusal powerless because it
+  lives at `execute_tool`, outside the loop. When you add a typed exception that
+  must survive to a boundary, the question is not "did I raise it" but **"who
+  catches `Exception` between here and there"** — and the answer is a
+  parameterized test over the marker that defines the boundary, asserting the
+  observable effect (no further `Acquisition` constructed, counted), not a test
+  per site. Fifteen tests passed while three tools were broken, because every one
+  drove a locally defined tool in a one-entry registry: a fixture that cannot
+  reach the real tool's error handling is not coverage of it.
 
 ## Rules the updater block paid for
 
