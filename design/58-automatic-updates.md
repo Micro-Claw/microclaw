@@ -2184,7 +2184,7 @@ unchanged since `c46e2db`, and no rollback path in `updates.py`
 | Restore returns production state | R7 | commit, selector, pending and `%APPDATA%` hash all back |
 | Public ZIP records `public-head`/`unknown`/404 | R7 | fresh ZIP install's cached state |
 | **Micro-Manager closed keeps the slot** | R10 | staged slot activated and kept, no rollback, no relaunch |
-| **Restart later activates at the next launch** | — | owed; the activation path itself is evidenced by R8 and R9 |
+| **Restart later activates at the next launch** | M5 2026-08-28 | six limbs PASS; health marker matched this start's nonce |
 | **Offline launch** | M5 2026-08-28 | offline launch, offline check in 7.3 s, warning rendered, recovery on reconnect |
 
 **Thirteen of fifteen limbs have rig evidence** (twelve at the time this table was first written; round 10 added Micro-Manager closed). Of the remainder:
@@ -2626,16 +2626,31 @@ leave it stale.
 Closed today: the **offline limb** (the last one booked for physical access),
 defects **7** and **8**, and the **check-for-updates** carried-forward row.
 
-**Still owed, one limb:** `Restart later`'s *button* path — the operator
-pressing it and seeing activation at the next ordinary launch. The mechanism is
-evidenced three times over (R8, R9, and the defect-7 gate's restart), so what is
-missing is only that a manual launch consumes the selector rather than a
-launcher-driven one. It costs nothing to collect: stage an update, press
-`Restart later`, and launch from the icon **without running `install.bat` in
-between** — the installer now retracts the pending slot, which is exactly what
-prevented this limb from closing incidentally on 2026-08-28.
+**`Restart later` closed the same day.** Staged into `b` at `1ea54ca`, the
+button pressed, Microclaw quit, and an ordinary desktop launch activated it: all
+six limbs PASS, `installed_commit` reconciled from `env-b`'s marker, `env-a`
+preserved at `e388759` as the rollback target.
 
-**Deliberately deferred, not owed:** everything under "on the flip" — CI,
+Two things this run settled that the offline run could not.
+
+**The application-started limb was actually exercised.** `launch-health.txt`
+held `f37e107d…`, matching the nonce the launcher minted for that start. The
+offline phase's pass on limb 1 had rested on corroboration because its snapshot
+predates the corrected check; the same launcher path, on the same machine, has
+now been measured directly.
+
+**Defect 7's fix was evidenced on the manual-launch path.** After activation the
+state carried `candidate: <none>` and `discovery: "The installed commit is
+current."` — so the invalidation ran, `next_check` was cleared, the startup
+check became due, and it found the machine current. The operator clicked
+`Check for updates` afterwards and was told there were none. The failure this
+design shipped with — install an update, be offered it again — does not occur on
+either restart path.
+
+**design/58 is closed.** Nothing is owed.
+
+**Deliberately deferred, and never part of this design's scope:** everything
+under "on the flip" — CI,
 branch protection, and the public-repo install path — which become possible only
 when the repository goes public. Per the 2026-08-27 operator decision these
 block nothing; `main` is the release branch and pre-merge testing on multiple

@@ -227,7 +227,7 @@ def run(phase: str, root: Path, work: Path) -> int:
     now = snapshot(root)
     (work / f"{phase}.json").write_text(json.dumps(now, indent=2, sort_keys=True), encoding="utf-8")
 
-    lines = [f"=== design/58 offline gate -- phase {phase} ===",
+    lines = [f"=== design/58 gate -- phase {phase} ===",
              f"root={root}", f"active={now['active']} pending={now['pending'] or '<none>'}"]
     state = now.get("state") or {}
     lines.append(f"installed_commit={state.get('installed_commit')}")
