@@ -2542,3 +2542,58 @@ State:
   possible on the Free plan. **Do not re-raise this as a blocker.**
 - **Every gate is the demo machine.** The Nikon is gone and no limb of this
   design needs a microscope at all.
+
+## Defect 7, found after close: the cached candidate outlives its own update
+
+Reported from three machines, 2026-08-28. Every one of them showed the same
+`update-state.json`: `installed_commit` equal to `last_success.candidate.sha`,
+and equal to the commit the operator had just installed. Fixed in `31a3798`.
+
+**The mechanism.** `state["last_success"]` is written by exactly one function,
+`check_for_update`, which is due once every `CHECK_INTERVAL_SECONDS` plus
+jitter. Nothing else ever cleared it. `activate_pending` had reconciled
+`installed_commit` correctly the whole time — but neither reader compared the
+two, so for the whole 24-hour interval after an update both
+`terminal_update_notice` and webserve's `update_status` handed back the commit
+that had just become the running one. Staging that answer rebuilt the *inactive*
+slot at the same SHA and republished `pending-slot.txt`, so Update → Restart now
+ping-ponged between `env-a` and `env-b` forever. The updater worked; only its
+memory of what it had already done was missing.
+
+**The generic rule.** *A cache computed against the previous install is not
+evidence about this one.* The same shape as the two contracts already in
+`CLAUDE.md` — a device that is not busy is not a device that arrived; a marker's
+existence is not health. Whenever state records the result of comparing A to B,
+a change in B must invalidate it, and the invalidation belongs at the transition,
+not at the next scheduled recomputation.
+
+**Why the suite was green.** Every unit was correct in isolation:
+`activate_pending` reconciled, `update_status` projected the cache faithfully,
+and no test composed them. The regression test that reproduces the report is
+`test_installing_an_update_clears_the_banner_that_offered_it`, which drives
+staged → restart → banner and fails on `d41fa09` at `after["candidate"] is None`
+with `pending_staged` already correctly `False`.
+
+**A diagnostic that lies is a defect.** `discovery` is written by
+`discover_clone` and read by nothing — confirmed by canary, not by grep: a
+distinctive string in `discovery.message` does not reach `GET /api/update`, and
+the word appears nowhere in the served page. It is one word away from the
+banner's own sentence (`"A newer main commit is available: <40-char sha>."`
+against `"A newer Microclaw commit is available: <7-char sha> — <subject>"`), so
+an operator reading the state file to diagnose reasonably took it for the
+banner's source. Being diagnostic-only is why it must not lie, not a reason to
+leave it stale.
+
+### Carried forward from defect 7
+
+- **`install.bat` does not clear `pending-slot.txt`.** Neither `:migrate_layout`
+  nor `:write_managed` touches it, so a slot staged but never restarted survives
+  a reinstall and is activated on the very next launch — replacing what the
+  installer just built, at whatever commit it happens to hold. A fresh install
+  is an authoritative statement about what should run and should retract any
+  pending answer. Untested, unfixed as of this note.
+- **`POST /api/update/check` has no caller.** The route exists with a rate
+  limiter and two tests; nothing in `serve.html` invokes it. So the only way to
+  retire a 24-hour interval early is to rerun `install.bat`, which rewrites the
+  whole state file. It cannot live in the update banner, which is hidden exactly
+  when there is no candidate.
