@@ -8911,6 +8911,35 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### Two from the Nikon session of 2026-08-23 — added 2026-08-28 **(no block)**
+
+Both are recorded in `design/59` §"Out of scope" and belong here, not in a
+design/59 block. Evidence:
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/pfs-nikon-design56-4/`,
+`20260823_095336_954938_microclaw_history.jsonl`.
+
+**1. A relative XY move reports neither the entry position nor the requested
+delta.** At message 41 the agent called
+`move_stage_xy(x_um=10, y_um=10, absolute=false)` and got back
+`{"x_um": -6803.3, "y_um": 2779.9, "error_um": [-0.1, 0.0]}` — the computed
+absolute target and the error against it. Both numbers are correct; the agent
+read them as a 6.8 mm move it had not asked for (message 43: *"that's a red
+flag"*). The entry position had genuinely changed since message 2, most
+plausibly when the operator went to the scope. `move_stage_z` reports
+`requested_um` alongside `measured_um`; the relative XY path reports neither, so
+nothing in the payload lets a reader distinguish a large stale-frame move from a
+bug. **Not a defect in the move** — a reporting gap that costs a session's trust.
+
+**2. `move_stage_xy` still has the pre-block-56 shape.** It calls `_wait`
+(`core.wait_for_device`) and takes one immediate read (`tools.py:2284–2288`).
+Per `CLAUDE.md`'s engine contract, *a device that is not busy is not a device
+that arrived*: this is exactly the premature read-back block 56 fixed for the
+single-axis Z tools, and it never reached the XY path. Block 56's own note
+already lists the paths it did not reach — `hooks.py`'s focus-recovery jog, the
+tile path's per-position Z, `_emit_go_to_position` — and this is a fourth. The
+fix is not a new loop: `settle_stage_move` exists, and the export coupling
+recorded under design/55's row 1 applies here too.
+
 ### Two from design/55's gates — added 2026-08-26 **(no block)**
 
 **1. The stage-move settle tolerance is a package constant with no configuration

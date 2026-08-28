@@ -378,15 +378,33 @@ produced went four review rounds unexecuted):
   read raises: both remain in `discrete_positions`, with the failed field
   `"unknown"` and its read error visible. Dropping either entry is the defect.
 
-Gate — **the demo machine first, then the Nikon.** The demo config carries an
-`Objective` StateDevice, a `Path` light-path device, an `Autofocus` device and
-pixel-size configs, so the generic path is fully exercisable without a Nikon;
-confirm that inventory on the machine as step 1 rather than assuming it. Every
+Gate — **the demo machine.** The demo config is expected to carry an `Objective`
+StateDevice, a `Path` light-path device, an `Autofocus` device and pixel-size
+configs, so the generic path is fully exercisable without a Nikon; **confirm that
+inventory on the machine as step 1 rather than assuming it**, and let the program
+report NOT EXERCISED for any limb whose device this machine does not have. Every
 limb is a computation over one `get_system_state` payload, so it ships as **a
 program** (`design/59-block59a-demo-gate.py`) that reports each limb
 independently and exits nonzero — not seven pasted PowerShell blocks (58a).
 Wall time for the first and second call is a reported limb, not a footnote.
 
+**The gate ships its own safety config** (`design/59-block59a-demo-safety-config.yaml`,
+the precedent is `design/33-block5-demo-safety-config.yaml`), because the single
+strongest limb needs one: a StateDevice **declared as illumination** and a second
+StateDevice **explicitly ruled** in `allowed_categorical` or `denied` must both
+still appear in `discrete_positions`. Those are exactly the devices
+`_auto_classified_state_pairs` drops, and off-rig fixtures are where 58a's
+unreachable branch hid. The gate must not leave that document as the machine's
+production safety config: the program records which document was active before it
+starts and checks it back afterwards.
+
+**Machine availability, 2026-08-28.** The operator has lost access to the Nikon.
+The Nikon-Ti-shaped payload is therefore covered only by the unit fixture named
+in Tests, and one live-Ti confirmation is **owed, not waived** — the checklist
+carries it as an owed row. If M2 or M5 is free, the M5 pass costs nothing and
+adds the one thing the demo machine cannot produce: M5 has no Core shutter, so
+`get_shutter_device()` returns empty rather than raising, which is the *other*
+half of the shutter-exclusion branch. It is not a precondition of merging.
 ### 59b — the reference, and the prompt loses its hardware names
 
 Items:
@@ -405,30 +423,68 @@ Items:
    `optical_path` before considering another exposure — alongside the existing
    `declared_illumination_properties` instruction, which is the same shape.
 
-Gate — **the Nikon**, replaying the 2026-08-23 opening.
+Gate — **the demo machine**, replaying the 2026-08-23 opening on the demo config.
+The Nikon is unavailable (operator, 2026-08-28) and this gate does not wait for
+it; what the demo machine cannot settle is listed at the end and owed.
+
+Every device name below is discovered, never assumed: a setup program
+(`design/59-block59b-demo-setup.py`) enumerates the machine's StateDevices,
+picks the light-path device by adapter/type rather than by the string `Path`,
+and refuses with NOT EXERCISED if the machine has none.
+
+**Two things the setup program arranges over the bridge, and both are reversible
+without touching the saved configuration.** The demo config's light-path labels
+are expected to be generic (`State-0…`), which carries no port vocabulary at all,
+so the setup program records the stock labels, calls `define_state_label` to name
+them `1-Eye100` / `2-Left100` / `3-Right100`, and restores the recorded labels
+afterwards. Nothing is written to a `.cfg`; a Micro-Manager restart also restores
+them. And the objective is driven to a state that **no pixel-size config
+matches**, which reproduces the Nikon's `4-Unknown` situation exactly.
 
 The criterion names the mechanism, not the outcome (52b: an outcome-shaped step
 gets satisfied by a better route and the mechanism under test never fires):
 
 - **Control that can fail** (58a: a limb that cannot fail is not a criterion):
-  before the session, set `TILightPath` to `1-Eye100`. The limb is that the
-  agent names the eyepiece routing **from message 2's payload, before its first
-  `snap_and_analyze`**. Scored on the message index of the naming versus the
-  message index of the first exposure — not on whether it eventually got there.
-- Second round with `TILightPath` at `2-Left100` and the **manual prism** at the
-  eyepiece — the real 2026-08-23 configuration. The pass condition is *not*
-  that the agent finds the fault; it is that it reports the software path as
-  correct and asks about the physical path before the second blank frame.
+  before the session, set the light-path device to the eyepiece label. The limb
+  is that the agent names the eyepiece routing **from message 2's payload, before
+  its first `snap_and_analyze`**. Scored on the message index of the naming versus
+  the message index of the first exposure — not on whether it eventually got
+  there. The control fires because the same session run with the device at a
+  camera label must **not** produce that naming.
+- **Round with the labels left stock** (`State-0…`): the port vocabulary matches
+  nothing, and the limb is that the device is still listed in
+  `discrete_positions` and the agent still reports the route as unverifiable
+  rather than silently absent. This is the marking-not-filtering rule seen from
+  the session side.
+- **The blank frame.** Put the demo camera into a mode whose frames carry no
+  structure (the setup program reads the camera's own allowed values and reports
+  NOT EXERCISED if this machine's camera offers none). The pass condition is *not*
+  that the agent finds a fault — there is none to find — it is that it reports
+  the software path as readable and asks about the **physical** path before its
+  second exposure.
 - Objective: with no pixel-size config active, the agent must report that
-  Micro-Manager does not know the objective. Reporting "default", or reporting
-  "60×" from the operator's earlier message as though measured, is a fail.
-- Focus: the agent proposes the hardware lock before any image-based sweep, from
+  Micro-Manager does not know the objective. Reporting "default", or reporting a
+  magnification the operator said earlier as though it were measured, is a fail.
+- Focus: the agent proposes the hardware lock (the demo `Autofocus` device,
+  discovered through `get_focus_lock_state`) before any image-based sweep, from
   orientation alone, with no operator prompting.
+- The agent calls `get_optical_path_documentation` when it needs the vocabulary,
+  and the tool is reachable **from `optical_path.hint`** — `SYSTEM_PROMPT` must
+  not name it. Scored by grepping the shipped prompt as well as the transcript.
 
 Scoring is a computation over the history JSONL and ships as
 `design/59-score-gate.py` — the operator drives the session and returns the
-file; the scorer reports each limb independently. Per step 6, score from the
-artifacts and not the verdict.
+file; the scorer reports each limb independently, and reports NOT EXERCISED
+rather than PASS for any limb whose stimulus the setup program could not arrange.
+Per step 6, score from the artifacts and not the verdict.
+
+**Owed to a Nikon Ti, not settled here.** The demo camera's frames do not depend
+on the light path, so no demo round reproduces a *real* blank field caused by
+routing; the manual-prism configuration of 2026-08-23 cannot be staged at all;
+and no demo device produces the `4-Unknown` turret label or a PFS status string.
+The demo gate tests the mechanism — payload, ordering, refusal to claim an
+objective, and the reachability of the reference — on the machine that is
+available.
 
 ## Out of scope, recorded so it is not lost
 
@@ -450,11 +506,184 @@ The same session surfaced two things this design does not address:
   that arrived* — this is the premature read-back block 56 fixed for the
   single-axis Z tools and did not reach here.
 
-Both belong in design/35's carried-forward register, not in this block.
+Both belong in design/35's carried-forward register, not in this block. Added
+there 2026-08-28 as "Two from the Nikon session of 2026-08-23 — **(no block)**".
+
+## Implementation checklist
+
+The process is `CLAUDE.md` §"The block workflow" — ten steps, uncompressed, per
+block. This checklist names *what* each block owes; that section owns *how*.
+Where the two disagree, `CLAUDE.md` wins and this document gets fixed.
+
+**Machine availability, 2026-08-28: the demo machine only.** The operator has
+lost access to the Nikon; M2 and M5 are reachable if free. Both gates are
+therefore designed for the demo machine, and what the demo machine cannot settle
+is written down as owed rather than quietly dropped.
+
+**Order: 59a, then 59b.** 59b's reference tool is reached from
+`optical_path.hint`, which 59a creates, and its gate reads the payload 59a
+builds. Do not run them concurrently.
+
+### Block 59a — `get_system_state` names the optical path
+
+Implementation (§1, §2, §3):
+
+- [ ] 1. Read-only StateDevice inventory built at live-rig validation,
+  **independent of the authorization map**: every loaded StateDevice except
+  `Core.Shutter`, *including* explicitly ruled and illumination-declared
+  devices. Device identities and allowed values retained on the controller for
+  the session; each call re-reads only the current label.
+- [ ] 2. It must not inherit `_auto_classified_state_pairs`' fail-closed-to-empty
+  behaviour. An unreadable Core shutter excludes nothing and the payload says the
+  exclusion could not be applied; `discrete_positions: []` there is the defect.
+- [ ] 3. Per-device failures preserve the entry: an unreadable allowed-values or
+  current-label read becomes `"unknown"` with the read error recorded. A dropped
+  device is the defect.
+- [ ] 4. `objective` from the pixel-size configs only, folding
+  `calibration._config_mismatches`' rule walk rather than duplicating it. Every
+  dependency reported and marked as a dependency; a multi-key config keeps all
+  its keys; no dependency is promoted to a measured objective.
+- [ ] 5. **Delete `_current_objective`'s `"default"` fallback** (`tools.py:4148`),
+  or make all three call sites — `_load_current_affine`, the calibration
+  artifact at `tools.py:4303`, and the new payload — distinguish "no config
+  active" from "a config named default". Whichever route: the string must stop
+  reaching the operator as an objective name.
+- [ ] 6. `focus` embeds `get_focus_lock_state`'s payload verbatim. Fold; do not
+  re-derive.
+- [ ] 7. The port vocabulary **marks** state labels and never filters an entry,
+  and is never applied to a device name.
+- [ ] 8. All three keys always present, `"unknown"` when unreadable, per
+  `_shutter_state`.
+- [ ] 9. `tools_schema.py`'s `get_system_state` description updated — it promises
+  stage/channel/exposure/live-view/shutter/lasers today and must promise these.
+- [ ] 10. `get_system_state` stays `@emits_nothing`.
+
+Tests — each watched failing on the pre-change tree, **and with a fixture that
+reaches the branch** (58a: a guard no fixture's shape could reach went four
+review rounds unexecuted):
+
+- [ ] 11. Minimal rig: no StateDevice, no pixel-size config, no autofocus device
+  — all three fields present, all three `"unknown"`/diagnosed.
+- [ ] 12. Nikon-Ti-shaped fake (`TINosePiece` at `4-Unknown`, `TILightPath` at
+  `2-Left100` with the four real allowed values, configs keyed on
+  `TINosePiece.Label` matching none, `TIPFSStatus` "Out of focus search range"):
+  the payload names the dependency and does not claim a measured objective,
+  **with no `TINosePiece` string in the implementation**.
+- [ ] 13. Demo-shaped fake (`Objective`, `Path`, `Autofocus`, `Res10x/20x/40x`):
+  same code, same shape, no Nikon vocabulary reachable.
+- [ ] 14. Second call issues strictly fewer bridge calls than the first —
+  **mutate the cache key** rather than watching this fail; its subject is call
+  structure (standing rule).
+- [ ] 15. A StateDevice whose labels match no port vocabulary still appears.
+- [ ] 16. A StateDevice in `allowed_categorical`, in `denied`, or declared as
+  illumination still appears; substituting `_auto_classified_state_pairs` makes
+  this test fail.
+- [ ] 17. A config keyed on both `Objective.Label` and `Camera.Binning` reports
+  both and calls neither a measured objective.
+- [ ] 18. `get_shutter_device` **raises**: every StateDevice still listed, and
+  the payload says the exclusion could not be applied.
+- [ ] 19. An allowed-values read raises, and a current-label read raises: both
+  entries survive with the failed field `"unknown"` and the error visible.
+- [ ] 20. Full suite re-run by the coordinator, not the reported count.
+
+Gate — demo machine, shipped as a program:
+
+- [ ] 21. `design/59-block59a-demo-gate.py` reports each limb independently,
+  reports NOT EXERCISED for any device this machine lacks, exits nonzero, and
+  **owns its own log** (58a: `Start-Transcript` does not capture a child
+  process's stdout).
+- [ ] 22. Step 1 of the runbook *confirms* the machine's StateDevice inventory,
+  pixel-size configs and autofocus device rather than assuming them.
+- [ ] 23. `design/59-block59a-demo-safety-config.yaml` declares one StateDevice
+  as illumination and rules on another, so limb 16 is live on hardware and not
+  only in a fixture. The program records the machine's active safety document
+  before it starts and checks it back afterwards — a gate must not leave
+  production state pointing into its own evidence folder.
+- [ ] 24. Bridge-call count **and** measured wall time reported for the first and
+  second `get_system_state` call. §3: if the first call exceeds ~1.5 s the
+  caching boundary is wrong, not the feature.
+- [ ] 25. Runbook committed **on the block's branch**, implementation pinned with
+  `git merge-base --is-ancestor`, branch pushed to `origin`.
+- [ ] 26. Gate scored from the artifacts, not the verdict (step 6).
+
+Owed, recorded rather than waived:
+
+- [ ] 27. **Owed to a Nikon Ti:** one live payload from a rig with an unnamed
+  turret position, a real `TILightPath`, and a PFS status device. Covered by
+  fixture only until the operator has a Ti again.
+- [ ] 28. **Opportunistic, not a precondition:** M5 has no Core shutter, so
+  `get_shutter_device()` returns empty rather than raising — the other half of
+  limb 18. Run it if M5 is free.
+
+### Block 59b — the reference, and the prompt loses its hardware names
+
+Implementation (§4):
+
+- [ ] 29. `microclaw/optics_docs.py` with §4's contents, all generic: ports and
+  splits; what Micro-Manager cannot see (the manual prism named as the **first**
+  thing to check on a blank frame with a valid lock); objectives, working
+  distance and search windows; hardware focus locks and the wrong-surface lock.
+- [ ] 30. Tool `get_optical_path_documentation`, `@emits_nothing`, registered in
+  `TOOL_REGISTRY` **and decorated** — an undecorated tool plants a
+  `raise RuntimeError` in every exported script that recorded it, which has now
+  killed three gates.
+- [ ] 31. `optical_path.hint` names the tool; `SYSTEM_PROMPT` does not.
+- [ ] 32. The PFS capture-range and immersion numbers move out of `SYSTEM_PROMPT`
+  (`agent.py:407–412`) into the reference, marked Nikon-specific. The prompt
+  keeps the procedure: jog and image-check every lock, never substitute the
+  offset range for the capture band.
+- [ ] 33. One prompt line: after a blank frame, read `optical_path` before
+  considering another exposure — alongside the existing
+  `declared_illumination_properties` instruction, which is the same shape.
+- [ ] 34. A test that the moved numbers are no longer in the prompt **and** are
+  in the reference, so the move cannot half-happen.
+- [ ] 35. Schema parity and the export decorator tests green; full suite re-run
+  by the coordinator.
+
+Gate — demo machine, a driven session plus two programs:
+
+- [ ] 36. `design/59-block59b-demo-setup.py` discovers the light-path device by
+  type rather than by name, records the stock state labels, renames them over the
+  bridge with `define_state_label`, drives the objective to a state no pixel-size
+  config matches, and **restores every label it changed**. Nothing written to a
+  `.cfg`.
+- [ ] 37. Control that can fail: with the light-path device at the eyepiece
+  label, the agent names the eyepiece routing from message 2's payload **before
+  its first exposure**; with it at a camera label, the same session does not.
+  Scored on message indices.
+- [ ] 38. Stock-label round: the vocabulary matches nothing, the device is still
+  listed, and the route is reported as unverifiable rather than absent.
+- [ ] 39. Blank-frame round: the agent asks about the **physical** path before
+  its second exposure. NOT EXERCISED if this machine's camera offers no
+  structureless mode.
+- [ ] 40. Objective: the agent reports that Micro-Manager does not know it.
+  "default", or a magnification the operator mentioned reported as measured, is a
+  fail.
+- [ ] 41. Focus: the hardware lock proposed before any image-based sweep, from
+  orientation alone, unprompted.
+- [ ] 42. `get_optical_path_documentation` reached from the hint; the shipped
+  prompt greps clean of its name.
+- [ ] 43. `design/59-score-gate.py` scores each limb independently over the
+  history JSONL, reports NOT EXERCISED where the stimulus could not be arranged,
+  and exits nonzero.
+- [ ] 44. **Owed to a Nikon Ti:** a real blank field caused by routing, the
+  manual-prism configuration, a `4-Unknown` turret, and a live PFS status. The
+  demo gate tests the mechanism, not the 2026-08-23 scene.
+
+### Post-merge design gate (step 10, both blocks)
+
+- [ ] 45. Reconcile this document to what was measured — especially §3's cost
+  table against the gate's real bridge-call count and wall time.
+- [ ] 46. Record coordination notes in `design/prompts.md` and close the ledger
+  rows below.
+- [ ] 47. `git log --oneline origin/main..main` empty for each block; branch
+  deleted locally and on `origin`.
+- [ ] 48. Carry the two owed-to-a-Ti rows (27, 44) forward into design/35's
+  register, so losing Nikon access does not lose the evidence debt.
 
 ## Run ledger
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 59a | — | — | — | — | — |
+| 59a | `design59/optical-path` | `82ee539` | — | — | — |
 | 59b | — | — | — | — | — |
