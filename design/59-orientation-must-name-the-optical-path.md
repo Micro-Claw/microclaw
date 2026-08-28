@@ -980,43 +980,43 @@ Owed, recorded rather than waived:
 
 Implementation (§2, §4):
 
-- [ ] 29. `microclaw/optics_docs.py` with §4's contents, all generic: ports and
+- [x] 29. `microclaw/optics_docs.py` with §4's contents, all generic: ports and
   splits; what Micro-Manager cannot see (the manual prism named as the **first**
   thing to check on a blank frame with a valid lock); objectives, working
   distance and search windows; hardware focus locks and the wrong-surface lock.
   §4's final bullet — the Nikon PFS worked example — is **not** written here;
   it arrives with block 59c, and a test asserts `optics_docs.py` names no Nikon
   identifier while 59b stands, so the split cannot half-happen either.
-- [ ] 29a. The reference is framed as *how light paths usually work*, in those
+- [x] 29a. The reference is framed as *how light paths usually work*, in those
   words, and the path ordering carries the caveat that stands differ — inverted,
   epi-illuminated, TIRF, spinning-disk and multi-camera rigs all depart from it.
   Nothing in the file may read as a claim about the rig in front of the agent;
   where it would, it points at `optical_path` or at the operator instead. A test
   asserts the caveat sits with the ordering, so the two cannot separate.
-- [ ] 30. Tool `get_optical_path_documentation`, `@emits_nothing`, registered in
+- [x] 30. Tool `get_optical_path_documentation`, `@emits_nothing`, registered in
   `TOOL_REGISTRY` **and decorated** — an undecorated tool plants a
   `raise RuntimeError` in every exported script that recorded it, which has now
   killed three gates.
-- [ ] 31. `optical_path.hint` names the tool; `SYSTEM_PROMPT` does not. The hint
+- [x] 31. `optical_path.hint` names the tool; `SYSTEM_PROMPT` does not. The hint
   **conditions the call on the camera not getting the expected signal** and says
   so in the sentence that names the tool, so it cannot be read as a
   read-me-every-session instruction; a test asserts the condition and the tool
   name occupy the same sentence.
-- [ ] 33. One prompt line: after a blank frame, read `optical_path` before
+- [x] 33. One prompt line: after a blank frame, read `optical_path` before
   considering another exposure — alongside the existing
   `declared_illumination_properties` instruction, which is the same shape.
-- [ ] 34a. `_build_state_device_inventory` retains `get_device_name` and
+- [x] 34a. `_build_state_device_inventory` retains `get_device_name` and
   `get_device_description` per StateDevice, each failing to `"unknown"` with the
   error recorded rather than dropping the entry — the same rule `allowed` already
   follows. Paid once at inventory construction; **zero** added to
   `get_system_state`, asserted by a test that counts calls on the second
   invocation.
-- [ ] 34b. `role` is a list and each entry names its source:
+- [x] 34b. `role` is a list and each entry names its source:
   `light-path candidate (position labels name ports)` and
   `light-path candidate (adapter self-description)`. A device matched by both
   carries both. Fixtures: the Nikon `TILightPath` (both), the demo `Path`
   (adapter only), and a labels-only device on a generic adapter.
-- [ ] 34b1. Port-label matching is case-insensitive, uses ASCII-letter
+- [x] 34b1. Port-label matching is case-insensitive, uses ASCII-letter
   boundaries, and carries the compound tokens of §2 **ordered before their own
   prefixes** — otherwise `eye` consumes the front of `Eyepiece` and the trailing
   `p` fails the lookahead. Fixtures assert `Left80`, `Eye100`, `Camera-Port`,
@@ -1035,12 +1035,12 @@ Implementation (§2, §4):
   **struck, it does not**: `main` finds the substring `ocular` inside
   `Trinocular` and the positive fixture passes there for the wrong reason.
   Nothing in the new-fixture set fails on `main` for a second reason.
-- [ ] 34c. `positions_unnamed` present **only** when the adapter identifies a
+- [x] 34c. `positions_unnamed` present **only** when the adapter identifies a
   light path and no label matches the port vocabulary; it names the
   identity-scoped `devices/` route and says explicitly that microclaw does not
   rename labels. A test asserts it is absent on the Nikon fixture and present
   on the demo one.
-- [ ] 34c1. Extend `devices/observed_on` to accept a structured condition for
+- [x] 34c1. Extend `devices/observed_on` to accept a structured condition for
   unnamed position maps: camera adapter, StateDevice config label, adapter name,
   and exact allowed-label list. **`adapter_description` is reported in the
   payload and is not a condition field** — it is prose an adapter author can
@@ -1051,13 +1051,13 @@ Implementation (§2, §4):
   other. A third fixture changes only the allowed-label list — the operator
   labelling their positions properly in Micro-Manager — and proves the stored
   guess retires itself rather than shadowing the new labels.
-- [ ] 34c1a. Structured maps use the explicit discriminator
+- [x] 34c1a. Structured maps use the explicit discriminator
   `kind: "optical_path_position_map"` and the fixed `device`, `positions`, and
   `observed_on` fields described in §2. Reject position keys not present in the
   resolved device's exact allowed-label list. Ordinary `devices/` entries,
   including ones whose `observed_on` happens to be a mapping for some future
   feature, do not enter this path without the discriminator.
-- [ ] 34c2. **The condition is evaluated in `get_system_state`, never in the
+- [x] 34c2. **The condition is evaluated in `get_system_state`, never in the
   prompt.** `format_for_prompt` runs once at `_system_blocks` (`agent.py:634`)
   from `load_knowledge()` alone, before any orientation call, under
   `cache_control: ephemeral`; it has no live payload. Orientation already reads
@@ -1068,12 +1068,12 @@ Implementation (§2, §4):
   entries. Tests assert a matching and a non-matching structured entry are both
   absent from the system block, only the matching one appears in orientation,
   and a legacy entry still renders with its verify-first header.
-- [ ] 34c3. An unreadable or `"unknown"` identity field refuses a new save and
+- [x] 34c3. An unreadable or `"unknown"` identity field refuses a new save and
   never counts as a match, and the refusal **names the offending field and why**
   rather than reporting a bare no (design/58: a tool whose failure can be caused
   by one unreadable value says which value). A test asserts the field name
   appears in the refusal.
-- [ ] 34c4. The agent does not manufacture `observed_on`. For a structured
+- [x] 34c4. The agent does not manufacture `observed_on`. For a structured
   position map, `save_knowledge` accepts the target StateDevice label and mapping,
   resolves the device from the retained inventory, reads the live camera adapter,
   and constructs the structured condition itself. It refuses a missing target,
@@ -1082,7 +1082,7 @@ Implementation (§2, §4):
   contains the complete resolved identity and mapping. A fixture deliberately
   supplies a plausible but wrong adapter and proves it is neither confirmed nor
   persisted.
-- [ ] 34d. **A test that 59b's paths do not write a state label.** The inventory,
+- [x] 34d. **A test that 59b's paths do not write a state label.** The inventory,
   orientation, documentation tool and gate setup are exercised against a
   bridge-shaped fake that raises on `define_state_label` / `defineStateLabel`.
   The scoped source assertion **names its modules explicitly** —
@@ -1091,12 +1091,12 @@ Implementation (§2, §4):
   into whatever the implementer considered in scope. It is deliberately not all
   of `microclaw/`: this block must not preclude a separately designed, explicitly
   authorized configuration tool.
-- [ ] 34e. Adapter matching is on `light\s*path` against the adapter name and
+- [x] 34e. Adapter matching is on `light\s*path` against the adapter name and
   description only, never the device label. A fixture whose *device label* is
   `LightPath` but whose adapter is a filter wheel must **not** be marked — the
   device-name heuristic CLAUDE.md forbids, caught by a test rather than by
   review.
-- [ ] 35. Schema parity and the export decorator tests green; full suite re-run
+- [x] 35. Schema parity and the export decorator tests green; full suite re-run
   by the coordinator.
 
 Gate — demo machine (available, 2026-08-28), **one read-only program and three
@@ -1106,7 +1106,7 @@ or a live agent is below. `design/55-gate-probe-selftest.py` and 59a's harness
 are the precedent — reuse 59a's limb/Tee/CountingCore structure and its safety
 config template rather than writing second copies.
 
-- [ ] 36. `design/59-block59b-demo-probe.py` — **no agent, one run, everything
+- [x] 36. `design/59-block59b-demo-probe.py` — **no agent, one run, everything
   mechanical.** Discovers the light-path device by adapter/type and never by
   name; confirms the machine's inventory as step 1 and reports NOT EXERCISED per
   limb for anything absent. Drives the objective to a state no pixel-size config
@@ -1115,19 +1115,25 @@ config template rather than writing second copies.
   `finally` with nothing reading it. Writes no state label and no `.cfg`; asserts
   every device's `allowed` values are byte-identical before and after, and that
   the production safety document's bytes and mtime are unchanged.
-- [ ] 36a. Probe limb — **marking, not filtering** (was 38): all six StateDevices
+- [x] 36a. Probe limb — **marking, not filtering** (was 38): all six StateDevices
   listed with their `allowed` values, including the illumination-declared and the
   explicitly ruled one, and `Path` marked adapter-only with `positions_unnamed`
   while no non-routing device is marked.
-- [ ] 36b. Probe limb — **the identity control** (was half of 37a). Writes a
+- [x] 36b. Probe limb — **the identity control** (was half of 37a). Writes a
   structured `devices/` map with one identity field wrong, asserts the live
   payload reports **no mapping**; corrects that field, asserts the mapping
   appears. This is where the match is decided, so it is scored on the payload and
   needs no session. Snapshots and restores the operator's knowledge file.
-- [ ] 36c. Probe limb — **objective unknown** (was 40's payload half):
+- [x] 36c. Probe limb — **objective unknown** (was 40's payload half):
   `pixel_size_config` `None`, `pixel_size_um` 0.0, every dependency's `live`
   following the device, and the string `"default"` absent.
-- [ ] 37. **Session A — imaging works.** Scored on message indices, not on
+- [~] 37. **Session A — imaging works. PARTIAL, and deliberately not ticked.**
+  The routing-before-exposure limb was observed FAILING once on the rig
+  (round 1) and was not re-run. It is instead *measured*: replaying that
+  machine's own payload gives **20/24 raised routing before any exposure,
+  the failure mode 2/24 (8%)**. The other four controls in this session
+  passed. Treat the limb as a known tail, not as a green pass, and if a
+  later block touches orientation, re-measure rather than assume. Scored on message indices, not on
   whether the agent eventually got there. The agent must raise the routing
   question **from message 2's payload, before its first exposure**, and ask what
   is on each position rather than assert one. Controls that can fail, in the same
@@ -1137,7 +1143,7 @@ config template rather than writing second copies.
   is a fail), it proposes the hardware lock unprompted from orientation alone,
   and — because the hint is conditional — it does **not** call
   `get_optical_path_documentation`, since imaging is working.
-- [ ] 38. **Session B — blank frame.** The camera is put into a mode whose frames
+- [x] 38. **Session B — blank frame.** The camera is put into a mode whose frames
   carry no structure; NOT EXERCISED if this machine's camera offers none. The
   pass condition is not that the agent finds a fault — there is none — it is that
   it reports the software path as readable and asks about the **physical** path
@@ -1148,27 +1154,27 @@ config template rather than writing second copies.
   condition from live state, and shows the complete resolved identity and mapping
   at the human gate. NOT EXERCISED if the operator declines — declining is their
   right and is not a product failure.
-- [ ] 39. **Session C — a fresh session, four messages.** The raw structured
+- [x] 39. **Session C — a fresh session, four messages.** The raw structured
   entry is absent from the system context; `get_system_state` resolves it against
   live orientation and reports the mapping inside `optical_path`; the agent uses
   it and does not ask again. Scored on the system context and the payload as well
   as the transcript, because mere absence of a repeated question proves nothing.
-- [ ] 40. **Cost, three phases, in the probe** (was 42a): live-rig validation
+- [x] 40. **Cost, three phases, in the probe** (was 42a): live-rig validation
   with the adapter reads in place, first `get_system_state`, second
   `get_system_state`. Report bridge calls **and** wall time for each; compare the
   latter two with §3's 39/36 ms and 27/8 ms and report the validation delta and
   its 2N adapter calls separately, so added startup cost cannot hide behind an
   orientation-only measurement. Off-rig the call counts are already 30→20 on this
   fingerprint; the rig supplies the wall time a fake cannot.
-- [ ] 41. `design/59-block59b-score.py` scores the three sessions' history JSONL,
+- [x] 41. `design/59-block59b-score.py` scores the three sessions' history JSONL,
   each limb independently, NOT EXERCISED where the stimulus could not be
   arranged, exits nonzero. The probe scores itself.
-- [ ] 42. **Both programs run against a bridge-shaped fake on both trees before
+- [x] 42. **Both programs run against a bridge-shaped fake on both trees before
   the operator sees them** (`design/59-block59b-gate-selftest.py`). Non-negotiable
   and the reason 59a lost a trip: a `MagicMock` hands back Python-friendly
   objects, so the fake's collections must expose `size()`/`get(i)` and raise on
   iteration. Report the discrimination, not a green line.
-- [ ] 43. Settled off-rig, recorded so the rig is not asked to re-prove it:
+- [x] 43. Settled off-rig, recorded so the rig is not asked to re-prove it:
   `design/59-block59b-offline-score.py` reports 22 limbs PASS on this tree, 15 of
   which FAIL or are NOT PRESENT on `main`. It also establishes that **neither the
   demo machine's real labels nor M5's discriminate the port-token fix** — no
@@ -1247,6 +1253,23 @@ accepted, then session C. That exercises the structured-map round trip end to
 end, which is the one thing this block changed that no artifact has yet shown
 working on hardware.
 
+**Round 4, 2026-08-28 — the block's last owed limb, PASSED.** Probe 6/6 for the
+fourth time, 39 then 27 calls. Session B's agent sent the **structured shape
+unprompted** — `kind: optical_path_position_map`, `device`, `positions`, and no
+`observed_on` — and the tool resolved the identity itself (`camera_adapter: DCam`,
+`adapter: DLightPath`, the exact allowed-label list), showing that complete
+identity at the human gate before storing. In session C the raw entry is absent
+from the whole history, `get_system_state` resolved it against live orientation,
+`positions_unnamed` correctly disappeared, and the agent answered "State-1 →
+left camera" while still saying Micro-Manager cannot see a manual prism. That is
+items 34c1–34c4 working on hardware, and it is the defect round 1 found, closed.
+
+The over-refusal boundary was validated by accident and is worth recording: the
+*LED* entry in the same session — an ordinary `devices/` note — was refused for
+a missing `observed_on` by the **legacy** rule and re-saved with one. The new
+position-map refusal fired on the map and stayed out of the way of the ordinary
+note, which is exactly the line it had to draw.
+
 - [ ] 44. **Owed to a Nikon Ti:** a real blank field caused by routing, the
   manual-prism configuration, a `4-Unknown` turret, a live PFS status, **and the
   label-matching source of the light-path role** — no demo device carries port
@@ -1312,5 +1335,5 @@ same commit, so the two halves of the move cannot separate.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; the product half was a silent `available_configs: []`. Round 2 **PASS 11/11**, 39 calls/36 ms then 27/8 ms; restore read-back added afterwards | `e314927` merged 2026-08-28, branch deleted |
-| 59b | `design59/optics-reference` | `906fac8` (2026-08-28) | `944d728` (4 Codex rounds, 20 findings; coordinator suite 2418/99/0; off-rig scorer 22/22, 15 discriminating on `main`) | round 1 2026-08-28: **probe PASS 6/6** (39→27 calls, 2N=12 adapter delta); session A product PASS / agent tail failure (8%, measured off-rig); **session B NOT EXERCISED — runbook named no camera mode**; session C found the unreachable structured map. Sessions B and C **owed** after the fixes | — |
+| 59b | `design59/optics-reference` | `906fac8` (2026-08-28) | `6864a63` (5 Codex rounds, 21 findings; coordinator suite 2419/99/0; off-rig scorer 22/22, 15 discriminating on `main`) | **4 rig rounds, PASSED round 4.** Probe 6/6 every round, 39→27 calls, 2N=12 adapter delta. Round 1 found the structured map unreachable; rounds 2–3 were lost to the gate's own prompts, not to the product; round 4 closed the save→resolve round trip on hardware. Session A's routing limb is a measured 8% tail, not a clean pass | merged 2026-08-28 |
 | 59c | — | — | — | — | — (not started, and does not start: gated on a Nikon Ti) |
