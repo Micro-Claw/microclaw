@@ -192,7 +192,7 @@ def classify(message, devices: list[str]) -> str:
 
 
 def run_one(client, model, payload, hint, devices, table, max_turns,
-            opening=None, watch="save_knowledge"):
+            opening=None, watch="save_knowledge", goal="routing", answer=None):
     """Drive the conversation until a decision, answering only from recorded data.
 
     A single turn is NOT enough. Session A gathered for two more turns before it
@@ -214,11 +214,32 @@ def run_one(client, model, payload, hint, devices, table, max_turns,
         watched += [b.input for b in response.content
                     if b.type == "tool_use" and b.name == watch]
         trail.append("+".join(calls) if calls else "say")
-        if verdict in ("RAISED_BEFORE", "EXPOSED_FIRST"):
+        if goal == "save":
+            # Session B TELLS the agent to take a frame, so an exposure is the
+            # instruction being followed, not a failure -- and everything this
+            # mode cares about happens AFTER it. Run on until the watched tool
+            # is called. Reusing the routing terminal condition here scored
+            # EXPOSED_FIRST 4/4 and never reached save_knowledge at all
+            # (measured 2026-08-28).
+            if watched:
+                return "CALLED_" + watch.upper(), trail, watched
+        elif verdict in ("RAISED_BEFORE", "EXPOSED_FIRST"):
             return verdict, trail, watched
         if response.stop_reason != "tool_use":
-            # It stopped to talk without raising routing and without exposing.
-            return "STOPPED_SILENT", trail, watched
+            # It stopped to talk. In a real session B the operator now ANSWERS
+            # the position question, and only then does the agent save -- so a
+            # replay with no operator can never reach save_knowledge. Supply the
+            # answer once and continue; without one, report the wait honestly.
+            if answer and not watched:
+                messages = messages + [
+                    {"role": "assistant",
+                     "content": [b.model_dump() for b in response.content]},
+                    {"role": "user", "content": answer},
+                ]
+                trail.append("<operator answers>")
+                answer = None
+                continue
+            return ("ASKED_AND_WAITED" if goal == "save" else "STOPPED_SILENT"), trail, watched
         messages = messages + [
             {"role": "assistant", "content": [b.model_dump() for b in response.content]},
             {"role": "user", "content": [
@@ -241,6 +262,14 @@ def main() -> int:
     ap.add_argument("--opening", default=None,
                     help="operator prompt to dry-run (default: session A's). Use "
                          "with --variants shipped to test a runbook prompt.")
+    ap.add_argument("--answer", default=None,
+                    help="operator reply injected once, the first time the agent "
+                         "stops to ask. Required for goal=save: the save only "
+                         "happens after the operator answers.")
+    ap.add_argument("--goal", choices=("routing", "save"), default="routing",
+                    help="routing: an exposure ends the run (session A). "
+                         "save: an exposure is expected, run on to the watched tool "
+                         "(session B).")
     ap.add_argument("--watch", default="save_knowledge",
                     help="print the input the agent sends to this tool")
     ap.add_argument("--samples", type=int, default=8)
@@ -249,13 +278,6 @@ def main() -> int:
     ap.add_argument("--variants", default=",".join(VARIANTS))
     args = ap.parse_args()
 
-    if not (os.environ.get("ANTHROPIC_API_KEY") or _keyring_key()):
-        print("No API key. Set ANTHROPIC_API_KEY or store one as microclaw does.")
-        return 2
-
-    import anthropic
-    client = anthropic.Anthropic()
-    model = resolve_model(args.model)
     payload = json.loads(args.payload.read_text(encoding="utf-8"))
     devices = [d["device"] for d in payload["optical_path"]["discrete_positions"]
                if any("light-path candidate" in r for r in d.get("role", []))]
@@ -272,17 +294,43 @@ def main() -> int:
         print("No recorded tool results found; pass --sessions explicitly. The "
               "replay refuses to invent tool output.")
         return 2
+    # A table with only get_system_state cannot carry a conversation past its
+    # first read, and the run then reports a verdict about the harness rather
+    # than about the prompt. Refuse rather than produce a confident number.
+    if args.goal == "save" and not args.answer:
+        print("goal=save needs --answer: the agent asks what the positions mean "
+              "and waits, so without an operator reply it can never reach "
+              f"{args.watch}. Measured 2026-08-28.")
+        return 2
+    needed = {"snap_and_analyze"} if args.goal == "save" else set()
+    missing = sorted(needed - set(table))
+    if missing or len(table) < 2:
+        print(f"Replay table is too thin ({sorted(table)}).")
+        if missing:
+            print(f"  goal={args.goal} needs recorded results for: {missing}")
+        print("  Pass --sessions with history files that contain them; several "
+              "directories can be combined.")
+        return 2
+    if not (os.environ.get("ANTHROPIC_API_KEY") or _keyring_key()):
+        print("No API key. Set ANTHROPIC_API_KEY or store one as microclaw does.")
+        return 2
+    import anthropic
+    client = anthropic.Anthropic()
+    model = resolve_model(args.model)
     print(f"model={model} routing devices={devices} samples={args.samples} "
           f"max_turns={args.max_turns}")
     print(f"recorded tool results available: {sorted(table)}\n")
 
-    order = ("RAISED_BEFORE", "EXPOSED_FIRST", "STOPPED_SILENT", "NO_DECISION")
+    order = (("CALLED_" + args.watch.upper(), "ASKED_AND_WAITED", "NO_DECISION")
+             if args.goal == "save" else
+             ("RAISED_BEFORE", "EXPOSED_FIRST", "STOPPED_SILENT", "NO_DECISION"))
     for name in [v.strip() for v in args.variants.split(",") if v.strip()]:
         counts, trails, seen = Counter(), Counter(), []
         for _ in range(args.samples):
             verdict, trail, watched = run_one(
                 client, model, payload, VARIANTS[name], devices, table,
-                args.max_turns, opening=args.opening, watch=args.watch)
+                args.max_turns, opening=args.opening, watch=args.watch,
+                goal=args.goal, answer=args.answer)
             counts[verdict] += 1
             trails[" -> ".join(trail)] += 1
             seen += watched
