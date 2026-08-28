@@ -814,6 +814,33 @@ def test_a_confirm_with_no_stream_bound_denies(session):
     assert session.confirm("Save knowledge x") is False
 
 
+def test_browser_renders_acquisition_progress_in_the_pending_status(client):
+    html = client.get("/").text
+    assert 'case "acquisition_progress"' in html
+    assert "`frames ${accounted} / ${planned}`" in html
+
+
+def test_browser_acquisition_grant_lookup_compares_structured_magnitude(session):
+    small = {"frames": 500, "duration_s": 26.0, "illuminated_ms": 25000.0}
+    grant = tools.SESSION_GRANTS.grant(
+        "acquisition", "threshold", "500-frame plan", "loopback",
+        grant_metadata=small,
+    )
+    smaller = {key: value / 2 for key, value in small.items()}
+    assert session.confirm(
+        "smaller", "acquisition", "threshold", grant_metadata=smaller
+    ) is True
+    assert session.audit_records[-1]["decision"] == f"auto-approved:{grant['id']}"
+    larger = dict(small)
+    larger["frames"] = 100000
+    # No stream is bound, so reaching the prompt path is an observable decline;
+    # an incorrect grant lookup would auto-approve it.
+    assert session.confirm(
+        "100,000-frame plan", "acquisition", "threshold", grant_metadata=larger
+    ) is False
+    assert session.audit_records[-1]["decision"] == "declined:no-stream"
+
+
 def test_confirmation_audit_is_durable_jsonl(session, tmp_path):
     path = tmp_path / "confirmations.jsonl"
     session.confirmation_audit = AuditLog(path)

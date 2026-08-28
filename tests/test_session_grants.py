@@ -135,3 +135,32 @@ def test_grant_does_not_match_other_questions_of_the_same_kind(monkeypatch):
     assert not tools._require_confirmation(
         "retarget Core.Shutter", "illumination", subject=None
     )
+
+
+@pytest.mark.parametrize("field", ["frames", "duration_s", "illuminated_ms"])
+def test_acquisition_grant_reasks_when_each_magnitude_independently_grows(
+    monkeypatch, field,
+):
+    small = {"frames": 500, "duration_s": 26.0, "illuminated_ms": 25000.0}
+    answers = iter(["session", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    assert tools._require_confirmation(
+        "500-frame plan", "acquisition", "threshold", grant_metadata=small
+    )
+
+    smaller = {key: value / 2 for key, value in small.items()}
+    assert tools._require_confirmation(
+        "smaller plan", "acquisition", "threshold", grant_metadata=smaller
+    )
+    larger = dict(small)
+    larger[field] += 1
+    assert not tools._require_confirmation(
+        "larger plan", "acquisition", "threshold", grant_metadata=larger
+    )
+
+
+def test_metadata_free_confirmation_retains_existing_grant_behavior(monkeypatch):
+    answers = iter(["session"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    assert tools._require_confirmation("enable 488", "illumination", "enable")
+    assert tools._require_confirmation("enable 561", "illumination", "enable")

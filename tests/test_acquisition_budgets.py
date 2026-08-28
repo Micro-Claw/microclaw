@@ -105,7 +105,7 @@ def test_each_confirmation_threshold_fires_at_boundary_and_not_below(
     calls = []
     monkeypatch.setattr(
         tools, "CONFIRM_FN",
-        lambda summary, kind="action", subject=None: calls.append(
+        lambda summary, kind="action", subject=None, **kwargs: calls.append(
             (summary, kind, subject)
         ) or True,
     )
@@ -162,6 +162,44 @@ def test_one_confirmation_names_both_reasons(monkeypatch):
     assert len(calls) == 1
     assert "500 frames" in calls[0]
     assert "20 minutes" in calls[0]
+
+
+def test_ndtiff_guaranteed_crossing_disclosure_uses_raw_pixel_bound(monkeypatch):
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    ctrl = MagicMock()
+    crossing = AcquisitionPlan(2, 1, 1, tools.NDTIFF_MAX_FILE_SIZE + 2)
+    tools._authorize_acquisition(ctrl, _guard(), crossing).close()
+    assert "roll to a second file before frame 1" in calls.pop()
+    just_under = AcquisitionPlan(2, 1, 1, tools.NDTIFF_MAX_FILE_SIZE)
+    tools._authorize_acquisition(ctrl, _guard(), just_under).close()
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("plan", "appears"),
+    [
+        (AcquisitionPlan(2, 10, 0.02, 2, hardware_sequenced_burst=True), True),
+        (AcquisitionPlan(2, 10, 0.02, 2), False),
+        (AcquisitionPlan(1, 10, 0.01, 1, hardware_sequenced_burst=True), False),
+    ],
+)
+def test_hardware_burst_disclosure_is_selective(monkeypatch, plan, appears):
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    assert bool(calls) is appears
+    if appears:
+        assert "Stop button" in calls[0]
+        assert "engine abort" in calls[0]
+        assert "thousands of further exposures" in calls[0]
+        assert "about" in calls[0]
 
 
 def test_deprecated_confirm_above_bytes_does_not_gate_a_plan(monkeypatch):

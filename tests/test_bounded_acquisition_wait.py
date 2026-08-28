@@ -583,6 +583,41 @@ def test_browser_acquisition_sink_records_to_stderr_when_no_turn_is_bound(capsys
     assert "acquisition_diagnostic" in capsys.readouterr().err
 
 
+def test_reservationless_progress_is_rate_limited_and_delivered_through_sink(
+    monkeypatch,
+):
+    class CallbackAcquisition:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self._dataset_disk_location = "/data/progress"
+            self._exception = None
+
+        def acquire(self, events):
+            for _ in events:
+                self.kwargs["image_saved_fn"]({}, object())
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(tools, "Acquisition", CallbackAcquisition)
+    monkeypatch.setattr(tools, "_acquisition_monotonic", lambda: 10.0)
+    events = [{"axes": {"time": i}} for i in range(100)]
+    plan = AcquisitionPlan(100, 1, 0.1, 100)
+    received = []
+    previous = getattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", None)
+    tools._ACQUISITION_EVENT_CONTEXT.sink = received.append
+    try:
+        result = _call_acquire(
+            _ctrl(False), _guard(), "/data", "progress", events, None,
+            reservation=None, plan=plan,
+        )
+    finally:
+        tools._ACQUISITION_EVENT_CONTEXT.sink = previous
+    assert result == "/data/progress"
+    assert [event["frames_accounted"] for event in received] == [1, 100]
+    assert all(event["type"] == "acquisition_progress" for event in received)
+
+
 def test_hookless_timelapse_emitter_remains_a_bare_acquisition_context():
     source = tools.run_timelapse._microclaw_emitter({
         "n_frames": 2, "interval_s": 0, "save_dir": "/data",

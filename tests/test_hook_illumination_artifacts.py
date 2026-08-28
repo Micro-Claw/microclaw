@@ -172,7 +172,7 @@ def test_sequenced_plan_refuses_before_preflight_exposure_or_acquisition(
     ctrl = MagicMock()
     acquisition = MagicMock()
     monkeypatch.setattr(tools, "Acquisition", acquisition)
-    monkeypatch.setattr(tools, "plan_events", lambda *args: object())
+    monkeypatch.setattr(tools, "plan_events", lambda *args, **kwargs: object())
     reservation = MagicMock(has_overrun=False)
     monkeypatch.setattr(tools, "_authorize_acquisition", lambda *args: reservation)
     guard = SafetyGuard(SafetyConstraints())
@@ -254,7 +254,7 @@ def test_envelope_confirmation_precedes_reservation(monkeypatch, tmp_path):
     hook = UntrustedHookAdapter(type("Hook", (), {"analyze_frame": lambda *a: HookResult({})})())
     monkeypatch.setattr(tools, "_resolve_hook", lambda *a: hook)
     monkeypatch.setattr(tools, "_build_acquisition_events", lambda **k: [{}])
-    monkeypatch.setattr(tools, "plan_events", lambda *a: object())
+    monkeypatch.setattr(tools, "plan_events", lambda *a, **k: object())
     monkeypatch.setattr(tools, "CONFIRM_FN", lambda text, kind: order.append("confirm") or True)
     reservation = MagicMock(has_overrun=False)
     monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a: order.append("reserve") or reservation)
@@ -611,6 +611,9 @@ def test_schema_states_the_three_rules_the_rig_kept_rediscovering():
     props = timelapse["input_schema"]["properties"]
     assert "nonzero" in props["interval_s"]["description"]
     assert "hook_action_plan" in props["interval_s"]["description"]
+    assert "Stop button" in props["interval_s"]["description"]
+    assert "engine abort" in props["interval_s"]["description"]
+    assert "Stop button" in props["n_frames"]["description"]
     plan = props["hook_action_plan"]["description"]
     assert "interval_s" in plan and "no hook_strategy" in plan
     for tool_name in ("run_timelapse", "run_zstack"):

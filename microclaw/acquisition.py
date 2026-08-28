@@ -15,6 +15,10 @@ class AcquisitionPlan:
     exposure_ms_per_frame: float
     estimated_duration_s: float
     estimated_bytes: int
+    # True only when the planner knows the whole time axis will be submitted as
+    # one hardware sequence. Other zero-min-start-time shapes (such as a
+    # z-stack) must not be inferred to have this property.
+    hardware_sequenced_burst: bool = False
 
     @property
     def illuminated_ms(self) -> float:
@@ -98,7 +102,8 @@ class Reservation:
         self.close()
 
 
-def plan_events(ctrl, events: list, exposure_ms: float | None = None) -> AcquisitionPlan:
+def plan_events(ctrl, events: list, exposure_ms: float | None = None, *,
+                hardware_sequenced_burst: bool = False) -> AcquisitionPlan:
     frames = len(events)
     if frames <= 0:
         raise SafetyViolation("Acquisition plan must contain at least one frame.")
@@ -121,4 +126,7 @@ def plan_events(ctrl, events: list, exposure_ms: float | None = None) -> Acquisi
         default=0.0,
     )
     duration = max(frames * exposure / 1000.0, last_start + exposure / 1000.0)
-    return AcquisitionPlan(frames, exposure, duration, frames * width * height * bpp)
+    return AcquisitionPlan(
+        frames, exposure, duration, frames * width * height * bpp,
+        hardware_sequenced_burst=hardware_sequenced_burst,
+    )

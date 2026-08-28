@@ -25,6 +25,13 @@ import numpy as np
 import tifffile
 from pycromanager import Acquisition, multi_d_acquisition_events
 from ndstorage import Dataset
+try:
+    from ndstorage.ndtiff_file import MAX_FILE_SIZE as NDTIFF_MAX_FILE_SIZE
+except ImportError:
+    # ndstorage releases have historically omitted this implementation module
+    # from some distributions. NDTiff's file format limit is 2**32 bytes; keep
+    # that documented fallback explicit rather than silently baking in 4 GiB.
+    NDTIFF_MAX_FILE_SIZE = 2**32
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
@@ -1756,12 +1763,23 @@ class SessionGrants:
     }
 
     def __init__(self) -> None:
-        self._granted: dict[tuple[str, str], dict[str, str]] = {}
+        self._granted: dict[tuple[str, str], dict[str, Any]] = {}
 
-    def granted(self, kind: str, subject: str | None) -> dict[str, str] | None:
+    def granted(self, kind: str, subject: str | None,
+                grant_metadata: dict[str, float | int] | None = None
+                ) -> dict[str, Any] | None:
         if subject is None:
             return None
-        return self._granted.get((kind, subject))
+        record = self._granted.get((kind, subject))
+        if record is None or grant_metadata is None:
+            return record
+        granted_metadata = record.get("grant_metadata")
+        if not isinstance(granted_metadata, dict):
+            return None
+        if any(float(grant_metadata[key]) > float(granted_metadata.get(key, -1))
+               for key in ("frames", "duration_s", "illuminated_ms")):
+            return None
+        return record
 
     @classmethod
     def is_grantable(cls, kind: str, subject: str | None) -> bool:
@@ -1769,8 +1787,9 @@ class SessionGrants:
         return subject in cls._SUBJECTS.get(kind, ())
 
     def grant(
-        self, kind: str, subject: str | None, summary: str, identity: str
-    ) -> dict[str, str]:
+        self, kind: str, subject: str | None, summary: str, identity: str,
+        grant_metadata: dict[str, float | int] | None = None,
+    ) -> dict[str, Any]:
         if kind not in self.GRANTABLE:
             raise ValueError(
                 f"{kind!r} confirmations cannot be granted for a session; "
@@ -1788,6 +1807,8 @@ class SessionGrants:
             "granted_at": datetime.now(timezone.utc).isoformat(),
             "granted_on": summary,
         }
+        if grant_metadata is not None:
+            record["grant_metadata"] = dict(grant_metadata)
         self._granted[(kind, subject)] = record
         return record
 
@@ -1833,14 +1854,15 @@ def _stdin_decision_record(
 
 
 def _require_confirmation(
-    summary: str, kind: str = "action", subject: str | None = None
+    summary: str, kind: str = "action", subject: str | None = None, *,
+    grant_metadata: dict[str, float | int] | None = None,
 ) -> bool:
     """Blocking stdin confirmation for actions that persist model-writable content.
 
     Prints the exact action and requires an explicit yes, unless the exact
     ``kind``/``subject`` pair has a session grant.
     """
-    grant = SESSION_GRANTS.granted(kind, subject)
+    grant = SESSION_GRANTS.granted(kind, subject, grant_metadata)
     if grant is not None:
         print(f"\n[microclaw] Auto-approved under session grant {grant['id']}:\n{summary}")
         _stdin_decision_record(
@@ -1853,7 +1875,9 @@ def _require_confirmation(
     prompt = "Proceed? [y/N, or s for this session] " if grantable else "Proceed? [y/N] "
     answer = input(prompt).strip().lower()
     if answer in {"s", "session"} and grantable:
-        grant = SESSION_GRANTS.grant(kind, subject, summary, identity="stdin")
+        grant = SESSION_GRANTS.grant(
+            kind, subject, summary, identity="stdin", grant_metadata=grant_metadata
+        )
         _stdin_decision_record(
             summary, kind, subject, f"approved:session:{grant['id']}",
             grant_id=grant["id"],
@@ -2126,11 +2150,47 @@ def _authorize_acquisition(
              c.confirm_above_illuminated_ms),
         ) if threshold is not None and value >= threshold
     ]
-    if confirm and reasons and not CONFIRM_FN(
-        "This acquisition will take " + " and ".join(reasons)
-        + ". It may use substantial disk space or time. Continue?",
+    clauses = []
+    if plan.hardware_sequenced_burst and plan.frames > 1:
+        clauses.append(
+            f"This is one hardware-sequenced burst of {plan.frames} frames "
+            f"({_format_duration(plan.estimated_duration_s)} by the current estimate). "
+            "Once started, Microclaw's Stop button and the engine abort cannot be "
+            "relied on to stop it promptly; thousands of further exposures may occur."
+        )
+    raw_bytes_per_frame = plan.estimated_bytes // plan.frames if plan.frames else 0
+    raw_frame_bound = (
+        NDTIFF_MAX_FILE_SIZE // raw_bytes_per_frame if raw_bytes_per_frame else None
+    )
+    if raw_frame_bound is not None and plan.frames > raw_frame_bound:
+        segments = math.ceil(plan.frames / raw_frame_bound)
+        clauses.append(
+            f"This acquisition writes at least {plan.estimated_bytes / 1e9:.3g} GB "
+            f"of raw image data against NDTiff's 4 GiB per-file limit, so it will "
+            f"roll to a second file before frame {raw_frame_bound:,} — and earlier "
+            "once per-frame metadata is counted. Consider segmenting the acquisition "
+            f"into {segments} runs of at most {raw_frame_bound:,} frames to keep each "
+            "file whole and bound each burst. Measured start/stop overhead is about "
+            f"6 s per segment (about {segments * 6} s across this run); for example, "
+            "ten 10,000-frame segments of a 100,000-frame run cost about 60 s."
+        )
+    grant_metadata = {
+        "frames": plan.frames,
+        "duration_s": plan.estimated_duration_s,
+        "illuminated_ms": plan.illuminated_ms,
+    }
+    summary = (
+        (("This acquisition will take " + " and ".join(reasons)
+          + ". It may use substantial disk space or time.")
+         if reasons else "This acquisition requires confirmation.")
+        + ((" " + " ".join(clauses)) if clauses else "")
+        + " Continue?"
+    )
+    if confirm and (reasons or clauses) and not CONFIRM_FN(
+        summary,
         kind="acquisition",
         subject="threshold",
+        grant_metadata=grant_metadata,
     ):
         reservation.close()
         # Name that this was a human confirmation decline, not a limit refusal.
@@ -3503,6 +3563,8 @@ def _acquire_with_hooks(
         "largest_gap": 0.0,
     }
     frame_lock = threading.Lock()
+    event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+    progress_state = {"last_emitted": None}
 
     def account_saved_frame(axes, dataset):
         with frame_lock:
@@ -3515,6 +3577,17 @@ def _acquire_with_hooks(
             frame_state["count"] += 1
             frame_state["last_saved"] = saved_at
             frame_state["previous_saved"] = saved_at
+            count = frame_state["count"]
+            last_emitted = progress_state["last_emitted"]
+            # A one-second cadence stays readable in the CLI/browser and caps a
+            # 1.2 kHz camera at roughly one event per second. Always publish the
+            # first and planned-final frames so short runs remain observable.
+            emit_progress = (
+                last_emitted is None or saved_at - last_emitted >= 1.0
+                or (plan is not None and count == plan.frames)
+            )
+            if emit_progress:
+                progress_state["last_emitted"] = saved_at
         if reservation is not None:
             # pycro-manager 1.0.2 calls this after the image is on disk. Unlike
             # image_process_fn, its arguments contain no pixel array, so plain
@@ -3525,6 +3598,19 @@ def _acquire_with_hooks(
                     reservation.plan.frames,
                     overrun_frames=reservation.overrun_frames,
                 )
+        if emit_progress:
+            previous_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+            if event_sink is not None:
+                _ACQUISITION_EVENT_CONTEXT.sink = event_sink
+            try:
+                _emit_acquisition_diagnostic({
+                    "type": "acquisition_progress",
+                    "frames_accounted": count,
+                    "frames_planned": plan.frames if plan is not None else None,
+                })
+            finally:
+                if event_sink is not None:
+                    _ACQUISITION_EVENT_CONTEXT.sink = previous_sink
 
     hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
@@ -4004,7 +4090,10 @@ def run_timelapse(
     # the preamble's only mutation and therefore stays below the guard.
     if not channel and exposure_ms is not None:
         ctrl.core.set_exposure(exposure_ms)
-    plan = plan_events(ctrl, events, exposure_ms)
+    plan = plan_events(
+        ctrl, events, exposure_ms,
+        hardware_sequenced_burst=(interval_s == 0 and n_frames > 1),
+    )
     if hook is not None:
         plan = _plan_with_hook_dose(plan, hook)
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
@@ -6340,6 +6429,7 @@ def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
         ),
         # Autofocus snaps are analyzed in memory and are not stored.
         estimated_bytes=plan.estimated_bytes,
+        hardware_sequenced_burst=plan.hardware_sequenced_burst,
     )
 
 

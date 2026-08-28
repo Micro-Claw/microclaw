@@ -524,6 +524,13 @@
       case "retry": toast("API overloaded — retrying in " + ev.delay + "s…"); break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;
+      case "acquisition_progress": {
+        const accounted = Number(ev.frames_accounted).toLocaleString();
+        const planned = ev.frames_planned == null
+          ? "?" : Number(ev.frames_planned).toLocaleString();
+        $("pending-text").textContent = `frames ${accounted} / ${planned}`;
+        break;
+      }
       // Confirmations are banner state, not transcript content.
       case "confirm_request": showConfirm(ev); break;
       case "confirm_resolved": hideConfirm(ev.id); break;
