@@ -260,6 +260,45 @@ blast radius of *any* fatal engine-side error, which is the correct scope for
 code that supervises somebody else's acquisition engine.
 
 
+## What the demo machine measured, 2026-08-28
+
+Block 60a's gate, evidence in `block60a-demo-evidence/`. Recorded here because
+three decisions above were written without these numbers.
+
+* **D3's camera probe is answerable mid-burst — the one thing that needed
+  hardware.** During a 600-frame `interval_s=0` burst, **62 of 62** probes of
+  `core.is_sequence_running()` returned True, median latency **0.0 ms**, max 62.
+  The two False readings bracket the burst exactly (+0.000 s and +12.969 s), so
+  the reading tracks the burst rather than being stuck. pyjavaz's per-round-trip
+  lock does **not** hold the bridge while the engine is inside a burst, and D3's
+  `camera_sequence_running` is therefore obtainable at expiry, as written.
+* **Teardown costs at most 203 ms on a healthy 600-frame run.** Derived from the
+  probe timestamps, not from the gate's own limb, which reports a looser 0.97 s
+  upper bound because it subtracts only exposures from wall time. Last True
+  +12.766 s, return +12.969 s.
+  **This does not shrink `ERROR_TEARDOWN_GRACE_S`.** The grace bounds a *broken*
+  teardown, and the incident measured 4 min 46 s of abort latency after the
+  engine's exception; D1 already refused to fit that constant to one observation
+  and a healthy-path measurement is not the observation it refused.
+* **The runtime ceiling had 24x headroom** on the shape it estimates well: wall
+  12.97 s against a 312 s ceiling, 4.2% of it, on a plan estimating 12.0 s.
+  Nothing here tests D1a's position-dominated shape, which has no hardware
+  evidence and rests on the suite's two simulated-clock tests.
+* **`_acq_dataset_path` read a suffixed path on hardware.** The dataset landed at
+  `..._1`, not the unsuffixed name, corroborating design/38 F7's concern on a
+  real acquisition rather than in a fixture.
+* **Not established, and not claimed:** that the waiter *thread* is the mechanism
+  on hardware. Nothing in the evidence distinguishes threaded teardown from
+  inline; the gate establishes no-regression. The mechanism's proof is the
+  suite's blocking fake, where the tool returns while `__exit__` is still
+  blocked.
+
+One input for 60b, from the same run: a healthy completion's result dict is
+`{"dataset_path": ..., "status": "Timelapse complete."}` and states **no frame
+count at all** — `_reservation_report` is empty on an exact run by design. F4 is
+about progress *during* a run; the final report is silent too, and D4 should
+carry `frames_accounted` into it while it is there.
+
 ## Decisions
 
 ### D1 — Microclaw bounds its own wait, with a short error grace and a long runtime ceiling. (fixes F2, F3)
@@ -875,5 +914,5 @@ costs more than the session, ask for the session.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | `e5958cb` (3 Codex rounds + 1 Claude round after Codex credit ran out; 4 defects returned, all in a broad `except Exception` between a supervised acquisition and `execute_tool`; coordinator suite 2450/99/0) | pushed 2026-08-28, awaiting the demo machine; selftest 8/8 on the branch and 4 limbs FAIL on pre-60a `main` | — |
+| 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | `e5958cb` (3 Codex rounds + 1 Claude round after Codex credit ran out mid-turn; 4 defects returned, all in a broad `except Exception` between a supervised acquisition and `execute_tool`; coordinator suite 2450/99/0) | **PASSED 8/8, round 1**, demo machine 2026-08-28. 62/62 probes read `is_sequence_running()` True mid-burst, median 0.0 ms; teardown after camera-idle <=203 ms derived from probe timestamps; ceiling used 4.2% | `daedc83` merged 2026-08-28, branch deleted; design gate below |
 | 60b | — | — | — | — | — (not started; depends on 60a's event sink) |

@@ -7916,3 +7916,91 @@ tokenizer fix, so the unit fixtures are its whole evidence and no gate limb may
 claim otherwise. M5 was ruled out for this block **from its own archived
 inventory** rather than from a trip: four StateDevices, no adapter or label
 routing signal, empty core autofocus.
+
+## design/60 block 60a — Microclaw bounds its own wait (merged 2026-08-28, `daedc83`)
+
+Four review rounds, demo gate passed 8/8 on the first attempt.
+
+**Every defect came from review, none from a runner's own tests, and all four
+were the same shape**: a broad `except Exception` sitting between a supervised
+acquisition and `execute_tool`. The typed `AcquisitionUnterminated` is an
+`Exception`, so each of them ate it. The survey handlers closed a reservation the
+teardown waiter still owned; `run_multiposition_acquisition` flattened the
+unterminated result into a per-position error string and **kept acquiring**, with
+the session refusal powerless because it lives at `execute_tool`, outside the
+loop; composites dropped the positions that had already finished; and the payload
+that fixed *that* copied whole child result dicts, so a live `Reservation` object
+escaped `json.dumps` from inside `execute_tool`'s own `except` clause — out of a
+function documented as never raising. **When you add a typed exception that must
+survive to a boundary, the question is not "did I raise it" but "who catches
+Exception between here and there".**
+
+**The structural test is what ended the chase.** After the first two site-by-site
+fixes I stopped enumerating and asked for one test parameterized over every tool
+carrying `_microclaw_acquisition_entry_point`, asserting each returns the D3 dict,
+leaves `ledger.in_flight` true, and — the part that mattered — **constructs no
+further `Acquisition`**, counted, so a loop that keeps going is caught by
+construction count rather than by its own report. It immediately found three
+tools where I had found one by reading. It also asserts
+`set(SUPERVISED_TOOL_NAMES) == set(inputs)`, so a seventh entry point fails the
+test until someone covers it. Fifteen synthetic-tool tests had passed while all
+three were broken, because every one drove a locally defined `run` registered
+into a one-entry registry: **a fixture that cannot reach the real tool's error
+handling is not coverage of it** (58a's lesson, one layer up).
+
+**Two design decisions were amended before any code, both from reading rather
+than from the incident.** D1a: D1's runtime ceiling is derived from
+`plan.estimated_duration_s`, which `plan_events` documents as counting exposure
+and `min_start_time` only — excellent for a hardware-sequenced burst (5,000 s
+planned against 5,175 s real on M2) and badly wrong for a position-dominated run,
+where a 1,000-position tile scan at 10 ms plans 10 s and would have been declared
+dead at 310 s. The operator's challenge — *"we've done several overnight
+acquisitions on the Nikon systems that worked"* — is what forced the second half:
+a *fixed* quiet window fails too, because a hook running a focus search leaves
+legitimate minutes between frames. Hence `max(900, 5 × largest observed gap)`,
+self-calibrated from the run's own frames, with the ceiling demoted to a
+precondition. D3a: D3's dict names one `dataset_path`, but four of the six
+supervised entry points are composites, so an expiry at position 3 of 20 reported
+nothing about two finished datasets — **this document's own F7 reappearing inside
+the fix for F2.**
+
+**The gate's selftest paid for itself twice before the rig saw it.** Driving the
+gate program against a bridge-shaped fake caught (1) that the program would have
+**hung with no output**, because `run_timelapse` can trip a confirmation and
+`_require_confirmation` calls `input()` on a console a program does not have —
+fixed by auto-approving *and recording* every confirmation into the evidence; and
+(2) that the camera probe polled more slowly than a short burst lasts, so its
+limb failed on the gate's own timing rather than on the product. Neither is
+detectable from reading the program.
+
+**Scoring the pass turned up a number the report does not state.** The gate's own
+teardown limb reports an upper bound of 0.97 s, computed as wall minus exposures
+— which also carries planning, authorization and submission. The probe timestamps
+are tighter: last `True` at +12.766 s, tool returned at +12.969 s, so **teardown
+after the camera went idle cost at most 203 ms** for a 600-frame dataset. That is
+the figure D1's constants were chosen without. It does **not** argue for
+shrinking the 90 s grace, which bounds a *broken* teardown — the incident
+measured 4 min 46 s of abort latency, and fitting a constant to one observation
+of a mechanism nobody understands is what D1 already refused to do.
+
+**What the gate deliberately does not prove**, said here so nobody later reads
+more into it: it establishes no regression on hardware, not that the waiter
+thread is the mechanism. Nothing in the evidence distinguishes threaded teardown
+from inline. The mechanism's proof is the suite's blocking fake, where the tool
+returning while `__exit__` is still blocked is only possible with a waiter.
+
+**Runner notes.** Three Codex rounds, then Codex hit its usage limit **mid-turn**
+with edits already landed. Per the workflow those were committed as `UNREVIEWED`
+— and running their tests first was the right call, because they failed, and the
+failure was a product defect rather than an incomplete edit. A Claude runner
+finished the round and improved on the instruction: told to add an optional
+`partial` dict, it shipped a named `positions_completed` list instead, on the
+grounds that an arbitrary dict merged into the result could clobber
+`dataset_path` or `frames_accounted`. It also caught that a two-position fixture
+cannot distinguish "expired on the last one" from "the loop stopped", and went to
+three.
+
+**One coordinator error.** Backticks inside a double-quoted shell string get
+command-substituted by zsh, which silently ate the words "except Exception" from
+`54db0e1`'s message. Use a heredoc or `-F -` for any commit message containing
+code.
