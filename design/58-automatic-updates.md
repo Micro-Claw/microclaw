@@ -2655,6 +2655,17 @@ with no network inside 7.3 s. The offline `git fetch` failed fast and well
 inside its 15 s cap; `last_error` stayed `None`, correctly, because
 `rev-parse` still resolved the stale ref.
 
+**What "offline launch works" can and cannot mean.** The operator confirmed the
+page opened and did not drive a Micro-Manager session. That session is not a
+limb this design can own, in either direction: the ZMQ bridge is loopback on
+4827 and a disconnected NIC does not touch it, but an agent *turn* calls
+`api.anthropic.com`, so no session completes offline no matter what the bridge
+does. What is proven, and what the limb was booked for, is that the managed
+install launches, activates a slot, serves, keeps its slot, and degrades its
+update check correctly with no route. Startup itself has no network dependency
+by construction -- `agent._get_client()` is lazy and `credentials.load_api_key()`
+reads local storage -- which is why the launch was clean.
+
 `Candidate.warning` was rendered on the rig for the first time, offline, and
 cleared on reconnect — the offer stayed `b567abb` across both, so the only
 difference between a fetched offer and a stale one was the sentence that had
