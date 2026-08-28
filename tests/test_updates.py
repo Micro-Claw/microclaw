@@ -1029,3 +1029,50 @@ def test_stage_cached_candidate_uses_shared_materialize_and_slot_builder(tmp_pat
         ("stage", tmp_path, candidate.sha, config),
     ]
     assert list((tmp_path / "downloads").iterdir()) == []
+
+
+def test_terminal_notice_does_not_offer_the_commit_already_installed(tmp_path):
+    """The cached candidate outlives the update that consumed it.
+
+    `last_success` is written only by `check_for_update`, which is due once a
+    day, so for the whole interval after a successful update the state file
+    still names the commit that is now running.  Offering it back is what made
+    the demo machines report an update immediately after installing that exact
+    update, and then loop: staging it rebuilds the other slot at the same SHA.
+    """
+    path = tmp_path / updates.STATE_NAME
+    installed = "b" * 40
+    state = updates.public_provenance(installed)
+    state["last_success"] = {
+        "candidate": updates.Candidate(installed, "The commit now running", "clone").__dict__,
+    }
+    updates.write_state(state, path)
+    assert updates.terminal_update_notice(state_file=path) == (None, None)
+
+
+def test_activation_invalidates_the_cached_candidate_and_the_check_interval(tmp_path):
+    """Activating a slot makes the check that produced the cache obsolete."""
+    old, new = "a" * 40, "b" * 40
+    state = updates.public_provenance(old)
+    state["last_attempt"] = 10.0
+    state["next_check"] = 10.0 + updates.CHECK_INTERVAL_SECONDS
+    state["last_success"] = {
+        "checked_at": 10.0,
+        "candidate": updates.Candidate(new, "Newer main", "clone").__dict__,
+    }
+    state["staging"] = {"status": "staged", "commit": new}
+    updates.write_state(state, tmp_path / updates.STATE_NAME)
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    updates.write_slot_marker(old, 1, executable=tmp_path / "env-a" / "Scripts" / "python.exe")
+    updates.write_slot_marker(new, 1, executable=tmp_path / "env-b" / "Scripts" / "python.exe")
+
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+
+    after = updates.load_state(tmp_path / updates.STATE_NAME)
+    assert after["installed_commit"] == new
+    assert after["last_success"]["candidate"] is None
+    assert "staging" not in after
+    # The interval was measured against the previous install; the next launch
+    # must be free to discover whatever main holds now.
+    assert "next_check" not in after

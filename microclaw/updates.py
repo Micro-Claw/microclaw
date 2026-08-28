@@ -151,9 +151,28 @@ def _reconcile_installed_commit(base: Path, slot: str) -> None:
         if commit == "unknown" or not isinstance(commit, str) or not _SHA.fullmatch(commit):
             return
         state = load_state(base / STATE_NAME)
-        if state is not None:
-            state["installed_commit"] = commit.lower()
-            write_state(state, base / STATE_NAME)
+        if state is None:
+            return
+        if state.get("installed_commit") == commit.lower():
+            return
+        state["installed_commit"] = commit.lower()
+        # The cached discovery was computed against the *previous* install, and
+        # `check_for_update` -- its only writer -- is not due again for a day.
+        # Left standing it offers the commit that just became the running one,
+        # and staging that answer rebuilds the other slot at the same SHA and
+        # re-arms the same banner: the update that never registers.  A slot
+        # change invalidates the cache and makes the next launch's check due.
+        success = state.get("last_success")
+        if isinstance(success, dict):
+            success["candidate"] = None
+        state.pop("next_check", None)
+        state.pop("staging", None)
+        # `discovery` is a diagnostic nothing in the product reads -- which is
+        # exactly why it must not lie: it is what someone opens the state file
+        # to consult, and after activation "A newer main commit is available"
+        # names the commit now running.
+        state.pop("discovery", None)
+        write_state(state, base / STATE_NAME)
     except Exception:
         return
 
@@ -972,6 +991,25 @@ def start_due_check(no_update_check: bool = False):
     return thread
 
 
+def candidate_is_installed(
+    candidate: Candidate | dict[str, Any] | None, state: dict[str, Any],
+) -> bool:
+    """Is this cached candidate the commit that is already running?
+
+    Read-side companion to the invalidation in `_reconcile_installed_commit`:
+    that is best-effort by design, and a state file written by an older build
+    carries the stale candidate anyway.  Neither the banner nor the REPL notice
+    may offer an update the user has already installed.
+    """
+    if candidate is None:
+        return False
+    sha = candidate.sha if isinstance(candidate, Candidate) else candidate.get("sha")
+    installed = str(state.get("installed_commit", "unknown")).lower()
+    return (
+        isinstance(sha, str) and installed != "unknown" and sha.lower() == installed
+    )
+
+
 def candidate_is_suppressed(
     candidate: Candidate | dict[str, Any] | None, dismissal: Any, *, now: float | None = None,
 ) -> bool:
@@ -1004,7 +1042,9 @@ def terminal_update_notice(*, state_file: str | Path | None = None) -> tuple[str
             candidate = Candidate(**raw)
         except (TypeError, ValueError):
             pass
-    if candidate_is_suppressed(candidate, state.get("dismissal")):
+    if candidate_is_installed(candidate, state) or candidate_is_suppressed(
+        candidate, state.get("dismissal")
+    ):
         candidate = None
     if candidate:
         return (

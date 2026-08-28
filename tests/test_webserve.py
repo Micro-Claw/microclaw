@@ -1994,3 +1994,67 @@ def test_remote_confirmation_audit_carries_identity(session, remote, fast_confir
     assert session.audit_records[-1]["kind"] == "illumination"
     assert session.audit_records[-1]["decision"] == "approved"
     assert session.audit_records[-1]["timestamp"]
+
+
+def test_update_status_does_not_offer_the_installed_commit(session, tmp_path, monkeypatch):
+    """The banner reads the same day-old cache the REPL notice does."""
+    _managed_updates(tmp_path, monkeypatch, candidate_sha="0" * 40)  # == installed_commit
+    assert TestClient(build_app(session)).get("/api/update").json()["candidate"] is None
+
+
+def test_staging_refuses_the_commit_already_installed(session, tmp_path, monkeypatch):
+    """Staging the running commit rebuilds the other slot at the same SHA and
+    re-arms the same banner: the update loop the demo machines were stuck in."""
+    _managed_updates(tmp_path, monkeypatch, candidate_sha="0" * 40)
+    monkeypatch.setattr(
+        updates, "stage_cached_candidate",
+        lambda *a, **k: pytest.fail("staged a commit that is already installed"),
+    )
+    assert TestClient(build_app(session)).post("/api/update/stage").status_code == 409
+
+
+def test_installing_an_update_clears_the_banner_that_offered_it(session, tmp_path, monkeypatch):
+    """The whole reported cycle, composed: stage -> restart -> banner gone.
+
+    Every unit of this was green while the machines looped.  `activate_pending`
+    reconciled `installed_commit` correctly, `update_status` projected the cache
+    faithfully, and nothing in between compared the two -- so the update
+    installed and then offered itself again, and staging that offer rebuilt the
+    other slot at the same SHA.  This drives the sequence an operator performs.
+    """
+    installed, newer = "0" * 40, "a" * 40
+    state_path = _managed_updates(tmp_path, monkeypatch, candidate_sha=newer)
+    state = updates.load_state(state_path)
+    state["next_check"] = time.time() + updates.CHECK_INTERVAL_SECONDS
+    updates.write_state(state, state_path)
+    (tmp_path / updates.LAUNCHER_PROTOCOL_NAME).write_text("1\n", encoding="ascii")
+    (tmp_path / updates.ACTIVE_SLOT_NAME).write_text("a\n", encoding="ascii")
+    for slot, commit in (("a", installed), ("b", newer)):
+        updates.write_slot_marker(
+            commit, 1, executable=tmp_path / f"env-{slot}" / "Scripts" / "python.exe",
+        )
+    # What stage_inactive_slot publishes on success.
+    (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
+    state = updates.load_state(state_path)
+    state["discovery"] = {"status": "candidate",
+                          "message": f"A newer main commit is available: {newer}."}
+    state["staging"] = {"status": "staged", "commit": newer}
+    updates.write_state(state, state_path)
+
+    app = TestClient(build_app(session))
+    staged = app.get("/api/update").json()
+    assert staged["pending_staged"] is True
+    assert staged["candidate"]["sha"] == newer
+
+    # "Restart now": the launcher consumes pending through the same call.
+    assert updates.activate_pending(tmp_path, 1) == ("b", "a")
+
+    after = app.get("/api/update").json()
+    assert after["pending_staged"] is False
+    assert after["candidate"] is None
+    assert updates.terminal_update_notice(state_file=state_path) == (None, None)
+    # And the interval must not hold the machine on a day-old answer, nor the
+    # diagnostic keep naming the commit that is now running.
+    settled = updates.load_state(state_path)
+    assert "next_check" not in settled
+    assert "discovery" not in settled
