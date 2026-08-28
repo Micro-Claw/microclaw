@@ -1099,61 +1099,82 @@ Implementation (§2, §4):
 - [ ] 35. Schema parity and the export decorator tests green; full suite re-run
   by the coordinator.
 
-Gate — demo machine, a driven session plus two programs:
+Gate — demo machine (available, 2026-08-28), **one read-only program and three
+short driven sessions**. The gate was reduced after `design/59-block59b-offline-score.py`
+settled 22 limbs off-rig on both trees; only what genuinely needs a live bridge
+or a live agent is below. `design/55-gate-probe-selftest.py` and 59a's harness
+are the precedent — reuse 59a's limb/Tee/CountingCore structure and its safety
+config template rather than writing second copies.
 
-- [ ] 36. `design/59-block59b-demo-setup.py` discovers the light-path device by
-  adapter/type rather than by name, drives the objective to a state no pixel-size
-  config matches, drives the light-path device between positions it already has,
-  restores entry state and **reads the restore back**. It writes no state label
-  and no `.cfg`; the scorer asserts every device's `allowed` values are
-  byte-identical before and after.
-- [ ] 37. Control that can fail, scored on message indices: round A, the
-  adapter-identified light path with unnamed labels — the agent raises the
-  routing question from message 2's payload **before its first exposure** and
-  asks what is on each position rather than asserting one; round B, the control —
-  no *non*-routing StateDevice draws the same question.
-- [ ] 37a. Knowledge-base round trip across two sessions: `save_knowledge` is
-  reached in the first, constructs the condition from live state, and shows that
-  complete identity and mapping at the human gate before storing the
-  identity-scoped `devices/` entry. In the second session the raw structured
+- [ ] 36. `design/59-block59b-demo-probe.py` — **no agent, one run, everything
+  mechanical.** Discovers the light-path device by adapter/type and never by
+  name; confirms the machine's inventory as step 1 and reports NOT EXERCISED per
+  limb for anything absent. Drives the objective to a state no pixel-size config
+  matches and the light-path device between positions it already has, then
+  restores entry state and **reads the restore back** — 59a's gate restored in a
+  `finally` with nothing reading it. Writes no state label and no `.cfg`; asserts
+  every device's `allowed` values are byte-identical before and after, and that
+  the production safety document's bytes and mtime are unchanged.
+- [ ] 36a. Probe limb — **marking, not filtering** (was 38): all six StateDevices
+  listed with their `allowed` values, including the illumination-declared and the
+  explicitly ruled one, and `Path` marked adapter-only with `positions_unnamed`
+  while no non-routing device is marked.
+- [ ] 36b. Probe limb — **the identity control** (was half of 37a). Writes a
+  structured `devices/` map with one identity field wrong, asserts the live
+  payload reports **no mapping**; corrects that field, asserts the mapping
+  appears. This is where the match is decided, so it is scored on the payload and
+  needs no session. Snapshots and restores the operator's knowledge file.
+- [ ] 36c. Probe limb — **objective unknown** (was 40's payload half):
+  `pixel_size_config` `None`, `pixel_size_um` 0.0, every dependency's `live`
+  following the device, and the string `"default"` absent.
+- [ ] 37. **Session A — imaging works.** Scored on message indices, not on
+  whether the agent eventually got there. The agent must raise the routing
+  question **from message 2's payload, before its first exposure**, and ask what
+  is on each position rather than assert one. Controls that can fail, in the same
+  session: no *non*-routing StateDevice draws the same question (the machine has
+  five), the agent reports that Micro-Manager does not know the objective
+  (`"default"`, or a magnification the operator mentioned reported as measured,
+  is a fail), it proposes the hardware lock unprompted from orientation alone,
+  and — because the hint is conditional — it does **not** call
+  `get_optical_path_documentation`, since imaging is working.
+- [ ] 38. **Session B — blank frame.** The camera is put into a mode whose frames
+  carry no structure; NOT EXERCISED if this machine's camera offers none. The
+  pass condition is not that the agent finds a fault — there is none — it is that
+  it reports the software path as readable and asks about the **physical** path
+  before its second exposure, and that it now *does* call
+  `get_optical_path_documentation`. Limbs 37 and 38 together are the pair that
+  makes the conditional hint falsifiable. The operator answers the position
+  question and accepts the save: `save_knowledge` is reached, constructs the
+  condition from live state, and shows the complete resolved identity and mapping
+  at the human gate. NOT EXERCISED if the operator declines — declining is their
+  right and is not a product failure.
+- [ ] 39. **Session C — a fresh session, four messages.** The raw structured
   entry is absent from the system context; `get_system_state` resolves it against
-  live orientation and reports the mapping inside `optical_path`, and the agent
-  uses it without asking again. A control session with one identity field changed
-  must have the raw entry absent from the system context, show **no mapping in the
-  payload**, and ask or report it unknown; mere absence of a repeated question is
-  not proof that storage caused it. Scored on the system context, confirmation,
-  payload and transcript. The gate snapshots and restores the user's knowledge
-  file so its evidence does not alter later sessions. NOT EXERCISED if the
-  operator declines the save — declining is their right and is not a product
-  failure.
-- [ ] 38. Marking, not filtering: the stock-label device is still listed with its
-  `allowed` values shown, and the route is reported as unverifiable rather than
-  absent.
-- [ ] 39. Blank-frame round: the agent asks about the **physical** path before
-  its second exposure. NOT EXERCISED if this machine's camera offers no
-  structureless mode.
-- [ ] 40. Objective: the agent reports that Micro-Manager does not know it.
-  "default", or a magnification the operator mentioned reported as measured, is a
-  fail.
-- [ ] 41. Focus: the hardware lock proposed before any image-based sweep, from
-  orientation alone, unprompted.
-- [ ] 42. `get_optical_path_documentation` reached from the hint; the shipped
-  prompt greps clean of its name. **Scored as a pair, because the hint is now
-  conditional (item 31) and a limb that cannot fail is not a criterion**: the
-  tool is reached in the blank-frame round, where the camera is not getting the
-  signal the agent expects, and is **not** reached in a round where imaging is
-  working. A session that pulls the whole reference into context every time it
-  reads orientation fails this limb even though it "used the tool".
-- [ ] 42a. Cost measured with the adapter reads in place in three separate
-  phases: live-rig validation, first `get_system_state`, and second
-  `get_system_state`. Report the latter two against §3's 39/36 ms and 27/8 ms,
-  and report the validation delta and its expected 2N adapter calls separately;
-  an orientation-only measurement cannot pass this limb by hiding startup cost.
-- [ ] 43. `design/59-score-gate.py` scores each limb independently over the
-  history JSONL, reports NOT EXERCISED where the stimulus could not be arranged,
-  and exits nonzero.
-- [ ] 43a. 59b's setup program and scorer are likewise run against a
-  bridge-shaped fake before the operator sees them, on both trees.
+  live orientation and reports the mapping inside `optical_path`; the agent uses
+  it and does not ask again. Scored on the system context and the payload as well
+  as the transcript, because mere absence of a repeated question proves nothing.
+- [ ] 40. **Cost, three phases, in the probe** (was 42a): live-rig validation
+  with the adapter reads in place, first `get_system_state`, second
+  `get_system_state`. Report bridge calls **and** wall time for each; compare the
+  latter two with §3's 39/36 ms and 27/8 ms and report the validation delta and
+  its 2N adapter calls separately, so added startup cost cannot hide behind an
+  orientation-only measurement. Off-rig the call counts are already 30→20 on this
+  fingerprint; the rig supplies the wall time a fake cannot.
+- [ ] 41. `design/59-block59b-score.py` scores the three sessions' history JSONL,
+  each limb independently, NOT EXERCISED where the stimulus could not be
+  arranged, exits nonzero. The probe scores itself.
+- [ ] 42. **Both programs run against a bridge-shaped fake on both trees before
+  the operator sees them** (`design/59-block59b-gate-selftest.py`). Non-negotiable
+  and the reason 59a lost a trip: a `MagicMock` hands back Python-friendly
+  objects, so the fake's collections must expose `size()`/`get(i)` and raise on
+  iteration. Report the discrimination, not a green line.
+- [ ] 43. Settled off-rig, recorded so the rig is not asked to re-prove it:
+  `design/59-block59b-offline-score.py` reports 22 limbs PASS on this tree, 15 of
+  which FAIL or are NOT PRESENT on `main`. It also establishes that **neither the
+  demo machine's real labels nor M5's discriminate the port-token fix** — no
+  available machine produces a match under either matcher — so the unit fixtures
+  are the whole evidence for 34b1 and no gate limb may claim otherwise.
+
 - [ ] 44. **Owed to a Nikon Ti:** a real blank field caused by routing, the
   manual-prism configuration, a `4-Unknown` turret, a live PFS status, **and the
   label-matching source of the light-path role** — no demo device carries port
@@ -1219,5 +1240,5 @@ same commit, so the two halves of the move cannot separate.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `30ed48d` (3 Codex rounds, 12 findings; coordinator suite 2357/99/0) | round 1 **FAILED** 2026-08-28 — `mmcorej_StrVector` not iterable, all 9 orientation limbs NOT EXERCISED; the product half was a silent `available_configs: []`. Round 2 **PASS 11/11**, 39 calls/36 ms then 27/8 ms; restore read-back added afterwards | `e314927` merged 2026-08-28, branch deleted |
-| 59b | `design59/optics-reference` | `906fac8` (2026-08-28) | — | — | — (design amended 2026-08-28: no renames, adapter identity, identity-scoped `devices/` map, compound port tokens; item 32 split out to 59c) |
+| 59b | `design59/optics-reference` | `906fac8` (2026-08-28) | `eddd1b6` (2 Codex rounds, 10 findings; coordinator suite 2415/99/0; off-rig scorer 22/22, 15 discriminating on `main`) | — (reduced to one probe + three driven sessions after off-rig scoring; M5 ruled out from its own archived inventory — no routing device, no autofocus) | — |
 | 59c | — | — | — | — | — (not started, and does not start: gated on a Nikon Ti) |
