@@ -361,6 +361,20 @@ a pattern, not a new layer. Contents, all generic:
   material. Those come from the 2026-08-23 session and the rig configs in the
   evidence archive; do not pad the reference with generic optics the agent will
   never act on.
+
+  **That ordering is a common arrangement, not ground truth** (operator,
+  2026-08-28). It describes a transmitted-light upright stand; plenty of
+  microscopes are not that. On an inverted stand the condenser is above the
+  sample and the objective below it. Under epi-illumination the excitation
+  arrives *through* the objective and no substage lamp is in the path at all.
+  Add a spinning disk, a TIRF illuminator, an optosplitter or a second camera
+  and the segment between objective and detector is a different graph. So the
+  reference must be written as *how light paths usually work*, saying so in
+  those words, and every sentence in it that could be read as a claim about
+  **this** rig must instead point at `optical_path` — which reads the actual
+  devices — or at the operator. A reference that lets the agent infer a
+  component microclaw never read has reintroduced Gap 1 in prose form, and 59b's
+  gate scores the agent on what it read, never on what the document implies.
 - **What Micro-Manager can and cannot see.** The motorized path only. A manual
   prism slider, a filter cube pulled to a detent, a closed field diaphragm and a
   condenser out of position all produce a dark camera with every readable value
@@ -778,6 +792,12 @@ Implementation (§2, §4):
   splits; what Micro-Manager cannot see (the manual prism named as the **first**
   thing to check on a blank frame with a valid lock); objectives, working
   distance and search windows; hardware focus locks and the wrong-surface lock.
+- [ ] 29a. The reference is framed as *how light paths usually work*, in those
+  words, and the path ordering carries the caveat that stands differ — inverted,
+  epi-illuminated, TIRF, spinning-disk and multi-camera rigs all depart from it.
+  Nothing in the file may read as a claim about the rig in front of the agent;
+  where it would, it points at `optical_path` or at the operator instead. A test
+  asserts the caveat sits with the ordering, so the two cannot separate.
 - [ ] 30. Tool `get_optical_path_documentation`, `@emits_nothing`, registered in
   `TOOL_REGISTRY` **and decorated** — an undecorated tool plants a
   `raise RuntimeError` in every exported script that recorded it, which has now
