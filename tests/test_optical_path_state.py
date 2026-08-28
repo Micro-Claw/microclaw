@@ -49,6 +49,12 @@ class OpticalCore:
         self.property_calls = []
         self.bridge_vectors = bridge_vectors
         self.config_enumeration_error = None
+        self.adapters = {name: (name, "") for name in self.devices}
+        self.camera = ""
+        self.adapter_name_calls = []
+        self.adapter_description_calls = []
+        self.adapter_name_failures = set()
+        self.adapter_description_failures = set()
 
     def _vector(self, values, java_type="mmcorej_StrVector"):
         return BridgeVector(values, java_type) if self.bridge_vectors else list(values)
@@ -56,6 +62,15 @@ class OpticalCore:
     def _call(self): self.calls += 1
     def get_loaded_devices(self): self._call(); return self._vector(self.devices)
     def get_device_type(self, device): self._call(); return 4
+    def get_device_name(self, device):
+        self._call(); self.adapter_name_calls.append(device)
+        if device in self.adapter_name_failures: raise RuntimeError(f"adapter name failed for {device}")
+        return self.adapters[device][0]
+    def get_device_description(self, device):
+        self._call(); self.adapter_description_calls.append(device)
+        if device in self.adapter_description_failures:
+            raise RuntimeError(f"adapter description failed for {device}")
+        return self.adapters[device][1]
     def get_shutter_device(self):
         self._call()
         if isinstance(self.shutter, Exception): raise self.shutter
@@ -91,7 +106,9 @@ class OpticalCore:
     def get_y_position(self): self._call(); return 0.0
     def get_position(self): self._call(); return 0.0
     def get_exposure(self): self._call(); return 10.0
-    def get_camera_device(self): self._call(); return ""
+    def get_camera_device(self): self._call(); return self.camera
+    def define_state_label(self, *args): raise AssertionError("state labels are read-only here")
+    def defineStateLabel(self, *args): raise AssertionError("state labels are read-only here")
 
 
 class Studio:
@@ -128,13 +145,17 @@ def test_ti_shaped_fake_reports_path_dependency_and_focus_without_claiming_objec
         "TILightPath": ("2-Left100", ["1-Eye100", "2-Left100", "3-Right100", "4-Left80"]),
     }, {"Res60x": [("TINosePiece", "Label", "4-60xOil")]})
     core.autofocus = "TIPFSStatus"
+    core.adapters["TILightPath"] = ("TILightPath", "Light Path Drive")
     core.devices["TIPFSStatus"] = ("Out of focus search range", [])
     payload, _ = state(core)
     assert payload["objective"]["available_configs"][0]["dependencies"][0]["device"] == "TINosePiece"
     assert "measured objective" not in str(payload).lower()
     assert payload["focus"]["status_properties"]["Status"] == "Out of focus search range"
     positions = {item["device"]: item for item in payload["optical_path"]["discrete_positions"]}
-    assert positions["TILightPath"]["role"] == ["light-path candidate"]
+    assert positions["TILightPath"]["role"] == [
+        "light-path candidate (position labels name ports)",
+        "light-path candidate (adapter self-description)",
+    ]
     assert positions["TINosePiece"]["role"] == [
         "pixel-size-config dependency (not proof of objective)"
     ]
@@ -190,8 +211,123 @@ def test_second_call_uses_retained_inventory_and_config_walk():
 def test_port_vocabulary_marks_but_never_filters():
     payload, _ = state(OpticalCore({"Opaque": ("Alpha", ["Alpha", "Beta"])}))
     assert payload["optical_path"]["discrete_positions"] == [
-        {"device": "Opaque", "allowed": ["Alpha", "Beta"], "label": "Alpha", "role": []}
+        {"device": "Opaque", "adapter": "Opaque", "adapter_description": "",
+         "allowed": ["Alpha", "Beta"], "label": "Alpha", "role": []}
     ]
+
+
+@pytest.mark.parametrize("label", [
+    "Left80", "Eye100", "Camera-Port", "Eyepiece", "Trinocular", "Sideport",
+    "Leftport", "Frontport", "Bottomport", "Camport", "Phototube",
+])
+def test_port_tokenizer_matches_complete_ascii_tokens(label):
+    from microclaw.tools import _PORT_LABEL_WORDS
+    assert _PORT_LABEL_WORDS.search(label)
+
+
+@pytest.mark.parametrize("label", [
+    "Brightfield", "Photoactivation", "Portrait", "Outside", "Photobleach",
+])
+def test_port_tokenizer_rejects_embedded_letter_substrings(label):
+    from microclaw.tools import _PORT_LABEL_WORDS
+    assert not _PORT_LABEL_WORDS.search(label)
+
+
+def test_port_tokenizer_lists_compounds_before_their_prefixes():
+    from microclaw.tools import _PORT_LABEL_WORDS
+    pattern = _PORT_LABEL_WORDS.pattern
+    alternatives = pattern.split("(?:", 1)[1].split(")", 1)[0].split("|")
+    for compound, prefix in (("eyepiece", "eye"), ("phototube", "photo"),
+                             ("sideport", "side"), ("leftport", "left"),
+                             ("rightport", "right"), ("frontport", "front"),
+                             ("bottomport", "bottom"), ("camport", "port")):
+        assert alternatives.index(compound) < alternatives.index(prefix)
+
+
+def test_adapter_and_label_roles_are_independent_and_device_name_is_never_a_signal():
+    core = OpticalCore({
+        "Path": ("State-0", ["State-0", "State-1"]),
+        "LabelsOnly": ("Left80", ["Left80", "Eye100"]),
+        "LightPath": ("A", ["A", "B"]),
+    })
+    core.adapters.update({
+        "Path": ("DLightPath", "Demo light path"),
+        "LabelsOnly": ("GenericSwitch", "Filter wheel"),
+        "LightPath": ("GenericFilter", "Filter wheel"),
+    })
+    payload, _ = state(core)
+    entries = {item["device"]: item for item in payload["optical_path"]["discrete_positions"]}
+    assert entries["Path"]["role"] == ["light-path candidate (adapter self-description)"]
+    assert "positions_unnamed" in entries["Path"]
+    assert "identity-scoped devices/" in entries["Path"]["positions_unnamed"]
+    assert "does not rename" in entries["Path"]["positions_unnamed"]
+    assert entries["LabelsOnly"]["role"] == ["light-path candidate (position labels name ports)"]
+    assert "positions_unnamed" not in entries["LabelsOnly"]
+    assert entries["LightPath"]["role"] == []
+
+
+def test_adapter_metadata_is_retained_once_and_failures_preserve_the_entry():
+    core = OpticalCore({"Path": ("A", ["A", "B"])})
+    ctrl = SimpleNamespace(core=core, studio=Studio(), get_mm_app_dir=None)
+    ctrl._state_device_inventory = authorization._build_state_device_inventory(
+        core, authorization._strings(core.get_loaded_devices())
+    )
+    assert core.adapter_name_calls == ["Path"]
+    assert core.adapter_description_calls == ["Path"]
+    core.adapter_name_calls.clear()
+    core.adapter_description_calls.clear()
+    get_system_state(ctrl, GUARD)
+    get_system_state(ctrl, GUARD)
+    assert core.adapter_name_calls == []  # no camera is configured in this fixture
+    assert core.adapter_description_calls == []
+    assert ctrl._state_device_inventory["devices"][0]["adapter"] == "Path"
+
+
+def test_adapter_read_failures_become_unknown_with_errors_without_dropping_device():
+    core = OpticalCore({"Path": ("A", ["A"])})
+    core.adapter_name_failures.add("Path")
+    core.adapter_description_failures.add("Path")
+    inventory = authorization._build_state_device_inventory(
+        core, authorization._strings(core.get_loaded_devices())
+    )
+    assert len(inventory["devices"]) == 1
+    entry = inventory["devices"][0]
+    assert entry["adapter"] == entry["adapter_description"] == "unknown"
+    assert "adapter name failed" in entry["adapter_error"]
+    assert "adapter description failed" in entry["adapter_description_error"]
+
+
+def test_structured_position_map_matches_only_complete_live_identity(monkeypatch):
+    core = OpticalCore({"Path": ("State-0", ["State-0", "State-1"])})
+    core.adapters["Path"] = ("RouteAdapter", "Light path selector")
+    core.camera = "Camera"
+    core.adapters["Camera"] = ("CamA", "")
+    saved = {"kind": "optical_path_position_map", "device": "Path",
+             "positions": {"State-0": "camera", "State-1": "eyes"},
+             "observed_on": {"camera_adapter": "CamA", "device": "Path",
+                             "adapter": "RouteAdapter", "allowed": ["State-0", "State-1"]}}
+    monkeypatch.setattr("microclaw.knowledge_manager.load_knowledge",
+                        lambda: {"devices": {"path": saved}})
+    payload, ctrl = state(core)
+    entry = payload["optical_path"]["discrete_positions"][0]
+    assert entry["position_map"] == saved["positions"]
+    core.adapters["Camera"] = ("CamB", "")
+    assert "position_map" not in get_system_state(ctrl, GUARD)["optical_path"]["discrete_positions"][0]
+    core.adapters["Camera"] = ("CamA", "")
+    ctrl._state_device_inventory["devices"][0]["allowed"].append("State-2")
+    assert "position_map" not in get_system_state(ctrl, GUARD)["optical_path"]["discrete_positions"][0]
+
+
+def test_mapping_shaped_ordinary_entry_never_enters_structured_path(monkeypatch):
+    core = OpticalCore({"Path": ("State-0", ["State-0"])})
+    core.adapters["Path"] = ("RouteAdapter", "Light path selector")
+    ordinary = {"device": "Path", "positions": {"State-0": "camera"},
+                "observed_on": {"camera_adapter": "unknown", "device": "Path",
+                                "adapter": "RouteAdapter", "allowed": ["State-0"]}}
+    monkeypatch.setattr("microclaw.knowledge_manager.load_knowledge",
+                        lambda: {"devices": {"ordinary": ordinary}})
+    payload, _ = state(core)
+    assert "position_map" not in payload["optical_path"]["discrete_positions"][0]
 
 
 def test_dependency_live_value_moves_with_discrete_label_without_a_duplicate_read():

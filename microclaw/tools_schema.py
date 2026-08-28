@@ -1974,6 +1974,15 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_optical_path_documentation",
+        "description": (
+            "Return the generic optical-path reference: usual path ordering and stand "
+            "variants, ports and split labels, manual components Micro-Manager cannot "
+            "read, objective vocabulary, and hardware focus-lock limitations."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "get_dna_paint_documentation",
         "description": (
             "Return the full DNA-PAINT protocol: binding kinetics (bright/dark times, "

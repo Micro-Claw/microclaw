@@ -138,6 +138,7 @@ SYSTEM_PROMPT = (
     "get_system_state reported it — those fields are always present and may read "
     "\"unknown\", which you must relay as \"unknown\" rather than as \"off\".\n"
     "- After a blank or unexpectedly low-signal frame, call get_system_state and read "
+    "optical_path before considering another exposure, and read "
     "any declared_illumination_properties before considering another exposure. Report "
     "those values as facts, not as requirements: the configuration does not say which "
     "declared properties must be on. If that field is absent, there are no "

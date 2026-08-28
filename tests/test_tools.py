@@ -4526,6 +4526,90 @@ class TestReadHookFromFile:
 
 
 class TestSaveKnowledgeConfirmation:
+    def test_structured_position_map_resolves_identity_before_confirmation(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        mock_ctrl._state_device_inventory = {"devices": [{
+            "device": "Path", "adapter": "RouteAdapter",
+            "adapter_description": "rewordable prose", "allowed": ["State-0", "State-1"],
+        }]}
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_device_name.return_value = "CamAdapter"
+        prompted, saved = [], []
+        monkeypatch.setattr(tools, "CONFIRM_FN",
+                            lambda summary, kind="action": prompted.append(summary) or True)
+        monkeypatch.setattr("microclaw.knowledge_manager.save_entry",
+                            lambda *args: saved.append(args))
+        value = {"kind": "optical_path_position_map", "device": "Path",
+                 "positions": {"State-0": "camera", "State-1": "eyepieces"}}
+        result = tools.save_knowledge(mock_ctrl, unconstrained_guard, "devices", "path", value)
+        expected = {"camera_adapter": "CamAdapter", "device": "Path",
+                    "adapter": "RouteAdapter", "allowed": ["State-0", "State-1"]}
+        assert result["value"]["observed_on"] == expected
+        assert saved[0][2]["observed_on"] == expected
+        assert "adapter_description" not in saved[0][2]["observed_on"]
+        assert "CamAdapter" in prompted[0] and "State-1" in prompted[0]
+
+    def test_wrong_caller_supplied_position_map_identity_is_not_prompted_or_saved(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        mock_ctrl._state_device_inventory = {"devices": [{
+            "device": "Path", "adapter": "LiveAdapter", "allowed": ["State-0"],
+        }]}
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_device_name.return_value = "CamAdapter"
+        monkeypatch.setattr(tools, "CONFIRM_FN",
+                            lambda *a, **k: pytest.fail("confirmation must not run"))
+        monkeypatch.setattr("microclaw.knowledge_manager.save_entry",
+                            lambda *a: pytest.fail("save must not run"))
+        result = tools.save_knowledge(mock_ctrl, unconstrained_guard, "devices", "path", {
+            "kind": "optical_path_position_map", "device": "Path",
+            "positions": {"State-0": "camera"},
+            "observed_on": {"camera_adapter": "CamAdapter", "device": "Path",
+                            "adapter": "PlausibleButWrong", "allowed": ["State-0"]},
+        })
+        assert "differs" in result["error"]
+
+    @pytest.mark.parametrize(("inventory", "field"), [
+        ({"devices": []}, "Path"),
+        ({"devices": [{"device": "Path", "adapter": "unknown", "allowed": ["A"]}]},
+         "adapter"),
+        ({"devices": [{"device": "Path", "adapter": "Route", "allowed": "unknown"}]},
+         "allowed"),
+    ])
+    def test_structured_map_refusals_name_missing_or_unreadable_identity_before_gate(
+        self, mock_ctrl, unconstrained_guard, monkeypatch, inventory, field
+    ):
+        from microclaw import tools
+        mock_ctrl._state_device_inventory = inventory
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_device_name.return_value = "CamAdapter"
+        monkeypatch.setattr(tools, "CONFIRM_FN",
+                            lambda *a, **k: pytest.fail("confirmation must not run"))
+        result = tools.save_knowledge(mock_ctrl, unconstrained_guard, "devices", "path", {
+            "kind": "optical_path_position_map", "device": "Path", "positions": {"A": "camera"},
+        })
+        assert field in result["error"]
+
+    def test_structured_map_rejects_position_key_outside_exact_allowed_labels(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import tools
+        mock_ctrl._state_device_inventory = {"devices": [{
+            "device": "Path", "adapter": "Route", "allowed": ["State-0"],
+        }]}
+        mock_ctrl.core.get_camera_device.return_value = "Camera"
+        mock_ctrl.core.get_device_name.return_value = "CamAdapter"
+        monkeypatch.setattr(tools, "CONFIRM_FN",
+                            lambda *a, **k: pytest.fail("confirmation must not run"))
+        result = tools.save_knowledge(mock_ctrl, unconstrained_guard, "devices", "path", {
+            "kind": "optical_path_position_map", "device": "Path",
+            "positions": {"State-9": "camera"},
+        })
+        assert "State-9" in result["error"] and "allowed-label" in result["error"]
+
     def test_declines_and_does_not_write(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw import tools
         calls = []

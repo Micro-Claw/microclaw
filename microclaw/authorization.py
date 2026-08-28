@@ -788,6 +788,15 @@ def _build_state_device_inventory(core: Any, loaded_devices: Iterable[str]) -> d
         except Exception:
             continue
         entry: dict[str, Any] = {"device": device}
+        for field, method_name in (
+            ("adapter", "get_device_name"),
+            ("adapter_description", "get_device_description"),
+        ):
+            try:
+                entry[field] = str(getattr(core, method_name)(device))
+            except Exception as exc:
+                entry[field] = "unknown"
+                entry[f"{field}_error"] = _clean_exception_message(exc)
         try:
             entry["allowed"] = list(_strings(
                 core.get_allowed_property_values(device, "Label")

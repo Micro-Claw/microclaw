@@ -2972,13 +2972,36 @@ def _laser_state(ctrl: MicroscopeController) -> Any:
 
 
 _PORT_LABEL_WORDS = re.compile(
-    r"(?:eye|ocular|binocular|camera|port|side|left|right|front|bottom|photo|tube)",
+    r"(?<![A-Za-z])(?:eyepiece|trinocular|binocular|phototube|sideport|leftport|"
+    r"rightport|frontport|bottomport|camport|eye|ocular|camera|port|side|left|right|"
+    r"front|bottom|photo|tube)(?![A-Za-z])",
     re.IGNORECASE,
 )
+
+_LIGHT_PATH_ADAPTER = re.compile(r"light\s*path", re.IGNORECASE)
+_POSITION_MAP_KIND = "optical_path_position_map"
+
+
+def _position_map_condition(camera_adapter: Any, entry: dict) -> dict:
+    return {
+        "camera_adapter": camera_adapter,
+        "device": entry.get("device"),
+        "adapter": entry.get("adapter"),
+        "allowed": entry.get("allowed"),
+    }
+
+
+def _identity_problem(condition: dict) -> str | None:
+    for field in ("camera_adapter", "device", "adapter", "allowed"):
+        value = condition.get(field)
+        if value == "unknown" or value is None or (field == "allowed" and not isinstance(value, list)):
+            return f"identity field '{field}' is unreadable or unknown"
+    return None
 
 
 def _optical_path_state(
     ctrl: MicroscopeController, config_dependencies: set[tuple[str, str]],
+    camera_adapter: Any = "unknown",
 ) -> tuple[Any, dict[tuple[str, str], str]]:
     inventory = getattr(ctrl, "_state_device_inventory", None)
     if not isinstance(inventory, dict):
@@ -2999,17 +3022,47 @@ def _optical_path_state(
             roles.append("pixel-size-config dependency (not proof of objective)")
         allowed = entry.get("allowed")
         labels = allowed if isinstance(allowed, list) else []
-        if any(_PORT_LABEL_WORDS.search(str(label)) for label in labels):
-            roles.append("light-path candidate")
+        labels_match = any(_PORT_LABEL_WORDS.search(str(label)) for label in labels)
+        adapter_match = any(
+            isinstance(entry.get(field), str)
+            and _LIGHT_PATH_ADAPTER.search(entry[field])
+            for field in ("adapter", "adapter_description")
+        )
+        if labels_match:
+            roles.append("light-path candidate (position labels name ports)")
+        if adapter_match:
+            roles.append("light-path candidate (adapter self-description)")
         entry["role"] = roles
+        if adapter_match and not labels_match:
+            entry["positions_unnamed"] = (
+                "This device routes light, but its position labels carry no port vocabulary. "
+                "Ask the operator what each position means and offer to store the answer with "
+                "save_knowledge as an identity-scoped devices/ entry. Microclaw does not rename "
+                "state labels; the operator may label the hardware in Micro-Manager."
+            )
         positions.append(entry)
+    try:
+        from microclaw.knowledge_manager import load_knowledge
+        stored = load_knowledge().get("devices", {})
+    except Exception:
+        stored = {}
+    for saved in stored.values():
+        if not isinstance(saved, dict) or saved.get("kind") != _POSITION_MAP_KIND:
+            continue
+        target = next((item for item in positions if item["device"] == saved.get("device")), None)
+        if target is None:
+            continue
+        actual = _position_map_condition(camera_adapter, target)
+        if _identity_problem(actual) is None and saved.get("observed_on") == actual:
+            target["position_map"] = dict(saved.get("positions", {}))
     result = {
         "discrete_positions": positions,
         "hint": (
             "A discrete-position device whose labels name ports routes light to the "
             "camera or the eyepiece. Micro-Manager sees only the motorized part of "
             "the path; a manual prism or slider can send light elsewhere with every "
-            "value above unchanged."
+            "value above unchanged. Call get_optical_path_documentation before "
+            "interpreting these."
         ),
     }
     shutter_exclusion = inventory.get("shutter_exclusion")
@@ -3147,6 +3200,13 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     # enabled" has to be sourced from here or not made at all (design/20 F2).
     state["shutter"] = _shutter_state(ctrl)
     state["lasers"] = _laser_state(ctrl)
+    try:
+        camera_label = str(ctrl.core.get_camera_device())
+        camera_adapter = str(ctrl.core.get_device_name(camera_label)) if camera_label else "unknown"
+        state["camera"] = {"label": camera_label or "unknown", "adapter": camera_adapter}
+    except Exception:
+        camera_adapter = "unknown"
+        state["camera"] = "unknown"
     from microclaw.calibration import _config_mismatches
     try:
         static_configs = _config_mismatches(ctrl, cached=True, read_live=False)
@@ -3159,7 +3219,7 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         for config in static_configs for rule in config.get("rules", [])
         if "device" in rule and "property" in rule
     }
-    optical_path, shared_live = _optical_path_state(ctrl, dependencies)
+    optical_path, shared_live = _optical_path_state(ctrl, dependencies, camera_adapter)
     state["optical_path"] = optical_path
     state["objective"] = _objective_state(ctrl, shared_live, config_error)
     try:
@@ -3172,16 +3232,6 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     illumination = guard.declared_illumination_state(ctrl.core)
     if illumination:
         state["declared_illumination_properties"] = illumination
-    try:
-        label = str(ctrl.core.get_camera_device())
-        state["camera"] = {
-            "label": label or "unknown",
-            # The label is whatever the config author typed; the adapter is the
-            # hardware. F4 keys knowledge entries on the adapter for that reason.
-            "adapter": str(ctrl.core.get_device_name(label)) if label else "unknown",
-        }
-    except Exception:
-        state["camera"] = "unknown"
     return state
 
 
@@ -8146,6 +8196,12 @@ def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> di
 
 
 @emits_nothing
+def get_optical_path_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
+    from microclaw.optics_docs import OPTICS_REFERENCE
+    return {"documentation": OPTICS_REFERENCE}
+
+
+@emits_nothing
 def get_dna_paint_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """The DNA-PAINT protocol in full, behind get_smlm_documentation's summary.
 
@@ -8223,6 +8279,34 @@ def save_knowledge(
         rig_profile_gaps,
         save_entry,
     )
+    if category == "devices" and value.get("kind") == _POSITION_MAP_KIND:
+        device = value.get("device")
+        inventory = getattr(ctrl, "_state_device_inventory", None)
+        retained = next(
+            (item for item in inventory.get("devices", []) if item.get("device") == device),
+            None,
+        ) if isinstance(inventory, dict) else None
+        if retained is None:
+            return {"error": f"StateDevice '{device}' is missing from the retained inventory."}
+        try:
+            camera_label = str(ctrl.core.get_camera_device())
+            camera_adapter = str(ctrl.core.get_device_name(camera_label)) if camera_label else "unknown"
+        except Exception as exc:
+            return {"error": f"identity field 'camera_adapter' is unreadable: {type(exc).__name__}: {exc}"}
+        condition = _position_map_condition(camera_adapter, retained)
+        problem = _identity_problem(condition)
+        if problem:
+            return {"error": problem}
+        positions = value.get("positions")
+        if not isinstance(positions, dict):
+            return {"error": "positions must be a mapping of exact state labels to operator meanings."}
+        invalid = [label for label in positions if label not in condition["allowed"]]
+        if invalid:
+            return {"error": f"position keys are not in the device's exact allowed-label list: {invalid}"}
+        supplied = value.get("observed_on")
+        if supplied is not None and supplied != condition:
+            return {"error": "caller-supplied observed_on differs from the live resolved identity."}
+        value = {**value, "observed_on": condition}
     # A devices/ entry can suppress an alarm (design/21 S4); it must name the
     # hardware it was observed on, or it detaches from its trigger and applies
     # to whatever camera is loaded next.
@@ -8968,6 +9052,7 @@ TOOL_REGISTRY = {
     "list_mm_plugins": list_mm_plugins,
     "get_hook_documentation": get_hook_documentation,
     "get_smlm_documentation": get_smlm_documentation,
+    "get_optical_path_documentation": get_optical_path_documentation,
     "get_dna_paint_documentation": get_dna_paint_documentation,
     "check_emu_installed": check_emu_installed,
     "get_htsmlm_documentation": get_htsmlm_documentation,

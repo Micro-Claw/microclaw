@@ -84,6 +84,8 @@ def format_for_prompt(knowledge: dict) -> str | None:
     # (design/21 F4). Legacy entries with no observed_on are the user's data —
     # render them under the verify-first header rather than bare, or not at all.
     for key, entry in devices.items():
+        if isinstance(entry, dict) and entry.get("kind") == "optical_path_position_map":
+            continue
         cond = entry.get("observed_on") if isinstance(entry, dict) else None
         header = (
             f"applies ONLY while get_system_state reports camera.adapter == {cond!r}; "

@@ -102,6 +102,19 @@ def test_format_for_prompt_empty():
     assert format_for_prompt({}) is None
 
 
+def test_format_for_prompt_omits_structured_maps_but_keeps_legacy_conditions():
+    text = format_for_prompt({"devices": {
+        "map": {"kind": "optical_path_position_map", "device": "Path",
+                "positions": {"A": "camera"}, "observed_on": {"future": "shape"}},
+        "ordinary": {"note": "keep", "observed_on": {"future": "shape"}},
+        "legacy": {"note": "keep too", "observed_on": "DCam"},
+    }})
+    assert "optical_path_position_map" not in text
+    assert "devices/ordinary" in text
+    assert "devices/legacy" in text
+    assert "verify before relying" in text
+
+
 def test_format_for_prompt_with_data():
     save_entry("devices", "Thorlabs-ELL-9", {"description": "cylindrical lens"})
     text = format_for_prompt(load_knowledge())
