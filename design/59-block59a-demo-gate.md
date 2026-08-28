@@ -9,13 +9,12 @@ accepts later documentation commits while refusing a checkout that predates the
 implementation:
 
 ```powershell
-git merge-base --is-ancestor IMPLEMENTATION_COMMIT HEAD
+git merge-base --is-ancestor fd3688e HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 59a implementation is not an ancestor of HEAD" }
 ```
 
-`IMPLEMENTATION_COMMIT` is replaced with the committed implementation SHA in
-this runbook before the branch is handed to the operator; it is not a command
-placeholder that ships to the rig.
+The ancestor pin deliberately permits later documentation commits on this
+branch while refusing a checkout that predates the implementation.
 
 Close Microclaw, leave Micro-Manager and its ZMQ server running, then run:
 
