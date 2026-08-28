@@ -399,6 +399,12 @@ class Session:
         print("[microclaw] Confirmation audit: " + json.dumps(record, sort_keys=True))
         return decision.startswith("approved") or decision.startswith("auto-approved")
 
+    def emit_acquisition_event(self, event: dict) -> None:
+        """Forward diagnostics to the active turn, or harmlessly drop them."""
+        emit = self._emit
+        if emit is not None:
+            emit(event)
+
     def confirm(
         self, summary: str, kind: str = "action", subject: str | None = None
     ) -> bool:
@@ -911,6 +917,13 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             # second emit to confuse.
             session._emit = emit
             session.current_identity = turn_identity
+            def acquisition_event_sink(event):
+                bound = getattr(session, "_emit", None)
+                if bound is not None:
+                    bound(event)
+            acquisition_event_sink = getattr(
+                session, "emit_acquisition_event", acquisition_event_sink
+            )
             try:
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
@@ -928,6 +941,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                     on_message=(session.store.append
                                 if hasattr(session, "store") else None),
                     confirmation_records=session.audit_records,
+                    acquisition_event_sink=acquisition_event_sink,
                 ):
                     emit(event)
             except Exception as e:  # noqa: BLE001 — the stream is the only channel

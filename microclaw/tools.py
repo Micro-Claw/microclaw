@@ -70,6 +70,18 @@ from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_
 
 logger = logging.getLogger(__name__)
 
+# An engine-side fatal error is already known; 90 seconds gives pycro-manager
+# a short orderly-teardown opportunity without recreating the silent hang.
+ERROR_TEARDOWN_GRACE_S = 90.0
+# A passed runtime estimate omits rig-dependent motion. Saved frames within
+# five minutes prove useful work is still arriving and suppress a false alarm.
+STALL_QUIET_S = 300.0
+# Only callers with no computable plan use this last-resort bound. A day is
+# deliberately generous, but finite: absence of a plan must never mean forever.
+FALLBACK_RUNTIME_CEILING_S = 24 * 60 * 60.0
+_ACQUISITION_POLL_S = 1.0
+_ACQUISITION_EVENT_CONTEXT = threading.local()
+
 #: Every run argument a hook -- or, under 55b, a plan-only coordinator -- must
 #: be present to carry. Canonical on purpose: parameterized tests drive every
 #: name through every refusal path, so a capability added here but not at a
@@ -1867,6 +1879,78 @@ class _HookedAcquisitionFailure(RuntimeError):
         self.last_hardware_state = last_hardware_state
 
 
+class AcquisitionUnterminated(RuntimeError):
+    """pycro-manager teardown exceeded a supervised acquisition bound."""
+
+    def __init__(self, *, dataset_path: str, frames_planned: int | None,
+                 frames_accounted: int, engine_exception: BaseException | None,
+                 camera_sequence_running: bool | None, teardown_running: bool,
+                 expired_bound: str, bound_s: float, fallback_ceiling: bool) -> None:
+        super().__init__("pycro-manager teardown did not complete")
+        self.dataset_path = dataset_path
+        self.frames_planned = frames_planned
+        self.frames_accounted = frames_accounted
+        self.engine_exception = engine_exception
+        self.camera_sequence_running = camera_sequence_running
+        self.teardown_running = teardown_running
+        self.expired_bound = expired_bound
+        self.bound_s = bound_s
+        self.fallback_ceiling = fallback_ceiling
+
+
+def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
+    sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+    if sink is not None:
+        sink(event)
+        return
+    stamp = datetime.now(timezone.utc).isoformat()
+    print(f"[microclaw acquisition {stamp}] {json.dumps(event, default=str)}",
+          file=__import__("sys").stderr)
+
+
+def _camera_sequence_running(ctrl: Any) -> bool | None:
+    try:
+        return bool(ctrl.core.is_sequence_running())
+    except Exception:
+        return None
+
+
+def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
+    camera = exc.camera_sequence_running
+    if camera is True:
+        hardware = ("The camera sequence was still running when Microclaw stopped "
+                    "waiting. Acquisition tools are refused until the camera is idle "
+                    "and the background teardown has finished.")
+        next_steps = ["Wait for the camera sequence to become idle before reading the dataset.",
+                      "Do not start another acquisition until camera_sequence_running "
+                      "and teardown_running are both false."]
+    elif camera is False:
+        hardware = ("The camera sequence was measured idle when Microclaw stopped "
+                    "waiting, but background teardown was still running. Acquisition "
+                    "tools are refused until teardown and its owned restoration finish.")
+        next_steps = ["The dataset may be read while teardown finishes.",
+                      "Do not start another acquisition until teardown_running is false."]
+    else:
+        hardware = ("Microclaw could not read whether the camera sequence was running. "
+                    "Background teardown was still running, so acquisitions are refused.")
+        next_steps = ["Check the camera state directly before reading the dataset.",
+                      "Do not start another acquisition until camera state is readable "
+                      "and idle and teardown_running is false."]
+    engine = (f"{type(exc.engine_exception).__name__}: {exc.engine_exception}"
+              if exc.engine_exception is not None else None)
+    return {
+        "error": (("The acquisition engine reported a fatal error and " if engine else "")
+                  + f"pycro-manager teardown did not complete within {exc.bound_s:g} s. "
+                  "Microclaw stopped waiting."),
+        "acquisition": "unterminated", "engine_exception": engine,
+        "dataset_path": exc.dataset_path, "frames_planned": exc.frames_planned,
+        "frames_accounted": exc.frames_accounted,
+        "camera_sequence_running": camera, "teardown_running": exc.teardown_running,
+        "expired_bound": exc.expired_bound, "ceiling_fallback": exc.fallback_ceiling,
+        "hardware": hardware, "next": next_steps,
+    }
+
+
 def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None) -> dict:
     """Report a mid-acquisition hook failure without hiding what was written.
 
@@ -3275,6 +3359,8 @@ def _acquire_with_hooks(
     hook: Any | None = None,
     reservation: Reservation | None = None,
     close_reservation: bool = True,
+    plan: AcquisitionPlan | None = None,
+    ctrl: MicroscopeController | None = None,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
 
@@ -3317,8 +3403,14 @@ def _acquire_with_hooks(
         if hasattr(hook, "image_process_fn"):
             hook_fn_kwargs["image_process_fn"] = hook.image_process_fn
 
-    if reservation is not None:
-        def account_saved_frame(axes, dataset):
+    frame_state = {"count": 0, "last_saved": time.monotonic()}
+    frame_lock = threading.Lock()
+
+    def account_saved_frame(axes, dataset):
+        with frame_lock:
+            frame_state["count"] += 1
+            frame_state["last_saved"] = time.monotonic()
+        if reservation is not None:
             # pycro-manager 1.0.2 calls this after the image is on disk. Unlike
             # image_process_fn, its arguments contain no pixel array, so plain
             # acquisitions retain the Java-side streaming fast path.
@@ -3329,7 +3421,7 @@ def _acquire_with_hooks(
                     overrun_frames=reservation.overrun_frames,
                 )
 
-        hook_fn_kwargs["image_saved_fn"] = account_saved_frame
+    hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
     dataset_path = None
     restoration_attempted = {"named-stage": False, "property": False}
@@ -3352,8 +3444,22 @@ def _acquire_with_hooks(
                 failures.append(f"{label} restoration failed: {restore_exc}")
         return failures
 
+    waiter_started = False
+    cleanup_done = False
+
+    def finish_owned_cleanup() -> list[str]:
+        nonlocal cleanup_done
+        if cleanup_done:
+            return []
+        cleanup_done = True
+        failures = restore_hardware()
+        if reservation is not None and close_reservation:
+            reservation.close()
+        return failures
+
     try:
-        with Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs) as acq:
+        acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
+        try:
             # Resolve collision suffixes before dispatching the first event: a
             # first-frame hook failure must still report the data already owned
             # by this acquisition. This is safe to read here because
@@ -3371,14 +3477,95 @@ def _acquire_with_hooks(
             if callable(events):
                 events = events(acq)
             acq.acquire(events)
-        # Acquisition.acquire() only submits work. __exit__ marks the stream
-        # finished and awaits completion, so named-stage restoration is safe
-        # only after the context has exited and all callbacks have run.
-        restoration_failures = restore_hardware()
-        if restoration_failures:
-            raise RuntimeError("; ".join(restoration_failures))
+        except Exception:
+            raise
+
+        outcome: dict[str, Any] = {}
+        event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+
+        def finish() -> None:
+            previous = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+            _ACQUISITION_EVENT_CONTEXT.sink = event_sink
+            try:
+                try:
+                    acq.__exit__(None, None, None)
+                except BaseException as exc:
+                    outcome["exc"] = exc
+                failures = finish_owned_cleanup()
+                if failures:
+                    prior = outcome.get("exc")
+                    detail = "; ".join(failures)
+                    outcome["exc"] = RuntimeError(
+                        f"{prior}; {detail}" if prior is not None else detail
+                    )
+                outcome["done"] = True
+                flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                if isinstance(flag, dict) and outcome.get("exc") is not None:
+                    late = outcome["exc"]
+                    _emit_acquisition_diagnostic({
+                        "type": "acquisition_diagnostic",
+                        "message": f"Late teardown/cleanup failure: {type(late).__name__}: {late}",
+                        "dataset_path": dataset_path,
+                    })
+            finally:
+                flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                if isinstance(flag, dict):
+                    flag["teardown_running"] = False
+                _ACQUISITION_EVENT_CONTEXT.sink = previous
+
+        waiter = threading.Thread(target=finish, name="microclaw-acq-teardown", daemon=True)
+        waiter_started = True
+        waiter.start()
+        fallback = plan is None
+        runtime_bound = (FALLBACK_RUNTIME_CEILING_S if fallback else
+                         max(plan.estimated_duration_s * 1.5,
+                             plan.estimated_duration_s + 300.0))
+        runtime_deadline = time.monotonic() + runtime_bound
+        error_deadline = None
+        engine_exc = None
+        while waiter.is_alive():
+            # pycro-manager 1.0.2 abort() stores the fatal exception here.
+            # This private API and _dataset_disk_location below must both be
+            # re-verified whenever pycro-manager is upgraded.
+            observed = getattr(acq, "_exception", None)
+            if observed is not None and error_deadline is None:
+                engine_exc = observed
+                error_deadline = time.monotonic() + ERROR_TEARDOWN_GRACE_S
+                _emit_acquisition_diagnostic({
+                    "type": "acquisition_diagnostic",
+                    "message": f"{type(observed).__name__}: {observed}",
+                    "dataset_path": dataset_path,
+                })
+            waiter.join(_ACQUISITION_POLL_S)
+            now = time.monotonic()
+            with frame_lock:
+                quiet = now - frame_state["last_saved"] >= STALL_QUIET_S
+                frames_accounted = frame_state["count"]
+            error_expired = error_deadline is not None and now >= error_deadline
+            runtime_expired = now >= runtime_deadline and quiet
+            if waiter.is_alive() and (error_expired or runtime_expired):
+                expired_bound = "error_grace" if error_expired else "runtime_ceiling"
+                bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
+                camera = _camera_sequence_running(ctrl)
+                setattr(ctrl, "_microclaw_unterminated_acquisition", {
+                    "waiter": waiter, "teardown_running": True,
+                    "camera_sequence_running": camera, "dataset_path": dataset_path,
+                })
+                raise AcquisitionUnterminated(
+                    dataset_path=dataset_path,
+                    frames_planned=(plan.frames if plan is not None else
+                                    reservation.plan.frames if reservation is not None else None),
+                    frames_accounted=frames_accounted, engine_exception=engine_exc,
+                    camera_sequence_running=camera, teardown_running=True,
+                    expired_bound=expired_bound, bound_s=bound_s,
+                    fallback_ceiling=fallback,
+                )
+        if "exc" in outcome:
+            raise outcome["exc"]
+    except AcquisitionUnterminated:
+        raise
     except Exception as exc:
-        restoration_failures = restore_hardware()
+        restoration_failures = [] if waiter_started else finish_owned_cleanup()
         if restoration_failures:
             exc = RuntimeError(f"{exc}; {'; '.join(restoration_failures)}")
         if hook is not None and dataset_path is not None:
@@ -3423,8 +3610,8 @@ def _acquire_with_hooks(
             ) from exc
         raise
     finally:
-        if reservation is not None and close_reservation:
-            reservation.close()
+        if not waiter_started:
+            finish_owned_cleanup()
 
     return _acq_dataset_path(acq, save_dir, name)
 
@@ -3531,6 +3718,7 @@ def run_zstack(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
+            plan=plan, ctrl=ctrl,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -3722,6 +3910,7 @@ def run_timelapse(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
+            plan=plan, ctrl=ctrl,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -6480,7 +6669,8 @@ def _acquire_positions_with_hook(
     started = time.monotonic()
     try:
         dataset_path = _acquire_with_hooks(
-            guard, save_dir, name, events, hook, reservation=reservation
+            guard, save_dir, name, events, hook, reservation=reservation,
+            plan=plan, ctrl=ctrl,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -6877,11 +7067,12 @@ def _acquire_survey_with_detector(
                                   adaptive=adaptive,
                                   max_events=(len(survey_events) + autofocus_reexposures)
                                   if adaptive else None)
+    survey_plan = _plan_with_hook_dose(
+        plan_events(ctrl, survey_events, exposure_ms), hook
+    )
     reservation = (
         _authorize_acquisition(
-            ctrl, guard, _plan_with_hook_dose(
-                plan_events(ctrl, survey_events, exposure_ms), hook
-            )
+            ctrl, guard, survey_plan
         )
         if adaptive else None
     )
@@ -6900,7 +7091,8 @@ def _acquire_survey_with_detector(
                 ctrl, guard, search_phase_channel
             )
         dataset_path = _acquire_with_hooks(
-            guard, save_dir, name, events, hook, reservation=reservation
+            guard, save_dir, name, events, hook, reservation=reservation,
+            plan=survey_plan, ctrl=ctrl,
         )
     except _HookedAcquisitionFailure as exc:
         # The two fixed runners already translate this; the survey runner did
@@ -7161,6 +7353,7 @@ def run_adaptive_survey(
                 acquire_path = _acquire_with_hooks(
                     guard, save_dir, f"{name}_acquire", acquire_events,
                     reservation=acquire_reservation,
+                    plan=acquire_plan, ctrl=ctrl,
                 )
                 hits_acquired = len(hits)
                 result["acquire_dataset_path"] = acquire_path
@@ -9130,6 +9323,7 @@ def execute_tool(
     setup_mode: bool = False,
     cancel=None,
     records=None,
+    acquisition_event_sink=None,
 ) -> str | list:
     """Execute a tool and return content for the tool_result block.
 
@@ -9147,7 +9341,34 @@ def execute_tool(
         # A registry whose advertised key has no callable is malformed. Keep
         # this model-visible and non-throwing like every other dispatch error.
         return json.dumps({"error": f"Tool '{name}' has no implementation."})
+    previous_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+    if acquisition_event_sink is not None:
+        _ACQUISITION_EVENT_CONTEXT.sink = acquisition_event_sink
     try:
+        if getattr(fn, "_microclaw_acquisition_entry_point", False):
+            pending = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+            if isinstance(pending, dict):
+                camera = _camera_sequence_running(ctrl)
+                waiter = pending.get("waiter")
+                teardown = bool(waiter.is_alive()) if waiter is not None else bool(
+                    pending.get("teardown_running")
+                )
+                pending["camera_sequence_running"] = camera
+                pending["teardown_running"] = teardown
+                if camera is False and not teardown:
+                    delattr(ctrl, "_microclaw_unterminated_acquisition")
+                else:
+                    state = ("unknown" if camera is None else str(camera).lower())
+                    return json.dumps({
+                        "error": "A previous acquisition has not fully terminated; "
+                                 "starting another could collide with its teardown or hardware.",
+                        "acquisition": "refused",
+                        "camera_sequence_running": camera,
+                        "teardown_running": teardown,
+                        "hardware": f"Camera sequence running is {state}; background "
+                                    f"teardown running is {str(teardown).lower()}.",
+                        "next": "Retry only after the camera is measured idle and teardown finishes.",
+                    })
         if (
             name != "run_mda"
             and getattr(fn, "_microclaw_acquisition_entry_point", False)
@@ -9161,6 +9382,8 @@ def execute_tool(
         else:
             result = fn(ctrl, guard, **tool_input)
         return result if isinstance(result, list) else json.dumps(result)
+    except AcquisitionUnterminated as e:
+        return json.dumps(_unterminated_result(e))
     except SafetyViolation as e:
         return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
@@ -9172,3 +9395,5 @@ def execute_tool(
             "error": f"{type(e).__name__}: {humanize_java_error(e)}",
             "hint": hint_for_error(e),
         })
+    finally:
+        _ACQUISITION_EVENT_CONTEXT.sink = previous_sink

@@ -757,6 +757,7 @@ def run_agent_iter(
     tool_schemas=TOOLS_CACHED,
     tool_registry=TOOL_REGISTRY,
     setup_mode: bool = False,
+    acquisition_event_sink: Callable[[dict], None] | None = None,
 ) -> Iterator[dict]:
     """Run one user turn, yielding an event per thing that happens.
 
@@ -873,6 +874,7 @@ def run_agent_iter(
                     block.name, block.input, ctrl, guard, tool_registry,
                     setup_mode=setup_mode,
                     cancel=cancel, records=messages,
+                    acquisition_event_sink=acquisition_event_sink,
                 )
                 if confirmation_records is not None:
                     issued = confirmation_records[confirmation_start:]
