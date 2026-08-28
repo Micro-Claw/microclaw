@@ -528,73 +528,73 @@ builds. Do not run them concurrently.
 
 Implementation (§1, §2, §3):
 
-- [ ] 1. Read-only StateDevice inventory built at live-rig validation,
+- [x] 1. Read-only StateDevice inventory built at live-rig validation,
   **independent of the authorization map**: every loaded StateDevice except
   `Core.Shutter`, *including* explicitly ruled and illumination-declared
   devices. Device identities and allowed values retained on the controller for
   the session; each call re-reads only the current label.
-- [ ] 2. It must not inherit `_auto_classified_state_pairs`' fail-closed-to-empty
+- [x] 2. It must not inherit `_auto_classified_state_pairs`' fail-closed-to-empty
   behaviour. An unreadable Core shutter excludes nothing and the payload says the
   exclusion could not be applied; `discrete_positions: []` there is the defect.
-- [ ] 3. Per-device failures preserve the entry: an unreadable allowed-values or
+- [x] 3. Per-device failures preserve the entry: an unreadable allowed-values or
   current-label read becomes `"unknown"` with the read error recorded. A dropped
   device is the defect.
-- [ ] 4. `objective` from the pixel-size configs only, folding
+- [x] 4. `objective` from the pixel-size configs only, folding
   `calibration._config_mismatches`' rule walk rather than duplicating it. Every
   dependency reported and marked as a dependency; a multi-key config keeps all
   its keys; no dependency is promoted to a measured objective.
-- [ ] 5. **Delete `_current_objective`'s `"default"` fallback** (`tools.py:4148`),
+- [x] 5. **Delete `_current_objective`'s `"default"` fallback** (`tools.py:4148`),
   or make all three call sites — `_load_current_affine`, the calibration
   artifact at `tools.py:4303`, and the new payload — distinguish "no config
   active" from "a config named default". Whichever route: the string must stop
   reaching the operator as an objective name.
-- [ ] 6. `focus` embeds `get_focus_lock_state`'s payload verbatim. Fold; do not
+- [x] 6. `focus` embeds `get_focus_lock_state`'s payload verbatim. Fold; do not
   re-derive.
-- [ ] 7. The port vocabulary **marks** state labels and never filters an entry,
+- [x] 7. The port vocabulary **marks** state labels and never filters an entry,
   and is never applied to a device name.
-- [ ] 8. All three keys always present, `"unknown"` when unreadable, per
+- [x] 8. All three keys always present, `"unknown"` when unreadable, per
   `_shutter_state`.
-- [ ] 9. `tools_schema.py`'s `get_system_state` description updated — it promises
+- [x] 9. `tools_schema.py`'s `get_system_state` description updated — it promises
   stage/channel/exposure/live-view/shutter/lasers today and must promise these.
-- [ ] 10. `get_system_state` stays `@emits_nothing`.
+- [x] 10. `get_system_state` stays `@emits_nothing`.
 
 Tests — each watched failing on the pre-change tree, **and with a fixture that
 reaches the branch** (58a: a guard no fixture's shape could reach went four
 review rounds unexecuted):
 
-- [ ] 11. Minimal rig: no StateDevice, no pixel-size config, no autofocus device
+- [x] 11. Minimal rig: no StateDevice, no pixel-size config, no autofocus device
   — all three fields present, all three `"unknown"`/diagnosed.
-- [ ] 12. Nikon-Ti-shaped fake (`TINosePiece` at `4-Unknown`, `TILightPath` at
+- [x] 12. Nikon-Ti-shaped fake (`TINosePiece` at `4-Unknown`, `TILightPath` at
   `2-Left100` with the four real allowed values, configs keyed on
   `TINosePiece.Label` matching none, `TIPFSStatus` "Out of focus search range"):
   the payload names the dependency and does not claim a measured objective,
   **with no `TINosePiece` string in the implementation**.
-- [ ] 13. Demo-shaped fake (`Objective`, `Path`, `Autofocus`, `Res10x/20x/40x`):
+- [x] 13. Demo-shaped fake (`Objective`, `Path`, `Autofocus`, `Res10x/20x/40x`):
   same code, same shape, no Nikon vocabulary reachable.
-- [ ] 14. Second call issues strictly fewer bridge calls than the first —
+- [x] 14. Second call issues strictly fewer bridge calls than the first —
   **mutate the cache key** rather than watching this fail; its subject is call
   structure (standing rule).
-- [ ] 15. A StateDevice whose labels match no port vocabulary still appears.
-- [ ] 16. A StateDevice in `allowed_categorical`, in `denied`, or declared as
+- [x] 15. A StateDevice whose labels match no port vocabulary still appears.
+- [x] 16. A StateDevice in `allowed_categorical`, in `denied`, or declared as
   illumination still appears; substituting `_auto_classified_state_pairs` makes
   this test fail.
-- [ ] 17. A config keyed on both `Objective.Label` and `Camera.Binning` reports
+- [x] 17. A config keyed on both `Objective.Label` and `Camera.Binning` reports
   both and calls neither a measured objective.
-- [ ] 18. `get_shutter_device` **raises**: every StateDevice still listed, and
+- [x] 18. `get_shutter_device` **raises**: every StateDevice still listed, and
   the payload says the exclusion could not be applied.
-- [ ] 19. An allowed-values read raises, and a current-label read raises: both
+- [x] 19. An allowed-values read raises, and a current-label read raises: both
   entries survive with the failed field `"unknown"` and the error visible.
-- [ ] 20. Full suite re-run by the coordinator, not the reported count.
+- [x] 20. Full suite re-run by the coordinator, not the reported count.
 
 Gate — demo machine, shipped as a program:
 
-- [ ] 21. `design/59-block59a-demo-gate.py` reports each limb independently,
+- [x] 21. `design/59-block59a-demo-gate.py` reports each limb independently,
   reports NOT EXERCISED for any device this machine lacks, exits nonzero, and
   **owns its own log** (58a: `Start-Transcript` does not capture a child
   process's stdout).
-- [ ] 22. Step 1 of the runbook *confirms* the machine's StateDevice inventory,
+- [x] 22. Step 1 of the runbook *confirms* the machine's StateDevice inventory,
   pixel-size configs and autofocus device rather than assuming them.
-- [ ] 23. `design/59-block59a-demo-safety-config.yaml` declares one StateDevice
+- [x] 23. `design/59-block59a-demo-safety-config.yaml` declares one StateDevice
   as illumination and rules on another, so limb 16 is live on hardware and not
   only in a fixture. The program records the machine's active safety document
   before it starts and checks it back afterwards — a gate must not leave
@@ -602,7 +602,7 @@ Gate — demo machine, shipped as a program:
 - [ ] 24. Bridge-call count **and** measured wall time reported for the first and
   second `get_system_state` call. §3: if the first call exceeds ~1.5 s the
   caching boundary is wrong, not the feature.
-- [ ] 25. Runbook committed **on the block's branch**, implementation pinned with
+- [x] 25. Runbook committed **on the block's branch**, implementation pinned with
   `git merge-base --is-ancestor`, branch pushed to `origin`.
 - [ ] 26. Gate scored from the artifacts, not the verdict (step 6).
 
@@ -685,5 +685,5 @@ Gate — demo machine, a driven session plus two programs:
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | — | — | — |
+| 59a | `design59/optical-path` | `4b7751b` (2026-08-28) | `0aefea4` (2 Codex rounds, 8 findings; coordinator suite 2355/99/0) | — | — |
 | 59b | — | — | — | — | — |
