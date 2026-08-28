@@ -1974,6 +1974,15 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_optical_path_documentation",
+        "description": (
+            "Return the generic optical-path reference: usual path ordering and stand "
+            "variants, ports and split labels, manual components Micro-Manager cannot "
+            "read, objective vocabulary, and hardware focus-lock limitations."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "get_dna_paint_documentation",
         "description": (
             "Return the full DNA-PAINT protocol: binding kinetics (bright/dark times, "
@@ -2330,7 +2339,14 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "object",
                     "description": (
                         "Structured data for the entry. Use descriptive field names. "
-                        "Always include a 'description' field summarizing the entry."
+                        "For entries other than an optical-path position map, include a "
+                        "'description' field summarizing the entry. For an optical-path "
+                        "position map, supply exactly the structured "
+                        "shape {'kind': 'optical_path_position_map', 'device': <StateDevice "
+                        "config label>, 'positions': {<exact state label>: <operator "
+                        "meaning>, ...}}. The caller supplies kind, device, and positions; "
+                        "save_knowledge resolves observed_on from live identity, so do not "
+                        "send observed_on."
                     ),
                     "additionalProperties": True,
                 },

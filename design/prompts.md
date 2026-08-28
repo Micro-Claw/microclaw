@@ -7831,9 +7831,15 @@ calls / 36 ms**, then **27 / 8 ms** — the §3 ceiling of 1.5 s is nowhere near
 binding.
 
 **Three facts about the demo machine that 59b needs.** Its light-path device
-`Path` carries `State-0/1/2`, so the port vocabulary correctly marks **nothing**
-— which is why 59b must rename those labels over the bridge with
-`define_state_label` to have any control that can fail. The Core shutter is
+`Path` carries `State-0/1/2`, so the port vocabulary correctly marks **nothing**.
+~~Which is why 59b must rename those labels over the bridge with
+`define_state_label` to have any control that can fail.~~ **Struck 2026-08-28**:
+microclaw never writes a state label, on any rig, for any reason — a tool that
+renames a microscope's hardware to make its own gate scoreable has broken the
+thing it was measuring. 59b's control that can fail comes from the **adapter**
+instead (`DLightPath` / `Demo light path`), which identifies the routing device
+with no writes at all, and the non-routing control is a filter wheel that must
+*not* draw the routing question. The Core shutter is
 `White Light Shutter`. And the demo `Autofocus` device exposes no status
 property at all: `status_properties` came back `Description`, `HubID`, `Name`,
 while `probe_hint` invited a probe against "one of the properties above". That
@@ -7845,3 +7851,68 @@ outside the `try` (no limb ran, no `results.json`); and removing the swallow fro
 `_config_mismatches` was right for the payload but wrong for two callers that
 interpolate that walk *into* an error message, where a raise replaces the
 diagnosis with the failure that produced it.
+
+## design/59 block 59b — the reference, the adapter, and the identity-scoped map (merged 2026-08-28)
+
+Merged `6864a63`. Five Codex rounds, 21 review findings, **four demo-machine
+rounds**. The block's lesson is not in its code either.
+
+**Four rig rounds, and only one was spent on a product defect.** Round 1 found
+the real one: the structured position map was **unreachable by the agent**. It
+sent a free-form entry, was refused by the *legacy* `observed_on` rule, then
+**invented `observed_on: "DCam"`** and the save succeeded — a fabricated
+condition that happened to be correct, indistinguishable from a resolved one,
+which would have rendered into every later system prompt and never been matched
+against live identity. Nothing named `kind` anywhere the agent reads. Fixed by
+putting the shape in `save_knowledge`'s **parameter** description and by refusing
+a position-map-shaped `devices/` entry that lacks the discriminator, detected
+from the live inventory rather than from a field name.
+
+**Rounds 2 and 3 were lost entirely to the gate's own prompts.** Round 1's
+session B said "choose an existing demo-camera mode whose frames have no
+structure" instead of naming `Camera`/`Mode`/`Noise` — a criterion, not a
+command, for the third time in this project's history. Round 2's session C asked
+"Which position reaches the camera?", which a microscopy agent reads as *stage*
+position: it answered about `Z` and `Aux Z` and never called `get_system_state`.
+Round 3 validated the reworded prompt but skipped session B, so the limb needing
+it still could not run. **A gate's prompts are part of its instrument** and
+belong under the same rule as its programs.
+
+**And the correction to that lesson, which cost more than the lesson.** Told the
+operator to dry-run prompts off-rig, I then built a replay harness to avoid
+asking for one more three-minute session — and it took three failed invocations
+and several exchanges. *"This is more gates than if you had just told me to redo
+session B."* Dry-run a prompt when the gate is long, repeated, or the operator is
+not standing at the rig. Otherwise ask for the session. The operator's scarce
+resource was time, not credits, and I optimised the wrong one.
+
+**A green gate is still a place to look.** Round 1's session A passed nothing
+about routing: the agent exposed while holding a payload that marked `Path` and
+carried `positions_unnamed`. Replaying that exact payload settled it — **20/24
+raise routing before any exposure, the failure is a 2/24 tail** — and along the
+way exonerated the hint. Its conditional tail was suspected of suppressing the
+question; conditional 5/8 vs 59a's unconditional 6/8, p=1.000. Two runs of the
+*same* wording gave 5/8 then 15/16, so the first eight samples were noise about
+their own arm. **One underpowered probe is a data point, exactly like one gate
+session.** A variant with an explicit instruction scored 8/8, but separating 100%
+from 94% needs ~128 samples/arm; not spent.
+
+**Two coordinator errors worth recording.** I told the runner that
+`save_knowledge`'s result carries no `confirmations` key and made it read the
+separate audit file; the result **does** carry one (`agent.py:919`) and its
+original approach would have worked. And I buried "run session B *then* C" in
+prose under a highlighted block about the session C rewording, so only C was
+re-run — the literal-command rule applies to messages to the operator, not just
+to runbooks.
+
+**What the rig established**, cross-checked rather than taken from a verdict:
+orientation costs **39 then 27 bridge calls, identical across all four rounds and
+to 59a**, while validation pays a **2N=12** adapter delta once — the retention
+claim proved on hardware. Wall time swung 23→129→17 ms for the same 27 calls, so
+**wall time on that machine is noise and the call count is the measure**; round
+1's "3× slower than 59a" was nothing. Zero port-token false positives across six
+real devices — though neither the demo config's labels nor M5's discriminate the
+tokenizer fix, so the unit fixtures are its whole evidence and no gate limb may
+claim otherwise. M5 was ruled out for this block **from its own archived
+inventory** rather than from a trip: four StateDevices, no adapter or label
+routing signal, empty core autofocus.

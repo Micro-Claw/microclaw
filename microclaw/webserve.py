@@ -532,6 +532,16 @@ def build_session(args, config_result: ConfigValidationResult | None = None):
             "Restricted setup will open, but it will not overwrite or delete that "
             "file. Move it aside or repair it deliberately, then restart setup."
         )
+    elif result.classification == "missing":
+        # A --safety-config that is simply not there used to drop into setup mode
+        # with no reason given: the diagnostic was built and never printed, so an
+        # operator who mistyped a path or had not generated one yet saw only
+        # "Connecting to Micro-Manager in setup mode..." and had to guess.
+        print(
+            f"No safety config at {result.path}, so restricted setup will open "
+            "instead of a live session. Check the --safety-config path, or run "
+            "setup to generate one."
+        )
     session = SetupSession(args, result)
     session.safety_config_path = result.path
     return session

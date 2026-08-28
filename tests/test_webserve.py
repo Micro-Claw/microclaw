@@ -2098,3 +2098,27 @@ def test_a_stale_build_error_does_not_report_a_failed_check(session, tmp_path, m
     payload = TestClient(build_app(session)).get("/api/update").json()
     assert payload["check_error"] is None
     assert payload["last_error"] == "the update could not be built"
+
+
+def test_missing_safety_config_says_so_instead_of_silently_opening_setup(
+    tmp_path, monkeypatch, capsys
+):
+    """A --safety-config that does not exist must name itself.
+
+    Measured on the demo machine 2026-08-28: the operator passed a path whose
+    directory had not been generated yet and saw only "Connecting to
+    Micro-Manager in setup mode...". validate_safety_config had already produced
+    "No safety config at <path>"; build_session printed a reason only for the
+    "blocked" classification, and "missing" is a separate one.
+    """
+    from types import SimpleNamespace
+
+    from microclaw import webserve
+
+    absent = tmp_path / "not-generated" / "generated-safety-config.yaml"
+    monkeypatch.setattr(webserve, "SetupSession", lambda args, result: SimpleNamespace())
+    args = SimpleNamespace(safety_config=str(absent), port=4827)
+    webserve.build_session(args)
+    out = capsys.readouterr().out
+    assert str(absent) in out
+    assert "--safety-config" in out
