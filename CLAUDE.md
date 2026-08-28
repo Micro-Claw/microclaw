@@ -265,6 +265,28 @@ because a block looks small.
    24-hour interval, where the check would not have run anyway; and the script
    owns its own log, because PowerShell 5.1's `Start-Transcript` does not capture
    a native child process's stdout and the transcript came back empty twice.
+
+   **And run that program against a bridge-shaped fake before you push it.** A
+   gate is code, and handing an operator code nobody executed is the defect this
+   workflow keeps paying for. The instrument already exists
+   (`design/55-gate-probe-selftest.py`); design/59 is why it must be *bridge
+   shaped*. Block 59a's gate reached the demo machine and every orientation limb
+   came back `TypeError: 'mmcorej_StrVector' object is not iterable` — a `list()`
+   over a Core collection, which works against every fake in the suite and fails
+   on every rig. **A `MagicMock` would not have caught it**, because it hands
+   back Python-friendly objects: the fake must return `size()`/`get(i)` vectors
+   whose `__iter__` raises, and the selftest is run on **both** trees so its
+   failure discriminates. Reproducing that rig trip off-rig afterwards took
+   twenty lines and a minute. Settle off-rig everything a fake can settle; what
+   reaches the operator is what needs the rig.
+
+   **A limb that reports NOT EXERCISED as a machine limitation is a place to
+   suspect the product.** That same 59a defect existed twice — raised in the
+   gate, and *swallowed* in `calibration._config_mismatches`, whose
+   `except Exception: return []` turns an unreadable collection into "this rig
+   has no pixel-size configs". The gate would have reported "no pixel-size config
+   has a dependency", which reads as a fact about the machine. An enumeration
+   that fails must say so; an empty list is a statement, not a silence.
 7. **Fix, sized to the finding.** Small corrections: do them yourself on the
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.
