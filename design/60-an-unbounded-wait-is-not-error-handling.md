@@ -449,6 +449,27 @@ the segmenting clause does say "13 runs", so the count is recoverable. Tightenin
 it to name the number of files is an optional improvement; it is not worth a
 re-gate on its own and is carried forward rather than fixed here.
 
+### Operator assessment, 2026-08-29: crossings are routine
+
+Recorded because it is the strongest evidence against this document's own
+framing, and it comes from the field history rather than from anything we could
+measure: **TIFF/NDTiff acquisitions have crossed the 4 GiB boundary for years
+without issue.** Three clean crossings of our own are weak next to that.
+
+So the frame-72,056 coincidence needs another explanation. The one that fits
+without requiring a broken rollover: a rollover is the only moment in an
+otherwise steady stream where the writer closes a file, opens another and writes
+a header — the instant of maximum activity, and therefore where a **latent
+environmental** problem is most likely to surface. That makes the boundary the
+place the failure appeared, not the reason it happened. **Hypothesis, not a
+finding**; nothing here depends on it.
+
+Two consequences. It strengthens the decision below to keep the upstream report
+unfiled. And it settles what D6's disclosure is *for*: **data management, not
+hazard avoidance.** It says a run will span more than one file, which matters for
+downstream handling. It is not a reason to segment, it is non-blocking, and
+Microclaw must not imply that a crossing is dangerous.
+
 ### The upstream report: decided — not filed
 
 design/60's post-merge gate asks for an explicit decision. **Do not file one
