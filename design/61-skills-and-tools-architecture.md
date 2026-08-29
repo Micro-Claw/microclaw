@@ -821,6 +821,43 @@ rig's normal work, not for a script — `design/40-pfs-five-sessions.md` cost fi
 sessions to learn that. A positive result authorizes 61c. A negative result does
 not.
 
+**This observation is asymmetric, and the reason is that the block it confirms
+has not shipped yet.** `nikon-pfs/SKILL.md` is byte-identical to the paragraph
+still in `SYSTEM_PROMPT` — 2,353 chars both sides, measured 2026-08-29 — so on
+today's released build the call returns text the agent already has verbatim.
+There is no information gain from making it. Therefore:
+
+- **Positive is strong**, and stronger than a bare pass: an agent that loads the
+  skill when the load is *redundant* will certainly load it when the skill is
+  the only source. That survives the difference between the two conditions and
+  is why one Ti session is enough to authorize 61c.
+- **Negative is uninterpretable, and is not a defect report.** Declining to
+  fetch a document you are already carrying is correct behaviour on this build.
+  Record it as *unmeasured* and leave 61c unscheduled; do **not** go looking for
+  a broken route, and do not "fix and repeat" as an earlier draft of this
+  section said. That instruction was the 61a G4 shape — a failure condition
+  satisfiable by the better answer.
+
+The structural point, worth stating because it is easy to miss: R1 measures the
+route under condition A (paragraph present) in order to license condition B
+(paragraph absent), and A and B differ in exactly the variable that matters —
+whether the skill is the only source of the guidance. The asymmetry above is
+what makes a positive still worth collecting; nothing makes a negative worth
+acting on.
+
+**If the Ti does come back negative and 61c still looks worth having**, the
+question 61c actually turns on is answerable off-rig: replay a Ti
+`get_focus_lock_state` payload (`TIPFSStatus`) against a build with the
+paragraph *removed*, and measure whether the model reaches
+`load_skill(name="nikon-pfs")` before acting.
+`design/61-skill-routing-spike.py` is already shaped for it and stays unrun
+until then. Note the burden of proof is the opposite of 61a's declined A/B: that
+one would have licensed *restoring* wording that had worked for months, which
+needs no measurement, whereas this one licenses *removing* operational safety
+guidance, which is a new mechanism and does. Price it against published rates at
+the time, not from memory — 61a's estimate was wrong by 3x — and validate the
+scoring on one sample before buying a batch.
+
 ### Post-merge design gate (step 10, all blocks)
 
 - Reconcile the design's estimates to what was measured: the "~1,050 tokens
@@ -940,7 +977,7 @@ an instrument on one sample before buying sixteen.**
 
 | # | row | owner | state |
 | --- | --- | --- | --- |
-| R1 | **Ti confirmation of the `nikon-pfs` route.** Blocks 61c; nothing else waits on it. | operator, post-merge | open |
+| R1 | **Ti confirmation of the `nikon-pfs` route.** Blocks 61c; nothing else waits on it. **Positive-informative only** — the skill is byte-identical to the paragraph still in the prompt, so a negative means the call was redundant, not that the route is broken; see the section above before acting on one. | operator, post-merge | open |
 | R2 | **`CLAUDE.md` says "Eleven tools are still undecorated" (measured 2026-08-17). It is twelve, measured 2026-08-29** over `TOOL_REGISTRY`: `calibrate_snr_threshold`, `calibrate_stage_to_camera`, `center_feature`, `export_dataset_as_tiff`, `find_features`, `get_focus_lock_state`, `run_mda`, `run_multiposition_with_autofocus`, `set_emu_laser_power_percentage`, `shutter_declared_illumination`, `snap_to_album`, `verify_emu_laser_power_calibration`. 61b closed `get_focus_lock_state`, leaving **eleven**, measured 2026-08-29 over `TOOL_REGISTRY` (81 tools): `calibrate_snr_threshold`, `calibrate_stage_to_camera`, `center_feature`, `export_dataset_as_tiff`, `find_features`, `run_mda`, `run_multiposition_with_autofocus`, `set_emu_laser_power_percentage`, `shutter_declared_illumination`, `snap_to_album`, `verify_emu_laser_power_calibration`. That is the same *number* `CLAUDE.md` has carried since 2026-08-17 but not the same *membership*, so the date must move with it. Note for whoever measures next: the three attributes are `_microclaw_emitter`, `_microclaw_emits_nothing` and `_microclaw_refusal_reason` — a probe that guesses `_microclaw_refuses` counts `build_stage_coordinate_mosaic` as undecorated and reports twelve. | coordinator | closed |
 | R3 | **`load_skill` is one more tool in an 85-schema list that is 74% of static context.** The design says plainly that the 74% row is where a context project would go and that this is not that project. Recorded so the measurement is not lost, not scheduled. | — | recorded |
 
