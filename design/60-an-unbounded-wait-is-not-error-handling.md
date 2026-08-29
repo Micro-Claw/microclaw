@@ -340,10 +340,32 @@ coincidence at frame 72,056 is tight to within one frame, the mechanism is
 unproven, and n=1.
 
 **D6's raw upper bound is the right thing to ship, and a fixed overhead model is
-not.** Per-frame overhead was 14,361 B on M2 (24% of its pixels) and 4,415 B here
-(0.84%). The absolute cost differs 3.3x and the *fraction* differs 29x, because
-the fraction is dominated by ROI size. Item 5's refinement would have to be
-rig-calibrated to beat the bound it refines; it stays optional and unbuilt.
+not** — though the first version of this paragraph argued it badly and the
+numbers are corrected here.
+
+Measuring the **same field** on both rigs, `md_length` from the index entries:
+M2 **14,361 B** per frame, this run **4,235 B** (mean; it takes 8 distinct values
+between 4,226 and 4,236 *within the single run*). The coordinator's first figure
+of 4,415 B was derived from file sizes and conflated metadata with the IFD; the
+180 B difference is the IFD, against the writer's own `IFD_size = 176`.
+
+The fractions were also quoted against different denominators — M2's "24%" is
+metadata as a share of the total per-frame cost, while 0.84% was quoted on top of
+pixels. Consistently, on top of pixels: **31.9% on M2, 0.81% here.**
+
+**These two runs are not comparable conditions and the comparison should not be
+read as one.** The operator's objection is recorded: the demo camera is
+simulated, M2 was moving data off a real sensor, and the integration times
+differed. `md_length` is a JSON blob of device properties and timestamps, so the
+likeliest driver is how many devices each config serialises — unverified here,
+because only M2's single quoted value is in hand, not its distribution.
+
+None of which is load-bearing. **`MAX_FILE_SIZE // (w*h*bpp)` is an upper bound
+because overhead is positive**, and that is D6's whole argument; it never needed
+the overhead's magnitude. What the two measurements do show is that a *fixed*
+overhead model has nothing stable to be fixed at — it varies between configs and
+within a single run. Item 5's refinement would have to be rig-calibrated to beat
+the bound it refines; it stays optional and unbuilt.
 
 **D4 works on hardware**: 131 progress events over 129.5 s = **1.01/s**, first
 frame 1, last 8,256 of 8,256. The 83-minute silence of the incident is gone —
@@ -694,7 +716,13 @@ crosses a boundary that the raw bound alone calls safe. Keep raw image bytes
 separately visible either way, and do not let the disclosure quote a frame number
 it cannot stand behind — the 4.5 GB raw estimate correctly predicts a crossing
 but puts it at frame 95,443, while the real one was 72,056, because per-frame
-metadata here was 14,361 bytes: 24% on top of the pixels.
+metadata here was 14,361 bytes against 45,000 bytes of pixels: **31.9% on top of
+the pixels**, or 24% of the total per-frame cost. (Corrected 2026-08-29: this
+line originally read "24% on top of the pixels", mixing the two denominators, and
+60b's write-up propagated the error before measuring `md_length` directly on a
+second rig. The two are 31.9% and 0.81% on top of pixels — measured under
+conditions too different to compare, which is itself the argument against a fixed
+overhead model.)
 
 > This acquisition writes at least 4.5 GB of image data against NDTiff's 4 GiB
 > per-file limit, so it will roll to a second file before frame 95,443 — and
