@@ -8129,3 +8129,74 @@ original verdict ran a regex over the assistant's prose; a single $1 validation
 run showed it scoring `PROPOSED_FIRST` on a message that was *refusing* to give
 numbers, having matched a stray "TIRF" and "20 ms" further down. Sixteen samples
 of that would have looked like data. Total spend: $2, all of it on finding that.
+
+## design/61 block 61b — the Nikon anchors, and the route they create
+
+**The block's central test could not have been written the way the checklist
+worded it.** 61a's routing test was vacuous — its "recorded payload" was a
+scripted mock whose first response *was* `load_skill(name="smlm")` — and four
+more Nikon limbs in that shape would have been four tests that cannot fail. A
+scripted mock cannot measure a routing choice because it supplies the choice.
+The limbs were split by what each half can observe: a **discriminator** fixture
+in the suite at $0 (the real `get_focus_lock_state` over four rig payloads,
+asserting the `device` identity routing depends on), **presence regressions**
+labelled as such for the anchors, and the routing choice itself left to a live
+session. Settling that before assigning the block is what made the rest cheap.
+
+**The one review finding was invisible to every test that could have looked for
+it.** The anchors shipped as *"on a rig with this kind of hardware lock, call
+`load_skill(name='nikon-pfs')"* — and the antecedent of "this kind" was a
+*generic* hardware focus lock, so read plainly they told an agent on any
+focus-lock rig, the demo machine included, to load the Nikon skill. The
+discriminator fixture asserts what the tool *returns*, not how a model reads a
+description; the presence test only asked for the string `nikon-pfs`, which the
+vague form contains. **Where prose is the mechanism, a presence test must check
+the discriminator, not the keyword.** The fix made all three parameters go red
+on the previous wording.
+
+**Two of the four limbs cannot fail for this block, and the runner said so
+unprompted.** The non-EMU branch already returned `device`, so `TIPFSStatus` and
+`PFS` pass on the pre-change tree; only `CRISP` exercises the new EMU key. They
+are legitimate cross-rig guards and are now documented as such in the test's own
+docstring, so a later reader cannot count them as this block's evidence.
+
+**The demo machine was a better negative than the design expected.** Its config
+configures an autofocus device — `Autofocus`/`DAutoFocus`, visible in 61a's own
+system-state artifact — so it is not "a rig with no lock" but a rig with a real
+focus lock that is not a PFS: the CRISP shape, live. Reading the previous
+block's artifact before writing the gate is what found that; the design had
+assumed the weaker case.
+
+**The gate ran three times and launched zero times, and every cause was the
+runbook's.** Bare `python` is not on PATH on that machine (the Microsoft Store
+alias answers and exits 9009); `uv run` from outside the repo cannot import
+microclaw because it resolves its environment from the project directory; and
+`uv run` from inside the repo hit the checkout guard, correctly. 61a's runbook
+had already solved this — `active-slot.txt` → `env-$slot\Scripts\python.exe`,
+run from `$HOME` — ten lines away, and this file was written fresh instead of
+reusing it. **The selftest could not have caught it**: it invokes the gate with
+a venv interpreter it built itself, so it exercises the program and never the
+runbook's way of starting it. A gate's launch command is part of its instrument
+and belongs to the machine, not to the author's shell.
+
+**The session was still fully scorable afterwards, and that is the design that
+saved the round.** Because the routing limbs read the saved history and the
+exported script rather than the operator's verdict, everything the session
+measured could be scored off-rig from the artifacts, and the operator only had
+to re-run the three build limbs — no second session. Scoring from artifacts is
+usually described as a way to catch a false pass; here it also made a failed
+instrument recoverable without spending the operator's time twice.
+
+**And it nearly bought a non-discriminating observation as evidence.** The
+agent's *"not a Nikon PFS, so no special skill is needed"* looked like proof the
+anchors had shipped — until the check that `main` already carries 61a's catalog
+line naming `nikon-pfs`, from which the same sentence is reachable with no
+anchor at all. H3 was different: the operator's own exported script renders
+`# No hardware-routine effect.` where `main`'s exporter on the *same history*
+plants `raise RuntimeError`, so that one discriminates and settles. **Ask what
+the other branch would have produced before calling an observation evidence.**
+
+**A probe that guesses an attribute name reports a wrong number.** The
+undecorated-tool count came back twelve because the one-liner tested
+`_microclaw_refuses`; the real attribute is `_microclaw_refusal_reason`, and
+`build_stage_coordinate_mosaic` is decorated `@refuses`. It is eleven.
