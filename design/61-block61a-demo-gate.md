@@ -10,17 +10,30 @@ driven session below would measure nothing.
 
 ## Step 0 — confirm you are on the right code
 
+Run this from inside your microclaw checkout, wherever it lives. Nothing below
+assumes a path — `$repo` is read back from git, not written here, because the
+first version of this runbook guessed `$HOME\Code\microclaw` and this machine's
+checkout is on `D:`.
+
+`Set-StrictMode` is deliberate: it makes a later step that references an unset
+variable stop with a named error instead of quietly expanding it to nothing.
+
 ```powershell
-$repo = "$HOME\Code\microclaw"
-cd $repo
+Set-StrictMode -Version Latest
 git fetch origin
 git checkout design61/skills-are-files
 git pull
+$repo = (git rev-parse --show-toplevel)
+if (-not $repo) { "NOT IN A GIT CHECKOUT - STOP" } else { "repo: $repo" }
 git merge-base --is-ancestor 26cae61 HEAD
 if ($LASTEXITCODE -eq 0) { "IMPLEMENTATION PRESENT" } else { "WRONG TREE - STOP" }
+$gate = Join-Path $repo "design\61-block61a-demo-gate.py"
+if (Test-Path $gate) { "gate program: $gate" } else { "GATE PROGRAM MISSING - STOP" }
 ```
 
-Expect `IMPLEMENTATION PRESENT`. Anything else, stop and report.
+Expect `repo: ...`, `IMPLEMENTATION PRESENT`, and `gate program: ...`. Anything
+else, stop and report. **Keep this PowerShell window** — `$repo` and `$gate` are
+used below.
 
 ## Step 1 — install this branch the way the machine normally installs
 
@@ -28,6 +41,9 @@ Expect `IMPLEMENTATION PRESENT`. Anything else, stop and report.
 cd $repo
 .\install.bat
 ```
+
+(If you already ran this successfully, you do not need to run it again — resume
+at Step 2.)
 
 This is the limb that matters most, and it is why the gate exists. The suite
 proves the skills are in the source tree and in a built wheel; only
@@ -42,10 +58,18 @@ Every command below is literal. Nothing needs substituting.
 ```powershell
 $slot = (Get-Content "$env:LOCALAPPDATA\microclaw\active-slot.txt" -Raw).Trim()
 $py = "$env:LOCALAPPDATA\microclaw\env-$slot\Scripts\python.exe"
+if (-not (Test-Path $py))   { "NO INSTALLED INTERPRETER AT $py - STOP" }
+if (-not (Test-Path $gate)) { "GATE PROGRAM NOT FOUND - RERUN STEP 0 - STOP" }
+"interpreter: $py"
+"gate: $gate"
 cd $HOME
-& $py "$repo\design\61-block61a-demo-gate.py" --output "$HOME\block61a-demo-evidence"
+& $py $gate --output "$HOME\block61a-demo-evidence"
 "exit code: $LASTEXITCODE"
 ```
+
+If either guard prints `STOP`, do not read the lines after it — go back to
+Step 0. Both paths are echoed before the run so a wrong one is visible rather
+than inferred from a confusing error.
 
 `cd $HOME` is not decoration: the program scores whatever `microclaw` its
 interpreter imports, and it refuses outright if that turns out to be the
@@ -111,6 +135,7 @@ $script = "PASTE THE ABSOLUTE PATH THE AGENT REPORTED"
 if (-not (Test-Path $script)) { "STOP - no file at that path" } else { "found: $script" }
 $hits = Select-String -Path $script -Pattern "NOT EMITTED"
 if ($hits) { "FAIL: $($hits.Count) NOT EMITTED line(s)"; $hits } else { "PASS: no NOT EMITTED lines" }
+if (-not (Test-Path $py)) { "INTERPRETER NOT SET - RERUN STEP 2's FIRST TWO LINES - STOP" }
 & $py -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read()); print('PASS: script compiles')" $script
 ```
 

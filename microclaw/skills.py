@@ -9,9 +9,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import resources
-from importlib.abc import Traversable
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    # Annotations only, and never imported at runtime: `importlib.abc` is
+    # deprecated from 3.12 and gone in 3.14, while `importlib.resources.abc`
+    # does not exist on 3.10, which pyproject still supports. `from __future__
+    # import annotations` above means nothing here is evaluated at run time, so
+    # one guarded import covers 3.10 through 3.14 without a compatibility shim.
+    from importlib.resources.abc import Traversable
 
 
 @dataclass(frozen=True)
