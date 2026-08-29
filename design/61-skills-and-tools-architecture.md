@@ -469,8 +469,10 @@ Items:
    sources are the design's Layout table: `hook-authoring` (`hook_docs.py`),
    `smlm` (`smlm_docs.py`), `dna-paint` (the existing Markdown), `optical-paths`
    (`optics_docs.py`), `htsmlm` (`htsmlm_docs.py`). `nikon-pfs/SKILL.md` is
-   authored from the `SYSTEM_PROMPT` Nikon paragraph (2,355 chars, measured
-   2026-08-29). Delete `hook_docs.py`, `smlm_docs.py`, `optics_docs.py`,
+   authored from the `SYSTEM_PROMPT` Nikon paragraph (2,353 chars stripped of
+   its bounding newline, 2,355 as a raw prompt segment; measured 2026-08-29,
+   and the design's 2,353 is the stripped figure).
+   Delete `hook_docs.py`, `smlm_docs.py`, `optics_docs.py`,
    `htsmlm_docs.py` and `dna_paint_docs.py` outright — no shim, no re-export.
 2. **Body equivalence is checked once, in review, and is not a shipped test.**
    Normalize only the single leading/trailing newline the triple-quoted literal
@@ -496,7 +498,7 @@ Items:
    generated — not hand-copied. Delete the SMLM (897 chars) and EMU/htSMLM (802
    chars) paragraphs and replace them with the catalog plus one routing rule:
    load the relevant skill before running its specialized workflow. **Leave the
-   Nikon paragraph (2,355 chars) exactly as it is.**
+   Nikon paragraph (2,353 chars stripped) exactly as it is.**
 7. **`check_emu_installed`'s schema description** carries the conditional
    htSMLM rule — load `htsmlm` after positive plugin/configuration detection, or
    when the operator identifies the system or workflow as htSMLM or EMU, never
@@ -667,7 +669,7 @@ it is meant to preserve.
 
 Items:
 
-1. Delete the Nikon paragraph (2,355 chars) from `SYSTEM_PROMPT`. `nikon-pfs`
+1. Delete the Nikon paragraph (2,353 chars stripped) from `SYSTEM_PROMPT`. `nikon-pfs`
    already carries it verbatim from 61a.
 2. Flip 61a's deliberate presence assertion: a session with no Nikon trigger has
    no Nikon skill body **and no Nikon paragraph**; the catalog and the anchors
