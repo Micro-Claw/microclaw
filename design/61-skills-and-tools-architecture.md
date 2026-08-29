@@ -407,7 +407,13 @@ Microscopy guidance is Markdown in an obvious place; code that touches the
 microscope is in another. Ordinary rigs stop carrying Nikon and htSMLM
 procedure after the staged confirmation. The initial merged block saves about
 1,050 tokens of cached static context while retaining the Nikon paragraph; the
-Nikon follow-up brings the net change to about −1,650 tokens. A specialized
+Nikon follow-up brings the net change to about −1,650 tokens. **Measured:** 61a came
+in at −3,300 chars / ~−825 tokens against that ~1,050 prediction, and 61b spent
+**+115 chars** of prompt (the ordering invariant and one word at `agent.py:118`;
+the anchors are schema text, already paid for), taking `SYSTEM_PROMPT` from 32,088
+chars before 61a to 31,326 after 61b. So the shipped net is about **−760 chars of
+prompt plus −2,600 chars of schema, ~−840 tokens** — with the Nikon paragraph
+(2,353 chars) still carried, exactly as designed. A specialized
 workflow pays one conditional round trip when its skill is first needed. Adding
 a skill becomes adding a file. Authorization, guards, bounds and confirmation
 enforcement are unchanged: no authority is gained by reading a document. Nikon
@@ -646,6 +652,39 @@ Tests — the recorded-payload routing fixture, four limbs. Drive them from
 replayed payloads; **do not assert the routing in prose**. Skipping a skill
 raises no error and produces no artifact — just a worse session, which is
 design/59's failure mode exactly.
+
+**Coordinator, before the block is assigned: what a suite test of this can and
+cannot be.** 61a's routing test was vacuous, and one mutation proved it — its
+"recorded payload" was a scripted mock whose first response *was*
+`load_skill(name="smlm")`, so the assertion held with the catalog and the
+routing rule deleted from `SYSTEM_PROMPT` outright. **A scripted mock cannot
+measure a routing choice, because it supplies the choice.** Writing the four
+limbs that way again produces four tests that cannot fail, and they would be the
+half of this block that matters.
+
+So the four limbs are split by what each half can actually observe, and each
+half is named for what it is:
+
+- **In the suite, at $0: the discriminator.** Each limb replays a rig-shaped
+  payload through the *real* `get_focus_lock_state` and asserts the identity the
+  routing depends on — `device` equal to `TIPFSStatus`, to `PFS`, to `CRISP`, and
+  absent for the no-device rig. These fail when item 4 or item 5 is wrong, which
+  is the product content of this block. **Bridge-shaped fakes** (59a): Core
+  collections are `size()`/`get(i)` vectors whose `__iter__` raises. The `PFS`
+  limb carries the Dragonfly's `PFS Status` *and* `PFS in Range` properties
+  beside a device that is not named `PFS`-only, and the `CRISP` limb carries a
+  status property containing `PFS`, so a substring scan over properties —
+  the shortcut item 5 forbids — turns both red.
+- **Separately, as presence regressions:** the three amended schema
+  descriptions name `nikon-pfs`, `agent.py:118`'s parenthetical carries
+  `focus lock`, and the ordering invariant is in the core prompt. These are weak
+  by construction — deleting the sentence turns them red and that is all they
+  claim. Do not label them routing tests.
+- **The routing choice itself is a live-model observation and is not bought
+  here.** Its negative direction is gate limb H2 on the demo machine, in a
+  session the operator was going to drive anyway; its positive direction is the
+  Ti row R1, post-merge. `design/61-skill-routing-spike.py` stays unrun. No
+  paid measurement is proposed for this block.
 
 - **Positive, `TIPFSStatus`.** Operator request to engage PFS; replay a
   `get_focus_lock_state` result whose `device` is `TIPFSStatus`. Assert the
@@ -902,7 +941,7 @@ an instrument on one sample before buying sixteen.**
 | # | row | owner | state |
 | --- | --- | --- | --- |
 | R1 | **Ti confirmation of the `nikon-pfs` route.** Blocks 61c; nothing else waits on it. | operator, post-merge | open |
-| R2 | **`CLAUDE.md` says "Eleven tools are still undecorated" (measured 2026-08-17). It is twelve, measured 2026-08-29** over `TOOL_REGISTRY`: `calibrate_snr_threshold`, `calibrate_stage_to_camera`, `center_feature`, `export_dataset_as_tiff`, `find_features`, `get_focus_lock_state`, `run_mda`, `run_multiposition_with_autofocus`, `set_emu_laser_power_percentage`, `shutter_declared_illumination`, `snap_to_album`, `verify_emu_laser_power_calibration`. 61b closes `get_focus_lock_state`; the count and the date are corrected at step 10. | coordinator | open |
+| R2 | **`CLAUDE.md` says "Eleven tools are still undecorated" (measured 2026-08-17). It is twelve, measured 2026-08-29** over `TOOL_REGISTRY`: `calibrate_snr_threshold`, `calibrate_stage_to_camera`, `center_feature`, `export_dataset_as_tiff`, `find_features`, `get_focus_lock_state`, `run_mda`, `run_multiposition_with_autofocus`, `set_emu_laser_power_percentage`, `shutter_declared_illumination`, `snap_to_album`, `verify_emu_laser_power_calibration`. 61b closed `get_focus_lock_state`, leaving **eleven**, measured 2026-08-29 over `TOOL_REGISTRY` (81 tools): `calibrate_snr_threshold`, `calibrate_stage_to_camera`, `center_feature`, `export_dataset_as_tiff`, `find_features`, `run_mda`, `run_multiposition_with_autofocus`, `set_emu_laser_power_percentage`, `shutter_declared_illumination`, `snap_to_album`, `verify_emu_laser_power_calibration`. That is the same *number* `CLAUDE.md` has carried since 2026-08-17 but not the same *membership*, so the date must move with it. Note for whoever measures next: the three attributes are `_microclaw_emitter`, `_microclaw_emits_nothing` and `_microclaw_refusal_reason` — a probe that guesses `_microclaw_refuses` counts `build_stage_coordinate_mosaic` as undecorated and reports twelve. | coordinator | closed |
 | R3 | **`load_skill` is one more tool in an 85-schema list that is 74% of static context.** The design says plainly that the 74% row is where a context project would go and that this is not that project. Recorded so the measurement is not lost, not scheduled. | — | recorded |
 
 ## Run ledger
@@ -910,5 +949,5 @@ an instrument on one sample before buying sixteen.**
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | round 1 demo 2026-08-29 after `85d63ec`: **G1/G2/G3/G5 PASS, G4 NOT EXERCISED**. Installed-build limbs agree byte-for-byte with the coordinator's selftest (6 skills, prompt 31,070 chars); emitted script compiles with `load_skill` as `# No hardware-routine effect.` and no `NOT EMITTED`. G4's prompt asked for dSTORM on the demo camera, so the agent correctly answered *this rig cannot do dSTORM* and never reached a routing decision — **gate defect, no product defect**. A runbook path bug (`$repo` hardcoded to the wrong drive) cost the operator one round before this. G4's cause fixed at `daa0053` by restoring the routing rule's ordering half (141 chars); the two-arm A/B was priced (~$11, after a 3x mispricing) and **declined as backwards burden of proof** — see the section above. Net context −3,300 chars / ~−825 tokens. Suite 2484/99/0. | `c18b15a` merged 2026-08-29, branch deleted locally and on `origin`; worktree removed. Design gate at step 10 below. |
-| 61b | `design61/nikon-anchors` | | | | |
+| 61b | `design61/nikon-anchors` | `fe82b05` (2026-08-29), worktree `../microclaw-61b` | `b5535c7` (1 Codex start turn, no revision turn needed). Runner's report was honest about the limbs that pass pre-change; it committed that report into the repo root, which the coordinator dropped (preserved in scratch). Coordinator reproduced both pre-change failures independently — `KeyError: 'device'` on the CRISP limb, `NOT EMITTED: get_focus_lock_state` on the export. **One finding, and the suite structurally could not catch it**: the three anchors shipped as "on a rig with this kind of hardware lock", whose antecedent was a *generic* hardware focus lock — so read plainly they told an agent on any focus-lock rig, this demo machine included, to load the Nikon skill. The discriminator fixture asserts what the tool returns, not how a model reads a description, and the presence test only asked for the string `nikon-pfs`, which the vague form contains. Fixed at `b5535c7`: each anchor names the Nikon PFS and identifies it by the returned device value; the presence test now checks the discriminator and all three parameters go red on the previous wording. Coordinator suite 2495/99/0 (main was 2484). | Gate pushed at `276dd5a`. **The demo config has an autofocus device** — `Autofocus` / `DAutoFocus`, from 61a's own system-state artifact — so this machine is a *non-PFS focus lock*, the discriminating negative, not "a rig with no lock"; the no-device limb is NOT EXERCISED by design. Routing is scored from the session history via microclaw's own `load_history` / `_recorded_tool_calls`. Selftest run on both trees before pushing: main fails with `run_autofocus carries no nikon-pfs anchor`, the missing ordering invariant and `NOT EMITTED: get_focus_lock_state`; H5 proved able to fail on a synthetic misrouted session; NOT EXERCISED never exits zero. **Demo round 1, 2026-08-29 after `a9bdd91`: all 7 limbs PASS plus the human limb.** The gate program failed to launch three times first, and every cause was the runbook's: bare `python` is not on PATH there (Store alias, exit 9009), `uv run` from outside the repo cannot import microclaw, and `uv run` from inside it hit the checkout guard — 61a had already solved this via `active-slot.txt` and the file was written fresh instead of reusing it. Session limbs scored off-rig from the operator's artifacts (H4 `Autofocus`, H5 no `nikon-pfs` with state read before set, H5c `smlm` loaded, H6 export standalone); H1/H2/H3 then read directly off the installed build at `env-a`, agreeing with the coordinator's run byte-for-byte (prompt 31,326 chars, 16-line export). **H5's evidence is better than a bare pass**: the agent said *"The configured device is `Autofocus` … not a Nikon PFS, so no special skill is needed"* — identification by the returned device value, in its own words. H3 was settled twice: the operator's own exported script renders `# No hardware-routine effect.` with zero `NOT EMITTED`, where `main`'s exporter on the *same history* plants `raise RuntimeError`. | `PENDING` |
 | 61c | *(conditional on R1)* | | | | |

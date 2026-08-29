@@ -18,6 +18,29 @@ def test_registry_and_schema_cover_the_same_tools():
     assert set(TOOL_REGISTRY) == set(_SCHEMA_BY_NAME)
 
 
+@pytest.mark.parametrize("name", [
+    "run_autofocus", "get_focus_lock_state", "set_focus_lock",
+])
+def test_focus_lock_schema_anchors_name_which_lock_and_how_to_identify_it(name):
+    """A presence regression, not a routing test -- but it has to check the
+    discriminator, not just the skill name.
+
+    The first version of these anchors read "on a rig with this kind of
+    hardware lock, call load_skill(name='nikon-pfs')", and the antecedent of
+    "this kind" was a generic "hardware focus lock". Read plainly that tells an
+    agent on an ASI CRISP rig to load the Nikon skill -- which is precisely
+    what the CRISP limb of the discriminator fixture exists to prevent, one
+    level down. No suite test can catch that: the discriminator tests what the
+    tool returns, not how a model reads a description. So assert here that each
+    anchor names *which* lock and identifies it by the returned device value.
+    """
+    description = _SCHEMA_BY_NAME[name]["description"]
+    assert "nikon-pfs" in description
+    assert "Perfect Focus" in description
+    anchor = next(s for s in description.split(". ") if "nikon-pfs" in s)
+    assert "device" in anchor
+
+
 def test_save_knowledge_value_teaches_optical_path_map_shape_at_point_of_use():
     description = _SCHEMA_BY_NAME["save_knowledge"]["input_schema"]["properties"]["value"]["description"]
     assert "'kind': 'optical_path_position_map'" in description

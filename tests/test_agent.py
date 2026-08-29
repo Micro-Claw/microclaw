@@ -377,6 +377,20 @@ class TestNikonPfsPrompt:
         assert "get_focus_lock_state" in SYSTEM_PROMPT
         assert "Do not wait to be asked" in SYSTEM_PROMPT
 
+    def test_focus_lock_ordering_invariant_is_vendor_neutral(self):
+        sentence = next(
+            line for line in SYSTEM_PROMPT.splitlines()
+            if "before any operation that engages or adjusts a hardware focus lock" in line.lower()
+        )
+        assert "get_focus_lock_state" in sentence
+        assert all(word not in sentence for word in ("Nikon", "PFS", "TIPFS"))
+
+    def test_focus_lock_is_named_as_a_dedicated_tool_operation(self):
+        assert "(stage, channel, exposure, focus lock)" in SYSTEM_PROMPT
+
+    def test_nikon_procedure_remains_in_core_prompt(self):
+        assert "Do BOTH of these every time you engage the lock" in SYSTEM_PROMPT
+
     def test_the_lock_validation_steps_are_steps_not_caveats(self):
         # Same session: it flagged the "locked too high" risk in its plan and
         # then did not carry out either check until asked.
