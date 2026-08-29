@@ -187,10 +187,24 @@ def main():
 
         # Limb 2's evidence: the disclosure decided from this machine's own
         # numbers, before the first exposure.
+        # Disclosures inform through the acquisition event sink and must NOT
+        # gate (D6: documentation, not a limit). Collect both: the clauses are
+        # the evidence, and an empty `confirmations` is part of it.
+        disclosures = []
+
         def ask(plan):
             confirmations.clear()
-            tools._authorize_acquisition(ctrl, guard, plan).close()
-            return list(confirmations)
+            disclosures.clear()
+            previous = getattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", None)
+            tools._ACQUISITION_EVENT_CONTEXT.sink = disclosures.append
+            try:
+                tools._authorize_acquisition(ctrl, guard, plan).close()
+            finally:
+                tools._ACQUISITION_EVENT_CONTEXT.sink = previous
+            return {"confirmations": list(confirmations),
+                    "clauses": [c for e in disclosures
+                                if e.get("type") == "acquisition_disclosure"
+                                for c in e["clauses"]]}
 
         over = AcquisitionPlan(bound + 1, args.exposure_ms,
                                (bound + 1) * args.exposure_ms / 1000.0,
@@ -299,8 +313,8 @@ def main():
           "a guaranteed 4 GiB crossing is not disclosed, or a safe plan is")
     def d6_disclosure():
         require_setup()
-        over = " ".join(c["summary"] for c in plan_probe["over"])
-        under = " ".join(c["summary"] for c in plan_probe["under"])
+        over = " ".join(plan_probe["over"]["clauses"])
+        under = " ".join(plan_probe["under"]["clauses"])
         assert "4 GiB per-file limit" in over, f"no crossing disclosure over bound: {over!r}"
         assert f"{geometry['frame_bound_per_file']:,}" in over, over
         assert "as early as frame" in over, over
@@ -315,13 +329,16 @@ def main():
           "un-interruptibility is not disclosed before a burst is authorized")
     def d5_burst_clause():
         require_setup()
-        burst = " ".join(c["summary"] for c in plan_probe["burst"])
-        single = " ".join(c["summary"] for c in plan_probe["single"])
+        burst = " ".join(plan_probe["burst"]["clauses"])
+        single = " ".join(plan_probe["single"]["clauses"])
         for phrase in ("hardware-sequenced burst", "Stop button", "engine abort",
                        "thousands of further exposures"):
             assert phrase in burst, f"missing {phrase!r} from {burst!r}"
         assert "hardware-sequenced burst" not in single, single
-        return "2-frame burst disclosed; 1-frame plan did not"
+        # The regression 60b briefly shipped: a disclosure must not block.
+        gated = plan_probe["burst"]["confirmations"]
+        assert not gated, f"the burst disclosure blocked on a confirmation: {gated}"
+        return "2-frame burst disclosed, and did not block; 1-frame plan did not"
 
     @limb("a session grant does not carry a larger plan",
           "the grant auto-approves a plan bigger than the one it was given for")

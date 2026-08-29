@@ -1203,10 +1203,42 @@ a parameterized test asserts the bound never exceeds the raw one. The wording
 changed with it: **"as early as frame N"**, not "before frame N", because a
 conservative bound cannot promise the roll happens before it.
 
-**Carried forward:** calibrating `m` from a dataset the rig already wrote would
-remove the last ~3%. The spike shows it works (0.07% spread on a 32-frame run);
-it needs plumbing a save path into authorization and is not urgent, because the
-conservative bound is already within 3% everywhere measured.
+**No calibration, by operator decision (2026-08-29).** The bound already shifts
+per machine on its own -- `w`, `h` and `bpp` are read live from the core -- and
+the fixed allowance is what keeps it working everywhere with nothing to
+configure. A live-measured `m` would recover the last ~3% and is **not wanted**:
+*"the bound will shift per-machine, so I don't want to calibrate it. I just want
+it to work everywhere."* The one boundary condition, recorded rather than
+guarded: a configuration whose metadata exceeds 16,000 B would under-warn again.
+None of the four rigs measured comes within 500 B of it, and
+`design/60-metadata-size-survey.py` re-checks any new rig from a saved dataset in
+one command, outside the product.
+
+### A disclosure must not block. (regression shipped and reverted, 2026-08-29)
+
+Block 60b changed `_authorize_acquisition`'s trigger from `reasons` to
+`reasons or clauses`, so a **clause created a confirmation instead of annotating
+one**. Every zero-interval multi-frame burst then blocked on an approval the
+operator had never asked for -- a **2-frame** burst included, and a 200-frame run
+under a `confirm_above_frames: 500` config. Both are visible in 60b's own gate
+evidence, and neither the coordinator's review nor the gate scoring caught it.
+
+This contradicts the decisions it was implementing. D6: *"segmenting is
+documentation, not a limit... do not add a cap."* D5: `_authorize_acquisition`
+**"adds a clause"** -- to the confirmation a threshold already triggered. The M2
+run that motivated all of this already prompted, because 100,000 frames exceeded
+`confirm_above_frames: 500`; D5 was about what that prompt *said*.
+
+Clauses now emit through the acquisition event sink as an
+`acquisition_disclosure` event -- reaching the browser and CLI, blocking nothing
+-- and still appear inside the confirmation when a threshold fires. A regression
+test asserts both halves, and 60b's gate limb now asserts the burst disclosure
+produced **no** confirmation.
+
+**The standing rule this cost:** never introduce a blocking prompt without
+asking the operator first. A prompt is a change to how the instrument behaves in
+someone's session, not an implementation detail, and no amount of green suite
+makes it the implementer's call.
 
 ### Post-merge design gate — CLOSED 2026-08-29
 
