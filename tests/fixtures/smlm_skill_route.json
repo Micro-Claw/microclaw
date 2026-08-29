@@ -1,0 +1,15 @@
+{
+  "operator": "I need to run dSTORM on this sample. What acquisition parameters should I use?",
+  "assistant_rounds": [
+    {
+      "type": "tool_use",
+      "name": "load_skill",
+      "input": {"name": "smlm"},
+      "id": "recorded-smlm-skill"
+    },
+    {
+      "type": "text",
+      "text": "From the loaded SMLM reference, start by confirming the pre-acquisition checklist before selecting exposure and frame count."
+    }
+  ]
+}

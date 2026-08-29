@@ -26,8 +26,6 @@ from microclaw.tools import (
     get_device_property_info,
     get_exposure,
     get_full_device_state,
-    get_dna_paint_documentation,
-    get_hook_documentation,
     get_pixel_size,
     get_position_list,
     get_system_state,
@@ -37,6 +35,7 @@ from microclaw.tools import (
     list_device_properties,
     list_devices,
     list_hooks,
+    load_skill,
     mark_position,
     move_stage_xy,
     move_stage_z,
@@ -5161,19 +5160,19 @@ class TestGetDevicePropertyInfo:
         assert "0x" not in result["type"]
 
 
-class TestGetDnaPaintDocumentation:
-    """The deep DNA-PAINT reference behind get_smlm_documentation's summary."""
+class TestLoadSkillDocumentation:
+    """The generic loader preserves the deep protocol and hook references."""
 
     def test_returns_the_packaged_protocol(self, mock_ctrl, unconstrained_guard):
-        result = get_dna_paint_documentation(mock_ctrl, unconstrained_guard)
+        result = load_skill(mock_ctrl, unconstrained_guard, "dna-paint")
         doc = result["documentation"]
         assert isinstance(doc, str)
         # Read through importlib.resources from package data, so this also
         # proves the .md is reachable the way an installed wheel reaches it.
-        assert doc.startswith("# DNA-PAINT Experiment Protocol")
+        assert "# DNA-PAINT Experiment Protocol" in doc
 
     def test_covers_the_whole_protocol(self, mock_ctrl, unconstrained_guard):
-        doc = get_dna_paint_documentation(mock_ctrl, unconstrained_guard)["documentation"]
+        doc = load_skill(mock_ctrl, unconstrained_guard, "dna-paint")["documentation"]
         for term in (
             # kinetics — the part that lets a parameter be derived, not quoted
             "τ_b = 1/k_off", "k_on", "Imager/docking strand design",
@@ -5189,12 +5188,10 @@ class TestGetDnaPaintDocumentation:
             assert term in doc, f"protocol lost its {term!r} content"
 
     def test_is_registered_and_emits_nothing(self):
-        assert tools.TOOL_REGISTRY["get_dna_paint_documentation"] is (
-            get_dna_paint_documentation
-        )
+        assert tools.TOOL_REGISTRY["load_skill"] is load_skill
         # An undecorated tool plants a raise RuntimeError in every exported
         # script that recorded it; a documentation read emits nothing.
-        assert get_dna_paint_documentation._microclaw_emits_nothing is True
+        assert load_skill._microclaw_emits_nothing is True
 
     def test_carries_no_rig_identity(self, mock_ctrl, unconstrained_guard):
         """Rig facts belong in gate docs and rig profiles, never in microclaw/.
@@ -5204,7 +5201,7 @@ class TestGetDnaPaintDocumentation:
         capability statements when it moved into the package. Only the cited
         reference instrument survives, inside the citation that carries it.
         """
-        doc = get_dna_paint_documentation(mock_ctrl, unconstrained_guard)["documentation"]
+        doc = load_skill(mock_ctrl, unconstrained_guard, "dna-paint")["documentation"]
         for rig_fact in ("Nikon Ti1", "iXON", "2 W", "MPI"):
             assert rig_fact not in doc, f"rig identity {rig_fact!r} in a packaged doc"
 
@@ -5219,31 +5216,33 @@ class TestSmlmAndDnaPaintDocsAgree:
     """
 
     def test_smlm_reference_routes_to_the_deep_protocol(self):
-        from microclaw.smlm_docs import SMLM_REFERENCE
-        assert SMLM_REFERENCE.count("get_dna_paint_documentation") >= 2
+        from microclaw.skills import load_skill_text
+        SMLM_REFERENCE = load_skill_text("smlm")
+        assert SMLM_REFERENCE.count('load_skill(name="dna-paint")') >= 2
 
     def test_smlm_reference_no_longer_carries_the_superseded_figures(self):
-        from microclaw.smlm_docs import SMLM_REFERENCE
+        from microclaw.skills import load_skill_text
+        SMLM_REFERENCE = load_skill_text("smlm")
         for superseded in ("0.1–1 nM", "PBS + 500 mM NaCl"):
             assert superseded not in SMLM_REFERENCE, (
                 f"{superseded!r} is the figure the protocol supersedes"
             )
 
     def test_both_documents_state_the_same_starting_frame_count(self):
-        from microclaw.smlm_docs import SMLM_REFERENCE
-        from microclaw.dna_paint_docs import load_reference
+        from microclaw.skills import load_skill_text
+        SMLM_REFERENCE = load_skill_text("smlm")
         assert "7,500" in SMLM_REFERENCE
-        assert "7,500" in load_reference()
+        assert "7,500" in load_skill_text("dna-paint")
 
 
-class TestGetHookDocumentation:
+class TestHookAuthoringSkill:
     def test_returns_nonempty_string(self, mock_ctrl, unconstrained_guard):
-        result = get_hook_documentation(mock_ctrl, unconstrained_guard)
+        result = load_skill(mock_ctrl, unconstrained_guard, "hook-authoring")
         assert isinstance(result["documentation"], str)
         assert len(result["documentation"]) > 0
 
     def test_covers_key_concepts(self, mock_ctrl, unconstrained_guard):
-        result = get_hook_documentation(mock_ctrl, unconstrained_guard)
+        result = load_skill(mock_ctrl, unconstrained_guard, "hook-authoring")
         doc = result["documentation"]
         for term in (
             "image_process_fn", "post_hardware_hook_fn", "HookBase", "event_queue",

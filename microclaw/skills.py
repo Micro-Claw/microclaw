@@ -1,0 +1,95 @@
+"""Repository-owned workflow skills, read from packaged Markdown resources.
+
+The maintained file is the text returned to the model, so prose cannot drift
+from a hand-copied Python string.  Resources are resolved with
+``importlib.resources`` rather than ``__file__`` so installed wheels work just
+like the source tree.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from importlib import resources
+from importlib.abc import Traversable
+
+import yaml
+
+
+@dataclass(frozen=True)
+class SkillMetadata:
+    name: str
+    description: str
+    resource: Traversable
+
+
+def _parse_skill(resource: Traversable) -> SkillMetadata:
+    text = resource.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        raise RuntimeError(f"Malformed skill frontmatter in {resource}: missing opening '---'")
+    try:
+        raw_frontmatter, _body = text[4:].split("\n---\n", 1)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Malformed skill frontmatter in {resource}: missing closing '---'"
+        ) from exc
+    try:
+        metadata = yaml.safe_load(raw_frontmatter)
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"Malformed skill frontmatter in {resource}: {exc}") from exc
+    if not isinstance(metadata, dict):
+        raise RuntimeError(f"Malformed skill frontmatter in {resource}: expected a mapping")
+    if set(metadata) != {"name", "description"}:
+        raise RuntimeError(
+            f"Malformed skill frontmatter in {resource}: exactly name and description are required"
+        )
+    name = metadata["name"]
+    description = metadata["description"]
+    if not isinstance(name, str) or not name:
+        raise RuntimeError(f"Malformed skill frontmatter in {resource}: name must be nonempty text")
+    if not isinstance(description, str) or not description or "\n" in description:
+        raise RuntimeError(
+            f"Malformed skill frontmatter in {resource}: description must be one nonempty line"
+        )
+    return SkillMetadata(name=name, description=description, resource=resource)
+
+
+def _build_catalog(root: Traversable) -> tuple[SkillMetadata, ...]:
+    skill_files = sorted(
+        (
+            child.joinpath("SKILL.md")
+            for child in root.iterdir()
+            if child.is_dir() and child.joinpath("SKILL.md").is_file()
+        ),
+        key=lambda item: item.parent.name,
+    )
+    if not skill_files:
+        raise RuntimeError("Skill catalog is empty; packaged microclaw/skills/*/SKILL.md resources are missing")
+    catalog = tuple(_parse_skill(resource) for resource in skill_files)
+    names = [skill.name for skill in catalog]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise RuntimeError(f"Duplicate skill names: {', '.join(duplicates)}")
+    for skill in catalog:
+        directory_name = skill.resource.parent.name
+        if skill.name != directory_name:
+            raise RuntimeError(
+                f"Skill name mismatch in {skill.resource}: directory is "
+                f"{directory_name!r}, name is {skill.name!r}"
+            )
+    return catalog
+
+
+SKILL_CATALOG = _build_catalog(resources.files("microclaw").joinpath("skills"))
+
+
+def catalog_text() -> str:
+    """Render the generated permanent prompt catalog."""
+    return "\n".join(f"- {skill.name}: {skill.description}" for skill in SKILL_CATALOG)
+
+
+def load_skill_text(name: str) -> str:
+    """Return one complete SKILL.md after validating an exact catalog name."""
+    for skill in SKILL_CATALOG:
+        if skill.name == name:
+            return skill.resource.read_text(encoding="utf-8")
+    available = ", ".join(skill.name for skill in SKILL_CATALOG)
+    raise ValueError(f"Unknown skill {name!r}. Available catalog names: {available}")

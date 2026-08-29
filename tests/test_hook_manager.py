@@ -4,6 +4,8 @@ import inspect
 from pathlib import Path
 
 import pytest
+
+from microclaw.skills import load_skill_text
 from microclaw.hook_manager import (
     describe_saved_hook,
     lint_hook_code,
@@ -90,7 +92,7 @@ def test_session_a_hook_source_is_rejected_verbatim():
 
 def test_documented_emit_artifact_order_matches_runtime_signature():
     assert list(inspect.signature(EmitArtifact).parameters)[:2] == ["filename", "payload"]
-    from microclaw.hook_docs import HOOK_REFERENCE
+    HOOK_REFERENCE = load_skill_text("hook-authoring")
     assert "EmitArtifact(filename, payload)" in HOOK_REFERENCE
 
 

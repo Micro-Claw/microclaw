@@ -4,6 +4,7 @@ sequence of tool calls. Uses a mock Anthropic client so no real API key needed.
 The mock pre-scripts the sequence of Claude responses (tool_use blocks).
 """
 import json
+from pathlib import Path
 import threading
 import types
 import anthropic
@@ -618,6 +619,38 @@ class TestRunAgentIter:
             "round_start", "text_delta", "done",
         ]
         assert events[1]["id"] == "c1" == events[2]["tool_use_id"]
+
+    def test_recorded_dstorm_opening_loads_smlm_before_proposing_parameters(
+        self, mock_ctrl, guard
+    ):
+        payload = json.loads(
+            (Path(__file__).parent / "fixtures" / "smlm_skill_route.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        tool_round, text_round = payload["assistant_rounds"]
+        scripted = [
+            tool_use_response(
+                tool_round["name"], tool_round["input"], call_id=tool_round["id"]
+            ),
+            text_response(text_round["text"]),
+        ]
+        with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
+            events = list(run_agent_iter(payload["operator"], mock_ctrl, guard, []))
+
+        load_index = next(
+            index for index, event in enumerate(events)
+            if event["type"] == "tool_use"
+            and event["name"] == "load_skill"
+            and event["input"] == {"name": "smlm"}
+        )
+        proposal_index = next(
+            index for index, event in enumerate(events)
+            if event["type"] == "text_delta" and "exposure and frame count" in event["text"]
+        )
+        result = next(event for event in events if event["type"] == "tool_result")
+        assert "# Single-Molecule Localization Microscopy" in result["content"]
+        assert load_index < proposal_index
 
     @pytest.mark.parametrize(
         ("decision", "tool_payload"),

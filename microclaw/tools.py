@@ -3349,7 +3349,7 @@ def _optical_path_state(
             "camera or the eyepiece. Micro-Manager sees only the motorized part of "
             "the path; a manual prism or slider can send light elsewhere with every "
             "value above unchanged. If the camera is not getting the signal you "
-            "expect, call get_optical_path_documentation before interpreting these; "
+            "expect, call load_skill(name=\"optical-paths\") before interpreting these; "
             "when imaging is working there is nothing here to look up."
         ),
     }
@@ -8672,35 +8672,15 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 @emits_nothing
-def get_hook_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    from microclaw.hook_docs import HOOK_REFERENCE
-    return {"documentation": HOOK_REFERENCE}
+def load_skill(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
+    """Return a repository-owned workflow skill without reading hardware."""
+    from microclaw.skills import load_skill_text
 
-
-@emits_nothing
-def get_smlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    from microclaw.smlm_docs import SMLM_REFERENCE
-    return {"documentation": SMLM_REFERENCE}
-
-
-@emits_nothing
-def get_optical_path_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    from microclaw.optics_docs import OPTICS_REFERENCE
-    return {"documentation": OPTICS_REFERENCE}
-
-
-@emits_nothing
-def get_dna_paint_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    """The DNA-PAINT protocol in full, behind get_smlm_documentation's summary.
-
-    Two documents cover DNA-PAINT and they are not peers: SMLM_REFERENCE plans
-    any SMLM session including this one, and this is the depth behind it —
-    binding kinetics, buffer recipes, strand design, and the bench procedure
-    from folding to reconstruction. Where a number appears in both, this one is
-    the accurate one and SMLM_REFERENCE says so where it quotes it.
-    """
-    from microclaw.dna_paint_docs import load_reference
-    return {"documentation": load_reference()}
+    try:
+        documentation = load_skill_text(name)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"name": name, "documentation": documentation}
 
 
 @emits_nothing
@@ -8743,12 +8723,6 @@ def check_emu_installed(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         "htsmlm_jars": jars["htSMLM"],
         "emu_config_present": config_exists,
     }
-
-
-@emits_nothing
-def get_htsmlm_documentation(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
-    from microclaw.htsmlm_docs import HTSMLM_REFERENCE
-    return {"documentation": HTSMLM_REFERENCE}
 
 
 @emits_nothing
@@ -9570,12 +9544,8 @@ TOOL_REGISTRY = {
     "list_hooks": list_hooks,
     "describe_hook": describe_hook,
     "list_mm_plugins": list_mm_plugins,
-    "get_hook_documentation": get_hook_documentation,
-    "get_smlm_documentation": get_smlm_documentation,
-    "get_optical_path_documentation": get_optical_path_documentation,
-    "get_dna_paint_documentation": get_dna_paint_documentation,
+    "load_skill": load_skill,
     "check_emu_installed": check_emu_installed,
-    "get_htsmlm_documentation": get_htsmlm_documentation,
     "get_emu_configuration": get_emu_configuration,
     "get_emu_laser_map": get_emu_laser_map,
     "verify_emu_laser_power_calibration": verify_emu_laser_power_calibration,

@@ -1,4 +1,7 @@
-HOOK_REFERENCE = """
+---
+name: hook-authoring
+description: Write and verify pycro-manager acquisition hooks and saved analysis adapters.
+---
 # pycro-manager hook API reference (microclaw)
 
 ## Integrating the user's own analysis
@@ -581,4 +584,3 @@ move from a plugin's non-image output, SafetyGuard applies normally (guard the
 move as usual) — that differs from autofocus_mm_plugin, where the plugin drives
 the stage and microclaw can only guard passively. Full-image Java processing
 should be an MM processor pipeline, not a hook.
-"""

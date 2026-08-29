@@ -1,4 +1,7 @@
-HTSMLM_REFERENCE = """
+---
+name: htsmlm
+description: Operate htSMLM and EMU configurations through their semantic hardware mappings.
+---
 # htSMLM / EMU reference (microclaw)
 
 ## What EMU and htSMLM are
@@ -146,4 +149,3 @@ it programmatically. For all acquisitions use microclaw's native tools:
 
 3. Is the Trigger tab (MicroFPGA) present?
    (Required to set laser trigger modes and pulse durations.)
-"""
