@@ -1064,6 +1064,64 @@ to prompt defects and none to product defects. Two prompts is a small sample and
 the session is short, so weigh that against the operator's time: if the dry-run
 costs more than the session, ask for the session.
 
+### The rollover spike, 2026-08-29 (after closure; `design/60-rollover-spike.py`)
+
+Written to settle the rollover question the closeout left open. **The spike this
+document originally asked for — write 4 GiB through a `SingleNDTiffWriter` —
+turned out to be the wrong experiment and partly a redundant one.**
+
+Wrong, because **Java writes the files.** pycro-manager's notification thread
+receives the index-entry payload and calls `NDTiffDataset.add_index_entry`
+(`java_backend_acquisitions.py:203-204`); the Python `SingleNDTiffWriter` is a
+port that microclaw's acquisitions never invoke. Redundant, because block 60b's
+gate already drove the *real* Java path across a real 4 GiB boundary twice. At a
+rollover, `add_index_entry` takes the one branch a normal frame never does
+(`ndtiff_dataset.py:260`): a filename it has not seen, so it opens a new
+`SingleNDTiffReader`. That call happens **before**
+`_image_notification_queue.put(...)`, so an image-saved callback proves it
+returned — and the gate recorded progress `first 1, last 8256 of 8256` with the
+roll at frame 8,114. Frames 8,115 onward all called back, on both runs.
+
+So the spike was narrowed to the Python index code those runs do not cover.
+Five probes, seconds each:
+
+| probe | result |
+| --- | --- |
+| writer rolls at a shrunken 8 MiB cap | **OK** — 8 stacks, 48/48 indexed, names match disk |
+| a parsed entry re-serialises | **FINDING** — `TypeError` |
+| `add_index_entry` when the new file is absent | **OK** — `FileNotFoundError`, and it is *caught* |
+| `NDTiffIndexEntry.read_index_map` | **FINDING** — `AttributeError`, always |
+| a real 2**32 crossing, true cap | **OK** — 2 stacks, largest 4,286,944,393 B, 544 entries, none lost |
+
+**Two live upstream bugs in `ndstorage`'s index module**, neither on microclaw's
+hot path, both reproducible in seconds:
+
+* `ndtiff_index.py:112` constructs the entry with `axes.items` — the bound
+  method, not `axes.items()`. Every entry parsed from an index therefore carries
+  a method object as its `axes_key`, and `as_byte_buffer()` on it raises
+  `TypeError`. The wire format itself is fine: the same entry round-trips through
+  `unpack_single_index_entry` when serialised by hand, which is how the spike
+  isolates the helper from the format.
+* `NDTiffIndexEntry.read_index_map` reads `.pixel_offset`, `.image_width` and
+  `.metadata_offset` from an object whose attributes are `pix_offset` and
+  `metadata_length`. It cannot ever have worked.
+
+**What this does to the diagnosis.** The rollover mechanism is now sound in three
+independent places — the Java writer on the demo machine (twice), the Python
+writer at a shrunken cap, and the Python writer at a real 2**32 with no offset
+overflow. And the one plausible Python-side race is **ruled out as a hang
+mechanism**: a new file that is not yet readable raises `FileNotFoundError`,
+which pycro-manager catches, turning into `acquisition.abort(e)` and a
+`continue` (`java_backend_acquisitions.py:227-229`). That produces an abort, not
+the silent unbounded wait M2 saw.
+
+The hypothesis space is narrower and the conclusion is unchanged: **still n=1,
+still unproven, upstream report still not filed.** What the two index bugs do add
+is a prior — this module's round-trip paths are demonstrably unexercised
+upstream — and that is worth stating when a report is eventually written. None of
+it is a microclaw defect, so none of it opens a block; per the repo's spike
+convention the program is committed and the findings live here.
+
 ### Post-merge design gate — CLOSED 2026-08-29
 
 All four items done.
