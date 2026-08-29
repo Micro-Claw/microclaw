@@ -124,8 +124,12 @@ replacement for it.
   same shape a third time, before the gate rather than during it** —
   `move_named_stage` was undecorated while sitting on the gate path of the block
   about named-stage motion. **Eleven tools are still undecorated** (measured over
-  `TOOL_REGISTRY`, 2026-08-17) and are tracked in the checklist's carried-forward
-  register. **A new capability is not finished until it can appear in an exported
+  `TOOL_REGISTRY`, 81 tools, 2026-08-29, after design/61 block 61b decorated
+  `get_focus_lock_state`) and are tracked in the checklist's carried-forward
+  register. Same number as the 2026-08-17 measurement, different membership.
+  When you re-measure, the three attributes are `_microclaw_emitter`,
+  `_microclaw_emits_nothing` and `_microclaw_refusal_reason` — a probe that
+  guesses `_microclaw_refuses` misses `@refuses` and reports twelve. **A new capability is not finished until it can appear in an exported
   script** — that is the lesson all three gates taught.
 
 ## Engineering principles
