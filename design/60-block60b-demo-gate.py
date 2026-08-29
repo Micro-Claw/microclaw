@@ -137,7 +137,12 @@ def main():
         bytes_per_frame = width * height * bpp
         if bytes_per_frame <= 0:
             raise NotExercised(f"camera reports a zero-byte frame: {width}x{height}x{bpp}")
-        bound = tools.NDTIFF_MAX_FILE_SIZE // bytes_per_frame
+        # Ask the product for its bound rather than recomputing the raw one:
+        # the band fix (2026-08-29) moved it below MAX//raw, and a gate that
+        # kept its own copy would fail its "just under" limb spuriously.
+        bound = (tools._ndtiff_frame_bound(bytes_per_frame)
+                 if hasattr(tools, "_ndtiff_frame_bound")
+                 else tools.NDTIFF_MAX_FILE_SIZE // bytes_per_frame)
         frames = bound + max(1, args.extra_frames)
         geometry = {
             "camera": str(core.get_camera_device() or ""),
@@ -298,6 +303,7 @@ def main():
         under = " ".join(c["summary"] for c in plan_probe["under"])
         assert "4 GiB per-file limit" in over, f"no crossing disclosure over bound: {over!r}"
         assert f"{geometry['frame_bound_per_file']:,}" in over, over
+        assert "as early as frame" in over, over
         assert "segmenting" in over, over
         # The control: one frame fewer must not disclose. A limb that cannot
         # fail is not a criterion (58a).

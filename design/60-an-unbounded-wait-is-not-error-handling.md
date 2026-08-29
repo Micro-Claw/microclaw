@@ -1168,12 +1168,45 @@ Validated against both crossings we have actually observed, with no fitting:
 Exact on the demo, 4 frames out of 72,056 on M2 (0.006%). `raw + m` alone is
 still optimistic by ~9 frames because it ignores the 5 MB reserve.
 
-`design/60-band-fix-spike.py` proves the defect and this bound **on hardware
-without changing product code**: it calibrates `m` from a 32-frame run, picks a
-frame count inside the band, shows the shipped authorizer stays silent, runs it,
-confirms the file really rolls, and compares all three candidate bounds against
-where it actually rolled. Its arithmetic self-checks against both rigs above
-before it touches the microscope. Not yet run.
+`design/60-band-fix-spike.py` proved the defect and this bound **on hardware**.
+Demo machine, 2026-08-29, **5/5 PASS**: `m` measured live at 4,228 B (spread
+0.07% over 32 frames), band 8,115..8,192, the shipped authorizer **silent** at
+n = 8,154, and the run **rolled anyway** — 2 stacks, 8,154/8,154 frames indexed.
+Errors against the observed roll at 8,114: raw **+78**, `raw+m` **+12**,
+admission **0**.
+
+### The fix, shipped 2026-08-29
+
+Measuring `m` at authorization time needs a dataset path `_authorize_acquisition`
+does not have, and an operator needed this on M2 the same day. So the shipped fix
+uses a **conservative allowance** instead of a live measurement:
+
+```python
+NDTIFF_METADATA_ALLOWANCE_BYTES = 16_000     # above the 4,112-15,553 B measured
+N = (MAX_FILE_SIZE - 5_000_000) // (w*h*bpp + m + IFD_SIZE)
+```
+
+Because the error is proportional to metadata/pixels, overshooting `m` costs
+almost nothing where metadata is small and stays conservative where it is large.
+Checked against all seven measured configurations — **always early, never late**,
+worst case 2.7%:
+
+| config | raw bound | shipped bound | true | error |
+| --- | --- | --- | --- | --- |
+| M2 150x150 | 95,443 | **70,125** | 72,060 | -2.7% |
+| M5 196x184 | 59,546 | **48,581** | 48,828 | -0.5% |
+| demo 512x512 | 8,192 | **7,937** | 8,114 | -2.2% |
+| Nikon 1024x1024 | 2,048 | **2,029** | 2,040 | -0.5% |
+
+Warning early is the safe direction; warning late is the defect being fixed, so
+a parameterized test asserts the bound never exceeds the raw one. The wording
+changed with it: **"as early as frame N"**, not "before frame N", because a
+conservative bound cannot promise the roll happens before it.
+
+**Carried forward:** calibrating `m` from a dataset the rig already wrote would
+remove the last ~3%. The spike shows it works (0.07% spread on a 32-frame run);
+it needs plumbing a save path into authorization and is not urgent, because the
+conservative bound is already within 3% everywhere measured.
 
 ### Post-merge design gate — CLOSED 2026-08-29
 

@@ -32,6 +32,42 @@ except ImportError:
     # from some distributions. NDTiff's file format limit is 2**32 bytes; keep
     # that documented fallback explicit rather than silently baking in 4 GiB.
     NDTIFF_MAX_FILE_SIZE = 2**32
+try:
+    from ndstorage.ndtiff_file import ENTRIES_PER_IFD as _NDTIFF_ENTRIES_PER_IFD
+except ImportError:
+    _NDTIFF_ENTRIES_PER_IFD = 13
+
+#: The writer decides whether a frame fits with
+#: ``md_length + IFD_size + pixels + extra_padding + file.tell() >= MAX_FILE_SIZE``
+#: (ndstorage ndtiff_file.py). A frame therefore costs more than its pixels, and
+#: the file stops accepting frames 5 MB before the format limit. Solving that for
+#: n is the bound below; using raw pixels alone is optimistic and leaves runs that
+#: cross a 4 GiB boundary undisclosed.
+NDTIFF_IFD_BYTES = _NDTIFF_ENTRIES_PER_IFD * 12 + 4 + 16
+NDTIFF_WRITER_RESERVE_BYTES = 5_000_000
+#: Conservative per-frame metadata allowance. Metadata size is set by how many
+#: devices Micro-Manager serialises, not by the image: measured across 732 saved
+#: datasets it is near-constant within a configuration (worst spread 0.33%) and
+#: spans 4,112-15,553 B between them. This is above that range on purpose --
+#: overshooting only moves the disclosure *earlier*, and because the error is
+#: proportional to metadata/pixels it stays under 3% on every configuration
+#: measured. See design/60 and design/60-metadata-size-survey.py.
+NDTIFF_METADATA_ALLOWANCE_BYTES = 16_000
+
+
+def _ndtiff_frame_bound(raw_bytes_per_frame: int) -> int | None:
+    """Frames that fit in one NDTiff file, from the writer's own admission test.
+
+    Never larger than the raw-pixel bound, so it can only disclose a crossing
+    earlier, never later. Validated against the only two crossings we have
+    observed: it predicts the demo camera's roll exactly (8,114) and M2's to
+    within 4 frames of 72,056.
+    """
+    if not raw_bytes_per_frame:
+        return None
+    per_frame = (raw_bytes_per_frame + NDTIFF_METADATA_ALLOWANCE_BYTES
+                 + NDTIFF_IFD_BYTES)
+    return max(0, (NDTIFF_MAX_FILE_SIZE - NDTIFF_WRITER_RESERVE_BYTES) // per_frame)
 
 from microclaw.autofocus import (
     MIN_CONTRAST,
@@ -2159,21 +2195,22 @@ def _authorize_acquisition(
             "relied on to stop it promptly; thousands of further exposures may occur."
         )
     raw_bytes_per_frame = plan.estimated_bytes // plan.frames if plan.frames else 0
-    raw_frame_bound = (
-        NDTIFF_MAX_FILE_SIZE // raw_bytes_per_frame if raw_bytes_per_frame else None
-    )
+    raw_frame_bound = _ndtiff_frame_bound(raw_bytes_per_frame)
     if raw_frame_bound is not None and plan.frames > raw_frame_bound:
         segment_frames = max(1, raw_frame_bound)
         segments = math.ceil(plan.frames / segment_frames)
+        # "as early as", not "before": the bound allows generously for metadata,
+        # so the real roll can land after it. Overstating precision here is what
+        # design/60 D6 warns against -- do not quote a frame it cannot stand behind.
         crossing_text = (
-            f"before frame {raw_frame_bound:,}"
+            f"as early as frame {raw_frame_bound:,}"
             if raw_frame_bound >= 1 else "before the first frame is complete"
         )
         clauses.append(
             f"This acquisition writes at least {plan.estimated_bytes / 1e9:.3g} GB "
             f"of raw image data against NDTiff's 4 GiB per-file limit, so it will "
-            f"roll to a second file {crossing_text} — and earlier "
-            "once per-frame metadata is counted. Consider segmenting the acquisition "
+            f"roll to a second file {crossing_text}. "
+            "Consider segmenting the acquisition "
             f"into {segments} runs of at most {segment_frames:,} frames to keep each "
             "file whole and bound each burst. Measured start/stop overhead is about "
             f"6 s per segment (about {segments * 6} s across this run); for example, "
