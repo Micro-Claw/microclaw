@@ -53,8 +53,17 @@ def _parse_skill(resource: Traversable) -> SkillMetadata:
 
 
 def _build_catalog(root: Traversable) -> tuple[SkillMetadata, ...]:
+    # A total package-data omission ships no files under skills/, so the
+    # directory itself is absent and iterdir() raises rather than returning
+    # nothing.  That is the failure this catalog is likeliest to meet in the
+    # wild, so it reports the same thing as an empty tree instead of a bare
+    # FileNotFoundError from inside importlib.
+    try:
+        children = list(root.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        children = []
     skill_directories = sorted(
-        (child for child in root.iterdir() if child.is_dir()),
+        (child for child in children if child.is_dir()),
         key=lambda item: item.name,
     )
     if not skill_directories:

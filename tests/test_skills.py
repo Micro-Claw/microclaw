@@ -62,6 +62,14 @@ def test_empty_catalog_fails_catalog_startup(tmp_path):
         skills._build_catalog(root)
 
 
+def test_absent_skills_tree_reports_an_empty_catalog_not_a_raw_oserror(tmp_path):
+    # The wheel-side failure mode: package data matched nothing, so microclaw/
+    # ships no skills/ directory at all.  importlib hands back a path that
+    # cannot be listed, and the operator must still be told what is wrong.
+    with pytest.raises(RuntimeError, match="Skill catalog is empty"):
+        skills._build_catalog(tmp_path / "skills")
+
+
 def test_skill_directory_without_skill_file_fails_catalog_startup(tmp_path):
     root = tmp_path / "skills"
     _write_skill(root, "smlm", "smlm")
