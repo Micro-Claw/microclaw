@@ -32,29 +32,44 @@ def test_packaged_skill_catalog_metadata_and_registry_boundary():
 
 
 def test_malformed_frontmatter_fails_catalog_startup(tmp_path):
-    skill_dir = tmp_path / "broken"
-    skill_dir.mkdir()
+    root = tmp_path / "skills"
+    skill_dir = root / "broken"
+    skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("name: broken\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="Malformed skill frontmatter"):
-        skills._build_catalog(tmp_path)
+        skills._build_catalog(root)
 
 
 def test_directory_name_mismatch_fails_catalog_startup(tmp_path):
-    _write_skill(tmp_path, "directory", "different")
+    root = tmp_path / "skills"
+    _write_skill(root, "directory", "different")
     with pytest.raises(RuntimeError, match="Skill name mismatch"):
-        skills._build_catalog(tmp_path)
+        skills._build_catalog(root)
 
 
 def test_duplicate_names_fail_catalog_startup(tmp_path):
-    _write_skill(tmp_path, "first", "duplicate")
-    _write_skill(tmp_path, "second", "duplicate")
+    root = tmp_path / "skills"
+    _write_skill(root, "first", "duplicate")
+    _write_skill(root, "second", "duplicate")
     with pytest.raises(RuntimeError, match="Duplicate skill names: duplicate"):
-        skills._build_catalog(tmp_path)
+        skills._build_catalog(root)
 
 
 def test_empty_catalog_fails_catalog_startup(tmp_path):
+    root = tmp_path / "skills"
+    root.mkdir()
     with pytest.raises(RuntimeError, match="Skill catalog is empty"):
-        skills._build_catalog(tmp_path)
+        skills._build_catalog(root)
+
+
+def test_skill_directory_without_skill_file_fails_catalog_startup(tmp_path):
+    root = tmp_path / "skills"
+    _write_skill(root, "smlm", "smlm")
+    (root / "htsmlm").mkdir(parents=True)
+    with pytest.raises(
+        RuntimeError, match="Skill directories missing readable SKILL.md: htsmlm"
+    ):
+        skills._build_catalog(root)
 
 
 @pytest.mark.parametrize("name", ["missing", "../smlm", "smlm/SKILL.md", "/smlm"])
@@ -84,13 +99,26 @@ def test_loaded_skill_emits_nothing_in_a_standalone_session_script(tmp_path):
 
 
 def test_untriggered_system_context_has_catalog_not_specialist_bodies():
-    assert "Specialized workflow skills (generated" in agent.SYSTEM_PROMPT
+    assert "Specialized workflow skills:" in agent.SYSTEM_PROMPT
     for item in skills.SKILL_CATALOG:
         assert f"- {item.name}: {item.description}" in agent.SYSTEM_PROMPT
     assert "# Single-Molecule Localization Microscopy" not in agent.SYSTEM_PROMPT
     assert "# htSMLM / EMU reference" not in agent.SYSTEM_PROMPT
     # Block 61a deliberately leaves the core Nikon paragraph for block 61c.
     assert "Do BOTH of these every time you engage the lock" in agent.SYSTEM_PROMPT
+
+
+def test_htsmlm_skill_preserves_specialized_mapping_and_dose_rules():
+    body = skills.load_skill_text("htsmlm")
+    flat = " ".join(body.split())
+    assert "get_emu_laser_map" in body
+    assert "resolve_emu_device" in body
+    assert "instead of trial-and-error property probing" in flat
+    assert "Never calculate an EMU percentage conversion in prose" in flat
+    assert "verify_emu_laser_power_calibration" in body
+    assert "set_emu_laser_power_percentage" in body
+    assert "get_emu_laser_power_percentage" in body
+    assert "keep illumination disabled and report the disagreement" in flat
 
 
 def test_built_wheel_contains_the_source_tree_skill_catalog(tmp_path):

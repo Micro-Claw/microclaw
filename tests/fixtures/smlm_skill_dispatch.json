@@ -1,5 +1,5 @@
 {
-  "operator": "I need to run dSTORM on this sample. What acquisition parameters should I use?",
+  "operator": "Load the SMLM workflow guidance.",
   "assistant_rounds": [
     {
       "type": "tool_use",

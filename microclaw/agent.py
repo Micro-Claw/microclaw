@@ -353,7 +353,7 @@ SYSTEM_PROMPT = (
     "- Default parameters for a 20× objective: z_range_um=20, z_step_um=0.5. Widen "
     "z_range_um if the warning says the peak was at the boundary.\n"
     "\n"
-    "Specialized workflow skills (generated from packaged SKILL.md frontmatter):\n"
+    "Specialized workflow skills:\n"
     f"{catalog_text()}\n"
     "Load the relevant skill before running its specialized workflow.\n"
     "\n"

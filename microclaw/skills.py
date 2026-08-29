@@ -53,16 +53,19 @@ def _parse_skill(resource: Traversable) -> SkillMetadata:
 
 
 def _build_catalog(root: Traversable) -> tuple[SkillMetadata, ...]:
-    skill_files = sorted(
-        (
-            child.joinpath("SKILL.md")
-            for child in root.iterdir()
-            if child.is_dir() and child.joinpath("SKILL.md").is_file()
-        ),
-        key=lambda item: item.parent.name,
+    skill_directories = sorted(
+        (child for child in root.iterdir() if child.is_dir()),
+        key=lambda item: item.name,
     )
-    if not skill_files:
+    if not skill_directories:
         raise RuntimeError("Skill catalog is empty; packaged microclaw/skills/*/SKILL.md resources are missing")
+    missing = [child.name for child in skill_directories
+               if not child.joinpath("SKILL.md").is_file()]
+    if missing:
+        raise RuntimeError(
+            "Skill directories missing readable SKILL.md: " + ", ".join(missing)
+        )
+    skill_files = [child.joinpath("SKILL.md") for child in skill_directories]
     catalog = tuple(_parse_skill(resource) for resource in skill_files)
     names = [skill.name for skill in catalog]
     duplicates = sorted({name for name in names if names.count(name) > 1})

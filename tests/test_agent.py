@@ -620,11 +620,13 @@ class TestRunAgentIter:
         ]
         assert events[1]["id"] == "c1" == events[2]["tool_use_id"]
 
-    def test_recorded_dstorm_opening_loads_smlm_before_proposing_parameters(
-        self, mock_ctrl, guard
-    ):
+    def test_scripted_load_skill_dispatch_returns_smlm_body(self, mock_ctrl, guard):
+        # This establishes dispatch and loop integration, not routing. The
+        # model's choice to call load_skill is the routing behaviour, and a
+        # scripted mock necessarily supplies that choice. Live-model routing
+        # evidence is gathered by design/61-skill-routing-spike.py instead.
         payload = json.loads(
-            (Path(__file__).parent / "fixtures" / "smlm_skill_route.json").read_text(
+            (Path(__file__).parent / "fixtures" / "smlm_skill_dispatch.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -638,19 +640,12 @@ class TestRunAgentIter:
         with patch("microclaw.agent._get_client", return_value=make_mock_client(scripted)):
             events = list(run_agent_iter(payload["operator"], mock_ctrl, guard, []))
 
-        load_index = next(
-            index for index, event in enumerate(events)
-            if event["type"] == "tool_use"
-            and event["name"] == "load_skill"
-            and event["input"] == {"name": "smlm"}
-        )
-        proposal_index = next(
-            index for index, event in enumerate(events)
-            if event["type"] == "text_delta" and "exposure and frame count" in event["text"]
-        )
+        use = next(event for event in events if event["type"] == "tool_use")
         result = next(event for event in events if event["type"] == "tool_result")
+        assert use["name"] == "load_skill"
+        assert use["input"] == {"name": "smlm"}
         assert "# Single-Molecule Localization Microscopy" in result["content"]
-        assert load_index < proposal_index
+        assert events[-1]["type"] == "done"
 
     @pytest.mark.parametrize(
         ("decision", "tool_payload"),
