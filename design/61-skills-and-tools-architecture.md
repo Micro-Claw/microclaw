@@ -833,6 +833,47 @@ a wording effect from noise. `design/61-skill-routing-spike.py` exists to size
 it; the design's own stance is that a measurement, not an intuition, is what buys
 a change here. **No product change on this evidence.**
 
+### What was done about it, and what was deliberately not
+
+The routing rule got its ordering half back, in 141 characters: *"...When the
+user asks about a task a skill covers, load that skill FIRST, before answering
+— a caveat about the rig is not a reason to skip it."* The catalog's own
+descriptions already carry the trigger vocabulary — `smlm` names dSTORM, PALM,
+PAINT and DNA-PAINT — so only the framing had to return, not the word list.
+Net context change for 61a is **−3,300 chars, about −825 tokens**, against the
+design's predicted ~1,050.
+
+**No measurement was bought for that change, on purpose.** A two-arm A/B was
+designed, priced and declined. The reasoning is worth recording because the
+coordinator got it wrong first:
+
+- The coordinator proposed 2 arms × 16 samples and priced it at **$35**. That
+  number was **wrong by 3×** — it used $15/$75 per Mtok from memory where Opus
+  4.8 is **$5/$25**. Real cost ~$11. *Never price a model from memory.*
+- The operator's objection was the sharper one: this is a **rearrangement of
+  code that had worked for months**, and a normal spike costs a few dollars.
+- Stating the experiment plainly is what settled it. Both arms hold the
+  operator prompt and the rig payload fixed and vary **one sentence of our own
+  system prompt** — arm B being approximately the wording 61a had deleted. So
+  its best case was *"put back what you took out"*, which is the action either
+  way. **The burden of proof was backwards**: the migration removed working
+  wording, and restoring one reversible sentence needs no licence. A
+  measurement buys a *new* mechanism, not the restoration of an old one.
+
+Evidence actually held: **three observations of the shipped wording — the demo
+session and two smoke samples — none of which loaded the skill.** One opening,
+n=3. That is a direction, not a rate, and it is not reported as one.
+
+`design/61-skill-routing-spike.py` stays in the tree **unrun**, with the
+recorded payload, as the instrument if this recurs. Its scoring was rewritten
+before it was shelved, and that rewrite is the durable lesson: the original
+verdict ran a regex over the assistant's prose, and a **one-sample validation
+run** showed it scoring `PROPOSED_FIRST` on a message that was *refusing* to
+give numbers — it had matched a stray "TIRF" and "20 ms" further down. Sixteen
+samples of that would have looked like data. The metric is now binary — was
+`load_skill(smlm)` called — and needs no text classification at all. **Validate
+an instrument on one sample before buying sixteen.**
+
 ## Carried-forward register
 
 | # | row | owner | state |
@@ -845,6 +886,6 @@ a change here. **No product change on this evidence.**
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | round 1 demo 2026-08-29 after `85d63ec`: **G1/G2/G3/G5 PASS, G4 NOT EXERCISED**. Installed-build limbs agree byte-for-byte with the coordinator's selftest (6 skills, prompt 31,070 chars); emitted script compiles with `load_skill` as `# No hardware-routine effect.` and no `NOT EMITTED`. G4's prompt asked for dSTORM on the demo camera, so the agent correctly answered *this rig cannot do dSTORM* and never reached a routing decision — **gate defect, no product defect**. A runbook path bug (`$repo` hardcoded to the wrong drive) cost the operator one round before this. | |
+| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | round 1 demo 2026-08-29 after `85d63ec`: **G1/G2/G3/G5 PASS, G4 NOT EXERCISED**. Installed-build limbs agree byte-for-byte with the coordinator's selftest (6 skills, prompt 31,070 chars); emitted script compiles with `load_skill` as `# No hardware-routine effect.` and no `NOT EMITTED`. G4's prompt asked for dSTORM on the demo camera, so the agent correctly answered *this rig cannot do dSTORM* and never reached a routing decision — **gate defect, no product defect**. A runbook path bug (`$repo` hardcoded to the wrong drive) cost the operator one round before this. G4's cause fixed at `daa0053` by restoring the routing rule's ordering half (141 chars); the two-arm A/B was priced (~$11, after a 3x mispricing) and **declined as backwards burden of proof** — see the section above. Net context −3,300 chars / ~−825 tokens. Suite 2484/99/0. | |
 | 61b | `design61/nikon-anchors` | | | | |
 | 61c | *(conditional on R1)* | | | | |
