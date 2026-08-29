@@ -18,6 +18,13 @@ def test_registry_and_schema_cover_the_same_tools():
     assert set(TOOL_REGISTRY) == set(_SCHEMA_BY_NAME)
 
 
+@pytest.mark.parametrize("name", [
+    "run_autofocus", "get_focus_lock_state", "set_focus_lock",
+])
+def test_focus_lock_schema_mentions_nikon_skill(name):
+    assert "nikon-pfs" in _SCHEMA_BY_NAME[name]["description"]
+
+
 def test_save_knowledge_value_teaches_optical_path_map_shape_at_point_of_use():
     description = _SCHEMA_BY_NAME["save_knowledge"]["input_schema"]["properties"]["value"]["description"]
     assert "'kind': 'optical_path_position_map'" in description

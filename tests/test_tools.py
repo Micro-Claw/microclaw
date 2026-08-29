@@ -66,6 +66,9 @@ class StrVector:
     def get(self, index):
         return self._values[index]
 
+    def __iter__(self):
+        raise TypeError("mmcorej_StrVector is not iterable")
+
 
 class TestLiveView:
     def test_start_live_view(self, mock_ctrl, unconstrained_guard):
@@ -3185,6 +3188,57 @@ class TestFocusLock:
         # Writable properties are not probe candidates and must not be offered.
         assert all(name not in state["status_properties"]
                    for name in names if name not in readonly)
+
+    @pytest.mark.parametrize(
+        "device,emu_props,names,values,readonly,expected_device",
+        [
+            # Ti: design/34-nikon-pfs-tizdrive-findings.md:48-49.
+            ("TIPFSStatus", {}, StrVector(["Status"]),
+             {"Status": "Out of focus search range"}, {"Status"}, "TIPFSStatus"),
+            # Ti2-E / Andor Dragonfly: design/56-the-focus-metric-need-not-be-an-image.md:785-797.
+            ("PFS", {}, StrVector(["PFS Status", "PFS in Range"]),
+             {"PFS Status": "0000001100001010", "PFS in Range": "In Range"},
+             {"PFS Status", "PFS in Range"}, "PFS"),
+            # ASI CRISP: design/06. The property deliberately contains "PFS";
+            # this limb rejects identifying a lock by substring-scanning properties.
+            ("", {"Z stage focus locking": {
+                "device": "CRISP", "property": "PFS CRISP State",
+                "mm_property_string": "CRISP-PFS CRISP State", "on": "In Focus", "off": "Idle",
+            }}, StrVector([]), {}, set(), "CRISP"),
+            # An ordinary rig with no configured autofocus device remains a silent no-op.
+            ("", {}, StrVector([]), {}, set(), None),
+        ],
+        ids=["tipfsstatus", "pfs", "crisp", "no-device"],
+    )
+    def test_focus_lock_discriminator_from_rig_payload(
+        self, mock_ctrl, unconstrained_guard, monkeypatch,
+        device, emu_props, names, values, readonly, expected_device,
+    ):
+        from microclaw.tools import get_focus_lock_state
+
+        self._emu(monkeypatch, props=emu_props)
+        mock_ctrl.core.get_auto_focus_device.return_value = device
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_property_names.return_value = names
+        mock_ctrl.core.is_property_read_only.side_effect = (
+            lambda _device, prop: prop in readonly
+        )
+        mock_ctrl.core.get_property.side_effect = (
+            lambda _device, prop: values.get(prop, "In Focus")
+        )
+
+        result = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+
+        if expected_device is None:
+            assert "device" not in result
+            rendered = json.dumps(result).lower()
+            assert "question" not in rendered
+            assert "unknown" not in rendered
+            assert "operator" not in rendered
+            assert "identify" not in rendered
+            assert "ask" not in rendered
+        else:
+            assert result["device"] == expected_device
 
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import set_focus_lock

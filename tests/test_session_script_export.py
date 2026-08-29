@@ -3572,3 +3572,13 @@ def test_generic_focus_lock_emits_the_core_call_it_actually_made(tmp_path):
         {"engaged": False, "property": "PFS.State", "value": "0"}))
     assert "core.set_property('PFS', 'State', '0')" in emu
     assert "NOT EMITTED" not in emu
+
+
+def test_focus_lock_state_read_is_omitted_cleanly_from_export(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "get_focus_lock_state", {},
+        {"engaged": True, "device": "HardwareAF"},
+    ))
+
+    compile(source, str(tmp_path / "routine.py"), "exec")
+    assert "NOT EMITTED" not in source

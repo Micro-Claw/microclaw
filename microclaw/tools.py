@@ -9020,6 +9020,7 @@ def _lock_status_properties(ctrl, device: str) -> dict[str, str]:
     return readable
 
 
+@emits_nothing
 def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     """Read the hardware focus lock via the EMU map ('Z stage focus locking').
 
@@ -9068,6 +9069,7 @@ def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict
     return {
         "engaged": value == on_value,
         "raw_value": value,
+        "device": lock["device"],
         "property": f"{lock['device']}.{lock['property']}",
         "qpd": _read_qpd(ctrl, lock),
     }
