@@ -316,9 +316,28 @@ answer. 512x512x16-bit, 8,256 frames, 10 ms:
 | D6 disclosed | "roll to a second file before frame 8,192" |
 | actual roll | after frame **8,114** — the bound HELD, margin 78 frames |
 
-So the demo camera's storage does what M2's did not: it rolled, kept every
-frame, and stayed under the limit. Weigh that when deciding the upstream report
-— the truncated notification did not reproduce here.
+**This does not make the M2 incident an M2 problem, and the coordinator's first
+write-up of it wrongly said so.** Nothing above locates the failure in a machine;
+"What the index proves" locates it in the rollover path in NDTiffStorage/AcqEngJ,
+which is the same code everywhere. What this run shows is narrower and cuts the
+other way: **a rollover happened here and worked**, so the rollover path is not
+simply broken.
+
+What it cannot settle is why M2's did not, because the two runs differ in the
+variable most likely to matter. This burst took 130.7 s against 82.56 s planned
+(1.58x) on a **simulated** camera — software-paced, not a real hardware sequence.
+M2's was a genuine sequenced burst at speed. A timing-dependent race at the
+writer swap and a one-off machine glitch are **both** consistent with these two
+runs, and this gate does not discriminate between them.
+
+The operator's standing objection is recorded here because it is correct on the
+evidence: long acquisitions have run fine on other systems, and one incident is
+one incident. The discriminating observation is not another demo burst — it is
+whether any long run on any rig has ever produced a second `_NDTiffStack_1.tif`
+**on a real camera under a fast burst**. A long run that never reached the cap
+says nothing about rollover. Until such a run is found, the honest state is: the
+coincidence at frame 72,056 is tight to within one frame, the mechanism is
+unproven, and n=1.
 
 **D6's raw upper bound is the right thing to ship, and a fixed overhead model is
 not.** Per-frame overhead was 14,361 B on M2 (24% of its pixels) and 4,415 B here
@@ -327,7 +346,9 @@ the fraction is dominated by ROI size. Item 5's refinement would have to be
 rig-calibrated to beat the bound it refines; it stays optional and unbuilt.
 
 **D4 works on hardware**: 131 progress events over 129.5 s = **1.01/s**, first
-frame 1, last 8,256 of 8,256. The 83-minute silence of the incident is gone.
+frame 1, last 8,256 of 8,256. The 83-minute silence of the incident is gone —
+and note this is the limb that does not care what caused the hang, which is the
+point of bounding a wait rather than diagnosing an engine.
 
 Two other numbers worth keeping. `plan_events` estimated 82.56 s and the burst
 took **130.72 s (1.58x)** — against 5,000 s planned / 5,175 s real on M2. The
