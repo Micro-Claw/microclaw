@@ -1,4 +1,7 @@
-OPTICS_REFERENCE = """
+---
+name: optical-paths
+description: Interpret generic microscope optical paths, ports, objectives, and manual components.
+---
 # Optical-path reference: how light paths usually work
 
 ## Usual path ordering — and why the actual stand may differ
@@ -57,4 +60,3 @@ operator what the usual value is before drawing any conclusion from it. Check
 the ordinary causes first: illumination and any declared illumination
 properties, the discrete devices in `optical_path`, the manual components named
 above, focus, and whether the stage is on the sample at all.
-"""

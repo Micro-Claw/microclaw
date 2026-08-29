@@ -1,4 +1,7 @@
-SMLM_REFERENCE = """
+---
+name: smlm
+description: Plan and run SMLM workflows including dSTORM, PALM, PAINT, and DNA-PAINT.
+---
 # Single-Molecule Localization Microscopy (SMLM) reference (microclaw)
 
 ## What SMLM is
@@ -80,7 +83,7 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
   causes cross-talk localizations — two nearby sites bound at once, fitted as one
   false spot between them.
 - Ask the user: imager strand concentration and identity, docking-strand target.
-- **Call get_dna_paint_documentation for the full protocol** — buffer recipes,
+- **Call `load_skill(name="dna-paint")` for the full protocol** — buffer recipes,
   the oxygen-scavenging system, strand design, sample prep, and the acquisition
   procedure. Its numbers supersede the DNA-PAINT figures in this document.
 
@@ -96,7 +99,7 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 - For PALM fluorescent proteins: 30–100 ms.
 - For DNA-PAINT: match τb — ~300 ms for the common 9-bp imager/docking duplex
   (τb ≈ 500 ms); 100–500 ms across usual duplex lengths. Longer τb allows more
-  photons per event. See get_dna_paint_documentation.
+  photons per event. See `load_skill(name="dna-paint")`.
 - Use: run_timelapse(exposure_ms=<value>, ...)
 
 ### Frame interval
@@ -284,8 +287,8 @@ This can be implemented as an image_process_fn hook that:
   3. Optionally signals end-of-acquisition when density drops below a threshold.
 
 If the user asks for adaptive density control, offer to write a hook following
-the get_hook_documentation pattern. Call get_smlm_documentation first to confirm
-the SMLM context, then call get_hook_documentation for the hook API.
+the `load_skill(name="hook-authoring")` pattern. Call `load_skill(name="smlm")` first to confirm
+the SMLM context, then call `load_skill(name="hook-authoring")` for the hook API.
 
 ---
 
@@ -360,7 +363,7 @@ Photonics "GATTA-PAINT" series), and provide absolute distance calibration:
   system mixed in ≥1 h before imaging. Lower concentration reduces background but
   increases τdark (time between binding events). Optimise for a τb / τdark ratio
   that keeps <10% of sites occupied simultaneously. Recipes and the rationale are
-  in get_dna_paint_documentation.
+  in `load_skill(name="dna-paint")`.
 - Origami passivation: BSA (1 mg/mL) + Pluronic F-127 (0.05%) in the imaging
   buffer reduces non-specific imager binding to the coverslip.
 - TIRF illumination is strongly preferred to minimise background from free imager
@@ -388,7 +391,7 @@ Photonics "GATTA-PAINT" series), and provide absolute distance calibration:
 ## Key questions to ask the user before starting
 
 1. Which SMLM technique? (dSTORM / PALM / PAINT / DNA-PAINT)
-   For DNA-PAINT, call get_dna_paint_documentation before planning parameters.
+   For DNA-PAINT, call `load_skill(name="dna-paint")` before planning parameters.
 2. Which fluorophore and labelling strategy?
 3. Is the photoswitching buffer / imaging medium in place? (for dSTORM)
 4. Which excitation channel and laser power will be used?
@@ -402,4 +405,3 @@ Photonics "GATTA-PAINT" series), and provide absolute distance calibration:
 11. Has the back focal plane been checked for air bubbles in the immersion oil?
 12. How many frames and what exposure time?
 13. Save directory for the raw data?
-"""

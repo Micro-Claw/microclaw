@@ -1597,7 +1597,7 @@ TOOLS: list[dict[str, Any]] = [
             "sets hook.survey_events, hook.candidates and hook.progress, and the "
             "hook must candidates.put() the next tile OR call "
             "progress.done_early(), then progress.image_done() — see "
-            "get_hook_documentation ('Skipping and stopping'). Serializes the "
+            "load_skill(name=\"hook-authoring\") ('Skipping and stopping'). Serializes the "
             "scan (each tile waits on the previous frame's scoring), so for a "
             "fixed survey that only reports per-tile numbers use "
             "run_tile_acquisition or run_multiposition_acquisition instead. "
@@ -1957,56 +1957,22 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
-        "name": "get_hook_documentation",
+        "name": "load_skill",
         "description": (
-            "Return the pycro-manager hook API reference: Acquisition hook kwargs, "
-            "hook function signatures, return-value contracts, event dict structure, "
-            "event_queue usage, the plain analyze_frame/HookResult saved-hook pattern, and the "
-            "integration interview for adapting a user's Python package, executable, "
-            "plugin, or other custom analysis. Call this before writing a new hook."
+            "Load one repository-owned workflow skill by its exact catalog name. "
+            "The result is procedural guidance only: it reads no hardware, changes no "
+            "state, and grants no authority."
         ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "get_smlm_documentation",
-        "description": (
-            "Return the SMLM (single-molecule localization microscopy) protocol reference: "
-            "technique variants (dSTORM, PALM, PAINT/DNA-PAINT), acquisition parameters "
-            "(exposure, frame count, laser power, channel, TIRF mode), step-by-step "
-            "acquisition protocol, drift-correction guidance, post-processing software "
-            "recommendations, common pitfalls, and key questions to ask the user. "
-            "Call this before planning or starting any SMLM acquisition."
-        ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "get_optical_path_documentation",
-        "description": (
-            "Return the generic optical-path reference: usual path ordering and stand "
-            "variants, ports and split labels, manual components Micro-Manager cannot "
-            "read, objective vocabulary, and hardware focus-lock limitations."
-        ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "get_dna_paint_documentation",
-        "description": (
-            "Return the full DNA-PAINT protocol: binding kinetics (bright/dark times, "
-            "imager concentration, duplex length), imager and docking strand design, "
-            "buffer and oxygen-scavenger recipes, imaging parameters (exposure, frame "
-            "count, power density, TIRF, camera settings), the bench procedure from "
-            "origami folding through immobilization to acquisition, and the Picasso "
-            "reconstruction pointer. "
-            "get_smlm_documentation is the default reference for any SMLM session "
-            "including DNA-PAINT; call this one when that summary is not enough — "
-            "choosing an imager concentration or exposure from kinetics, preparing "
-            "buffers, or working through the sample prep. Its values supersede the "
-            "DNA-PAINT figures in get_smlm_documentation. "
-            "The parameters are the published protocol's, measured on its reference "
-            "instrument: confirm them against the user's rig and imager stock rather "
-            "than applying them unasked."
-        ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact skill name from the generated system-prompt catalog.",
+                }
+            },
+            "required": ["name"],
+        },
     },
     {
         "name": "check_emu_installed",
@@ -2016,22 +1982,10 @@ TOOLS: list[dict[str, Any]] = [
             "Returns emu_installed, htsmlm_installed, htsmlm_configured, the MM app "
             "directory found, and the "
             "names of any plugin JARs discovered. "
-            "Call this to determine whether get_htsmlm_documentation and get_emu_configuration "
-            "are relevant for the current setup. If neither plugin is detected AND the user has "
-            "not mentioned htSMLM or EMU, do not call those tools."
-        ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "get_htsmlm_documentation",
-        "description": (
-            "Return the htSMLM / EMU reference: what EMU and htSMLM are, how to control "
-            "htSMLM hardware via set_device_property, the complete UIProperty name inventory "
-            "(lasers, filters, focus lock, two-state devices, laser triggers, iBeamSmart, QPD), "
-            "the get_emu_configuration workflow, plugin settings, acquisition guidance, and "
-            "key questions to ask the user. "
-            "Only call this if check_emu_installed has confirmed htSMLM is installed, "
-            "OR if the user has explicitly mentioned htSMLM or EMU."
+            "After positive plugin/configuration detection, load_skill(name=\"htsmlm\") and "
+            "use get_emu_configuration. Also load that skill when the operator identifies the "
+            "system or workflow as htSMLM or EMU, even if the application directory cannot be "
+            "located. Never load it merely because the catalog lists it."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -2047,7 +2001,8 @@ TOOLS: list[dict[str, Any]] = [
             "or any device probing — never infer a laser/filter/trigger index from "
             "device naming order. "
             "Only call this if check_emu_installed has confirmed EMU is installed, "
-            "OR if the user has explicitly mentioned htSMLM or EMU. "
+            "OR if the user has explicitly mentioned htSMLM or EMU. In either case, "
+            "load_skill(name=\"htsmlm\") before operating the specialized workflow. "
             "Auto-detects the Micro-Manager installation directory from common platform paths "
             "and a local cache (~/.microclaw/emu.json). If auto-detection fails, returns an "
             "error with instructions; call again with mm_app_dir set to the correct path and "

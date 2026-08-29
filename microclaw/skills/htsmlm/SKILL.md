@@ -1,4 +1,7 @@
-HTSMLM_REFERENCE = """
+---
+name: htsmlm
+description: Operate htSMLM and EMU configurations through their semantic hardware mappings.
+---
 # htSMLM / EMU reference (microclaw)
 
 ## What EMU and htSMLM are
@@ -48,16 +51,25 @@ Call resolve_emu_device with either an exact UIProperty key or a configured
 name such as "640" or "BFP". A laser name returns the whole slot record so its
 enable, power, and trigger lines remain paired.
 
+Use `get_emu_laser_map` and `resolve_emu_device` instead of trial-and-error property
+probing. The semantic map already states which property is writable, the
+filter-wheel state table, and the focus-lock property.
+
+Never calculate an EMU percentage conversion in prose. Call
+`verify_emu_laser_power_calibration`, then use
+`set_emu_laser_power_percentage` and `get_emu_laser_power_percentage`. If the
+requested, effective, measured, or GUI state disagree, or the requested value
+is not representable, keep illumination disabled and report the disagreement.
+
 Example — enable Laser 0:
   config = get_emu_configuration()
   entry  = config["properties"]["Laser 0 enable"]
   set_device_property(entry["device"], entry["property"], entry["on"])
 
 Example — set Laser 0 to 50% power:
-  entry = config["properties"]["Laser 0 power percentage"]
-  # For a Rescaled property the MM value = slope * ui_value + offset
-  mm_value = float(entry.get("slope", 1)) * 50 + float(entry.get("offset", 0))
-  set_device_property(entry["device"], entry["property"], str(mm_value))
+  verify_emu_laser_power_calibration(laser_slot=0, ...)
+  set_emu_laser_power_percentage(laser_slot=0, percent=50)
+  get_emu_laser_power_percentage(laser_slot=0)
 
 ---
 
@@ -146,4 +158,3 @@ it programmatically. For all acquisitions use microclaw's native tools:
 
 3. Is the Trigger tab (MicroFPGA) present?
    (Required to set laser trigger modes and pulse durations.)
-"""

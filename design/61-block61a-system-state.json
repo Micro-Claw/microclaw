@@ -1,0 +1,202 @@
+{
+  "camera": {
+    "adapter": "DCam",
+    "label": "Camera"
+  },
+  "exposure_ms": 10,
+  "focus": {
+    "device": "Autofocus",
+    "engaged": false,
+    "probe_hint": "To find this lock's capture range at zero exposures, call run_autofocus with probe device 'Autofocus', one of the properties above, and the values that mean in-range. Read the values shown to pick the property; a bitfield or a number is not the one you want.",
+    "property": "continuous focus device Autofocus",
+    "status_properties": {
+      "Description": "Demo auto-focus adapter",
+      "HubID": "",
+      "Name": "DAutoFocus"
+    }
+  },
+  "lasers": "unknown \u2014 this rig has no EMU laser map, which is the only per-SLOT laser source microclaw has. This is not evidence that the rig has no lasers: a non-EMU rig drives its lasers as ordinary device properties. Read declared_illumination_properties and list_devices before saying anything about what illumination exists here.",
+  "live_view": false,
+  "named_stages": {
+    "Aux Z": 0.0
+  },
+  "objective": {
+    "available_configs": [
+      {
+        "affine_verdict": "sentinel_or_invalid",
+        "config": "Res10x",
+        "dependencies": [
+          {
+            "device": "Objective",
+            "expected": "Nikon 10X S Fluor",
+            "live": "Nikon 10X S Fluor",
+            "matches": true,
+            "property": "Label"
+          }
+        ],
+        "pixel_size_um": 1.0
+      },
+      {
+        "affine_verdict": "sentinel_or_invalid",
+        "config": "Res20x",
+        "dependencies": [
+          {
+            "device": "Objective",
+            "expected": "Nikon 20X Plan Fluor ELWD",
+            "live": "Nikon 10X S Fluor",
+            "matches": false,
+            "property": "Label"
+          }
+        ],
+        "pixel_size_um": 0.5
+      },
+      {
+        "affine_verdict": "sentinel_or_invalid",
+        "config": "Res40x",
+        "dependencies": [
+          {
+            "device": "Objective",
+            "expected": "Nikon 40X Plan Fluor ELWD",
+            "live": "Nikon 10X S Fluor",
+            "matches": false,
+            "property": "Label"
+          }
+        ],
+        "pixel_size_um": 0.25
+      }
+    ],
+    "pixel_size_config": "Res10x",
+    "pixel_size_um": 1.0,
+    "reason": "Micro-Manager reports active pixel-size configuration 'Res10x'. Its device/property rules are calibration dependencies, not proof that any one device is an objective turret or a measured objective identity."
+  },
+  "optical_path": {
+    "discrete_positions": [
+      {
+        "adapter": "DWheel",
+        "adapter_description": "Demo filter wheel",
+        "allowed": [
+          "400DCLP",
+          "89402bs",
+          "Q505LP",
+          "Q585LP",
+          "State-4",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8",
+          "State-9"
+        ],
+        "device": "Dichroic",
+        "label": "400DCLP",
+        "role": []
+      },
+      {
+        "adapter": "DWheel",
+        "adapter_description": "Demo filter wheel",
+        "allowed": [
+          "89402m",
+          "Chroma-D460",
+          "Chroma-HQ535",
+          "Chroma-HQ620",
+          "Chroma-HQ700",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8",
+          "State-9"
+        ],
+        "device": "Emission",
+        "label": "Chroma-HQ620",
+        "role": []
+      },
+      {
+        "adapter": "DWheel",
+        "adapter_description": "Demo filter wheel",
+        "allowed": [
+          "Chroma-D360",
+          "Chroma-HQ480",
+          "Chroma-HQ570",
+          "Chroma-HQ620",
+          "Empty",
+          "State-4",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8"
+        ],
+        "device": "Excitation",
+        "label": "Chroma-D360",
+        "role": []
+      },
+      {
+        "adapter": "DStateDevice",
+        "adapter_description": "Demo State Device",
+        "allowed": [
+          "385nm",
+          "470nm",
+          "550nm",
+          "635nm",
+          "Closed",
+          "State-5",
+          "State-6",
+          "State-7",
+          "State-8",
+          "State-9"
+        ],
+        "device": "LED",
+        "label": "Closed",
+        "role": []
+      },
+      {
+        "adapter": "DObjective",
+        "adapter_description": "Demo objective turret",
+        "allowed": [
+          "Nikon 10X S Fluor",
+          "Nikon 20X Plan Fluor ELWD",
+          "Nikon 40X Plan Fluor ELWD",
+          "Objective-2",
+          "Objective-4",
+          "Objective-5"
+        ],
+        "device": "Objective",
+        "label": "Nikon 10X S Fluor",
+        "role": [
+          "pixel-size-config dependency (not proof of objective)"
+        ]
+      },
+      {
+        "adapter": "DLightPath",
+        "adapter_description": "Demo light path",
+        "allowed": [
+          "State-0",
+          "State-1",
+          "State-2"
+        ],
+        "device": "Path",
+        "label": "State-1",
+        "position_map": {
+          "State-0": "eyepiece",
+          "State-1": "left camera",
+          "State-2": "right camera"
+        },
+        "role": [
+          "light-path candidate (adapter self-description)"
+        ]
+      }
+    ],
+    "hint": "A discrete-position device whose labels name ports routes light to the camera or the eyepiece. Micro-Manager sees only the motorized part of the path; a manual prism or slider can send light elsewhere with every value above unchanged. If the camera is not getting the signal you expect, call load_skill(name=\"optical-paths\") before interpreting these; when imaging is working there is nothing here to look up.",
+    "shutter_exclusion": {
+      "device": "White Light Shutter",
+      "reason": "Core shutter is reported separately"
+    }
+  },
+  "shutter": {
+    "auto": true,
+    "device": "White Light Shutter",
+    "open": false,
+    "open_during_exposure": "unknown (autoshutter opens the shutter for each exposure)"
+  },
+  "x_um": 0,
+  "y_um": 0,
+  "z_um": 0
+}

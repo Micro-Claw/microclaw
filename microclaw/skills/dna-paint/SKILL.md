@@ -1,6 +1,11 @@
+---
+name: dna-paint
+description: Prepare and acquire DNA-PAINT samples using the full kinetics, buffer, and bench protocol.
+---
+
 # DNA-PAINT Experiment Protocol — DNA Origami (in vitro), Singleplex
 
-Returned by `get_dna_paint_documentation`. `get_smlm_documentation` is the
+Returned by `load_skill(name="dna-paint")`. `load_skill(name="smlm")` is the
 general SMLM reference and covers DNA-PAINT at planning depth; this document is
 the depth behind it — kinetics, buffers, strand design, and the full bench
 procedure. Where the two differ, **this document is the accurate one**.

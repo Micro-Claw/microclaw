@@ -21,6 +21,8 @@ import threading
 import time
 
 import pytest
+
+from microclaw.skills import load_skill_text
 from pycromanager.acquisition.acquisition_superclass import EventQueue
 
 from microclaw.hooks import HookBase
@@ -670,30 +672,29 @@ class TestAcquireSurveyWithDetector:
 
 # ── Fix 1: the docs must not promise what silently does nothing ──────────────
 
+HOOK_REFERENCE = load_skill_text("hook-authoring")
+
+
 class TestHookDocsStopPromisingEventQueuePut:
     """hook_docs.py is the agent's spec for hooks; it is what was wrong. The
     correction must be total: put() is NEVER available — not conditional on
     the runner — and the early-stop put(None) promise is gone too."""
 
     def test_the_old_promises_are_gone(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         assert "Push new events" not in HOOK_REFERENCE
         assert "End the acquisition early" not in HOOK_REFERENCE
         assert "Signal that the acquisition should end early" not in HOOK_REFERENCE
 
     def test_put_is_documented_as_never_available(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         assert "NEVER call event_queue.put()" in HOOK_REFERENCE
         assert "SILENT NO-OP" in HOOK_REFERENCE
         # ...and not conditionally available:
         assert "under every microclaw runner" in HOOK_REFERENCE
 
     def test_the_early_stop_put_none_is_documented_as_dead_too(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         assert "event_queue.put(None) does NOT end the acquisition early" in HOOK_REFERENCE
 
     def test_the_docs_point_at_the_supported_path(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         # The path must be named by its TOOL: rig run 20260716_140329 read the
         # private function's name here and had no way to call it.
         assert "run_adaptive_survey" in HOOK_REFERENCE
@@ -714,7 +715,6 @@ class TestHookDocsReturnNoneIsNotASkip:
     correction must be total — one backend, and on it the promise is dead."""
 
     def test_the_old_skip_promises_are_gone(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         flat = " ".join(HOOK_REFERENCE.split())   # a line wrap must not hide a promise
         assert "Return None to skip" not in flat
         assert "skip image capture for this event" not in flat
@@ -727,19 +727,16 @@ class TestHookDocsReturnNoneIsNotASkip:
         assert "the capture is skipped and the acquisition stops" not in flat
 
     def test_return_none_is_documented_as_a_ghost_exposure(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         assert "NEVER return None" in HOOK_REFERENCE
         assert "ghost exposure" in HOOK_REFERENCE
         assert "STILL FIRES THE CAMERA" in HOOK_REFERENCE
 
     def test_the_processor_discard_is_documented_as_discard_only(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         flat = " ".join(HOOK_REFERENCE.split())   # line wraps must not hide text
         assert "discards the image and NOTHING else" in flat
         assert "keeps the frame out of the dataset" in flat
 
     def test_the_honest_levers_are_documented(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         flat = " ".join(HOOK_REFERENCE.split())
         # Raise = abort everything, loudly:
         assert "acquisition.abort(e)" in flat
@@ -750,7 +747,6 @@ class TestHookDocsReturnNoneIsNotASkip:
         assert "stopping is simply NOT SUBMITTING" in flat
 
     def test_the_autofocus_plugin_section_now_promises_the_raise(self):
-        from microclaw.hook_docs import HOOK_REFERENCE
         assert "RAISES SafetyViolation" in HOOK_REFERENCE
 
 

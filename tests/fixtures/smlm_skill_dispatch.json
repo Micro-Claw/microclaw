@@ -1,0 +1,15 @@
+{
+  "operator": "Load the SMLM workflow guidance.",
+  "assistant_rounds": [
+    {
+      "type": "tool_use",
+      "name": "load_skill",
+      "input": {"name": "smlm"},
+      "id": "recorded-smlm-skill"
+    },
+    {
+      "type": "text",
+      "text": "From the loaded SMLM reference, start by confirming the pre-acquisition checklist before selecting exposure and frame count."
+    }
+  ]
+}
