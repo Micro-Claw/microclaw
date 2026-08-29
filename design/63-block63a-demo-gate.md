@@ -59,11 +59,11 @@ implementation this runbook was written against is in what you checked out:
 
 ```powershell
 .\install.bat
-git merge-base --is-ancestor IMPLEMENTATION_COMMIT HEAD
+git merge-base --is-ancestor ec26f21 HEAD
 if ($LASTEXITCODE -eq 0) { Write-Host "IMPLEMENTATION PRESENT" } else { Write-Host "WRONG COMMIT - stop and tell the coordinator" }
 ```
 
-If it prints `WRONG COMMIT`, stop.
+`ec26f21` must be an ancestor. If it prints `WRONG COMMIT`, stop.
 
 **`$work` must be inside your configured `workspace_dir`.** If it is not, change
 `$work` above to a folder that is — the acquisition turns write there and

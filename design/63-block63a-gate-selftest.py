@@ -110,8 +110,16 @@ def _export_with(interpreter: Path, history: Path, out: Path) -> Path:
         "export_session_script(None, G(sys.argv[2]), 'routine.py', msgs)\n"
     )
     out.mkdir(parents=True, exist_ok=True)
+    # cwd=out is load-bearing, and this file shipped without it. `python -c`
+    # puts the CURRENT DIRECTORY at the head of sys.path, so run from the 63a
+    # checkout -- which is where the docstring tells you to run this file --
+    # `import microclaw` resolved to the checkout's source rather than to
+    # `interpreter`'s install. The main-tree export was therefore produced by
+    # 63a's exporter, and the two limbs that exist to prove the gate can fail
+    # (G4, G5) came back green on main. Caught by running this selftest, which
+    # is the whole argument for having one.
     subprocess.run([str(interpreter), "-c", snippet, str(history), str(out)],
-                   check=True, capture_output=True, text=True)
+                   check=True, capture_output=True, text=True, cwd=out)
     return out / "routine.py"
 
 
@@ -274,9 +282,18 @@ def main() -> int:
 
         # 5. The checkout guard refuses, which is what stops this gate from
         #    scoring source the operator is not running.
+        # Reproduce the operator mistake the guard exists for: an interpreter
+        # whose `import microclaw` lands inside the very checkout the gate file
+        # came from -- which is what `uv run design/63-...py` does from inside
+        # the repository, tried and recorded on the demo machine in 61b. A bare
+        # `sys.executable` is NOT that case: this machine's editable install
+        # points at the primary checkout, a different tree, so the guard
+        # correctly stays quiet and the check would have measured nothing.
+        environment = dict(os.environ, PYTHONPATH=str(tree))
         completed = subprocess.run([sys.executable, str(GATE), "--output",
                                     str(work / "evidence")],
-                                   cwd=tree, capture_output=True, text=True)
+                                   cwd=tree, capture_output=True, text=True,
+                                   env=environment)
         check("checkout guard refuses to score the repository",
               completed.returncode != 0 and "Refusing to score the checkout"
               in (completed.stdout + completed.stderr))
