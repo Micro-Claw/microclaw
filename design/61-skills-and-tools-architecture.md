@@ -647,6 +647,39 @@ replayed payloads; **do not assert the routing in prose**. Skipping a skill
 raises no error and produces no artifact — just a worse session, which is
 design/59's failure mode exactly.
 
+**Coordinator, before the block is assigned: what a suite test of this can and
+cannot be.** 61a's routing test was vacuous, and one mutation proved it — its
+"recorded payload" was a scripted mock whose first response *was*
+`load_skill(name="smlm")`, so the assertion held with the catalog and the
+routing rule deleted from `SYSTEM_PROMPT` outright. **A scripted mock cannot
+measure a routing choice, because it supplies the choice.** Writing the four
+limbs that way again produces four tests that cannot fail, and they would be the
+half of this block that matters.
+
+So the four limbs are split by what each half can actually observe, and each
+half is named for what it is:
+
+- **In the suite, at $0: the discriminator.** Each limb replays a rig-shaped
+  payload through the *real* `get_focus_lock_state` and asserts the identity the
+  routing depends on — `device` equal to `TIPFSStatus`, to `PFS`, to `CRISP`, and
+  absent for the no-device rig. These fail when item 4 or item 5 is wrong, which
+  is the product content of this block. **Bridge-shaped fakes** (59a): Core
+  collections are `size()`/`get(i)` vectors whose `__iter__` raises. The `PFS`
+  limb carries the Dragonfly's `PFS Status` *and* `PFS in Range` properties
+  beside a device that is not named `PFS`-only, and the `CRISP` limb carries a
+  status property containing `PFS`, so a substring scan over properties —
+  the shortcut item 5 forbids — turns both red.
+- **Separately, as presence regressions:** the three amended schema
+  descriptions name `nikon-pfs`, `agent.py:118`'s parenthetical carries
+  `focus lock`, and the ordering invariant is in the core prompt. These are weak
+  by construction — deleting the sentence turns them red and that is all they
+  claim. Do not label them routing tests.
+- **The routing choice itself is a live-model observation and is not bought
+  here.** Its negative direction is gate limb H2 on the demo machine, in a
+  session the operator was going to drive anyway; its positive direction is the
+  Ti row R1, post-merge. `design/61-skill-routing-spike.py` stays unrun. No
+  paid measurement is proposed for this block.
+
 - **Positive, `TIPFSStatus`.** Operator request to engage PFS; replay a
   `get_focus_lock_state` result whose `device` is `TIPFSStatus`. Assert the
   order `get_focus_lock_state` → `load_skill(name="nikon-pfs")` →
@@ -910,5 +943,5 @@ an instrument on one sample before buying sixteen.**
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | round 1 demo 2026-08-29 after `85d63ec`: **G1/G2/G3/G5 PASS, G4 NOT EXERCISED**. Installed-build limbs agree byte-for-byte with the coordinator's selftest (6 skills, prompt 31,070 chars); emitted script compiles with `load_skill` as `# No hardware-routine effect.` and no `NOT EMITTED`. G4's prompt asked for dSTORM on the demo camera, so the agent correctly answered *this rig cannot do dSTORM* and never reached a routing decision — **gate defect, no product defect**. A runbook path bug (`$repo` hardcoded to the wrong drive) cost the operator one round before this. G4's cause fixed at `daa0053` by restoring the routing rule's ordering half (141 chars); the two-arm A/B was priced (~$11, after a 3x mispricing) and **declined as backwards burden of proof** — see the section above. Net context −3,300 chars / ~−825 tokens. Suite 2484/99/0. | `c18b15a` merged 2026-08-29, branch deleted locally and on `origin`; worktree removed. Design gate at step 10 below. |
-| 61b | `design61/nikon-anchors` | | | | |
+| 61b | `design61/nikon-anchors` | `fe82b05` (2026-08-29), worktree `../microclaw-61b` | | | |
 | 61c | *(conditional on R1)* | | | | |
