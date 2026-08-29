@@ -415,3 +415,368 @@ operational-safety guidance becomes conditionally loaded only after its routing
 invariant and positive behavioral test have been confirmed on the Ti; if they
 do not reliably load the skill before action, the Nikon procedure stays in the
 core prompt.
+
+---
+
+## Blocks
+
+design/61 owns its own blocks, checklist and run ledger, as design/58, design/59
+and design/60 do. It is not a design/35 row.
+
+The "Migration" section above sizes this as **one block plus the Nikon
+follow-up**. The coordinator is splitting the first of those in two. This is a
+sizing judgement, not a disagreement with the design: step 1–3 is already five
+document migrations, a new module, a five-for-one tool swap, a package-data
+pattern with a wheel test that must isolate itself from an editable install, a
+system-prompt edit and ~57 test references across four files. Step 4's Nikon
+anchors are a separate, separately-gateable mechanism whose own test — the
+recorded-payload routing fixture with four limbs — is the subtlest thing in the
+document. Reviewing them in one diff makes any regression unlocalizable, which
+is the same reason this design refuses the `tools.py` split.
+
+Splitting costs nothing the design cares about: it requires only that **both**
+blocks be on `main` before the Ti confirmation is requested, because the
+confirmation observes the anchors and the skill together. Step 5 is unchanged.
+
+### 61a — skills are files, and one `load_skill` replaces five tools
+
+Migration steps 1–3. The catalog, the loader, the tool, the packaging, the
+deletion of the five doc tools and the SMLM/EMU paragraphs. The Nikon paragraph
+stays untouched and is not this block's business.
+
+### 61b — the Nikon anchors, and the route they create
+
+Migration step 4, plus the recorded-payload routing fixture. Code changes, not
+wording: three schema descriptions, one word at `agent.py:118`, the ordering
+invariant in the core prompt, and the `device` key on the EMU branch of
+`get_focus_lock_state`. Ships with the Nikon paragraph still redundantly in the
+core prompt, exactly as the design requires.
+
+### 61c — the Nikon paragraph leaves the core prompt
+
+Migration step 5's follow-up. **Conditional and unscheduled**: it does not start
+until the carried-forward Ti row closes *positive*. A negative confirmation
+sends the work back to 61b's route and this block does not run.
+
+## Implementation checklist
+
+### Block 61a — skills are files, and one `load_skill` replaces five tools
+
+Items:
+
+1. **Move the four constants to `microclaw/skills/<name>/SKILL.md`** and
+   relocate `dna_paint_protocol.md` into `skills/dna-paint/SKILL.md`. Names and
+   sources are the design's Layout table: `hook-authoring` (`hook_docs.py`),
+   `smlm` (`smlm_docs.py`), `dna-paint` (the existing Markdown), `optical-paths`
+   (`optics_docs.py`), `htsmlm` (`htsmlm_docs.py`). `nikon-pfs/SKILL.md` is
+   authored from the `SYSTEM_PROMPT` Nikon paragraph (2,355 chars, measured
+   2026-08-29). Delete `hook_docs.py`, `smlm_docs.py`, `optics_docs.py`,
+   `htsmlm_docs.py` and `dna_paint_docs.py` outright — no shim, no re-export.
+2. **Body equivalence is checked once, in review, and is not a shipped test.**
+   Normalize only the single leading/trailing newline the triple-quoted literal
+   introduced; frontmatter is expected to differ. The implementer reports the
+   diff for each of the four; the coordinator reproduces it. DNA-PAINT's body is
+   byte-identical apart from added frontmatter.
+3. **`microclaw/skills.py`** — catalog plus loader, read through
+   `importlib.resources` exactly as `dna_paint_docs.load_reference` did (the
+   docstring explaining why is worth carrying over into the new module). The
+   catalog is built from YAML frontmatter at import time.
+4. **`load_skill(ctrl, guard, name)` decorated `@emits_nothing`**, one schema in
+   `TOOLS`, one entry in `TOOL_REGISTRY`. No `SKILL_SCHEMAS`, no second
+   registry. Delete the five `get_*_documentation` functions, their five schemas
+   and their five registry entries in the same commit. Watch the schema
+   interleaving: `tools_schema.py` runs the five doc schemas across ~1960–2035
+   with `check_emu_installed` (2012) and `get_emu_configuration` (2039) **in the
+   middle of them**, and both of those stay.
+5. **Startup fails loudly** on malformed frontmatter, a directory/name mismatch,
+   duplicate names, **and an empty catalog**. The empty case is the likely one
+   and is the only one a bad package-data glob produces, so it does not get to
+   share a code path with "no skills were broken".
+6. **The catalog renders into `SYSTEM_PROMPT`** as name + one-line description,
+   generated — not hand-copied. Delete the SMLM (897 chars) and EMU/htSMLM (802
+   chars) paragraphs and replace them with the catalog plus one routing rule:
+   load the relevant skill before running its specialized workflow. **Leave the
+   Nikon paragraph (2,355 chars) exactly as it is.**
+7. **`check_emu_installed`'s schema description** carries the conditional
+   htSMLM rule — load `htsmlm` after positive plugin/configuration detection, or
+   when the operator identifies the system or workflow as htSMLM or EMU, never
+   merely because the catalog lists it. It goes in the *schema*, not in the
+   skill's frontmatter: a catalog `description` is one discriminating line, and
+   policy written there is the paragraph moved rather than removed. Same for
+   `get_emu_configuration`'s description where it names a removed tool.
+8. **Rewrite every prose reference to a removed tool name** to the corresponding
+   `load_skill(name=...)` call: `smlm_docs` content (7 mentions), the migrated
+   `dna-paint` body's line 3, `agent.py:357,454,519`, `tools.py:3352`.
+9. **`pyproject.toml` package data gains `skills/*/*.md`.** setuptools'
+   recursive-glob handling is the footgun the wheel test below exists for; do
+   not assume the pattern works because the source tree does.
+
+Tests:
+
+- every skill has valid frontmatter, its directory name matches `name`, and
+  every `description` is a single line;
+- skill identifiers are unique and collide with no name in `TOOL_REGISTRY`
+  (`load_skill` itself stays an ordinary registry entry);
+- malformed metadata, a name mismatch, duplicates **and a nonempty-catalog
+  assertion** each fail startup. The empty-catalog assertion sits with the
+  others;
+- `load_skill` refuses an unknown name and any path-shaped argument, and the
+  refusal names the catalog;
+- `load_skill` is decorated: an exported session that loaded a skill compiles
+  and contains no `NOT EMITTED`;
+- `test_schema_parity.py:18` stays an **equality** — `set(TOOL_REGISTRY) ==
+  set(_SCHEMA_BY_NAME)`. If a change makes it want to be a subset, the change is
+  wrong;
+- **the wheel test.** Build the wheel, install it into a throwaway virtualenv,
+  and inspect it **with that venv's interpreter from a working directory outside
+  the repository**. Assert its catalog names equal the nonempty catalog names
+  discovered from the source tree by a **plain filesystem glob over
+  `microclaw/skills/*/SKILL.md`** — deliberately a different mechanism from the
+  `importlib.resources` query used on the wheel side. Both sides using
+  `resources.files("microclaw")` is the failure this test exists to prevent:
+  this repo's dev setup is `pip install -e .`, whose `__editable__.microclaw-*.pth`
+  maps `microclaw` back to the checkout from any cwd and any `PYTHONPATH`, so a
+  subprocess alone is not isolation and the test would compare the tree to
+  itself. Say in the test which side is which and why. Never mutate the ambient
+  environment;
+- **the ~57 existing content assertions keep passing through the loader.** They
+  pin design/24, /26 and /27 into the hook reference — "NEVER return None",
+  "STILL FIRES THE CAMERA", "SILENT NO-OP" — and are not incidental. Measured
+  2026-08-29: `test_survey_runner.py` 28, `test_tools.py` 7 (+12 tool-name
+  references), `test_optics_docs.py` 3 (+4), `test_hook_manager.py` 2. Preserve
+  every substantive content assertion. Assertions coupled to a **removed tool
+  name** change with the interface — including `test_tools.py:5223`'s
+  `count(...) >= 2`, which must not keep teaching the model a tool that no
+  longer exists;
+- **the negative context assertion**: a session with no SMLM or htSMLM trigger
+  has neither skill body in its system blocks, and the catalog is present. The
+  Nikon core paragraph is still there — assert its presence, deliberately, so
+  61c has something to flip;
+- **and the converse, which is the one that matters**: a session whose opening
+  *does* trigger a skill loads it before acting. The negative above passes on an
+  agent that never loads anything. Drive it from a recorded payload, not from
+  prose. 61a's positive limb is SMLM: an operator-worded dSTORM request must
+  reach `load_skill(name="smlm")` before it proposes acquisition parameters.
+  (The Nikon limbs are 61b's.)
+
+Coordinator notes for review:
+
+- Watch for a second registry appearing under another name — a `SKILLS` dict
+  that the schema is generated from is the parallel plumbing layer the design
+  rejects, whatever it is called.
+- Watch for `references/` subdirectories. Five of six bodies are under 500
+  lines; the design forbids the split until a body is actually too big.
+- **Verify the body equivalence yourself.** The design makes it a review-time
+  check precisely because nothing in the suite will do it afterwards.
+
+### Block 61b — the Nikon anchors, and the route they create
+
+Items:
+
+1. **One sentence into three existing schema descriptions** —
+   `get_focus_lock_state`, `set_focus_lock`, `run_autofocus`: on a rig with a
+   hardware focus lock of this kind, load `nikon-pfs` before engaging or
+   adjusting it. `set_focus_lock` carries it because it performs the hazardous
+   act and an agent that goes straight there must still meet the rule. These are
+   capability anchors, not incidental wording — checked across all 85 schemas,
+   **zero mention PFS, TIPFS or Nikon** today, so `nikon-pfs` has no anchor at
+   all until this lands.
+2. **`agent.py:118` gains one word.** The parenthetical reads "(stage, channel,
+   exposure)"; it becomes "(stage, channel, exposure, focus lock)". Focus lock
+   already has a dedicated tool. Add the word rather than writing a parallel
+   rule.
+3. **One vendor-neutral ordering invariant in the core prompt**: before any
+   operation that engages or adjusts a hardware focus lock, call
+   `get_focus_lock_state` first. It is an **ordering** rule, not a second
+   prohibition on the raw setter, and it makes the state tool the single
+   discovery point.
+4. **The `device` key on the EMU branch of `get_focus_lock_state`**
+   (`tools.py:9094–9099`, which returns `engaged`, `raw_value`, `property`,
+   `qpd` and omits the device). Return `"device": lock["device"]`. **Add the
+   key; do not recover the device by splitting `property` on the dot** — the
+   branch flattens the identity into `"<device>.<property>"`, so
+   `property.split(".")[0]` is the shortcut an implementer reaches for, and
+   parsing an identity out of a display string is the fragility this design
+   forbids one sentence later.
+5. **Identification is by the returned `device` value and nothing else.** Do not
+   substring-scan properties for `"PFS"`: a status property may contain it as
+   readily as the lock device, which is the identity confusion design/59 fixed
+   in `_PORT_LABEL_WORDS`. Where no autofocus device is configured
+   (`tools.py:9088` returns `{"engaged": None, "reason": ...}` with **no
+   `device` key at all**) the invariant is a silent no-op. **Do not add an
+   "unknown → ask the operator" branch**, which would turn every ordinary rig
+   into a question.
+6. **Coordinator-added: decorate `get_focus_lock_state` `@emits_nothing`.** It
+   is undecorated today and it sits on the exact route this block creates —
+   `get_focus_lock_state` → `load_skill(name="nikon-pfs")` →
+   `set_focus_lock(enabled=true)` — so the first PFS session that exports gets
+   `raise RuntimeError` planted three lines in. That is the 43h / 47 / 52a shape
+   for the fourth time, and 52a's version was likewise a tool sitting on its own
+   block's gate path. The tool only reads (`get_auto_focus_device`,
+   `is_continuous_focus_enabled`, `get_property`, `_read_qpd`), so
+   `@emits_nothing` is the correct decoration, not `@emits`. **`run_autofocus`
+   and `set_focus_lock` are already decorated** — checked, not assumed.
+
+Tests — the recorded-payload routing fixture, four limbs. Drive them from
+replayed payloads; **do not assert the routing in prose**. Skipping a skill
+raises no error and produces no artifact — just a worse session, which is
+design/59's failure mode exactly.
+
+- **Positive, `TIPFSStatus`.** Operator request to engage PFS; replay a
+  `get_focus_lock_state` result whose `device` is `TIPFSStatus`. Assert the
+  order `get_focus_lock_state` → `load_skill(name="nikon-pfs")` →
+  `set_focus_lock(enabled=true)`. Start from the **hazardous direct-engagement
+  shortcut**, not an autofocus request that was already likely to visit the
+  state tool.
+- **Positive, `PFS`.** Same, with `device` of `PFS`. Both device strings are
+  measured on different Nikon rigs — a Ti reported `Core.AutoFocus` =
+  `TIPFSStatus` (`design/34-nikon-pfs-tizdrive-findings.md:48-49`); a Ti2-E /
+  Andor Dragonfly reported lock device `PFS`, property `PFS in Range`, in-range
+  value `In Range` (`design/56-the-focus-metric-need-not-be-an-image.md:785-797`).
+  Cite both in the fixtures. Together they prevent routing from collapsing onto
+  one literal device name.
+- **Negative, and it must name its device string.** Use a real focus lock that
+  is not PFS — `CRISP` (design/06 maps an ASI `CRISP`/`CRISP State` focus
+  device) — replayed through the now-consistent EMU result carrying
+  `"device": "CRISP"`. This discriminates *PFS from other focus locks*; a
+  non-lock device would pass for the wrong reason and is the outcome-shaped step
+  this workflow keeps paying for. It must not load `nikon-pfs`.
+- **Negative, no device.** The `{"engaged": null, "reason": ...}` result must
+  neither load `nikon-pfs` **nor ask the operator an unnecessary identification
+  question**. Assert both halves; the second is the one that regresses silently.
+- Regression: `test_schema_parity.py` still equality; the three amended schemas
+  still match their signatures.
+- Regression: an exported session that called `get_focus_lock_state` compiles
+  and contains no `NOT EMITTED` (item 6).
+
+Coordinator notes for review:
+
+- The four limbs are the block. An implementation that lands the anchors and
+  hand-writes a prose assertion instead of replaying payloads has delivered the
+  half that cannot fail.
+- Check that the negative limbs *can* fail: mutate the routing rule and confirm
+  the CRISP limb goes red. A limb that cannot fail is not a criterion — 58a's
+  opt-out limb passed three rounds for that reason.
+
+### Block 61c — the Nikon paragraph leaves the core prompt (conditional)
+
+**Do not start this block until the Ti row in the carried-forward register
+closes positive.** On a negative confirmation, retain the paragraph, fix 61b's
+route, and repeat the confirmation. No released version first loses the guidance
+it is meant to preserve.
+
+Items:
+
+1. Delete the Nikon paragraph (2,355 chars) from `SYSTEM_PROMPT`. `nikon-pfs`
+   already carries it verbatim from 61a.
+2. Flip 61a's deliberate presence assertion: a session with no Nikon trigger has
+   no Nikon skill body **and no Nikon paragraph**; the catalog and the anchors
+   remain.
+3. Record the measured net token change against the design's ~1,650 estimate.
+
+## Gates
+
+### Block 61a — demo machine
+
+Two artifacts, because the limbs are of two kinds and CLAUDE.md's rule is that
+computational limbs ship as a program:
+
+- **`design/61-block61a-demo-gate.py`** — every limb that only computes. Reports
+  each limb **independently** (one failure must not hide the rest behind a
+  cascade), writes **its own log** (PowerShell 5.1's `Start-Transcript` does not
+  capture a native child's stdout), exits nonzero, and reports **NOT EXERCISED**
+  for a limb whose mechanism could not run. NOT EXERCISED is never a pass.
+  **It must not require a `workspace_dir` or any configuration the product does
+  not require** — 60b's gate reported six limbs NOT EXERCISED for exactly that
+  and made the operator edit a production safety config.
+- **`design/61-block61a-demo-gate.md`** — only the steps a human performs and
+  judges: driving a session and reading what the agent did. Every step is a
+  literal command or a verbatim prompt. No placeholders in a literal command;
+  52c's export grep shipped as `Select-String -Pattern "<t2>", "<t3>"`, was run
+  verbatim, matched nothing, and "passed".
+- **`design/61-block61a-gate-selftest.py`** — bridge-shaped, run on **both**
+  trees so its failure discriminates. Collections must be `size()`/`get(i)`
+  vectors whose `__iter__` raises; a `MagicMock` hands back Python-friendly
+  objects and would have missed 59a's `TypeError: 'mmcorej_StrVector' object is
+  not iterable`. **Write the fake from the dependency's source, not from the
+  caller** — 60b's gate globbed `NDTiffStack*.tif` and its fake obligingly wrote
+  that name, and a perfect 4 GiB crossing came back FAIL.
+
+Limbs:
+
+- **G1 (program) — the real install route ships the skills.** Install the branch
+  the way the demo machine actually installs, then `load_skill(name="hook-authoring")`
+  returns a nonempty body. This is the limb the wheel test cannot replace: the
+  wheel test proves the pattern, this proves the installer.
+- **G2 (program) — refusals.** An unknown name and a path-shaped name are both
+  refused, and the refusal names the catalog.
+- **G3 (program) — the catalog is in the prompt and the bodies are not.** SMLM
+  and htSMLM bodies absent, catalog present, **Nikon paragraph still present**.
+- **G4 (runbook, reach) — do not name the tool.** An operator-worded dSTORM
+  request. Does the session call `load_skill(name="smlm")` before it proposes
+  acquisition parameters? Ask unprompted first; if it does not get there, record
+  that as a finding and **then** ask directly, so one round yields both answers
+  instead of neither.
+- **G5 (runbook, mechanism) — the export.** The G4 session runs a 2-frame
+  timelapse and then `export_session_script`. The script compiles and contains
+  no `NOT EMITTED`. **A fresh session emits a 13-line stub**, so the run must
+  come before the export.
+
+### Block 61b — replay first, demo machine second
+
+The Ti is unreachable pre-merge: it is in daily use by a collaborator who
+receives code through the update route, so anything on `main` can be exercised
+on it and anything on a block branch effectively cannot. Step 5 of the block
+workflow cannot cover the Nikon limb, and that is why 61b ships with the Nikon
+paragraph intact.
+
+- **H1 (off-rig) — dry-run the runbook's prompts against the fixture payloads.**
+  Cheap here, and worth it: the payloads already exist as 61b's required tests,
+  so the harness is not new work. 59b lost three demo rounds to prompt defects
+  and zero to product defects — but the same block then built a replay harness
+  that cost more than the session it replaced, so this is a judgement call each
+  time, and it goes the other way here only because the fixtures are free.
+- **H2 (program, demo machine) — the ordinary rig is unharmed.** On a demo
+  config with no autofocus device, a driven session that engages focus must
+  **not** load `nikon-pfs` and must **not** ask an identification question. If
+  the demo config *does* configure an autofocus device, report the `device`
+  value and mark the no-device limb NOT EXERCISED rather than passing it.
+- **H3 (program) — the `device` key.** Where an EMU focus lock is present (M5),
+  `get_focus_lock_state` returns `device` and it equals the EMU map's. NOT
+  EXERCISED on a rig without one.
+- **H4 (program) — the export.** A session that called `get_focus_lock_state`
+  exports a script with no `NOT EMITTED` (item 6's regression, on real
+  hardware).
+
+### Post-merge — the Ti confirmation (carried forward, not a gate step)
+
+Once **both** 61a and 61b are on `main`: a Ti session in which the operator asks
+to engage PFS, and the record shows `get_focus_lock_state` →
+`load_skill(name="nikon-pfs")` → the requested focus-lock action. Ask for the
+rig's normal work, not for a script — `design/40-pfs-five-sessions.md` cost five
+sessions to learn that. A positive result authorizes 61c. A negative result does
+not.
+
+### Post-merge design gate (step 10, all blocks)
+
+- Reconcile the design's estimates to what was measured: the "~1,050 tokens
+  saved at 61a, ~1,650 after the Nikon follow-up" line in Consequences becomes a
+  measured number.
+- Update `CLAUDE.md`'s undecorated-tool register — see the row below.
+- Tick the carried-forward rows this design closes.
+
+## Carried-forward register
+
+| # | row | owner | state |
+| --- | --- | --- | --- |
+| R1 | **Ti confirmation of the `nikon-pfs` route.** Blocks 61c; nothing else waits on it. | operator, post-merge | open |
+| R2 | **`CLAUDE.md` says "Eleven tools are still undecorated" (measured 2026-08-17). It is twelve, measured 2026-08-29** over `TOOL_REGISTRY`: `calibrate_snr_threshold`, `calibrate_stage_to_camera`, `center_feature`, `export_dataset_as_tiff`, `find_features`, `get_focus_lock_state`, `run_mda`, `run_multiposition_with_autofocus`, `set_emu_laser_power_percentage`, `shutter_declared_illumination`, `snap_to_album`, `verify_emu_laser_power_calibration`. 61b closes `get_focus_lock_state`; the count and the date are corrected at step 10. | coordinator | open |
+| R3 | **`load_skill` is one more tool in an 85-schema list that is 74% of static context.** The design says plainly that the 74% row is where a context project would go and that this is not that project. Recorded so the measurement is not lost, not scheduled. | — | recorded |
+
+## Run ledger
+
+| block | branch | start | implementation | gate | merge |
+| --- | --- | --- | --- | --- | --- |
+| 61a | `design61/skills-are-files` | `4368b25` (2026-08-29) | | | |
+| 61b | `design61/nikon-anchors` | | | | |
+| 61c | *(conditional on R1)* | | | | |
