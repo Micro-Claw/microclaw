@@ -130,14 +130,33 @@ replacement for it.
 
 ## Engineering principles
 
-- **Never add a blocking prompt without asking the user first.** A confirmation
-  changes how the instrument behaves in someone's session; it is not an
-  implementation detail and never the implementer's call. design/60 block 60b
-  turned a *disclosure* into a gate by changing one condition from `reasons` to
-  `reasons or clauses`, so every zero-interval burst -- a 2-frame one included --
-  blocked on an approval nobody had asked for. It passed the suite, a coordinator
-  review and a demo gate. If a change can stop a run and wait for a human, it
-  needs the user's agreement before it ships, not after.
+- **A confirmation is for something Microclaw is about to do on the user's
+  behalf, where "no" changes what happens.** Every legitimate one in this
+  codebase fits that: writing a safety config, clearing MM's position list,
+  removing file entries, authorizing unattended hook illumination, allowing hook
+  hardware control, running MMStudio's MDA. Each is irreversible or a real dose,
+  each is state the user owns, and each has a meaningful decline -- *don't do
+  it*. **Never gate on another package's normal behaviour**, which Microclaw
+  neither causes nor can prevent: there the decline is not consent, it is only
+  "cancel my experiment", and the thing happens anyway if the user says yes.
+  Before adding one, ask what a "no" does. If the answer is "nothing, except
+  abort the run", it is not a confirmation -- it is information, and information
+  goes to the acquisition event sink.
+
+  design/60 block 60b got this wrong in one token, `reasons` to
+  `reasons or clauses`, and made a *disclosure* about NDTiff rolling to a second
+  file into a blocking approval -- on a rollover that happens inside ndstorage
+  regardless of the answer. Every zero-interval burst then stopped for consent,
+  a 2-frame one included. **It got there because the clause had no output
+  channel except `CONFIRM_FN`**, so "does the disclosure fire?" was implemented
+  *and reviewed* as "was a confirmation raised?" — the test's observation
+  channel silently became the definition of the behaviour. It passed the suite,
+  a coordinator review and a demo gate. Give a disclosure somewhere to go that
+  is not a prompt.
+
+  And regardless: **a change that can stop a run and wait for a human needs the
+  user's agreement before it ships, not after.** That is theirs, never the
+  implementer's.
 - **Fold into what exists.** Before writing a new function, look for the one
   that already does this or nearly does this, and extend it. Two functions that
   do almost the same thing is a defect, not a convenience.
