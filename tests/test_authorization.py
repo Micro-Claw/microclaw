@@ -620,7 +620,9 @@ def test_exact_declared_emu_enable_uses_existing_illumination_protections(tmp_pa
     ctrl.core.set_property = lambda device, prop, value: setattr(
         ctrl.core, "last_write", (device, prop, value)
     )
-    assert guard.shutter_all(ctrl.core) == ["Luxx638.Laser Operation Select"]
+    assert guard.shutter_all(ctrl.core) == [
+        ("Luxx638", "Laser Operation Select", "Safe")
+    ]
     assert ctrl.core.last_write == ("Luxx638", "Laser Operation Select", "Safe")
 
 

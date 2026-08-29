@@ -1157,7 +1157,7 @@ class TestIlluminationGate:
         core.set_property.assert_called_once_with(
             "Luxx638", "Laser Operation Select", "Off"
         )
-        assert done == ["Luxx638.Laser Operation Select"]
+        assert done == [("Luxx638", "Laser Operation Select", "Off")]
 
     def test_shutter_all_swallows_hardware_errors(self):
         guard = _laser_guard()

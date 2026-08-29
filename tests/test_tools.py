@@ -1089,9 +1089,29 @@ def test_explicit_shutter_tool_drives_every_declaration_to_off_value(mock_ctrl):
     mock_ctrl.core.get_property.side_effect = ["1", "armed"]
     result = shutter_declared_illumination(mock_ctrl, guard)
     assert result["attempted"] == ["Source.Enable", "Aggregate.Gate"]
-    assert result["shuttered"] == ["Source.Enable", "Aggregate.Gate"]
+    assert result["shuttered"] == [
+        ("Source", "Enable", "0"), ("Aggregate", "Gate", "closed")
+    ]
     assert mock_ctrl.core.set_property.call_args_list == [
         call("Source", "Enable", "0"), call("Aggregate", "Gate", "closed")
+    ]
+
+
+def test_explicit_shutter_tool_reports_only_successful_write_triples(mock_ctrl):
+    guard = SafetyGuard(SafetyConstraints(illumination=IlluminationConstraints(
+        shutters=[
+            IlluminationProperty("Source", "Enable", off_value="0"),
+            IlluminationProperty("Broken", "Gate", off_value="closed"),
+        ]
+    )))
+    mock_ctrl.core.get_property.side_effect = ["1", "armed"]
+    mock_ctrl.core.set_property.side_effect = [None, RuntimeError("unplugged")]
+
+    result = shutter_declared_illumination(mock_ctrl, guard)
+
+    assert result["shuttered"] == [("Source", "Enable", "0")]
+    assert mock_ctrl.core.set_property.call_args_list == [
+        call("Source", "Enable", "0"), call("Broken", "Gate", "closed")
     ]
 
 
@@ -3056,6 +3076,9 @@ class TestCenterFeature:
         mock_ctrl.core.is_sequence_running.return_value = True
         result = center_feature(mock_ctrl, unconstrained_guard, max_iter=3, tol_px=5.0)
         assert result["centered"] is True
+        assert result["affine_coefficients"] == {
+            "a": -px, "b": 0.0, "c": 0.0, "d": -px,
+        }
         assert math.hypot(*result["residual_px"]) <= 5.0
         assert live.set_live_mode_on.call_args_list[-1] == call(True)
         assert call(False) in live.set_live_mode_on.call_args_list
@@ -5397,6 +5420,8 @@ def test_emu_write_reports_unrepresentable_one_percent(
     assert result["effective_percent"] == 0
     assert result["representable"] is False
     assert result["min_nonzero_percent"] == pytest.approx(10 / 3)
+    assert result["device"] == "PWM"
+    assert result["property"] == "Position0"
 
 
 def test_emu_write_refuses_unverified_calibration(

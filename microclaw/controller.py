@@ -59,11 +59,12 @@ def stage_move_dispatch_failure(core, device: str, target_um: float,
     })
 
 
-def settle_stage_move(core, device: str, target_um: float) -> dict:
-    """Read until a single-axis stage is both near its target and stable."""
+def settle_stage_move(core, device: str, target_um: float | tuple[float, float]) -> dict:
+    """Read until a single-axis or XY stage is both near its target and stable."""
     started = time.monotonic()
-    in_tolerance: list[tuple[float, float]] = []
-    measured: float | None = None
+    xy = isinstance(target_um, tuple)
+    in_tolerance: list[tuple[float, float | tuple[float, float]]] = []
+    measured: float | tuple[float, float] | None = None
     status = "unknown"
     while True:
         now = time.monotonic()
@@ -72,19 +73,23 @@ def settle_stage_move(core, device: str, target_um: float) -> dict:
         except Exception as exc:  # status is evidence, never the success gate
             status = f"unavailable: {type(exc).__name__}"
         try:
-            measured = float(core.get_position(device))
+            measured = (
+                (float(core.get_x_position(device)), float(core.get_y_position(device)))
+                if xy else float(core.get_position(device))
+            )
             # A non-finite read is a failed read, not a position. Reached via
             # the same handler so there is one policy: NaN never survives into
             # a result dict, where json.dumps would write it as bare `NaN` and
             # any strict reader of the history would reject the line.
-            if not math.isfinite(measured):
+            if not all(math.isfinite(value) for value in measured) if xy else not math.isfinite(measured):
                 raise ValueError(f"non-finite position {measured!r}")
         except Exception as exc:
             in_tolerance.clear()
             status = f"{status}; position_read_error: {type(exc).__name__}: {exc}"
             if now - started >= STAGE_MOVE_TIMEOUT_S:
                 raise StageMoveError({
-                    "requested_um": round(target_um, 4),
+                    "requested_um": ([round(value, 4) for value in target_um]
+                                     if xy else round(target_um, 4)),
                     "measured_um": None,
                     "tolerance_um": STAGE_MOVE_TOLERANCE_UM,
                     "within_tolerance": False,
@@ -93,15 +98,22 @@ def settle_stage_move(core, device: str, target_um: float) -> dict:
                 }) from exc
             time.sleep(STAGE_MOVE_POLL_S)
             continue
-        if abs(measured - target_um) <= STAGE_MOVE_TOLERANCE_UM:
+        within_tolerance = (
+            all(abs(actual - target) <= STAGE_MOVE_TOLERANCE_UM
+                for actual, target in zip(measured, target_um))
+            if xy else abs(measured - target_um) <= STAGE_MOVE_TOLERANCE_UM
+        )
+        if within_tolerance:
             in_tolerance.append((now, measured))
             if len(in_tolerance) > STAGE_MOVE_REQUIRED_SAMPLES:
                 in_tolerance.pop(0)
             if (len(in_tolerance) == STAGE_MOVE_REQUIRED_SAMPLES and
                     now - in_tolerance[0][0] >= STAGE_MOVE_STABILITY_WINDOW_S):
                 return {
-                    "requested_um": round(target_um, 4),
-                    "measured_um": round(measured, 4),
+                    "requested_um": ([round(value, 4) for value in target_um]
+                                     if xy else round(target_um, 4)),
+                    "measured_um": ([round(value, 4) for value in measured]
+                                    if xy else round(measured, 4)),
                     "tolerance_um": STAGE_MOVE_TOLERANCE_UM,
                     "within_tolerance": True,
                     "elapsed_s": round(now - started, 3),
@@ -111,8 +123,10 @@ def settle_stage_move(core, device: str, target_um: float) -> dict:
             in_tolerance.clear()
         if now - started >= STAGE_MOVE_TIMEOUT_S:
             result = {
-                "requested_um": round(target_um, 4),
-                "measured_um": round(measured, 4),
+                "requested_um": ([round(value, 4) for value in target_um]
+                                 if xy else round(target_um, 4)),
+                "measured_um": ([round(value, 4) for value in measured]
+                                if xy else round(measured, 4)),
                 "tolerance_um": STAGE_MOVE_TOLERANCE_UM,
                 "within_tolerance": False,
                 "elapsed_s": round(now - started, 3),

@@ -1210,7 +1210,7 @@ class SafetyGuard:
                     f"Step up gradually."
                 )
 
-    def shutter_all(self, core) -> list[str]:
+    def shutter_all(self, core) -> list[tuple[str, str, str]]:
         """Best-effort: drive every known illumination shutter to its off value.
 
         This is an explicit operator action, never session teardown. Must not
@@ -1219,7 +1219,7 @@ class SafetyGuard:
         for s in self._c.illumination.shutters:
             try:
                 core.set_property(s.device, s.property, s.off_value)
-                done.append(f"{s.device}.{s.property}")
+                done.append((s.device, s.property, s.off_value))
             except Exception:
                 pass
         return done
