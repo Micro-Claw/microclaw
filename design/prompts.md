@@ -8067,3 +8067,65 @@ dry-run against a recorded payload, deliberately: the mechanisms were already
 covered by gate limbs, 59b's replay harness cost more than the session it
 replaced, and the prompts were written to name mechanisms (`interval_s`, frame
 counts, "approve for this session") rather than outcomes. That judgement held.
+
+## design/61 block 61a — skills are files, and one `load_skill` replaces five tools
+
+**The runner's own tests found none of the four review findings.** Codex produced
+a clean migration — the body equivalences reproduced against hashes taken before
+it started, the ~57 content assertions were rewritten at the acquisition
+mechanism rather than weakened, and the wheel test avoided the trap the design
+spent a paragraph on (`--no-deps` into a fresh venv, `-I`, cwd outside the repo,
+genuinely different discovery on each side). What review caught was elsewhere.
+
+**The routing test could not fail, and proving that took one mutation.** Its
+"recorded payload" was hand-authored: the mock's first scripted response *was*
+`load_skill(name="smlm")` and the second *was* the parameter sentence, so
+asserting the first preceded the second asserted a property of the mock. Deleting
+the catalog **and** the routing rule from `SYSTEM_PROMPT` outright — leaving an
+agent that cannot know a skill exists — left it passing in 0.48 s. The runner's
+own red evidence gave it away and was misread: the pre-change failure was
+`Unknown tool 'load_skill'`, which is dispatch, not routing.
+
+**Two silent-drop defects, same family.** A skill directory whose `SKILL.md` was
+missing vanished from the catalog without a word (partial package-data omission
+at runtime); and the *total* omission path — no `skills/` directory at all, which
+is what a bad glob actually produces — raised a bare `FileNotFoundError`, so the
+"empty catalog" message the design calls *the likelier failure* was reachable
+only from a test that built the directory by hand.
+
+**Deleting a paragraph moves its routing but not its content.** The EMU/htSMLM
+paragraph carried three operational rules; two survived in schemas, and two —
+"use `get_emu_laser_map` instead of trial-and-error probing" and "never calculate
+an EMU percentage conversion in prose … keep illumination disabled" — existed in
+neither the skill nor any of the 81 schemas. The design's premise for deleting
+the paragraph was that its content lived in the skill; that had to be *made*
+true. The skill's own worked example was meanwhile teaching the arithmetic the
+restored rule forbids.
+
+**A Codex turn died at its usage limit with edits landed.** Preserved and
+committed unreviewed per the workflow, then verified rather than trusted: R2/R3
+watched red on the pre-fix tree, R1 mutation-checked.
+
+**The gate found a product defect the failure was hiding.** The demo machine runs
+Python 3.12 and the selftest ran 3.11; `skills.py` imported `Traversable` from
+`importlib.abc`, deprecated at 3.12 and gone at 3.14, while the replacement
+module does not exist on the 3.10 `pyproject` still supports. Moved under
+`TYPE_CHECKING`; verified by importing with `importlib.abc` poisoned to `None`.
+
+**The most expensive lesson was about an instrument, not the product.** G4's
+reach limb measured nothing because its prompt asked for dSTORM parameters on a
+demo camera — answerable, and better answered, without ever touching the skill.
+The coordinator then proposed a two-arm A/B to settle the wording, **priced it at
+$35 from a remembered $15/$75 when Opus 4.8 is $5/$25**, and the operator
+declined: *"you want to spend $35 to test this code that has been working for us
+for months?"* They were right, and the sharper reason emerged from stating the
+experiment plainly — both arms varied **one sentence of our own system prompt**,
+arm B being roughly the wording 61a had deleted, so its best case was "put back
+what you took out". **The burden of proof was backwards**: a measurement buys a
+new mechanism, not the restoration of an old one. Fix shipped in 141 chars.
+
+**And validate an instrument on one sample before buying sixteen.** The spike's
+original verdict ran a regex over the assistant's prose; a single $1 validation
+run showed it scoring `PROPOSED_FIRST` on a message that was *refusing* to give
+numbers, having matched a stray "TIRF" and "20 ms" further down. Sixteen samples
+of that would have looked like data. Total spend: $2, all of it on finding that.
