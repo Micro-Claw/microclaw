@@ -779,6 +779,6 @@ not.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | | | |
+| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | gate + selftest at `60bdcd7`, pushed; selftest PASSED, discriminates against `main` for the right reason. **Awaiting demo machine.** | |
 | 61b | `design61/nikon-anchors` | | | | |
 | 61c | *(conditional on R1)* | | | | |
