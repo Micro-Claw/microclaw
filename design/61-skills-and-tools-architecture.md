@@ -767,6 +767,72 @@ not.
 - Update `CLAUDE.md`'s undecorated-tool register — see the row below.
 - Tick the carried-forward rows this design closes.
 
+## What the demo machine measured for 61a, 2026-08-29
+
+Round 1. **G1, G2, G3, G5 PASS. G4 NOT EXERCISED** — and its limb is a gate
+defect, not a product one.
+
+The three programmatic limbs passed against the *installed* build, and their
+numbers agree byte-for-byte with the coordinator's macOS selftest run: six
+skills at `dna-paint` 19,829 / `hook-authoring` 34,025 / `htsmlm` 7,149 /
+`nikon-pfs` 2,470 / `optical-paths` 3,572 / `smlm` 23,056 chars, prompt 31,070
+chars. `install.bat`'s artifact carries `skills/*/SKILL.md`, so the package-data
+pattern works through the route the machine actually uses, which is what the
+gate existed to prove.
+
+**G5 passed on real artifacts.** The session ran a 2-frame timelapse and
+exported; the emitted script compiles, imports nothing from `microclaw`, and
+renders `load_skill` as `# No hardware-routine effect.` with no `NOT EMITTED`
+anywhere. A session that loaded a skill exports a working standalone script.
+
+**G4 measured nothing about routing, and the prompt is why.** Asked the
+unprompted opening — *"I need to run dSTORM on this sample. What acquisition
+parameters should I use?"* — the agent called `get_system_state`, read `DCam`
+and the rest of the demo configuration, and spent its whole turn telling the
+operator that this rig cannot do dSTORM at all. It never loaded `smlm`. It also
+never proposed a parameter. So neither the PASS condition nor the FAIL condition
+in the runbook was met: the mechanism under test — does a triggered session load
+the skill *before acting* — was never put to the agent, because the agent never
+reached the point of planning an acquisition.
+
+That is the design/59 lesson again, and this time the coordinator wrote the rule
+into the checklist and then reasoned past it: *dry-run a prompt when the gate is
+long, repeated, or the operator is not standing at the rig; otherwise ask for the
+session.* The judgement went the wrong way here, and cheaply, because
+`design/61-skill-routing-spike.py` had already been authored and replays exactly
+this opening off-rig. **A gate prompt that asks for dSTORM on a rig whose camera
+emits synthetic bands is answerable without the thing under test** — and the
+better answer, the one a good microscopy agent gives, skips it.
+
+**The rubric was also wrong, in the same shape.** The runbook offered the human
+limbs only PASS or FAIL. The gate *program* has a `NotExercised` state; the
+prose limbs did not, so an operator following the runbook literally would have
+had to record FAIL for a limb that measured nothing. A rubric that cannot say
+"this did not run" reports nulls as results.
+
+**The direct fallback worked.** Asked *"Load the smlm skill, then tell me what
+acquisition parameters to use for dSTORM"*, the agent called
+`load_skill(name="smlm")` immediately and answered from the returned reference.
+The mechanism is fine; what is unmeasured is the reach.
+
+### A hypothesis this raises, which one session cannot settle
+
+The paragraph 61a deleted said: *"When the user asks to do SMLM,
+super-resolution, dSTORM, PALM, PAINT, DNA-PAINT, or single-molecule
+localization, call get_smlm_documentation **first**."* That is trigger-worded and
+enumerates the exact words an operator uses. What replaced it is *"Load the
+relevant skill before running its specialized workflow"*, which fires on
+**running** a workflow, not on **being asked about** one. Under the new rule the
+observed session is arguably compliant: it ran nothing.
+
+So the migration may have narrowed the routing trigger, and that would be a real
+cost of the change rather than a bug in it. **It is a hypothesis, not a finding.**
+n=1, on the one rig where the confound is strongest, and design/59 measured two
+runs of the *same* wording at 5/8 then 15/16 — a single session cannot separate
+a wording effect from noise. `design/61-skill-routing-spike.py` exists to size
+it; the design's own stance is that a measurement, not an intuition, is what buys
+a change here. **No product change on this evidence.**
+
 ## Carried-forward register
 
 | # | row | owner | state |
@@ -779,6 +845,6 @@ not.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | gate + selftest at `60bdcd7`, pushed; selftest PASSED, discriminates against `main` for the right reason. **Awaiting demo machine.** | |
+| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | round 1 demo 2026-08-29 after `85d63ec`: **G1/G2/G3/G5 PASS, G4 NOT EXERCISED**. Installed-build limbs agree byte-for-byte with the coordinator's selftest (6 skills, prompt 31,070 chars); emitted script compiles with `load_skill` as `# No hardware-routine effect.` and no `NOT EMITTED`. G4's prompt asked for dSTORM on the demo camera, so the agent correctly answered *this rig cannot do dSTORM* and never reached a routing decision — **gate defect, no product defect**. A runbook path bug (`$repo` hardcoded to the wrong drive) cost the operator one round before this. | |
 | 61b | `design61/nikon-anchors` | | | | |
 | 61c | *(conditional on R1)* | | | | |
