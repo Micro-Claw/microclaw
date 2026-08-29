@@ -304,6 +304,25 @@ because a block looks small.
    twenty lines and a minute. Settle off-rig everything a fake can settle; what
    reaches the operator is what needs the rig.
 
+   **And the gate's own fake is the one nobody reviews.** design/60 block 60b's
+   gate failed the single limb its rig trip existed for — a 4 GiB NDTiff
+   crossing — because it globbed `NDTiffStack*.tif` while ndstorage writes
+   `<name>_NDTiffStack*.tif`; the crossing had in fact been perfect. It survived
+   the bridge-shaped selftest because **the fake wrote the filename the glob
+   expected**. *A fake that encodes your assumption is not a test of it* applies
+   to gate code exactly as it does to product code, and gate code gets no review
+   pass. Write the fake from the dependency's source, not from your caller. That
+   same gate also **required a `workspace_dir`, which is optional in the
+   product** — so it reported six limbs NOT EXERCISED for a reason that said
+   nothing about the code and made the operator edit a production safety config
+   to run it: **a gate must not require configuration the product does not
+   require.**
+
+   **A FAIL is also scored from artifacts, not only a PASS.** That false-negative
+   limb was settled off-rig from the `NDTiff.index` the operator sent when the
+   4 GB `.tif`s were too large to copy — 8,256 of 8,256 frames, rollover at
+   frame 8,114 against a disclosed bound of 8,192.
+
    **A limb that reports NOT EXERCISED as a machine limitation is a place to
    suspect the product.** That same 59a defect existed twice — raised in the
    gate, and *swallowed* in `calibration._config_mismatches`, whose
