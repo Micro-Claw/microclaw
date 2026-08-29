@@ -199,11 +199,13 @@ class RemoteAuth:
 class _Pending:
     """One confirmation waiting on the operator, readable by /api/confirm."""
 
-    def __init__(self, id: str, summary: str, kind: str, subject: str | None):
+    def __init__(self, id: str, summary: str, kind: str, subject: str | None,
+                 grant_metadata: dict[str, float | int] | None = None):
         self.id = id
         self.summary = summary
         self.kind = kind
         self.subject = subject
+        self.grant_metadata = grant_metadata
         self.grant_id: str | None = None
         # threading queue, not asyncio: confirm() blocks on the turn thread
         # while /api/confirm answers from the event loop.
@@ -412,7 +414,8 @@ class Session:
             )
 
     def confirm(
-        self, summary: str, kind: str = "action", subject: str | None = None
+        self, summary: str, kind: str = "action", subject: str | None = None, *,
+        grant_metadata: dict[str, float | int] | None = None,
     ) -> bool:
         """Route a confirmation to the browser. Runs on the turn thread.
 
@@ -439,7 +442,7 @@ class Session:
                 grant_identity=grant_identity,
             )
 
-        grant = tools.SESSION_GRANTS.granted(kind, subject)
+        grant = tools.SESSION_GRANTS.granted(kind, subject, grant_metadata)
         if grant is not None:
             # `identity` is the operator whose turn caused this action;
             # `grant_identity` separately preserves who authored the standing
@@ -452,7 +455,7 @@ class Session:
 
         if emit is None:
             return decided("declined:no-stream")           # no stream: deny
-        p = _Pending(confirmation_id, summary, kind, subject)
+        p = _Pending(confirmation_id, summary, kind, subject, grant_metadata)
         self.pending = p
         print(f"\n[microclaw] Confirmation required ({kind}):\n{summary}")
         emit({"type": "confirm_request", "id": p.id,
@@ -1055,7 +1058,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(422, "This confirmation cannot be granted for the session.")
         if c.approve == "session":
             grant = tools.SESSION_GRANTS.grant(
-                p.kind, p.subject, p.summary, identity=request.state.identity
+                p.kind, p.subject, p.summary, identity=request.state.identity,
+                grant_metadata=p.grant_metadata,
             )
             p.grant_id = grant["id"]
             # Grant lifecycle is committed here, beside creation and

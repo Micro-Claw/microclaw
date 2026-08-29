@@ -105,7 +105,7 @@ def test_each_confirmation_threshold_fires_at_boundary_and_not_below(
     calls = []
     monkeypatch.setattr(
         tools, "CONFIRM_FN",
-        lambda summary, kind="action", subject=None: calls.append(
+        lambda summary, kind="action", subject=None, **kwargs: calls.append(
             (summary, kind, subject)
         ) or True,
     )
@@ -162,6 +162,115 @@ def test_one_confirmation_names_both_reasons(monkeypatch):
     assert len(calls) == 1
     assert "500 frames" in calls[0]
     assert "20 minutes" in calls[0]
+
+
+def test_ndtiff_guaranteed_crossing_disclosure_uses_raw_pixel_bound(monkeypatch):
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    ctrl = MagicMock()
+    bytes_per_frame = 512 * 512 * 2
+    frame_bound = tools.NDTIFF_MAX_FILE_SIZE // bytes_per_frame
+    crossing = AcquisitionPlan(
+        frame_bound + 1, 1, 1, (frame_bound + 1) * bytes_per_frame
+    )
+    tools._authorize_acquisition(ctrl, _guard(), crossing).close()
+    assert frame_bound == 8192
+    assert "roll to a second file before frame 8,192" in calls.pop()
+    just_under = AcquisitionPlan(frame_bound, 1, 1, frame_bound * bytes_per_frame)
+    tools._authorize_acquisition(ctrl, _guard(), just_under).close()
+    assert calls == []
+
+
+def test_ndtiff_disclosure_never_claims_rollover_before_frame_zero(monkeypatch):
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    plan = AcquisitionPlan(1, 1, 1, tools.NDTIFF_MAX_FILE_SIZE + 1)
+    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    assert "before the first frame is complete" in calls[0]
+    assert "before frame 0" not in calls[0]
+
+
+@pytest.mark.parametrize(
+    ("n_frames", "interval_s", "appears"),
+    [(2, 0, True), (2, 1, False), (1, 0, False)],
+)
+def test_run_timelapse_arguments_drive_burst_disclosure(
+    monkeypatch, tmp_path, n_frames, interval_s, appears,
+):
+    from microclaw import tools
+
+    ctrl = MagicMock()
+    ctrl.core.get_exposure.return_value = 10
+    ctrl.core.get_image_width.return_value = 16
+    ctrl.core.get_image_height.return_value = 16
+    ctrl.core.get_bytes_per_pixel.return_value = 2
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/run")
+    tools.run_timelapse(
+        ctrl, _guard(), n_frames=n_frames, interval_s=interval_s,
+        save_dir=str(tmp_path),
+    )
+    assert any("hardware-sequenced burst" in summary for summary in calls) is appears
+
+
+def test_hook_dose_reconstruction_preserves_burst_disclosure(
+    monkeypatch, tmp_path,
+):
+    from microclaw import tools
+
+    class DoseHook:
+        def planned_extra_exposures(self):
+            return 1
+
+        def planned_extra_exposures_per_event(self):
+            return 0
+
+    ctrl = MagicMock()
+    ctrl.core.get_exposure.return_value = 10
+    ctrl.core.get_image_width.return_value = 16
+    ctrl.core.get_image_height.return_value = 16
+    ctrl.core.get_bytes_per_pixel.return_value = 2
+    calls = []
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: DoseHook())
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/run")
+    tools.run_timelapse(
+        ctrl, _guard(), n_frames=2, interval_s=0, save_dir=str(tmp_path),
+        hook_strategy="dose_hook",
+    )
+    assert any("hardware-sequenced burst" in summary for summary in calls)
+
+
+@pytest.mark.parametrize(
+    ("plan", "appears"),
+    [
+        (AcquisitionPlan(2, 10, 0.02, 2, hardware_sequenced_burst=True), True),
+        (AcquisitionPlan(2, 10, 0.02, 2), False),
+        (AcquisitionPlan(1, 10, 0.01, 1, hardware_sequenced_burst=True), False),
+    ],
+)
+def test_hardware_burst_disclosure_is_selective(monkeypatch, plan, appears):
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    assert bool(calls) is appears
+    if appears:
+        assert "Stop button" in calls[0]
+        assert "engine abort" in calls[0]
+        assert "thousands of further exposures" in calls[0]
+        assert "about" in calls[0]
 
 
 def test_deprecated_confirm_above_bytes_does_not_gate_a_plan(monkeypatch):

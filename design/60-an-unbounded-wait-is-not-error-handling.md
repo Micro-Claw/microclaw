@@ -299,6 +299,168 @@ count at all** — `_reservation_report` is empty on an exact run by design. F4 
 about progress *during* a run; the final report is silent too, and D4 should
 carry `frames_accounted` into it while it is there.
 
+## What the demo machine measured for 60b, 2026-08-29
+
+Round 1 of 60b's gate. **The product passed every limb it reached; both failures
+were defects in the gate itself**, and the second one is the more instructive.
+
+**The 4 GiB crossing is clean on this camera** — the one question no fake could
+answer. 512x512x16-bit, 8,256 frames, 10 ms:
+
+| | measured |
+| --- | --- |
+| frames in the index | **8,256 of 8,256** — nothing lost across the roll |
+| `..._NDTiffStack.tif` | 8,114 frames, 4,289,888,652 B (5,078,644 B under 2^32) |
+| `..._NDTiffStack_1.tif` | 142 frames, 75,079,752 B |
+| per-frame overhead | 4,415 B, **0.84%** on top of pixels |
+| D6 disclosed | "roll to a second file before frame 8,192" |
+| actual roll | after frame **8,114** — the bound HELD, margin 78 frames |
+
+**This does not make the M2 incident an M2 problem, and the coordinator's first
+write-up of it wrongly said so.** Nothing above locates the failure in a machine;
+"What the index proves" locates it in the rollover path in NDTiffStorage/AcqEngJ,
+which is the same code everywhere. What this run shows is narrower and cuts the
+other way: **a rollover happened here and worked**, so the rollover path is not
+simply broken.
+
+What it cannot settle is why M2's did not, because the two runs differ in the
+variable most likely to matter. This burst took 130.7 s against 82.56 s planned
+(1.58x) on a **simulated** camera — software-paced, not a real hardware sequence.
+M2's was a genuine sequenced burst at speed. A timing-dependent race at the
+writer swap and a one-off machine glitch are **both** consistent with these two
+runs, and this gate does not discriminate between them.
+
+The operator's standing objection is recorded here because it is correct on the
+evidence: long acquisitions have run fine on other systems, and one incident is
+one incident. The discriminating observation is not another demo burst — it is
+whether any long run on any rig has ever produced a second `_NDTiffStack_1.tif`
+**on a real camera under a fast burst**. A long run that never reached the cap
+says nothing about rollover. Until such a run is found, the honest state is: the
+coincidence at frame 72,056 is tight to within one frame, the mechanism is
+unproven, and n=1.
+
+**D6's raw upper bound is the right thing to ship, and a fixed overhead model is
+not** — though the first version of this paragraph argued it badly and the
+numbers are corrected here.
+
+Measuring the **same field** on both rigs, `md_length` from the index entries:
+M2 **14,361 B** per frame, this run **4,235 B** (mean; it takes 8 distinct values
+between 4,226 and 4,236 *within the single run*). The coordinator's first figure
+of 4,415 B was derived from file sizes and conflated metadata with the IFD; the
+180 B difference is the IFD, against the writer's own `IFD_size = 176`.
+
+The fractions were also quoted against different denominators — M2's "24%" is
+metadata as a share of the total per-frame cost, while 0.84% was quoted on top of
+pixels. Consistently, on top of pixels: **31.9% on M2, 0.81% here.**
+
+**These two runs are not comparable conditions and the comparison should not be
+read as one.** The operator's objection is recorded: the demo camera is
+simulated, M2 was moving data off a real sensor, and the integration times
+differed. `md_length` is a JSON blob of device properties and timestamps, so the
+likeliest driver is how many devices each config serialises — unverified here,
+because only M2's single quoted value is in hand, not its distribution.
+
+None of which is load-bearing. **`MAX_FILE_SIZE // (w*h*bpp)` is an upper bound
+because overhead is positive**, and that is D6's whole argument; it never needed
+the overhead's magnitude. What the two measurements do show is that a *fixed*
+overhead model has nothing stable to be fixed at — it varies between configs and
+within a single run. Item 5's refinement would have to be rig-calibrated to beat
+the bound it refines; it stays optional and unbuilt.
+
+**D4 works on hardware**: 131 progress events over 129.5 s = **1.01/s**, first
+frame 1, last 8,256 of 8,256. The 83-minute silence of the incident is gone —
+and note this is the limb that does not care what caused the hang, which is the
+point of bounding a wait rather than diagnosing an engine.
+
+Two other numbers worth keeping. `plan_events` estimated 82.56 s and the burst
+took **130.72 s (1.58x)** — against 5,000 s planned / 5,175 s real on M2. The
+demo camera is a simulator and is not truly hardware-sequencing, so this does not
+contradict D1a's reasoning, but it is a second data point that the estimate is a
+statement about exposure, not about wall time. And the run's `dataset_path`
+carried AcqEngJ's `_1` rename, as design/21 F6 says it does.
+
+### The two gate defects, because one of them is this document's own lesson
+
+**1. The gate required a `workspace_dir`.** It defaulted `--save-root` from the
+safety config and refused when there was none — but `workspace_dir` is
+**optional** in the product (`resolve_output_path`: None means writes are
+unconfined), so the gate invented a precondition microclaw does not have. Six
+limbs came back NOT EXERCISED for a reason that says nothing about the code, and
+the operator had to edit a production safety config to run the gate at all. A
+gate must not require configuration the product does not require.
+
+**2. The gate globbed `NDTiffStack*.tif`, and NDTiff writes
+`<name>_NDTiffStack*.tif`.** It matched nothing, so the one limb the rig trip
+existed for reported FAIL on a crossing that had in fact been perfect. The
+correct pattern was already written down in `controller.py:513`.
+
+The second is *this document's own rule*, reproduced by the coordinator who wrote
+it: **the selftest's fake wrote the filename the glob expected**, so the selftest
+could not catch it — a fake that encodes your assumption is not a test of it. The
+fake now writes the names ndstorage really writes, and with the old glob restored
+it fails exactly as the demo machine did. The selftest also now runs **both**
+safety-config shapes, with and without `workspace_dir`, because no fixture
+produced the shape the operator actually had.
+
+## Round 2, 2026-08-29: the gate passes and the driven session reproduces the incident
+
+**8/8 PASS**, with the two gate defects fixed. The burst reproduces round 1
+exactly: 8,256 of 8,256 frames in the index, 8,114 in the first file and 142 in
+the second, roll at frame 8,114 against a disclosed bound of 8,192. Progress: 124
+events over 122.8 s = **1.01/s**. The operator confirms the browser's pending
+line showed `frames N / 200` counting up — D4's user-visible half, which no
+artifact can show.
+
+**The driven session is the incident, run forwards, and it carries a control the
+runbook did not ask for.** Three `run_timelapse` calls on one session grant
+`7c1007e5`:
+
+| | plan | decision |
+| --- | --- | --- |
+| 05:43:13 | 200 frames, `interval_s=0` | grant created, `approved:session` |
+| 05:44:18 | **100,000 frames** | **`declined`** — no `grant_id`, so it re-asked |
+| 05:45:05 | 200 frames | `auto-approved:7c1007e5` |
+
+The third row is what makes the second mean anything: the grant was still alive
+and still auto-approving inside its magnitude, so the 100,000-frame re-ask was a
+**magnitude** decision and not a consumed or lost grant. D5 does what its
+docstring always claimed — removes *repeated* decisions, not *larger* ones.
+
+Both disclosures appeared in the refused plan's summary, together: the burst
+clause naming the Stop button and engine abort, and D6's crossing sentence
+("52.4 GB ... roll to a second file before frame 8,192 ... 13 runs of at most
+8,192 frames"). The tool then reported it as a human decline —
+`"operator refused the reserved plan"` — not as a limit refusal.
+
+### Two measured notes, neither a defect
+
+**The duration estimate under-reports on this camera by half.** The 100,000-frame
+disclosure said "about 16.7 minutes by the current estimate" (100,000 x 10 ms),
+while the measured burst ran 123.9 s against 82.56 s planned — **1.50x**. On M2 a
+sequenced burst planned 5,000 s and took 5,175 s. `plan_events` counts exposure
+and `min_start_time` and says so, the disclosure hedges with "by the current
+estimate", and D1a already refused to derive any bound from it. Recorded because
+this is the number an operator reads while deciding, and on a simulated camera it
+is optimistic by 50%.
+
+**D6's headline sentence says "a second file" for a run that makes thirteen.**
+"roll to a second file before frame 8,192" is true and is the first crossing, and
+the segmenting clause does say "13 runs", so the count is recoverable. Tightening
+it to name the number of files is an optional improvement; it is not worth a
+re-gate on its own and is carried forward rather than fixed here.
+
+### The upstream report: decided — not filed
+
+design/60's post-merge gate asks for an explicit decision. **Do not file one
+yet.** Two crossings on the demo machine rolled cleanly and kept every frame, so
+we would be reporting a rollover bug while holding evidence that rollover works;
+the mechanism behind M2's truncated notification is still unproven, and this
+document already forbids writing a fix against the guess. The cheap next step is
+the off-rig `SingleNDTiffWriter` reproduction this document already describes,
+not an upstream issue. The operator's standing objection — long acquisitions have
+run fine elsewhere, and one incident is one incident — is part of this decision,
+not an aside to it.
+
 ## Decisions
 
 ### D1 — Microclaw bounds its own wait, with a short error grace and a long runtime ceiling. (fixes F2, F3)
@@ -613,7 +775,13 @@ crosses a boundary that the raw bound alone calls safe. Keep raw image bytes
 separately visible either way, and do not let the disclosure quote a frame number
 it cannot stand behind — the 4.5 GB raw estimate correctly predicts a crossing
 but puts it at frame 95,443, while the real one was 72,056, because per-frame
-metadata here was 14,361 bytes: 24% on top of the pixels.
+metadata here was 14,361 bytes against 45,000 bytes of pixels: **31.9% on top of
+the pixels**, or 24% of the total per-frame cost. (Corrected 2026-08-29: this
+line originally read "24% on top of the pixels", mixing the two denominators, and
+60b's write-up propagated the error before measuring `md_length` directly on a
+second rig. The two are 31.9% and 0.81% on top of pixels — measured under
+conditions too different to compare, which is itself the argument against a fixed
+overhead model.)
 
 > This acquisition writes at least 4.5 GB of image data against NDTiff's 4 GiB
 > per-file limit, so it will roll to a second file before frame 95,443 — and
@@ -915,4 +1083,4 @@ costs more than the session, ask for the session.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | `e5958cb` (3 Codex rounds + 1 Claude round after Codex credit ran out mid-turn; 4 defects returned, all in a broad `except Exception` between a supervised acquisition and `execute_tool`; coordinator suite 2450/99/0) | **PASSED 8/8, round 1**, demo machine 2026-08-28. 62/62 probes read `is_sequence_running()` True mid-burst, median 0.0 ms; teardown after camera-idle <=203 ms derived from probe timestamps; ceiling used 4.2% | `daedc83` merged 2026-08-28, branch deleted; design gate below |
-| 60b | — | — | — | — | — (not started; depends on 60a's event sink) |
+| 60b | `design60/progress-and-disclosure` | `4ed79c4` (2026-08-29) | `c8cba67` (2 Codex rounds; 3 findings returned, two of them coverage gaps the coordinator proved by mutation — the D5 trigger inverted left 508 tests green, the progress cadence at 1e9 left 180 green; coordinator suite 2466/99/0) | round 1 demo 2026-08-29: 6/8, **both failures gate defects, no product defect**. round 2 after `f1b184b`: **8/8 PASS**; crossing reproduces (8,256/8,256 frames, roll at 8,114 vs disclosed 8,192); progress 124 events at 1.01/s; driven session grant `7c1007e5` re-asked a 100k plan and still auto-approved a later 200-frame one | |

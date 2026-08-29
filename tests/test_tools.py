@@ -3282,6 +3282,7 @@ class TestTimelapseTriggerPreflight:
     def _setup(self, mock_ctrl, monkeypatch, mode="4 - Follow", sequence="65535"):
         from microclaw import tools
         monkeypatch.setattr(tools, "_cached_emu_properties", lambda ctrl: (self.PROPS, {}))
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
         monkeypatch.setattr("microclaw.tools._acquire_with_hooks", lambda *a, **k: "/tmp/ds")
         values = {("Laser Trigger", "Mode3"): mode,
                   ("Laser Trigger", "Sequence3"): sequence}

@@ -655,12 +655,18 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "n_frames": {"type": "integer", "description": "Number of frames."},
+                "n_frames": {"type": "integer", "description": (
+                    "Number of frames. With interval_s=0 and more than one frame, "
+                    "the whole time axis is one hardware-sequenced burst; Microclaw's "
+                    "Stop button and engine abort may not stop it promptly."
+                )},
                 "interval_s": {"type": "number", "description": (
                     "Interval between frames in seconds. Must be nonzero when "
                     "hook_action_plan is set -- 0 lets the engine "
                     "hardware-sequence the time axis, which leaves no software "
-                    "between exposures for a per-frame action."
+                    "between exposures for a per-frame action. With n_frames>1 this "
+                    "is one burst, and Microclaw's Stop button and engine abort may "
+                    "not stop it promptly; thousands of further exposures may occur."
                 )},
                 "channel": {"type": "string", "description": "Channel preset (optional)."},
                 "exposure_ms": {"type": "number", "description": "Exposure in ms (optional)."},
