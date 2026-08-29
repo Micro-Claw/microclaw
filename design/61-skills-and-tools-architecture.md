@@ -571,6 +571,29 @@ Coordinator notes for review:
 - **Verify the body equivalence yourself.** The design makes it a review-time
   check precisely because nothing in the suite will do it afterwards.
 
+> **Three things 61a's gate cost, which 61b's gate should not repeat.**
+>
+> 1. **Derive paths, never assume them.** 61a's runbook hardcoded
+>    `$repo = "$HOME\Code\microclaw"`; the demo machine's checkout is on `D:`,
+>    so the operator reasonably skipped that line and the *next* step expanded
+>    an unset `$repo` into `C:\design\...`, failing with an error that named
+>    nothing relevant. Use `git rev-parse --show-toplevel`, echo every derived
+>    path before use, guard each step's inputs, and put `Set-StrictMode -Version
+>    Latest` at the top so an unset variable is a named error rather than an
+>    empty expansion.
+> 2. **A gate's own environment is a fake, and it encodes assumptions too.**
+>    61a's selftest installed each tree with `--no-deps` into an isolated venv,
+>    so every limb died on a missing numpy and *both* trees "failed" — which
+>    would have reported a discrimination the gate had never demonstrated. It
+>    now borrows ambient dependencies, installs only microclaw, asserts the gate
+>    imported the tree it installed, and requires `main` to fail **for the right
+>    reason** rather than merely to fail. Check the reason, not the exit code.
+> 3. **A human limb needs a NOT EXERCISED branch.** 61a's gate *program* had
+>    one; its prose limbs offered only PASS/FAIL, so an operator following the
+>    runbook literally would have recorded FAIL for a limb that measured
+>    nothing. A rubric that cannot say "this did not run" reports nulls as
+>    results.
+
 ### Block 61b — the Nikon anchors, and the route they create
 
 Items:
@@ -886,6 +909,6 @@ an instrument on one sample before buying sixteen.**
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | round 1 demo 2026-08-29 after `85d63ec`: **G1/G2/G3/G5 PASS, G4 NOT EXERCISED**. Installed-build limbs agree byte-for-byte with the coordinator's selftest (6 skills, prompt 31,070 chars); emitted script compiles with `load_skill` as `# No hardware-routine effect.` and no `NOT EMITTED`. G4's prompt asked for dSTORM on the demo camera, so the agent correctly answered *this rig cannot do dSTORM* and never reached a routing decision — **gate defect, no product defect**. A runbook path bug (`$repo` hardcoded to the wrong drive) cost the operator one round before this. G4's cause fixed at `daa0053` by restoring the routing rule's ordering half (141 chars); the two-arm A/B was priced (~$11, after a 3x mispricing) and **declined as backwards burden of proof** — see the section above. Net context −3,300 chars / ~−825 tokens. Suite 2484/99/0. | |
+| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | `26cae61` (1 Codex start + 1 revision turn **killed mid-flight by a Codex account usage limit** with its edits landed — preserved as `40aaa8a` and committed unreviewed per the workflow, then verified by the coordinator: R2/R3 watched red on the pre-fix tree, R1 mutation-checked. 4 findings returned; R1 was a **vacuous routing test** proved by deleting the catalog from the prompt and watching it still pass. Coordinator fix `26cae61` for the total-package-data-omission path. Coordinator suite 2483/99/0) | round 1 demo 2026-08-29 after `85d63ec`: **G1/G2/G3/G5 PASS, G4 NOT EXERCISED**. Installed-build limbs agree byte-for-byte with the coordinator's selftest (6 skills, prompt 31,070 chars); emitted script compiles with `load_skill` as `# No hardware-routine effect.` and no `NOT EMITTED`. G4's prompt asked for dSTORM on the demo camera, so the agent correctly answered *this rig cannot do dSTORM* and never reached a routing decision — **gate defect, no product defect**. A runbook path bug (`$repo` hardcoded to the wrong drive) cost the operator one round before this. G4's cause fixed at `daa0053` by restoring the routing rule's ordering half (141 chars); the two-arm A/B was priced (~$11, after a 3x mispricing) and **declined as backwards burden of proof** — see the section above. Net context −3,300 chars / ~−825 tokens. Suite 2484/99/0. | `c18b15a` merged 2026-08-29, branch deleted locally and on `origin`; worktree removed. Design gate at step 10 below. |
 | 61b | `design61/nikon-anchors` | | | | |
 | 61c | *(conditional on R1)* | | | | |
