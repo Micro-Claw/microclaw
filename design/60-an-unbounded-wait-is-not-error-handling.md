@@ -402,6 +402,65 @@ it fails exactly as the demo machine did. The selftest also now runs **both**
 safety-config shapes, with and without `workspace_dir`, because no fixture
 produced the shape the operator actually had.
 
+## Round 2, 2026-08-29: the gate passes and the driven session reproduces the incident
+
+**8/8 PASS**, with the two gate defects fixed. The burst reproduces round 1
+exactly: 8,256 of 8,256 frames in the index, 8,114 in the first file and 142 in
+the second, roll at frame 8,114 against a disclosed bound of 8,192. Progress: 124
+events over 122.8 s = **1.01/s**. The operator confirms the browser's pending
+line showed `frames N / 200` counting up — D4's user-visible half, which no
+artifact can show.
+
+**The driven session is the incident, run forwards, and it carries a control the
+runbook did not ask for.** Three `run_timelapse` calls on one session grant
+`7c1007e5`:
+
+| | plan | decision |
+| --- | --- | --- |
+| 05:43:13 | 200 frames, `interval_s=0` | grant created, `approved:session` |
+| 05:44:18 | **100,000 frames** | **`declined`** — no `grant_id`, so it re-asked |
+| 05:45:05 | 200 frames | `auto-approved:7c1007e5` |
+
+The third row is what makes the second mean anything: the grant was still alive
+and still auto-approving inside its magnitude, so the 100,000-frame re-ask was a
+**magnitude** decision and not a consumed or lost grant. D5 does what its
+docstring always claimed — removes *repeated* decisions, not *larger* ones.
+
+Both disclosures appeared in the refused plan's summary, together: the burst
+clause naming the Stop button and engine abort, and D6's crossing sentence
+("52.4 GB ... roll to a second file before frame 8,192 ... 13 runs of at most
+8,192 frames"). The tool then reported it as a human decline —
+`"operator refused the reserved plan"` — not as a limit refusal.
+
+### Two measured notes, neither a defect
+
+**The duration estimate under-reports on this camera by half.** The 100,000-frame
+disclosure said "about 16.7 minutes by the current estimate" (100,000 x 10 ms),
+while the measured burst ran 123.9 s against 82.56 s planned — **1.50x**. On M2 a
+sequenced burst planned 5,000 s and took 5,175 s. `plan_events` counts exposure
+and `min_start_time` and says so, the disclosure hedges with "by the current
+estimate", and D1a already refused to derive any bound from it. Recorded because
+this is the number an operator reads while deciding, and on a simulated camera it
+is optimistic by 50%.
+
+**D6's headline sentence says "a second file" for a run that makes thirteen.**
+"roll to a second file before frame 8,192" is true and is the first crossing, and
+the segmenting clause does say "13 runs", so the count is recoverable. Tightening
+it to name the number of files is an optional improvement; it is not worth a
+re-gate on its own and is carried forward rather than fixed here.
+
+### The upstream report: decided — not filed
+
+design/60's post-merge gate asks for an explicit decision. **Do not file one
+yet.** Two crossings on the demo machine rolled cleanly and kept every frame, so
+we would be reporting a rollover bug while holding evidence that rollover works;
+the mechanism behind M2's truncated notification is still unproven, and this
+document already forbids writing a fix against the guess. The cheap next step is
+the off-rig `SingleNDTiffWriter` reproduction this document already describes,
+not an upstream issue. The operator's standing objection — long acquisitions have
+run fine elsewhere, and one incident is one incident — is part of this decision,
+not an aside to it.
+
 ## Decisions
 
 ### D1 — Microclaw bounds its own wait, with a short error grace and a long runtime ceiling. (fixes F2, F3)
@@ -1024,4 +1083,4 @@ costs more than the session, ask for the session.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | `e5958cb` (3 Codex rounds + 1 Claude round after Codex credit ran out mid-turn; 4 defects returned, all in a broad `except Exception` between a supervised acquisition and `execute_tool`; coordinator suite 2450/99/0) | **PASSED 8/8, round 1**, demo machine 2026-08-28. 62/62 probes read `is_sequence_running()` True mid-burst, median 0.0 ms; teardown after camera-idle <=203 ms derived from probe timestamps; ceiling used 4.2% | `daedc83` merged 2026-08-28, branch deleted; design gate below |
-| 60b | `design60/progress-and-disclosure` | `4ed79c4` (2026-08-29) | `c8cba67` (2 Codex rounds; 3 findings returned, two of them coverage gaps the coordinator proved by mutation — the D5 trigger inverted left 508 tests green, the progress cadence at 1e9 left 180 green; coordinator suite 2466/99/0) | round 1 demo 2026-08-29: **6/8 PASS, 2 FAIL — both gate defects, no product defect**. Crossing clean (8,256/8,256 frames, roll at 8,114 vs disclosed 8,192); progress 131 events at 1.01/s. Gate fixed in `f1b184b`; part 2 (driven session) not yet run | — |
+| 60b | `design60/progress-and-disclosure` | `4ed79c4` (2026-08-29) | `c8cba67` (2 Codex rounds; 3 findings returned, two of them coverage gaps the coordinator proved by mutation — the D5 trigger inverted left 508 tests green, the progress cadence at 1e9 left 180 green; coordinator suite 2466/99/0) | round 1 demo 2026-08-29: 6/8, **both failures gate defects, no product defect**. round 2 after `f1b184b`: **8/8 PASS**; crossing reproduces (8,256/8,256 frames, roll at 8,114 vs disclosed 8,192); progress 124 events at 1.01/s; driven session grant `7c1007e5` re-asked a 100k plan and still auto-approved a later 200-frame one | |

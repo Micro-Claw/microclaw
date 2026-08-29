@@ -8004,3 +8004,66 @@ three.
 command-substituted by zsh, which silently ate the words "except Exception" from
 `54db0e1`'s message. Use a heredoc or `-F -` for any commit message containing
 code.
+
+## Block 60b — progress, disclosure, and the bounded grant (merged 2026-08-29)
+
+**Two Codex rounds.** Round 1 was broadly right and its grant metadata was
+threaded correctly end to end, including the `_Pending` -> `/api/confirm` leg
+that is easy to miss. Review returned three findings, **two of which were
+coverage gaps found by mutation, not by reading**: inverting the D5 trigger
+(`interval_s == 0 and n_frames > 1`) left 508 tests green, and setting the
+progress cadence to `1e9` left 180 green. Both tests had been written against the
+wrong subject — one set `hardware_sequenced_burst=` on a hand-built plan instead
+of driving `run_timelapse`, the other froze the clock so only the *suppressing*
+half of the rate limit could ever be exercised. Under that second mutation an
+83-minute run emits two events, which is F4 unfixed and still green.
+
+Worth keeping as a technique: **mutate the one line whose behaviour the test
+claims to constrain, and run the tests that ought to notice.** It is faster than
+reading and it produces a number the runner cannot argue with.
+
+**The gate cost a demo round to two defects, both the coordinator's.**
+
+1. It required a `workspace_dir`. That is **optional** in the product
+   (`resolve_output_path`: None means unconfined), so the gate invented a
+   precondition microclaw does not have, reported six limbs NOT EXERCISED for a
+   reason that says nothing about the code, and made the operator edit a
+   production safety config to run it at all. **A gate must not require
+   configuration the product does not require** — and the operator flagged it as
+   a product-design question, which is how the confusion shows up.
+2. It globbed `NDTiffStack*.tif`; ndstorage writes `<name>_NDTiffStack*.tif`. It
+   matched nothing and reported FAIL on the one limb the whole rig trip existed
+   for, on a crossing that had in fact been perfect. `controller.py:513` already
+   spelled the pattern correctly.
+
+The second is **this repo's own rule, reproduced by the person who had just
+written it into the runner prompt**: the selftest's fake wrote the filename the
+glob expected, so the selftest could not catch it. *A fake that encodes your
+assumption is not a test of it* applies to gate code exactly as it does to
+product code, and a gate's fake is the one nobody reviews. The fixed fake writes
+the real names and, with the old glob restored, fails exactly as the demo machine
+did; the selftest also now runs **both** safety-config shapes, because no fixture
+produced the one the operator actually had.
+
+**Scoring rescued the block from its own instrument.** Round 1's FAIL was a false
+negative: the operator could not copy the 4 GB `.tif`s but sent `NDTiff.index`,
+and parsing it settled limb 6 completely — 8,256 of 8,256 frames, roll at 8,114
+against a disclosed bound of 8,192. Read the artifacts even when the gate says
+FAIL, not only when it says PASS.
+
+**Three coordinator overreaches, all the same shape**, all corrected in
+`design/60` after the operator pushed back: calling a single incident "M2's
+storage", comparing a *derived* overhead number against a *directly measured*
+one, and quoting two percentages against different denominators. Each turned one
+measurement into a property. The corrections are recorded in place in the design
+doc rather than silently rewritten, because D6's own line carried the original
+ambiguity.
+
+**The driven session was worth more than the program.** It produced a control
+nobody asked for — a second 200-frame run that auto-approved under the standing
+grant *after* the 100,000-frame plan had been re-asked — which is what makes the
+re-ask mean "magnitude" rather than "grant lost". Two prompts were **not**
+dry-run against a recorded payload, deliberately: the mechanisms were already
+covered by gate limbs, 59b's replay harness cost more than the session it
+replaced, and the prompts were written to name mechanisms (`interval_s`, frame
+counts, "approve for this session") rather than outcomes. That judgement held.
