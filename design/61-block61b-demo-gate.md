@@ -145,10 +145,26 @@ score a checkout, deliberately:
 $exported = "PASTE THE PATH TURN R3 REPORTED HERE"
 if (-not (Test-Path $exported)) { throw "Exported script not found at $exported" }
 
-cd $evidence
-python $gate --output $evidence --history $history.FullName --exported $exported
+# The installed interpreter, derived the way 61a's gate derived it. Do NOT use
+# bare `python` (this machine has no python on PATH -- the Microsoft Store
+# alias answers and exits 9009), and do NOT use `uv run` (it resolves its
+# environment from the project directory, so from outside the repo microclaw is
+# not importable, and from inside it the gate correctly refuses to score a
+# checkout). All three were tried on 2026-08-29 and none of them ran the gate.
+$slot = (Get-Content "$env:LOCALAPPDATA\microclaw\active-slot.txt" -Raw).Trim()
+$py   = "$env:LOCALAPPDATA\microclaw\env-$slot\Scripts\python.exe"
+if (-not (Test-Path $py)) { throw "NO INSTALLED INTERPRETER AT $py - rerun install.bat" }
+Write-Host "interpreter: $py"
+
+cd $HOME
+& $py $gate --output $evidence --history $history.FullName --exported $exported
 Write-Host "gate exit code: $LASTEXITCODE"
 ```
+
+`cd $HOME` is not decoration: the program scores whatever `microclaw` its
+interpreter imports, and refuses outright if that turns out to be the checkout.
+Its first line prints which `microclaw` it imported — check that it is under
+`$env:LOCALAPPDATA\microclaw` before reading any limb.
 
 The program writes `gate.txt` and `results.json` into `$evidence` and prints one
 line per limb. **It owns its own log** — do not use `Start-Transcript`, which
