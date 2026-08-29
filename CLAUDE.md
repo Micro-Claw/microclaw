@@ -130,6 +130,14 @@ replacement for it.
 
 ## Engineering principles
 
+- **Never add a blocking prompt without asking the user first.** A confirmation
+  changes how the instrument behaves in someone's session; it is not an
+  implementation detail and never the implementer's call. design/60 block 60b
+  turned a *disclosure* into a gate by changing one condition from `reasons` to
+  `reasons or clauses`, so every zero-interval burst -- a 2-frame one included --
+  blocked on an approval nobody had asked for. It passed the suite, a coordinator
+  review and a demo gate. If a change can stop a run and wait for a human, it
+  needs the user's agreement before it ships, not after.
 - **Fold into what exists.** Before writing a new function, look for the one
   that already does this or nearly does this, and extend it. Two functions that
   do almost the same thing is a defect, not a convenience.

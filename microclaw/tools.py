@@ -2228,7 +2228,19 @@ def _authorize_acquisition(
         + ((" " + " ".join(clauses)) if clauses else "")
         + " Continue?"
     )
-    if confirm and (reasons or clauses) and not CONFIRM_FN(
+    # design/60 D6: "segmenting is documentation, not a limit". A clause
+    # ANNOTATES a confirmation that a threshold already triggered; it must never
+    # create one. Block 60b briefly made `reasons or clauses` the trigger, which
+    # turned every zero-interval multi-frame burst -- a 2-frame one included --
+    # into a blocking approval that the operator had never asked for.
+    if clauses:
+        _emit_acquisition_diagnostic({
+            "type": "acquisition_disclosure",
+            "frames": plan.frames,
+            "gated": bool(confirm and reasons),
+            "clauses": clauses,
+        })
+    if confirm and reasons and not CONFIRM_FN(
         summary,
         kind="acquisition",
         subject="threshold",

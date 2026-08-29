@@ -2,6 +2,8 @@ import ast
 from unittest.mock import MagicMock
 import inspect
 
+import contextlib
+
 import pytest
 
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, plan_events
@@ -17,6 +19,21 @@ def _guard(**limits):
     return SafetyGuard(
         SafetyConstraints(acquisition=AcquisitionConstraints(**limits))
     )
+
+
+@contextlib.contextmanager
+def _disclosures(monkeypatch):
+    """Collect disclosure events. Clauses inform through the sink, never gate."""
+    from microclaw import tools
+    seen = []
+    monkeypatch.setattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", seen.append,
+                        raising=False)
+    yield seen
+
+
+def _clause_text(events):
+    return " ".join(" ".join(e["clauses"]) for e in events
+                    if e.get("type") == "acquisition_disclosure")
 
 
 @pytest.mark.parametrize(("tool_name", "shape"), [
@@ -177,12 +194,17 @@ def test_ndtiff_crossing_disclosure_fires_at_the_admission_bound(monkeypatch):
     crossing = AcquisitionPlan(
         frame_bound + 1, 1, 1, (frame_bound + 1) * bytes_per_frame
     )
-    tools._authorize_acquisition(ctrl, _guard(), crossing).close()
+    with _disclosures(monkeypatch) as events:
+        tools._authorize_acquisition(ctrl, _guard(), crossing).close()
     # "as early as", never "before": the bound allows generously for metadata, so
     # the real roll can land after it.
-    assert "roll to a second file as early as frame 7,937" in calls.pop()
-    just_under = AcquisitionPlan(frame_bound, 1, 1, frame_bound * bytes_per_frame)
-    tools._authorize_acquisition(ctrl, _guard(), just_under).close()
+    assert "roll to a second file as early as frame 7,937" in _clause_text(events)
+    # ...and it informed without blocking: no threshold was crossed.
+    assert calls == []
+    with _disclosures(monkeypatch) as under_events:
+        just_under = AcquisitionPlan(frame_bound, 1, 1, frame_bound * bytes_per_frame)
+        tools._authorize_acquisition(ctrl, _guard(), just_under).close()
+    assert _clause_text(under_events) == ""
     assert calls == []
 
 
@@ -204,8 +226,10 @@ def test_the_band_the_raw_pixel_bound_missed_is_now_disclosed(monkeypatch):
     n = 8154
     assert n <= raw_bound, "the raw bound would have caught this; not the band"
     plan = AcquisitionPlan(n, 10, n * 0.01, n * bytes_per_frame)
-    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
-    assert any("4 GiB per-file limit" in c for c in calls), calls
+    with _disclosures(monkeypatch) as events:
+        tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    assert "4 GiB per-file limit" in _clause_text(events)
+    assert calls == [], "disclosing a crossing must not block the run"
 
 
 @pytest.mark.parametrize(
@@ -248,9 +272,12 @@ def test_ndtiff_disclosure_never_claims_rollover_before_frame_zero(monkeypatch):
     monkeypatch.setattr(tools, "CONFIRM_FN",
                         lambda summary, **kwargs: calls.append(summary) or True)
     plan = AcquisitionPlan(1, 1, 1, tools.NDTIFF_MAX_FILE_SIZE + 1)
-    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
-    assert "before the first frame is complete" in calls[0]
-    assert "before frame 0" not in calls[0]
+    with _disclosures(monkeypatch) as events:
+        tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    text = _clause_text(events)
+    assert "before the first frame is complete" in text
+    assert "before frame 0" not in text
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -271,11 +298,13 @@ def test_run_timelapse_arguments_drive_burst_disclosure(
     monkeypatch.setattr(tools, "CONFIRM_FN",
                         lambda summary, **kwargs: calls.append(summary) or True)
     monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/run")
-    tools.run_timelapse(
-        ctrl, _guard(), n_frames=n_frames, interval_s=interval_s,
-        save_dir=str(tmp_path),
-    )
-    assert any("hardware-sequenced burst" in summary for summary in calls) is appears
+    with _disclosures(monkeypatch) as events:
+        tools.run_timelapse(
+            ctrl, _guard(), n_frames=n_frames, interval_s=interval_s,
+            save_dir=str(tmp_path),
+        )
+    assert ("hardware-sequenced burst" in _clause_text(events)) is appears
+    assert calls == [], "a burst disclosure must not block the run"
 
 
 def test_hook_dose_reconstruction_preserves_burst_disclosure(
@@ -300,11 +329,12 @@ def test_hook_dose_reconstruction_preserves_burst_disclosure(
     monkeypatch.setattr(tools, "CONFIRM_FN",
                         lambda summary, **kwargs: calls.append(summary) or True)
     monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/run")
-    tools.run_timelapse(
-        ctrl, _guard(), n_frames=2, interval_s=0, save_dir=str(tmp_path),
-        hook_strategy="dose_hook",
-    )
-    assert any("hardware-sequenced burst" in summary for summary in calls)
+    with _disclosures(monkeypatch) as events:
+        tools.run_timelapse(
+            ctrl, _guard(), n_frames=2, interval_s=0, save_dir=str(tmp_path),
+            hook_strategy="dose_hook",
+        )
+    assert "hardware-sequenced burst" in _clause_text(events)
 
 
 @pytest.mark.parametrize(
@@ -321,13 +351,16 @@ def test_hardware_burst_disclosure_is_selective(monkeypatch, plan, appears):
     calls = []
     monkeypatch.setattr(tools, "CONFIRM_FN",
                         lambda summary, **kwargs: calls.append(summary) or True)
-    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
-    assert bool(calls) is appears
+    with _disclosures(monkeypatch) as events:
+        tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    text = _clause_text(events)
+    assert bool(text) is appears
     if appears:
-        assert "Stop button" in calls[0]
-        assert "engine abort" in calls[0]
-        assert "thousands of further exposures" in calls[0]
-        assert "about" in calls[0]
+        for phrase in ("Stop button", "engine abort",
+                       "thousands of further exposures", "about"):
+            assert phrase in text
+    # Never a gate: no threshold was crossed by any of these plans.
+    assert calls == []
 
 
 def test_deprecated_confirm_above_bytes_does_not_gate_a_plan(monkeypatch):
@@ -563,3 +596,35 @@ def test_an_estimate_is_not_reported_to_six_significant_figures():
     assert _format_duration(60) == "about 1 minute"
     assert _format_duration(90) == "about 1.5 minutes"
     assert _format_duration(45) == "about 45 seconds"
+
+
+def test_a_disclosure_alone_never_blocks_but_annotates_a_real_confirmation(
+    monkeypatch, tmp_path,
+):
+    """The regression block 60b shipped: clauses must not create a confirmation.
+
+    A 2-frame zero-interval burst became a blocking approval nobody asked for.
+    D6 is explicit -- "segmenting is documentation, not a limit" -- and D5 says
+    _authorize_acquisition *adds a clause*, to a prompt a threshold triggered.
+    """
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    burst = AcquisitionPlan(2, 10, 0.02, 2, hardware_sequenced_burst=True)
+
+    # No threshold: discloses through the sink, asks nothing.
+    with _disclosures(monkeypatch) as events:
+        tools._authorize_acquisition(MagicMock(), _guard(), burst).close()
+    assert "hardware-sequenced burst" in _clause_text(events)
+    assert calls == []
+
+    # A threshold fires: one confirmation, carrying the clause.
+    with _disclosures(monkeypatch):
+        tools._authorize_acquisition(
+            MagicMock(), _guard(confirm_above_frames=1), burst
+        ).close()
+    assert len(calls) == 1
+    assert "hardware-sequenced burst" in calls[0]
+    assert "2 frames" in calls[0]
