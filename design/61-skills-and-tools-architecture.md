@@ -777,6 +777,6 @@ not.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 61a | `design61/skills-are-files` | `4368b25` (2026-08-29) | | | |
+| 61a | `design61/skills-are-files` | `64cb63f` (2026-08-29), worktree `../microclaw-61a` | | | |
 | 61b | `design61/nikon-anchors` | | | | |
 | 61c | *(conditional on R1)* | | | | |
