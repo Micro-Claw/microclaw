@@ -116,6 +116,31 @@ def test_untriggered_system_context_has_catalog_not_specialist_bodies():
     assert "Do BOTH of these every time you engage the lock" in agent.SYSTEM_PROMPT
 
 
+def test_catalog_routing_rule_fires_on_being_asked_not_only_on_running():
+    """The catalog replaced a trigger-worded paragraph; keep its ordering half.
+
+    What 61a deleted said "when the user asks to do SMLM ... call it FIRST".
+    The first replacement said only "load the relevant skill before RUNNING its
+    specialized workflow", which fires on running a workflow rather than on
+    being asked about one -- and block 61a's demo session was arguably
+    compliant with it while never loading anything: asked for dSTORM
+    parameters, the agent explained the rig instead and routed nowhere.
+
+    The catalog's own descriptions already carry the trigger vocabulary
+    (`smlm` names dSTORM, PALM, PAINT, DNA-PAINT), so only the ordering
+    framing had to come back. This pins it.
+    """
+    rule = agent.SYSTEM_PROMPT.split("Specialized workflow skills:", 1)[1]
+    rule = rule.split("\n\n", 1)[0]
+    assert "before running its specialized workflow" in rule
+    assert "asks about a task a skill covers" in rule
+    assert "FIRST" in rule
+    assert "before answering" in rule
+    # The observed failure was a rig caveat displacing the lookup, not the
+    # agent forgetting the rule existed.
+    assert "not a reason to skip it" in rule
+
+
 def test_htsmlm_skill_preserves_specialized_mapping_and_dose_rules():
     body = skills.load_skill_text("htsmlm")
     flat = " ".join(body.split())
