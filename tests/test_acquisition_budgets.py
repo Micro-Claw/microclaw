@@ -164,7 +164,7 @@ def test_one_confirmation_names_both_reasons(monkeypatch):
     assert "20 minutes" in calls[0]
 
 
-def test_ndtiff_guaranteed_crossing_disclosure_uses_raw_pixel_bound(monkeypatch):
+def test_ndtiff_crossing_disclosure_fires_at_the_admission_bound(monkeypatch):
     from microclaw import tools
 
     calls = []
@@ -172,16 +172,73 @@ def test_ndtiff_guaranteed_crossing_disclosure_uses_raw_pixel_bound(monkeypatch)
                         lambda summary, **kwargs: calls.append(summary) or True)
     ctrl = MagicMock()
     bytes_per_frame = 512 * 512 * 2
-    frame_bound = tools.NDTIFF_MAX_FILE_SIZE // bytes_per_frame
+    frame_bound = tools._ndtiff_frame_bound(bytes_per_frame)
+    assert frame_bound == 7937
     crossing = AcquisitionPlan(
         frame_bound + 1, 1, 1, (frame_bound + 1) * bytes_per_frame
     )
     tools._authorize_acquisition(ctrl, _guard(), crossing).close()
-    assert frame_bound == 8192
-    assert "roll to a second file before frame 8,192" in calls.pop()
+    # "as early as", never "before": the bound allows generously for metadata, so
+    # the real roll can land after it.
+    assert "roll to a second file as early as frame 7,937" in calls.pop()
     just_under = AcquisitionPlan(frame_bound, 1, 1, frame_bound * bytes_per_frame)
     tools._authorize_acquisition(ctrl, _guard(), just_under).close()
     assert calls == []
+
+
+def test_the_band_the_raw_pixel_bound_missed_is_now_disclosed(monkeypatch):
+    """The defect measured on the demo machine, 2026-08-29.
+
+    512x512x16-bit, 8,154 frames: under the raw pixel bound of 8,192, so nothing
+    warned -- and the run rolled to a second file at frame 8,114 anyway. Every
+    frame count in that band crossed 4 GiB undisclosed. On M2's 150x150 ROI the
+    same band is 31.9% wide, which is why this matters for SMLM.
+    """
+    from microclaw import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "CONFIRM_FN",
+                        lambda summary, **kwargs: calls.append(summary) or True)
+    bytes_per_frame = 512 * 512 * 2
+    raw_bound = tools.NDTIFF_MAX_FILE_SIZE // bytes_per_frame
+    n = 8154
+    assert n <= raw_bound, "the raw bound would have caught this; not the band"
+    plan = AcquisitionPlan(n, 10, n * 0.01, n * bytes_per_frame)
+    tools._authorize_acquisition(MagicMock(), _guard(), plan).close()
+    assert any("4 GiB per-file limit" in c for c in calls), calls
+
+
+@pytest.mark.parametrize(
+    ("w", "h", "bpp"),
+    [(150, 150, 2), (196, 184, 2), (512, 512, 2), (1024, 1024, 2),
+     (2304, 2304, 2), (2048, 2048, 2)],
+)
+def test_the_bound_is_never_later_than_the_raw_pixel_bound(w, h, bpp):
+    """Overshooting the metadata allowance may warn early; it must never warn late.
+
+    A frame always costs more than its pixels, so a bound above the raw one would
+    let a guaranteed crossing through undisclosed -- the defect this replaced.
+    """
+    from microclaw import tools
+
+    raw = w * h * bpp
+    assert tools._ndtiff_frame_bound(raw) <= tools.NDTIFF_MAX_FILE_SIZE // raw
+
+
+def test_the_bound_reproduces_the_two_crossings_we_have_observed():
+    """Unfitted: the writer's own admission test with a conservative allowance.
+
+    Both numbers come from parsed NDTiff.index files, not from a model.
+    """
+    from microclaw import tools
+
+    demo = tools._ndtiff_frame_bound(512 * 512 * 2)
+    m2 = tools._ndtiff_frame_bound(150 * 150 * 2)
+    assert demo <= 8114, f"demo rolled at 8,114; bound {demo} is late"
+    assert m2 <= 72056, f"M2 rolled at 72,056; bound {m2} is late"
+    # ...and not so early as to be useless: within 3% of the real crossing.
+    assert demo >= 0.97 * 8114, demo
+    assert m2 >= 0.97 * 72056, m2
 
 
 def test_ndtiff_disclosure_never_claims_rollover_before_frame_zero(monkeypatch):

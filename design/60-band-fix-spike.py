@@ -24,6 +24,14 @@ changing product code**: it computes the candidate bound inline. The demo band
 is only ~0.8% wide (8,127..8,192), which makes it a tight but honest test -- if
 the defect shows up there it certainly shows up on M2.
 
+**Run on the demo machine 2026-08-29: PASSED, 5/5, and the defect is now
+fixed.** It measured m = 4,228 B (spread 0.07% over 32 frames), found the band
+8,115..8,192, showed the shipped disclosure silent at n = 8,154, ran it, and the
+file rolled to a second stack with 8,154/8,154 frames indexed. Errors against the
+observed roll of 8,114: raw +78, raw+m +12, admission **0**. The fix landed the
+same day, so limb 3 ("the SHIPPED disclosure stays silent") is expected to FAIL
+on any tree that carries it -- that failure is the fix working, not a regression.
+
     uv run python design\\60-band-fix-spike.py > band-spike-console.txt 2>&1
 
 Writes ~4.3 GB. Delete the datasets afterwards; paths are in results.json.
