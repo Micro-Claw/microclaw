@@ -299,6 +299,66 @@ count at all** — `_reservation_report` is empty on an exact run by design. F4 
 about progress *during* a run; the final report is silent too, and D4 should
 carry `frames_accounted` into it while it is there.
 
+## What the demo machine measured for 60b, 2026-08-29
+
+Round 1 of 60b's gate. **The product passed every limb it reached; both failures
+were defects in the gate itself**, and the second one is the more instructive.
+
+**The 4 GiB crossing is clean on this camera** — the one question no fake could
+answer. 512x512x16-bit, 8,256 frames, 10 ms:
+
+| | measured |
+| --- | --- |
+| frames in the index | **8,256 of 8,256** — nothing lost across the roll |
+| `..._NDTiffStack.tif` | 8,114 frames, 4,289,888,652 B (5,078,644 B under 2^32) |
+| `..._NDTiffStack_1.tif` | 142 frames, 75,079,752 B |
+| per-frame overhead | 4,415 B, **0.84%** on top of pixels |
+| D6 disclosed | "roll to a second file before frame 8,192" |
+| actual roll | after frame **8,114** — the bound HELD, margin 78 frames |
+
+So the demo camera's storage does what M2's did not: it rolled, kept every
+frame, and stayed under the limit. Weigh that when deciding the upstream report
+— the truncated notification did not reproduce here.
+
+**D6's raw upper bound is the right thing to ship, and a fixed overhead model is
+not.** Per-frame overhead was 14,361 B on M2 (24% of its pixels) and 4,415 B here
+(0.84%). The absolute cost differs 3.3x and the *fraction* differs 29x, because
+the fraction is dominated by ROI size. Item 5's refinement would have to be
+rig-calibrated to beat the bound it refines; it stays optional and unbuilt.
+
+**D4 works on hardware**: 131 progress events over 129.5 s = **1.01/s**, first
+frame 1, last 8,256 of 8,256. The 83-minute silence of the incident is gone.
+
+Two other numbers worth keeping. `plan_events` estimated 82.56 s and the burst
+took **130.72 s (1.58x)** — against 5,000 s planned / 5,175 s real on M2. The
+demo camera is a simulator and is not truly hardware-sequencing, so this does not
+contradict D1a's reasoning, but it is a second data point that the estimate is a
+statement about exposure, not about wall time. And the run's `dataset_path`
+carried AcqEngJ's `_1` rename, as design/21 F6 says it does.
+
+### The two gate defects, because one of them is this document's own lesson
+
+**1. The gate required a `workspace_dir`.** It defaulted `--save-root` from the
+safety config and refused when there was none — but `workspace_dir` is
+**optional** in the product (`resolve_output_path`: None means writes are
+unconfined), so the gate invented a precondition microclaw does not have. Six
+limbs came back NOT EXERCISED for a reason that says nothing about the code, and
+the operator had to edit a production safety config to run the gate at all. A
+gate must not require configuration the product does not require.
+
+**2. The gate globbed `NDTiffStack*.tif`, and NDTiff writes
+`<name>_NDTiffStack*.tif`.** It matched nothing, so the one limb the rig trip
+existed for reported FAIL on a crossing that had in fact been perfect. The
+correct pattern was already written down in `controller.py:513`.
+
+The second is *this document's own rule*, reproduced by the coordinator who wrote
+it: **the selftest's fake wrote the filename the glob expected**, so the selftest
+could not catch it — a fake that encodes your assumption is not a test of it. The
+fake now writes the names ndstorage really writes, and with the old glob restored
+it fails exactly as the demo machine did. The selftest also now runs **both**
+safety-config shapes, with and without `workspace_dir`, because no fixture
+produced the shape the operator actually had.
+
 ## Decisions
 
 ### D1 — Microclaw bounds its own wait, with a short error grace and a long runtime ceiling. (fixes F2, F3)

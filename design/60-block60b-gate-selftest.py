@@ -122,12 +122,26 @@ class FakeAcquisition:
             type(self).core.sequence_running = True
         saved = self.kwargs.get("image_saved_fn")
         directory = Path(self._dataset_disk_location)
+        self._events = list(events)
         for index, _event in enumerate(events):
             time.sleep(FRAME_SLEEP_S)
             if saved is not None:
                 saved({"time": index}, object())
-        (directory / "NDTiffStack.tif").write_bytes(b"\0")
-        (directory / "NDTiffStack_1.tif").write_bytes(b"\0")
+        # The REAL names ndstorage writes: the dataset name is prefixed onto
+        # every stack (ndtiff_dataset.py:184-196). The first version of this
+        # fake wrote the bare `NDTiffStack.tif` that the gate's glob expected,
+        # so the selftest could not catch the glob being wrong -- a fake that
+        # encodes your assumption is not a test of it, and the demo machine
+        # paid for it. Sizes are plausible so the overhead number is exercised.
+        name = self.kwargs["name"]
+        raw_per_frame = type(self).core.get_image_width() * \
+            type(self).core.get_image_height() * type(self).core.get_bytes_per_pixel()
+        total = int(len(self._events) * raw_per_frame * 1.01)
+        first = min(total, 4_289_888_652)
+        (directory / f"{name}_NDTiffStack.tif").write_bytes(b"\0")
+        (directory / f"{name}_NDTiffStack_1.tif").write_bytes(b"\0")
+        os.truncate(directory / f"{name}_NDTiffStack.tif", first)
+        os.truncate(directory / f"{name}_NDTiffStack_1.tif", max(1, total - first))
 
     def __exit__(self, *_exc):
         time.sleep(0.2)
@@ -136,7 +150,15 @@ class FakeAcquisition:
         return None
 
 
-def main():
+def run_once(with_workspace: bool):
+    """One full gate run. `with_workspace` is the shape the demo machine had.
+
+    The first demo run of this gate carried a safety config with no
+    workspace_dir -- which the product allows, since None means writes are
+    unconfined -- and six limbs came back NOT EXERCISED. No fixture here
+    produced that shape, so nothing could have caught it: a fixture that cannot
+    reach the code is not coverage of it. Both shapes now run.
+    """
     core = FakeCore()
     FakeAcquisition.core = core
     ctrl = MagicMock()
@@ -167,7 +189,13 @@ def main():
 
     evidence = workspace / "evidence"
     safety_doc = workspace / "safety.yaml"
-    safety_doc.write_text("workspace_dir: " + str(workspace) + "\n", encoding="utf-8")
+    safety_doc.write_text(
+        ("workspace_dir: " + str(workspace) + "\n") if with_workspace else
+        "reviewed: true\n", encoding="utf-8")
+    if not with_workspace:
+        # Unconfined, exactly as the product behaves with no workspace_dir.
+        constraints.workspace_dir = None
+        os.chdir(workspace)
     # No --save-root: the default path through the safety config is what the
     # runbook uses, so it is what the selftest must exercise.
     sys.argv = ["gate", "--exposure-ms", str(EXPOSURE_MS), "--extra-frames", "64",
@@ -178,14 +206,32 @@ def main():
     sys.stderr = sys.__stderr__
     results = json.loads((evidence / "results.json").read_text())
     print()
-    print(f"tree under test: {TREE}")
+    print(f"tree under test: {TREE}  "
+          f"(safety config {'with' if with_workspace else 'WITHOUT'} workspace_dir)")
     for item in results["results"]:
         print(f"  {item['status']:<14} {item['name']} - {item['detail']}")
     print()
     print("geometry:", json.dumps(results["geometry"], sort_keys=True))
     print("measured:", json.dumps(results["measured"], sort_keys=True))
-    print("SELFTEST " + ("PASS" if rc == 0 else "FAIL") + f" (gate exit {rc})")
+    print("RUN " + ("PASS" if rc == 0 else "FAIL") + f" (gate exit {rc})")
     return rc
+
+
+def main():
+    origin = Path.cwd()
+    codes = {}
+    for with_workspace in (True, False):
+        try:
+            codes[with_workspace] = run_once(with_workspace)
+        finally:
+            os.chdir(origin)
+    print()
+    for with_workspace, rc in codes.items():
+        shape = "with workspace_dir" if with_workspace else "without workspace_dir"
+        print(f"  {shape:<24} exit {rc}")
+    failed = any(codes.values())
+    print("SELFTEST " + ("FAIL" if failed else "PASS"))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

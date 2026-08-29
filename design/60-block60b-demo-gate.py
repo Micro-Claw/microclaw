@@ -120,12 +120,16 @@ def main():
         config = load_safety_config(safety_path)
         guard = SafetyGuard(config.constraints)
         if args.save_root is None:
+            # workspace_dir is OPTIONAL in the product -- None means writes are
+            # unconfined (safety.py resolve_output_path) -- so a gate that
+            # demands one invents a precondition microclaw does not have. The
+            # first demo run of this gate did exactly that and reported six
+            # limbs NOT EXERCISED for a reason that says nothing about the code.
             workspace = getattr(config.constraints, "workspace_dir", None)
-            if not workspace:
-                raise NotExercised(
-                    f"no workspace_dir in {safety_path}; pass --save-root explicitly")
-            args.save_root = Path(workspace) / "block60b-gate"
-            print(f"Save root defaulted from the safety config: {args.save_root}")
+            args.save_root = Path(workspace or Path.cwd()) / "block60b-gate"
+            source = "the safety config's workspace_dir" if workspace else \
+                "the current directory (no workspace_dir configured, which is fine)"
+            print(f"Save root defaulted from {source}: {args.save_root}")
         core = ctrl.core
         width = int(core.get_image_width())
         height = int(core.get_image_height())
@@ -228,11 +232,16 @@ def main():
                 tools._ACQUISITION_EVENT_CONTEXT.sink = sink_previous
             returned = time.monotonic()
             dataset_path = result.get("dataset_path") if isinstance(result, dict) else None
-            stacks = sorted(p.name for p in Path(dataset_path).glob("NDTiffStack*.tif")) \
+            # `*_NDTiffStack*.tif`, not `NDTiffStack*.tif`: ndstorage prefixes
+            # every stack with the dataset name when one is set, and microclaw
+            # always sets one (ndtiff_dataset.py:184-196). controller.py:513
+            # already spells it correctly; the first version of this gate did
+            # not, matched nothing, and failed the one limb the rig trip was for
+            # on a crossing that had in fact been clean.
+            files = sorted(Path(dataset_path).glob("*NDTiffStack*.tif")) \
                 if dataset_path and Path(dataset_path).is_dir() else []
-            sizes = {p.name: p.stat().st_size
-                     for p in Path(dataset_path).glob("NDTiffStack*.tif")} \
-                if dataset_path and Path(dataset_path).is_dir() else {}
+            stacks = [p.name for p in files]
+            sizes = {p.name: p.stat().st_size for p in files}
             run = {"result": result, "wall_s": returned - started,
                    "dataset_path": dataset_path, "stacks": stacks, "sizes": sizes,
                    "confirmations": confirmations}
@@ -340,9 +349,17 @@ def main():
         assert len(stacks) >= 2, (
             f"only {stacks} under {run['dataset_path']}; the burst of "
             f"{geometry['burst_frames']:,} frames did not roll to a second file")
-        first = run["sizes"].get("NDTiffStack.tif", 0)
-        return (f"{len(stacks)} stacks {stacks}; first file {first/1e9:.2f} GB; "
-                f"run completed in {run['wall_s']:.1f} s")
+        total = sum(run["sizes"].values())
+        raw = geometry["raw_bytes"]
+        overhead = (total - raw) / geometry["burst_frames"]
+        first = max(run["sizes"].values()) if run["sizes"] else 0
+        assert first <= tools.NDTIFF_MAX_FILE_SIZE, (
+            f"a stack of {first} bytes exceeds NDTiff's own {tools.NDTIFF_MAX_FILE_SIZE}")
+        run["overhead_bytes_per_frame"] = overhead
+        return (f"{len(stacks)} stacks {stacks}; largest {first/1e9:.3f} GB, under the "
+                f"{tools.NDTIFF_MAX_FILE_SIZE/1e9:.3f} GB limit; per-frame overhead "
+                f"{overhead:.0f} B ({100*overhead/(raw/geometry['burst_frames']):.1f}% "
+                f"on top of pixels); run completed in {run['wall_s']:.1f} s")
 
     @limb("progress events arrived during the burst, rate-limited",
           "an 83-minute run is again indistinguishable from a hung one")
@@ -382,7 +399,8 @@ def main():
                "confirmations": run.get("confirmations", []),
                "measured": {k: run.get(k) for k in
                             ("wall_s", "stacks", "sizes", "progress_events",
-                             "progress_rate_per_s", "dataset_path")}}
+                             "progress_rate_per_s", "dataset_path",
+                             "overhead_bytes_per_frame")}}
     (args.output / "results.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8")
