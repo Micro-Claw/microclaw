@@ -1064,6 +1064,32 @@ to prompt defects and none to product defects. Two prompts is a small sample and
 the session is short, so weigh that against the operator's time: if the dry-run
 costs more than the session, ask for the session.
 
+### Post-merge design gate — CLOSED 2026-08-29
+
+All four items done.
+
+- **Reconciled.** 60a's limb 3: `is_sequence_running()` answers mid-burst,
+  62/62 probes True, median 0.0 ms. 60b's limb 3: **the demo camera's rollover is
+  clean**, twice — 8,256/8,256 frames both rounds, roll at frame 8,114 against a
+  disclosed bound of 8,192. Neither contradicts a decision above. Three
+  coordinator overreaches were corrected in place (the "M2's storage" attribution,
+  a derived-vs-measured overhead comparison, and two percentages quoted against
+  different denominators), and D6's own line carried the last of those.
+- **`CLAUDE.md`.** 60a's seventh engine contract landed in `5d995a7`. 60b added
+  the gate-process lesson in `a77801b`: a gate's own fake gets no review pass, a
+  gate must not require configuration the product does not require, and a FAIL is
+  scored from artifacts the same way a PASS is.
+- **Coordination notes** for both blocks are in `design/prompts.md`; both ledger
+  rows are closed.
+- **The upstream report is decided: not filed.** Reasoning above under "Round 2".
+  The off-rig `SingleNDTiffWriter` reproduction remains the cheap next step and is
+  not owed by this document.
+
+**design/60 is CLOSED.** Carried forward, neither blocking: D6's headline
+sentence names "a second file" for a run that makes thirteen, and D6's optional
+per-frame metadata refinement stays unbuilt — measured overhead varies between
+configs and eight ways inside one run, so it has nothing stable to be fixed at.
+
 ### Post-merge design gate (step 10, both blocks)
 
 - Reconcile design/60 to what was measured, in particular limb 3 of 60a's gate
@@ -1083,4 +1109,4 @@ costs more than the session, ask for the session.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 60a | `design60/bounded-wait` | `dd5b0dd` (2026-08-28) | `e5958cb` (3 Codex rounds + 1 Claude round after Codex credit ran out mid-turn; 4 defects returned, all in a broad `except Exception` between a supervised acquisition and `execute_tool`; coordinator suite 2450/99/0) | **PASSED 8/8, round 1**, demo machine 2026-08-28. 62/62 probes read `is_sequence_running()` True mid-burst, median 0.0 ms; teardown after camera-idle <=203 ms derived from probe timestamps; ceiling used 4.2% | `daedc83` merged 2026-08-28, branch deleted; design gate below |
-| 60b | `design60/progress-and-disclosure` | `4ed79c4` (2026-08-29) | `c8cba67` (2 Codex rounds; 3 findings returned, two of them coverage gaps the coordinator proved by mutation — the D5 trigger inverted left 508 tests green, the progress cadence at 1e9 left 180 green; coordinator suite 2466/99/0) | round 1 demo 2026-08-29: 6/8, **both failures gate defects, no product defect**. round 2 after `f1b184b`: **8/8 PASS**; crossing reproduces (8,256/8,256 frames, roll at 8,114 vs disclosed 8,192); progress 124 events at 1.01/s; driven session grant `7c1007e5` re-asked a 100k plan and still auto-approved a later 200-frame one | |
+| 60b | `design60/progress-and-disclosure` | `4ed79c4` (2026-08-29) | `c8cba67` (2 Codex rounds; 3 findings returned, two of them coverage gaps the coordinator proved by mutation — the D5 trigger inverted left 508 tests green, the progress cadence at 1e9 left 180 green; coordinator suite 2466/99/0) | round 1 demo 2026-08-29: 6/8, **both failures gate defects, no product defect**. round 2 after `f1b184b`: **8/8 PASS**; crossing reproduces (8,256/8,256 frames, roll at 8,114 vs disclosed 8,192); progress 124 events at 1.01/s; driven session grant `7c1007e5` re-asked a 100k plan and still auto-approved a later 200-frame one | `3f33b1e` merged 2026-08-29, branch deleted; design gate closed below |
