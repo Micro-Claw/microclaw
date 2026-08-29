@@ -256,9 +256,24 @@ def _emit_snap_and_analyze(params: RecordedParams) -> str:
 
 
 def _emit_shutter_declared_illumination(params: RecordedParams) -> str:
-    return "\n".join(
-        f"core.set_property({device!r}, {prop!r}, {value!r})"
-        for device, prop, value in params.result.get("shuttered", [])
+    writes = params.result.get("shuttered", [])
+    if not isinstance(writes, list):
+        raise CannotEmit(
+            f"the recorded shuttered writes have unsupported shape {writes!r}; "
+            "expected a list of [device, property, off_value] entries"
+        )
+    lines = []
+    for entry in writes:
+        if (not isinstance(entry, (list, tuple)) or len(entry) != 3
+                or not all(isinstance(value, str) for value in entry)):
+            raise CannotEmit(
+                f"the recorded shuttered entry has unsupported shape {entry!r}; "
+                "expected [device, property, off_value]"
+            )
+        device, prop, value = entry
+        lines.append(f"core.set_property({device!r}, {prop!r}, {value!r})")
+    return "\n".join(lines) if lines else (
+        "# No declared illumination was successfully shuttered in the recorded session."
     )
 
 
@@ -310,16 +325,19 @@ def _emit_center_feature(params: RecordedParams) -> str:
         "    _center_dx_px, _center_dy_px = _center_residual",
         "    _center_dx_um = _center_affine[0] * _center_dx_px + _center_affine[1] * _center_dy_px",
         "    _center_dy_um = _center_affine[2] * _center_dx_px + _center_affine[3] * _center_dy_px",
-        "    _center_target_x = float(core.get_x_position()) - _center_dx_um",
-        "    _center_target_y = float(core.get_y_position()) - _center_dy_um",
         "    core.set_relative_xy_position(-_center_dx_um, -_center_dy_um)",
-        "    settle_stage_move(core, core.get_xy_stage_device(), (_center_target_x, _center_target_y))",
+        "    core.wait_for_device(core.get_xy_stage_device())",
     ])
 
 
 def _emit_multiposition_with_autofocus(params: RecordedParams) -> str:
     signature = inspect.signature(run_multiposition_with_autofocus)
     value = lambda name: params.get(name, signature.parameters[name].default)
+    save_dir = value("save_dir")
+    compatibility_log = (
+        str(Path(save_dir) / f"{value('name')}_autofocus_log.json")
+        if save_dir is not None else None
+    )
     forwarded = RecordedParams({
         "protocol": value("protocol"),
         "positions": value("positions"),
@@ -328,6 +346,7 @@ def _emit_multiposition_with_autofocus(params: RecordedParams) -> str:
         "save_dir": value("save_dir"),
         "protocol_params": value("protocol_params"),
         "preserve_unsupported": value("preserve_unsupported"),
+        "log_path": compatibility_log,
         "hook_strategy": "autofocus_per_position",
         "hook_params": {
             "z_range_um": value("z_range_um"),
@@ -802,7 +821,9 @@ def _resolve_recorded_position_names(
             params["positions"] = [dict(state[item]) for item in requested]
 
 
-def _analysis_source(*, include_autofocus: bool = False) -> str:
+def _analysis_source(
+    *, include_autofocus: bool = False, include_detection: bool = False,
+) -> str:
     """Return exact source for the pure-numpy analysis used by exported routines."""
     from microclaw import autofocus, image_analysis
     parts = [
@@ -822,9 +843,10 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
         image_analysis.snr_validity, image_analysis.resolve_min_snr,
         image_analysis.coverage_stats,
         image_analysis.compute_stats,
-        image_analysis.detect_features,
     ):
         parts.append(inspect.getsource(fn))
+    if include_detection:
+        parts.append(inspect.getsource(image_analysis.detect_features))
     if include_autofocus:
         parts.extend([
             inspect.getsource(autofocus.SweepResult),
@@ -1635,6 +1657,10 @@ def export_session_script(
             and params.get("protocol") == "snap")
         for name, params in included
     )
+    detection_used = any(
+        name in {"find_features", "center_feature"}
+        for name, params in included
+    )
     autofocus_used = adaptive_used or any(
         name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
         for name, params in included
@@ -1791,7 +1817,10 @@ def export_session_script(
         "import numpy as np",
         "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
         "",
-        *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
+        *(["", _analysis_source(
+            include_autofocus=autofocus_used,
+            include_detection=detection_used,
+        ).rstrip()]
           if analysis_used else []),
         *(["", _portable_log_path_source().rstrip()] if adaptive_used else []),
         *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),

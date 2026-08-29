@@ -163,6 +163,15 @@ def test_inlined_analysis_function_is_byte_identical_to_source(tmp_path, fn):
     assert inspect.getsource(fn) in source
 
 
+def test_detection_source_is_inlined_only_for_detection_tools(tmp_path):
+    _, _, analysis_source = export(tmp_path, [call("snap_and_analyze", {})])
+    _, _, detection_source = export(tmp_path, [call("find_features", {})])
+
+    exact = inspect.getsource(image_analysis.detect_features)
+    assert exact not in analysis_source
+    assert exact in detection_source
+
+
 def test_autofocus_emitter_passes_recorded_inputs_without_rederiving(tmp_path):
     _, _, source = export(tmp_path, [call(
         "run_autofocus", {"z_range_um": 20, "z_step_um": 0.5}
@@ -3677,8 +3686,28 @@ def test_shutter_record_with_no_successful_writes_emits_no_fabricated_write(tmp_
     ))
     section = source.split("# RECORDED TOOL: shutter_declared_illumination", 1)[1]
     assert "core.set_property" not in section
+    assert (
+        "# No declared illumination was successfully shuttered in the recorded session."
+        in section
+    )
     assert "NOT EMITTED" not in section
     assert result["emitted_calls"] == 1
+
+
+def test_old_string_shutter_record_refuses_only_that_step(tmp_path):
+    _, _, source = export(tmp_path, [
+        *completed_call(
+            "shutter_declared_illumination", {},
+            {"shuttered": ["LaserA.Enable"]},
+        ),
+        call("set_exposure", {"ms": 12}),
+    ])
+    assert (
+        "# NOT EMITTED: shutter_declared_illumination — the recorded shuttered "
+        "entry has unsupported shape 'LaserA.Enable'; expected "
+        "[device, property, off_value]"
+    ) in source
+    assert "core.set_exposure(12)" in source
 
 
 def test_emu_power_emits_recorded_readback_with_dose_comment(tmp_path):
@@ -3707,6 +3736,46 @@ def test_autofocus_multiposition_wrapper_delegates_to_specific_hook_refusal(tmp_
     assert "no standalone emitter has been implemented" not in source
 
 
+def test_autofocus_multiposition_emitter_forwards_the_tool_call_exactly(monkeypatch):
+    captured = {}
+
+    def capture(params):
+        captured.update(params)
+        return "# delegated"
+
+    monkeypatch.setattr(tools, "_emit_multiposition", capture)
+    rendered = tools._emit_multiposition_with_autofocus(tools.RecordedParams({
+        "position_names": ["p0"],
+        "positions": None,
+        "z_range_um": 4,
+        "z_step_um": 0.5,
+        "protocol": "timelapse",
+        "save_dir": "session",
+        "name": "af",
+        "settle_ms": 75,
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "preserve_unsupported": True,
+    }))
+
+    assert rendered == "# delegated"
+    assert captured == {
+        "protocol": "timelapse",
+        "positions": None,
+        "position_names": ["p0"],
+        "name": "af",
+        "save_dir": "session",
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "preserve_unsupported": True,
+        "log_path": "session/af_autofocus_log.json",
+        "hook_strategy": "autofocus_per_position",
+        "hook_params": {
+            "z_range_um": 4,
+            "z_step_um": 0.5,
+            "settle_ms": 75,
+        },
+    }
+
+
 def test_center_feature_without_recorded_affine_refuses_specifically(tmp_path):
     _, _, source = export(tmp_path, completed_call(
         "center_feature", {"max_iter": 2}, {"centered": False},
@@ -3717,7 +3786,7 @@ def test_center_feature_without_recorded_affine_refuses_specifically(tmp_path):
     ) in source
 
 
-def test_emitted_center_feature_executes_snap_move_and_xy_settlement(tmp_path):
+def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     images = []
     for x in (6, 4):
         image = np.zeros((8, 8), dtype=np.uint16)
@@ -3729,7 +3798,7 @@ def test_emitted_center_feature_executes_snap_move_and_xy_settlement(tmp_path):
             self.snaps = 0
             self.x = self.y = 0.0
             self.moves = []
-            self.polls = []
+            self.waits = []
         def snap_image(self): self.snaps += 1
         def get_tagged_image(self):
             return SimpleNamespace(
@@ -3737,25 +3806,20 @@ def test_emitted_center_feature_executes_snap_move_and_xy_settlement(tmp_path):
             )
         def get_bytes_per_pixel(self): return 2
         def get_number_of_components(self): return 1
-        def get_x_position(self, device=None):
-            if device is not None: self.polls.append(("x", device))
-            return self.x
-        def get_y_position(self, device=None):
-            if device is not None: self.polls.append(("y", device))
-            return self.y
+        def get_x_position(self): return self.x
+        def get_y_position(self): return self.y
         def set_relative_xy_position(self, dx, dy):
             self.moves.append((dx, dy)); self.x += dx; self.y += dy
         def get_xy_stage_device(self): return "XY"
-        def device_busy(self, device): return False
+        def wait_for_device(self, device): self.waits.append(device)
 
     core = Core()
     _, _, source = export(tmp_path, completed_call(
         "center_feature", {"max_iter": 2, "tol_px": 0.5},
         {"centered": True, "affine_coefficients": {"a": 1, "b": 0, "c": 0, "d": 1}},
     ))
-    source = source.replace("STAGE_MOVE_STABILITY_WINDOW_S = 0.05", "STAGE_MOVE_STABILITY_WINDOW_S = 0.0")
     _exec_export_with_core(source, core, tmp_path / "routine.py")
     assert core.snaps == 2
     assert core.moves == [(-2.0, -0.0)]
-    assert core.polls.count(("x", "XY")) >= 3
-    assert core.polls.count(("y", "XY")) >= 3
+    assert core.waits == ["XY"]
+    assert "settle_stage_move" not in source
