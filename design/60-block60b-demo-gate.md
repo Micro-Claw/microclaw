@@ -17,12 +17,16 @@ Check out this branch and confirm the tree carries the implementation:
     git fetch origin
     git checkout design60/progress-and-disclosure
     git pull
-    git merge-base --is-ancestor c8cba67 HEAD
+    git merge-base --is-ancestor f1b184b HEAD
     if ($LASTEXITCODE -eq 0) { "IMPLEMENTATION PRESENT" } else { "WRONG TREE - STOP" }
 
 Micro-Manager must be running with the demo config and the ZMQ server enabled,
-as for the 60a gate. Nothing else needs to be set up: the gate reads its save
-directory from your safety config and checks free disk itself.
+as for the 60a gate. Nothing else needs to be set up. The gate writes to
+`<workspace_dir>/block60b-gate` if your safety config has a `workspace_dir`, and
+to `.\block60b-gate` under the current directory if it does not — **you do not
+need to configure one**, and if you added one for round 1 you can take it back
+out. Pass `--save-root <path>` to put the data somewhere else. It checks free
+disk itself and needs about 6 GB.
 
 ## Part 1 — the program
 
@@ -95,6 +99,21 @@ Record for prompt B: did it re-ask (yes/no), and did the confirmation carry the
 
 Watch the pending line in the browser while prompt A's 200-frame run is going
 and note whether it shows `frames N / 200` counting up.
+
+## Round 2 note (2026-08-29)
+
+Round 1's program failed two limbs and **both were defects in the gate, not the
+product**: it demanded a `workspace_dir` the product does not require, and it
+looked for `NDTiffStack*.tif` when NDTiff writes `<name>_NDTiffStack*.tif`, so
+limb 6 reported FAIL on a crossing that was actually clean. Both are fixed.
+
+**Limb 6 is already answered** from round 1's `NDTiff.index`: all 8,256 frames
+present, 8,114 in the first file and 142 in the second, largest file 5.1 MB
+under the 4 GiB limit, rollover at frame 8,114 against a disclosed bound of
+8,192. You do not need to prove that again — but the program re-runs it anyway
+as part of a clean pass, and it is only ~2 minutes of burst.
+
+**Part 2 was not run in round 1 and is the part still owed.**
 
 ## What to send back
 
