@@ -3214,6 +3214,23 @@ class TestFocusLock:
         self, mock_ctrl, unconstrained_guard, monkeypatch,
         device, emu_props, names, values, readonly, expected_device,
     ):
+        """The identity routing depends on, replayed from four rig payloads.
+
+        This is a discriminator fixture, not a routing test. A model chooses
+        whether to load `nikon-pfs`; nothing here observes that choice, and a
+        scripted mock that supplied it would only assert a property of the mock
+        (design/61, block 61a's vacuous routing test). What this asserts is that
+        the identity a router needs is present and correct on four measured
+        rigs.
+
+        Two limbs cannot fail for block 61b, deliberately, and must not be
+        counted as its evidence: `tipfsstatus` and `pfs` both take the non-EMU
+        branch, which already returned `device` before this block, and
+        `no-device` guards an already-correct silent no-op. Only `crisp`
+        exercises item 4's new EMU key -- verified red on the pre-change tree
+        with `KeyError: 'device'`. The two Nikon limbs are cross-rig guards:
+        they keep routing from collapsing onto one literal device name.
+        """
         from microclaw.tools import get_focus_lock_state
 
         self._emu(monkeypatch, props=emu_props)
@@ -3231,12 +3248,12 @@ class TestFocusLock:
 
         if expected_device is None:
             assert "device" not in result
+            # No identification question on an ordinary rig: the invariant is
+            # a silent no-op where no autofocus device is configured. Word
+            # boundaries, because a bare "ask" substring also matches "task".
             rendered = json.dumps(result).lower()
-            assert "question" not in rendered
-            assert "unknown" not in rendered
-            assert "operator" not in rendered
-            assert "identify" not in rendered
-            assert "ask" not in rendered
+            for word in ("question", "unknown", "operator", "identify", "ask"):
+                assert not re.search(rf"\b{word}", rendered), word
         else:
             assert result["device"] == expected_device
 

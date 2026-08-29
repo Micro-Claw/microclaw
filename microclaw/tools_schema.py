@@ -929,9 +929,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Run a software autofocus sweep to find the sharpest Z plane. "
             "A probe reads a device property at each plane instead of the camera; "
-            "use it when the rig has a hardware focus lock. On a rig with this kind "
-            "of hardware lock, call load_skill(name=\"nikon-pfs\") before engaging "
-            "or adjusting the lock. Without a probe the sweep "
+            "use it when the rig has a hardware focus lock. When get_focus_lock_state "
+            "reports a Nikon Perfect Focus System (PFS) as the lock device, call "
+            "load_skill(name=\"nikon-pfs\") before engaging or adjusting it. "
+            "Without a probe the sweep "
             "maximises image sharpness, which finds the sharpest plane, not "
             "necessarily the sample plane. method='sweep' is right with a probe: "
             "the coarse pass exists to save exposures and property reads spend none. "
@@ -2062,8 +2063,10 @@ TOOLS: list[dict[str, Any]] = [
             "Read whether the hardware focus lock (external sensor / QPD) is engaged, "
             "using the generic Micro-Manager autofocus device, or the EMU map when "
             "one exists, plus current QPD readings where available. If the returned "
-            "device identifies this kind of hardware lock, call "
-            "load_skill(name=\"nikon-pfs\") before engaging or adjusting it. A sharp "
+            "device is a Nikon Perfect Focus System (PFS), call "
+            "load_skill(name=\"nikon-pfs\") before engaging or adjusting it — identify "
+            "the lock by this device value, never by a property name that happens to "
+            "contain 'PFS'. A sharp "
             "image is NOT evidence that the lock is engaged — always answer the SMLM "
             "checklist's focus-lock item with this tool. Returns engaged=null on rigs "
             "with no configured or readable focus-lock device."
@@ -2077,8 +2080,9 @@ TOOLS: list[dict[str, Any]] = [
             "configured autofocus device (or the EMU map when present). Disengage before running a "
             "software autofocus sweep (which would otherwise fight the servo loop), "
             "and re-engage afterwards — run_autofocus refuses to run while it is on. "
-            "On a rig with this kind of hardware lock, call "
-            "load_skill(name=\"nikon-pfs\") before engaging or adjusting it."
+            "When get_focus_lock_state reports a Nikon Perfect Focus System (PFS) as "
+            "the lock device, call load_skill(name=\"nikon-pfs\") before engaging or "
+            "adjusting it."
         ),
         "input_schema": {
             "type": "object",
