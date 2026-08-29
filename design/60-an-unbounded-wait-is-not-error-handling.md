@@ -1122,6 +1122,59 @@ upstream — and that is worth stating when a report is eventually written. None
 it is a microclaw defect, so none of it opens a block; per the repo's spike
 convention the program is committed and the findings live here.
 
+### The disclosure's blind band, and a bound validated on two rigs (2026-08-29)
+
+Raised by the operator while reviewing the rollover spike. The shipped disclosure
+tests `n > MAX_FILE_SIZE // (w*h*bpp)` — the **raw pixel** bound. A file also
+holds per-frame metadata and an IFD, so it fills sooner. Every run between the
+two crosses a 4 GiB boundary **and is never disclosed**, and the band's width is
+exactly `m / (w*h*bpp)` — negligible on a full chip, large on the small ROIs SMLM
+uses to go fast. This is checklist item 5, left unbuilt on the grounds that
+overhead cannot be modelled by a constant. That reasoning was right and the
+conclusion was wrong: it does not need modelling, it needs **measuring**.
+
+**Survey of every dataset we have kept** (`design/60-metadata-size-survey.py`,
+732 of 746 parsed; 14 have empty indexes):
+
+* **Within** a dataset `m` is effectively constant — median spread **0.00%**,
+  90th percentile 0.05%, worst 0.33%, none above 5%.
+* **Between** rigs it moves **3.8x** (4,112–15,553 B) and tracks the *config*,
+  not the image: M2 is ~14,150 B at both 150x150 and 512x512; M5 is ~15,400 B
+  across nine different ROIs; demo ~4,234; Nikon ~4,900.
+
+So `m` is close to a per-rig constant set by how many devices Micro-Manager
+serialises. Measuring it once from a dataset the rig already wrote is both
+sufficient and nearly exact — and a fixed model would be wrong by up to 3.8x.
+
+**Measured band widths:** M2 at 150x150 **31.9%** (72,358 real vs 95,443
+disclosed), M5 at 196x184 21.6%, M5 at 312x324 7.7%, demo at 512x512 0.8%,
+Nikon at 1024x1024 0.2%. **The blind spot is worst exactly where SMLM lives.**
+
+**The bound to ship is the writer's own admission test solved for n**, not
+`raw + m`. `ndtiff_file.py:80-90` reserves `IFD_size + 5 MB` on every write:
+
+```python
+IFD_SIZE = ENTRIES_PER_IFD * 12 + 4 + 16
+N = (MAX_FILE_SIZE - 5_000_000) // (w*h*bpp + m + IFD_SIZE)
+```
+
+Validated against both crossings we have actually observed, with no fitting:
+
+| rig | raw bound | `raw+m` | **admission** | observed roll |
+| --- | --- | --- | --- | --- |
+| demo 512x512 | 8,192 | 8,126 | **8,114** | **8,114** (twice) |
+| M2 150x150 | 95,443 | 72,358 | **72,060** | **72,056** |
+
+Exact on the demo, 4 frames out of 72,056 on M2 (0.006%). `raw + m` alone is
+still optimistic by ~9 frames because it ignores the 5 MB reserve.
+
+`design/60-band-fix-spike.py` proves the defect and this bound **on hardware
+without changing product code**: it calibrates `m` from a 32-frame run, picks a
+frame count inside the band, shows the shipped authorizer stays silent, runs it,
+confirms the file really rolls, and compares all three candidate bounds against
+where it actually rolled. Its arithmetic self-checks against both rigs above
+before it touches the microscope. Not yet run.
+
 ### Post-merge design gate — CLOSED 2026-08-29
 
 All four items done.
