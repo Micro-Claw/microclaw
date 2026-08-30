@@ -3311,11 +3311,11 @@ class TestMicroManagerIsTheCalibrationAuthority:
         assert report["calibration_source"] == MM_AFFINE_SOURCE
         assert report["adopted_from_micro_manager"] is True
         # It is in the knowledge base now, which is what center_feature reads.
-        stored, source = load_affine_entry(
+        stored, identity = load_affine_entry(
             _current_objective(mock_ctrl) or "", _current_binning(mock_ctrl)
         )
         assert (stored.a, stored.d) == (0.2, 0.3)
-        assert source == MM_AFFINE_SOURCE
+        assert identity["source"] == MM_AFFINE_SOURCE
 
     def test_adoption_is_idempotent(self, mock_ctrl):
         from microclaw.tools import _resolve_current_affine
@@ -3377,6 +3377,124 @@ class TestMicroManagerIsTheCalibrationAuthority:
         from microclaw.tools import _resolve_current_affine
         self.publish(mock_ctrl, ["0.1225", "0.004", "0.0", "-0.003", "0.1071", "0.0"])
         assert "calibration_note" not in _resolve_current_affine(mock_ctrl)[1]
+
+    def test_our_calibration_agrees_with_mm_convention(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The independent oracle the shared-model tests cannot be.
+
+        A code review noted, correctly, that flipping the convention in BOTH
+        `solve_affine` and `center_feature` leaves every convergence test green:
+        the two minus signs cancel and the fake has no opinion about which
+        convention is stored. It matters anyway, because MM's affine is adopted
+        into the SAME knowledge-base slot — so the invariant with teeth is that
+        what we measure equals what MM would publish for the same optics, and
+        that is what this pins.
+        """
+        from microclaw.tools import _resolve_current_affine
+        optics = SyntheticOptics(OPTICS_CASES["rot90"])
+        TestCentringAgainstItsOwnCalibration.calibrate(
+            optics, mock_ctrl, unconstrained_guard, monkeypatch
+        )
+        measured, _ = _resolve_current_affine(mock_ctrl)
+
+        # What MM publishes for this rig, derived from MM's semantics only: to
+        # centre a feature at offset r the stage must move A·r, and this model
+        # says the scene moves m_phys·s for a stage move s. So A = -m_phys^-1.
+        expected = -np.linalg.inv(optics.m_phys)
+
+        assert measured.a == pytest.approx(expected[0, 0], abs=0.02)
+        assert measured.b == pytest.approx(expected[0, 1], abs=0.02)
+        assert measured.c == pytest.approx(expected[1, 0], abs=0.02)
+        assert measured.d == pytest.approx(expected[1, 1], abs=0.02)
+
+    def test_a_camera_swap_invalidates_the_cached_calibration(self, mock_ctrl):
+        """(objective, binning) does not identify a camera."""
+        from microclaw.tools import _resolve_current_affine
+        mock_ctrl.core.get_camera_device.return_value = "Andor"
+        mock_ctrl.core.get_device_name.return_value = "iXon"
+        roi = MagicMock()
+        roi.x, roi.y, roi.width, roi.height = 0, 0, 512, 512
+        mock_ctrl.core.get_roi.return_value = roi
+        self.publish(mock_ctrl, ["0.2", "0.0", "0.0", "0.0", "0.3", "0.0"])
+        assert _resolve_current_affine(mock_ctrl)[0] is not None
+
+        # Same objective and binning, different camera, and MM now publishes
+        # nothing — the cache must not answer for the new sensor.
+        mock_ctrl.core.get_device_name.return_value = "Hamamatsu ORCA"
+        self.publish(mock_ctrl, ["0.0"] * 6)
+
+        affine, report = _resolve_current_affine(mock_ctrl)
+
+        assert affine is None
+        assert "different camera" in report["cached_calibration_rejected"]
+
+    def test_a_cropped_roi_does_not_invalidate_the_calibration(self, mock_ctrl):
+        """Cropping changes where the centre is, not the pixel-to-stage map."""
+        from microclaw.tools import _resolve_current_affine
+        mock_ctrl.core.get_camera_device.return_value = "Andor"
+        mock_ctrl.core.get_device_name.return_value = "iXon"
+        roi = MagicMock()
+        roi.x, roi.y, roi.width, roi.height = 0, 0, 512, 512
+        mock_ctrl.core.get_roi.return_value = roi
+        self.publish(mock_ctrl, ["0.2", "0.0", "0.0", "0.0", "0.3", "0.0"])
+        _resolve_current_affine(mock_ctrl)
+
+        cropped = MagicMock()
+        cropped.x, cropped.y, cropped.width, cropped.height = 100, 100, 64, 64
+        mock_ctrl.core.get_roi.return_value = cropped
+        self.publish(mock_ctrl, ["0.0"] * 6)
+
+        affine, report = _resolve_current_affine(mock_ctrl)
+
+        assert affine is not None, "an ROI crop must not discard the calibration"
+        assert "cached_calibration_rejected" not in report
+
+    def test_an_unwritable_knowledge_base_does_not_cost_the_mm_affine(
+        self, mock_ctrl, monkeypatch
+    ):
+        """MM is the live authority; caching it is a convenience, not a gate."""
+        from microclaw import tools
+        from microclaw.calibration import MM_AFFINE_SOURCE
+        self.publish(mock_ctrl, ["0.2", "0.0", "0.0", "0.0", "0.3", "0.0"])
+        monkeypatch.setattr(
+            "microclaw.calibration.save_affine",
+            MagicMock(side_effect=OSError("read-only file system")),
+        )
+
+        affine, report = tools._resolve_current_affine(mock_ctrl)
+
+        assert affine is not None and affine.a == 0.2
+        assert report["calibration_source"] == MM_AFFINE_SOURCE
+        assert "read-only file system" in report["calibration_not_cached"]
+        assert report["adopted_from_micro_manager"] is False
+
+    def test_an_optical_path_change_mid_loop_stops_the_centring(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The user owns the session and microclaw is not the only client."""
+        from microclaw import tools
+        optics = SyntheticOptics(OPTICS_CASES["aligned"])
+        TestCentringAgainstItsOwnCalibration.calibrate(
+            optics, mock_ctrl, unconstrained_guard, monkeypatch
+        )
+        entry, _ = tools._resolve_current_affine(mock_ctrl)
+        rotated = type(entry)(0.0, -entry.a, entry.a, 0.0, entry.objective,
+                              entry.binning, entry.pixel_size_um)
+        calls = {"n": 0}
+
+        def turret_turns(ctrl):
+            calls["n"] += 1
+            return (entry if calls["n"] <= 1 else rotated), {}
+
+        monkeypatch.setattr(tools, "_resolve_current_affine", turret_turns)
+        mock_ctrl.core.set_relative_xy_position.reset_mock()
+
+        result = tools.center_feature(mock_ctrl, unconstrained_guard, max_iter=3)
+
+        assert result["centered"] is False
+        assert "calibration changed during centring" in result["error"]
+        mock_ctrl.core.set_relative_xy_position.assert_not_called()
 
     def test_adopted_mm_affine_centres_the_feature(
         self, mock_ctrl, unconstrained_guard, monkeypatch

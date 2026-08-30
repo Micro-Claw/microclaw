@@ -246,6 +246,57 @@ with no local calibration at all.
   their application changed. Entries written before this doc carry no `source`
   and are read as ours, so MM cannot silently replace one.)
 
+## Review findings, and what they changed
+
+Reviewed by a Codex runner against `6f62a90`. It confirmed the live sign, the MM
+adoption sign, the 6- and 4-value decodings, the mosaic's consistency, emitter
+parity and the blob arithmetic, and found five defects. Four were real:
+
+- **A cached affine survived a camera swap.** `affine_key` is only
+  (objective, binning), so a different camera on the same objective got the
+  first camera's pixel size and rotation. `_cached_affine_is_stale` now rejects
+  it. **ROI deliberately does not invalidate** — cropping moves the centre, and
+  `offset_from_center_px` is measured against the real frame, so the map still
+  holds; the reviewer suggested including ROI and that would refuse on every
+  ordinary crop.
+- **`center_feature` pinned one affine while re-analysing each frame.** Another
+  MM client can turn the turret mid-loop. It now re-resolves per iteration and
+  **stops** rather than correcting a rotated field along the old axes.
+- **An unwritable knowledge base cost a valid MM affine.** MM is the live
+  authority; caching it is a convenience. A failed `save_affine` now reports
+  `calibration_not_cached` and proceeds.
+- **Making a read able to write made concurrent launches more likely to
+  collide.** `knowledge_manager` now replaces the file atomically, closing the
+  torn-read window. **The lost-update race is NOT closed** — two processes that
+  load, edit and save the whole document can still drop each other's unrelated
+  edits. That predates design/64, which only made it more frequent, and it is
+  recorded here rather than claimed fixed.
+
+The fifth was half right, and the half that was wrong matters. The reviewer
+predicted that flipping the convention in *both* `solve_affine` and
+`center_feature` would leave every centring test green. It does not:
+`test_first_commanded_move_is_the_unnegated_affine` fails in all six cases,
+because it compares the commanded move against the *unnegated* stored affine.
+But the underlying point stands — the convergence tests alone cannot see it, and
+nothing tied our stored convention to MM's, which matters precisely because both
+now land in the same knowledge-base slot.
+`test_our_calibration_agrees_with_mm_convention` is that oracle: it asserts what
+`calibrate_stage_to_camera` measures equals `-m_phys⁻¹`, derived from MM's
+semantics alone. It fails under the global flip; the convergence tests do not.
+
+The reviewer's pytest exited 139 before collection in its sandbox. The same
+tests pass in that same worktree outside it, so its mutation experiment produced
+no runtime result and its finding 5 was reasoned algebraically — which is how
+the prediction came to be wrong.
+
+**Scope objection, partly accepted.** The reviewer called the adoption-on-read
+state machine more than a sign fix needs. It is, but it is what "MM's affine
+must be in the knowledge base before `center_feature` is called" requires. The
+294-line design doc and 299-line gate are fair criticism against `CLAUDE.md`'s
+"short and to the point"; the gate is a program the operator runs rather than
+prose they read, and this document has been left long because the convention
+derivation is the artifact that stops this being re-litigated.
+
 ## Evidence
 
 - `tests/synthetic_optics.py` — ONE optical model, whose only statement is how

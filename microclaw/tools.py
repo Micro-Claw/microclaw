@@ -4959,6 +4959,39 @@ def _mm_pixel_size_affine(ctrl: MicroscopeController, objective: str, binning: i
     return parse_mm_pixel_size_affine(raw, objective=objective, binning=binning)
 
 
+def _cached_affine_is_stale(ctrl: MicroscopeController, identity: dict) -> str | None:
+    """Why a cached affine does not describe the optical path in front of us.
+
+    `affine_key` is only (objective, binning), which does not distinguish two
+    cameras: swap the camera and the cache silently hands back the other one's
+    pixel size and rotation, and `center_feature` corrects along the wrong axis.
+
+    **ROI is deliberately not a staleness signal.** Cropping changes the frame
+    size and therefore where the centre is, but `offset_from_center_px` is
+    measured against the actual frame, and cropping changes neither pixel size
+    nor orientation — so the affine still holds. (`resolve_calibration` requires
+    a matching ROI for a different reason: it reconstructs geometry from a saved
+    dataset rather than measuring the live frame.) Binning, which does change
+    the map, is already part of the key.
+
+    An identity we cannot read on either side is not evidence of a mismatch, so
+    it returns None: refusing on an unreadable camera model would break centring
+    on every rig whose adapter does not answer.
+    """
+    current, unreadable = _camera_identity(ctrl)
+    if unreadable is not None:
+        return None
+    mismatched = [
+        f"{field} was {identity.get(field)!r}, now {current[field]!r}"
+        for field in ("camera_device", "camera_model")
+        if identity.get(field) is not None and identity[field] != current[field]
+    ]
+    if not mismatched:
+        return None
+    return ("The cached calibration was measured on a different camera ("
+            + "; ".join(mismatched) + "), so it does not describe this optical path.")
+
+
 def _resolve_current_affine(ctrl: MicroscopeController) -> tuple[Any, dict]:
     """The affine the centring tools act on, and where it came from.
 
@@ -4985,10 +5018,15 @@ def _resolve_current_affine(ctrl: MicroscopeController) -> tuple[Any, dict]:
     # objective name to the operator.
     objective = _current_objective(ctrl) or ""
     binning = _current_binning(ctrl)
-    stored, stored_source = load_affine_entry(objective, binning)
+    stored, stored_identity = load_affine_entry(objective, binning)
+    stored_source = stored_identity.get("source") or MEASURED_AFFINE_SOURCE
     mm_affine = _mm_pixel_size_affine(ctrl, objective, binning)
     key = affine_key(objective, binning)
     coefficients = lambda affine: (affine.a, affine.b, affine.c, affine.d)
+
+    stale = _cached_affine_is_stale(ctrl, stored_identity) if stored else None
+    if stale is not None:
+        stored, stored_source = None, MEASURED_AFFINE_SOURCE
 
     def report(affine, source, **extra):
         payload = {"calibration_source": source, "knowledge_key": key, **extra}
@@ -5007,11 +5045,14 @@ def _resolve_current_affine(ctrl: MicroscopeController) -> tuple[Any, dict]:
 
     if mm_affine is None:
         if stored is None:
-            return None, {"calibration_source": None, "knowledge_key": key}
-        return report(stored, stored_source or MEASURED_AFFINE_SOURCE)
+            payload = {"calibration_source": None, "knowledge_key": key}
+            if stale is not None:
+                payload["cached_calibration_rejected"] = stale
+            return None, payload
+        return report(stored, stored_source)
 
-    if stored is not None and (stored_source or MEASURED_AFFINE_SOURCE) != MM_AFFINE_SOURCE:
-        affine, payload = report(stored, stored_source or MEASURED_AFFINE_SOURCE)
+    if stored is not None and stored_source != MM_AFFINE_SOURCE:
+        affine, payload = report(stored, stored_source)
         if coefficients(stored) != coefficients(mm_affine):
             payload["micro_manager_affine_differs"] = {
                 "micro_manager": list(coefficients(mm_affine)),
@@ -5025,8 +5066,16 @@ def _resolve_current_affine(ctrl: MicroscopeController) -> tuple[Any, dict]:
 
     if stored is None or coefficients(stored) != coefficients(mm_affine):
         identity, _incomplete = _camera_identity(ctrl)
-        save_affine(mm_affine, source=MM_AFFINE_SOURCE, **identity)
-        return report(mm_affine, MM_AFFINE_SOURCE, adopted_from_micro_manager=True)
+        extra = {"adopted_from_micro_manager": True}
+        try:
+            save_affine(mm_affine, source=MM_AFFINE_SOURCE, **identity)
+        except Exception as error:
+            # MM is the live authority; caching it is a convenience. An
+            # unwritable knowledge base must not cost the caller a calibration
+            # Micro-Manager is publishing right now.
+            extra = {"adopted_from_micro_manager": False,
+                     "calibration_not_cached": str(error)}
+        return report(mm_affine, MM_AFFINE_SOURCE, **extra)
     return report(stored, MM_AFFINE_SOURCE)
 
 
@@ -5297,6 +5346,27 @@ def center_feature(
     residual = None
     for i in range(max_iter + 1):
         feats = find_features(ctrl, guard)
+        # The optical path can change under us: the user owns the session and
+        # microclaw is not the only client, so another window can turn the
+        # turret or swap the camera between two iterations of this loop. Pinning
+        # the entry affine while re-analysing each new frame would keep
+        # correcting a 90°-rotated field along the old axes. Stop instead of
+        # silently switching mid-loop — the operator changed something, and the
+        # honest answer is to say where we got to.
+        current, _ = _resolve_current_affine(ctrl)
+        if current is None or (current.a, current.b, current.c, current.d) != (
+            affine.a, affine.b, affine.c, affine.d
+        ):
+            return {
+                "centered": False, "iterations": i, "residual_px": residual,
+                **context,
+                "error": (
+                    "The stage-camera calibration changed during centring — the "
+                    "objective, binning or camera moved under the loop. Stopped "
+                    "rather than correcting a new optical path with the old "
+                    "affine. Rerun center_feature."
+                ),
+            }
         residual = feats["brightest_feature_offset_px"]
         if residual is None:
             # An empty field and a field of unresolved structure are different

@@ -246,12 +246,15 @@ def load_affine_version(key: str) -> tuple[StageCameraAffine, dict]:
 
 def load_affine_entry(
     objective: str, binning: int,
-) -> tuple[StageCameraAffine | None, str | None]:
-    """The cached affine for this optical path, and the source that wrote it.
+) -> tuple[StageCameraAffine | None, dict]:
+    """The cached affine for this optical path, and the identity it was saved under.
 
-    The source decides whether Micro-Manager's own PixelSizeAffine may replace
-    it (design/64): MM is the authority until the operator deliberately measures
-    one with calibrate_stage_to_camera, and that measurement then stands.
+    The `source` in that identity decides whether Micro-Manager's own
+    PixelSizeAffine may replace it (design/64): MM is the authority until the
+    operator deliberately measures one with calibrate_stage_to_camera, and that
+    measurement then stands. The camera fields let a caller check that the cache
+    still describes the optical path in front of it — `affine_key` is only
+    (objective, binning), which does not distinguish two cameras.
     """
     from microclaw.knowledge_manager import load_knowledge
 
@@ -260,23 +263,28 @@ def load_affine_entry(
         .get(KNOWLEDGE_CATEGORY, {})
         .get(affine_key(objective, binning))
     )
-    if not entry:
-        return None, None
-    if isinstance(entry, dict) and entry.get("current_version"):
+    if not isinstance(entry, dict) or not entry:
+        return None, {}
+    if entry.get("current_version"):
         affine, stored = load_affine_version(str(entry["current_version"]))
-        return affine, entry.get("source") or stored.get("source")
+        identity = {field: entry.get(field) if entry.get(field) is not None
+                    else stored.get(field)
+                    for field in ("camera_device", "camera_model", "roi", "source")}
+        return affine, identity
     # Legacy aliases stored the mutable payload inline. Pin one immutable copy
     # before use, then replace the alias with a pointer to it.
     try:
         affine = StageCameraAffine(**{k: entry[k] for k in AFFINE_FIELDS})
     except (KeyError, TypeError, ValueError):
-        return None, None
-    source = entry.get("source") if isinstance(entry, dict) else None
+        return None, {}
+    identity = {field: entry.get(field)
+                for field in ("camera_device", "camera_model", "roi", "source")}
     save_affine(
-        affine, camera_device=entry.get("camera_device"),
-        camera_model=entry.get("camera_model"), roi=entry.get("roi"), source=source,
+        affine, camera_device=identity["camera_device"],
+        camera_model=identity["camera_model"], roi=identity["roi"],
+        source=identity["source"],
     )
-    return affine, source
+    return affine, identity
 
 
 def load_affine(objective: str, binning: int) -> StageCameraAffine | None:
