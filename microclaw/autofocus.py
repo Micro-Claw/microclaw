@@ -7,8 +7,8 @@ import numpy as np
 
 from microclaw.image_analysis import snap_to_numpy, tenengrad
 from microclaw.controller import (
-    STAGE_MOVE_POLL_S, StageMoveError, settle_stage_move,
-    stage_move_dispatch_failure,
+    STAGE_MOVE_POLL_S, StageMoveError, read_stage_start_position,
+    settle_stage_move, stage_move_dispatch_failure,
 )
 
 
@@ -350,7 +350,9 @@ def sweep_autofocus(
                   if guard is not None else None)
 
     for z in z_positions:
-        start_um = float(ctrl.core.get_position(focus_device))
+        start_um = read_stage_start_position(
+            ctrl.core, focus_device, z, "relative", configured
+        )
         try:
             ctrl.core.set_position(z)
         except Exception as exc:
@@ -379,7 +381,9 @@ def sweep_autofocus(
     best_idx = probe.choose(metric_values)
     best_z = measured_z_positions[best_idx]
     if move_to_best:
-        start_um = float(ctrl.core.get_position(focus_device))
+        start_um = read_stage_start_position(
+            ctrl.core, focus_device, best_z, "relative", configured
+        )
         try:
             ctrl.core.set_position(best_z)
         except Exception as exc:
@@ -408,10 +412,12 @@ def sweep_autofocus(
 
 def _restore(ctrl, z: float) -> dict:
     focus_device = ctrl.core.get_focus_device()
-    start_um = float(ctrl.core.get_position(focus_device))
     guard = getattr(ctrl, "_guard", None)
     configured = (guard.stage_move_tolerance(focus_device, core_focus=True)
                   if guard is not None else None)
+    start_um = read_stage_start_position(
+        ctrl.core, focus_device, z, "floor", configured
+    )
     try:
         ctrl.core.set_position(z)
     except Exception as exc:

@@ -29,14 +29,24 @@ class StageMoveError(RuntimeError):
 
     def __init__(self, result: dict):
         self.result = result
+        start, measured = result["start_um"], result["measured_um"]
+        if start is None:
+            target_text = ("no resolved target (relative move)"
+                           if result["requested_um"] is None
+                           else f"requested {result['requested_um']} um")
+            opening = ("Stage move could not be verified: the start position is "
+                       f"unavailable, {target_text}, measured {measured} um")
+            closing = "response cannot be assessed without a start position."
+        else:
+            opening = ("Stage move did not demonstrate the requested response: "
+                       f"started {start} um, requested {result['requested_um']} um, "
+                       f"measured {measured} um")
+            closing = ("the axis did not move." if start == measured
+                       else "hardware error or incomplete motion remains possible.")
         super().__init__(
-            "Stage move did not demonstrate the requested response: "
-            f"started {result['start_um']} um, requested {result['requested_um']} um, measured "
-            f"{result['measured_um']} um after {result['elapsed_s']} s "
+            f"{opening} after {result['elapsed_s']} s "
             f"using {result['tolerance_um']} um from {result['band_source']} policy "
-            f"({result['last_device_status']}); "
-            + ("the axis did not move." if result['start_um'] == result['measured_um']
-               else "hardware error or incomplete motion remains possible.")
+            f"({result['last_device_status']}); {closing}"
         )
 
 
@@ -78,10 +88,13 @@ def stage_move_dispatch_failure(core, device: str, target_um: float,
     band, source, kind, unverifiable = _stage_move_band(
         target_um, start_um, band_policy, configured_band_um
     )
-    residual = None if measured is None else round(abs(measured - target_um), 4)
+    # A relative move whose start could not be read has no resolved absolute
+    # target; reporting one would be a fabrication, so both stay None.
+    residual = (None if measured is None or target_um is None
+                else round(abs(measured - target_um), 4))
     return StageMoveError({
         "start_um": None if start_um is None else round(start_um, 4),
-        "requested_um": round(target_um, 4),
+        "requested_um": None if target_um is None else round(target_um, 4),
         "measured_um": measured,
         "arrival_residual_um": residual,
         "tolerance_um": band,
@@ -95,6 +108,29 @@ def stage_move_dispatch_failure(core, device: str, target_um: float,
             f"dispatch_error: {type(exc).__name__}: {exc}; {device_state}"
         ),
     })
+
+
+def read_stage_start_position(core, device: str, target_um: float | None,
+                              band_policy: str, configured_band_um: float | None
+                              ) -> float:
+    """Read the pre-dispatch position, or refuse with the same typed contract.
+
+    A stage whose link is down fails every bridge call, not only the write, so
+    this read raises before `set_position` is ever attempted. Left bare, that
+    escapes as an untyped bridge exception carrying none of the move contract —
+    measured on M2 (block 66's gate, 2026-08-30): the TIRF Stage controller was
+    disconnected, the canonical non-response, and the tool reported a serial
+    error with no `start_um`, no `band_source` and no typed class for a caller
+    or a scorer to key on. `start_um` is None here because it genuinely is
+    unknown, which makes the band the floor and response unverifiable — the
+    honest report, and the one the record already has a shape for.
+    """
+    try:
+        return float(core.get_position(device))
+    except Exception as exc:
+        raise stage_move_dispatch_failure(
+            core, device, target_um, None, band_policy, configured_band_um, exc
+        ) from exc
 
 
 def settle_stage_move(core, device: str, target_um: float,
@@ -1019,10 +1055,12 @@ class MicroscopeController:
         if self._guard is not None:
             self._guard.check_z(z_um)
         device = self._core.get_focus_device()
-        start_um = float(self._core.get_position(device))
         configured = (
             self._guard.stage_move_tolerance(device, core_focus=True)
             if self._guard is not None else None
+        )
+        start_um = read_stage_start_position(
+            self._core, device, z_um, "relative", configured
         )
         try:
             self._core.set_position(z_um)

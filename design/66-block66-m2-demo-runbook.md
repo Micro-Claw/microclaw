@@ -151,8 +151,10 @@ if ($LASTEXITCODE -ne 0) { throw "M2 non-response control did not pass" }
 Control mode takes **no** `--emitted` or `--capture`: a failed live call is
 deliberately not emitted as a runnable move, so it scores the refusal alone, and
 passing another run's artifacts is refused rather than counted as two limbs that
-cannot fail. The required evidence is a dispatch refusal or a stable
-`start_um == measured_um`, read out of the refusal message — a refused tool
+cannot fail. The required evidence is a dispatch refusal, a stable
+`start_um == measured_um`, or an unreadable start position — a link that is down
+hard enough that the axis cannot be interrogated at all, which is what M2
+produced on 2026-08-30 — read out of the refusal message — a refused tool
 records an error string, not a result dict, so the message is the only channel.
 A refusal whose message carries no `started … from <source> policy` clause was
 written by pre-block-66 code and is NOT EXERCISED.

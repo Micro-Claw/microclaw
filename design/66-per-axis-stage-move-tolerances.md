@@ -295,6 +295,34 @@ only"; there should be no such site, and a test asserts there is none.
 measured 526.9" reads as a broken stage; "started at 526.9, requested 552,
 measured 526.9, never moved" names the actual failure.
 
+**And the read itself must refuse in this contract, not the bridge's** (M2,
+2026-08-30, block 66's own gate). The control limb disconnected the `TIRF Stage`
+controller — the canonical non-response — and got neither of the two refusals
+this design predicted. A stage whose link is down fails *every* bridge call, not
+only the write, so the pre-dispatch read raised before `set_position` was ever
+attempted and an untyped `java.lang.Exception` escaped carrying none of the move
+contract: no `start_um`, no `band_source`, no typed class for a caller or a
+scorer to key on. This block *widened* that exposure, because `set_z`,
+`move_stage_z`, `sweep_autofocus`, `_restore` and `_apply_named_stage` had no
+pre-dispatch read at all before it.
+
+Every site therefore reads through `read_stage_start_position`, which refuses via
+`stage_move_dispatch_failure` with `start_um=None`. That is the "site that
+genuinely cannot read a start position" the paragraph below says should not
+exist: it does not exist *statically* — no call site passes a literal `None`, and
+the test asserting that still holds — but it exists at runtime whenever the link
+is down, and the honest report is the floor band with response unverifiable. The
+axis is never commanded in that state, and a *relative* move additionally has no
+resolved absolute target, so `requested_um` is `None` rather than a fabricated
+coordinate.
+
+`move_named_stage` now reads **once**, not twice. Its two back-to-back reads were
+separated only by an in-process guard check, so the band could be computed from a
+different coordinate than the target was; one read makes `target - start` exactly
+the commanded displacement, which is what the relative band is defined on. This
+is not the caching the section below forbids — that is about reusing a *previous
+move's* position.
+
 ### Optional configuration, never a prerequisite
 
 ```yaml
@@ -646,10 +674,11 @@ executed standalone; pass the move's `tool_use_ids` and everything else stays a
 **The control limb must be able to fail.** A limb that cannot fail is not a
 criterion. The rig control is a genuine non-response: with the operator's
 judgement that it is safe on their hardware, power down or disconnect the
-`TIRF Stage` controller and repeat the same command. Expect a refusal naming
-either a dispatch error or a stable non-response with
-`start_um == measured_um` — and expect it well before the deadline for the
-dispatch case. If the operator judges that unsafe, this limb reports
+`TIRF Stage` controller and repeat the same command. Expect a refusal in one of
+three shapes: a dispatch error, a stable non-response with
+`start_um == measured_um`, or — the shape M2 actually produced on 2026-08-30 —
+an unreadable start position, where the link is down hard enough that the axis
+could not even be interrogated. All three arrive well before the deadline. If the operator judges that unsafe, this limb reports
 **NOT EXERCISED**, which is never a pass, and the block's only discrimination
 evidence is the off-rig suite — say so in the checklist row rather than ticking
 it.

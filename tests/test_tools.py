@@ -609,7 +609,9 @@ class TestNamedStages:
         from microclaw.controller import StageMoveError
         from microclaw.tools import move_named_stage
         # Settling error is real on this rig and was previously invisible.
-        stage_ctrl.core.get_position.side_effect = [100.0, 100.0, 201.1]
+        # Two reads: one start (which also resolves a relative target) and one
+        # settle sample.
+        stage_ctrl.core.get_position.side_effect = [100.0, 201.1]
         monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
         with pytest.raises(StageMoveError) as caught:
             move_named_stage(stage_ctrl, stage_guard, device="TIRF Stage", um=200.0)

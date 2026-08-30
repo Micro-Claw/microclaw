@@ -20,7 +20,8 @@ from typing import Any
 import numpy as np
 
 from microclaw.controller import (
-    StageMoveError, settle_stage_move, stage_move_dispatch_failure,
+    StageMoveError, read_stage_start_position, settle_stage_move,
+    stage_move_dispatch_failure,
 )
 
 #: Payload for a run whose hardware program is fully specified by
@@ -556,10 +557,12 @@ class UntrustedHookAdapter:
             raise RuntimeError(f"named-stage action refused: {exc}") from exc
         # The budget counts attempted dispatches, including writes that raise.
         ctx["remaining"] -= 1
-        start_um = float(ctx["core"].get_position(ctx["device"]))
         band_policy = "floor" if restoration else "relative"
         tolerance_lookup = getattr(ctx["guard"], "stage_move_tolerance", None)
         configured = tolerance_lookup(ctx["device"]) if tolerance_lookup else None
+        start_um = read_stage_start_position(
+            ctx["core"], ctx["device"], target, band_policy, configured
+        )
         try:
             try:
                 ctx["core"].set_position(ctx["device"], target)

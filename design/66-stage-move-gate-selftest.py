@@ -205,6 +205,23 @@ def main():
             check(f"{name} control limb passes", code == 0,
                   "" if code == 0 else log.strip())
 
+        # M2's actual control, 2026-08-30: a disconnected controller fails every
+        # bridge call, so the pre-dispatch read raises before the write is
+        # attempted. The gate found this reported as an untyped exception.
+        class LinkDownStage(QuantizedBridgeStage):
+            def get_position(self, device=None):
+                raise RuntimeError(
+                    'java.lang.Exception: Error in device "TIRF Stage": '
+                    "Serial command failed.  Is the device connected to the "
+                    "serial port? (14)")
+
+        link_down = recorded_call(LinkDownStage(), device, target)
+        code, log = run_scorer(root, "control-linkdown", [
+            "--history", str(write_jsonl(root / "control_linkdown.jsonl", link_down)),
+            "--device", device, "--target", str(target), "--mode", "m2-control"])
+        check("link-down control limb passes", code == 0,
+              "" if code == 0 else log.strip())
+
         # A control that MOVED is the negative this limb exists to reject.
         moved = recorded_call(QuantizedBridgeStage(start=150.0), device, target)
         code, log = run_scorer(root, "control-moved", [

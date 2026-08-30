@@ -88,6 +88,7 @@ from microclaw.controller import (
     PositionListConflict,
     PositionProjection,
     dataset_stack_files,
+    read_stage_start_position,
     settle_stage_move,
     stage_move_dispatch_failure,
 )
@@ -2797,6 +2798,7 @@ def _stage_move_contract_source() -> str:
         inspect.getsource(move_controller.StageMoveError),
         inspect.getsource(move_controller._stage_move_band),
         inspect.getsource(move_controller.stage_move_dispatch_failure),
+        inspect.getsource(move_controller.read_stage_start_position),
         inspect.getsource(move_controller.settle_stage_move),
     ])
 
@@ -2829,8 +2831,10 @@ def move_stage_z(
     guard.check_z(target_z)
 
     device = ctrl.core.get_focus_device()
-    start_um = float(ctrl.core.get_position(device))
     configured = guard.stage_move_tolerance(device, core_focus=True)
+    start_um = read_stage_start_position(
+        ctrl.core, device, target_z, "relative", configured
+    )
     try:
         if absolute:
             ctrl.core.set_position(target_z)
@@ -2935,11 +2939,17 @@ def move_named_stage(
 ) -> dict:
     """Move a single-axis stage addressed by label, guarded by the PER-DEVICE
     limits table (named_stages in the safety config — fail-closed)."""
-    current = float(ctrl.core.get_position(device))
-    target = um if absolute else current + um
-    guard.check_named_stage(device, target)
-    start_um = float(ctrl.core.get_position(device))
     configured = guard.stage_move_tolerance(device)
+    # One read, used as both the relative origin and the verified start: they
+    # were two back-to-back bridge calls separated only by an in-process guard
+    # check, so the band could be computed from a different coordinate than the
+    # target was. Not a cache -- design/66 forbids reusing a *previous move's*
+    # position, and this is read immediately before this dispatch.
+    start_um = read_stage_start_position(
+        ctrl.core, device, um if absolute else None, "relative", configured
+    )
+    target = um if absolute else start_um + um
+    guard.check_named_stage(device, target)
     try:
         ctrl.core.set_position(device, target)
     except Exception as exc:

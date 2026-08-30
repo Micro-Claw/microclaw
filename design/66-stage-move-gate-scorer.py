@@ -220,6 +220,13 @@ def score_control(call: Call) -> tuple[str, str, str]:
         return ("genuine non-response", FAIL,
                 "the control call succeeded; the axis responded")
     message = call.message
+    # A link-down axis fails its pre-dispatch read, so there is no start
+    # coordinate to compare -- the refusal says so, before any Java text that
+    # first-line trimming might cut. This is the strongest control shape there
+    # is: the axis could not even be read, and was never commanded.
+    if "start position is unavailable" in message:
+        return ("genuine non-response", PASS,
+                "refused before dispatch: the axis could not be read or commanded")
     match = REFUSAL.search(message)
     if not match:
         return ("genuine non-response", NE,

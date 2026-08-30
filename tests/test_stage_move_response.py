@@ -11,7 +11,7 @@ from microclaw.controller import (MicroscopeController, StageMoveError, settle_s
 from microclaw.safety import (NamedStageLimits, SafetyConfigError, SafetyConstraints,
                               SafetyGuard, StageConstraints, ParsedSafetyConfig)
 from microclaw.tools import move_named_stage, move_stage_z
-from microclaw.autofocus import FocusProbe, sweep_autofocus
+from microclaw.autofocus import FocusProbe, _restore, sweep_autofocus
 from microclaw.hook_decisions import MoveNamedStage, UntrustedHookAdapter
 
 
@@ -328,3 +328,104 @@ def test_09_tolerance_without_bounds_is_exact_path_error(tmp_path):
             tmp_path, "stage: {z_move_tolerance_um: 0.4}\n"))
     assert "stage.z_move_tolerance_um" in str(caught.value)
     assert "requires declared travel bounds" in str(caught.value)
+
+
+SERIAL_DOWN = ('java.lang.Exception: Error in device "TIRF Stage": '
+               'Serial command failed.  Is the device connected to the serial port? (14)')
+
+
+class LinkDownStage:
+    """A stage whose serial link is down: every bridge call raises, not just the write.
+
+    This is M2's block-66 control, 2026-08-30. The disconnected controller failed
+    the pre-dispatch read, which sits outside the dispatch try/except, so the
+    canonical non-response escaped as an untyped bridge exception carrying none
+    of the move contract -- no `start_um`, no `band_source`, no typed class.
+    """
+    def __init__(self):
+        self.writes = []
+
+    def get_position(self, device=None):
+        raise Exception(SERIAL_DOWN)
+
+    def set_position(self, *args):
+        self.writes.append(args)
+        raise Exception(SERIAL_DOWN)
+
+    def device_busy(self, device):
+        raise Exception(SERIAL_DOWN)
+
+    def get_focus_device(self):
+        return "TIRF Stage"
+
+
+def _named_guard():
+    return SafetyGuard(SafetyConstraints(
+        stage=StageConstraints(z_min=0, z_max=300),
+        named_stages=[NamedStageLimits("TIRF Stage", -1000, 1000)]))
+
+
+def _drive_hook_named_stage(core, guard):
+    hook = UntrustedHookAdapter(object())
+    hook.configure_named_stage(core=core, guard=guard, device="TIRF Stage",
+                               min_um=0, max_um=300, max_writes=2,
+                               initial_value=10, restore="entry", action_plan=None)
+    hook._apply_named_stage(MoveNamedStage(199.9), {"axes": {"time": 0}})
+
+
+@pytest.mark.parametrize("drive", [
+    pytest.param(lambda core, guard: move_named_stage(
+        MagicMock(core=core), guard, "TIRF Stage", 199.9), id="move_named_stage"),
+    pytest.param(lambda core, guard: move_named_stage(
+        MagicMock(core=core), guard, "TIRF Stage", 40.0, absolute=False),
+        id="move_named_stage-relative"),
+    pytest.param(lambda core, guard: move_stage_z(
+        MagicMock(core=core), guard, 199.9), id="move_stage_z"),
+    pytest.param(lambda core, guard: _set_z(core, guard), id="controller.set_z"),
+    pytest.param(lambda core, guard: sweep_autofocus(
+        _ctrl_with(core, guard), 9, 11, 1, settle_ms=0, move_to_best=False,
+        probe=FocusProbe(read=lambda: 1.0, choose=lambda values: 0,
+                         admit=lambda values: None, exposures_per_plane=0,
+                         describe="fixture")), id="sweep_autofocus"),
+    pytest.param(lambda core, guard: _restore(_ctrl_with(core, guard), 50.0),
+                 id="autofocus._restore"),
+    pytest.param(_drive_hook_named_stage, id="hook_named_stage"),
+])
+def test_a_link_down_axis_refuses_with_the_typed_contract_everywhere(drive):
+    """Every settle site must refuse in the move contract, not in the bridge's."""
+    core = LinkDownStage()
+    with pytest.raises(StageMoveError) as caught:
+        drive(core, _named_guard())
+    result = caught.value.result
+    assert result["start_um"] is None
+    assert result["band_source"] == "floor"
+    assert result["arrival_unverifiable"] is True
+    assert result["last_device_status"].startswith("dispatch_error:")
+    assert "Serial command failed" in result["last_device_status"]
+    # The axis is never commanded when its position could not be read.
+    assert core.writes == []
+    assert "start position is unavailable" in str(caught.value)
+
+
+def _set_z(core, guard):
+    ctrl = MicroscopeController.__new__(MicroscopeController)
+    ctrl._core, ctrl._guard = core, guard
+    return ctrl.set_z(199.9)
+
+
+def _ctrl_with(core, guard):
+    ctrl = type("Ctrl", (), {})()
+    ctrl.core, ctrl._guard = core, guard
+    return ctrl
+
+
+def test_a_relative_move_with_no_readable_start_reports_no_resolved_target():
+    """Reporting a target for a relative move whose origin is unknown would be
+    a fabrication: `um` is a displacement, not a coordinate."""
+    core = LinkDownStage()
+    with pytest.raises(StageMoveError) as caught:
+        move_named_stage(MagicMock(core=core), _named_guard(), "TIRF Stage",
+                         40.0, absolute=False)
+    assert caught.value.result["requested_um"] is None
+    assert caught.value.result["arrival_residual_um"] is None
+    assert "no resolved target" in str(caught.value)
