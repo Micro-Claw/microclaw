@@ -109,14 +109,18 @@ def limb_adoption_persisted(ctrl, guard, out):
 
     objective = _current_objective(ctrl) or ""
     binning = _current_binning(ctrl)
-    stored, source = load_affine_entry(objective, binning)
+    stored, identity = load_affine_entry(objective, binning)
     if stored is None:
         return "FAIL", (
             f"nothing cached for objective={objective!r} binning={binning}; "
             "_resolve_current_affine did not persist what it resolved"
         )
-    return "PASS", (f"knowledge base holds a={stored.a:+.6f} d={stored.d:+.6f} "
-                    f"for objective={objective!r} binning={binning}, source={source!r}")
+    return "PASS", (
+        f"knowledge base holds [{stored.a:+.5f} {stored.b:+.5f}; "
+        f"{stored.c:+.5f} {stored.d:+.5f}] for objective={objective!r} "
+        f"binning={binning}, source={identity.get('source')!r}, "
+        f"camera={identity.get('camera_model')!r}"
+    )
 
 
 @limb("D_detector_names_a_target", "find_features reports brightest_feature_offset_px")
@@ -176,64 +180,128 @@ def limb_refusal_control(ctrl, guard, out):
                     f"stayed put (moved {moved:.3f} um)")
 
 
-@limb("F_convergence", "center_feature reduces the residual on a real sample")
-def limb_convergence(ctrl, guard, out):
-    """The limb the rig trip exists for. Scored on the residual, not the verdict:
-    a passing gate is a place to look for defects, not a reason to stop."""
+@limb("F_one_correction", "a SINGLE correction moves the feature toward centre")
+def limb_one_correction(ctrl, guard, out):
+    """The limb the rig trip exists for, and it scores ONE correction.
+
+    An earlier version asked only that the residual be smaller after the whole
+    loop. Its own dry run passed with design/64's defect restored — the loop
+    flailed for four iterations and landed 4% closer by luck (47.2 -> 45.3). A
+    criterion a broken mechanism can satisfy is not a criterion.
+
+    One correction is the measurement with teeth, because the arithmetic is
+    unambiguous: on a linear system the right move lands near zero, and the
+    wrong sign lands at exactly twice the offset. The RATIO is the diagnosis, so
+    it is reported whatever the verdict.
+    """
     from microclaw.tools import center_feature, find_features
 
     before = find_features(ctrl, guard)
     if before.get("brightest_feature_offset_px") is None:
         return "NOT EXERCISED", "no punctum to centre in this field"
     start = math.hypot(*before["brightest_feature_offset_px"])
+    if start <= 8.0:
+        return "NOT EXERCISED", (
+            f"the feature is already centred ({start:.1f} px). Move the stage "
+            "10-20 um off it and rerun — a correction this small measures noise."
+        )
     entry = (ctrl.core.get_x_position(), ctrl.core.get_y_position())
 
-    result = center_feature(ctrl, guard, max_iter=4, tol_px=5.0)
+    # tol_px=0 so the loop cannot decide it is already done and skip the move.
+    result = center_feature(ctrl, guard, max_iter=1, tol_px=0.0)
     after = find_features(ctrl, guard)
     exit_xy = (ctrl.core.get_x_position(), ctrl.core.get_y_position())
+    end = (math.hypot(*after["brightest_feature_offset_px"])
+           if after.get("brightest_feature_offset_px") is not None else None)
+    ratio = None if end is None else end / start
+    (out / "one_correction.json").write_text(json.dumps({
+        "before": before, "center_feature": result, "after": after,
+        "residual_px_before": start, "residual_px_after": end,
+        "residual_ratio": ratio,
+        "stage_entry_um": list(entry), "stage_exit_um": list(exit_xy),
+        "stage_move_um": [exit_xy[0] - entry[0], exit_xy[1] - entry[1]],
+    }, indent=2, default=str), encoding="utf-8")
+
+    if end is None:
+        return "FAIL", (
+            f"the punctum left the field on one correction from {start:.1f} px. "
+            "That is what a sign error looks like on a rig with no wrap-around."
+        )
+    diagnosis = ("~2.0 means the correction was applied with the wrong sign; "
+                 "~1.0 means the stage did not arrive; >1 either way is wrong")
+    if ratio > 0.6:
+        return "FAIL", (
+            f"residual {start:.1f} -> {end:.1f} px, ratio {ratio:.2f}. Expected "
+            f"well under 0.6 for one correction. {diagnosis}"
+        )
+    return "PASS", (
+        f"residual {start:.1f} -> {end:.1f} px in ONE correction, ratio "
+        f"{ratio:.2f}; stage moved "
+        f"{math.hypot(exit_xy[0] - entry[0], exit_xy[1] - entry[1]):.2f} um"
+    )
+
+
+@limb("F2_convergence", "the loop reaches tolerance on a real sample")
+def limb_convergence(ctrl, guard, out):
+    """Separate from F on purpose: converging and moving the right way are two
+    claims, and a gate that merges them can pass on either."""
+    from microclaw.tools import center_feature, find_features
+
+    before = find_features(ctrl, guard)
+    if before.get("brightest_feature_offset_px") is None:
+        return "NOT EXERCISED", "no punctum to centre in this field"
+    start = math.hypot(*before["brightest_feature_offset_px"])
+    result = center_feature(ctrl, guard, max_iter=4, tol_px=5.0)
+    after = find_features(ctrl, guard)
     end = (math.hypot(*after["brightest_feature_offset_px"])
            if after.get("brightest_feature_offset_px") is not None else None)
     (out / "convergence.json").write_text(json.dumps({
         "before": before, "center_feature": result, "after": after,
         "residual_px_before": start, "residual_px_after": end,
-        "stage_entry_um": list(entry), "stage_exit_um": list(exit_xy),
     }, indent=2, default=str), encoding="utf-8")
 
-    if end is None:
-        return "FAIL", "the punctum was lost during centring — it left the field"
-    if start <= 5.0:
-        return "NOT EXERCISED", (
-            f"the feature was already centred ({start:.1f} px <= tol). Move the "
-            "stage 10-20 um off the feature and rerun."
-        )
-    if end >= start:
+    if result.get("error"):
+        return "FAIL", f"center_feature reported: {result['error']}"
+    if not result.get("centered"):
         return "FAIL", (
-            f"residual GREW {start:.1f} -> {end:.1f} px. Ratio {end / start:.2f}: "
-            "a ratio near 2.0 is the signature of a sign error, near 1.0 a stage "
-            "that never arrived."
+            f"did not reach tolerance in {result.get('iterations')} iterations; "
+            f"residual {start:.1f} -> {end} px"
         )
-    return "PASS", (
-        f"residual {start:.1f} -> {end:.1f} px in {result.get('iterations')} "
-        f"iteration(s); centered={result.get('centered')}; "
-        f"stage moved {math.hypot(exit_xy[0] - entry[0], exit_xy[1] - entry[1]):.2f} um"
-    )
+    if end is None or end > 5.0:
+        return "FAIL", (
+            f"center_feature reported centered=True but a fresh find_features "
+            f"measures {end} px, which is outside tol_px=5.0"
+        )
+    return "PASS", (f"residual {start:.1f} -> {end:.1f} px in "
+                    f"{result['iterations']} iteration(s), independently "
+                    f"re-measured after the loop")
 
 
 @limb("G_export_matches", "the exported script carries the same unnegated affine")
 def limb_export(ctrl, guard, out):
     """52b: an export gate step needs a run in front of it — F is that run."""
-    from microclaw.session_record import SessionRecord
     from microclaw.tools import export_session_script
 
     convergence = out / "convergence.json"
     if not convergence.exists():
         return "NOT EXERCISED", "limb F did not run, so there is nothing to export"
     payload = json.loads(convergence.read_text(encoding="utf-8"))
-    record = SessionRecord()
-    record.record_call("center_feature", {"max_iter": 4, "tol_px": 5.0},
-                       payload["center_feature"])
+    # export_session_script compiles THIS session's recorded calls from the
+    # conversation transcript, so the gate hands it a transcript of the run limb
+    # F just made. A fresh session emits a 13-line stub (block 52b).
+    records = [
+        {"role": "assistant", "content": [{
+            "type": "tool_use", "id": "gate64-center", "name": "center_feature",
+            "input": {"max_iter": 4, "tol_px": 5.0},
+        }]},
+        {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "gate64-center",
+            "content": json.dumps(payload["center_feature"], default=str),
+        }]},
+    ]
     script = out / "exported_center.py"
-    source = export_session_script(record, str(script))
+    export_session_script(ctrl, guard, str(script), records)
+    source = script.read_text(encoding="utf-8")
     if "# NOT EMITTED" in source or "RuntimeError('# NOT EMITTED" in source:
         return "FAIL", "center_feature did not emit"
     if "set_relative_xy_position(-_center_dx_um" in source:
@@ -251,24 +319,35 @@ def limb_export(ctrl, guard, out):
 
 
 LIMBS = [limb_affine_readable, limb_affine_resolution, limb_adoption_persisted,
-         limb_detector, limb_refusal_control, limb_convergence, limb_export]
+         limb_detector, limb_refusal_control, limb_one_correction,
+         limb_convergence, limb_export]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="gate64", help="evidence directory")
-    parser.add_argument("--config", default=None, help="safety config path")
+    parser.add_argument("--safety-config", default=None)
+    parser.add_argument("--port", type=int, default=4827)
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
+    from microclaw.authorization import RigAuthorizationError, validate_live_rig
+    from microclaw.config import load_safety_config_or_exit
     from microclaw.controller import MicroscopeController
-    from microclaw.safety import SafetyGuard, load_constraints
+    from microclaw.safety import SafetyGuard
 
-    ctrl = MicroscopeController()
-    ctrl.connect()
-    guard = SafetyGuard(load_constraints(args.config) if args.config
-                        else load_constraints())
+    parsed = load_safety_config_or_exit(args.safety_config)
+    guard = SafetyGuard(parsed.constraints)
+    ctrl = MicroscopeController(port=args.port, guard=guard)
+    if not ctrl.is_connected():
+        print("FAIL  could not connect to Micro-Manager; is the ZMQ server on?")
+        return 2
+    try:
+        validate_live_rig(ctrl, parsed, guard=guard)
+    except RigAuthorizationError as error:
+        print(f"FAIL  this rig is not authorized for a session: {error}")
+        return 2
 
     print(f"design/64 centring gate — {datetime.now().isoformat(timespec='seconds')}\n")
     for fn in LIMBS:

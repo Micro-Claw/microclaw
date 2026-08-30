@@ -182,7 +182,7 @@ commissioned after the fact; that is not the same as step 2 and this row says so
 
 ### The gate
 
-`design/64-gate-probe.py`, run on a rig with a sample in the field. Seven limbs,
+`design/64-gate-probe.py`, run on a rig with a sample in the field. Eight limbs,
 each scored independently, exit nonzero unless every one PASSes. It is a
 program, not a runbook, because every limb only computes — block 58a reported
 `PASSED` over five failed limbs when pasted `throw`s ended a pipeline rather
@@ -199,7 +199,8 @@ uv run python design/64-gate-probe.py --out gate64
 | C | what it resolved actually reached the knowledge base |
 | D | `find_features` names a target: `brightest_feature_offset_px` |
 | E | **the control that must fire** — a gradient refuses AND the stage does not move |
-| F | the residual shrinks on a real sample; a ratio near 2.0 means the sign, near 1.0 means arrival |
+| F | **one** correction cuts the residual to under 0.6× — the sign test |
+| F2 | the loop reaches tolerance, re-measured independently after it returns |
 | G | the exported script carries the same unnegated affine and target |
 
 **What the gate is NOT for.** The sign convention is settled off-rig — twice,
@@ -208,10 +209,36 @@ it. What needs a rig is whether this installation publishes an affine we can
 read, and whether the loop converges through real optics on a real sample.
 Limb F is scored from `convergence.json`, not from its verdict.
 
-**Not yet dry-run against a bridge-shaped fake.** `CLAUDE.md` requires that
-before an operator sees it (`design/55-gate-probe-selftest.py` is the
-instrument, and it must return `size()`/`get(i)` vectors whose `__iter__`
-raises). Do that before step 4.
+**Dry-run before shipping, and it paid for itself three times.**
+`design/64-gate-probe-selftest.py` drives the whole probe against a
+bridge-shaped fake — Core collections that refuse `__iter__` and answer
+`size()`/`get(i)`, and the same `tests/synthetic_optics.py` model, whose only
+statement is how the scene moves when the stage does.
+
+It found three defects in the gate, none of which any review had caught:
+
+1. `import microclaw.safety.load_constraints` — **a function that does not
+   exist**. The probe would have died on its first line on the rig.
+2. `microclaw.session_record` — **a module I invented**; the real
+   `export_session_script(ctrl, guard, path, records)` takes a conversation
+   transcript. Limb G could never have run.
+3. **Limb F could not see the bug the gate exists for.** It asked only that the
+   residual be smaller after the whole loop; run with the defect restored, the
+   loop flailed for four iterations and finished 4% closer *by luck* — 47.2 →
+   45.3 px — and the limb reported PASS. A criterion a broken mechanism can
+   satisfy is not a criterion. It now scores a **single** correction, where the
+   arithmetic is unambiguous, and reports the ratio whatever the verdict.
+
+Discrimination is now demonstrated rather than assumed:
+
+```
+python design/64-gate-probe-selftest.py               -> 8/8 PASS, exit 0
+python design/64-gate-probe-selftest.py --flip-sign   -> F_one_correction FAIL
+        residual 47.2 -> 94.4 px, ratio 2.00
+```
+
+The selftest itself fails loudly if `--flip-sign` does not turn limb F red, so
+the gate cannot quietly stop discriminating later.
 
 ## Required tests — and where they landed
 
