@@ -3050,7 +3050,7 @@ class TestCenterFeature:
         monkeypatch.setattr("microclaw.tools._resolve_current_affine", lambda ctrl: (None, {}))
         result = center_feature(mock_ctrl, unconstrained_guard)
         assert "calibrate_stage_to_camera" in result["error"]
-        assert "residual_um" not in result
+        assert "residual_offset_um" not in result
 
     # test_converges_on_synthetic_scene was DELETED by design/64, not repaired.
     # It hand-injected StageCameraAffine(-px, 0, 0, -px) — the negation of what
@@ -3315,7 +3315,7 @@ class TestCentringAgainstItsOwnCalibration:
         assert "calibrat" not in result["hint"].lower()
 
     @pytest.mark.parametrize("case", ["aligned", "rot90_flip"])
-    def test_residual_um_uses_the_resolved_affine(
+    def test_residual_offset_um_uses_the_resolved_affine(
         self, case, mock_ctrl, unconstrained_guard, monkeypatch
     ):
         from microclaw.tools import _resolve_current_affine, center_feature
@@ -3326,7 +3326,7 @@ class TestCentringAgainstItsOwnCalibration:
         result = center_feature(mock_ctrl, unconstrained_guard, max_iter=2, tol_px=0.05)
 
         correction = affine.px_to_um(*result["residual_px"])
-        assert result["residual_um"] == pytest.approx(math.hypot(*correction))
+        assert result["residual_offset_um"] == pytest.approx(math.hypot(*correction))
 
     def test_residual_history_matches_iterations_on_centered_path(
         self, mock_ctrl, unconstrained_guard, monkeypatch

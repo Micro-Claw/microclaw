@@ -3909,7 +3909,7 @@ def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     _, _, source = export(tmp_path, completed_call(
         "center_feature", {"max_iter": 2, "tol_px": 0.5},
         {"centered": True, "residuals_px": [2.0, 0.0],
-         "residual_um": 0.0, "smallest_correction_um": 2.0,
+         "residual_offset_um": 0.0, "smallest_correction_um": 2.0,
          "affine_coefficients": {"a": 1, "b": 0, "c": 0, "d": 1}},
     ))
     _exec_export_with_core(source, core, tmp_path / "routine.py")

@@ -5344,7 +5344,7 @@ def center_feature(
     affine_coefficients = {key: getattr(affine, key) for key in ("a", "b", "c", "d")}
     context = {"affine_coefficients": affine_coefficients, **calibration}
     residual = None
-    residual_um = None
+    residual_offset_um = None
     residuals_px = []
     commanded_corrections_um = []
     for i in range(max_iter + 1):
@@ -5362,7 +5362,7 @@ def center_feature(
         ):
             return {
                 "centered": False, "iterations": i, "residual_px": residual,
-                "residual_um": residual_um, "residuals_px": residuals_px,
+                "residual_offset_um": residual_offset_um, "residuals_px": residuals_px,
                 "smallest_correction_um": (
                     min(commanded_corrections_um)
                     if commanded_corrections_um else None
@@ -5391,7 +5391,7 @@ def center_feature(
                     "centre by hand."
                 ),
                 "iterations": i, "n_spots": feats["n_spots"],
-                "residual_um": residual_um, "residuals_px": residuals_px,
+                "residual_offset_um": residual_offset_um, "residuals_px": residuals_px,
                 "smallest_correction_um": (
                     min(commanded_corrections_um)
                     if commanded_corrections_um else None
@@ -5401,10 +5401,10 @@ def center_feature(
         residual_magnitude_px = math.hypot(*residual)
         residuals_px.append(residual_magnitude_px)
         residual_move_um = affine.px_to_um(residual[0], residual[1])
-        residual_um = math.hypot(*residual_move_um)
+        residual_offset_um = math.hypot(*residual_move_um)
         if residual_magnitude_px <= tol_px:
             return {"centered": True, "iterations": i, "residual_px": residual,
-                    "residual_um": residual_um, "residuals_px": residuals_px,
+                    "residual_offset_um": residual_offset_um, "residuals_px": residuals_px,
                     "smallest_correction_um": (
                         min(commanded_corrections_um)
                         if commanded_corrections_um else None
@@ -5446,7 +5446,7 @@ def center_feature(
         "centered": False,
         "iterations": max_iter,
         "residual_px": residual,
-        "residual_um": residual_um,
+        "residual_offset_um": residual_offset_um,
         "residuals_px": residuals_px,
         "smallest_correction_um": smallest_correction_um,
         **context,
