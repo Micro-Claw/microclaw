@@ -60,11 +60,23 @@ def limb_coupling(ctrl, guard, out):
     confident, wrong diagnosis about hardware that is working fine. A gate that
     cries wolf on the demo machine gets its real FAILs dismissed.
 
-    Measured, not assumed, and the two shapes separate cleanly: register two
-    frames taken with NO stage motion, then two spanning a known move. A camera
-    imaging a real sample gives ~0 for the first and a clear shift for the
-    second. A static frame gives ~0 for both. A rotating pattern gives a large
-    first.
+    Measured, not assumed: snap two frames with NO stage motion, then one
+    spanning a known move, and compare how much the pixels changed. A camera
+    imaging a real sample changes far more across the move than across the still
+    pair; a frozen frame changes by nothing either way; a rotating pattern
+    changes as much standing still as it does moving.
+
+    **The criterion is a whole-frame difference, deliberately not a registered
+    shift.** The M2 run of 2026-08-30 scored a phase correlation, and on that
+    bead field it locked onto the wrong bead: it measured (-23.3, -0.7) px for a
+    +10 um X move where the affine — validated minutes later by limb F to within
+    2.3% — predicts (0, -78.7). Wrong axis, 3.4x wrong magnitude. It passed only
+    because 23.3 happened to clear the threshold; another field could as easily
+    have returned ~0 and declared a healthy rig decoupled, which reads as a fact
+    about the machine. design/29 had already measured phase correlation failing
+    on this exact sample: "sparse beads give a correlator few features to lock
+    onto, and it can lock onto the wrong one". The shift is still reported, as
+    information, and never scored.
     """
     global DECOUPLED
     import numpy as np
@@ -76,9 +88,16 @@ def limb_coupling(ctrl, guard, out):
     entry = (ctrl.core.get_x_position(), ctrl.core.get_y_position())
     guard.check_xy(entry[0] + step_um, entry[1])
 
+    def change(a, b):
+        """Normalised RMS difference — no peak finding, nothing to mislock."""
+        a = a.astype(np.float64)
+        b = b.astype(np.float64)
+        scale = float(np.std(a)) or 1.0
+        return float(np.sqrt(np.mean((a - b) ** 2))) / scale
+
     first = snap_to_numpy(ctrl)
     second = snap_to_numpy(ctrl)
-    still, _, _ = phase_cross_correlation(first, second, upsample_factor=10)
+    still_change = change(first, second)
 
     from microclaw.tools import move_stage_xy
     move_stage_xy(ctrl, guard, step_um, 0.0, absolute=False)
@@ -86,43 +105,43 @@ def limb_coupling(ctrl, guard, out):
         moved_frame = snap_to_numpy(ctrl)
     finally:
         move_stage_xy(ctrl, guard, -step_um, 0.0, absolute=False)
-    moved, _, _ = phase_cross_correlation(first, moved_frame, upsample_factor=10)
+    moved_change = change(first, moved_frame)
 
-    still_px = math.hypot(float(still[0]), float(still[1]))
-    moved_px = math.hypot(float(moved[0]), float(moved[1]))
+    # Reported, never scored: see the docstring.
+    shift, _, _ = phase_cross_correlation(first, moved_frame, upsample_factor=10)
+    identical = bool(np.array_equal(first, moved_frame))
     (out / "coupling.json").write_text(json.dumps({
-        "step_um": step_um, "shift_without_moving_px": still_px,
-        "shift_after_moving_px": moved_px,
-        "still_dy_dx": [float(still[0]), float(still[1])],
-        "moved_dy_dx": [float(moved[0]), float(moved[1])],
+        "step_um": step_um,
+        "change_without_moving": still_change,
+        "change_after_moving": moved_change,
+        "frames_byte_identical": identical,
+        "registered_shift_dy_dx_px_UNSCORED": [float(shift[0]), float(shift[1])],
     }, indent=2), encoding="utf-8")
 
-    if still_px > 2.0:
+    if identical or moved_change < 1e-9:
         DECOUPLED = (
-            f"two frames taken with NO stage motion register {still_px:.1f} px "
-            "apart, so this camera's content does not track the stage (the demo "
-            "camera's rotating pattern, design/20 §S3)"
-        )
-        return "NOT EXERCISED", DECOUPLED + ". F and F2 need a real sample."
-    if moved_px < max(3.0, 3.0 * still_px):
-        identical = bool(np.array_equal(first, moved_frame))
-        DECOUPLED = (
-            f"a {step_um} um stage move shifted the scene only {moved_px:.1f} px "
-            f"(noise floor {still_px:.1f} px)"
-            + ("; the two frames are byte-identical" if identical else "")
+            f"a {step_um} um stage move changed the frame by "
+            f"{moved_change:.4f} (byte-identical: {identical})"
         )
         return "NOT EXERCISED", (
-            DECOUPLED + ". "
-            + ("A camera that returns the same image wherever the stage is, is "
-               "the demo camera — the centring limbs cannot run here, and this "
-               "says nothing about the code."
-               if identical else
-               "Either the stage is not moving, the step is too small for this "
-               "magnification, or the camera is not imaging the sample.")
+            DECOUPLED + ". A camera that returns the same image wherever the "
+            "stage is, is the demo camera — the centring limbs cannot run here, "
+            "and that says nothing about the code."
+        )
+    if moved_change < 2.0 * still_change:
+        DECOUPLED = (
+            f"moving {step_um} um changed the frame by {moved_change:.3f} but "
+            f"two frames with NO motion already differ by {still_change:.3f}"
+        )
+        return "NOT EXERCISED", (
+            DECOUPLED + ". The pixels are not tracking the stage — a frame "
+            "driven by snap count rather than position (design/20 §S3), a stage "
+            "that is not moving, or a step too small for this magnification."
         )
     return "PASS", (
-        f"still {still_px:.2f} px, {step_um} um move {moved_px:.1f} px — the "
-        "frames follow the stage, so the centring limbs mean something"
+        f"frame change {still_change:.3f} still vs {moved_change:.3f} after a "
+        f"{step_um} um move — the pixels follow the stage (registered shift, "
+        f"unscored: {math.hypot(float(shift[0]), float(shift[1])):.1f} px)"
     )
 
 
@@ -332,7 +351,8 @@ def limb_one_correction(ctrl, guard, out):
 def limb_convergence(ctrl, guard, out):
     """Separate from F on purpose: converging and moving the right way are two
     claims, and a gate that merges them can pass on either."""
-    from microclaw.tools import center_feature, find_features
+    from microclaw.tools import (_resolve_current_affine, center_feature,
+                                 find_features, move_stage_xy)
 
     if DECOUPLED is not None:
         return "NOT EXERCISED", (
@@ -340,21 +360,58 @@ def limb_convergence(ctrl, guard, out):
             f"stage: {DECOUPLED}. A residual measured here would diagnose "
             "hardware from a camera that is not watching it."
         )
+    affine, _ = _resolve_current_affine(ctrl)
+    if affine is None:
+        return "NOT EXERCISED", "no calibration to displace by; see limb B"
+    seed = find_features(ctrl, guard)
+    if seed.get("brightest_feature_offset_px") is None:
+        return "NOT EXERCISED", "no punctum to centre in this field"
+
+    # Displace the feature FIRST. On M2 (2026-08-30) this limb ran after F had
+    # already centred the field, entered at 3.9 px against tol_px=5.0, returned
+    # in ZERO iterations and reported PASS — a limb that cannot fail is not a
+    # criterion (CLAUDE.md; block 58a's opt-out limb passed three rounds the
+    # same way). Moving by -A·r is the inverse of the centring move, so it puts
+    # the punctum at a known offset; the offset is then re-measured rather than
+    # assumed, so a wrong affine cannot hide here either.
+    displacement_px = (0.0, 45.0)
+    dx_um, dy_um = affine.px_to_um(*displacement_px)
+    entry = (ctrl.core.get_x_position(), ctrl.core.get_y_position())
+    guard.check_xy(entry[0] - dx_um, entry[1] - dy_um)
+    move_stage_xy(ctrl, guard, -dx_um, -dy_um, absolute=False)
+
     before = find_features(ctrl, guard)
     if before.get("brightest_feature_offset_px") is None:
-        return "NOT EXERCISED", "no punctum to centre in this field"
+        return "NOT EXERCISED", (
+            f"displacing by {displacement_px} px pushed the punctum out of the "
+            "field; use a smaller displacement or a more central feature"
+        )
     start = math.hypot(*before["brightest_feature_offset_px"])
+    if start <= 5.0:
+        return "NOT EXERCISED", (
+            f"the displacement left the punctum {start:.1f} px from centre, "
+            "inside tol_px, so the loop would not have to do anything"
+        )
     result = center_feature(ctrl, guard, max_iter=4, tol_px=5.0)
     after = find_features(ctrl, guard)
     end = (math.hypot(*after["brightest_feature_offset_px"])
            if after.get("brightest_feature_offset_px") is not None else None)
     (out / "convergence.json").write_text(json.dumps({
+        "seed": seed, "displacement_px": list(displacement_px),
+        "displacement_move_um": [-dx_um, -dy_um],
         "before": before, "center_feature": result, "after": after,
         "residual_px_before": start, "residual_px_after": end,
+        "iterations": result.get("iterations"),
     }, indent=2, default=str), encoding="utf-8")
 
     if result.get("error"):
         return "FAIL", f"center_feature reported: {result['error']}"
+    if not result.get("iterations"):
+        return "FAIL", (
+            f"center_feature returned in {result.get('iterations')} iterations "
+            f"from {start:.1f} px — the loop never ran, so this limb measured "
+            "nothing"
+        )
     if not result.get("centered"):
         return "FAIL", (
             f"did not reach tolerance in {result.get('iterations')} iterations; "
@@ -424,6 +481,11 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=4827)
     parser.add_argument("--step-um", type=float, default=10.0,
                         help="stage step for the coupling precondition (limb 0)")
+    parser.add_argument("--limbs", default=None,
+                        help="comma-separated limb prefixes to run, e.g. '0,F2'. "
+                             "A re-run after a fix should not cost a full gate; "
+                             "limb 0 always runs, because F and F2 are unsafe to "
+                             "score without it.")
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -446,9 +508,18 @@ def main() -> int:
         return 2
 
     limb_coupling.step_um = args.step_um
-    print(f"design/64 centring gate — {datetime.now().isoformat(timespec='seconds')}\n")
+    selected = None
+    if args.limbs:
+        selected = {piece.strip().upper() for piece in args.limbs.split(",")}
+    print(f"design/64 centring gate — {datetime.now().isoformat(timespec='seconds')}")
+    if selected:
+        print(f"partial run: {sorted(selected)} (plus limb 0, always)")
+    print()
     for fn in LIMBS:
         name, mechanism = fn._limb
+        if selected is not None and fn is not limb_coupling:
+            if name.split("_")[0].upper() not in selected:
+                continue
         try:
             status, detail = fn(ctrl, guard, out)
         except Exception as error:                       # one limb, one failure
@@ -459,6 +530,9 @@ def main() -> int:
 
     (out / "gate64_results.json").write_text(
         json.dumps(RESULTS, indent=2), encoding="utf-8")
+    if selected:
+        print("PARTIAL RUN — limbs not selected were not run at all, which is "
+              "not the same as passing.")
     passed = sum(r["status"] == "PASS" for r in RESULTS)
     unexercised = [r["limb"] for r in RESULTS if r["status"] == "NOT EXERCISED"]
     failed = [r["limb"] for r in RESULTS if r["status"] == "FAIL"]

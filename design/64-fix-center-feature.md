@@ -172,7 +172,7 @@ record.
 
 | Block | Scope | Branch | Start commit | Implementation | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
-| 64a | Sign, centring target, MM as authority, and their export | `design/64-center-feature` | `1f07761` | *(this branch)* | **owed — gate below not yet run** | — | — |
+| 64a | Sign, centring target, MM as authority, and their export | `design/64-center-feature` | `1f07761` | *(this branch)* | **M2 2026-08-30, 9/9 PASS — product confirmed; two gate defects found, F2 re-run owed** | — | — |
 
 **Deviation from the workflow, recorded rather than hidden.** 64a was
 implemented by the coordinator inline instead of being delegated to a runner in
@@ -347,6 +347,52 @@ must be in the knowledge base before `center_feature` is called" requires. The
 "short and to the point"; the gate is a program the operator runs rather than
 prose they read, and this document has been left long because the convention
 derivation is the artifact that stops this being re-litigated.
+
+## M2, 2026-08-30 — scored from the artifacts
+
+Dense bead field, slightly defocused so the beads read as blobs. All nine limbs
+reported PASS. Scored from `gate64-m2/*.json` rather than from that verdict,
+which is where both of the following came from.
+
+**The claim this block exists for is confirmed on hardware.** M2 publishes
+`0;0.127;0;-0.127;0;0`, it was adopted unchanged, and **one correction took the
+punctum from 72.3 px to 2.5 px — ratio 0.03**. The independent check is that
+the adopted affine predicts the observed motion: the punctum moved
+`(-23.0, +71.0)` px for a stage move of `(-9.0, -2.7)` µm, against a prediction
+of `(-21.3, +70.9)` px — **2.3% on a 74 px displacement**. The sign is right on
+a real microscope, and MM's affine needs no negation.
+
+Root cause 2 is confirmed too, on the same frame: the aggregate centroid sat at
+`(12.8, -10.4)` px while the brightest punctum was at `(21.5, -69.0)` — **70 px
+apart**. The old code would have driven to a point on neither bead.
+
+The Manual-Simple fingerprint fired, on the very rig whose scale design/29
+measured. Per-axis scales derived from this single correction are 0.117 and
+0.127 µm/px against MM's declared 0.127 — the same direction as design/29's
+−3.5%/−15.7%, but **n=1 through a stage that quantizes**, so this corroborates
+the sign of the error and measures nothing about its size.
+
+### Two gate defects, neither visible in the verdict
+
+- **F2 passed without running.** F centres the field, so F2 entered at 3.9 px
+  against `tol_px=5.0`, returned in **0 iterations** and reported PASS. A limb
+  that cannot fail is not a criterion — block 58a's opt-out limb passed three
+  rounds the same way. F2 now displaces the punctum by a known 45 px first,
+  re-measures rather than assuming, and **FAILs on `iterations == 0`**.
+- **Limb 0 passed for the wrong reason.** It scored a phase correlation, which
+  on this bead field locked onto the wrong bead: `(-23.3, -0.7)` px for a +10 µm
+  X move where the affine — validated minutes later by limb F — predicts
+  `(0, -78.7)`. Wrong axis, 3.4× wrong magnitude. It cleared the threshold by
+  luck; another field could as easily have returned ~0 and reported a healthy M2
+  as decoupled, which reads as a fact about the machine. design/29 had already
+  measured this exact failure on this exact sample. The criterion is now a
+  whole-frame difference with no peak finding; the shift is still reported and
+  explicitly **unscored**.
+
+**Owed: a partial re-run of F2 on M2 or M5** — `--limbs F2` runs it plus limb 0
+and nothing else, so the re-run costs two minutes rather than a full gate.
+Nothing else needs re-running: the other eight limbs' evidence is unaffected by
+either fix.
 
 ## Evidence
 
