@@ -3,7 +3,7 @@
 Implementation pin: before any rig action, run:
 
 ```powershell
-git merge-base --is-ancestor ff6723c HEAD
+git merge-base --is-ancestor 47331a4 HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 66 implementation is not present" }
 ```
 
