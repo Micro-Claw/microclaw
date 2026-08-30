@@ -8441,3 +8441,34 @@ coordinator, one block handed to a runner in its own worktree, then reviewed.
 The review found the collision and one classifier edge; the runner's own report
 was accurate but is a handoff, and the suite count in the ledger is the
 coordinator's own run.
+
+## design/61 block 61c — the Nikon paragraph leaves the core prompt (merged 2026-08-30, `9b052fa`)
+
+**The normal-work history authorized the deletion more strongly than a gate
+verdict could.** After "hey, focus for me", `get_system_state` returned
+`TIPFSStatus`; the agent loaded `nikon-pfs` before its first focus action while
+the identical paragraph was still in the core prompt. That redundant load is
+the positive-informative observation design/61 required. The history used the
+embedded `get_system_state.focus` result rather than the narrower planned
+`get_focus_lock_state` call, so the scored mechanism is stated exactly rather
+than rewritten to match the plan.
+
+**One artifact answered two questions, and they must not be conflated.** The
+same session later called `set_focus_lock(enabled=true)` before an explicit
+`get_focus_lock_state`, contrary to the vendor-neutral ordering rule. That is a
+separate finding, recorded in R1; it neither weakens the earlier skill-route
+observation nor belongs in the paragraph-removal block.
+
+**The runner found the tests that still treated location as content.** Five
+substantive Nikon safety assertions pinned phrases specifically to
+`SYSTEM_PROMPT`. Deleting those tests would have deleted the safety coverage;
+instead they now read `nikon-pfs/SKILL.md`, while the context-boundary test
+asserts both the whole body and a distinctive instruction are absent from an
+untriggered prompt. The coordinator watched that boundary fail on the pre-fix
+product, then ran the complete suite: 2554 passed / 99 skipped / 0 failed.
+
+Measured 61c change: `SYSTEM_PROMPT` 31,326 → 28,971 characters, −2,355 chars
+or about −589 tokens. Across 61a–61c the measured reduction is about −1,429
+tokens versus the design's −1,650 estimate. No additional rig trip was owed:
+the positive Ti observation was 61c's explicit precondition, and the change
+only removes the now-redundant copy it licensed.
