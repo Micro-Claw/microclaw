@@ -78,18 +78,42 @@ Start microclaw the way you normally do (`microclaw serve`, or the desktop
 icon). Connect to the demo configuration.
 
 Paste each prompt **exactly as written**, one turn at a time, and let each turn
-finish. Where a prompt contains `PASTE_WORK_PATH`, replace it with the `work:`
-path Step 1 printed — do that substitution **before** you send the turn, and
-check the path is really in the text you sent. A placeholder left in a literal
-command is a step that does not run: 52c's strictest criterion produced no
-evidence at all that way.
+finish.
+
+**Do not hand-substitute any path.** Run this first, and paste the turns it
+prints — they come out with your `$work` path already in them:
+
+```powershell
+$turns = @(
+  "Run a one-frame timelapse at the current position, saving into $work, and tell me the dataset path it wrote. Then call export_dataset_as_tiff on that dataset, writing the TIFF to $work\gate.tif.",
+  "Call find_features on the current field, then call shutter_declared_illumination. Report what each returned.",
+  "Call snap_to_album. Then call get_mda_settings, and immediately after it call run_mda.",
+  "Call calibrate_stage_to_camera.",
+  "Export this session as a standalone script to $work\full.py, and tell me the exact path you wrote and how many calls it emitted.",
+  "Export this session again to $work\runnable.py, this time excluding the calibrate_stage_to_camera, snap_to_album and run_mda steps by their tool_use ids. Tell me the exact path you wrote."
+)
+$turns | ForEach-Object -Begin { $i = 0 } -Process { $i++; Write-Host "`n--- TURN $i ---`n$_" }
+$turns | Set-Content -Encoding utf8 (Join-Path $evidence "turns.txt")
+```
+
+Send them to `turns.txt` in the evidence folder too, so the coordinator can see
+what you actually sent. The prose below repeats each turn for context, but the
+text you paste is the text that block printed.
+
+This is not ceremony. Round 1 of this gate shipped the turns with a
+`PASTE_WORK_PATH` placeholder and a paragraph telling the operator to
+substitute it; Turn 5 went out unsubstituted and the export landed in
+`D:\Code\microclaw\PASTE_WORK_PATH\full.py`, inside the checkout. A
+placeholder left in a literal command is a step that does not run — 52c's
+strictest criterion produced no rig evidence at all that way, and a warning in
+prose did not prevent the recurrence.
 
 ### Turn 1 — an acquisition and an offline export
 
 > Run a one-frame timelapse at the current position, saving into
-> `PASTE_WORK_PATH`, and tell me the dataset path it wrote. Then call
+> `$work`, and tell me the dataset path it wrote. Then call
 > `export_dataset_as_tiff` on that dataset, writing the TIFF to
-> `PASTE_WORK_PATH\gate.tif`.
+> `$work\gate.tif`.
 
 ### Turn 2 — the two analysis-and-illumination tools
 
@@ -101,9 +125,14 @@ evidence at all that way.
 > Call `snap_to_album`. Then call `get_mda_settings`, and immediately after it
 > call `run_mda`.
 
-`run_mda` asks you to authorize MMStudio's MDA. **Approve it.** If you decline,
-say so — the call is still recorded and the gate still scores it, but say which
-you did.
+**`run_mda` will refuse, and that is expected.** Measured on this machine
+2026-08-30: it returns `RigAuthorizationError` — `mmstudio-mda` is excluded from
+the Phase-1 authorization map at code level, so no safety config and no operator
+approval can permit it. (Round 1 of this runbook wrongly told the operator to
+approve a confirmation that cannot be reached.) The refusal costs this gate
+nothing: a `@refuses` tool emits its reason *before* the exporter looks at
+whether the call succeeded, so the limb is scored either way. Record what it
+said.
 
 ### Turn 4 — the calibration tool
 
@@ -116,12 +145,12 @@ like one that did not. Note what it reported.
 
 ### Turn 5 — export the whole session
 
-> Export this session as a standalone script to `PASTE_WORK_PATH\full.py`, and
+> Export this session as a standalone script to `$work\full.py`, and
 > tell me the exact path you wrote and how many calls it emitted.
 
 ### Turn 6 — export a runnable subset
 
-> Export this session again to `PASTE_WORK_PATH\runnable.py`, this time
+> Export this session again to `$work\runnable.py`, this time
 > excluding the `calibrate_stage_to_camera`, `snap_to_album` and `run_mda`
 > steps by their tool_use ids. Tell me the exact path you wrote.
 

@@ -220,8 +220,29 @@ def main():
                       if DECIDED.get(r.split("—")[0].strip().split(" ")[0]) != "refuses"]
         if unexpected:
             raise AssertionError(f"refusals for tools that should emit: {unexpected}")
+        # Which emitting tools actually put executable code in the script, and
+        # which emitted only a comment. A faithful emission of a call that did
+        # nothing IS a comment -- the demo config declares no illumination, so
+        # `shutter_declared_illumination` correctly emits one -- but then that
+        # tool's write path was not exercised, and a limb that reports it as
+        # "reached" without saying so hides a NOT EXERCISED inside a PASS.
+        sections = {}
+        current = None
+        for line in source.splitlines():
+            if line.startswith("# RECORDED TOOL: "):
+                current = line.split(": ", 1)[1].strip()
+                sections[current] = []
+            elif current is not None:
+                sections[current].append(line)
+        comment_only = sorted(
+            name for name, body in sections.items()
+            if DECIDED.get(name) == "emits"
+            and not any(l.strip() and not l.lstrip().startswith("#") for l in body)
+        )
         return (f"{len(source.splitlines())} lines, compiles, standalone; "
-                f"{len(refused)} refusal(s), all from the decided-refuses set: {refused}")
+                f"{len(refused)} refusal(s), all from the decided-refuses set: {refused}"
+                + (f"; EMITTED ONLY A COMMENT (write path not exercised): "
+                   f"{comment_only}" if comment_only else ""))
 
     @limb("G5 every refusal in that script says why THAT tool cannot be emitted",
           fails_if="a refusal carries the default sentence, which is the "
