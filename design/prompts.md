@@ -8200,3 +8200,73 @@ the other branch would have produced before calling an observation evidence.**
 undecorated-tool count came back twelve because the one-liner tested
 `_microclaw_refuses`; the real attribute is `_microclaw_refusal_reason`, and
 `build_stage_coordinate_mosaic` is decorated `@refuses`. It is eleven.
+
+## design/63 block 63a — decorate the eleven (merged 2026-08-30)
+
+**One block, one Codex start turn, one revision turn, one demo round.** The
+assignment was a decision table, not a task list, and that is why it went in one
+pass: the register row had said for six months that the eleven "fall into three
+groups and each needs a decision, not a sweep of `@emits_nothing`", and the
+coordinator made those eleven decisions in `design/63` *before* the runner was
+launched. A runner given "decorate these" would have swept them.
+
+**The blocking review finding was the coordinator's own instruction.** I told
+the runner the emitted centring move "must go through the settlement contract
+the exporter already inlines" without checking what the live tool does. It does
+not settle — `move_stage_xy` dispatches, calls `wait_for_device`, and *reports*
+the residual. The runner implemented what I asked, correctly, by widening
+`settle_stage_move` to accept an XY tuple: a type switch in a shared,
+safety-critical helper that is inlined verbatim into every exported script, and
+an emitted loop that would raise `StageMoveError` where the session had carried
+on. Withdrawing an instruction is cheaper than defending it, and saying plainly
+in the revision that it was mine kept the runner from arguing the code instead
+of changing it. The general rule now lives in `CLAUDE.md`: **an emitted step
+must not be stricter than the tool it reproduces.**
+
+Two tells that the widening was wrong were visible in the diff before any
+reasoning about hardware: the test had to rewrite the emitted source
+(`STAGE_MOVE_STABILITY_WINDOW_S = 0.05` → `0.0`) to make it terminate, and the
+new fake had been written to accept a `device` argument the live tool never
+passes. *A fake that encodes your assumption is not a test of it* applies to the
+argument list as much as to the return value.
+
+**The gate's selftest found two defects in the gate, and one of them faked the
+whole discrimination.** `_export_with` inherited the caller's cwd, and `python
+-c` puts the current directory at the head of `sys.path` — so run from the block
+tree, as the file's own docstring instructs, the *main*-tree artifact was
+produced by the block tree's exporter. Both limbs whose job is to prove the gate
+can fail came back green on `main`. The checkout-guard check had the mirror
+problem: it ran an interpreter whose `microclaw` resolved to a *different*
+checkout, so the guard correctly stayed quiet and the check measured nothing.
+Neither is visible by reading; both took one run. **Gate code gets no review
+pass, so the selftest is the only review it gets.**
+
+**The demo round passed six of six, and the useful evidence was not the
+verdict.** The standalone capture is one line, `EXIT=0` — on its own that is
+43h's 0-byte artifact again. What settled it was a number nobody reported:
+the script wrote `timelapse_2`, one frame, a 532,637-byte stack against the live
+run's 532,638, with an NDTiff index differing in a single byte of metadata
+length. That is proof the inlined `detect_features` ran standalone without a
+`NameError`, which is the exact block-13/41b failure this export exists to
+prevent. Two more facts came free from artifacts rather than limbs:
+`calibrate_stage_to_camera` failed on the demo camera *and still emitted its
+refusal*, proving on real data that a `@refuses` tool refuses before the
+exporter reads whether the call succeeded; and `run_mda` returned
+`RigAuthorizationError`, so the runbook's instruction to approve its
+confirmation described a prompt no rig can reach.
+
+**A PASS hid a NOT EXERCISED, and the fix was to make the gate say so.** The
+demo config declares no illumination, so `shutter_declared_illumination`
+emitted its "nothing was shuttered" comment and its *write* path never ran on a
+rig — while G3 counted it among the tools "with a new emitter" that had been
+reached. The limb was not wrong, it was imprecise, and imprecision in a control
+is how 58a's opt-out limb passed three rounds. G4 now names any emitting tool
+whose section is comment-only, and reports it on this very session.
+
+**52c recurred, in this runbook, one block after being written down.** Turn 5
+went out with `PASTE_WORK_PATH` unsubstituted and the export landed inside the
+operator's checkout. The runbook *did* warn about the placeholder — in prose,
+one paragraph above. A warning is not a mechanism: Step 2 now prints the turns
+with `$work` already interpolated and writes them to the evidence folder, so
+there is nothing left to substitute by hand and the coordinator can see what was
+actually sent.

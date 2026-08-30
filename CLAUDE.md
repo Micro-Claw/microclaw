@@ -123,13 +123,32 @@ replacement for it.
   died on line 17; both now emit their bare `core` call. **Block 52a caught the
   same shape a third time, before the gate rather than during it** —
   `move_named_stage` was undecorated while sitting on the gate path of the block
-  about named-stage motion. **Eleven tools are still undecorated** (measured over
-  `TOOL_REGISTRY`, 81 tools, 2026-08-29, after design/61 block 61b decorated
-  `get_focus_lock_state`) and are tracked in the checklist's carried-forward
-  register. Same number as the 2026-08-17 measurement, different membership.
-  When you re-measure, the three attributes are `_microclaw_emitter`,
-  `_microclaw_emits_nothing` and `_microclaw_refusal_reason` — a probe that
-  guesses `_microclaw_refuses` misses `@refuses` and reports twelve. **A new capability is not finished until it can appear in an exported
+  about named-stage motion. **Every registered tool now carries exactly one
+  marker** — design/63 block 63a, merged 2026-08-30, decided the last eleven
+  (81 tools: 23 `@emits`, 54 `@emits_nothing`, 4 `@refuses`) — and
+  `test_every_registered_tool_has_exactly_one_export_decision` keeps it that
+  way, so a twelfth cannot ship the way the first eleven did. Do not re-derive
+  that count by hand; if you must, the three attributes are
+  `_microclaw_emitter`, `_microclaw_emits_nothing` and
+  `_microclaw_refusal_reason` — a probe that guesses `_microclaw_refuses`
+  misses `@refuses`.
+
+  **Decide the marker, never sweep it.** The eleven were not one problem: three
+  had no hardware-routine effect, four owed a real emitter, and four owed a
+  reason a standalone script cannot be written at all. Decorating a
+  hardware-writing tool `@emits_nothing` would delete its write from every
+  exported script *silently*, which is worse than the raise it replaces. And an
+  emitter may only render what the record contains — three tools had to start
+  reporting what they wrote (the shutter's triples, the EMU write's
+  device/property, the centring loop's affine) before they could be emitted at
+  all. A tool that reports a number should report where it sent it.
+
+  **An emitted step must not be stricter than the tool it reproduces.** 63a's
+  first round routed the emitted centring move through `settle_stage_move`, so
+  the standalone script would have raised `StageMoveError` where the live tool —
+  which only `wait_for_device`s and *reports* the residual — carried on. XY has
+  no arrival contract; design/56 reached the single-axis moves and not this one.
+  **A new capability is not finished until it can appear in an exported
   script** — that is the lesson all three gates taught.
 
 ## Engineering principles

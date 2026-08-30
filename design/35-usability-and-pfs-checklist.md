@@ -8900,6 +8900,8 @@ schedule them or record a reason at block 12.
 | `get_focus_lock_state` is EMU-only | design/40 | **(no block)** — Block 6a **dropped unmerged 2026-08-18**; still live on `main` (`tools.py:7623`). design/49 typed the EMU lock and did not touch this. See "Still open" |
 | Hooked-survey defects: position-list poisoning, `rank_hook_log`, hook-contract preflight, SNR gate, calibration zero-shift | design/40 | **Block 13** |
 | Saved knowledge does not separate measurement from inference | design/40 D6 | **(no block)** — owed, shape not yet clear |
+| XY stage motion has no arrival contract | design/63 block 63a, 2026-08-30 | **(no block)** — design/56 gave the single-axis tools a measured read-back; `move_stage_xy` still dispatches, calls `wait_for_device` and *reports* the residual, so `center_feature`'s closed loop can snap before the stage arrives. 63a's first round widened `settle_stage_move` to fix this in the *emitter*, which was rejected: an exported step must not be stricter than the tool it reproduces, and the fix belongs in the tool. |
+| `run_multiposition_acquisition` refuses any non-observation hook, where 43j taught `run_timelapse`/`run_zstack` to emit the adaptive program | design/63 block 63a, 2026-08-30 | **(no block)** — why `run_multiposition_with_autofocus` emits a refusal rather than a program; its emitter delegates, so both improve together whenever this is closed. |
 | Block 11 Run B | old §11 | **Block 9** |
 | Block 12 Run C | old §12 | **Block 10** |
 | Block 13 worker isolation | old §13 | **Block 11** |
@@ -9872,10 +9874,15 @@ Two smaller Track B remnants, recorded so they are not re-discovered:
   **Pre-existing since 41b, not 43h's to fix** — 43h fixed only the one blocking
   its own workflow. Size as its own block with an offline gate; the evidence is
   a one-line sweep over `TOOL_REGISTRY` for the three marker attributes.
-  **Assigned 2026-08-29 as block 63a, `design/63-decorate-the-eleven.md`**, which
-  re-measured the same eleven over 81 tools and makes a per-tool decision:
-  three `@emits_nothing`, four `@emits`, four `@refuses`. The sweep becomes a
-  test rather than a runbook step, so a twelfth undecorated tool cannot ship.
+  **CLOSED 2026-08-30 by block 63a, `design/63-decorate-the-eleven.md`.** All
+  eleven decided per tool — three `@emits_nothing`, four `@emits`, four
+  `@refuses` — and the sweep is now
+  `test_every_registered_tool_has_exactly_one_export_decision` rather than a
+  runbook step, so a twelfth cannot ship the way these did. Demo gate
+  2026-08-30: six limbs PASS, and the standalone script wrote a second dataset
+  one byte from the live one. Two findings this row did not anticipate go to the
+  register below: XY motion has no arrival contract, and
+  `run_multiposition_acquisition` refuses hooks that `run_timelapse` emits.
 - **A stitched mosaic's zero padding corrupts every statistic in
   `ImageStats`, not just coverage.** From 43g's round-2 review, 2026-08-10, and
   confirmed by the implementer's own sweep. `dataset_mosaic.py:105` allocates the
