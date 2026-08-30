@@ -445,3 +445,62 @@ def test_a_save_blocked_by_another_launch_times_out_rather_than_hanging(tmp_path
     finally:
         holder.kill()
         holder.wait(timeout=60)
+
+
+def test_a_concurrent_delete_and_save_lose_neither(tmp_path):
+    """`delete_entry` is a read-modify-write too, and needs the same lock.
+
+    Review finding on this block: the other concurrency tests all drive
+    `save_entry`, so reverting only `delete_entry` to an unlocked
+    load-modify-write left every one of them green. One launch deleting while
+    another saves can then resurrect a deleted entry or discard the save,
+    depending on which writes second.
+    """
+    import os
+    import subprocess
+    import sys
+
+    kb_path = tmp_path / "knowledge.yaml"
+    count = 25
+    deleter = (
+        "import pathlib, sys\n"
+        "import microclaw.knowledge_manager as km\n"
+        "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+        f"for i in range({count}):\n"
+        "    km.delete_entry('samples', f'doomed-{i}')\n"
+    )
+    saver = (
+        "import pathlib, sys\n"
+        "import microclaw.knowledge_manager as km\n"
+        "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+        f"for i in range({count}):\n"
+        "    km.save_entry('samples', f'kept-{i}', {'index': i})\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+
+    import microclaw.knowledge_manager as km
+    original = km.KNOWLEDGE_PATH
+    km.KNOWLEDGE_PATH = kb_path
+    try:
+        for index in range(count):
+            km.save_entry("samples", f"doomed-{index}", {"index": index})
+        for index in range(120):
+            km.save_entry("strategies", f"primed-{index}", {"index": index})
+        workers = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(kb_path)],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for script in (deleter, saver)
+        ]
+        for worker in workers:
+            _out, err = worker.communicate(timeout=120)
+            assert worker.returncode == 0, err[-2000:]
+        data = km.load_knowledge()
+    finally:
+        km.KNOWLEDGE_PATH = original
+
+    # Every delete must stick and every save must survive: the two workers touch
+    # disjoint keys, so no interleaving of correct operations can lose either.
+    assert set(data.get("samples") or {}) == {f"kept-{i}" for i in range(count)}
+    assert len(data.get("strategies") or {}) == 120
