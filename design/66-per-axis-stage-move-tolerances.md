@@ -747,3 +747,110 @@ The row closes after the implementation and the rig gate land.
   (`tools.py:6153`) and `_emit_go_to_position`. They take no start position
   because they take no settle; do not quietly give them one here.
 - Any per-call escape hatch.
+
+## Coordination
+
+This design is one implementation block, **66**, not a sequence of independently
+mergeable sub-blocks. The settle-function signature, all live callers, result
+records and standalone emitters form one contract: landing only part of it would
+either break every caller or, worse, let one path verify a different band. Use
+branch `design66/stage-move-response`, created from updated `main`, and record
+its start commit in the design/35 run ledger before assigning the runner.
+
+The implementation runner owns the whole decision above in one linked worktree:
+
+- replace the fixed arrival constant with the response floor/fraction policy and
+  the explicit `start_um`, `band_policy`, `configured_band_um` contract;
+- parse, validate and expose the two usable per-axis configuration fields while
+  refusing the two inert XY fields; do not change setup output;
+- propagate a fresh pre-dispatch position and the configured value through all
+  seven settle and dispatch-failure sites, using floor policy for every
+  restoration;
+- add the result fields, autofocus aggregation, hook event and system-state
+  observability specified above;
+- update both standalone-emission paths so live and emitted policy decisions are
+  identical, including configured and restoration cases; and
+- implement Tests 1–17. Add the named design/35 register row for cross-plane
+  non-response detection in the same branch; it is an acceptance condition, not
+  an optional follow-up.
+
+The runner must not implement the out-of-scope XY arrival loop or the three
+unsettled Z paths. It must commit and report without merging. Its exact prompt is
+written to the scratchpad before launch and its job directory is retained until
+the block closes.
+
+Coordinator review is against the diff and the full suite, not the runner's
+summary. In addition to Tests 1–17, explicitly audit every `settle_stage_move`
+and `stage_move_dispatch_failure` call, both emitted-call renderers, and every
+restoration site. Watch the new discrimination tests fail on the pre-fix tree
+for the intended reason; in particular, a test whose residual is at most 0.5 um
+or whose effective band is the 2.0 um floor does not prove propagation of the
+relative rule. Drive registered tools and bridge-shaped fakes rather than local
+stand-ins.
+
+The branch's rig deliverables are committed with the implementation before the
+push:
+
+- an M2/demo runbook containing the human hardware steps in **Rig gate**;
+- one offline scorer taking the history JSONL, selected-call emitted script and
+  UTF-8 capture as required arguments, independently reporting PASS, FAIL or NOT
+  EXERCISED for every limb and exiting nonzero unless all required limbs pass;
+- a command-sheet generator that resolves every guillemet placeholder and emits
+  the PowerShell capture block verbatim with quoted literal paths; and
+- a bridge-shaped self-test for the scorer and generated sheet, run against both
+  the pre-fix and implementation trees so its discrimination is demonstrated.
+
+Pin the implementation in the runbook with
+`git merge-base --is-ancestor <implementation-commit> HEAD`, push the branch,
+and hand the user the M2 and demo gates. The M2 pass requires the relative-policy
+success with a residual greater than 0.5 um, the selected-call standalone
+success, and the genuine non-response control. If the operator declines the
+control as unsafe, record it as NOT EXERCISED and do not call the rig gate a
+pass. The demo limb proves exact instant arrival remains accepted. Score the
+returned artifacts directly and loop fixes and re-tests on the same branch.
+
+After the gates pass, merge and push `main`, delete both branch copies, record
+the outcome in `design/prompts.md`, close the design/35 ledger row, and run the
+post-merge documentation gate. That reconciliation must replace design/35's old
+claim that the refusal “must not be fixed by loosening it” with this design's
+measured response-versus-accuracy decision, close the first design/55 row, and
+leave the new cross-plane non-response row open with an explicit owner/block.
+
+## Coordinator checklist
+
+- [ ] Update `main`; create `design66/stage-move-response`; record the exact
+  start commit and block 66 row in design/35; commit those coordinator-owned
+  edits before assignment.
+- [ ] Write the block-66 runner prompt to the scratchpad; launch the configured
+  Codex runner in its own linked worktree; retain its job directory and session.
+- [ ] Confirm the runner committed but did not merge, and that its diff covers
+  the complete implementation scope, Tests 1–17, and the cross-plane register
+  row without entering any out-of-scope path.
+- [ ] Review the diff line by line; audit all settle/dispatch callers,
+  restorations and emitters; return concrete findings through the same runner
+  session until resolved.
+- [ ] Run the full suite in the coordinator checkout and record passed, skipped,
+  warning and collected counts.
+- [ ] On the pre-fix tree, run the new discrimination tests and record that they
+  fail for the stated policy/propagation reason; restore the implementation tree
+  and rerun them green.
+- [ ] Run the bridge-shaped gate self-test on both trees; run the command-sheet
+  generator; verify no unresolved guillemets, optional product configuration,
+  non-independent limbs, or silent zero-match paths remain.
+- [ ] Commit the runbook, scorer, generator and self-test on the block branch;
+  verify the runbook's merge-base pin; push `design66/stage-move-response` to
+  `origin` with no PR.
+- [ ] Hand the user the M2 and demo gates; receive the history JSONL, selected
+  emitted script, UTF-8 standalone capture, scorer log and demo evidence.
+- [ ] Score artifacts rather than the reported verdict: require the M2 relative
+  limb (`residual > 0.5 um`), exact recomputed band, fast completion, unchanged
+  target, standalone exit, and safe non-response control; classify absent or
+  non-discriminating evidence as NOT EXERCISED.
+- [ ] Apply small findings on the branch or return larger findings to the same
+  runner; push and repeat the user gates until every required limb passes.
+- [ ] Merge the branch to `main`; push `main`; verify
+  `git log --oneline origin/main..main` is empty; delete the local and remote
+  block branches.
+- [ ] Record coordination findings in `design/prompts.md`; close block 66 and
+  the first design/55 row in design/35; run and commit the post-merge design
+  reconciliation, including the still-open owned cross-plane row.
