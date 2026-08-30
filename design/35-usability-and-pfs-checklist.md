@@ -2182,7 +2182,7 @@ them. `json.load`, not a line loop.
 | 56 | Register promotion | none — any rig | `design35/measured-move-reporting` (deleted) | `5b2bcf8` | `56d657d` + `4546ae2`/`b549884` (round 2) + `108b19f` (coordinator fix); runbook `fb6f4d4`/`cb5b34c`/`794bb27`/`5029afe`/`4b64411` | **Nikon, two trips 2026-08-19 — 4 limbs PASS, rig suite 551 passed**; missed-move criterion recorded **unreproducible on this hardware**, evidenced instead by `last_device_status: "busy"` on a successful 0.89 s move | `c8f1801` | done 2026-08-19 |
 | 64b | Register promotion | design/64 merged | `design64/kb-lost-update` | `5544d90` | `16ff7f1` | **none needed** — the defect is reproducible with two processes; `design/64-kb-lost-update-probe.py` lost **40 of 80** disjoint keys pre-fix, 0 of 80 after | `8731e73` | design/64 §"The lost-update race, closed"; register row closed. Runner review returned **no correctness defect** and one real coverage gap — all four tests drove `save_entry`, so reverting *only* `delete_entry` to an unlocked read-modify-write left every one green; closed by `test_a_concurrent_delete_and_save_lose_neither`, watched to fail on exactly that mutation. Suite 2549 / 99 / 3. **Step-2 deviation, recorded not hidden:** implemented by the coordinator inline before the coordinator role was assigned, not delegated to a runner in its own worktree. A runner review of the diff was commissioned after the fact, which is not the same thing — same shape as 64a, and the second time in two blocks. |
 | 64c | Register promotion | design/64 merged; 64b merged | `design67/tol-px-floor` | `0fc97b7` | `f4c31f6` (runner) + `cb98255` (coordinator review round 1) | **none — no rig gate.** Every mechanism is a computation over values the loop already held; the M2 data that sized it is in `gate64-m2`/`gate64b-m2`. Scoring the new hint on a rig needs a session that *fails* to converge — dose spent to observe a string | `4394338` | design/67 §"Implemented 2026-08-30". Review round 1 renamed `residual_um` → `residual_offset_um`: design/66 (in flight) defines `residual_um` on a single-axis move as the arrival miss, and `center_feature` calls `move_stage_xy`, so both would have landed under one name in adjacent records of one session. Suite **2554 / 99 / 3**, run by the coordinator, not taken from the runner's report |
-| 66 | Register promotion | design/64 and 64c merged | `design66/stage-move-response` | `fa9b3cf` | `ff6723c` + runbook `8156eb4` (Codex runner, one interrupted turn resumed); review round 1 = `78728f2` (coordinator, gate) + `996ae3c` (Claude runner, product, merged `2a85841`) + `47331a4` (coordinator); runbook re-pinned `47331a4` | **required — M2 relative-response move + standalone selected-call export + safe genuine non-response control; demo instant-arrival regression.** See design/66 §"Rig gate" | | **in flight 2026-08-30, round 1 returned nine findings, five of them in the gate instrument.** **The scorer could not parse a single real Microclaw history** — it read an invented `{tool, result}` row where a real row is an Anthropic message written by `AuditLog.append`, the tool name lives only in the assistant's `tool_use` block, and the result is a JSON string inside `tool_result`. Run against a real rig history carrying a real `move_named_stage` call (`block56-nikon/20260819_101902_231619`) it reported *found 0* and exited 1: every limb of all three modes was dead before the operator touched the rig. **The control limb could never have been scored at all** — a refused tool records `{"error": "StageMoveError: …", "hint": …}` with no result dict (verified against `amr-tirf-stage-issue/20260829_174335_360070`, the refusal this block was written for), while the limb read `start_um`/`measured_um`/`last_device_status`. It now reads the refusal message, which block 66's own error text makes sufficient, and reports NOT EXERCISED for a pre-block-66 message. **Both survived the bridge-shaped self-test because the self-test wrote the history the scorer expected** and fabricated the failure from `exc.result` — 60b's `NDTiffStack*.tif` glob, exactly. Its fixtures are now produced by driving `execute_tool` and `export_session_script`, and because Microclaw's transcript *is* the exporter's `records`, one fixture serves both and neither can drift; 18 limbs report independently, 10 of them negatives, including both real control shapes. On the pre-fix tree 7 of 18 fail independently while every negative still passes. Also: the emitted-move limb matched by substring, so a recorded **integer** target (`requested_um: 0` is real) missed `str(200.0)` — 52c's shape — and is matched structurally now, additionally requiring the emitted call to carry the recorded start and the same `band_policy`; control mode counted the reused success artifacts as two limbs that could not fail, and now refuses them; and the demo limb **required a declared named stage, which the product does not require** (`--tool move_stage_z` runs it on the core focus axis, and the self-test executes that fallback rather than only documenting it). Product findings: design test 16's floor-policy restoration export was untested; `_emit_autofocus` **read the configured band from the live `SafetyGuard` at export time**, so a config edited between the run and the export silently changed the band the standalone script verified against — it is carried in the sweep's own record now; `getattr(ctrl, "__dict__", {}).get("_guard")` silently returned `None` for a property-backed guard; and the `core_focus=True` delivery path had no test. One test the coordinator had already passed was found weak by the runner writing its twin: the configured export test zeroed the emitted `STAGE_MOVE_TIMEOUT_S`, so the script raised whatever band it was given; both halves are now watched to fail with the emitter mutated. Suite **2591 passed / 99 skipped / 3 warnings, 2690 collected**, coordinator-run. design/66 owns the response-versus-accuracy decision; the owned cross-plane non-response row is added and must stay open |
+| 66 | Register promotion | design/64 and 64c merged | `design66/stage-move-response` | `fa9b3cf` | `ff6723c` + runbook `8156eb4` (Codex runner, one interrupted turn resumed); review round 1 = `78728f2` (coordinator, gate) + `996ae3c` (Claude runner, product, merged `2a85841`) + `47331a4`; gate findings `8eae845`, `9da7d61`, `4527251`, `97af8f9` | **M2 2026-08-30 PASS on the success limb; demo 2026-08-30 PASS; the genuine non-response control has NO rig evidence** and was closed off-rig by operator decision, on a defect the rig itself found. **M2 success**: `TIRF Stage` −0.1 → 199.9, `measured_um` 199.2, `arrival_residual_um` **0.7**, `tolerance_um` **20.0** recomputed from the record's own start and target, `band_source: relative`, **0.453 s**. The residual is above 0.5, so this exact move is one the old constant refused; the same stage's 0.7 µm residual on 2026-08-29 consumed ~10.1 s and raised. The relative rule — not the floor — was the thing exercised. **Demo**: `Aux Z` 0.0 → 60, exact arrival, `tolerance_um` 6.0, `band_source: relative`, 0.125 s, and the **selected export** M2 never managed: selection header, two `# SKIPPED` ids, one emitted move. Its emitted literal is `settle_stage_move(core, 'Aux Z', 60, 0.0, 'relative', None)` — an **integer** target, the exact case round 1's structural matcher replaced a substring match to catch, earning itself on real evidence rather than in a fixture. **The control limb found a product defect, which is what a control is for.** Disconnecting the controller produced neither predicted refusal: a link that is down fails *every* bridge call, so the pre-dispatch read raised before `set_position` and an untyped `java.lang.Exception` escaped carrying no `start_um`, no `band_source` and no typed class. This block had widened that exposure — five sites gained a pre-dispatch read that had none. All six now read through `read_stage_start_position`, inlined by `_stage_move_contract_source` because `sweep_autofocus`/`_restore` are emitted verbatim; a relative move with no readable start reports `requested_um: None` rather than a fabricated coordinate, and `move_named_stage` reads **once** again, its two reads having been separated only by an in-process guard check. Eight parameterized cases watched failing on the pre-fix product. **M2's own control record still scores NOT EXERCISED** — that session ran the unfixed code, and the scorer does not retroactively pass it. **Two more product defects came from the gate sessions, not the suite**: `export_session_script` invited an agent to pass a tool *name* as an id (it did, was refused, and recovered by exporting the **whole session** — the dangerous direction, which passed only because that session held nothing else emittable), and it reported plain success while emitting nothing when every selected id was real but non-emitting. Both now say what they are. **Round 1's nine findings were five gate and four product**, and the gate half is the story: the scorer could not parse a single real Microclaw history, the control limb could never have been scored at all, and the bridge-shaped self-test hid both by writing the history the scorer expected — 60b's glob, reproduced. Suite **2601 passed / 99 skipped / 3 warnings**, coordinator-run; self-test 21 limbs, 7 of which fail independently on the pre-fix tree | `MERGE` | design/66 §"Rig gate" and §"`start_um` and band policy" reconciled to what was measured; design/55 register row 1 **closed**; the cross-plane non-response row stays **open** with its owner |
 
 **Out-of-band rows.** design/36, design/37, design/38 and the composition block
 all ran the full block workflow without a ledger row, because they grew out of
@@ -9094,23 +9094,37 @@ field. **Measured on M2, 2026-08-26** (design/55 Part B): a sweep asked for
 was to **retarget it to 198.8**, the position the stage happens to land at. The
 operator asked for 199.9 and got a different experiment.
 
-**The refusal is not the defect and must not be "fixed" by loosening it.** The
-stage genuinely did not arrive, and block 56's contract reporting that is right.
-What is missing is any way for a rig to declare that 1.1 µm is acceptable *on
-that axis*. A fixed micron tolerance is a rig fact living in `microclaw/`, which
-`CLAUDE.md` forbids, and it is per-device physics that belongs beside `min_um`
-and `max_um` in the `named_stages` entry.
+**CLOSED 2026-08-30 by block 66** (design/66, merged). The paragraph that stood
+here — *"the refusal is not the defect and must not be 'fixed' by loosening
+it"* — was half right and is superseded. The stage genuinely did not arrive, and
+reporting that is right; but the 0.5 µm number was never a property of any
+stage, and asserting it everywhere turned a constant that came from nowhere into
+a universal *accuracy* claim Microclaw was in no position to make. The question
+the check answers is **response, not accuracy**: did the axis act on the command,
+or did nothing happen. The default is now
+`max(2.0, 0.1 × |target − start|)` — which guarantees 90% progress above 20 µm,
+where a 0.5 µm band asserted nothing about a large move because it could not be
+met at all — and an operator who needs an absolute requirement on one axis
+declares `z_move_tolerance_um` or a named stage's `move_tolerance_um`, which then
+*is* the band. **Measured on M2, 2026-08-30**: the same class of move that
+refused at 10.1 s on 2026-08-26 and 2026-08-29 completed in 0.453 s with its
+0.7 µm miss reported, not hidden, and the target unretargeted.
 
-**It is a design decision, not a number, and it is design/56's mechanism rather
-than design/55's.** Three things are unsettled: where the value lives for the
-**core focus and XY**, which have no `named_stages` entry but reach the same loop
-through `autofocus.py` and `move_stage_z`; what the default is when a device
-declares nothing (0.5 fails closed for M2 forever; a wider default silently
-loosens every rig that works today); and whether `move_named_stage` gets a
-per-call override, which would be a per-call relaxation of a safety-relevant
-bound and needs the scrutiny the envelope bounds got.
+The loosening is real and is stated rather than sold: a 200 µm move is now
+verified to 20 µm. What it bought is the failure that matters — a stalled,
+unpowered or ignored axis — which the old constant detected only by accident.
 
-**It has an export coupling that will bite.** `_stage_move_contract_source()`
+**The three unsettled questions are answered.** Where the value lives for the
+**core focus**: `stage.z_move_tolerance_um`, delivered through one
+`SafetyGuard.stage_move_tolerance` accessor to `set_z`, `move_stage_z`,
+`sweep_autofocus` and `_restore`. For **XY**: nowhere yet — both keys are parsed
+and **refused** at their exact YAML path, naming `move_stage_xy`'s missing
+arrival loop, so an operator learns the key has no effect at the moment they
+write it rather than after trusting it. The **default** is the relative rule
+above, not a wider constant. And **no per-call override**: an agent under
+pressure to continue must not be able to redefine success for one call.
+
+**The export coupling did bite, and was caught before the rig.** `_stage_move_contract_source()`
 (`tools.py`) emits all five constants as literals into every standalone script
 and inlines `settle_stage_move` with `inspect.getsource`. A config-driven
 tolerance must travel into the export as a **recorded per-device value**, or the
@@ -9119,9 +9133,11 @@ defect class `CLAUDE.md` §"An exported script that compiles is not an exported
 script that works" exists to prevent. Six call sites read the constant, across
 `tools.py`, `hook_decisions.py` and `autofocus.py`.
 
-**The gate is already written by the accident that found it**: on M2, request
-`199.9` with a declared tolerance of `1.5 µm` and the sweep should complete
-rather than refuse, with `achieved_um` still reporting the measured `198.8`.
+**The gate was run** — M2 and the demo machine, 2026-08-30, block 66's row above.
+Nothing configured: the relative rule alone completed the move the accident
+refused. A declared per-axis tolerance is exercised off-rig, in the live path and
+in an executed standalone export, because scoring it on hardware would need a rig
+whose stage misses by more than its declared band on demand.
 
 **2. An agent asked the operator for positions it could have read itself.** Told
 to use "the five positions in the list" (design/55 round 3), it came back asking
