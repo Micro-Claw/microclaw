@@ -172,7 +172,7 @@ record.
 
 | Block | Scope | Branch | Start commit | Implementation | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
-| 64a | Sign, centring target, MM as authority, and their export | `design/64-center-feature` | `1f07761` | *(this branch)* | **M2 2026-08-30, 9/9 PASS — product confirmed; two gate defects found, F2 re-run owed** | — | — |
+| 64a | Sign, centring target, MM as authority, and their export | `design/64-center-feature` | `1f07761` | `6f62a90` + `290998a` + `f2c45d4` + `6776d47` + `3984ac4` + `a400dd6` | **M2 2026-08-30 `gate64-m2` 9/9 PASS + re-run `gate64b-m2` 2/2 PASS** | *(pending)* | *(pending)* |
 
 **Deviation from the workflow, recorded rather than hidden.** 64a was
 implemented by the coordinator inline instead of being delegated to a runner in
@@ -389,10 +389,41 @@ the sign of the error and measures nothing about its size.
   whole-frame difference with no peak finding; the shift is still reported and
   explicitly **unscored**.
 
-**Owed: a partial re-run of F2 on M2 or M5** — `--limbs F2` runs it plus limb 0
-and nothing else, so the re-run costs two minutes rather than a full gate.
-Nothing else needs re-running: the other eight limbs' evidence is unaffected by
-either fix.
+### The re-run, M2, 2026-08-30 (`gate64b-m2`) — both fixes validated
+
+`--limbs F2`. Two limbs, and each one settled its own defect.
+
+**F2 is now a criterion.** It displaced the punctum by a commanded −5.715 µm
+(`-A·(0,45)`), which put it 47.0 px out where 45.0 was predicted, and the loop
+brought it back to 3.9 px **in 3 iterations**. The displacement is itself a
+third independent check on the sign: moving by `-A·r` is the inverse of the
+centring move, and the punctum went to `(-0.5, +47.0)` where the affine predicts
+`(-1.5, +45.0)` — the *positive* y a flipped convention could not produce.
+
+**Not scoring the registered shift was right, and the rig proved it.** The same
+measurement, the same rig, the same 10 µm step, two runs apart:
+
+| run | registered shift | affine predicts |
+|---|---|---|
+| `gate64-m2` | **23.3 px** — locked onto the wrong bead | 78.7 px |
+| `gate64b-m2` | **82.7 px** — 5% agreement | 78.7 px |
+
+Scoring that would have been a coin flip. The whole-frame criterion gave 0.217
+still against 1.266 moved, a ratio of 5.8, on both. And run 2's 82.7 px is a
+fourth confirmation of the affine's scale, from a measurement nothing depends on.
+
+### One rig fact worth recording, not a defect
+
+**M2's stage quantization is close to `tol_px`.** design/29 measured ~0.8 µm of
+it; at 0.127 µm/px that is **6.3 px, larger than the gate's `tol_px=5.0`**. That
+is why a loop that lands 72.3 → 2.5 px in *one* correction (limb F) needed
+*three* to get 47.0 → 3.9. It converged, and on a rig with coarser steps or
+higher magnification it would not. Related: `center_feature` reported its own
+final residual as 2.1 px while an independent re-snap immediately after measured
+3.9 px, so on a defocused bead field the measurement's own repeatability is
+~2 px. Neither is a code defect; both say `tol_px` should be chosen against the
+stage's step size, and `center_feature`'s non-convergence hint currently only
+suggests a stale calibration.
 
 ## Evidence
 
