@@ -192,8 +192,17 @@ than the session.
 uv run python design/64-gate-probe.py --out gate64
 ```
 
+**This gate needs M2 or M5. The demo machine cannot run it** — its camera
+returns the same image every snap regardless of stage position (operator,
+2026-08-30), and in other modes the frame follows the snap count rather than the
+stage (design/20 §S3). Limb 0 measures that and stands the centring limbs down
+rather than letting them diagnose hardware from a camera that is not watching
+it. Limbs 0, A–E and G still run there and are worth having, but F/F2 — the
+reason the trip exists — report NOT EXERCISED, which is never a pass.
+
 | Limb | Mechanism under test |
 |---|---|
+| 0 | **precondition** — frames actually respond to the stage, measured, not assumed |
 | A | `get_pixel_size_affine()` read through `_strings`, never `list()` (design/59a) |
 | B | `_resolve_current_affine` adopts MM's affine, or reports our override |
 | C | what it resolved actually reached the knowledge base |
@@ -215,7 +224,7 @@ bridge-shaped fake — Core collections that refuse `__iter__` and answer
 `size()`/`get(i)`, and the same `tests/synthetic_optics.py` model, whose only
 statement is how the scene moves when the stage does.
 
-It found three defects in the gate, none of which any review had caught:
+It found five defects in the gate, none of which any review had caught:
 
 1. `import microclaw.safety.load_constraints` — **a function that does not
    exist**. The probe would have died on its first line on the rig.
@@ -237,8 +246,23 @@ python design/64-gate-probe-selftest.py --flip-sign   -> F_one_correction FAIL
         residual 47.2 -> 94.4 px, ratio 2.00
 ```
 
-The selftest itself fails loudly if `--flip-sign` does not turn limb F red, so
-the gate cannot quietly stop discriminating later.
+4. **Limb F would have reported FAIL on the demo machine**, computing a ratio
+   near 1.0 and concluding "the stage did not arrive" — a confident, wrong
+   diagnosis about hardware that is working fine. A gate that cries wolf on the
+   demo machine gets its real FAILs dismissed. Limb 0 now measures coupling
+   first: two frames with no motion, then two spanning a known move.
+5. And the fix for (4) **landed twice in limb F and not at all in F2**, so F2
+   still reported FAIL on a frozen camera. Only running the thing found that.
+
+The selftest itself fails loudly if `--flip-sign` does not turn limb F red, and
+`--demo-camera` fails if any centring limb reports FAIL rather than standing
+down — so the gate cannot quietly stop discriminating, nor quietly start
+blaming hardware, later.
+
+```
+python design/64-gate-probe-selftest.py --demo-camera
+        -> limb 0 NOT EXERCISED, F/F2/G NOT EXERCISED, no FAIL
+```
 
 ## Required tests — and where they landed
 

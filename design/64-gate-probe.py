@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 RESULTS: list[dict] = []
+DECOUPLED: str | None = None   # set by limb 0 when frames ignore the stage
 
 
 def limb(name, mechanism):
@@ -43,6 +44,86 @@ def record(name, mechanism, status, detail):
     RESULTS.append({"limb": name, "mechanism": mechanism,
                     "status": status, "detail": detail})
     print(f"[{status:<13}] {name}\n                {detail}\n", flush=True)
+
+
+@limb("0_frames_follow_the_stage", "the camera images the sample the stage moves")
+def limb_coupling(ctrl, guard, out):
+    """Precondition. Without it, F and F2 measure nothing and would lie.
+
+    **The demo camera cannot run the centring limbs**, in either of the two
+    shapes it takes. The demo machine returns the *same image every snap*
+    regardless of where the stage is (operator, 2026-08-30); in other modes the
+    frame is a function of how many times you have snapped rather than of stage
+    position — design/20 §S3's rotating test pattern. Either way the camera is
+    not imaging the thing the stage moves, so the residual barely changes,
+    limb F computes a ratio near 1.0 and reports "the stage did not arrive" — a
+    confident, wrong diagnosis about hardware that is working fine. A gate that
+    cries wolf on the demo machine gets its real FAILs dismissed.
+
+    Measured, not assumed, and the two shapes separate cleanly: register two
+    frames taken with NO stage motion, then two spanning a known move. A camera
+    imaging a real sample gives ~0 for the first and a clear shift for the
+    second. A static frame gives ~0 for both. A rotating pattern gives a large
+    first.
+    """
+    global DECOUPLED
+    import numpy as np
+    from skimage.registration import phase_cross_correlation
+
+    from microclaw.tools import snap_to_numpy
+
+    step_um = float(getattr(limb_coupling, "step_um", 10.0))
+    entry = (ctrl.core.get_x_position(), ctrl.core.get_y_position())
+    guard.check_xy(entry[0] + step_um, entry[1])
+
+    first = snap_to_numpy(ctrl)
+    second = snap_to_numpy(ctrl)
+    still, _, _ = phase_cross_correlation(first, second, upsample_factor=10)
+
+    from microclaw.tools import move_stage_xy
+    move_stage_xy(ctrl, guard, step_um, 0.0, absolute=False)
+    try:
+        moved_frame = snap_to_numpy(ctrl)
+    finally:
+        move_stage_xy(ctrl, guard, -step_um, 0.0, absolute=False)
+    moved, _, _ = phase_cross_correlation(first, moved_frame, upsample_factor=10)
+
+    still_px = math.hypot(float(still[0]), float(still[1]))
+    moved_px = math.hypot(float(moved[0]), float(moved[1]))
+    (out / "coupling.json").write_text(json.dumps({
+        "step_um": step_um, "shift_without_moving_px": still_px,
+        "shift_after_moving_px": moved_px,
+        "still_dy_dx": [float(still[0]), float(still[1])],
+        "moved_dy_dx": [float(moved[0]), float(moved[1])],
+    }, indent=2), encoding="utf-8")
+
+    if still_px > 2.0:
+        DECOUPLED = (
+            f"two frames taken with NO stage motion register {still_px:.1f} px "
+            "apart, so this camera's content does not track the stage (the demo "
+            "camera's rotating pattern, design/20 §S3)"
+        )
+        return "NOT EXERCISED", DECOUPLED + ". F and F2 need a real sample."
+    if moved_px < max(3.0, 3.0 * still_px):
+        identical = bool(np.array_equal(first, moved_frame))
+        DECOUPLED = (
+            f"a {step_um} um stage move shifted the scene only {moved_px:.1f} px "
+            f"(noise floor {still_px:.1f} px)"
+            + ("; the two frames are byte-identical" if identical else "")
+        )
+        return "NOT EXERCISED", (
+            DECOUPLED + ". "
+            + ("A camera that returns the same image wherever the stage is, is "
+               "the demo camera — the centring limbs cannot run here, and this "
+               "says nothing about the code."
+               if identical else
+               "Either the stage is not moving, the step is too small for this "
+               "magnification, or the camera is not imaging the sample.")
+        )
+    return "PASS", (
+        f"still {still_px:.2f} px, {step_um} um move {moved_px:.1f} px — the "
+        "frames follow the stage, so the centring limbs mean something"
+    )
 
 
 @limb("A_affine_readable", "core.get_pixel_size_affine() via _strings, NOT list()")
@@ -196,6 +277,12 @@ def limb_one_correction(ctrl, guard, out):
     """
     from microclaw.tools import center_feature, find_features
 
+    if DECOUPLED is not None:
+        return "NOT EXERCISED", (
+            "skipped because limb 0 measured that frames do not follow the "
+            f"stage: {DECOUPLED}. A residual measured here would diagnose "
+            "hardware from a camera that is not watching it."
+        )
     before = find_features(ctrl, guard)
     if before.get("brightest_feature_offset_px") is None:
         return "NOT EXERCISED", "no punctum to centre in this field"
@@ -247,6 +334,12 @@ def limb_convergence(ctrl, guard, out):
     claims, and a gate that merges them can pass on either."""
     from microclaw.tools import center_feature, find_features
 
+    if DECOUPLED is not None:
+        return "NOT EXERCISED", (
+            "skipped because limb 0 measured that frames do not follow the "
+            f"stage: {DECOUPLED}. A residual measured here would diagnose "
+            "hardware from a camera that is not watching it."
+        )
     before = find_features(ctrl, guard)
     if before.get("brightest_feature_offset_px") is None:
         return "NOT EXERCISED", "no punctum to centre in this field"
@@ -318,7 +411,8 @@ def limb_export(ctrl, guard, out):
                     f"{list(coefficients.values())}, unnegated, brightest-punctum target")
 
 
-LIMBS = [limb_affine_readable, limb_affine_resolution, limb_adoption_persisted,
+LIMBS = [limb_coupling, limb_affine_readable, limb_affine_resolution,
+         limb_adoption_persisted,
          limb_detector, limb_refusal_control, limb_one_correction,
          limb_convergence, limb_export]
 
@@ -328,6 +422,8 @@ def main() -> int:
     parser.add_argument("--out", default="gate64", help="evidence directory")
     parser.add_argument("--safety-config", default=None)
     parser.add_argument("--port", type=int, default=4827)
+    parser.add_argument("--step-um", type=float, default=10.0,
+                        help="stage step for the coupling precondition (limb 0)")
     args = parser.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -349,6 +445,7 @@ def main() -> int:
         print(f"FAIL  this rig is not authorized for a session: {error}")
         return 2
 
+    limb_coupling.step_um = args.step_um
     print(f"design/64 centring gate — {datetime.now().isoformat(timespec='seconds')}\n")
     for fn in LIMBS:
         name, mechanism = fn._limb

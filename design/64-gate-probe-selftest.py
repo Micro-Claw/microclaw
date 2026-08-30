@@ -154,6 +154,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--flip-sign", action="store_true",
                         help="restore design/64's defect; limb F must go red")
+    parser.add_argument("--demo-camera", action="store_true",
+                        help="same image every snap, as the demo machine does; "
+                             "limb 0 must catch it and F/F2 must NOT report FAIL")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
@@ -167,6 +170,16 @@ def main() -> int:
     affine_values = [a[0, 0], a[0, 1], 0.0, a[1, 0], a[1, 1], 0.0]
 
     core = FakeCore(optics, affine_values)
+    if args.demo_camera:
+        # The demo machine hands back the SAME image regardless of where the
+        # stage is (operator, 2026-08-30). Not noise, not a rotating pattern —
+        # byte-identical. Nothing about the stage reaches the pixels.
+        frozen = optics.snap()
+        core.snap_image = lambda: None
+        core.get_tagged_image = lambda: types.SimpleNamespace(
+            tags={"Width": optics.shape[1], "Height": optics.shape[0]}, pix=frozen
+        )
+        print("!! --demo-camera: every snap returns one frozen frame\n")
     ctrl = MagicMock()
     ctrl.core = core
     ctrl.is_connected.return_value = True
@@ -210,7 +223,22 @@ def main() -> int:
     print(f"stage moves commanded: {[(round(x, 2), round(y, 2)) for x, y in core.moves]}")
     print(f"evidence under: {home}")
 
-    limb_f = next((r for r in probe.RESULTS if r["limb"] == "F_one_correction"), None)
+    by_limb = {r["limb"]: r for r in probe.RESULTS}
+    limb_f = by_limb.get("F_one_correction")
+    if args.demo_camera:
+        coupling = by_limb.get("0_frames_follow_the_stage")
+        centring = [by_limb.get("F_one_correction"), by_limb.get("F2_convergence")]
+        if coupling is None or coupling["status"] != "NOT EXERCISED":
+            print("\nSELFTEST FAIL: limb 0 did not catch a camera that ignores "
+                  "the stage.")
+            return 1
+        if any(r is None or r["status"] == "FAIL" for r in centring):
+            print("\nSELFTEST FAIL: a centring limb reported FAIL on a camera "
+                  "that cannot answer. That is a false diagnosis about hardware.")
+            return 1
+        print("\nSELFTEST PASS: limb 0 caught the frozen camera and the centring "
+              "limbs stood down instead of blaming the stage.")
+        return 0
     if args.flip_sign:
         if limb_f is None or limb_f["status"] != "FAIL":
             print("\nSELFTEST FAIL: the sign defect did not turn limb F red. "
