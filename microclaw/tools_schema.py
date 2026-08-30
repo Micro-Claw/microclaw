@@ -868,12 +868,19 @@ TOOLS: list[dict[str, Any]] = [
         "name": "find_features",
         "description": (
             "Snap and return NUMBERS about the field: spot count (blob detection), "
-            "intensity-weighted centroid, offset of the signal from the field "
-            "centre (pixels, and µm when calibrated), background level, SNR, and "
+            "the intensity-weighted centroid of all signal and its offset from "
+            "the field centre, the brightest detected punctum "
+            "(brightest_feature_xy_px / brightest_feature_offset_px, both null "
+            "when nothing was detected), background level, SNR, and "
             "spot_density_per_um2 (the SMLM blinking-density check). Use this — "
             "not a thumbnail — whenever you need to answer 'is the feature "
             "centred?', 'is there anything here?', or 'is the blinking density "
-            "right?'. Deterministic and identical on every call."
+            "right?'. Deterministic and identical on every call. "
+            "centering_move_um, when calibrated, is the RELATIVE STAGE MOVE that "
+            "would centre the brightest punctum — pass it to move_stage_xy as-is "
+            "with absolute=false, do not negate it — not a distance, and not "
+            "about the aggregate centroid. Prefer center_feature, which applies "
+            "it in a closed loop."
         ),
         "input_schema": {
             "type": "object",
@@ -900,12 +907,18 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "center_feature",
         "description": (
-            "Closed loop that centres the brightest feature in the field of view: "
-            "find_features → pixel offset → stage-camera affine → guarded stage "
-            "move → repeat, until the residual is below tol_px or max_iter is "
-            "reached. Requires calibrate_stage_to_camera to have run for the "
-            "current objective/binning. Use this instead of manually nudging the "
-            "stage and re-snapping."
+            "Closed loop that centres the brightest DETECTED punctum in the field "
+            "of view: find_features → that punctum's pixel offset → stage-camera "
+            "affine → guarded stage move → repeat, until the residual is below "
+            "tol_px or max_iter is reached. Uses Micro-Manager's own "
+            "PixelSizeAffine when the rig publishes one (adopting it into the "
+            "knowledge base), else a cached calibrate_stage_to_camera "
+            "measurement; if neither exists it refuses and asks you to run "
+            "calibrate_stage_to_camera. Refuses without moving when no punctum is "
+            "detected — a gradient or extended structure is not a centring "
+            "target, so use find_features to check n_spots first on a "
+            "filamentous or confluent field. Use this instead of manually "
+            "nudging the stage and re-snapping."
         ),
         "input_schema": {
             "type": "object",

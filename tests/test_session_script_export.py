@@ -3786,6 +3786,98 @@ def test_center_feature_without_recorded_affine_refuses_specifically(tmp_path):
     ) in source
 
 
+def test_emitted_center_feature_moves_the_same_way_as_the_live_tool(tmp_path,
+                                                                    monkeypatch):
+    """design/64 required test 4: the script and the tool must agree in SIGN.
+
+    Both halves are driven by ONE optical model (`tests.synthetic_optics`), and
+    the assertion is that the emitted loop commands the same displacement the
+    live tool did — not merely that it runs. `_emit_center_feature` reproduced
+    the live wrong-way move verbatim, so a fix applied to one and not the other
+    would just relocate the defect into every standalone script.
+    """
+    import math
+    from unittest.mock import MagicMock
+
+    from tests.synthetic_optics import OPTICS_CASES, SyntheticOptics
+    from tests.test_tools import TestCentringAgainstItsOwnCalibration as Centring
+    from microclaw.tools import center_feature
+
+    monkeypatch.setattr(
+        "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+    )
+    ctrl = MagicMock()
+    ctrl.core.get_image_width.return_value = 160
+    ctrl.core.get_image_height.return_value = 160
+    guard = MagicMock()
+    guard.check_xy.return_value = None
+    optics = SyntheticOptics(OPTICS_CASES["flip_x"])
+    Centring.calibrate(optics, ctrl, guard, monkeypatch)
+
+    start = dict(optics.pos)
+    ctrl.core.set_relative_xy_position.reset_mock()   # drop the calibration's moves
+    result = center_feature(ctrl, guard, max_iter=2, tol_px=3.0)
+    live_moves = [c.args for c in ctrl.core.set_relative_xy_position.call_args_list]
+    assert live_moves, "the live tool commanded no move"
+
+    replay = SyntheticOptics(OPTICS_CASES["flip_x"])
+    replay.pos.update(start)
+
+    class Core:
+        def __init__(self):
+            self.moves = []
+            self.frame = None
+        def snap_image(self):
+            self.frame = replay.snap()
+        def get_tagged_image(self):
+            return SimpleNamespace(tags={"Width": 160, "Height": 160}, pix=self.frame)
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def set_relative_xy_position(self, dx, dy):
+            self.moves.append((dx, dy)); replay.move(dx, dy)
+        def get_xy_stage_device(self): return "XY"
+        def wait_for_device(self, device): pass
+
+    core = Core()
+    _, _, source = export(tmp_path, completed_call(
+        "center_feature", {"max_iter": 2, "tol_px": 3.0}, result,
+    ))
+    _exec_export_with_core(source, core, tmp_path / "routine.py")
+
+    assert core.moves, "the emitted loop commanded no move"
+    assert len(core.moves) == len(live_moves)
+    for emitted, live in zip(core.moves, live_moves):
+        assert emitted[0] == pytest.approx(live[0], abs=1e-9)
+        assert emitted[1] == pytest.approx(live[1], abs=1e-9)
+    # And it actually centred, in the standalone script, against real optics.
+    assert math.hypot(*replay.punctum_offset_px()) <= 4.5
+
+
+def test_emitted_center_feature_refuses_a_field_with_no_punctum(tmp_path):
+    """The refusal has to travel too, and stay distinguishable from an empty field."""
+    ramp = np.tile(np.linspace(400, 3000, 64, dtype=np.float32), (64, 1)).astype(np.uint16)
+
+    class Core:
+        moves = 0
+        def snap_image(self): pass
+        def get_tagged_image(self):
+            return SimpleNamespace(tags={"Width": 64, "Height": 64}, pix=ramp)
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def set_relative_xy_position(self, dx, dy): self.moves += 1
+        def get_xy_stage_device(self): return "XY"
+        def wait_for_device(self, device): pass
+
+    core = Core()
+    _, _, source = export(tmp_path, completed_call(
+        "center_feature", {"max_iter": 2, "tol_px": 0.5},
+        {"centered": True, "affine_coefficients": {"a": 1, "b": 0, "c": 0, "d": 1}},
+    ))
+    with pytest.raises(RuntimeError, match="No detected feature to centre"):
+        _exec_export_with_core(source, core, tmp_path / "routine.py")
+    assert core.moves == 0
+
+
 def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     images = []
     for x in (6, 4):
@@ -3820,6 +3912,6 @@ def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     ))
     _exec_export_with_core(source, core, tmp_path / "routine.py")
     assert core.snaps == 2
-    assert core.moves == [(-2.0, -0.0)]
+    assert core.moves == [(2.0, 0.0)]
     assert core.waits == ["XY"]
     assert "settle_stage_move" not in source

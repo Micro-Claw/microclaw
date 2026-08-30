@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, call
 import numpy as np
 import pytest
 
+from tests.synthetic_optics import OPTICS_CASES, SyntheticOptics
+
 from microclaw import tools
 from microclaw.autofocus import AutofocusResult, SweepResult, curve_contrast
 from microclaw.safety import (
@@ -2997,7 +2999,7 @@ class TestFindFeatures:
     ):
         from microclaw.tools import find_features
         monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
-        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        monkeypatch.setattr("microclaw.tools._resolve_current_affine", lambda ctrl: (None, {}))
         live = mock_ctrl.studio.live()
         live.is_live_mode_on.return_value = True
         live.set_live_mode_on.reset_mock()
@@ -3015,22 +3017,25 @@ class TestFindFeatures:
         from microclaw.tools import find_features
         monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
         monkeypatch.setattr(
-            "microclaw.tools._load_current_affine",
-            lambda ctrl: StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5),
+            "microclaw.tools._resolve_current_affine",
+            lambda ctrl: (StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5), {}),
         )
         mock_ctrl.core.get_pixel_size_um.return_value = 0.5
         result = find_features(mock_ctrl, unconstrained_guard)
-        off_px = result["offset_from_center_px"]
-        assert result["offset_from_center_um"] == [
-            pytest.approx(off_px[0] * 0.5, abs=0.1),
-            pytest.approx(off_px[1] * 0.5, abs=0.1),
+        # The µm figure is a stage MOVE that centres the brightest punctum, not
+        # a distance and not the aggregate centroid (design/64).
+        assert "offset_from_center_um" not in result
+        brightest = result["brightest_feature_offset_px"]
+        assert result["centering_move_um"] == [
+            pytest.approx(brightest[0] * 0.5, abs=0.1),
+            pytest.approx(brightest[1] * 0.5, abs=0.1),
         ]
         assert "spot_density_per_um2" in result
 
     def test_notes_missing_calibration(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import find_features
         monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: _puncta_image())
-        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        monkeypatch.setattr("microclaw.tools._resolve_current_affine", lambda ctrl: (None, {}))
         mock_ctrl.core.get_pixel_size_um.return_value = 0.0
         result = find_features(mock_ctrl, unconstrained_guard)
         assert "offset_from_center_um" not in result
@@ -3042,47 +3047,17 @@ class TestFindFeatures:
 class TestCenterFeature:
     def test_refuses_without_calibration(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import center_feature
-        monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+        monkeypatch.setattr("microclaw.tools._resolve_current_affine", lambda ctrl: (None, {}))
         result = center_feature(mock_ctrl, unconstrained_guard)
         assert "calibrate_stage_to_camera" in result["error"]
 
-    def test_converges_on_synthetic_scene(self, mock_ctrl, unconstrained_guard, monkeypatch):
-        # 0.5 µm/px identity optics: a stage move of +d µm shifts the spot
-        # -d/0.5 px. The loop must land the spot within tol_px of centre.
-        from microclaw.calibration import StageCameraAffine
-        from microclaw.tools import center_feature
-        px = 0.5
-        pos = {"x": 0.0, "y": 0.0}
-        spot0 = (100.0, 20.0)  # (y, x) at stage (0, 0)
-        mock_ctrl.core.get_x_position.side_effect = lambda: pos["x"]
-        mock_ctrl.core.get_y_position.side_effect = lambda: pos["y"]
-        mock_ctrl.core.set_relative_xy_position.side_effect = (
-            lambda dx, dy: (pos.__setitem__("x", pos["x"] + dx),
-                            pos.__setitem__("y", pos["y"] + dy))
-        )
-        monkeypatch.setattr(
-            "microclaw.tools.snap_to_numpy",
-            lambda ctrl: _puncta_image(
-                (spot0[0] - pos["y"] / px, spot0[1] - pos["x"] / px)
-            ),
-        )
-        monkeypatch.setattr(
-            "microclaw.tools._load_current_affine",
-            lambda ctrl: StageCameraAffine(-px, 0.0, 0.0, -px, "obj", 1, px),
-        )
-        live = mock_ctrl.studio.live()
-        live.is_live_mode_on.return_value = True
-        live.set_live_mode_on.reset_mock()
-        mock_ctrl.core.is_sequence_running.return_value = True
-        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=3, tol_px=5.0)
-        assert result["centered"] is True
-        assert result["affine_coefficients"] == {
-            "a": -px, "b": 0.0, "c": 0.0, "d": -px,
-        }
-        assert math.hypot(*result["residual_px"]) <= 5.0
-        assert live.set_live_mode_on.call_args_list[-1] == call(True)
-        assert call(False) in live.set_live_mode_on.call_args_list
-        mock_ctrl.core.is_sequence_running.assert_called()
+    # test_converges_on_synthetic_scene was DELETED by design/64, not repaired.
+    # It hand-injected StageCameraAffine(-px, 0, 0, -px) — the negation of what
+    # calibrate_stage_to_camera actually produces — against a scene model that
+    # moved the opposite way from the calibration test's own. Two wrongs
+    # cancelled, so it stayed green for a tool that moved the wrong way on every
+    # real rig. Its replacement is TestCentringAgainstItsOwnCalibration, which
+    # calibrates and centres against ONE model and never writes an affine by hand.
 
     def test_empty_field_errors(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.calibration import StageCameraAffine
@@ -3092,11 +3067,294 @@ class TestCenterFeature:
             lambda ctrl: np.full((64, 64), 400, dtype=np.uint16),
         )
         monkeypatch.setattr(
-            "microclaw.tools._load_current_affine",
-            lambda ctrl: StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5),
+            "microclaw.tools._resolve_current_affine",
+            lambda ctrl: (StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5), {}),
         )
         result = center_feature(mock_ctrl, unconstrained_guard)
         assert "nothing to centre" in result["error"].lower()
+        # An empty field and a structured one without puncta are different
+        # diagnoses; see test_structure_without_puncta_moves_nothing.
+        assert "No detected feature" not in result["error"]
+        mock_ctrl.core.set_relative_xy_position.assert_not_called()
+
+
+class TestCentringAgainstItsOwnCalibration:
+    """design/64: calibrate and centre against the SAME optical model.
+
+    Every test here runs the real `calibrate_stage_to_camera`, lets it save, and
+    lets `center_feature` load what it saved. None hand-writes an affine —
+    a hand-written affine is exactly where the sign error hid.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _knowledge(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+
+    @staticmethod
+    def calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch):
+        from microclaw.tools import calibrate_stage_to_camera
+        optics.drive(mock_ctrl, monkeypatch)
+        mock_ctrl.core.get_camera_device.return_value = "Cam"
+        mock_ctrl.core.get_device_name.return_value = "CamModel"
+        roi = MagicMock()
+        roi.x, roi.y, roi.width, roi.height = 0, 0, optics.shape[1], optics.shape[0]
+        mock_ctrl.core.get_roi.return_value = roi
+        result = calibrate_stage_to_camera(mock_ctrl, unconstrained_guard, step_um=8.0)
+        assert "error" not in result, result
+        assert optics.pos == {"x": 0.0, "y": 0.0}, "calibration must restore the stage"
+        return result
+
+    @pytest.mark.parametrize("case", sorted(OPTICS_CASES))
+    def test_calibration_then_centring_converges(
+        self, case, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(OPTICS_CASES[case])
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+
+        before = math.hypot(*optics.punctum_offset_px())
+        assert before > 20.0, "the punctum must start well off centre"
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=4, tol_px=3.0)
+
+        assert result["centered"] is True, (case, result)
+        assert math.hypot(*optics.punctum_offset_px()) < before, case
+
+    @pytest.mark.parametrize("case", sorted(OPTICS_CASES))
+    def test_first_commanded_move_is_the_unnegated_affine(
+        self, case, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The regression assertion for the defect itself.
+
+        Convergence alone does not pin the sign: a wrong-signed affine applied
+        with a wrong sign also converges, which is precisely how this shipped.
+        This compares the commanded move against the affine calibration SAVED.
+        """
+        from microclaw.tools import _resolve_current_affine, center_feature
+        optics = SyntheticOptics(OPTICS_CASES[case])
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        saved = _resolve_current_affine(mock_ctrl)[0]
+        assert saved is not None, "calibration did not reach the knowledge base"
+        expected = saved.px_to_um(*optics.punctum_offset_px())
+
+        mock_ctrl.core.set_relative_xy_position.reset_mock()
+        center_feature(mock_ctrl, unconstrained_guard, max_iter=1, tol_px=3.0)
+        commanded = mock_ctrl.core.set_relative_xy_position.call_args_list[0].args
+
+        assert commanded[0] == pytest.approx(expected[0], abs=0.7), case
+        assert commanded[1] == pytest.approx(expected[1], abs=0.7), case
+        assert not (commanded[0] == pytest.approx(-expected[0], abs=0.7)
+                    and commanded[1] == pytest.approx(-expected[1], abs=0.7)), case
+
+    def test_one_correction_reduces_the_residual(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """Acceptance criterion: every successful correction shrinks the residual.
+
+        Asserted over a SINGLE iteration, so a loop that overshoots and recovers
+        cannot satisfy it by accident.
+        """
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(OPTICS_CASES["rot90"])
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        before = math.hypot(*optics.punctum_offset_px())
+        center_feature(mock_ctrl, unconstrained_guard, max_iter=1, tol_px=0.01)
+        assert math.hypot(*optics.punctum_offset_px()) < before
+
+    def test_centres_the_brighter_punctum_not_the_aggregate_centroid(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(
+            OPTICS_CASES["aligned"], punctum=(40.0, 40.0), amplitude=9000.0,
+            second_punctum=(120.0, 120.0), second_amplitude=1500.0,
+        )
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=4, tol_px=3.0)
+
+        assert result["centered"] is True, result
+        bright = math.hypot(*optics.punctum_offset_px())
+        dim = math.hypot(*optics.punctum_offset_px(optics.second_punctum))
+        assert bright < 4.5, bright
+        assert dim > 40.0, "the dim punctum must NOT have been centred"
+
+    def test_structure_without_puncta_moves_nothing(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """A gradient is signal above background and is not a centring target."""
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(OPTICS_CASES["aligned"])
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        ramp = np.tile(
+            np.linspace(400, 3000, 160, dtype=np.float32), (160, 1)
+        ).astype(np.uint16)
+        monkeypatch.setattr("microclaw.tools.snap_to_numpy", lambda ctrl: ramp)
+        mock_ctrl.core.set_relative_xy_position.reset_mock()
+
+        result = center_feature(mock_ctrl, unconstrained_guard)
+
+        mock_ctrl.core.set_relative_xy_position.assert_not_called()
+        assert "No detected feature to centre" in result.get("error", "")
+        assert "nothing to centre" not in result["error"], "wrong diagnosis"
+        assert result["n_spots"] == 0
+
+    def test_equal_puncta_select_deterministically(self):
+        """Required test 7, at the detector: an exact tie must not flip.
+
+        Noiseless on purpose — with texture underneath, two puncta of equal
+        amplitude do not actually tie, and the test would be measuring the
+        texture rather than the tie break.
+        """
+        from microclaw.image_analysis import detect_features
+        yy, xx = np.mgrid[0:160, 0:160]
+        image = np.full((160, 160), 400.0, dtype=np.float32)
+        for cy, cx in ((50.0, 60.0), (110.0, 60.0)):
+            image = image + 5000.0 * np.exp(
+                -((yy - cy) ** 2 + (xx - cx) ** 2) / 8.0
+            )
+        image = image.astype(np.uint16)
+
+        chosen = {tuple(detect_features(image)["brightest_feature_xy_px"])
+                  for _ in range(5)}
+
+        assert len(chosen) == 1, chosen
+        # Deterministic AND the documented rule: lowest (y, x) wins a tie.
+        assert chosen.pop()[1] == pytest.approx(50.0, abs=1.5)
+
+
+class TestMicroManagerIsTheCalibrationAuthority:
+    """design/64: MM's PixelSizeAffine wins, and is adopted into the KB.
+
+    The convention question is settled and load-bearing: MM's affine is the SAME
+    map as ours (feature offset → the stage move that centres it), so it is
+    adopted with no sign change. That equivalence is derived from MM's own
+    consumer path — `CenterAndDragListener` passes the negated offset to
+    `XYNavigator.moveSampleOnDisplayPixels`, whose `toStageSpace` negates again
+    — and it is what `test_adopted_mm_affine_centres_the_feature` proves end to
+    end rather than restating.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _knowledge(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "microclaw.knowledge_manager.KNOWLEDGE_PATH", tmp_path / "knowledge.yaml"
+        )
+
+    @staticmethod
+    def publish(mock_ctrl, values):
+        """Give the mock core an MM affine, as a NON-iterable Core collection.
+
+        `list()` over one of these works against every naive fake and raises on
+        every rig (design/59a lost a whole demo trip to exactly that), so the
+        fake refuses iteration and offers size()/get(i) like the real thing.
+        """
+        class StrVector:
+            def __init__(self, items): self._items = list(items)
+            def size(self): return len(self._items)
+            def get(self, index): return self._items[index]
+            def __iter__(self): raise TypeError(
+                "'mmcorej_StrVector' object is not iterable"
+            )
+        mock_ctrl.core.get_pixel_size_affine.return_value = StrVector(values)
+
+    def test_mm_affine_is_adopted_into_the_knowledge_base(self, mock_ctrl):
+        from microclaw.calibration import MM_AFFINE_SOURCE, load_affine_entry
+        from microclaw.tools import _current_binning, _current_objective, _resolve_current_affine
+        self.publish(mock_ctrl, ["0.2", "0.0", "0.0", "0.0", "0.3", "0.0"])
+
+        affine, report = _resolve_current_affine(mock_ctrl)
+
+        assert (affine.a, affine.b, affine.c, affine.d) == (0.2, 0.0, 0.0, 0.3)
+        assert report["calibration_source"] == MM_AFFINE_SOURCE
+        assert report["adopted_from_micro_manager"] is True
+        # It is in the knowledge base now, which is what center_feature reads.
+        stored, source = load_affine_entry(
+            _current_objective(mock_ctrl) or "", _current_binning(mock_ctrl)
+        )
+        assert (stored.a, stored.d) == (0.2, 0.3)
+        assert source == MM_AFFINE_SOURCE
+
+    def test_adoption_is_idempotent(self, mock_ctrl):
+        from microclaw.tools import _resolve_current_affine
+        self.publish(mock_ctrl, ["0.2", "0.0", "0.0", "0.0", "0.3", "0.0"])
+        assert _resolve_current_affine(mock_ctrl)[1]["adopted_from_micro_manager"]
+        assert "adopted_from_micro_manager" not in _resolve_current_affine(mock_ctrl)[1]
+
+    def test_a_recalibrated_mm_affine_replaces_the_adopted_one(self, mock_ctrl):
+        from microclaw.tools import _resolve_current_affine
+        self.publish(mock_ctrl, ["0.2", "0.0", "0.0", "0.0", "0.3", "0.0"])
+        _resolve_current_affine(mock_ctrl)
+        self.publish(mock_ctrl, ["0.25", "0.0", "0.0", "0.0", "0.25", "0.0"])
+
+        affine, report = _resolve_current_affine(mock_ctrl)
+
+        assert affine.a == 0.25
+        assert report["adopted_from_micro_manager"] is True
+
+    def test_our_own_measurement_overrides_mm_and_says_so(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The escape hatch: MM is the authority until we deliberately measure."""
+        from microclaw.calibration import MEASURED_AFFINE_SOURCE
+        from microclaw.tools import _resolve_current_affine
+        optics = SyntheticOptics(OPTICS_CASES["rot90"])
+        TestCentringAgainstItsOwnCalibration.calibrate(
+            optics, mock_ctrl, unconstrained_guard, monkeypatch
+        )
+        self.publish(mock_ctrl, ["0.2", "0.0", "0.0", "0.0", "0.3", "0.0"])
+
+        affine, report = _resolve_current_affine(mock_ctrl)
+
+        assert report["calibration_source"] == MEASURED_AFFINE_SOURCE
+        assert affine.a != 0.2
+        differs = report["micro_manager_affine_differs"]
+        assert differs["micro_manager"] == [0.2, 0.0, 0.0, 0.3]
+        assert "Rerun it" in differs["reason"]
+
+    def test_a_sentinel_mm_affine_is_not_adopted(self, mock_ctrl):
+        from microclaw.tools import _resolve_current_affine
+        self.publish(mock_ctrl, ["0.0"] * 6)
+        affine, report = _resolve_current_affine(mock_ctrl)
+        assert affine is None
+        assert report["calibration_source"] is None
+
+    def test_manual_simple_signature_is_reported_not_refused(self, mock_ctrl):
+        """design/29: MM's Manual-Simple calibrator never measures a scale."""
+        from microclaw.tools import _resolve_current_affine
+        # Res1 exactly as design/29 read it off M2's .cfg, signed zero included.
+        self.publish(mock_ctrl, ["-0.0", "0.127", "0.0", "-0.127", "0.0", "0.0"])
+
+        affine, report = _resolve_current_affine(mock_ctrl)
+
+        assert affine is not None, "a scale-only doubt must not block centring"
+        assert "Manual-Simple" in report["calibration_note"]
+        assert "anisotropic by 14%" in report["calibration_note"]
+
+    def test_a_genuinely_measured_mm_affine_gets_no_scale_warning(self, mock_ctrl):
+        from microclaw.tools import _resolve_current_affine
+        self.publish(mock_ctrl, ["0.1225", "0.004", "0.0", "-0.003", "0.1071", "0.0"])
+        assert "calibration_note" not in _resolve_current_affine(mock_ctrl)[1]
+
+    def test_adopted_mm_affine_centres_the_feature(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """The convention claim, end to end, with no calibrate_stage_to_camera.
+
+        If MM's affine were the opposite convention this diverges instead, the
+        same way the pre-fix tool did.
+        """
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(OPTICS_CASES["flip_y"]).drive(mock_ctrl, monkeypatch)
+        # flip_y optics: a +1 µm stage X move shifts the scene +2 px in X and a
+        # +1 µm Y move shifts it -2 px in Y, so the centring map is diag(-0.5, +0.5).
+        self.publish(mock_ctrl, ["-0.5", "0.0", "0.0", "0.0", "0.5", "0.0"])
+        before = math.hypot(*optics.punctum_offset_px())
+
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=4, tol_px=3.0)
+
+        assert result["centered"] is True, result
+        assert math.hypot(*optics.punctum_offset_px()) < before
 
 
 class TestFocusLock:
@@ -4162,7 +4420,7 @@ class TestRunAOfflineTools:
         a, b = tmp_path / "a.tif", tmp_path / "b.tif"
         tools.tifffile.imwrite(a, source)
         tools.tifffile.imwrite(b, revisit)
-        monkeypatch.setattr(tools, "_load_current_affine", lambda ctrl: None)
+        monkeypatch.setattr(tools, "_resolve_current_affine", lambda ctrl: (None, {}))
         result = tools.compare_revisit_frames(
             mock_ctrl, unconstrained_guard, str(a), str(b),
             [{"position": "p", "source_index": 0, "revisit_index": 0}],
@@ -4173,7 +4431,7 @@ class TestRunAOfflineTools:
             [-2.25, 1.5], abs=0.15
         )
         assert row["registration_valid"] is True
-        assert row["translation_um"] is None
+        assert row["realign_move_um"] is None
 
     def test_calibrate_snr_requires_replicates_and_writes_artifact(
         self, mock_ctrl, unconstrained_guard, tmp_path
@@ -4260,7 +4518,7 @@ class TestRunAOfflineTools:
         source, revisit = tmp_path / "source.tif", tmp_path / "revisit.tif"
         tools.tifffile.imwrite(source, image)
         tools.tifffile.imwrite(revisit, image)
-        monkeypatch.setattr(tools, "_load_current_affine", lambda ctrl: None)
+        monkeypatch.setattr(tools, "_resolve_current_affine", lambda ctrl: (None, {}))
         result = tools.compare_revisit_frames(
             mock_ctrl, guard, str(source), str(revisit),
             [{"position": "p", "source_index": 0, "revisit_index": 0}],
