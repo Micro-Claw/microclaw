@@ -5625,7 +5625,7 @@ def _sweep_payload(sweep, min_contrast: float | None = None,
     # _emit_autofocus copies this out of the record instead of asking the live
     # SafetyGuard, so a config edited after the run cannot change the band the
     # exported script verifies against (design/66, "Standalone export").
-    if getattr(sweep, "configured_move_tolerance_um", None) is not None:
+    if sweep.configured_move_tolerance_um is not None:
         payload["z_move_tolerance_um"] = sweep.configured_move_tolerance_um
     # peak_interior answers "is the chosen plane away from a sweep boundary",
     # which only means anything about a curve that was swept to its end. An

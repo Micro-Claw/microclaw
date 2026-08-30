@@ -2979,31 +2979,58 @@ def test_emitted_named_stage_move_runs_success_and_failure_paths(tmp_path):
     assert caught.value.result["within_tolerance"] is False
 
 
-def test_emitted_configured_named_stage_preserves_absolute_accuracy_decision(tmp_path):
-    _, _, source = export(tmp_path, completed_call(
-        "move_named_stage",
-        {"device": "TIRF Stage", "um": 200.0, "absolute": True},
-        {"device": "TIRF Stage", "start_um": 0.0, "requested_um": 200.0,
-         "measured_um": 195.0, "arrival_residual_um": 5.0,
-         "tolerance_um": 1.5, "band_policy": "relative",
-         "band_source": "configured", "arrival_unverifiable": False,
-         "verification_kind": "configured_accuracy", "within_tolerance": False,
-         "elapsed_s": 10.0, "last_device_status": "idle"},
-    ))
-    assert "200.0, 0.0, 'relative', 1.5" in source
-    runnable = source.replace(
-        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
-    ).replace("STAGE_MOVE_TIMEOUT_S = 10.0", "STAGE_MOVE_TIMEOUT_S = 0.0")
+def test_emitted_configured_named_stage_preserves_absolute_accuracy_decision(
+    tmp_path, monkeypatch
+):
+    """A declared band survives into the standalone script and still refuses.
+
+    The deadline is left long enough for a passing settle to pass, and the
+    unconfigured record is exported and run as the control: with a zeroed
+    timeout the emitted script raises whatever band it was given, so the
+    refusal below would be satisfied by an emitter that dropped the band
+    entirely.
+    """
+    monkeypatch.setattr(controller, "STAGE_MOVE_POLL_S", 0.0)
+    monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
+    monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.2)
 
     class FakeCore:
         def set_position(self, device, target): pass
         def device_busy(self, device): return False
         def get_position(self, device): return 195.0
 
-    with pytest.raises(RuntimeError) as caught:
-        exec(compile(runnable, "routine.py", "exec"), {
+    def emitted(tolerance_um, band_source):
+        _, _, source = export(tmp_path, completed_call(
+            "move_named_stage",
+            {"device": "TIRF Stage", "um": 200.0, "absolute": True},
+            {"device": "TIRF Stage", "start_um": 0.0, "requested_um": 200.0,
+             "measured_um": 195.0, "arrival_residual_um": 5.0,
+             "tolerance_um": tolerance_um, "band_policy": "relative",
+             "band_source": band_source, "arrival_unverifiable": False,
+             "verification_kind": ("configured_accuracy"
+                                   if band_source == "configured" else "response"),
+             "within_tolerance": band_source != "configured",
+             "elapsed_s": 10.0, "last_device_status": "idle"},
+        ))
+        return source.replace(
+            "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+        )
+
+    def run(source):
+        exec(compile(source, "routine.py", "exec"), {
             "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
         })
+
+    # Control: the same 5 um miss under the package relative rule is a 20 um
+    # band, and the standalone script completes.
+    control = emitted(20.0, "relative")
+    assert "200.0, 0.0, 'relative', None" in control
+    run(control)
+
+    configured = emitted(1.5, "configured")
+    assert "200.0, 0.0, 'relative', 1.5" in configured
+    with pytest.raises(RuntimeError) as caught:
+        run(configured)
     assert type(caught.value).__name__ == "StageMoveError"
     assert caught.value.result["tolerance_um"] == 1.5
     assert caught.value.result["verification_kind"] == "configured_accuracy"
