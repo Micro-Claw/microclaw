@@ -118,6 +118,11 @@ raise the typed contract *before* dispatch rather than an untyped bridge
 exception — block 66's control limb found that on M2 and it applies here
 unchanged.
 
+For the same reason, `move_stage_xy` reads both coordinates before
+`guard.check_xy`, including for an absolute move that previously needed no
+read. The read is not a command: an out-of-bounds target still refuses before
+the first write, while a failed link receives the typed move contract.
+
 ### Emitters move with their tools
 
 Four emit sites render XY motion: `move_stage_xy`'s `@emits` lambda
@@ -127,6 +132,11 @@ reproduces — **an emitted step must not be stricter than its tool** (63a), and
 after this block it must not be *looser* either. `_stage_move_contract_source`
 already inlines the single-axis contract with `inspect.getsource`; extend it,
 never re-write the loop in the emitter.
+
+An emitted `go_to_position` carries the recorded start as a literal because it
+replays one resolved move and its recorded contract. Emitted multiposition code
+instead reads the start at run time inside the loop, because each position has
+a different predecessor and therefore a different displacement and band.
 
 ### `center_feature` accepts unverifiable corrections
 

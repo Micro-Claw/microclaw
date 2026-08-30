@@ -320,6 +320,36 @@ class TestMoveStageZ:
 
 
 class TestMoveStageXY:
+    @pytest.mark.parametrize("late_axis", ["x", "y"])
+    def test_not_busy_stage_arriving_on_a_later_poll_succeeds(
+        self, late_axis, unconstrained_guard
+    ):
+        from itertools import chain, repeat
+        from microclaw import controller
+
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        late = chain([0.0, 50.0, 75.0], repeat(99.0))
+        immediate = chain([0.0], repeat(19.0))
+        if late_axis == "x":
+            core.get_x_position.side_effect = lambda: next(late)
+            core.get_y_position.side_effect = lambda: next(immediate)
+        else:
+            core.get_x_position.side_effect = lambda: next(immediate)
+            core.get_y_position.side_effect = lambda: next(late)
+        ctrl = MagicMock(core=core)
+
+        target = (100.0, 20.0) if late_axis == "x" else (20.0, 100.0)
+        result = move_stage_xy(ctrl, unconstrained_guard, *target)
+
+        assert result["measured_um"] == (
+            [99.0, 19.0] if late_axis == "x" else [19.0, 99.0]
+        )
+        late_reader = core.get_x_position if late_axis == "x" else core.get_y_position
+        assert late_reader.call_count > controller.STAGE_MOVE_REQUIRED_SAMPLES
+        assert core.device_busy.call_count >= controller.STAGE_MOVE_REQUIRED_SAMPLES
+
     def test_idle_short_of_target_is_measured_and_refused(self, unconstrained_guard,
                                                           monkeypatch):
         from microclaw import controller
@@ -505,7 +535,10 @@ def test_xy_move_failure_reaches_execute_tool_without_a_followup_move(
     inputs = {}
 
     if caller == "move_stage_xy":
-        monkeypatch.setattr(tools, "move_stage_xy", moves)
+        from microclaw import controller
+        moves = mock_ctrl.core.set_xy_position = MagicMock()
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+        inputs = {"x_um": 20.0, "y_um": 20.0}
     elif caller == "calibrate_stage_to_camera":
         monkeypatch.setattr(tools, "move_stage_xy", moves)
         monkeypatch.setattr(tools, "snap_to_numpy", lambda _ctrl: np.ones((8, 8)))
@@ -537,12 +570,8 @@ def test_xy_move_failure_reaches_execute_tool_without_a_followup_move(
             inputs = {"protocol": "snap", "rows": 1, "cols": 2,
                       "step_um": 10.0, "return_to_center": False}
 
-    registry = {caller: getattr(tools, caller)}
-    if caller == "move_stage_xy":
-        registry[caller] = moves
-        inputs = {"x_um": 20.0, "y_um": 20.0}
     payload = json.loads(tools.execute_tool(
-        caller, inputs, mock_ctrl, unconstrained_guard, registry
+        caller, inputs, mock_ctrl, unconstrained_guard
     ))
 
     assert payload["error"].startswith("XYStageMoveError:")
