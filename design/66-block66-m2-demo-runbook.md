@@ -35,17 +35,22 @@ if ($LASTEXITCODE -ne 0) { throw "command-sheet generation failed" }
 ```
 
 5. Score the artifacts. Every argument below is required; replace each
-   angle-bracket item with a quoted literal path:
+   angle-bracket item with a quoted literal path. `<HISTORY>` is either the
+   live `*_microclaw_history.jsonl` or the saved `.json` history — the scorer
+   reads both:
 
 ```powershell
-& <PYTHON> design/66-stage-move-gate-scorer.py --history <HISTORY_JSONL> --emitted <SELECTED_SCRIPT> --capture <CAPTURE> --log <M2_SUCCESS_LOG> --device "TIRF Stage" --target 199.9 --mode m2-success
+& <PYTHON> design/66-stage-move-gate-scorer.py --history <HISTORY> --emitted <SELECTED_SCRIPT> --capture <CAPTURE> --log <M2_SUCCESS_LOG> --device "TIRF Stage" --target 199.9 --mode m2-success
 if ($LASTEXITCODE -ne 0) { throw "M2 success limb did not pass" }
 ```
 
 The scorer independently requires one matching successful record, a residual
 greater than 0.5 µm, `band_source` and `band_policy` both `relative`, the exact
 band recomputed from the recorded start and target, settlement below 1 second,
-a parseable selected-call script, and one standalone `EXIT_CODE=0` trailer.
+an unchanged target, a selected-call script whose emitted `settle_stage_move`
+carries the recorded start and the same `band_policy`, and one standalone
+`EXIT_CODE=0` trailer. It matches the call structurally — by tool name, device
+and numeric target — so an integer target in the record is not a miss.
 
 ## M2 genuine non-response control
 
@@ -53,18 +58,21 @@ With the operator's explicit judgement that it is safe, power down or disconnect
 the `TIRF Stage` controller. From a coordinate more than 20 µm from 199.9 µm,
 repeat the same registered command without changing its target. Preserve the
 control history. A failed live call is deliberately not emitted as a runnable
-move, so reuse the selected success script and its successful capture as the
-two required standalone arguments while scoring the independent control record:
+move, so the control mode takes **no** `--emitted` or `--capture`: it scores the
+refusal alone, and passing another run's artifacts is refused rather than
+counted as two limbs that cannot fail.
 
 ```powershell
-& <PYTHON> design/66-stage-move-gate-scorer.py --history <CONTROL_HISTORY_JSONL> --emitted <SELECTED_SUCCESS_SCRIPT> --capture <SUCCESS_CAPTURE> --log <CONTROL_LOG> --device "TIRF Stage" --target 199.9 --mode m2-control
+& <PYTHON> design/66-stage-move-gate-scorer.py --history <CONTROL_HISTORY> --log <CONTROL_LOG> --device "TIRF Stage" --target 199.9 --mode m2-control
 if ($LASTEXITCODE -ne 0) { throw "M2 non-response control did not pass" }
 ```
 
 Restore controller power/connectivity before leaving the rig. The required
-evidence is a dispatch refusal or stable `start_um == measured_um`. The reused
-success script must still have its unique `EXIT_CODE=0`; an
-import/interpreter/ZMQ failure is NOT EXERCISED, not a control pass.
+evidence is a dispatch refusal or a stable `start_um == measured_um`, read out
+of the refusal message — a refused tool records an error string, not a result
+dict, so the message is the only channel. A refusal whose message carries no
+`started ... from <source> policy` clause was written by pre-block-66 code and
+is NOT EXERCISED.
 
 ## Demo regression limb
 
@@ -74,8 +82,24 @@ least 40 µm from its current coordinate. Run one registered
 with the demo device and target substituted literally:
 
 ```powershell
-& <PYTHON> design/66-stage-move-gate-scorer.py --history <DEMO_HISTORY_JSONL> --emitted <DEMO_SCRIPT> --capture <DEMO_CAPTURE> --log <DEMO_LOG> --device <DEMO_DEVICE> --target <DEMO_TARGET> --mode demo
+& <PYTHON> design/66-stage-move-gate-scorer.py --history <DEMO_HISTORY> --emitted <DEMO_SCRIPT> --capture <DEMO_CAPTURE> --log <DEMO_LOG> --device <DEMO_DEVICE> --target <DEMO_TARGET> --mode demo
 if ($LASTEXITCODE -ne 0) { throw "demo regression limb did not pass" }
+```
+
+**If this demo machine declares no named stage**, do not add one — the product
+does not require one and neither may this gate. Run the same limb on the core
+focus axis with `move_stage_z` instead, which needs no configuration:
+
+```powershell
+& <PYTHON> design/66-stage-move-gate-scorer.py --history <DEMO_HISTORY> --emitted <DEMO_SCRIPT> --capture <DEMO_CAPTURE> --log <DEMO_LOG> --tool move_stage_z --target <DEMO_TARGET> --mode demo
+if ($LASTEXITCODE -ne 0) { throw "demo regression limb did not pass" }
+```
+
+Before the rig, confirm the instrument itself still discriminates:
+
+```powershell
+& <PYTHON> design/66-stage-move-gate-selftest.py
+if ($LASTEXITCODE -ne 0) { throw "gate self-test failed" }
 ```
 
 Return the three scorer logs, histories, selected scripts, and UTF-8 captures.
