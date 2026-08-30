@@ -1,3 +1,5 @@
+import pathlib
+
 import pytest
 import yaml
 from microclaw.knowledge_manager import (
@@ -11,6 +13,8 @@ from microclaw.knowledge_manager import (
     rig_profile_gaps,
 )
 from microclaw.tools_schema import TOOLS
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -271,3 +275,232 @@ def test_knowledge_file_is_utf8_on_disk(tmp_path, monkeypatch):
     save_entry("devices", "affine", {"description": "px \u2192 \u00b5m"})
     raw = (tmp_path / "knowledge.yaml").read_bytes()
     assert "\u2192" in raw.decode("utf-8")
+
+
+def test_a_concurrent_launch_does_not_lose_the_other_launchs_unrelated_edits(tmp_path):
+    """Two processes writing disjoint keys must both survive.
+
+    ``save_entry`` loads the whole document, changes one key and writes it all
+    back. design/64 made the write atomic and left the read-modify-write
+    unserialized, so two launches -- and microclaw is required to open more than
+    once (CLAUDE.md) -- could each load the same snapshot and each write their
+    own version back, the second silently deleting the first's unrelated edit.
+
+    Every key here is written by exactly one worker and none is written twice,
+    so the only correct answer is that all of them survive. Measured on the
+    unfixed tree by ``design/64-kb-lost-update-probe.py``: 40 of 80 lost.
+    """
+    import os
+    import subprocess
+    import sys
+
+    kb_path = tmp_path / "knowledge.yaml"
+    writes = 25
+    # A document with some bulk in it is the realistic case and is what the
+    # load+dump window is proportional to; it is the same code path either way.
+    script = (
+        "import pathlib, sys\n"
+        "import microclaw.knowledge_manager as km\n"
+        "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+        "tag = sys.argv[2]\n"
+        f"for i in range({writes}):\n"
+        "    km.save_entry('samples', f'{tag}-{i}', {'tag': tag, 'index': i})\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+
+    import microclaw.knowledge_manager as km
+    original = km.KNOWLEDGE_PATH
+    km.KNOWLEDGE_PATH = kb_path
+    try:
+        for index in range(120):
+            km.save_entry("strategies", f"primed-{index}", {"index": index})
+        workers = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(kb_path), tag],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for tag in ("a", "b")
+        ]
+        for worker in workers:
+            _out, err = worker.communicate(timeout=120)
+            assert worker.returncode == 0, err[-2000:]
+        data = km.load_knowledge()
+    finally:
+        km.KNOWLEDGE_PATH = original
+
+    expected = {f"{tag}-{i}" for tag in ("a", "b") for i in range(writes)}
+    assert set(data.get("samples") or {}) == expected
+    assert len(data.get("strategies") or {}) == 120
+
+
+def test_the_document_is_loaded_after_the_lock_is_taken_not_before(tmp_path, monkeypatch):
+    """The load must be inside the lock, or the lock protects a stale snapshot.
+
+    Moving ``load_knowledge()`` above the ``with`` would leave every test above
+    green -- one process still round-trips correctly -- while restoring the race
+    in full. This drives another process's write into the window between the
+    caller entering ``save_entry`` and the lock being taken: the value it wrote
+    is only preserved if the load happens on the far side of the lock.
+    """
+    import os
+    import subprocess
+    import sys
+    from microclaw import knowledge_manager as km
+
+    kb_path = tmp_path / "knowledge.yaml"
+    monkeypatch.setattr(km, "KNOWLEDGE_PATH", kb_path)
+    km.save_entry("samples", "already-there", {"n": 0})
+
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    real_take_lock = km._take_lock
+
+    def take_lock_after_a_concurrent_write(fd):
+        subprocess.run(
+            [sys.executable, "-c",
+             "import pathlib, sys\n"
+             "import microclaw.knowledge_manager as km\n"
+             "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+             "km.save_entry('samples', 'written-by-the-other-launch', {'n': 1})\n",
+             str(kb_path)],
+            env=env, check=True, capture_output=True, timeout=120,
+        )
+        return real_take_lock(fd)
+
+    monkeypatch.setattr(km, "_take_lock", take_lock_after_a_concurrent_write)
+    km.save_entry("samples", "written-by-this-launch", {"n": 2})
+
+    monkeypatch.setattr(km, "_take_lock", real_take_lock)
+    assert set(km.load_knowledge()["samples"]) == {
+        "already-there", "written-by-the-other-launch", "written-by-this-launch",
+    }
+
+
+def test_a_killed_launch_leaves_the_knowledge_base_writable(tmp_path, monkeypatch):
+    """An OS lock, not a marker file: the kernel drops it when the holder dies.
+
+    Reinstalling is the way out of a wedged rig, and a hand-rolled lock file
+    left behind by a killed launch would make the knowledge base permanently
+    unwritable -- the recovery path defeated by exactly what made recovery
+    necessary (CLAUDE.md, design/58).
+    """
+    import os
+    import signal
+    import subprocess
+    import sys
+    from microclaw import knowledge_manager as km
+
+    kb_path = tmp_path / "knowledge.yaml"
+    monkeypatch.setattr(km, "KNOWLEDGE_PATH", kb_path)
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import pathlib, sys, time\n"
+         "import microclaw.knowledge_manager as km\n"
+         "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+         "with km._knowledge_lock():\n"
+         "    print('held', flush=True)\n"
+         "    time.sleep(120)\n",
+         str(kb_path)],
+        env=env, stdout=subprocess.PIPE, text=True,
+    )
+    assert holder.stdout.readline().strip() == "held"
+    holder.kill()
+    holder.wait(timeout=60)
+
+    km.save_entry("samples", "after-the-kill", {"n": 1})
+    assert "after-the-kill" in km.load_knowledge()["samples"]
+
+
+def test_a_save_blocked_by_another_launch_times_out_rather_than_hanging(tmp_path, monkeypatch):
+    """The wait is bounded, and bounded identically on every platform.
+
+    Windows' LK_LOCK gives up after ten seconds; POSIX flock blocks forever. A
+    divergence there would put the only observable behaviour on the rig. A
+    refusal to save is recoverable and reported; a hang is design/60's failure.
+    """
+    import os
+    import subprocess
+    import sys
+    from microclaw import knowledge_manager as km
+
+    kb_path = tmp_path / "knowledge.yaml"
+    monkeypatch.setattr(km, "KNOWLEDGE_PATH", kb_path)
+    monkeypatch.setattr(km, "_LOCK_TIMEOUT_S", 0.3)
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import pathlib, sys, time\n"
+         "import microclaw.knowledge_manager as km\n"
+         "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+         "with km._knowledge_lock():\n"
+         "    print('held', flush=True)\n"
+         "    time.sleep(120)\n",
+         str(kb_path)],
+        env=env, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(TimeoutError, match="knowledge base"):
+            km.save_entry("samples", "blocked", {"n": 1})
+    finally:
+        holder.kill()
+        holder.wait(timeout=60)
+
+
+def test_a_concurrent_delete_and_save_lose_neither(tmp_path):
+    """`delete_entry` is a read-modify-write too, and needs the same lock.
+
+    Review finding on this block: the other concurrency tests all drive
+    `save_entry`, so reverting only `delete_entry` to an unlocked
+    load-modify-write left every one of them green. One launch deleting while
+    another saves can then resurrect a deleted entry or discard the save,
+    depending on which writes second.
+    """
+    import os
+    import subprocess
+    import sys
+
+    kb_path = tmp_path / "knowledge.yaml"
+    count = 25
+    deleter = (
+        "import pathlib, sys\n"
+        "import microclaw.knowledge_manager as km\n"
+        "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+        f"for i in range({count}):\n"
+        "    km.delete_entry('samples', f'doomed-{i}')\n"
+    )
+    saver = (
+        "import pathlib, sys\n"
+        "import microclaw.knowledge_manager as km\n"
+        "km.KNOWLEDGE_PATH = pathlib.Path(sys.argv[1])\n"
+        f"for i in range({count}):\n"
+        "    km.save_entry('samples', f'kept-{i}', {'index': i})\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+
+    import microclaw.knowledge_manager as km
+    original = km.KNOWLEDGE_PATH
+    km.KNOWLEDGE_PATH = kb_path
+    try:
+        for index in range(count):
+            km.save_entry("samples", f"doomed-{index}", {"index": index})
+        for index in range(120):
+            km.save_entry("strategies", f"primed-{index}", {"index": index})
+        workers = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(kb_path)],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for script in (deleter, saver)
+        ]
+        for worker in workers:
+            _out, err = worker.communicate(timeout=120)
+            assert worker.returncode == 0, err[-2000:]
+        data = km.load_knowledge()
+    finally:
+        km.KNOWLEDGE_PATH = original
+
+    # Every delete must stick and every save must survive: the two workers touch
+    # disjoint keys, so no interleaving of correct operations can lose either.
+    assert set(data.get("samples") or {}) == {f"kept-{i}" for i in range(count)}
+    assert len(data.get("strategies") or {}) == 120

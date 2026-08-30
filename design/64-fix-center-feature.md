@@ -192,8 +192,9 @@ whose value is that every entry cost a rig trip.
   floor is ~6.3 px and the default tolerance is 5.0, so convergence there is
   partly luck; the non-convergence hint blames a stale calibration and should
   also name this.
-- The knowledge base's lost-update race under concurrent launches. The torn-read
-  window is closed; the read-modify-write is not.
+- ~~The knowledge base's lost-update race under concurrent launches. The
+  torn-read window is closed; the read-modify-write is not.~~ **Closed
+  2026-08-30**, see §"The lost-update race, closed" below.
 
 **Deviation from the workflow, recorded rather than hidden.** 64a was
 implemented by the coordinator inline instead of being delegated to a runner in
@@ -339,10 +340,10 @@ parity and the blob arithmetic, and found five defects. Four were real:
   `calibration_not_cached` and proceeds.
 - **Making a read able to write made concurrent launches more likely to
   collide.** `knowledge_manager` now replaces the file atomically, closing the
-  torn-read window. **The lost-update race is NOT closed** — two processes that
-  load, edit and save the whole document can still drop each other's unrelated
-  edits. That predates design/64, which only made it more frequent, and it is
-  recorded here rather than claimed fixed.
+  torn-read window. The lost-update race it left open — two processes that load,
+  edit and save the whole document dropping each other's unrelated edits — was
+  **closed 2026-08-30**; see the section at the end of this document. It
+  predated design/64, which only made it more frequent.
 
 The fifth was half right, and the half that was wrong matters. The reviewer
 predicted that flipping the convention in *both* `solve_affine` and
@@ -467,3 +468,60 @@ px to 94.40 px in one iteration — exactly doubled, the signature of applying
 `−correction` — and fails 13 of 16. Steering by the aggregate centroid again
 fails 14 of 16, including the two-punctum and gradient limbs specifically.
 
+## The lost-update race, closed — 2026-08-30
+
+Carried out of this block's "not closed by this block" list, and out of
+design/35's open register. No rig was needed.
+
+**Reproduced before it was fixed.** `design/64-kb-lost-update-probe.py` runs two
+real processes, each writing 40 keys that no other process writes, into one
+knowledge base primed with 200 entries. Every key must survive, because none is
+contended. On the unfixed tree **40 of 80 were lost** — effectively one worker's
+entire set, because each launch kept writing back a document it had loaded
+before the other's edits landed. After the fix: 0 of 80, three runs.
+
+**The fix is where the race is: the read.** `save_entry` and `delete_entry` were
+two copies of load → mutate → `_write_knowledge`; they are now one
+`_update_knowledge(mutate)` that does all three **inside** an exclusive lock.
+The load has to be on the far side of the lock — a snapshot taken before it is
+exactly the stale read being serialized against — and that is what
+`test_the_document_is_loaded_after_the_lock_is_taken_not_before` pins, by
+driving another process's write into the window between entering `save_entry`
+and taking the lock. Hoisting the load one line above the `with` leaves every
+other test in that file green and restores the race in full; it fails that one.
+
+**Two choices in the lock are load-bearing:**
+
+- *A sidecar `knowledge.yaml.lock`, not `knowledge.yaml`.* `_write_knowledge`
+  replaces that path, so a lock held on it is a lock on an inode nothing reads
+  afterwards. The lock has to live outside the thing being replaced — the same
+  shape as design/58's rule that only what sits outside both slots may write
+  what selects between them.
+- *An OS lock, not a marker file.* The kernel drops it when the holder exits, so
+  a launch killed mid-save cannot leave the knowledge base permanently
+  unwritable — design/58's "a recovery path must survive the state that made
+  recovery necessary". `test_a_killed_launch_leaves_the_knowledge_base_writable`
+  is the pin: swapped for an `O_EXCL` marker file it fails, and before the wait
+  was bounded it *hung*, which is how the bound stopped being an assumption.
+
+**The wait is bounded at 10 s and raises,** identically on both platforms.
+Windows' `LK_LOCK` already gave up after ten seconds while POSIX `flock` blocks
+for ever, and that divergence would have put the only observable behaviour on
+the rig. A `TimeoutError` naming the situation is recoverable — `save_affine`'s
+caller already reports `calibration_not_cached` and proceeds — and silently
+losing an edit is not.
+
+**Deliberately not done, and why:**
+
+- *Readers do not take the lock.* `load_knowledge` sits on the agent's prompt
+  path and on several calibration paths; `_write_knowledge`'s replace already
+  hands them an atomic snapshot, and making them contend would add a new way for
+  a session to fail on a path that currently cannot fail that way. One narrow
+  Windows window survives: `os.replace` onto a file another process has open for
+  reading can raise `PermissionError`. It predates this change and is not
+  widened by it, so it was left rather than fixed speculatively — recorded here
+  so the next person meets it as a known window rather than a surprise.
+- *`save_affine`'s two `save_entry` calls take the lock twice.* A reader landing
+  between them sees the new immutable version with the alias still naming the
+  old one — a valid older calibration, not a corrupt state. Making it one
+  transaction needs a batched entry point, which is not worth it for that.
