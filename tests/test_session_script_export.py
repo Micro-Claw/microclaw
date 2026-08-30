@@ -1,3 +1,4 @@
+import ast
 import inspect
 import json
 import queue
@@ -4163,9 +4164,76 @@ def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     assert "core.wait_for_device(core.get_xy_stage_device())" not in source
     # The single-axis contract is DEFINED (one contract, both halves) but this
     # session moved no focus axis, so nothing calls it.
-    assert "settle_stage_move(core," not in source
+    tree = ast.parse(source)
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "settle_stage_move"
+        for node in ast.walk(tree)
+    )
     assert "<= 0.5" in source
     assert "residuals_px" not in source
+
+
+@pytest.mark.parametrize("site,params,result,expected_moves", [
+    (
+        "move_stage_xy", {"x_um": 12.0, "y_um": 3.0},
+        {"requested_um": [12.0, 3.0], "start_um": [0.0, 0.0],
+         "x_band_source": "floor", "y_band_source": "floor",
+         "x_tolerance_um": 2.0, "y_tolerance_um": 2.0,
+         "band_policy": "relative"},
+        [(12.0, 3.0)],
+    ),
+    (
+        "go_to_position", {"name": "p"},
+        {"x_um": 8.0, "y_um": 9.0, "xy_move": {
+            "requested_um": [8.0, 9.0], "start_um": [0.0, 0.0],
+            "x_band_source": "floor", "y_band_source": "floor",
+            "x_tolerance_um": 2.0, "y_tolerance_um": 2.0,
+            "band_policy": "relative"}},
+        [(8.0, 9.0)],
+    ),
+    (
+        "run_multiposition_acquisition",
+        {"protocol": "snap", "positions": [
+            {"name": "a", "x_um": 2.0, "y_um": 3.0},
+            {"name": "b", "x_um": 5.0, "y_um": 7.0},
+        ]},
+        {"results": [
+            {"position": "a", "x_um": 2.0, "y_um": 3.0,
+             "xy_move": {"x_band_source": "floor", "y_band_source": "floor",
+                         "x_tolerance_um": 2.0, "y_tolerance_um": 2.0}},
+        ]},
+        [(2.0, 3.0), (5.0, 7.0)],
+    ),
+])
+def test_each_other_xy_emitter_executes_its_settled_moves(
+    tmp_path, site, params, result, expected_moves
+):
+    image = np.ones((8, 8), dtype=np.uint16)
+
+    class Core:
+        def __init__(self):
+            self.x = self.y = 0.0
+            self.moves = []
+        def get_xy_stage_device(self): return "XY"
+        def get_x_position(self): return self.x
+        def get_y_position(self): return self.y
+        def device_busy(self, _device): return False
+        def set_xy_position(self, x, y):
+            self.moves.append((x, y)); self.x, self.y = float(x), float(y)
+        def snap_image(self): pass
+        def get_tagged_image(self):
+            return SimpleNamespace(tags={"Width": 8, "Height": 8}, pix=image)
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+
+    core = Core()
+    _, _, source = export(tmp_path, completed_call(site, params, result))
+    _exec_export_with_core(source, core, tmp_path / "routine.py")
+
+    assert core.moves == expected_moves
+    assert "settle_xy_move(core, core.get_xy_stage_device()" in source
 
 
 def test_unknown_tool_use_id_that_is_a_tool_name_names_the_real_ids(tmp_path):

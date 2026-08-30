@@ -320,6 +320,95 @@ class TestMoveStageZ:
 
 
 class TestMoveStageXY:
+    def test_idle_short_of_target_is_measured_and_refused(self, unconstrained_guard,
+                                                          monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        core.get_x_position.side_effect = [0.0, 80.0]
+        core.get_y_position.side_effect = [0.0, 0.0]
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+
+        with pytest.raises(controller.XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 100.0, 0.0)
+
+        assert core.device_busy.call_count == 1
+        assert core.get_x_position.call_count == 2
+        assert caught.value.result["measured_um"] == [80.0, 0.0]
+        assert caught.value.result["requested_um"] == [100.0, 0.0]
+
+    def test_large_x_move_does_not_expand_held_y_band(self, unconstrained_guard,
+                                                      monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        core.get_x_position.side_effect = [0.0, 200.0]
+        core.get_y_position.side_effect = [0.0, 4.0]
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+        monkeypatch.setattr(controller, "STAGE_MOVE_REQUIRED_SAMPLES", 1)
+        monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
+
+        with pytest.raises(controller.XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 200.0, 0.0)
+
+        assert caught.value.axes == ["y"]
+        assert caught.value.result["x_tolerance_um"] == 20.0
+        assert caught.value.result["y_tolerance_um"] == 2.0
+
+    def test_one_stationary_axis_is_named_even_when_other_arrives(
+        self, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        core.get_x_position.side_effect = [0.0, 20.0]
+        core.get_y_position.side_effect = [0.0, 0.0]
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+
+        with pytest.raises(controller.XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 20.0, 20.0)
+
+        assert caught.value.axes == ["y"]
+        assert "Y started 0.0 um" in str(caught.value)
+
+    def test_relative_down_link_is_typed_and_never_dispatches(
+        self, unconstrained_guard
+    ):
+        from microclaw.controller import XYStageMoveError
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.get_x_position.side_effect = RuntimeError("link down")
+        core.get_y_position.side_effect = RuntimeError("link down")
+        core.device_busy.side_effect = RuntimeError("link down")
+        ctrl = MagicMock(core=core)
+
+        with pytest.raises(XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 5.0, 6.0, absolute=False)
+
+        assert caught.value.result["start_um"] is None
+        assert caught.value.result["requested_um"] is None
+        assert caught.value.result["measured_um"] is None
+        core.set_relative_xy_position.assert_not_called()
+
+    def test_configured_xy_bands_are_independent_and_claim_accuracy(
+        self, mock_ctrl
+    ):
+        guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(
+            x_min=-100, x_max=100, y_min=-100, y_max=100,
+            x_move_tolerance_um=0.25, y_move_tolerance_um=1.75,
+        )))
+        result = move_stage_xy(mock_ctrl, guard, 10.0, 10.0)
+        assert result["x_tolerance_um"] == 0.25
+        assert result["y_tolerance_um"] == 1.75
+        assert result["x_band_source"] == result["y_band_source"] == "configured"
+        assert result["verification_kind"] == "configured_accuracy"
+
     def test_in_range(self, mock_ctrl, default_guard):
         move_stage_xy(mock_ctrl, default_guard, x_um=100.0, y_um=-50.0)
         mock_ctrl.core.set_xy_position.assert_called_once_with(100.0, -50.0)
@@ -371,6 +460,93 @@ class TestMoveStageXY:
         assert result["within_tolerance"] is True
         assert result["x_arrival_residual_um"] == pytest.approx(1.1)
         assert result["y_arrival_residual_um"] == pytest.approx(0.1)
+
+
+def test_center_feature_accepts_and_reports_sub_band_correction(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    affine = types.SimpleNamespace(
+        a=1.0, b=0.0, c=0.0, d=1.0,
+        px_to_um=lambda x, y: (float(x), float(y)),
+    )
+    monkeypatch.setattr(tools, "_resolve_current_affine", lambda _ctrl: (affine, {}))
+    readings = iter([
+        {"brightest_feature_offset_px": [1.0, 0.0]},
+        {"brightest_feature_offset_px": [0.0, 0.0]},
+    ])
+    monkeypatch.setattr(tools, "find_features", lambda *_args, **_kwargs: next(readings))
+
+    result = tools.center_feature(
+        mock_ctrl, unconstrained_guard, max_iter=2, tol_px=0.1
+    )
+
+    assert result["centered"] is True
+    assert result["arrival_unverifiable_corrections"] == [0]
+    mock_ctrl.core.set_relative_xy_position.assert_called_once_with(1.0, 0.0)
+
+
+@pytest.mark.parametrize("caller", [
+    "move_stage_xy", "calibrate_stage_to_camera", "center_feature",
+    "go_to_position", "run_multiposition_acquisition", "run_tile_acquisition",
+])
+def test_xy_move_failure_reaches_execute_tool_without_a_followup_move(
+    caller, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+):
+    from microclaw.controller import XYStageMoveError
+
+    failure = XYStageMoveError({
+        "start_um": [0.0, 0.0], "requested_um": [20.0, 20.0],
+        "measured_um": [0.0, 0.0], "x_tolerance_um": 2.0,
+        "y_tolerance_um": 2.0, "x_band_source": "floor",
+        "y_band_source": "floor", "elapsed_s": 0.0,
+        "last_device_status": "idle",
+    }, ["x", "y"])
+    moves = MagicMock(side_effect=failure)
+    inputs = {}
+
+    if caller == "move_stage_xy":
+        monkeypatch.setattr(tools, "move_stage_xy", moves)
+    elif caller == "calibrate_stage_to_camera":
+        monkeypatch.setattr(tools, "move_stage_xy", moves)
+        monkeypatch.setattr(tools, "snap_to_numpy", lambda _ctrl: np.ones((8, 8)))
+        inputs = {"step_um": 20.0, "pixel_size_hint_um": 1.0}
+    elif caller == "center_feature":
+        affine = types.SimpleNamespace(
+            a=1.0, b=0.0, c=0.0, d=1.0, px_to_um=lambda x, y: (x, y)
+        )
+        monkeypatch.setattr(tools, "_resolve_current_affine", lambda _ctrl: (affine, {}))
+        monkeypatch.setattr(tools, "find_features", lambda *_args, **_kwargs: {
+            "brightest_feature_offset_px": [10.0, 0.0]
+        })
+        monkeypatch.setattr(tools, "move_stage_xy", moves)
+    elif caller == "go_to_position":
+        mock_ctrl.go_to_position = moves
+        mock_ctrl.inspect_current_position_list.return_value = tools.PositionProjection(
+            [{"name": "p", "x_um": 20.0, "y_um": 20.0}], [], []
+        )
+        inputs = {"name": "p"}
+    else:
+        mock_ctrl.core.set_xy_position = moves
+        inputs = {
+            "protocol": "snap", "positions": [
+                {"name": "p1", "x_um": 20.0, "y_um": 20.0},
+                {"name": "p2", "x_um": 30.0, "y_um": 30.0},
+            ],
+        }
+        if caller == "run_tile_acquisition":
+            inputs = {"protocol": "snap", "rows": 1, "cols": 2,
+                      "step_um": 10.0, "return_to_center": False}
+
+    registry = {caller: getattr(tools, caller)}
+    if caller == "move_stage_xy":
+        registry[caller] = moves
+        inputs = {"x_um": 20.0, "y_um": 20.0}
+    payload = json.loads(tools.execute_tool(
+        caller, inputs, mock_ctrl, unconstrained_guard, registry
+    ))
+
+    assert payload["error"].startswith("XYStageMoveError:")
+    assert moves.call_count == 1
 
 
 class TestCalibrateStageToCamera:

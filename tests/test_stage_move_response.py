@@ -245,13 +245,18 @@ def test_09_invalid_tolerance_fails_at_exact_path(tmp_path, value):
         ParsedSafetyConfig.from_yaml(path)
 
 
-@pytest.mark.parametrize("axis", ["x", "y"])
-def test_10_inert_xy_keys_are_recognized_and_refused_exactly(tmp_path, axis):
-    with pytest.raises(SafetyConfigError) as caught:
-        ParsedSafetyConfig.from_yaml(_write_config(
-            tmp_path, f"stage:\n  {axis}_move_tolerance_um: 1.2\n"))
-    assert f"stage.{axis}_move_tolerance_um" in str(caught.value)
-    assert "move_stage_xy" in str(caught.value)
+def test_10_xy_tolerances_compile_to_their_own_core_axis(tmp_path):
+    parsed = ParsedSafetyConfig.from_yaml(_write_config(
+        tmp_path,
+        "stage:\n"
+        "  x_min: -10\n  x_max: 10\n  y_min: -20\n  y_max: 20\n"
+        "  x_move_tolerance_um: 0.7\n  y_move_tolerance_um: 1.3\n",
+    ))
+    assert parsed.constraints.stage.x_move_tolerance_um == 0.7
+    assert parsed.constraints.stage.y_move_tolerance_um == 1.3
+    guard = SafetyGuard(parsed.constraints)
+    assert guard.stage_move_tolerance("XY", core_axis="x") == 0.7
+    assert guard.stage_move_tolerance("XY", core_axis="y") == 1.3
 
 
 def test_11_contract_arguments_have_no_defaults():
