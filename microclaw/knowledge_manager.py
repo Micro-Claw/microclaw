@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from pathlib import Path
 import yaml
 
@@ -33,10 +34,28 @@ def save_entry(category: str, key: str, value: dict) -> None:
     data = load_knowledge()
     data.setdefault(category, {})[key] = value
     KNOWLEDGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    KNOWLEDGE_PATH.write_text(
-        yaml.dump(data, default_flow_style=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    _write_knowledge(data)
+
+
+def _write_knowledge(data: dict) -> None:
+    """Replace the file atomically, so a second launch never reads a half-write.
+
+    Microclaw must open more than once (CLAUDE.md), and design/64 made ordinary
+    tool reads able to persist an adopted calibration, so concurrent writers are
+    now ordinary rather than exotic. This closes the torn-file window; it does
+    NOT make a concurrent read-modify-write safe — two processes that load, edit
+    and save the whole document can still lose one another's unrelated edits.
+    That race predates this function and is recorded in design/64.
+    """
+    temporary = KNOWLEDGE_PATH.with_name(f"{KNOWLEDGE_PATH.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            yaml.dump(data, default_flow_style=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        os.replace(temporary, KNOWLEDGE_PATH)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def delete_entry(category: str, key: str) -> bool:
@@ -46,10 +65,7 @@ def delete_entry(category: str, key: str) -> bool:
     del data[category][key]
     if not data[category]:
         del data[category]
-    KNOWLEDGE_PATH.write_text(
-        yaml.dump(data, default_flow_style=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    _write_knowledge(data)
     return True
 
 

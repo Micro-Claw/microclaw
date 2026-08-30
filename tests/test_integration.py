@@ -1542,7 +1542,7 @@ def test_find_features_is_deterministic(headless_mm, unconstrained_guard):
 
 def test_center_feature_refuses_without_calibration(headless_mm, unconstrained_guard, monkeypatch):
     from microclaw.tools import center_feature
-    monkeypatch.setattr("microclaw.tools._load_current_affine", lambda ctrl: None)
+    monkeypatch.setattr("microclaw.tools._resolve_current_affine", lambda ctrl: (None, {}))
     result = center_feature(headless_mm, unconstrained_guard)
     assert "calibrate_stage_to_camera" in result["error"]
 

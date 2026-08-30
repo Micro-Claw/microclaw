@@ -310,14 +310,22 @@ def _emit_center_feature(params: RecordedParams) -> str:
     signature = inspect.signature(center_feature)
     max_iter = params.get("max_iter", signature.parameters["max_iter"].default)
     tol_px = params.get("tol_px", signature.parameters["tol_px"].default)
+    # Every line below must match center_feature: the same brightest-punctum
+    # target, the same refusal when there is none, and the same UNNEGATED
+    # affine. design/64's live defect was reproduced verbatim here, so a fix in
+    # one that misses the other just moves the wrong-way move into the script.
     return "\n".join([
         f"_center_affine = ({affine['a']!r}, {affine['b']!r}, {affine['c']!r}, {affine['d']!r})",
         f"for _center_i in range({max_iter!r} + 1):",
         "    image = snap_to_numpy(mm)",
         "    _center_features = detect_features(image)",
-        "    _center_residual = _center_features['offset_from_center_px']",
+        "    _center_residual = _center_features['brightest_feature_offset_px']",
         "    if _center_residual is None:",
-        "        raise RuntimeError('No signal above background — nothing to centre.')",
+        "        raise RuntimeError(",
+        "            'No signal above background — nothing to centre.'",
+        "            if _center_features['offset_from_center_px'] is None else",
+        "            'No detected feature to centre: signal above background but no puncta.'",
+        "        )",
         f"    if math.hypot(*_center_residual) <= {tol_px!r}:",
         "        break",
         f"    if _center_i == {max_iter!r}:",
@@ -325,7 +333,7 @@ def _emit_center_feature(params: RecordedParams) -> str:
         "    _center_dx_px, _center_dy_px = _center_residual",
         "    _center_dx_um = _center_affine[0] * _center_dx_px + _center_affine[1] * _center_dy_px",
         "    _center_dy_um = _center_affine[2] * _center_dx_px + _center_affine[3] * _center_dy_px",
-        "    core.set_relative_xy_position(-_center_dx_um, -_center_dy_um)",
+        "    core.set_relative_xy_position(_center_dx_um, _center_dy_um)",
         "    core.wait_for_device(core.get_xy_stage_device())",
     ])
 
@@ -4914,14 +4922,161 @@ def _current_binning(ctrl: MicroscopeController) -> int:
         return 1
 
 
-def _load_current_affine(ctrl: MicroscopeController):
-    from microclaw.calibration import load_affine
+def _camera_identity(ctrl: MicroscopeController) -> tuple[dict, str | None]:
+    """(camera device, model and ROI, why it is incomplete) for a saved calibration."""
+    try:
+        camera_device = str(ctrl.core.get_camera_device())
+        if not camera_device:
+            raise ValueError("camera device is empty")
+        camera_model = str(ctrl.core.get_device_name(camera_device))
+        if not camera_model:
+            raise ValueError("camera model is empty")
+        roi_value = ctrl.core.get_roi()
+        roi = [int(roi_value.x), int(roi_value.y),
+               int(roi_value.width), int(roi_value.height)]
+        if roi[2] <= 0 or roi[3] <= 0:
+            raise ValueError(f"camera ROI has invalid geometry {roi}")
+    except Exception as error:
+        return {"camera_device": None, "camera_model": None, "roi": None}, str(error)
+    return {"camera_device": camera_device, "camera_model": camera_model,
+            "roi": roi}, None
 
-    objective = _current_objective(ctrl)
+
+def _mm_pixel_size_affine(ctrl: MicroscopeController, objective: str, binning: int):
+    """Micro-Manager's own PixelSizeAffine for the active pixel-size config.
+
+    `_strings` rather than `list()`: a Core collection is not Python-iterable on
+    a rig, which is how design/59's orientation limbs all died with a TypeError
+    that no fake reproduced.
+    """
+    from microclaw.authorization import _strings
+    from microclaw.calibration import parse_mm_pixel_size_affine
+
+    try:
+        raw = ";".join(_strings(ctrl.core.get_pixel_size_affine()))
+    except Exception:
+        return None
+    return parse_mm_pixel_size_affine(raw, objective=objective, binning=binning)
+
+
+def _cached_affine_is_stale(ctrl: MicroscopeController, identity: dict) -> str | None:
+    """Why a cached affine does not describe the optical path in front of us.
+
+    `affine_key` is only (objective, binning), which does not distinguish two
+    cameras: swap the camera and the cache silently hands back the other one's
+    pixel size and rotation, and `center_feature` corrects along the wrong axis.
+
+    **ROI is deliberately not a staleness signal.** Cropping changes the frame
+    size and therefore where the centre is, but `offset_from_center_px` is
+    measured against the actual frame, and cropping changes neither pixel size
+    nor orientation — so the affine still holds. (`resolve_calibration` requires
+    a matching ROI for a different reason: it reconstructs geometry from a saved
+    dataset rather than measuring the live frame.) Binning, which does change
+    the map, is already part of the key.
+
+    An identity we cannot read on either side is not evidence of a mismatch, so
+    it returns None: refusing on an unreadable camera model would break centring
+    on every rig whose adapter does not answer.
+    """
+    current, unreadable = _camera_identity(ctrl)
+    if unreadable is not None:
+        return None
+    mismatched = [
+        f"{field} was {identity.get(field)!r}, now {current[field]!r}"
+        for field in ("camera_device", "camera_model")
+        if identity.get(field) is not None and identity[field] != current[field]
+    ]
+    if not mismatched:
+        return None
+    return ("The cached calibration was measured on a different camera ("
+            + "; ".join(mismatched) + "), so it does not describe this optical path.")
+
+
+def _resolve_current_affine(ctrl: MicroscopeController) -> tuple[Any, dict]:
+    """The affine the centring tools act on, and where it came from.
+
+    **Micro-Manager's PixelSizeAffine is the authority whenever the rig
+    publishes one.** It is the calibration the operator already maintains, and
+    design/64 established it is the same convention we use (see
+    `StageCameraAffine`), so it is adopted WITHOUT a sign change — and adopted
+    *into the knowledge base*, so there is still one storage path, one lookup,
+    and an exported script whose coefficients match the session that ran.
+
+    `calibrate_stage_to_camera` is the deliberate override for a rig whose MM
+    affine is absent, a sentinel, or measured wrong. Once it has run, its
+    measurement stands even if MM later publishes a different one; that
+    disagreement is reported rather than silently resolved, because discarding
+    an operator's own measurement is not ours to do quietly.
+    """
+    from microclaw.calibration import (
+        MEASURED_AFFINE_SOURCE, MM_AFFINE_SOURCE, affine_key, load_affine_entry,
+        mm_affine_is_orientation_only, save_affine,
+    )
+
     # The empty identity deliberately retains the historical storage alias
     # used by affine_key ("default") without reporting that alias as an
     # objective name to the operator.
-    return load_affine(objective or "", _current_binning(ctrl))
+    objective = _current_objective(ctrl) or ""
+    binning = _current_binning(ctrl)
+    stored, stored_identity = load_affine_entry(objective, binning)
+    stored_source = stored_identity.get("source") or MEASURED_AFFINE_SOURCE
+    mm_affine = _mm_pixel_size_affine(ctrl, objective, binning)
+    key = affine_key(objective, binning)
+    coefficients = lambda affine: (affine.a, affine.b, affine.c, affine.d)
+
+    stale = _cached_affine_is_stale(ctrl, stored_identity) if stored else None
+    if stale is not None:
+        stored, stored_source = None, MEASURED_AFFINE_SOURCE
+
+    def report(affine, source, **extra):
+        payload = {"calibration_source": source, "knowledge_key": key, **extra}
+        if source == MM_AFFINE_SOURCE and mm_affine_is_orientation_only(affine):
+            payload["calibration_note"] = (
+                "Micro-Manager's PixelSizeAffine is axis-aligned with identical "
+                "column scales — the signature of MM's Manual-Simple calibrator, "
+                "which snaps orientation to one of eight cases and reuses your "
+                "existing pixel size on both axes without measuring either "
+                "(design/29). Its orientation is trustworthy and centring "
+                "converges through a scale error; on M2 the true optics were "
+                "anisotropic by 14%. Run calibrate_stage_to_camera before "
+                "trusting this scale for a mosaic or a stage-coordinate figure."
+            )
+        return affine, payload
+
+    if mm_affine is None:
+        if stored is None:
+            payload = {"calibration_source": None, "knowledge_key": key}
+            if stale is not None:
+                payload["cached_calibration_rejected"] = stale
+            return None, payload
+        return report(stored, stored_source)
+
+    if stored is not None and stored_source != MM_AFFINE_SOURCE:
+        affine, payload = report(stored, stored_source)
+        if coefficients(stored) != coefficients(mm_affine):
+            payload["micro_manager_affine_differs"] = {
+                "micro_manager": list(coefficients(mm_affine)),
+                "in_use": list(coefficients(stored)),
+                "reason": (
+                    "A calibrate_stage_to_camera measurement overrides MM's "
+                    "PixelSizeAffine. Rerun it if MM has been recalibrated since."
+                ),
+            }
+        return affine, payload
+
+    if stored is None or coefficients(stored) != coefficients(mm_affine):
+        identity, _incomplete = _camera_identity(ctrl)
+        extra = {"adopted_from_micro_manager": True}
+        try:
+            save_affine(mm_affine, source=MM_AFFINE_SOURCE, **identity)
+        except Exception as error:
+            # MM is the live authority; caching it is a convenience. An
+            # unwritable knowledge base must not cost the caller a calibration
+            # Micro-Manager is publishing right now.
+            extra = {"adopted_from_micro_manager": False,
+                     "calibration_not_cached": str(error)}
+        return report(mm_affine, MM_AFFINE_SOURCE, **extra)
+    return report(stored, MM_AFFINE_SOURCE)
 
 
 def _calibration_pixel_size_hint(
@@ -5015,7 +5170,9 @@ def calibrate_stage_to_camera(
     F4). With no pixel size to scale against, step_um falls back to 20 µm.
     """
     from skimage.registration import phase_cross_correlation
-    from microclaw.calibration import affine_version_key, save_affine, solve_affine
+    from microclaw.calibration import (
+        MEASURED_AFFINE_SOURCE, affine_version_key, save_affine, solve_affine,
+    )
 
     px_hint = _calibration_pixel_size_hint(ctrl, pixel_size_hint_um)
     x0, y0 = ctrl.core.get_x_position(), ctrl.core.get_y_position()
@@ -5064,29 +5221,16 @@ def calibrate_stage_to_camera(
     except ValueError as e:
         return {"error": f"Calibration failed: {e}", **live_payload}
 
-    try:
-        camera_device = str(ctrl.core.get_camera_device())
-        if not camera_device:
-            raise ValueError("camera device is empty")
-        camera_model = str(ctrl.core.get_device_name(camera_device))
-        if not camera_model:
-            raise ValueError("camera model is empty")
-        roi_value = ctrl.core.get_roi()
-        roi = [int(roi_value.x), int(roi_value.y),
-               int(roi_value.width), int(roi_value.height)]
-        if roi[2] <= 0 or roi[3] <= 0:
-            raise ValueError(f"camera ROI has invalid geometry {roi}")
-    except Exception as error:
+    identity, incomplete = _camera_identity(ctrl)
+    if incomplete is not None:
         return {
             "error": (
                 "Calibration measured but not saved: complete camera device, "
-                f"model, and ROI identity could not be read ({error})."
+                f"model, and ROI identity could not be read ({incomplete})."
             ),
             **live_payload,
         }
-    key = save_affine(
-        affine, camera_device=camera_device, camera_model=camera_model, roi=roi,
-    )
+    key = save_affine(affine, source=MEASURED_AFFINE_SOURCE, **identity)
     from dataclasses import asdict
     return {
         **asdict(affine),
@@ -5097,8 +5241,11 @@ def calibrate_stage_to_camera(
         "calibration_ref": {"kind": "knowledge_version",
                             "key": affine_version_key(affine)},
         "status": (
-            "Calibrated and cached. Image-pixel offsets can now be converted "
-            "to stage µm (find_features reports offset_from_center_um)."
+            "Calibrated and cached, and this measurement now overrides Micro-"
+            "Manager's own PixelSizeAffine for this objective/binning. The "
+            "coefficients map a feature's pixel offset from the field centre to "
+            "the stage move that centres it — find_features reports that move as "
+            "centering_move_um, and center_feature applies it."
         ),
         **live_payload,
     }
@@ -5114,8 +5261,16 @@ def find_features(
     max_sigma: float = 4.0,
     threshold_rel: float = 0.15,
 ) -> dict:
-    """Snap and return spot count, intensity-weighted centroid, and its offset
-    from the field centre — in pixels always, in µm when calibrated."""
+    """Snap and return spot count, the field's intensity-weighted centroid, and
+    the brightest detected punctum with the stage move that would centre it.
+
+    Two offsets, deliberately (design/64): `offset_from_center_px` describes ALL
+    the signal in the field and is a statistic, while
+    `brightest_feature_offset_px` names one punctum and is the thing
+    `center_feature` steers by. `centering_move_um` is the brightest punctum's
+    offset through the affine — a stage MOVE to apply, not a distance, and the
+    reason the old `offset_from_center_um` name is gone.
+    """
     with _pause_live(ctrl) as live_state:
         image = snap_to_numpy(ctrl)
     out = detect_features(image, min_sigma, max_sigma, threshold_rel)
@@ -5127,17 +5282,20 @@ def find_features(
     if live_report:
         out["live_view_restore"] = live_report
 
-    if out["offset_from_center_px"] is not None:
-        affine = _load_current_affine(ctrl)
-        if affine is not None:
-            off_x, off_y = out["offset_from_center_px"]
-            dx_um, dy_um = affine.px_to_um(off_x, off_y)
-            out["offset_from_center_um"] = [round(dx_um, 2), round(dy_um, 2)]
-        else:
-            out["note"] = (
-                "No stage-camera calibration for the current objective/binning; "
-                "offsets are pixels only. Run calibrate_stage_to_camera()."
-            )
+    affine, calibration = _resolve_current_affine(ctrl)
+    out.update(calibration)
+    if affine is None:
+        out["note"] = (
+            "No stage-camera calibration for the current objective/binning: "
+            "Micro-Manager publishes no usable PixelSizeAffine and none is "
+            "cached. Offsets are pixels only. Run calibrate_stage_to_camera()."
+        )
+    elif out["brightest_feature_offset_px"] is not None:
+        off_x, off_y = out["brightest_feature_offset_px"]
+        dx_um, dy_um = affine.px_to_um(off_x, off_y)
+        # The stage move that centres the brightest punctum, NOT a distance:
+        # see StageCameraAffine. center_feature applies exactly this.
+        out["centering_move_um"] = [round(dx_um, 2), round(dy_um, 2)]
 
     try:
         px = float(ctrl.core.get_pixel_size_um())
@@ -5157,44 +5315,88 @@ def center_feature(
     max_iter: int = 3,
     tol_px: float = 5.0,
 ) -> dict:
-    """Closed loop: find_features → pixel offset → affine → stage move → repeat.
+    """Closed loop: find_features → brightest punctum → affine → stage move →
+    repeat.
 
     Turns "centre the cell in the ROI" from a guess-shift-resnap conversation
-    into arithmetic. Requires calibrate_stage_to_camera to have run for the
-    current objective/binning; every stage move passes the XY guard.
+    into arithmetic. Uses Micro-Manager's PixelSizeAffine when the rig publishes
+    one, else a cached calibrate_stage_to_camera measurement; every stage move
+    passes the XY guard.
+
+    **The affine is applied as-is, never negated** (design/64). `px_to_um` of a
+    feature's offset already IS the stage move that centres it, and the extra
+    minus sign this once carried moved the feature further out on every
+    iteration until it left the field. The test that covered it hand-injected an
+    affine that contradicted the one calibration produces, so the two negations
+    cancelled and the loop converged in the suite and nowhere else.
     """
-    affine = _load_current_affine(ctrl)
+    affine, calibration = _resolve_current_affine(ctrl)
     if affine is None:
         return {
             "error": (
-                "No stage-camera calibration for the current objective/binning. "
-                "Run calibrate_stage_to_camera() first."
-            )
+                "No stage-camera calibration for the current objective/binning: "
+                "Micro-Manager publishes no usable PixelSizeAffine and none is "
+                "cached. Run calibrate_stage_to_camera() first."
+            ),
+            **calibration,
         }
 
     affine_coefficients = {key: getattr(affine, key) for key in ("a", "b", "c", "d")}
+    context = {"affine_coefficients": affine_coefficients, **calibration}
     residual = None
     for i in range(max_iter + 1):
         feats = find_features(ctrl, guard)
-        residual = feats["offset_from_center_px"]
-        if residual is None:
+        # The optical path can change under us: the user owns the session and
+        # microclaw is not the only client, so another window can turn the
+        # turret or swap the camera between two iterations of this loop. Pinning
+        # the entry affine while re-analysing each new frame would keep
+        # correcting a 90°-rotated field along the old axes. Stop instead of
+        # silently switching mid-loop — the operator changed something, and the
+        # honest answer is to say where we got to.
+        current, _ = _resolve_current_affine(ctrl)
+        if current is None or (current.a, current.b, current.c, current.d) != (
+            affine.a, affine.b, affine.c, affine.d
+        ):
             return {
-                "error": "No signal above background — nothing to centre.",
-                "iterations": i, "affine_coefficients": affine_coefficients,
+                "centered": False, "iterations": i, "residual_px": residual,
+                **context,
+                "error": (
+                    "The stage-camera calibration changed during centring — the "
+                    "objective, binning or camera moved under the loop. Stopped "
+                    "rather than correcting a new optical path with the old "
+                    "affine. Rerun center_feature."
+                ),
+            }
+        residual = feats["brightest_feature_offset_px"]
+        if residual is None:
+            # An empty field and a field of unresolved structure are different
+            # problems with different fixes, so they are different errors.
+            empty = feats["offset_from_center_px"] is None
+            return {
+                "error": (
+                    "No signal above background — nothing to centre." if empty else
+                    "No detected feature to centre: the field has signal above "
+                    "background but no puncta at the current detector settings. "
+                    "Positive background structure — a gradient, extended or "
+                    "filamentous signal — is not a motion target. Adjust "
+                    "min_sigma/max_sigma/threshold_rel via find_features, or "
+                    "centre by hand."
+                ),
+                "iterations": i, "n_spots": feats["n_spots"], **context,
             }
         if math.hypot(*residual) <= tol_px:
             return {"centered": True, "iterations": i, "residual_px": residual,
-                    "affine_coefficients": affine_coefficients}
+                    **context}
         if i == max_iter:
             break
         dx_um, dy_um = affine.px_to_um(residual[0], residual[1])
-        move_stage_xy(ctrl, guard, -dx_um, -dy_um, absolute=False)
+        move_stage_xy(ctrl, guard, dx_um, dy_um, absolute=False)
 
     return {
         "centered": False,
         "iterations": max_iter,
         "residual_px": residual,
-        "affine_coefficients": affine_coefficients,
+        **context,
         "hint": (
             "Residual did not fall below tol_px. If it GREW between iterations, "
             "the calibration may be stale — rerun calibrate_stage_to_camera."
@@ -8486,7 +8688,7 @@ def compare_revisit_frames(
         source = source[None, ...]
     if revisit.ndim == 2:
         revisit = revisit[None, ...]
-    affine = _load_current_affine(ctrl)
+    affine, _calibration = _resolve_current_affine(ctrl)
     rows = []
     for item in comparisons:
         si, ri = int(item["source_index"]), int(item["revisit_index"])
@@ -8520,13 +8722,17 @@ def compare_revisit_frames(
                                        correlation >= min_correlation),
         }
         if affine is not None:
+            # phase_cross_correlation returns a REGISTRATION vector, so this is
+            # the stage move that would restore the source framing — the
+            # negative of the drift that occurred, not the drift itself
+            # (design/64).
             dx_um, dy_um = affine.px_to_um(float(shift[1]), float(shift[0]))
-            row.update(translation_stage_dx_um=dx_um, translation_stage_dy_um=dy_um,
-                       translation_magnitude_um=float(np.hypot(dx_um, dy_um)),
+            row.update(realign_move_dx_um=dx_um, realign_move_dy_um=dy_um,
+                       realign_move_magnitude_um=float(np.hypot(dx_um, dy_um)),
                        calibration_identity={"objective": affine.objective,
                                              "binning": affine.binning})
         else:
-            row["translation_um"] = None
+            row["realign_move_um"] = None
             row["calibration_warning"] = (
                 "No stage-camera affine for the current objective/binning."
             )

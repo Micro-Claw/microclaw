@@ -26,10 +26,26 @@ class CalibrationResolutionError(ValueError):
 
 @dataclass
 class StageCameraAffine:
-    """Maps image-pixel displacement → stage-µm displacement.
+    """Maps an image-pixel offset from the field centre → the RELATIVE STAGE
+    MOVE (µm) that brings that point to the centre.
 
         [dx_um]   [a b] [dx_px]
         [dy_um] = [c d] [dy_px]
+
+    It is a **correction** vector, not a displacement: feed it where a feature
+    is now, and it returns where to send the stage. The earlier wording
+    ("image-pixel displacement → stage-µm displacement") was ambiguous and cost
+    a systematically wrong-way `center_feature` — see design/64.
+
+    This is Micro-Manager's own `PixelSizeAffine` convention, so an MM affine is
+    adopted without a sign change. Derived from MM's consumer path rather than
+    assumed: `CenterAndDragListener` double-click-to-centre passes the NEGATIVE
+    of the clicked offset (`0.5 * width - center.x`) to
+    `XYNavigator.moveSampleOnDisplayPixels`, and `XYNavigator.toStageSpace`
+    applies the affine and then negates both axes ("not sure why, but for the
+    stage movement to be correct, we need to invert both axes"). The two
+    negations cancel: MM's stage move to centre a feature at offset r is +A·r,
+    which is exactly `px_to_um(r)`.
 
     Captures pixel size, camera rotation, and BOTH axis flips in one object.
     It is a property of the optical path (objective + binning), not of the
@@ -58,11 +74,17 @@ def solve_affine(
     objective: str,
     binning: int,
 ) -> StageCameraAffine:
-    """Solve the 2×2 affine from two measured image shifts.
+    """Solve the 2×2 affine from two measured registration vectors.
 
-    shift_*_px are (row, col) = (dy_px, dx_px) image shifts observed for a
-    +step_um stage move along stage-X and stage-Y respectively (the output
-    convention of skimage.registration.phase_cross_correlation).
+    shift_*_px are (row, col) = (dy_px, dx_px) as returned by
+    skimage.registration.phase_cross_correlation for a +step_um stage move along
+    stage-X and stage-Y respectively. That is the vector which registers the
+    moved frame back onto the reference — the NEGATIVE of the scene's observed
+    displacement, not the displacement itself. Inverting the stacked pair
+    therefore yields the correction map documented on StageCameraAffine: pixel
+    offset from centre → the stage move that centres it. Do not "fix" this by
+    negating here; design/64 verified the composition numerically and against
+    Micro-Manager's own affine consumers.
 
     Raises ValueError when the shifts are degenerate — a garbage affine is worse
     than none. This is a geometric backstop; calibrate_stage_to_camera diagnoses
@@ -135,11 +157,20 @@ def affine_version_key(affine: StageCameraAffine | dict) -> str:
     return f"{affine_key(payload['objective'], payload['binning'])}_sha256_{affine_payload_hash(payload)}"
 
 
-def _identity_fields(camera_device, camera_model, roi) -> dict:
+MM_AFFINE_SOURCE = "micro_manager_pixel_size_affine"
+MEASURED_AFFINE_SOURCE = "calibrate_stage_to_camera"
+
+
+def _identity_fields(camera_device, camera_model, roi, source=None) -> dict:
     return {
         "camera_device": None if camera_device is None else str(camera_device),
         "camera_model": None if camera_model is None else str(camera_model),
         "roi": None if roi is None else [int(value) for value in roi],
+        # Which routine measured this. Entries written before design/64 carry
+        # None, and None means "ours": calibrate_stage_to_camera was the only
+        # writer, so an unlabelled entry must never be treated as MM's and
+        # silently replaced by it.
+        "source": None if source is None else str(source),
     }
 
 
@@ -149,6 +180,7 @@ def save_affine(
     camera_device: str | None = None,
     camera_model: str | None = None,
     roi: list[int] | tuple[int, int, int, int] | None = None,
+    source: str | None = None,
 ) -> str:
     """Persist under the knowledge base's devices category.
 
@@ -161,7 +193,7 @@ def save_affine(
     alias = affine_key(affine.objective, affine.binning)
     version = affine_version_key(affine)
     payload = canonical_affine_payload(affine)
-    identity = _identity_fields(camera_device, camera_model, roi)
+    identity = _identity_fields(camera_device, camera_model, roi, source)
     save_entry(
         KNOWLEDGE_CATEGORY,
         version,
@@ -207,11 +239,23 @@ def load_affine_version(key: str) -> tuple[StageCameraAffine, dict]:
         "version_key": key,
         "payload": payload,
         "payload_sha256": actual_hash,
-        **_identity_fields(entry.get("camera_device"), entry.get("camera_model"), entry.get("roi")),
+        **_identity_fields(entry.get("camera_device"), entry.get("camera_model"),
+                           entry.get("roi"), entry.get("source")),
     }
 
 
-def load_affine(objective: str, binning: int) -> StageCameraAffine | None:
+def load_affine_entry(
+    objective: str, binning: int,
+) -> tuple[StageCameraAffine | None, dict]:
+    """The cached affine for this optical path, and the identity it was saved under.
+
+    The `source` in that identity decides whether Micro-Manager's own
+    PixelSizeAffine may replace it (design/64): MM is the authority until the
+    operator deliberately measures one with calibrate_stage_to_camera, and that
+    measurement then stands. The camera fields let a caller check that the cache
+    still describes the optical path in front of it — `affine_key` is only
+    (objective, binning), which does not distinguish two cameras.
+    """
     from microclaw.knowledge_manager import load_knowledge
 
     entry = (
@@ -219,21 +263,52 @@ def load_affine(objective: str, binning: int) -> StageCameraAffine | None:
         .get(KNOWLEDGE_CATEGORY, {})
         .get(affine_key(objective, binning))
     )
-    if not entry:
-        return None
-    if isinstance(entry, dict) and entry.get("current_version"):
-        return load_affine_version(str(entry["current_version"]))[0]
+    if not isinstance(entry, dict) or not entry:
+        return None, {}
+    if entry.get("current_version"):
+        affine, stored = load_affine_version(str(entry["current_version"]))
+        identity = {field: entry.get(field) if entry.get(field) is not None
+                    else stored.get(field)
+                    for field in ("camera_device", "camera_model", "roi", "source")}
+        return affine, identity
     # Legacy aliases stored the mutable payload inline. Pin one immutable copy
     # before use, then replace the alias with a pointer to it.
     try:
         affine = StageCameraAffine(**{k: entry[k] for k in AFFINE_FIELDS})
     except (KeyError, TypeError, ValueError):
-        return None
+        return None, {}
+    identity = {field: entry.get(field)
+                for field in ("camera_device", "camera_model", "roi", "source")}
     save_affine(
-        affine, camera_device=entry.get("camera_device"),
-        camera_model=entry.get("camera_model"), roi=entry.get("roi"),
+        affine, camera_device=identity["camera_device"],
+        camera_model=identity["camera_model"], roi=identity["roi"],
+        source=identity["source"],
     )
-    return affine
+    return affine, identity
+
+
+def load_affine(objective: str, binning: int) -> StageCameraAffine | None:
+    return load_affine_entry(objective, binning)[0]
+
+
+def mm_affine_is_orientation_only(affine: StageCameraAffine) -> bool:
+    """True when this affine carries MM's *orientation* and an unmeasured scale.
+
+    MM's Manual-Simple calibrator never measures a scale: it applies the pixel
+    size you already had to BOTH axes and snaps orientation to one of eight
+    axis-aligned cases (design/29, from `javap` on MMJ_.jar). Its output is
+    therefore always `scalar × signed permutation` — exact zeros, zero shear,
+    identical column scales. On M2 the true optics were anisotropic by 14% and
+    the two columns were 3.5% and 15.7% off.
+
+    A closed loop like center_feature converges through a scale error anyway
+    (it just takes more iterations); a mosaic does not. So this is reported, not
+    refused — the operator decides whether to run calibrate_stage_to_camera.
+    """
+    a, b, c, d = affine.a, affine.b, affine.c, affine.d
+    axis_aligned = (b == 0.0 and c == 0.0) or (a == 0.0 and d == 0.0)
+    scales = (math.hypot(a, c), math.hypot(b, d))
+    return axis_aligned and math.isclose(scales[0], scales[1], rel_tol=1e-9)
 
 
 def _metadata_value(metadata: dict, *keys: str):

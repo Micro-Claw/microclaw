@@ -8270,3 +8270,75 @@ one paragraph above. A warning is not a mechanism: Step 2 now prints the turns
 with `$work` already interpolated and writes them to the evidence folder, so
 there is nothing left to substitute by hand and the coordinator can see what was
 actually sent.
+
+## design/64 block 64a — center_feature moves toward the feature (M2 gated 2026-08-30)
+
+**The coordinator implemented this one inline, and the ledger row says so.** No
+runner worktree, and it began in `main`'s working tree before being moved to a
+branch. Nothing reached `main`. A Codex review was commissioned on the finished
+commit instead, which is not step 2 and should not be repeated as a pattern —
+but it did return four real defects, so the review half of the workflow earned
+its place even when the implementation half was skipped.
+
+**The user's question was the whole block.** "Look at design/64 and see if you
+agree" is a review request, and answering it took verifying the sign
+*numerically* rather than reading the doc's argument: `phase_cross_correlation`
+returns a registration vector, so `solve_affine`'s inversion already yields the
+centring move and the tool's extra minus sign doubled the error every iteration.
+
+**Two sources disagreed about which is authoritative, and only one had been
+measured.** design/29 concluded "MM is not a calibration source" after measuring
+M2's affine 3.5% and 15.7% low. The operator's instruction was the opposite: MM
+is the authority. Both are right about different things — the scale design/29
+faulted is *self-correcting in a closed loop* and fatal in a mosaic, while the
+orientation, which decides convergence versus divergence, was rig-confirmed to a
+third of a degree. That reconciliation is the reason the block could adopt MM's
+affine without contradicting the earlier finding.
+
+**design/29's own spike could not answer the sign question, and looked like it
+could.** It prints a "sign-aligned comparison" that absorbs a global flip
+(`"the flip is the motion convention, not an error"`), so its +0.30° agreement
+says nothing about direction. The answer came from Micro-Manager's source:
+`CenterAndDragListener` passes the negated offset to
+`moveSampleOnDisplayPixels`, and `XYNavigator.toStageSpace` negates again with
+the comment *"not sure why, but for the stage movement to be correct, we need to
+invert both axes"*. The reference implementation has our bug, with a comment
+admitting it.
+
+**The suite was green because two fakes described two different microscopes.**
+The calibration test shifted its scene one way for a +X move and the centring
+test shifted its spot the other, and the centring test hand-injected the
+negation of what calibration produces. `tests/synthetic_optics.py` replaces both
+with one model whose only statement is how the scene moves when the stage does.
+A reviewer then noted, correctly, that flipping the convention in *both*
+`solve_affine` and `center_feature` leaves convergence green — the fix for that
+is an oracle tying our measurement to MM's, not more convergence cases.
+
+**Three gate defects were found by running the gate, not by reading it.** It
+imported a function that does not exist and a module that was never written —
+either would have died on the first line on the rig. Worse, its convergence limb
+could not see the bug it existed for: with the defect restored the loop flailed
+for four iterations, finished 4% closer *by luck*, and reported PASS. Limb F now
+scores a **single** correction, where the arithmetic is unambiguous.
+
+**Then the rig found two more, in a gate that reported 9/9.** F2 ran *after* F
+had centred the field, entered inside tolerance, returned in **zero iterations**
+and passed — 58a's opt-out limb exactly, one block after that lesson was written
+down. And limb 0 scored a phase correlation which locked onto the wrong bead:
+23.3 px where the affine predicted 78.7. It cleared the threshold by luck; the
+re-run measured 82.7 px for the identical operation. **The same measurement, the
+same rig, two runs: 23.3 and 82.7.** Scoring it would have been a coin flip, and
+a low draw would have reported a healthy M2 as decoupled — a false statement
+about the machine. design/29 had already measured phase correlation failing on
+this exact sample; the gate did not consult it.
+
+**The operator's field was better evidence than any synthetic case.** A dense,
+slightly defocused bead region put the aggregate centroid 70 px from the
+brightest punctum, which is root cause 2 made visible: the old code would have
+driven to a point on neither bead. Ask for the awkward sample, not the clean one.
+
+**A process note worth keeping.** The coordinator paused before dry-running the
+gate — a cheap, local, reversible step — having not paused before a thousand
+lines of product code and two public result renames. The user named it: the
+pause was landing at a reportable-artifact boundary rather than a risk boundary.
+Check in before design decisions and public renames; never before verification.

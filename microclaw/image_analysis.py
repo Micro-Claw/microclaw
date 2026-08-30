@@ -518,13 +518,27 @@ def detect_features(
     max_sigma: float = 4.0,
     threshold_rel: float = 0.15,
 ) -> dict:
-    """Blob-detect puncta and return an intensity-weighted centroid — numbers,
-    not a picture (design/14 §9).
+    """Blob-detect puncta and return both a field centroid and a centring target
+    — numbers, not a picture (design/14 §9).
 
     In amr_test the model read the same field three ways across three snaps
     ("well-centered" / "just looks like noise" / "biased toward upper-right")
     because it was doing spatial statistics by eye on a thumbnail. This answers
     "is the feature centred?" deterministically and identically every time.
+
+    **Two different questions, two different answers, and confusing them was a
+    defect (design/64).** `centroid_xy_px` / `offset_from_center_px` are the
+    intensity-weighted centre of mass of ALL positive signal: a field statistic,
+    which in a frame with several objects, debris, or a gradient need not lie on
+    any detected feature at all — and which is non-null even when `n_spots` is
+    zero. `brightest_feature_xy_px` / `brightest_feature_offset_px` are the
+    single brightest detected punctum, which is what "centre the feature" means
+    and what `center_feature` steers by. They are None when nothing was
+    detected, because positive background structure is not a motion target.
+
+    The brightest blob is scored by background-subtracted signal inside its own
+    LoG footprint (radius sigma·sqrt(2)), ties broken by (y, x) so the choice is
+    deterministic on a symmetric field.
     """
     from skimage.feature import blob_log
     from scipy import ndimage
@@ -541,6 +555,8 @@ def detect_features(
             "n_spots": 0,
             "centroid_xy_px": None,
             "offset_from_center_px": None,
+            "brightest_feature_xy_px": None,
+            "brightest_feature_offset_px": None,
             "background_level": round(bg, 1),
             "snr": 0.0,
         }
@@ -550,10 +566,30 @@ def detect_features(
     )
     cy, cx = ndimage.center_of_mass(sig)
     off_x, off_y = cx - w / 2, cy - h / 2
+
+    best = None
+    for blob_y, blob_x, blob_sigma in blobs:
+        radius = max(1.0, float(blob_sigma) * 2.0 ** 0.5)
+        y0, y1 = max(0, int(blob_y - radius)), min(h, int(blob_y + radius) + 1)
+        x0, x1 = max(0, int(blob_x - radius)), min(w, int(blob_x + radius) + 1)
+        rows, cols = np.ogrid[y0:y1, x0:x1]
+        footprint = (rows - blob_y) ** 2 + (cols - blob_x) ** 2 <= radius ** 2
+        score = float(sig[y0:y1, x0:x1][footprint].sum())
+        # Ties break by (y, x) so a symmetric field always picks the same blob.
+        ranking = (-score, float(blob_y), float(blob_x))
+        if best is None or ranking < best[0]:
+            best = (ranking, float(blob_x), float(blob_y))
+    brightest_xy = None if best is None else [round(best[1], 1), round(best[2], 1)]
+    brightest_off = None if best is None else [
+        round(best[1] - w / 2, 1), round(best[2] - h / 2, 1)
+    ]
+
     return {
         "n_spots": int(len(blobs)),
         "centroid_xy_px": [round(float(cx), 1), round(float(cy), 1)],
         "offset_from_center_px": [round(float(off_x), 1), round(float(off_y), 1)],
+        "brightest_feature_xy_px": brightest_xy,
+        "brightest_feature_offset_px": brightest_off,
         "background_level": round(bg, 1),
         # The ONE snr definition (design/23 F7): (p99.5-bg)/(1.4826·MAD), NOT the
         # old peak/std. peak/std and this are different scales — leaving two

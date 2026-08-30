@@ -498,7 +498,9 @@ looking. For a sparse punctate SMLM field, that is the wrong instrument.
  "centroid_xy_px": [96, 88],          # intensity-weighted, in ROI coords
  "bbox_px": [12, 20, 180, 170],
  "offset_from_center_px": [-4, -12],
- "offset_from_center_um": [-0.4, -1.2],   # if §8 calibration is present
+ "centering_move_um": [-0.4, -1.2],   # if §8 calibration is present; design/64
+                                     # renamed this from offset_from_center_um —
+                                     # it is a stage MOVE, not a distance
  "spot_density_per_um2": 0.31}
 ```
 
@@ -1453,7 +1455,9 @@ def find_features(ctrl, guard, min_sigma: float = 1.0, max_sigma: float = 4.0,
         "snr": round(float(sig.max() / (sig.std() or 1.0)), 2),
     }
     if (affine := _load_affine(ctrl)) is not None:                       # §8
-        out["offset_from_center_um"] = [round(v, 2) for v in affine.px_to_um(off_x, off_y)]
+        # design/64: renamed centering_move_um, and computed from the brightest
+        # detected punctum rather than the aggregate centroid shown here.
+        out["centering_move_um"] = [round(v, 2) for v in affine.px_to_um(off_x, off_y)]
     if (px := float(ctrl.core.get_pixel_size_um())) > 0:
         out["spot_density_per_um2"] = round(len(blobs) / (h * w * px * px), 4)  # SMLM check
     return out
