@@ -334,13 +334,11 @@ def main(argv=None):
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--device", default="")
     parser.add_argument("--target", required=True, type=float)
-    parser.add_argument("--tool", default="move_named_stage",
-                        choices=("move_named_stage", "move_stage_z"))
+    parser.add_argument("--tool", choices=("move_named_stage", "move_stage_z"),
+                        help="usually omitted: inferred from the history")
     parser.add_argument("--mode", required=True,
                         choices=("m2-success", "m2-control", "demo"))
     a = parser.parse_args(argv)
-    if a.tool == "move_named_stage" and not a.device:
-        parser.error("--device is required for move_named_stage")
     if a.mode == "m2-control":
         if a.emitted or a.capture:
             parser.error("the control limb scores a refused call, which emits no "
@@ -350,20 +348,43 @@ def main(argv=None):
         parser.error("--emitted and --capture are required for this mode")
 
     items = []
+    history = ""
     try:
-        calls = collect_calls(load_nonempty(a.history, "history"), a.tool)
+        history = load_nonempty(a.history, "history")
     except Exception as exc:
-        calls = []
         items.append(("history artifact", NE, str(exc)))
-    matched = select(calls, a.tool, a.device, a.target)
+    # Which tool moved the axis is a fact about the session, not a decision for
+    # the operator. The demo gate (2026-08-30) was scored with --tool
+    # move_stage_z against a session that had used move_named_stage: fail-closed,
+    # but a limb mis-scored on an argument the history already answers.
+    present = {tool: collect_calls(history, tool) if history else []
+               for tool in ("move_named_stage", "move_stage_z")}
+    if a.tool:
+        tool = a.tool
+        other = "move_stage_z" if tool == "move_named_stage" else "move_named_stage"
+        if not present[tool] and present[other]:
+            items.append((f"--tool {tool}", NE,
+                          f"the history records no {tool} call, but {len(present[other])} "
+                          f"{other} call(s); re-run without --tool"))
+    else:
+        named = [tool for tool, found in present.items() if found]
+        if len(named) != 1:
+            items.append(("tool selection", NE,
+                          f"cannot infer the tool: the history records {len(named)} "
+                          "of the two move tools; pass --tool"))
+        tool = named[0] if len(named) == 1 else "move_named_stage"
+    if tool == "move_named_stage" and not a.device:
+        parser.error("--device is required for a move_named_stage session")
+    calls = present[tool]
+    matched = select(calls, tool, a.device, a.target)
     if len(matched) != 1:
         items.append(("matching move", NE,
-                      f"expected exactly one {a.tool} call at {a.device or 'the focus axis'}"
+                      f"expected exactly one {tool} call at {a.device or 'the focus axis'}"
                       f"/{a.target}, found {len(matched)} among {len(calls)} recorded"))
         call = None
     else:
         items.append(("matching move", PASS,
-                      f"exactly one {a.tool} call matched device and target"))
+                      f"exactly one {tool} call matched device and target"))
         call = matched[0]
 
     if a.mode == "m2-control":
@@ -377,7 +398,7 @@ def main(argv=None):
         if not call.refused and isinstance(call.payload, dict):
             policy = call.payload.get("band_policy")
     items.append(score_selection(a.emitted))
-    items.append(score_emitted(a.emitted, a.tool, a.device, a.target, policy))
+    items.append(score_emitted(a.emitted, tool, a.device, a.target, policy))
     items.append(score_capture(a.capture))
     return report(items, a.log)
 

@@ -223,19 +223,15 @@ if ($LASTEXITCODE -ne 0) { throw "command-sheet generation failed" }
 if (-not (Test-Path $CAPTURE)) { throw "the sheet wrote no capture" }
 ```
 
-**ROUTE: NAMED**
-
 ```powershell
 & $PYTHON (Join-Path $REPO "design\66-stage-move-gate-scorer.py") --history $HISTORY --emitted $SCRIPT --capture $CAPTURE --log $DEMOLOG --device "<demo device>" --target <demo target> --mode demo
 if ($LASTEXITCODE -ne 0) { throw "demo regression limb did not pass" }
 ```
 
-**ROUTE: FOCUS**
-
-```powershell
-& $PYTHON (Join-Path $REPO "design\66-stage-move-gate-scorer.py") --history $HISTORY --emitted $SCRIPT --capture $CAPTURE --log $DEMOLOG --tool move_stage_z --target <demo target> --mode demo
-if ($LASTEXITCODE -ne 0) { throw "demo regression limb did not pass" }
-```
+There is one scorer command for both routes: it reads which move tool the
+session used out of the history rather than being told, and on ROUTE: FOCUS the
+`--device` argument is simply omitted. Naming a `--tool` that the history does
+not hold reports which one it does.
 
 The demo limb requires `within_tolerance: true` with `measured_um` exactly equal
 to the target — the regression check — plus the selected-export limb, which

@@ -4158,3 +4158,34 @@ def test_unknown_tool_use_id_that_is_a_tool_name_names_the_real_ids(tmp_path):
                                tool_use_ids=[recorded_id])
     assert "settle_stage_move(core, 'TIRF Stage', 199.9" in (
         tmp_path / "routine.py").read_text(encoding="utf-8")
+
+
+def test_a_selection_that_emits_nothing_says_so_in_its_status(tmp_path):
+    """Block 66's demo gate, 2026-08-30: a valid id for the wrong call.
+
+    Asked to export only its move, an agent passed the id of an earlier
+    `list_stages` call — real, but not a call that emits a hardware step — and
+    got "Session script exported." back with `emitted_calls: 0`. It noticed and
+    re-exported; a quieter one ships a script that runs and does nothing.
+    """
+    guard = Guard(tmp_path)
+    records = [
+        *completed_call("list_stages", {}, {"single_axis_stages": ["Aux Z"]}),
+        *completed_call("move_named_stage", {"device": "Aux Z", "um": 60},
+                        {"device": "Aux Z", "requested_um": 60,
+                         "measured_um": 60.0}),
+    ]
+    listing_id = records[0]["content"][0]["id"]
+    move_id = records[2]["content"][0]["id"]
+
+    empty = tools.export_session_script(None, guard, "routine.py", records,
+                                        tool_use_ids=[listing_id])
+    assert empty["emitted_calls"] == 0
+    assert "performs no hardware step" in empty["status"]
+    assert "recorded_calls" in empty
+
+    # The right id keeps the plain success status.
+    real = tools.export_session_script(None, guard, "routine.py", records,
+                                       tool_use_ids=[move_id])
+    assert real["emitted_calls"] == 1
+    assert real["status"] == "Session script exported."

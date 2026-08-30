@@ -200,12 +200,23 @@ def main():
         export_session_script(SimpleNamespace(core=None), guard_for(device),
                               str(focus_script), focus,
                               tool_use_ids=["toolu_selftest_0000"])
+        focus_history = write_jsonl(root / "focus.jsonl", focus)
         code, log = run_scorer(root, "demo-focus", [
-            "--history", str(write_jsonl(root / "focus.jsonl", focus)),
+            "--history", str(focus_history),
             "--emitted", str(focus_script), "--capture", str(capture),
-            "--tool", "move_stage_z", "--target", str(target), "--mode", "demo"])
-        check("demo fallback on the core focus axis passes", code == 0,
-              "" if code == 0 else log.strip())
+            "--target", str(target), "--mode", "demo"])
+        check("demo fallback on the core focus axis passes (tool inferred)",
+              code == 0, "" if code == 0 else log.strip())
+
+        # Naming the wrong tool must explain itself, not report a null. The demo
+        # gate (2026-08-30) was scored with --tool move_stage_z against a
+        # move_named_stage session and reported only "found 0".
+        code, log = run_scorer(root, "demo-wrong-tool", [
+            "--history", str(history), "--emitted", str(script),
+            "--capture", str(capture), "--tool", "move_stage_z",
+            "--target", str(target), "--mode", "demo"])
+        check("the wrong --tool names the tool the history does hold",
+              code != 0 and "re-run without --tool" in log)
 
         # --- the two control shapes, from refusals the product actually wrote ---
         for name, stage in (("stationary", QuantizedBridgeStage(start=150.0, powered=False)),

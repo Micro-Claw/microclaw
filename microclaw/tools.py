@@ -1940,6 +1940,20 @@ def export_session_script(
     }
     if selected_ids is not None:
         result["selection_warning"] = selection_warning
+    if selected_ids is not None and emitted == 0:
+        # Every selected id was real but none of them emits a hardware step, so
+        # the script runs and does nothing. Seen on the demo machine (block 66's
+        # gate, 2026-08-30): asked to export only its move, an agent passed the
+        # id of an earlier `list_stages` call and got "Session script exported."
+        # back. It noticed `emitted_calls: 0` and re-exported with the right id;
+        # a quieter one ships the empty script. Status stays successful — the
+        # file was written, and selecting only non-emitting calls to read their
+        # SKIPPED comments is legitimate — but the result must say what it is.
+        result["status"] = (
+            "Session script exported, but it performs no hardware step: none of "
+            "the selected tool_use ids emits one. Check the ids against "
+            "recorded_calls."
+        )
     return result
 
 
