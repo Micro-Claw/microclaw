@@ -3009,6 +3009,154 @@ def test_emitted_configured_named_stage_preserves_absolute_accuracy_decision(tmp
     assert caught.value.result["verification_kind"] == "configured_accuracy"
 
 
+def test_emitted_floor_restoration_does_not_revert_to_the_relative_rule(
+    tmp_path, monkeypatch
+):
+    """The other half of design/66 test 16: a recorded restoration.
+
+    `_recorded_stage_contract` defaults a policy-less record to "relative", so
+    dropping the recorded `band_policy` is the silent, non-raising direction:
+    this 200 um displacement puts the relative band at 20 um, which accepts the
+    5 um miss the floor refuses. The `relative` half is exported and run too,
+    because a limb that raises whatever the emitter wrote is not a criterion --
+    the emitted timeout is left long enough for a passing settle to pass.
+    """
+    monkeypatch.setattr(controller, "STAGE_MOVE_POLL_S", 0.0)
+    monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
+    monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.2)
+
+    class FakeCore:
+        def set_position(self, device, target): pass
+        def device_busy(self, device): return False
+        def get_position(self, device): return 195.0
+
+    def run(source):
+        namespace = {"__file__": str(tmp_path / "routine.py"), "Core": FakeCore}
+        exec(compile(source.replace(
+            "from pycromanager import Acquisition, Core, "
+            "multi_d_acquisition_events", ""), "routine.py", "exec"), namespace)
+
+    def emitted(policy):
+        _, _, source = export(tmp_path, completed_call(
+            "move_named_stage",
+            {"device": "TIRF Stage", "um": 200.0, "absolute": True},
+            {"device": "TIRF Stage", "start_um": 0.0, "requested_um": 200.0,
+             "measured_um": 195.0, "arrival_residual_um": 5.0,
+             "tolerance_um": 2.0 if policy == "floor" else 20.0,
+             "band_policy": policy, "band_source": policy,
+             "arrival_unverifiable": False, "verification_kind": "response",
+             "within_tolerance": policy != "floor", "elapsed_s": 10.0,
+             "last_device_status": "idle"},
+        ))
+        assert (f"settle_stage_move(core, 'TIRF Stage', 200.0, 0.0, "
+                f"{policy!r}, None)") in source
+        assert f"200.0, 0.0, {policy!r}, None, _move_exc" in source
+        return source
+
+    # The control: the same landing under the relative rule is a 20 um band and
+    # the standalone script completes. Without it, the refusal below would be
+    # satisfied by any emitter that raises for any reason.
+    run(emitted("relative"))
+
+    with pytest.raises(RuntimeError) as caught:
+        run(emitted("floor"))
+    assert type(caught.value).__name__ == "StageMoveError"
+    assert caught.value.result["band_policy"] == "floor"
+    assert caught.value.result["band_source"] == "floor"
+    assert caught.value.result["tolerance_um"] == controller.STAGE_MOVE_RESPONSE_BAND_UM
+    assert caught.value.result["arrival_residual_um"] == 5.0
+
+
+@pytest.mark.parametrize("declared", [None, 0.35])
+def test_emitted_autofocus_probe_moves_use_the_recorded_focus_band(
+    tmp_path, monkeypatch, declared
+):
+    """The emitted sweep must verify against the band the RUN used.
+
+    `sweep_autofocus` and `_restore` are inlined verbatim and read `ctrl._guard`,
+    so the emitted `mm._guard` line is the only route a declared Core-focus
+    band has into a standalone script -- and until this block it was computed
+    from the live SafetyGuard at export time, not copied from the record.
+    The fake parks 1.0 um short of every plane: above the old 0.5 um constant,
+    below the 2.0 um floor the package rule gives a 1 um step, and refused only
+    by the declared 0.35 um band.
+    """
+    monkeypatch.setattr(controller, "STAGE_MOVE_POLL_S", 0.0)
+    monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
+    monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.2)
+    spec = {"device": "lock", "property": "status",
+            "in_focus_values": ["in"], "stop_when_found": False}
+    coarse = {"z_positions": [60, 61, 62, 63, 64], "measured_z_positions": [],
+              "best_z_um": 62.0, "arrival_unverifiable_count": 0,
+              "arrival_unverifiable_planes": []}
+    if declared is not None:
+        coarse["z_move_tolerance_um"] = declared
+    _, _, source = export(tmp_path, completed_call(
+        "run_autofocus",
+        {"z_min_um": 60, "z_max_um": 64, "z_step_um": 1, "method": "sweep",
+         "settle_ms": 0, "probe": spec},
+        {"converged": False, "moved": False, "coarse": coarse, "fine": None},
+    ))
+    assert (f"mm._guard = SimpleNamespace(stage_move_tolerance="
+            f"lambda device, core_focus=False: {declared!r})") in source
+
+    class FakeCore:
+        last = None
+        def __init__(self):
+            type(self).last = self
+            self.position = 50.0
+        def get_position(self, _device=None): return self.position
+        def get_focus_device(self): return "Z"
+        def set_position(self, z): self.position = float(z) - 1.0
+        def device_busy(self, _device): return False
+        def wait_for_device(self, _device): pass
+        def get_allowed_property_values(self, _device, _prop): return []
+        def get_property(self, _device, _prop): return "out"
+
+    monkeypatch.setattr("pycromanager.Core", FakeCore)
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {"__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+                 "Acquisition": object,
+                 "multi_d_acquisition_events": lambda **kwargs: []}
+    if declared is None:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+        # Five planes swept and the floor-policy restore honoured, all at a
+        # 1.0 um miss the declared band below refuses.
+        assert namespace["autofocus_result"].coarse.z_positions == [60, 61, 62, 63, 64]
+        assert namespace["autofocus_result"].coarse.configured_move_tolerance_um is None
+        assert FakeCore.last.position == 49.0
+        return
+    with pytest.raises(RuntimeError) as caught:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert type(caught.value).__name__ == "StageMoveError"
+    assert caught.value.result["tolerance_um"] == declared
+    assert caught.value.result["band_source"] == "configured"
+    assert caught.value.result["verification_kind"] == "configured_accuracy"
+
+
+def test_emitted_autofocus_band_ignores_configuration_edited_after_the_run(tmp_path):
+    """Nothing is COMPUTED per axis at export time (design/66).
+
+    The exporter used to ask the live SafetyGuard for the Core-focus band while
+    rendering. A safety config edited between the run and the export then
+    changed the band the standalone script verifies against -- in the looser
+    direction if the key had been removed -- on the one axis an operator cared
+    enough to declare.
+    """
+    guard = Guard(tmp_path)
+    guard.stage_move_tolerance = lambda device, core_focus=False: 7.531
+    tools.export_session_script(None, guard, "routine.py", completed_call(
+        "run_autofocus", {"z_range_um": 4, "z_step_um": 1, "method": "sweep"},
+        {"converged": True, "moved": True,
+         "coarse": {"z_positions": [], "measured_z_positions": [],
+                    "best_z_um": 0.0, "arrival_unverifiable_count": 0,
+                    "arrival_unverifiable_planes": []}},
+    ))
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    assert "lambda device, core_focus=False: None)" in source
+    assert "7.531" not in source
+
+
 @pytest.mark.parametrize(("label", "result"), [
     # "nothing" -> the SKIPPED comment; "partial" -> refuse()'s NOT EMITTED
     # comment. Both interpolate the recorded reason, and both used to break.

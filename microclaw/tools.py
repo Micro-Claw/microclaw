@@ -373,7 +373,15 @@ def _emit_autofocus(params: RecordedParams) -> str:
     probe = params.get("probe", signature.parameters["probe"].default)
     z_min = params.get("z_min_um")
     z_max = params.get("z_max_um")
-    configured = params.get("_export_focus_move_tolerance_um")
+    # The band the recorded sweep actually verified its probe moves against.
+    # Read from the run's own result, never re-derived from the live
+    # SafetyGuard at export time: the config may have been edited since the
+    # run, and a dropped key would loosen the emitted script silently on
+    # exactly the axis an operator cared enough to declare. A record written
+    # before this block, or one whose sweep never ran, carries no key and
+    # emits None -- the package rule, which is what such a run used.
+    coarse = params.result.get("coarse") or {}
+    configured = coarse.get("z_move_tolerance_um")
     policy_line = (
         "mm._guard = SimpleNamespace(stage_move_tolerance="
         f"lambda device, core_focus=False: {configured!r})"
@@ -1103,6 +1111,7 @@ class _RecordedSafetyGuard:
             raise SafetyViolation(f"Named stage {{device!r}} has no recorded envelope")
         self._bounded(position_um, envelope["min_um"], envelope["max_um"],
                       f"Named stage {{device}}")
+
     def stage_move_tolerance(self, device, *, core_focus=False):
         if core_focus:
             return _LIMITS.get("z_move_tolerance_um")
@@ -1731,11 +1740,6 @@ def export_session_script(
         ):
             params["_export_safety_limits"] = safety_limits
             params["_export_safety_limits_error"] = safety_limits_error
-        if name == "run_autofocus":
-            lookup = getattr(guard, "stage_move_tolerance", None)
-            params["_export_focus_move_tolerance_um"] = (
-                lookup("", core_focus=True) if lookup else None
-            )
     # Every one of these is reached only by the adaptive block: hashlib/io/json
     # by the hook artifact and log writers, queue by the candidate stream,
     # threading by SurveyProgress, asdict and
@@ -5615,6 +5619,14 @@ def _sweep_payload(sweep, min_contrast: float | None = None,
         "arrival_unverifiable_count": len(sweep.arrival_unverifiable_indices),
         "arrival_unverifiable_planes": list(sweep.arrival_unverifiable_indices),
     }
+    # Present only where the axis has a declared band, exactly as
+    # get_system_state reports it: absent means the package response rule, so
+    # an unconfigured payload keeps the shape every consumer already reads.
+    # _emit_autofocus copies this out of the record instead of asking the live
+    # SafetyGuard, so a config edited after the run cannot change the band the
+    # exported script verifies against (design/66, "Standalone export").
+    if getattr(sweep, "configured_move_tolerance_um", None) is not None:
+        payload["z_move_tolerance_um"] = sweep.configured_move_tolerance_um
     # peak_interior answers "is the chosen plane away from a sweep boundary",
     # which only means anything about a curve that was swept to its end. An
     # early-stopped sweep stops BECAUSE it found the target, so the chosen plane

@@ -1388,6 +1388,7 @@ class SafetyGuard:
                 "`plugins.allow_hardware_motion: false`. Hardware-motion plugin hooks "
                 "are disabled."
             )
+
     def stage_move_tolerance(self, device: str, *, core_focus: bool = False
                              ) -> float | None:
         """Return a declared absolute arrival band for one authorized axis."""
