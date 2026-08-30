@@ -840,7 +840,16 @@ def test_failed_and_partial_acquisitions_are_not_replayed_as_successes(tmp_path)
     visited, acquisitions = [], []
 
     class StageCore:
-        def set_xy_position(self, x, y): visited.append((x, y))
+        # Bridge shaped, and a STAGE: it reports where it is, and it only gets
+        # there because something wrote to it. A fake that answers the target
+        # before the write cannot fail the emitted arrival contract.
+        xy = (0.0, 0.0)
+        def set_xy_position(self, x, y):
+            visited.append((x, y)); StageCore.xy = (float(x), float(y))
+        def get_xy_stage_device(self): return "XY"
+        def get_x_position(self): return StageCore.xy[0]
+        def get_y_position(self): return StageCore.xy[1]
+        def device_busy(self, _device): return False
         def set_position(self, z): pass
         def wait_for_device(self, _device): pass
 
@@ -964,7 +973,13 @@ def test_script_runs_past_a_call_that_did_nothing_to_the_one_that_ran(tmp_path):
     visited, acquisitions, writes = [], [], []
 
     class DemoCore:
-        def set_xy_position(self, x, y): visited.append((x, y))
+        xy = (0.0, 0.0)
+        def set_xy_position(self, x, y):
+            visited.append((x, y)); DemoCore.xy = (float(x), float(y))
+        def get_xy_stage_device(self): return "XY"
+        def get_x_position(self): return DemoCore.xy[0]
+        def get_y_position(self): return DemoCore.xy[1]
+        def device_busy(self, _device): return False
         def set_position(self, z): pass
         def wait_for_device(self, _device): pass
         def set_property(self, d, p, v): writes.append((d, p, v))
@@ -1524,8 +1539,14 @@ def _exec_acquisition_source(source, script_path=None):
         def __init__(self):
             self.moves = []
             self.z_moves = []
+            self.xy = (0.0, 0.0)
 
-        def set_xy_position(self, x, y): self.moves.append((x, y))
+        def set_xy_position(self, x, y):
+            self.moves.append((x, y)); self.xy = (float(x), float(y))
+        def get_xy_stage_device(self): return "XY"
+        def get_x_position(self): return self.xy[0]
+        def get_y_position(self): return self.xy[1]
+        def device_busy(self, _device): return False
         def set_position(self, z): self.z_moves.append(z)
         def set_exposure(self, _exposure): pass
 
@@ -1633,12 +1654,17 @@ def test_realistic_emitted_routine_runs_to_completion_against_fake_core(tmp_path
             self.z = 0.0
             self.snaps = 0
             self.moves = []
+            self.xy = (0.0, 0.0)
 
         def get_focus_device(self): return "Z"
         def get_position(self, _device=None): return self.z
         def set_position(self, z): self.z = float(z)
         def device_busy(self, _device): return False
-        def set_xy_position(self, x, y): self.moves.append((x, y))
+        def set_xy_position(self, x, y):
+            self.moves.append((x, y)); self.xy = (float(x), float(y))
+        def get_xy_stage_device(self): return "XY"
+        def get_x_position(self): return self.xy[0]
+        def get_y_position(self): return self.xy[1]
         def wait_for_device(self, _device): pass
         def snap_image(self): self.snaps += 1
         def get_bytes_per_pixel(self): return 2
@@ -4019,6 +4045,9 @@ def test_emitted_center_feature_moves_the_same_way_as_the_live_tool(tmp_path,
     ctrl.core.get_image_height.return_value = 160
     guard = MagicMock()
     guard.check_xy.return_value = None
+    # No declared XY arrival band on this rig: a MagicMock would answer with a
+    # MagicMock, which the tool then reports and json.dumps cannot encode.
+    guard.stage_move_tolerance.return_value = None
     optics = SyntheticOptics(OPTICS_CASES["flip_x"])
     Centring.calibrate(optics, ctrl, guard, monkeypatch)
 
@@ -4044,6 +4073,9 @@ def test_emitted_center_feature_moves_the_same_way_as_the_live_tool(tmp_path,
         def set_relative_xy_position(self, dx, dy):
             self.moves.append((dx, dy)); replay.move(dx, dy)
         def get_xy_stage_device(self): return "XY"
+        def get_x_position(self): return replay.pos["x"]
+        def get_y_position(self): return replay.pos["y"]
+        def device_busy(self, _device): return False
         def wait_for_device(self, device): pass
 
     core = Core()
@@ -4111,6 +4143,7 @@ def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
         def set_relative_xy_position(self, dx, dy):
             self.moves.append((dx, dy)); self.x += dx; self.y += dy
         def get_xy_stage_device(self): return "XY"
+        def device_busy(self, device): self.waits.append(device); return False
         def wait_for_device(self, device): self.waits.append(device)
 
     core = Core()
@@ -4123,8 +4156,14 @@ def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     _exec_export_with_core(source, core, tmp_path / "routine.py")
     assert core.snaps == 2
     assert core.moves == [(2.0, 0.0)]
-    assert core.waits == ["XY"]
-    assert "settle_stage_move" not in source
+    # The emitted loop no longer calls wait_for_device: it settles. Every poll
+    # asks the XY device whether it is busy, which is evidence and not the gate.
+    assert core.waits and set(core.waits) == {"XY"}
+    assert "settle_xy_move(core, core.get_xy_stage_device()" in source
+    assert "core.wait_for_device(core.get_xy_stage_device())" not in source
+    # The single-axis contract is DEFINED (one contract, both halves) but this
+    # session moved no focus axis, so nothing calls it.
+    assert "settle_stage_move(core," not in source
     assert "<= 0.5" in source
     assert "residuals_px" not in source
 

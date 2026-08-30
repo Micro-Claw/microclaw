@@ -78,6 +78,8 @@ class StageConstraints:
     z_min: Optional[float] = None
     z_max: Optional[float] = None
     z_move_tolerance_um: Optional[float] = None
+    x_move_tolerance_um: Optional[float] = None
+    y_move_tolerance_um: Optional[float] = None
 
 
 @dataclass
@@ -381,6 +383,10 @@ def _stage_constraints(
             core[f"{identity.axis}_max"] = policy.maximum.bound
     focus = ActuatorId("core_focus", None, "stage-position", "z")
     core["z_move_tolerance_um"] = tolerances.get(focus)
+    for axis in ("x", "y"):
+        core[f"{axis}_move_tolerance_um"] = tolerances.get(
+            ActuatorId("core_xy", None, "stage-position", axis)
+        )
     return StageConstraints(**core), named
 
 
@@ -481,13 +487,6 @@ class ParsedSafetyConfig:
             return value
 
         stage_cfg = mapping("stage")
-        for axis in ("x", "y"):
-            key = f"{axis}_move_tolerance_um"
-            if key in stage_cfg:
-                problem(
-                    f"stage.{key}",
-                    "cannot be used until move_stage_xy has an arrival loop",
-                )
         camera_cfg = mapping("camera")
         analysis_cfg = mapping("analysis")
         acquisition_cfg = mapping("acquisition")
@@ -700,6 +699,12 @@ class ParsedSafetyConfig:
         tolerance_fields = [
             (stage_cfg, "z_move_tolerance_um", "stage.z_move_tolerance_um",
              ActuatorId("core_focus", None, "stage-position", "z")),
+            *[
+                (stage_cfg, f"{axis}_move_tolerance_um",
+                 f"stage.{axis}_move_tolerance_um",
+                 ActuatorId("core_xy", None, "stage-position", axis))
+                for axis in ("x", "y")
+            ],
             *[
                 (item, "move_tolerance_um", f"named_stages[{index}].move_tolerance_um",
                  ActuatorId("named", item.get("device"), "stage-position"))
@@ -1389,11 +1394,23 @@ class SafetyGuard:
                 "are disabled."
             )
 
-    def stage_move_tolerance(self, device: str, *, core_focus: bool = False
-                             ) -> float | None:
-        """Return a declared absolute arrival band for one authorized axis."""
+    def stage_move_tolerance(self, device: str, *, core_focus: bool = False,
+                             core_axis: str | None = None) -> float | None:
+        """Return a declared absolute arrival band for one authorized axis.
+
+        `core_focus` addresses the Core focus device; `core_axis` addresses one
+        Core XY axis ("x" or "y"), which is banded per axis because a pair is
+        only as verified as its weaker half. A named stage is looked up by
+        label, as before. There is deliberately no path here to a package
+        default: a guardless controller uses the package rule at the settle
+        site, never a second constant.
+        """
         if core_focus:
             return self._c.stage.z_move_tolerance_um
+        if core_axis is not None:
+            if core_axis not in ("x", "y"):
+                raise ValueError(f"unsupported core stage axis {core_axis!r}")
+            return getattr(self._c.stage, f"{core_axis}_move_tolerance_um")
         limits = next(
             (item for item in self._c.named_stages if item.device == device), None
         )

@@ -11,8 +11,19 @@ from microclaw.safety import SafetyConstraints, SafetyGuard, StageConstraints, C
 @pytest.fixture
 def mock_core():
     core = MagicMock()
-    core.get_x_position.return_value = 0.0
-    core.get_y_position.return_value = 0.0
+    # A stage, not a constant. Every XY write moves the position the reads
+    # answer with, because block 64d's arrival loop polls until the MEASURED
+    # position is in band -- a fake that answers 0.0 forever is a stage that
+    # never responds, which is the failure case, not the ordinary one. Park the
+    # stage somewhere, or model a landing that misses, by writing to
+    # `core.xy_position` (or giving set_xy_position its own side_effect).
+    core.xy_position = {"x": 0.0, "y": 0.0}
+    core.get_x_position.side_effect = lambda: core.xy_position["x"]
+    core.get_y_position.side_effect = lambda: core.xy_position["y"]
+    core.set_xy_position.side_effect = lambda x, y: core.xy_position.update(
+        x=float(x), y=float(y))
+    core.set_relative_xy_position.side_effect = lambda dx, dy: core.xy_position.update(
+        x=core.xy_position["x"] + float(dx), y=core.xy_position["y"] + float(dy))
     core.get_position.return_value = 50.0
     core.get_exposure.return_value = 100.0
     core.get_xy_stage_device.return_value = "DXYStage"

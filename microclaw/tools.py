@@ -87,10 +87,15 @@ from microclaw.controller import (
     MicroscopeController,
     PositionListConflict,
     PositionProjection,
+    StageMoveError,
+    XYStageMoveError,
     dataset_stack_files,
     read_stage_start_position,
+    read_xy_start_position,
     settle_stage_move,
+    settle_xy_move,
     stage_move_dispatch_failure,
+    xy_stage_move_dispatch_failure,
 )
 from microclaw import controller as move_controller
 from microclaw.errors import hint_for_error, humanize_java_error
@@ -304,6 +309,33 @@ def _emit_find_features(params: RecordedParams) -> str:
     ])
 
 
+def _emit_relative_xy_contract_lines(indent: str, dx_expr: str, dy_expr: str,
+                                     configured_x, configured_y) -> list[str]:
+    """The XY arrival contract for a move whose target is only known at run time.
+
+    Emitted, never hand-written as a paraphrase: the loop itself is inlined by
+    `_stage_move_contract_source` with `inspect.getsource`, and these five lines
+    only resolve the target and call it.
+    """
+    device = "core.get_xy_stage_device()"
+    policy = "'relative'"
+    bands = f"{configured_x!r}, {configured_y!r}"
+    return [
+        f"{indent}_xy_start_x, _xy_start_y = read_xy_start_position("
+        f"core, {device}, None, None, {policy}, {bands})",
+        f"{indent}_xy_target_x = _xy_start_x + {dx_expr}",
+        f"{indent}_xy_target_y = _xy_start_y + {dy_expr}",
+        f"{indent}try:",
+        f"{indent}    core.set_relative_xy_position({dx_expr}, {dy_expr})",
+        f"{indent}except Exception as _move_exc:",
+        f"{indent}    raise xy_stage_move_dispatch_failure("
+        f"core, {device}, _xy_target_x, _xy_target_y, _xy_start_x, _xy_start_y, "
+        f"{policy}, {bands}, _move_exc) from _move_exc",
+        f"{indent}settle_xy_move(core, {device}, _xy_target_x, _xy_target_y, "
+        f"_xy_start_x, _xy_start_y, {policy}, {bands})",
+    ]
+
+
 def _emit_center_feature(params: RecordedParams) -> str:
     affine = params.result.get("affine_coefficients")
     if not isinstance(affine, dict) or any(key not in affine for key in ("a", "b", "c", "d")):
@@ -334,8 +366,17 @@ def _emit_center_feature(params: RecordedParams) -> str:
         "    _center_dx_px, _center_dy_px = _center_residual",
         "    _center_dx_um = _center_affine[0] * _center_dx_px + _center_affine[1] * _center_dy_px",
         "    _center_dy_um = _center_affine[2] * _center_dx_px + _center_affine[3] * _center_dy_px",
-        "    core.set_relative_xy_position(_center_dx_um, _center_dy_um)",
-        "    core.wait_for_device(core.get_xy_stage_device())",
+        # The correction is computed at run time, so the start is READ at run
+        # time, exactly as the live move_stage_xy does for a relative move --
+        # the same shape as the inlined sweep_autofocus, which reads its start
+        # per plane. Only the declared bands are literals, copied out of the
+        # record so the standalone script cannot verify against a looser band
+        # than the run did.
+        *_emit_relative_xy_contract_lines(
+            "    ", "_center_dx_um", "_center_dy_um",
+            params.result.get("x_move_tolerance_um"),
+            params.result.get("y_move_tolerance_um"),
+        ),
     ])
 
 
@@ -463,8 +504,19 @@ def _emit_go_to_position(params: RecordedParams) -> str:
     result = params.result
     if "x_um" not in result or "y_um" not in result:
         raise CannotEmit("the recorded result has no resolved XY coordinates")
-    lines = [f"core.set_xy_position({result['x_um']!r}, {result['y_um']!r})"]
+    # The recorded arrival contract, or -- for a fixture predating this block --
+    # the package rule with no start, which is the stricter floor.
+    xy_record = result.get("xy_move") if isinstance(result.get("xy_move"), dict) else {}
+    x_um, y_um = result["x_um"], result["y_um"]
+    lines = [
+        _emit_xy_dispatch(f"core.set_xy_position({x_um!r}, {y_um!r})",
+                          x_um, y_um, xy_record),
+        _emit_xy_settle(x_um, y_um, xy_record),
+    ]
     if result.get("z_um") is not None:
+        # Z here is still a bare write: this emitter's focus straggler is
+        # design/66's, and design/68 §"Out of scope" leaves it to the next
+        # Z-motion block rather than growing a second contract here.
         lines.append(f"core.set_position({result['z_um']!r})")
     return "\n".join(lines)
 
@@ -559,8 +611,28 @@ def _emit_multiposition(params: RecordedParams) -> str:
             f"name={params.get('name', 'multipos')!r}) as acq:\n"
             + "    acq.acquire(events)"
         )
+    # Every per-position XY move in the live tile path is settled, so every one
+    # here is too. The targets are literals but the START is read per position
+    # at run time, exactly as _run_protocol_at reads it; only the declared bands
+    # are copied out of the record, which is where the run's own bands live.
+    recorded_xy = next(
+        (item["xy_move"] for item in (params.result.get("results") or [])
+         if isinstance(item.get("xy_move"), dict)), {}
+    )
+    _, _, _, tile_cx, tile_cy = _recorded_xy_contract(recorded_xy)
+    device = "core.get_xy_stage_device()"
+    bands = f"{tile_cx!r}, {tile_cy!r}"
     lines = [f"for position in {positions!r}:",
-             "    core.set_xy_position(position['x_um'], position['y_um'])",
+             f"    _xy_start_x, _xy_start_y = read_xy_start_position("
+             f"core, {device}, position['x_um'], position['y_um'], 'relative', {bands})",
+             "    try:",
+             "        core.set_xy_position(position['x_um'], position['y_um'])",
+             "    except Exception as _move_exc:",
+             f"        raise xy_stage_move_dispatch_failure(core, {device}, "
+             f"position['x_um'], position['y_um'], _xy_start_x, _xy_start_y, "
+             f"'relative', {bands}, _move_exc) from _move_exc",
+             f"    settle_xy_move(core, {device}, position['x_um'], position['y_um'], "
+             f"_xy_start_x, _xy_start_y, 'relative', {bands})",
              "    if position.get('z_um') is not None:",
              "        core.set_position(position['z_um'])"]
     if protocol == "snap":
@@ -1113,9 +1185,11 @@ class _RecordedSafetyGuard:
         self._bounded(position_um, envelope["min_um"], envelope["max_um"],
                       f"Named stage {{device}}")
 
-    def stage_move_tolerance(self, device, *, core_focus=False):
+    def stage_move_tolerance(self, device, *, core_focus=False, core_axis=None):
         if core_focus:
             return _LIMITS.get("z_move_tolerance_um")
+        if core_axis is not None:
+            return _LIMITS.get(f"{{core_axis}}_move_tolerance_um")
         return _LIMITS.get("named_stage_move_tolerances_um", {{}}).get(device)
     def check_device_property(self, core, device, prop, value, *, approved_envelope=False):
         envelope = globals().get("_PROPERTY_ENVELOPE")
@@ -1732,6 +1806,8 @@ def export_session_script(
                 "exposure_ms": (0.0, camera.max_exposure_ms),
                 "analysis_min_snr": guard.analysis_min_snr,
                 "z_move_tolerance_um": getattr(stage, "z_move_tolerance_um", None),
+                "x_move_tolerance_um": getattr(stage, "x_move_tolerance_um", None),
+                "y_move_tolerance_um": getattr(stage, "y_move_tolerance_um", None),
                 "named_stage_move_tolerances_um": {
                     item.device: getattr(item, "move_tolerance_um", None)
                     for item in getattr(constraints, "named_stages", [])
@@ -1859,6 +1935,8 @@ def export_session_script(
     stage_moves = not adaptive_used and (
         autofocus_used or "settle_stage_move(" in body_text
         or "stage_move_dispatch_failure(" in body_text
+        or "settle_xy_move(" in body_text
+        or "read_xy_start_position(" in body_text
     )
     lines = [
         "from __future__ import annotations",
@@ -2718,11 +2796,70 @@ def get_xy_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return result
 
 
-@emits(lambda p: (
-    f"core.set_xy_position({p['x_um']!r}, {p['y_um']!r})"
-    if p.get("absolute", True) else
-    f"core.set_relative_xy_position({p['x_um']!r}, {p['y_um']!r})"
-))
+def _recorded_xy_contract(result: dict):
+    """Recover (start_x, start_y, band_policy, configured_x, configured_y).
+
+    Same rule as `_recorded_stage_contract`: the policy and any declared band
+    are copied out of the record, never re-derived from the live SafetyGuard,
+    which may have been edited since the run. A record with no XY arrival
+    contract exists only in hand-built fixtures predating this block; it emits
+    the package rule with no start, which is stricter (the floor) and cannot
+    substantiate non-response at all.
+    """
+    start = result.get("start_um")
+    policy = result.get("band_policy", "relative")
+    configured = [
+        result.get(f"{axis}_tolerance_um")
+        if result.get(f"{axis}_band_source") == "configured" else None
+        for axis in ("x", "y")
+    ]
+    start_x, start_y = (None, None) if start is None else (start[0], start[1])
+    return start_x, start_y, policy, configured[0], configured[1]
+
+
+def _emit_xy_settle(target_x, target_y, result: dict) -> str:
+    sx, sy, policy, cx, cy = _recorded_xy_contract(result)
+    return (f"settle_xy_move(core, core.get_xy_stage_device(), "
+            f"{target_x!r}, {target_y!r}, {sx!r}, {sy!r}, "
+            f"{policy!r}, {cx!r}, {cy!r})")
+
+
+def _emit_xy_dispatch(set_line: str, target_x, target_y, result: dict) -> str:
+    sx, sy, policy, cx, cy = _recorded_xy_contract(result)
+    return "\n".join([
+        "try:",
+        f"    {set_line}",
+        "except Exception as _move_exc:",
+        f"    raise xy_stage_move_dispatch_failure(core, core.get_xy_stage_device(), "
+        f"{target_x!r}, {target_y!r}, {sx!r}, {sy!r}, {policy!r}, {cx!r}, {cy!r}, "
+        f"_move_exc) from _move_exc",
+    ])
+
+
+def _emit_move_stage_xy(params: RecordedParams) -> str:
+    """Emit the resolved ABSOLUTE move, exactly as the Z and named-stage
+    emitters do: a recorded relative displacement re-resolved against wherever
+    the standalone script's stage happens to sit lands somewhere else entirely,
+    and would then be settled against a target it was never sent to."""
+    result = params.result
+    requested = result.get("requested_um")
+    if requested is None and params.get("absolute", True):
+        # An absolute call carries its own target; only a relative one needs the
+        # run to have resolved it. Same fallback as _emit_move_stage_z.
+        requested = [params.get("x_um"), params.get("y_um")]
+    if requested is None or any(value is None for value in requested):
+        raise CannotEmit("the XY stage move recorded no resolved target")
+    target_x, target_y = requested
+    return "\n".join([
+        _emit_xy_dispatch(
+            f"core.set_xy_position({target_x!r}, {target_y!r})",
+            target_x, target_y, result,
+        ),
+        _emit_xy_settle(target_x, target_y, result),
+    ])
+
+
+@emits(_emit_move_stage_xy)
 def move_stage_xy(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -2730,34 +2867,48 @@ def move_stage_xy(
     y_um: float,
     absolute: bool = True,
 ) -> dict:
-    if absolute:
-        target_x, target_y = x_um, y_um
-    else:
-        current_x = ctrl.core.get_x_position()
-        current_y = ctrl.core.get_y_position()
-        target_x = current_x + x_um
-        target_y = current_y + y_um
+    device = ctrl.core.get_xy_stage_device()
+    configured_x = guard.stage_move_tolerance(device, core_axis="x")
+    configured_y = guard.stage_move_tolerance(device, core_axis="y")
+    # One read, used as both the relative origin and the verified start --
+    # move_named_stage's idiom, for the same reason: two back-to-back bridge
+    # reads let the band be computed from a different coordinate than the one
+    # the target was resolved against. Reading before the guard check is also
+    # what makes a down link raise the typed contract rather than an untyped
+    # bridge exception; a read is not a command, and an out-of-bounds target
+    # still refuses before anything is written.
+    start_x, start_y = read_xy_start_position(
+        ctrl.core, device,
+        x_um if absolute else None, y_um if absolute else None,
+        "relative", configured_x, configured_y,
+    )
+    target_x = x_um if absolute else start_x + x_um
+    target_y = y_um if absolute else start_y + y_um
 
     guard.check_xy(target_x, target_y)
 
-    if absolute:
-        ctrl.core.set_xy_position(target_x, target_y)
-    else:
-        ctrl.core.set_relative_xy_position(x_um, y_um)
-
-    _wait(ctrl, ctrl.core.get_xy_stage_device())
-    # Report requested vs achieved: in amr_test a Y move carried a 1.1 µm
-    # unrequested X excursion that nothing surfaced (design/14 §8).
-    achieved_x = float(ctrl.core.get_x_position())
-    achieved_y = float(ctrl.core.get_y_position())
+    try:
+        if absolute:
+            ctrl.core.set_xy_position(target_x, target_y)
+        else:
+            ctrl.core.set_relative_xy_position(x_um, y_um)
+    except Exception as exc:
+        raise xy_stage_move_dispatch_failure(
+            ctrl.core, device, target_x, target_y, start_x, start_y,
+            "relative", configured_x, configured_y, exc,
+        ) from exc
+    # A device that is not busy is not a device that arrived (block 56): the
+    # old `_wait` plus one immediate read reported the PRE-move position as an
+    # achievement. `achieved_um`/`error_um` still carry the design/14 §8
+    # unrequested-excursion evidence, per axis and signed.
+    result = settle_xy_move(
+        ctrl.core, device, target_x, target_y, start_x, start_y,
+        "relative", configured_x, configured_y,
+    )
     return {
         "x_um": round(target_x, 3),
         "y_um": round(target_y, 3),
-        "achieved_um": [round(achieved_x, 3), round(achieved_y, 3)],
-        "error_um": [
-            round(achieved_x - target_x, 3),
-            round(achieved_y - target_y, 3),
-        ],
+        **result,
         "status": "Moved.",
     }
 
@@ -2814,6 +2965,16 @@ def _stage_move_contract_source() -> str:
         inspect.getsource(move_controller.stage_move_dispatch_failure),
         inspect.getsource(move_controller.read_stage_start_position),
         inspect.getsource(move_controller.settle_stage_move),
+        # The XY half of the same contract, inlined for the same reason: an
+        # emitted loop hand-copied from this one drifts silently, and the
+        # per-axis banding is the whole point of it.
+        inspect.getsource(move_controller.XYStageMoveError),
+        inspect.getsource(move_controller._xy_axis_value),
+        inspect.getsource(move_controller._xy_move_record),
+        inspect.getsource(move_controller._xy_move_failure),
+        inspect.getsource(move_controller.xy_stage_move_dispatch_failure),
+        inspect.getsource(move_controller.read_xy_start_position),
+        inspect.getsource(move_controller.settle_xy_move),
     ])
 
 
@@ -3661,6 +3822,10 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
         y = ctrl.core.get_y_position()
         state["x_um"] = round(x, 3)
         state["y_um"] = round(y, 3)
+        for axis in ("x", "y"):
+            declared = getattr(guard._c.stage, f"{axis}_move_tolerance_um", None)
+            if declared is not None:
+                state[f"{axis}_move_tolerance_um"] = declared
         violation = _bounds_violation(guard.check_xy, x, y)
         if violation:
             out_of_bounds.append(violation)
@@ -5447,7 +5612,23 @@ def center_feature(
         }
 
     affine_coefficients = {key: getattr(affine, key) for key in ("a", "b", "c", "d")}
-    context = {"affine_coefficients": affine_coefficients, **calibration}
+    xy_device = ctrl.core.get_xy_stage_device()
+    # Reported, not looked up at export time: the config may be edited between
+    # the run and the export, and a dropped band loosens the emitted loop
+    # silently on exactly the axis an operator cared enough to declare.
+    arrival_context = {
+        "x_move_tolerance_um": guard.stage_move_tolerance(xy_device, core_axis="x"),
+        "y_move_tolerance_um": guard.stage_move_tolerance(xy_device, core_axis="y"),
+    }
+    # A final correction is routinely smaller than the 2.0 um response floor,
+    # so it reports arrival_unverifiable and that is CORRECT -- the loop's next
+    # residual is the response evidence, and design/67's rising/plateaued/
+    # still-falling classification is already the detector. Recorded, never a
+    # refusal.
+    arrival_unverifiable_corrections: list[int] = []
+    context = {"affine_coefficients": affine_coefficients, **calibration,
+               **arrival_context,
+               "arrival_unverifiable_corrections": arrival_unverifiable_corrections}
     residual = None
     residual_offset_um = None
     residuals_px = []
@@ -5519,7 +5700,10 @@ def center_feature(
             break
         dx_um, dy_um = residual_move_um
         commanded_corrections_um.append(math.hypot(dx_um, dy_um))
-        move_stage_xy(ctrl, guard, dx_um, dy_um, absolute=False)
+        correction = move_stage_xy(ctrl, guard, dx_um, dy_um, absolute=False)
+        if (correction.get("x_arrival_unverifiable")
+                or correction.get("y_arrival_unverifiable")):
+            arrival_unverifiable_corrections.append(i)
 
     smallest_correction_um = (
         min(commanded_corrections_um) if commanded_corrections_um else None
@@ -6058,8 +6242,11 @@ def go_to_position(
     guard.check_xy(pos["x_um"], pos["y_um"])
     if "z_um" in pos:
         guard.check_z(pos["z_um"])
-    ctrl.go_to_position(name)
-    return {"status": f"Moved to '{name}'.", **pos}
+    moves = ctrl.go_to_position(name)
+    # What each axis measured, not only what was asked for -- and the exporter
+    # reads the XY band out of exactly this record rather than guessing one.
+    return {"status": f"Moved to '{name}'.", **pos,
+            **(moves if isinstance(moves, dict) else {})}
 
 
 @emits_nothing
@@ -6311,12 +6498,34 @@ def _run_protocol_at(
     reservation: Reservation | None = None,
 ) -> dict:
     guard.check_xy(x_um, y_um)
-    ctrl.core.set_xy_position(x_um, y_um)
-    _wait(ctrl, ctrl.core.get_xy_stage_device())
+    # The tile path's own analogue of the per-position Z straggler: a scan that
+    # exposes at a position the stage never reached is the defect block 56 fixed
+    # for Z. Costs ~0.1-0.15 s per position; weighed and accepted (design/68).
+    xy_device = ctrl.core.get_xy_stage_device()
+    configured_x = guard.stage_move_tolerance(xy_device, core_axis="x")
+    configured_y = guard.stage_move_tolerance(xy_device, core_axis="y")
+    start_x, start_y = read_xy_start_position(
+        ctrl.core, xy_device, x_um, y_um, "relative", configured_x, configured_y
+    )
+    try:
+        ctrl.core.set_xy_position(x_um, y_um)
+    except Exception as exc:
+        raise xy_stage_move_dispatch_failure(
+            ctrl.core, xy_device, x_um, y_um, start_x, start_y,
+            "relative", configured_x, configured_y, exc
+        ) from exc
+    xy_move = settle_xy_move(
+        ctrl.core, xy_device, x_um, y_um, start_x, start_y,
+        "relative", configured_x, configured_y
+    )
     if z_um is not None:
         guard.check_z(z_um)
         ctrl.core.set_position(z_um)
         _wait(ctrl, ctrl.core.get_focus_device())
+    # Where the stage actually got to, per axis, on every row this call
+    # produces -- the tile coordinates elsewhere in the row are what was ASKED
+    # for, and the whole point of the contract is that those can differ.
+    moved = {"xy_move": xy_move}
     marked = {}
     if mark_position_in_list:
         # Same path as the mark_position tool: mirrors into microclaw's list
@@ -6341,6 +6550,7 @@ def _run_protocol_at(
             "position": pos_label,
             "status": "snapped",
             "saved": False,
+            **moved,
             **marked,
             # No metric_valid_for stamp per tile: the grid shares one
             # ROI/exposure/binning, so the caller stamps it once. A bare float
@@ -6371,6 +6581,7 @@ def _run_protocol_at(
         return {
             "position": pos_label,
             "error": f"save_dir is required for protocol '{protocol}'.",
+            **moved,
             **marked,
         }
     Path(pos_save_dir).mkdir(parents=True, exist_ok=True)
@@ -6379,15 +6590,16 @@ def _run_protocol_at(
             ctrl, guard, save_dir=pos_save_dir, name=pos_label,
             _reservation=reservation, **params
         )
-        return {"position": pos_label, **marked, **r}
+        return {"position": pos_label, **moved, **marked, **r}
     elif protocol == "timelapse":
         r = run_timelapse(
             ctrl, guard, save_dir=pos_save_dir, name=pos_label,
             _reservation=reservation, **params
         )
-        return {"position": pos_label, **marked, **r}
+        return {"position": pos_label, **moved, **marked, **r}
     else:
-        return {"position": pos_label, "error": f"Unknown protocol '{protocol}'."}
+        return {"position": pos_label, **moved,
+                "error": f"Unknown protocol '{protocol}'."}
 
 
 @_acquisition_entry_point
@@ -6610,6 +6822,15 @@ def run_multiposition_acquisition(
                     ]
                     unterminated = True
                     raise
+                except StageMoveError:
+                    # A stage that did not demonstrate its response is not a
+                    # per-position error to record and walk past: the very next
+                    # thing this loop does is command that stage again. Block
+                    # 60a found this exact shape -- a broad handler that
+                    # flattened a typed failure and KEPT ACQUIRING, with the
+                    # session-level refusal powerless because it lives at
+                    # execute_tool, outside the loop.
+                    raise
                 except Exception as e:
                     results.append({"position": pos_label, **where, "error": str(e)})
         finally:
@@ -6709,20 +6930,15 @@ def run_tile_acquisition(
         # the move *home*, stranding the objective out over the sample on the
         # last tile — the opposite of what the guard is for.
         return_started = time.monotonic()
-        ctrl.set_xy(center_x, center_y)
-        try:
-            achieved_x = float(ctrl.core.get_x_position())
-            achieved_y = float(ctrl.core.get_y_position())
-            return_result = {
-                "requested_um": [center_x, center_y],
-                "achieved_um": [achieved_x, achieved_y],
-                "error_um": [achieved_x - center_x, achieved_y - center_y],
-                "duration_s": round(time.monotonic() - return_started, 6),
-            }
-        except Exception:
-            return_result = {"requested_um": [center_x, center_y],
-                             "achieved_um": None,
-                             "duration_s": round(time.monotonic() - return_started, 6)}
+        # set_xy now settles and reports; the read-back that used to sit here
+        # was the premature one block 56 replaced, and re-reading after the
+        # seam has already measured would only report a second, later position.
+        settled = ctrl.set_xy(center_x, center_y)
+        return_result = {
+            **(settled if isinstance(settled, dict) else
+               {"requested_um": [center_x, center_y], "achieved_um": None}),
+            "duration_s": round(time.monotonic() - return_started, 6),
+        }
     # Report where the grid actually sat, so a caller comparing two runs can see
     # they measured the same ground rather than assuming it.
     return {**result, "grid_center_x_um": center_x, "grid_center_y_um": center_y,

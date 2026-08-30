@@ -349,7 +349,7 @@ class TestMoveStageXY:
         assert result["y_um"] == 0.0
 
     def test_get_xy_position_reports_bounds_without_moving(self, mock_ctrl):
-        mock_ctrl.core.get_y_position.return_value = 12.5
+        mock_ctrl.core.xy_position.update(y=12.5)
         guard = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=10.0)))
         result = get_xy_position(mock_ctrl, guard)
@@ -360,11 +360,17 @@ class TestMoveStageXY:
 
     def test_settling_error_surfaced(self, mock_ctrl, unconstrained_guard):
         # amr_test carried a 1.1 µm unrequested X excursion nothing surfaced.
-        mock_ctrl.core.get_x_position.return_value = 101.1
-        mock_ctrl.core.get_y_position.return_value = 199.9
+        # The DEVICE chooses the landing, not the caller: this is a stage that
+        # lands 1.1 µm past its X target and 0.1 µm short in Y, both inside the
+        # response floor, so the move succeeds and still reports the excursion.
+        mock_ctrl.core.set_xy_position.side_effect = (
+            lambda x, y: mock_ctrl.core.xy_position.update(x=x + 1.1, y=y - 0.1))
         result = move_stage_xy(mock_ctrl, unconstrained_guard, x_um=100.0, y_um=200.0)
         assert result["achieved_um"] == [101.1, 199.9]
         assert result["error_um"] == [pytest.approx(1.1), pytest.approx(-0.1)]
+        assert result["within_tolerance"] is True
+        assert result["x_arrival_residual_um"] == pytest.approx(1.1)
+        assert result["y_arrival_residual_um"] == pytest.approx(0.1)
 
 
 class TestCalibrateStageToCamera:
@@ -869,7 +875,7 @@ class TestGetSystemState:
     def test_reports_xy_out_of_bounds_with_value_and_limit_without_moving(
         self, mock_ctrl
     ):
-        mock_ctrl.core.get_y_position.return_value = 12.5
+        mock_ctrl.core.xy_position.update(y=12.5)
         guard = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=10.0,
                                    z_min=0, z_max=100)))
@@ -881,7 +887,7 @@ class TestGetSystemState:
         mock_ctrl.core.set_position.assert_not_called()
 
     def test_in_bounds_omits_but_unset_limit_reports_out_of_bounds(self, mock_ctrl):
-        mock_ctrl.core.get_y_position.return_value = 12.5
+        mock_ctrl.core.xy_position.update(y=12.5)
         in_bounds = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=20.0,
                                    z_min=0, z_max=100)))
@@ -2328,8 +2334,9 @@ class TestTileAcquisitionMarkPositions:
 
     @pytest.fixture
     def centered_ctrl(self, mock_ctrl):
-        mock_ctrl.core.get_x_position.return_value = 256.0
-        mock_ctrl.core.get_y_position.return_value = 256.0
+        # Park the stage; the fake moves when it is written to, so pinning the
+        # reads instead would model a stage that never responds.
+        mock_ctrl.core.xy_position.update(x=256.0, y=256.0)
         return mock_ctrl
 
     def test_snap_grid_marks_positions_without_save_dir(self, centered_ctrl, unconstrained_guard):
@@ -2536,8 +2543,7 @@ class TestHookedGridAcquisition:
 
     @pytest.fixture
     def centered_ctrl(self, mock_ctrl):
-        mock_ctrl.core.get_x_position.return_value = 0.0
-        mock_ctrl.core.get_y_position.return_value = 0.0
+        mock_ctrl.core.xy_position.update(x=0.0, y=0.0)
         return mock_ctrl
 
     @pytest.fixture
@@ -4783,8 +4789,7 @@ class TestRunAOfflineTools:
 
 class TestMarkPosition:
     def test_saves_position(self, mock_ctrl, unconstrained_guard):
-        mock_ctrl.core.get_x_position.return_value = 100.0
-        mock_ctrl.core.get_y_position.return_value = 200.0
+        mock_ctrl.core.xy_position.update(x=100.0, y=200.0)
         mock_ctrl.core.get_position.return_value = 50.0
         result = mark_position(mock_ctrl, unconstrained_guard, name="test_pos")
         mock_ctrl.add_position.assert_called_once_with("test_pos", 100.0, 200.0, 50.0)
@@ -4794,15 +4799,13 @@ class TestMarkPosition:
 
     def test_xy_safety_check(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_max=100.0)))
-        mock_ctrl.core.get_x_position.return_value = 200.0
-        mock_ctrl.core.get_y_position.return_value = 0.0
+        mock_ctrl.core.xy_position.update(x=200.0, y=0.0)
         mock_ctrl.core.get_position.return_value = 50.0
         with pytest.raises(SafetyViolation):
             mark_position(mock_ctrl, guard, name="out_of_bounds")
 
     def test_without_z(self, mock_ctrl, unconstrained_guard):
-        mock_ctrl.core.get_x_position.return_value = 10.0
-        mock_ctrl.core.get_y_position.return_value = 20.0
+        mock_ctrl.core.xy_position.update(x=10.0, y=20.0)
         result = mark_position(mock_ctrl, unconstrained_guard, name="no_z", include_z=False)
         assert "z_um" not in result
         mock_ctrl.add_position.assert_called_once_with("no_z", 10.0, 20.0, None)
