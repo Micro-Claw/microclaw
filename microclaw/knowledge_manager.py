@@ -1,5 +1,7 @@
 from __future__ import annotations
+import contextlib
 import os
+import time
 from pathlib import Path
 import yaml
 
@@ -28,24 +30,118 @@ def load_knowledge() -> dict:
     return yaml.safe_load(KNOWLEDGE_PATH.read_text(encoding="utf-8")) or {}
 
 
+# A holder keeps the lock for one small read-modify-write of a local YAML file
+# and runs no third-party code inside it, so ten seconds is a wide margin.
+# The wait is bounded, and bounded the same way on every platform: Windows'
+# LK_LOCK gives up after ten seconds while POSIX flock blocks forever, and a
+# behaviour that only exists on the rig is a behaviour nobody can test. Timing
+# out raises; refusing to save is recoverable, silently losing an edit is not.
+_LOCK_TIMEOUT_S = 10.0
+
+if os.name == "nt":
+    import msvcrt
+
+    def _try_lock(fd: int) -> bool:
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+    def _drop_lock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _try_lock(fd: int) -> bool:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        return True
+
+    def _drop_lock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _take_lock(fd: int) -> None:
+    deadline = time.monotonic() + _LOCK_TIMEOUT_S
+    while not _try_lock(fd):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Another microclaw launch has held the knowledge base for "
+                f"{_LOCK_TIMEOUT_S:.0f}s; this entry was not saved."
+            )
+        time.sleep(0.01)
+
+
+@contextlib.contextmanager
+def _knowledge_lock():
+    """Hold an exclusive OS lock for the length of one read-modify-write.
+
+    The lock lives in a sidecar file and never in ``knowledge.yaml`` itself,
+    because ``_write_knowledge`` replaces that path: a lock taken on it would be
+    a lock on an inode nothing reads afterwards. It is an OS lock rather than a
+    hand-rolled lock file so the kernel drops it when the holder exits — a
+    launch killed mid-save cannot leave the knowledge base permanently
+    unwritable, which is what a stale marker file would do.
+    """
+    KNOWLEDGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = KNOWLEDGE_PATH.with_name(f"{KNOWLEDGE_PATH.name}.lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        _take_lock(fd)
+        try:
+            yield
+        finally:
+            _drop_lock(fd)
+    finally:
+        os.close(fd)
+
+
+def _update_knowledge(mutate) -> None:
+    """Load, change and rewrite the whole document under one exclusive lock.
+
+    Every writer loads the entire document, changes one key and writes it all
+    back. design/64 made the *write* atomic, so no reader sees a half-file —
+    but two launches could still load the same snapshot, change different keys,
+    and each write their own version back, so whichever wrote second silently
+    deleted the other's unrelated edit. Microclaw is required to open more than
+    once (CLAUDE.md), and design/64 made an ordinary *read* able to persist an
+    adopted calibration, so concurrent writers are routine rather than exotic.
+    Reproduced with two processes by ``design/64-kb-lost-update-probe.py``,
+    which lost 40 of 80 disjoint keys before this lock existed.
+
+    The load must happen *inside* the lock: a snapshot taken before it is
+    exactly the stale read this serializes against. ``mutate`` receives the
+    freshly loaded document and returns the document to write, or None to write
+    nothing.
+    """
+    with _knowledge_lock():
+        data = mutate(load_knowledge())
+        if data is not None:
+            _write_knowledge(data)
+
+
 def save_entry(category: str, key: str, value: dict) -> None:
     if category not in CATEGORIES:
         raise ValueError(f"Unknown category '{category}'. Must be one of: {', '.join(CATEGORIES)}")
-    data = load_knowledge()
-    data.setdefault(category, {})[key] = value
-    KNOWLEDGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _write_knowledge(data)
+
+    def mutate(data: dict) -> dict:
+        data.setdefault(category, {})[key] = value
+        return data
+
+    _update_knowledge(mutate)
 
 
 def _write_knowledge(data: dict) -> None:
     """Replace the file atomically, so a second launch never reads a half-write.
 
-    Microclaw must open more than once (CLAUDE.md), and design/64 made ordinary
-    tool reads able to persist an adopted calibration, so concurrent writers are
-    now ordinary rather than exotic. This closes the torn-file window; it does
-    NOT make a concurrent read-modify-write safe — two processes that load, edit
-    and save the whole document can still lose one another's unrelated edits.
-    That race predates this function and is recorded in design/64.
+    Callers reach this through ``_update_knowledge``, which holds the lock that
+    makes the surrounding read-modify-write safe; this function only closes the
+    torn-file window, which is what a lock-free reader needs.
     """
     temporary = KNOWLEDGE_PATH.with_name(f"{KNOWLEDGE_PATH.name}.{os.getpid()}.tmp")
     try:
@@ -59,14 +155,20 @@ def _write_knowledge(data: dict) -> None:
 
 
 def delete_entry(category: str, key: str) -> bool:
-    data = load_knowledge()
-    if category not in data or key not in data[category]:
-        return False
-    del data[category][key]
-    if not data[category]:
-        del data[category]
-    _write_knowledge(data)
-    return True
+    removed = False
+
+    def mutate(data: dict) -> dict | None:
+        nonlocal removed
+        if category not in data or key not in data[category]:
+            return None
+        del data[category][key]
+        if not data[category]:
+            del data[category]
+        removed = True
+        return data
+
+    _update_knowledge(mutate)
+    return removed
 
 
 def _fenced_yaml(data: dict) -> str:
