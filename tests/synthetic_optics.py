@@ -35,13 +35,20 @@ class SyntheticOptics:
     """A rig whose only property is how the scene moves when the stage does."""
 
     def __init__(self, m_phys, shape=(160, 160), punctum=(52.0, 118.0),
-                 amplitude=6000.0, second_punctum=None, second_amplitude=0.0):
+                 amplitude=6000.0, second_punctum=None, second_amplitude=0.0,
+                 quantum_um=0.0):
         self.m_phys = np.asarray(m_phys, dtype=float)
         self.shape = shape
         self.punctum = punctum
         self.amplitude = amplitude
         self.second_punctum = second_punctum
         self.second_amplitude = second_amplitude
+        # Stage quantization, off by default. design/29 measured ~0.8 µm of it
+        # on M2 — identical 2 µm commands produced 14.8 or 22.4 px — so a rig
+        # has a residual floor and a closed loop cannot always reach an
+        # arbitrary tolerance. Modelling it is what makes the non-convergence
+        # path testable without hand-writing a wrong affine.
+        self.quantum_um = float(quantum_um)
         self.pos = {"x": 0.0, "y": 0.0}
         rng = np.random.default_rng(7)
         # Texture so phase correlation has something to lock onto; the punctum
@@ -92,5 +99,9 @@ class SyntheticOptics:
         return self
 
     def move(self, dx_um, dy_um):
+        if self.quantum_um > 0:
+            quantum = self.quantum_um
+            dx_um = round(dx_um / quantum) * quantum
+            dy_um = round(dy_um / quantum) * quantum
         self.pos["x"] += dx_um
         self.pos["y"] += dy_um

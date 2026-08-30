@@ -3223,6 +3223,48 @@ class TestCentringAgainstItsOwnCalibration:
         assert chosen.pop()[1] == pytest.approx(50.0, abs=1.5)
 
 
+    def test_every_correction_is_bounds_checked(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """design/64 required test 8. There was nothing here to "keep": the guard
+        was passed through and never asserted on, so a refusal escaping as an
+        unhandled SafetyViolation would have gone unnoticed."""
+        from microclaw.safety import (
+            SafetyConstraints, SafetyGuard, SafetyViolation, StageConstraints,
+        )
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(OPTICS_CASES["aligned"])
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        # A box far too small to hold the correction the loop is about to make.
+        tight = SafetyGuard(SafetyConstraints(stage=StageConstraints(
+            x_min=-0.5, x_max=0.5, y_min=-0.5, y_max=0.5)))
+
+        with pytest.raises(SafetyViolation):
+            center_feature(mock_ctrl, tight)
+
+        assert optics.pos == {"x": 0.0, "y": 0.0}, "a refused move must not happen"
+
+    def test_failure_to_converge_is_finite_and_honest(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """A loop that cannot reach tolerance must stop and say so, not spin."""
+        from microclaw.tools import center_feature
+        # A stage that quantizes to 2 µm cannot place a punctum inside a
+        # sub-pixel tolerance, which is a rig property (design/29), not a rigged
+        # test: the loop must stop at max_iter and report where it got to.
+        optics = SyntheticOptics(OPTICS_CASES["aligned"], quantum_um=2.0)
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        result = center_feature(mock_ctrl, unconstrained_guard,
+                                max_iter=2, tol_px=0.05)
+
+        assert result["centered"] is False
+        assert result["iterations"] == 2
+        assert result["residual_px"] is not None
+        assert "rerun calibrate_stage_to_camera" in result["hint"]
+        # max_iter corrections, and not one more.
+        assert len(mock_ctrl.core.set_relative_xy_position.call_args_list) == 2 + 4
+
+
 class TestMicroManagerIsTheCalibrationAuthority:
     """design/64: MM's PixelSizeAffine wins, and is adopted into the KB.
 

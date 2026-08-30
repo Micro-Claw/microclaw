@@ -213,51 +213,26 @@ before an operator sees it (`design/55-gate-probe-selftest.py` is the
 instrument, and it must return `size()`/`get(i)` vectors whose `__iter__`
 raises). Do that before step 4.
 
-## Required tests
+## Required tests — and where they landed
 
-1. Use one shared synthetic optical model for calibration and centring. Run
-   `calibrate_stage_to_camera`, load the affine it saved, then run
-   `center_feature` against the same model. Do not inject a hand-written affine
-   into the centring half.
-2. Parameterize that end-to-end test over both axis flips and a 90-degree camera
-   rotation. In every case, the residual magnitude after a correction must be
-   smaller than before it and the feature must converge within `tol_px`.
-3. Add a regression assertion on the first commanded move. For a known feature
-   offset, it must equal `affine.px_to_um(offset)` and not its negative.
-4. Execute an exported `center_feature` script against the same fake optical
-   model and assert that it converges with the same move sign as the live tool.
-5. Build a field with two puncta of unequal signal. Assert that the brighter
-   punctum, rather than their aggregate centre of mass, reaches the centre.
-6. Build a field with a gradient or extended non-blob signal and no detected
-   puncta. Assert that no stage move occurs.
-7. Build an equal-score two-blob field and assert deterministic target
-   selection.
-8. Keep the existing guard and maximum-iteration assertions: every correction
-   remains bounds-checked, and failure to reach tolerance remains finite and
-   honestly reported.
+All eight are implemented. Named here so a reader can check the claim rather
+than take it.
 
-## Also fixed, because they were the same defect
+| # | Requirement | Where |
+|---|---|---|
+| 1 | One shared optical model; no hand-written affine in the centring half | `tests/synthetic_optics.py`; `TestCentringAgainstItsOwnCalibration.calibrate` runs the real tool and lets `center_feature` load what it saved |
+| 2 | Parameterized over both axis flips and a 90° rotation; residual must shrink | `test_calibration_then_centring_converges`, 6 cases; `test_one_correction_reduces_the_residual` asserts the shrink over a SINGLE iteration so an overshoot-and-recover cannot pass |
+| 3 | First commanded move equals `px_to_um(offset)`, not its negative | `test_first_commanded_move_is_the_unnegated_affine`, 6 cases, and it asserts the negative explicitly |
+| 4 | Exported script runs against the same model, same move sign | `test_emitted_center_feature_moves_the_same_way_as_the_live_tool` — execs the emitted source and compares commanded moves element-wise |
+| 5 | Two puncta of unequal signal; the brighter one centres | `test_centres_the_brighter_punctum_not_the_aggregate_centroid`, which also asserts the dim one did NOT move to centre |
+| 6 | Gradient with no puncta; no stage move | `test_structure_without_puncta_moves_nothing`, plus `test_emitted_center_feature_refuses_a_field_with_no_punctum` for the script |
+| 7 | Equal-score two-blob field selects deterministically | `test_equal_puncta_select_deterministically` — noiseless on purpose, since with texture underneath two equal puncta do not actually tie |
+| 8 | Guard and max-iteration assertions kept | **There were none to keep.** `test_every_correction_is_bounds_checked` and `test_failure_to_converge_is_finite_and_honest` are new; the second needs a stage that quantizes (design/29 measured ~0.8 µm on M2), because a noiseless linear model converges to exactly zero and cannot exercise the give-up path |
 
-- `find_features` reported `px_to_um(offset)` as `offset_from_center_um`. That
-  value is a stage MOVE, not a distance, and the name is the ambiguity that
-  caused this bug. Renamed **`centering_move_um`**, and it now describes the
-  brightest punctum — the one the agent would act on — not the aggregate
-  centroid. `calibrate_stage_to_camera`'s status string advertised the old name
-  and now states the convention.
-- `compare_revisit_frames` labelled `px_to_um(registration_shift)` as
-  `translation_stage_dx_um`, which reads as the drift that occurred; it is the
-  correction, of opposite sign. Renamed `realign_move_*`.
-- `_load_current_affine` was collapsed into `_resolve_current_affine`. Keeping
-  both would have left every test that patched the old name silently inert for
-  the tools that had moved on.
-
-## Deliberately NOT in scope
-
-- **`move_stage_xy` still has no arrival contract** (design/35 register,
-  design/63 block 63a). The loop can snap before the stage stops, so a residual
-  can be measured mid-move. That is a real defect and it is not this one; fixing
-  the sign does not depend on it and does not hide it.
-- Choosing a non-brightest target, or tracking one object across frames.
+Plus `TestMicroManagerIsTheCalibrationAuthority`: adoption, re-adoption on an MM
+recalibration, idempotence, the local override and its disagreement report, the
+sentinel, the Manual-Simple note, and centring driven by an adopted MM affine
+with no local calibration at all.
 
 ## Acceptance criteria
 
