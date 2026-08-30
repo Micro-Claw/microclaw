@@ -106,6 +106,13 @@ with the XY helpers; the shared code is those helpers, not a new wrapper. A
 relative move keeps dispatching `set_relative_xy_position` and is settled
 against the resolved absolute target, which is what `move_stage_z` does.
 
+**The tile path's cost was weighed, not assumed.** The contract adds roughly
+0.1–0.15 s per position — three stability samples across a 0.1 s window plus its
+bridge round trips — so about +150 s on a 1,000-position scan. Operator decision
+2026-08-30: include it. A tile scan that exposes at a position the stage never
+reached is the same defect class design/56 fixed for Z, and leaving one site out
+is precisely how `autofocus.py` came to be folded in three blocks later.
+
 Reading the start through `read_stage_start_position` is what makes a down link
 raise the typed contract *before* dispatch rather than an untyped bridge
 exception — block 66's control limb found that on M2 and it applies here
