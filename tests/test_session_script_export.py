@@ -163,6 +163,15 @@ def test_inlined_analysis_function_is_byte_identical_to_source(tmp_path, fn):
     assert inspect.getsource(fn) in source
 
 
+def test_detection_source_is_inlined_only_for_detection_tools(tmp_path):
+    _, _, analysis_source = export(tmp_path, [call("snap_and_analyze", {})])
+    _, _, detection_source = export(tmp_path, [call("find_features", {})])
+
+    exact = inspect.getsource(image_analysis.detect_features)
+    assert exact not in analysis_source
+    assert exact in detection_source
+
+
 def test_autofocus_emitter_passes_recorded_inputs_without_rederiving(tmp_path):
     _, _, source = export(tmp_path, [call(
         "run_autofocus", {"z_range_um": 20, "z_step_um": 0.5}
@@ -2500,6 +2509,7 @@ def test_emitted_adaptive_seed_check_refuses_out_of_bounds_before_acquisition(
 
 @pytest.mark.parametrize("records", [
     pytest.param([call("snap_and_analyze", {})], id="analysis"),
+    pytest.param([call("find_features", {})], id="feature-detection"),
     pytest.param(
         [call("run_autofocus", {"z_range_um": 2, "z_step_um": 0.5})], id="autofocus"
     ),
@@ -2586,6 +2596,10 @@ def test_emitted_free_name_guard_detects_a_removed_inline(tmp_path):
 
     broken = survey_source.replace(inspect.getsource(controller.settle_stage_move), "")
     assert "settle_stage_move" in _undefined_emitted_names(broken)
+
+    _, _, feature_source = export(tmp_path, [call("find_features", {})])
+    broken = feature_source.replace(inspect.getsource(image_analysis.detect_features), "")
+    assert "detect_features" in _undefined_emitted_names(broken)
 
 
 def test_stage_move_contract_is_defined_once_however_many_moves(tmp_path):
@@ -3582,3 +3596,230 @@ def test_focus_lock_state_read_is_omitted_cleanly_from_export(tmp_path):
 
     compile(source, str(tmp_path / "routine.py"), "exec")
     assert "NOT EMITTED" not in source
+
+
+def test_every_registered_tool_has_exactly_one_export_decision():
+    markers = (
+        "_microclaw_emitter", "_microclaw_emits_nothing",
+        "_microclaw_refusal_reason",
+    )
+    offenders = {
+        name: [marker for marker in markers if hasattr(fn, marker)]
+        for name, fn in tools.TOOL_REGISTRY.items()
+        if sum(hasattr(fn, marker) for marker in markers) != 1
+    }
+    assert offenders == {}
+
+
+@pytest.mark.parametrize("name,reason", [
+    ("calibrate_stage_to_camera", "solve and its knowledge-base cache are microclaw.calibration"),
+    ("snap_to_album", "exported script builds core = Core() and has no studio"),
+    ("run_mda", "preview token hashed over settings read immediately before the run"),
+])
+def test_the_three_new_tool_refusals_keep_their_specific_reason(tmp_path, name, reason):
+    _, _, source = export(tmp_path, [call(name, {})])
+    assert f"# NOT EMITTED: {name}" in source
+    assert reason in source
+    assert "no standalone emitter has been implemented" not in source
+
+
+def test_none_of_the_eleven_can_fall_back_to_the_default_refusal(tmp_path):
+    records = [call(name, {}) for name in (
+        "calibrate_snr_threshold", "verify_emu_laser_power_calibration",
+        "export_dataset_as_tiff", "shutter_declared_illumination",
+        "set_emu_laser_power_percentage", "find_features", "center_feature",
+        "run_multiposition_with_autofocus", "calibrate_stage_to_camera",
+        "snap_to_album", "run_mda",
+    )]
+    _, _, source = export(tmp_path, records)
+    assert "no standalone emitter has been implemented" not in source
+
+
+def _exec_export_with_core(source, core, path):
+    source = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    )
+    exec(compile(source, str(path), "exec"), {
+        "__file__": str(path), "Core": lambda: core,
+        "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: kwargs,
+    })
+
+
+def test_emitted_find_features_executes_its_snap(tmp_path):
+    image = np.zeros((8, 8), dtype=np.uint16)
+    image[3, 5] = 100
+
+    class Core:
+        snaps = 0
+        def snap_image(self): self.snaps += 1
+        def get_tagged_image(self):
+            return SimpleNamespace(tags={"Width": 8, "Height": 8}, pix=image)
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+
+    core = Core()
+    _, _, source = export(tmp_path, [call("find_features", {
+        "min_sigma": 1.5, "max_sigma": 3.5, "threshold_rel": 0.2,
+    })])
+    _exec_export_with_core(source, core, tmp_path / "routine.py")
+    assert core.snaps == 1
+    assert "detect_features(image, 1.5, 3.5, 0.2)" in source
+
+
+def test_emitted_shutter_executes_only_recorded_successful_writes(tmp_path):
+    writes = []
+
+    class Core:
+        def set_property(self, device, prop, value): writes.append((device, prop, value))
+
+    _, _, source = export(tmp_path, completed_call(
+        "shutter_declared_illumination", {},
+        {"shuttered": [["LaserA", "Enable", "0"], ["LaserB", "Gate", "closed"]]},
+    ))
+    _exec_export_with_core(source, Core(), tmp_path / "routine.py")
+    assert writes == [("LaserA", "Enable", "0"), ("LaserB", "Gate", "closed")]
+
+
+def test_shutter_record_with_no_successful_writes_emits_no_fabricated_write(tmp_path):
+    _, result, source = export(tmp_path, completed_call(
+        "shutter_declared_illumination", {}, {"shuttered": []},
+    ))
+    section = source.split("# RECORDED TOOL: shutter_declared_illumination", 1)[1]
+    assert "core.set_property" not in section
+    assert (
+        "# No declared illumination was successfully shuttered in the recorded session."
+        in section
+    )
+    assert "NOT EMITTED" not in section
+    assert result["emitted_calls"] == 1
+
+
+def test_old_string_shutter_record_refuses_only_that_step(tmp_path):
+    _, _, source = export(tmp_path, [
+        *completed_call(
+            "shutter_declared_illumination", {},
+            {"shuttered": ["LaserA.Enable"]},
+        ),
+        call("set_exposure", {"ms": 12}),
+    ])
+    assert (
+        "# NOT EMITTED: shutter_declared_illumination — the recorded shuttered "
+        "entry has unsupported shape 'LaserA.Enable'; expected "
+        "[device, property, off_value]"
+    ) in source
+    assert "core.set_exposure(12)" in source
+
+
+def test_emu_power_emits_recorded_readback_with_dose_comment(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "set_emu_laser_power_percentage", {"slot": 2, "percent": 7.0},
+        {"device": "PWM", "property": "Position0", "raw_value_written": "2",
+         "requested_percent": 7.0, "effective_percent": 6.6666666667},
+    ))
+    assert "core.set_property('PWM', 'Position0', '2')" in source
+    assert "requested_percent=7.0; effective_percent=6.6666666667" in source
+    assert "slope" not in source
+
+
+def test_autofocus_multiposition_wrapper_delegates_to_specific_hook_refusal(tmp_path):
+    _, _, source = export(tmp_path, [call("run_multiposition_with_autofocus", {
+        "position_names": ["p0"], "z_range_um": 4, "z_step_um": 0.5,
+        "protocol": "timelapse", "save_dir": "session", "name": "af",
+        "settle_ms": 75, "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "preserve_unsupported": True,
+    })])
+    assert (
+        "# NOT EMITTED: run_multiposition_with_autofocus — hooked acquisition "
+        "('autofocus_per_position'): inlining HookBase would import microclaw safety "
+        "and hook decisions"
+    ) in source
+    assert "no standalone emitter has been implemented" not in source
+
+
+def test_autofocus_multiposition_emitter_forwards_the_tool_call_exactly(monkeypatch):
+    captured = {}
+
+    def capture(params):
+        captured.update(params)
+        return "# delegated"
+
+    monkeypatch.setattr(tools, "_emit_multiposition", capture)
+    rendered = tools._emit_multiposition_with_autofocus(tools.RecordedParams({
+        "position_names": ["p0"],
+        "positions": None,
+        "z_range_um": 4,
+        "z_step_um": 0.5,
+        "protocol": "timelapse",
+        "save_dir": "session",
+        "name": "af",
+        "settle_ms": 75,
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "preserve_unsupported": True,
+    }))
+
+    assert rendered == "# delegated"
+    assert captured == {
+        "protocol": "timelapse",
+        "positions": None,
+        "position_names": ["p0"],
+        "name": "af",
+        "save_dir": "session",
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "preserve_unsupported": True,
+        "log_path": "session/af_autofocus_log.json",
+        "hook_strategy": "autofocus_per_position",
+        "hook_params": {
+            "z_range_um": 4,
+            "z_step_um": 0.5,
+            "settle_ms": 75,
+        },
+    }
+
+
+def test_center_feature_without_recorded_affine_refuses_specifically(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "center_feature", {"max_iter": 2}, {"centered": False},
+    ))
+    assert (
+        "# NOT EMITTED: center_feature — the recorded centering result has no "
+        "stage-camera affine coefficients"
+    ) in source
+
+
+def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
+    images = []
+    for x in (6, 4):
+        image = np.zeros((8, 8), dtype=np.uint16)
+        image[4, x] = 100
+        images.append(image)
+
+    class Core:
+        def __init__(self):
+            self.snaps = 0
+            self.x = self.y = 0.0
+            self.moves = []
+            self.waits = []
+        def snap_image(self): self.snaps += 1
+        def get_tagged_image(self):
+            return SimpleNamespace(
+                tags={"Width": 8, "Height": 8}, pix=images[self.snaps - 1]
+            )
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def get_x_position(self): return self.x
+        def get_y_position(self): return self.y
+        def set_relative_xy_position(self, dx, dy):
+            self.moves.append((dx, dy)); self.x += dx; self.y += dy
+        def get_xy_stage_device(self): return "XY"
+        def wait_for_device(self, device): self.waits.append(device)
+
+    core = Core()
+    _, _, source = export(tmp_path, completed_call(
+        "center_feature", {"max_iter": 2, "tol_px": 0.5},
+        {"centered": True, "affine_coefficients": {"a": 1, "b": 0, "c": 0, "d": 1}},
+    ))
+    _exec_export_with_core(source, core, tmp_path / "routine.py")
+    assert core.snaps == 2
+    assert core.moves == [(-2.0, -0.0)]
+    assert core.waits == ["XY"]
+    assert "settle_stage_move" not in source

@@ -9872,6 +9872,10 @@ Two smaller Track B remnants, recorded so they are not re-discovered:
   **Pre-existing since 41b, not 43h's to fix** — 43h fixed only the one blocking
   its own workflow. Size as its own block with an offline gate; the evidence is
   a one-line sweep over `TOOL_REGISTRY` for the three marker attributes.
+  **Assigned 2026-08-29 as block 63a, `design/63-decorate-the-eleven.md`**, which
+  re-measured the same eleven over 81 tools and makes a per-tool decision:
+  three `@emits_nothing`, four `@emits`, four `@refuses`. The sweep becomes a
+  test rather than a runbook step, so a twelfth undecorated tool cannot ship.
 - **A stitched mosaic's zero padding corrupts every statistic in
   `ImageStats`, not just coverage.** From 43g's round-2 review, 2026-08-10, and
   confirmed by the implementer's own sweep. `dataset_mosaic.py:105` allocates the

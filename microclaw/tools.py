@@ -255,6 +255,108 @@ def _emit_snap_and_analyze(params: RecordedParams) -> str:
     )
 
 
+def _emit_shutter_declared_illumination(params: RecordedParams) -> str:
+    writes = params.result.get("shuttered", [])
+    if not isinstance(writes, list):
+        raise CannotEmit(
+            f"the recorded shuttered writes have unsupported shape {writes!r}; "
+            "expected a list of [device, property, off_value] entries"
+        )
+    lines = []
+    for entry in writes:
+        if (not isinstance(entry, (list, tuple)) or len(entry) != 3
+                or not all(isinstance(value, str) for value in entry)):
+            raise CannotEmit(
+                f"the recorded shuttered entry has unsupported shape {entry!r}; "
+                "expected [device, property, off_value]"
+            )
+        device, prop, value = entry
+        lines.append(f"core.set_property({device!r}, {prop!r}, {value!r})")
+    return "\n".join(lines) if lines else (
+        "# No declared illumination was successfully shuttered in the recorded session."
+    )
+
+
+def _emit_set_emu_laser_power_percentage(params: RecordedParams) -> str:
+    result = params.result
+    required = ("device", "property", "raw_value_written")
+    if any(name not in result for name in required):
+        raise CannotEmit("the recorded laser-power write is missing its device, property, or read-back value")
+    return (
+        f"core.set_property({result['device']!r}, {result['property']!r}, "
+        f"{result['raw_value_written']!r})  # requested_percent={result.get('requested_percent')!r}; "
+        f"effective_percent={result.get('effective_percent')!r}"
+    )
+
+
+def _emit_find_features(params: RecordedParams) -> str:
+    signature = inspect.signature(find_features)
+    arguments = {
+        name: params.get(name, signature.parameters[name].default)
+        for name in ("min_sigma", "max_sigma", "threshold_rel")
+    }
+    return "\n".join([
+        "image = snap_to_numpy(mm)",
+        "features = detect_features(image, "
+        f"{arguments['min_sigma']!r}, {arguments['max_sigma']!r}, "
+        f"{arguments['threshold_rel']!r})",
+    ])
+
+
+def _emit_center_feature(params: RecordedParams) -> str:
+    affine = params.result.get("affine_coefficients")
+    if not isinstance(affine, dict) or any(key not in affine for key in ("a", "b", "c", "d")):
+        raise CannotEmit("the recorded centering result has no stage-camera affine coefficients")
+    signature = inspect.signature(center_feature)
+    max_iter = params.get("max_iter", signature.parameters["max_iter"].default)
+    tol_px = params.get("tol_px", signature.parameters["tol_px"].default)
+    return "\n".join([
+        f"_center_affine = ({affine['a']!r}, {affine['b']!r}, {affine['c']!r}, {affine['d']!r})",
+        f"for _center_i in range({max_iter!r} + 1):",
+        "    image = snap_to_numpy(mm)",
+        "    _center_features = detect_features(image)",
+        "    _center_residual = _center_features['offset_from_center_px']",
+        "    if _center_residual is None:",
+        "        raise RuntimeError('No signal above background — nothing to centre.')",
+        f"    if math.hypot(*_center_residual) <= {tol_px!r}:",
+        "        break",
+        f"    if _center_i == {max_iter!r}:",
+        "        break",
+        "    _center_dx_px, _center_dy_px = _center_residual",
+        "    _center_dx_um = _center_affine[0] * _center_dx_px + _center_affine[1] * _center_dy_px",
+        "    _center_dy_um = _center_affine[2] * _center_dx_px + _center_affine[3] * _center_dy_px",
+        "    core.set_relative_xy_position(-_center_dx_um, -_center_dy_um)",
+        "    core.wait_for_device(core.get_xy_stage_device())",
+    ])
+
+
+def _emit_multiposition_with_autofocus(params: RecordedParams) -> str:
+    signature = inspect.signature(run_multiposition_with_autofocus)
+    value = lambda name: params.get(name, signature.parameters[name].default)
+    save_dir = value("save_dir")
+    compatibility_log = (
+        str(Path(save_dir) / f"{value('name')}_autofocus_log.json")
+        if save_dir is not None else None
+    )
+    forwarded = RecordedParams({
+        "protocol": value("protocol"),
+        "positions": value("positions"),
+        "position_names": value("position_names"),
+        "name": value("name"),
+        "save_dir": value("save_dir"),
+        "protocol_params": value("protocol_params"),
+        "preserve_unsupported": value("preserve_unsupported"),
+        "log_path": compatibility_log,
+        "hook_strategy": "autofocus_per_position",
+        "hook_params": {
+            "z_range_um": value("z_range_um"),
+            "z_step_um": value("z_step_um"),
+            "settle_ms": value("settle_ms"),
+        },
+    }, params.result)
+    return _emit_multiposition(forwarded)
+
+
 def _emit_autofocus(params: RecordedParams) -> str:
     signature = inspect.signature(run_autofocus)
     method = params.get("method", signature.parameters["method"].default)
@@ -719,7 +821,9 @@ def _resolve_recorded_position_names(
             params["positions"] = [dict(state[item]) for item in requested]
 
 
-def _analysis_source(*, include_autofocus: bool = False) -> str:
+def _analysis_source(
+    *, include_autofocus: bool = False, include_detection: bool = False,
+) -> str:
     """Return exact source for the pure-numpy analysis used by exported routines."""
     from microclaw import autofocus, image_analysis
     parts = [
@@ -741,6 +845,8 @@ def _analysis_source(*, include_autofocus: bool = False) -> str:
         image_analysis.compute_stats,
     ):
         parts.append(inspect.getsource(fn))
+    if include_detection:
+        parts.append(inspect.getsource(image_analysis.detect_features))
     if include_autofocus:
         parts.extend([
             inspect.getsource(autofocus.SweepResult),
@@ -1546,9 +1652,13 @@ def export_session_script(
         for name, params in included
     )
     analysis_used = adaptive_used or any(
-        name in {"snap_and_analyze", "run_autofocus"}
+        name in {"snap_and_analyze", "run_autofocus", "find_features", "center_feature"}
         or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
             and params.get("protocol") == "snap")
+        for name, params in included
+    )
+    detection_used = any(
+        name in {"find_features", "center_feature"}
         for name, params in included
     )
     autofocus_used = adaptive_used or any(
@@ -1707,7 +1817,10 @@ def export_session_script(
         "import numpy as np",
         "from pycromanager import Acquisition, Core, multi_d_acquisition_events",
         "",
-        *(["", _analysis_source(include_autofocus=autofocus_used).rstrip()]
+        *(["", _analysis_source(
+            include_autofocus=autofocus_used,
+            include_detection=detection_used,
+        ).rstrip()]
           if analysis_used else []),
         *(["", _portable_log_path_source().rstrip()] if adaptive_used else []),
         *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),
@@ -4042,6 +4155,7 @@ def _verify_trigger_line_armed(ctrl: MicroscopeController, laser_slot: int) -> d
     }
 
 
+@emits(_emit_shutter_declared_illumination)
 def shutter_declared_illumination(
     ctrl: MicroscopeController, guard: SafetyGuard
 ) -> dict:
@@ -4189,6 +4303,7 @@ def run_timelapse(
     return result
 
 
+@emits_nothing
 def export_dataset_as_tiff(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4875,6 +4990,10 @@ def _diagnose_calibration_shift(
     return None
 
 
+@refuses(
+    "The solve and its knowledge-base cache are microclaw.calibration "
+    "(solve_affine, save_affine, affine_version_key); inlining would not be standalone."
+)
 def calibrate_stage_to_camera(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -4987,6 +5106,7 @@ def calibrate_stage_to_camera(
 
 # --- Feature detection and centring (design/14 §9) ---
 
+@emits(_emit_find_features)
 def find_features(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -5030,6 +5150,7 @@ def find_features(
     return out
 
 
+@emits(_emit_center_feature)
 def center_feature(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -5051,6 +5172,7 @@ def center_feature(
             )
         }
 
+    affine_coefficients = {key: getattr(affine, key) for key in ("a", "b", "c", "d")}
     residual = None
     for i in range(max_iter + 1):
         feats = find_features(ctrl, guard)
@@ -5058,10 +5180,11 @@ def center_feature(
         if residual is None:
             return {
                 "error": "No signal above background — nothing to centre.",
-                "iterations": i,
+                "iterations": i, "affine_coefficients": affine_coefficients,
             }
         if math.hypot(*residual) <= tol_px:
-            return {"centered": True, "iterations": i, "residual_px": residual}
+            return {"centered": True, "iterations": i, "residual_px": residual,
+                    "affine_coefficients": affine_coefficients}
         if i == max_iter:
             break
         dx_um, dy_um = affine.px_to_um(residual[0], residual[1])
@@ -5071,6 +5194,7 @@ def center_feature(
         "centered": False,
         "iterations": max_iter,
         "residual_px": residual,
+        "affine_coefficients": affine_coefficients,
         "hint": (
             "Residual did not fall below tol_px. If it GREW between iterations, "
             "the calibration may be stale — rerun calibrate_stage_to_camera."
@@ -6240,6 +6364,7 @@ def run_tile_acquisition(
 
 
 @_acquisition_entry_point
+@emits(_emit_multiposition_with_autofocus)
 def run_multiposition_with_autofocus(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -8410,6 +8535,7 @@ def compare_revisit_frames(
             "comparisons": rows}
 
 
+@emits_nothing
 def calibrate_snr_threshold(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -9180,6 +9306,7 @@ def _round_raw(value: float) -> int:
     return int(math.floor(value + 0.5))
 
 
+@emits_nothing
 def verify_emu_laser_power_calibration(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -9231,6 +9358,7 @@ def get_emu_laser_power_percentage(
     }
 
 
+@emits(_emit_set_emu_laser_power_percentage)
 def set_emu_laser_power_percentage(
     ctrl: MicroscopeController, guard: SafetyGuard, slot: int, percent: float
 ) -> dict:
@@ -9271,6 +9399,8 @@ def set_emu_laser_power_percentage(
     ctrl.refresh_gui()
     return {
         "requested_percent": requested,
+        "device": entry["device"],
+        "property": entry["property"],
         "raw_value_written": written,
         "effective_percent": written_effective,
         "representable": representable and math.isclose(written_effective, requested,
@@ -9305,6 +9435,11 @@ def get_album_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return {"album_exists": store is not None, "datastore": _datastore_state(store)}
 
 
+@refuses(
+    "The Album is an MMStudio datastore. The exported script builds core = Core() "
+    "and has no studio; emitting a bare core.snap_image() would fabricate a "
+    "different operation — a display-only snap that joins no album and saves nothing."
+)
 def snap_to_album(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     guard.check_exposure(float(ctrl.core.get_exposure()))
     with _pause_live(ctrl) as live_state:
@@ -9384,6 +9519,12 @@ def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 @_acquisition_entry_point
+@refuses(
+    "MMStudio owns the settings, and the tool's contract is a preview token hashed "
+    "over settings read immediately before the run. A standalone script has neither "
+    "the studio nor the settings, and re-running whatever the MDA dialog holds now "
+    "is not the recorded acquisition."
+)
 def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) -> dict:
     from microclaw.authorization import authorize_path
     authorize_path(ctrl, "mmstudio-mda")
