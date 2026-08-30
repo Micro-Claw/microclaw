@@ -8342,3 +8342,52 @@ gate — a cheap, local, reversible step — having not paused before a thousand
 lines of product code and two public result renames. The user named it: the
 pause was landing at a reportable-artifact boundary rather than a risk boundary.
 Check in before design decisions and public renames; never before verification.
+
+## design/64 block 64b — the knowledge base's lost-update race (merged 2026-08-30, `8731e73`)
+
+Carried out of 64a's "not closed by this block" list. **No rig.** The whole
+block is off-rig, and that is the point worth keeping: the register row said
+"reproducible with two processes", and it was — first try, before any fix.
+
+**Reproduce before you fix, even when the mechanism is obvious.** The race was
+plain from reading `save_entry`, so the temptation was to fix it and assert the
+fix. `design/64-kb-lost-update-probe.py` instead measured it: two processes, 40
+disjoint keys each, **40 of 80 lost** — not "some interleaving is possible" but
+one worker's entire set, wiped. That number is what makes the register row's
+close-out reviewable by someone who was not here, and it cost about ten minutes.
+
+**A lock's two design choices were both about somebody else's failure.** The
+sidecar `knowledge.yaml.lock` exists because `_write_knowledge` *replaces*
+`knowledge.yaml`, so a lock on that path guards an inode nothing reads next —
+design/58's "only the thing outside both slots may write the thing outside both
+slots", arriving in a completely different module. And it is an OS lock rather
+than a marker file because the kernel drops it when a killed launch exits; a
+stale marker would make the knowledge base permanently unwritable, which is
+design/58's "a recovery path must survive the state that made recovery
+necessary". Neither was invented here. Both were read off the existing rules.
+
+**The bound was measured, not assumed.** Windows' `LK_LOCK` gives up after ten
+seconds; POSIX `flock` blocks for ever. That divergence would have put the only
+observable behaviour on the rig, so both are now bounded and raise. It surfaced
+because the killed-holder test **hung** under one of the mutations instead of
+failing — a mutation that hangs is telling you about a missing deadline, not
+just about a missing assertion.
+
+**The runner review earned its turn on the one thing the coordinator could not
+see.** It returned *no correctness defect* — and one real gap: all four tests
+drove `save_entry`, so reverting **only** `delete_entry` to an unlocked
+read-modify-write left every one of them green. Both writers had been folded
+into `_update_knowledge` precisely so they could not diverge, and that folding
+is exactly what made the missing coverage invisible. The fifth test fails on
+that mutation and no other. It also checked the `msvcrt` semantics against
+Microsoft's own documentation rather than the POSIX analogy, which is the half
+of this change no test in the suite can reach.
+
+**Step-2 deviation, recorded in the ledger row rather than tidied away.** 64b
+was implemented by the coordinator inline before the coordinator role was
+assigned, and the runner review was commissioned after the fact. That is not
+step 2 — it is a review of finished work, which cannot influence the design and
+cannot catch what the implementer and reviewer both assume. **Second time in two
+blocks** (64a did the same), so it is a pattern in this design's blocks and not
+an incident. The review being clean is not evidence the deviation was harmless;
+it found a gap that a step-2 runner would likely have avoided creating.
