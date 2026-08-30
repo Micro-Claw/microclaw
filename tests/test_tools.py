@@ -330,7 +330,13 @@ class TestMoveStageXY:
         core = MagicMock()
         core.get_xy_stage_device.return_value = "XY"
         core.device_busy.return_value = False
-        late = chain([0.0, 50.0, 75.0], repeat(99.0))
+        # The late axis must still be out of band AFTER the stability window
+        # could first have been satisfied, or this test cannot fail: a loop that
+        # ignored the band entirely and merely collected
+        # STAGE_MOVE_REQUIRED_SAMPLES readings would return the same value.
+        # Verified by mutation -- with an arrival on the third poll, deleting
+        # the band check outright leaves this test green.
+        late = chain([0.0, 50.0, 62.0, 71.0, 78.0, 84.0, 89.0], repeat(99.0))
         immediate = chain([0.0], repeat(19.0))
         if late_axis == "x":
             core.get_x_position.side_effect = lambda: next(late)
