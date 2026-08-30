@@ -112,8 +112,9 @@ def test_untriggered_system_context_has_catalog_not_specialist_bodies():
         assert f"- {item.name}: {item.description}" in agent.SYSTEM_PROMPT
     assert "# Single-Molecule Localization Microscopy" not in agent.SYSTEM_PROMPT
     assert "# htSMLM / EMU reference" not in agent.SYSTEM_PROMPT
-    # Block 61a deliberately leaves the core Nikon paragraph for block 61c.
-    assert "Do BOTH of these every time you engage the lock" in agent.SYSTEM_PROMPT
+    nikon_skill_body = skills.load_skill_text("nikon-pfs").split("\n---\n", 1)[1].strip()
+    assert nikon_skill_body not in agent.SYSTEM_PROMPT
+    assert "Do BOTH of these every time you engage the lock" not in agent.SYSTEM_PROMPT
 
 
 def test_catalog_routing_rule_fires_on_being_asked_not_only_on_running():

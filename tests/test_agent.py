@@ -20,6 +20,7 @@ from microclaw.agent import (
     _system_blocks,
 )
 from microclaw.safety import SafetyConstraints, SafetyGuard
+from microclaw.skills import load_skill_text
 
 
 class TestRigInterviewSystemBlock:
@@ -356,7 +357,7 @@ class TestVerifyBeforeAssertingPrompt:
         assert "objective out of focus" in SYSTEM_PROMPT
 
 
-class TestNikonPfsPrompt:
+class TestFocusLockPromptAndNikonPfsSkill:
     """Rig facts, so they are pinned as text rather than trusted to survive.
 
     The whole section rendered as a single line until the literals were fixed,
@@ -388,33 +389,37 @@ class TestNikonPfsPrompt:
     def test_focus_lock_is_named_as_a_dedicated_tool_operation(self):
         assert "(stage, channel, exposure, focus lock)" in SYSTEM_PROMPT
 
-    def test_nikon_procedure_remains_in_core_prompt(self):
-        assert "Do BOTH of these every time you engage the lock" in SYSTEM_PROMPT
+    def test_nikon_procedure_is_maintained_in_the_skill(self):
+        assert "Do BOTH of these every time you engage the lock" in load_skill_text("nikon-pfs")
 
     def test_the_lock_validation_steps_are_steps_not_caveats(self):
         # Same session: it flagged the "locked too high" risk in its plan and
         # then did not carry out either check until asked.
-        assert "Do BOTH of these every time you engage the " in SYSTEM_PROMPT
-        assert "not as caveats you mention and skip" in SYSTEM_PROMPT
+        skill = load_skill_text("nikon-pfs")
+        assert "Do BOTH of these every time you engage the " in skill
+        assert "not as caveats you mention and skip" in skill
 
     def test_pfs_status_reads_regardless_of_whether_the_lock_is_engaged(self):
-        assert "TIPFSStatus-Status tells you if you are focusing" in SYSTEM_PROMPT
-        assert "regardless of whether or not the PFS is on" in SYSTEM_PROMPT
-        assert "use run_autofocus with its property probe" in SYSTEM_PROMPT
-        assert "Just move the Z stage and check this property" not in SYSTEM_PROMPT
+        skill = load_skill_text("nikon-pfs")
+        assert "TIPFSStatus-Status tells you if you are focusing" in skill
+        assert "regardless of whether or not the PFS is on" in skill
+        assert "use run_autofocus with its property probe" in skill
+        assert "Just move the Z stage and check this property" not in skill
 
     def test_a_lock_found_too_high_is_diagnosed_by_moving_xy(self):
         # A PFS can lock on a coverslip the objective has pushed up at an angle;
         # the tell is that the lock drops after a small lateral move.
-        assert "pushed the coverslip up at an angle" in SYSTEM_PROMPT
-        assert "jog the stage a little bit" in SYSTEM_PROMPT
-        assert "see if the PFS stays on" in SYSTEM_PROMPT
+        skill = load_skill_text("nikon-pfs")
+        assert "pushed the coverslip up at an angle" in skill
+        assert "jog the stage a little bit" in skill
+        assert "see if the PFS stays on" in skill
 
     def test_offset_range_is_given_per_immersion_medium(self):
-        assert "PFS offset range is around 10 micrometers for oil immersion" in SYSTEM_PROMPT
-        assert "20 micrometers for water immersion" in SYSTEM_PROMPT
-        assert "100 micrometers or more for dry" in SYSTEM_PROMPT
-        assert "decrease with increasing numerical aperture" in SYSTEM_PROMPT
+        skill = load_skill_text("nikon-pfs")
+        assert "PFS offset range is around 10 micrometers for oil immersion" in skill
+        assert "20 micrometers for water immersion" in skill
+        assert "100 micrometers or more for dry" in skill
+        assert "decrease with increasing numerical aperture" in skill
 
 
 class TestKnowledgeBaseUpkeepPrompt:
