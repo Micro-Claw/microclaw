@@ -1665,7 +1665,28 @@ def export_session_script(
     selected_ids = set(tool_use_ids) if tool_use_ids is not None else None
     unknown_ids = sorted((selected_ids or set()) - known_ids)
     if unknown_ids:
-        raise ValueError("unknown tool_use id(s): " + ", ".join(unknown_ids))
+        # Name the ids the caller probably meant. On M2 (block 66's gate,
+        # 2026-08-30) an agent asked for `tool_use_ids: ["move_named_stage"]`,
+        # was told only that the id was unknown, and recovered by dropping the
+        # argument -- exporting the WHOLE session, which is the dangerous
+        # direction: run standalone, an unselected export re-runs every
+        # acquisition the session made. The refusal has the record open and can
+        # say both things.
+        by_tool: dict[str, list[str]] = {}
+        for recorded_name, params in recorded:
+            by_tool.setdefault(recorded_name, []).append(params["_tool_use_id"])
+        named_tools = [
+            f"{unknown!r} is a tool name, not an id; its recorded call ids are "
+            + ", ".join(by_tool[unknown])
+            for unknown in unknown_ids if unknown in by_tool
+        ]
+        raise ValueError(
+            "unknown tool_use id(s): " + ", ".join(unknown_ids)
+            + (". " + "; ".join(named_tools) if named_tools else "")
+            + ". Fix the ids rather than omitting tool_use_ids: an unselected "
+              "export emits every recorded call, so running it re-runs every "
+              "acquisition this session made."
+        )
     included = [
         (name, params) for name, params in recorded
         if selected_ids is None or params["_tool_use_id"] in selected_ids

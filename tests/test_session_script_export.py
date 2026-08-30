@@ -4127,3 +4127,34 @@ def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     assert "settle_stage_move" not in source
     assert "<= 0.5" in source
     assert "residuals_px" not in source
+
+
+def test_unknown_tool_use_id_that_is_a_tool_name_names_the_real_ids(tmp_path):
+    """Block 66's M2 gate, 2026-08-30: the recovery was worse than the mistake.
+
+    An agent asked for `tool_use_ids: ["move_named_stage"]`, was told only that
+    the id was unknown, and recovered by dropping the argument — exporting the
+    whole session. That is the dangerous direction: run standalone, an
+    unselected export re-runs every acquisition the session made. It passed the
+    gate only because that session had nothing else emittable.
+    """
+    guard = Guard(tmp_path)
+    records = completed_call(
+        "move_named_stage", {"device": "TIRF Stage", "um": 199.9},
+        {"device": "TIRF Stage", "requested_um": 199.9, "measured_um": 199.2},
+    )
+    recorded_id = records[0]["content"][0]["id"]
+
+    with pytest.raises(ValueError) as caught:
+        tools.export_session_script(None, guard, "routine.py", records,
+                                    tool_use_ids=["move_named_stage"])
+
+    message = str(caught.value)
+    assert "is a tool name, not an id" in message
+    assert recorded_id in message
+    assert "re-runs every acquisition" in message
+    # The real id still works, and still selects only that call.
+    tools.export_session_script(None, guard, "routine.py", records,
+                               tool_use_ids=[recorded_id])
+    assert "settle_stage_move(core, 'TIRF Stage', 199.9" in (
+        tmp_path / "routine.py").read_text(encoding="utf-8")
