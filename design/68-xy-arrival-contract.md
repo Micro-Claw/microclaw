@@ -197,7 +197,28 @@ fails on every rig). M2, because design/29 measured its ~0.8 µm quantization an
 
 Limb C is the limb the trip exists for. A limb that cannot fail is not a
 criterion, and a limb that could not run its mechanism reports **NOT
-EXERCISED**, never a pass.
+EXERCISED**, never a pass. It is not run by default: it needs an axis physically
+blocked, so it is `--limbs C --control` after the operator does that, and the
+runbook (`design/68-block68-m2-runbook.md`) carries the literal commands.
+
+**Dry-run before shipping, and it paid for itself immediately.**
+`design/68-gate-probe-selftest.py` drives the whole probe against a
+bridge-shaped fake in five modes, each of which must come out a specific way —
+`--shared-band` must turn limb B red, `--blocked-axis` must turn limb C green
+naming Y, `--untyped-failure` must turn it red rather than crash, `--dead-stage`
+must make limb 0 stand the rest down. The fake's XY stage answers `device_busy`
+False throughout and converges over ~0.2 s of wall clock, because **a fake that
+lands instantly lets a probe which reads once pass**, and reading once is the
+defect this block exists to fix.
+
+It found one gate defect before the rig did: **limb C commanded a move along X
+only**. An operator who blocked the Y axis — whichever their rig lets them
+reach — would have had a correctly blocked axis trivially satisfy its band, and
+the limb would have reported "a blocked axis reported a successful arrival". A
+confidently wrong verdict, on the limb the trip exists for. It now commands both
+axes and lets the refusal name the one that did not respond. Limb D likewise now
+states when no correction was sub-band, rather than passing for a half of its
+mechanism that did not run.
 
 ## Out of scope
 
