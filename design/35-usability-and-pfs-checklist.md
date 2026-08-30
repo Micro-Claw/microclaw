@@ -8917,6 +8917,34 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### Focus-lock ordering rule was not followed on the Nikon Ti — added 2026-08-30 **(no block)**
+
+`SYSTEM_PROMPT` says: before any operation that engages or adjusts a hardware
+focus lock, call `get_focus_lock_state` first. A normal-work Ti session did not
+follow that exact ordering. Evidence:
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/nikon-history-design61/20260830_160718_176677_microclaw_history.jsonl`,
+sha256 `557235fcfe0adcfa0221c5395d255d15634fd7eec1b59c0e810d70dad1248596`.
+After two unsuccessful property-probe sweeps, the recorded outer tool sequence
+contains `set_focus_lock(enabled=true)` before the later explicit
+`get_focus_lock_state` call.
+
+This is **not** a failure of design/61's `nikon-pfs` route: after the operator
+asked "hey, focus for me", `get_system_state` returned focus device
+`TIPFSStatus`, and the agent loaded `nikon-pfs` before its first focus action.
+That positive observation correctly authorized 61c. It is also not evidence
+that the lock was engaged without any state observation — the earlier
+`get_system_state.focus` payload carried `engaged`, `device`, status properties
+and the probe hint. The narrower defect is that a model treated that broader
+read as satisfying (or bypassed) a core rule that names one required tool
+literally.
+
+Do not fix this by weakening the invariant to “read focus state somehow” without
+deciding whether the dedicated tool has information or semantics the aggregate
+state lacks. Scope the smallest mechanism that makes the required ordering
+reliable, and test the ordering choice with a live-model observation or another
+instrument that actually chooses calls — a scripted mock whose response already
+contains `get_focus_lock_state` cannot prove routing. No block is scheduled.
+
 ### One from block 59a's demo gate — added 2026-08-28 **(no block)**
 
 **A focus lock with no status property still gets a probe hint pointing at
