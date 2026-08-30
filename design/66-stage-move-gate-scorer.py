@@ -168,6 +168,28 @@ def emitted_settle_calls(source: str) -> list[list]:
     return found
 
 
+def score_selection(path: Path) -> tuple[str, str, str]:
+    """Was this a selected export, or the whole session?
+
+    `export_session_script` writes a `# WARNING:` header only when
+    `tool_use_ids` was supplied, so the script says which it was. M2's gate
+    (2026-08-30) asked for a selected export, the agent passed the tool's *name*
+    as an id, was refused, and recovered by dropping the argument — the export
+    limb passed because that session happened to hold nothing else emittable.
+    An unselected export re-runs every acquisition the session made, so the
+    selection is the mechanism under test, not a detail of how the file was
+    produced.
+    """
+    try:
+        source = load_nonempty(path, "emitted script")
+    except Exception as exc:
+        return ("selected export", NE, str(exc))
+    if "# WARNING:" in source:
+        return ("selected export", PASS, "script carries the selection header")
+    return ("selected export", NE,
+            "script is a whole-session export; tool_use_ids was not exercised")
+
+
 def score_emitted(path: Path, tool: str, device: str, target: float,
                   policy: str | None) -> tuple[str, str, str]:
     try:
@@ -354,6 +376,7 @@ def main(argv=None):
         items.extend(score_success(call, a.target, a.mode))
         if not call.refused and isinstance(call.payload, dict):
             policy = call.payload.get("band_policy")
+    items.append(score_selection(a.emitted))
     items.append(score_emitted(a.emitted, a.tool, a.device, a.target, policy))
     items.append(score_capture(a.capture))
     return report(items, a.log)

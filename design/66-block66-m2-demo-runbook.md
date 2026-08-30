@@ -167,22 +167,81 @@ in the checklist row rather than ticking it.
 
 ## Step 6 — the demo regression limb (demo machine, not M2)
 
-Repeat Steps 0–4 on the demo machine with its own declared named stage and an
-in-bounds target at least 40 µm from its current coordinate, then:
+The demo machine proves the regression half: an axis that arrives exactly and
+instantly is still verified, and reports how. It also carries the limb M2 could
+not: a **selected** export.
+
+### 6.1 — Set up, and let a command choose the route
+
+Run all of Step 0 on this machine — `$REPO`, the pin, `$PYTHON`, a fresh
+`$EVIDENCE`, and the self-test. Then let the config decide which tool this limb
+uses, rather than deciding by eye:
+
+```powershell
+& $PYTHON -c "import os,yaml;p=os.path.join(os.environ['APPDATA'],'microclaw','safety_config.yaml');d=yaml.safe_load(open(p,encoding='utf-8'));n=d.get('named_stages') or [];print('ROUTE: NAMED' if n else 'ROUTE: FOCUS');[print('  device:',s.get('device')) for s in n];z=d.get('stage') or {};print('  z bounds:',z.get('z_min'),z.get('z_max'))"
+```
+
+`ROUTE: NAMED` — use the printed device with `move_named_stage`.
+`ROUTE: FOCUS` — use `move_stage_z` on the core focus axis. **Do not add a named
+stage to the config to get the first route**: the product does not require one,
+and neither may this gate.
+
+### 6.2 — Drive one session, using these prompts verbatim
+
+Open Microclaw on the demo machine and paste each prompt as written. The first
+names the tool because routing is not what this limb tests; the third
+deliberately does **not** say how to select a call, because whether an agent can
+find that mechanism is exactly what M2 left unexercised.
+
+1. `What is the current position of <the device from 6.1, or the focus axis>?`
+2. **ROUTE: NAMED** — `Use move_named_stage to move <device> to <a target at
+   least 40 um from the position it just reported, inside the z bounds printed
+   in 6.1>, absolute.`
+   **ROUTE: FOCUS** — `Use move_stage_z to move the focus axis to <same rule>,
+   absolute.`
+   Record the target you used; it is `<demo target>` below. Do not retarget to
+   the achieved coordinate.
+3. `Export a standalone script containing only that move — none of the other
+   calls in this session.`
+4. If the export reports every recorded call rather than one, **stop and record
+   what the agent did**, then ask it again naming the id explicitly. Both
+   outcomes are evidence: the first is the M2 failure recurring, the second
+   still exercises the selection.
+
+Close Microclaw.
+
+### 6.3 — Name the files, capture, and score
+
+```powershell
+$HISTORY = "<paste this session's *_microclaw_history.jsonl>"
+$SCRIPT  = "<paste the path export_session_script wrote>"
+foreach ($p in @($HISTORY, $SCRIPT)) { if (-not (Test-Path $p)) { throw "not found: $p" } }
+Copy-Item $HISTORY $EVIDENCE; Copy-Item $SCRIPT $EVIDENCE
+& $PYTHON (Join-Path $REPO "design\66-stage-move-command-sheet.py") --interpreter $PYTHON --script $SCRIPT --capture $CAPTURE --output $SHEET
+if ($LASTEXITCODE -ne 0) { throw "command-sheet generation failed" }
+& $SHEET
+if (-not (Test-Path $CAPTURE)) { throw "the sheet wrote no capture" }
+```
+
+**ROUTE: NAMED**
 
 ```powershell
 & $PYTHON (Join-Path $REPO "design\66-stage-move-gate-scorer.py") --history $HISTORY --emitted $SCRIPT --capture $CAPTURE --log $DEMOLOG --device "<demo device>" --target <demo target> --mode demo
 if ($LASTEXITCODE -ne 0) { throw "demo regression limb did not pass" }
 ```
 
-**If the demo machine declares no named stage**, do not add one — the product
-does not require one and neither may this gate. Run the same limb on the core
-focus axis with `move_stage_z`, which needs no configuration:
+**ROUTE: FOCUS**
 
 ```powershell
 & $PYTHON (Join-Path $REPO "design\66-stage-move-gate-scorer.py") --history $HISTORY --emitted $SCRIPT --capture $CAPTURE --log $DEMOLOG --tool move_stage_z --target <demo target> --mode demo
 if ($LASTEXITCODE -ne 0) { throw "demo regression limb did not pass" }
 ```
+
+The demo limb requires `within_tolerance: true` with `measured_um` exactly equal
+to the target — the regression check — plus the selected-export limb, which
+reports **NOT EXERCISED** on a whole-session export however well its move scores.
+A simulated stage lands exactly, so a demo `measured_um` that is *not* the target
+is a finding, not a tolerance question.
 
 ## What to return
 

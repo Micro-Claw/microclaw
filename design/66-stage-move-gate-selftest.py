@@ -169,6 +169,18 @@ def main():
             "--device", device, "--target", str(target), "--mode", "m2-success"])
         check("list-shaped tool_result content is read", code == 0)
 
+        # A whole-session export cannot satisfy the selection limb, however
+        # well its move scores.
+        whole = root / "whole_session.py"
+        export_session_script(SimpleNamespace(core=None), guard_for(device),
+                              str(whole), messages)
+        code, log = run_scorer(root, "negative-unselected", [
+            "--history", str(history), "--emitted", str(whole),
+            "--capture", str(capture), "--device", device,
+            "--target", str(target), "--mode", "m2-success"])
+        check("an unselected export is NOT EXERCISED",
+              code != 0 and "tool_use_ids was not exercised" in log)
+
         # --- the demo regression limb: exact instant arrival ---
         demo = recorded_call(QuantizedBridgeStage(start=150.0, exact=True),
                              device, target)
