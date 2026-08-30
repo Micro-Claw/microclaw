@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from microclaw import controller
-from microclaw.controller import StageMoveError, settle_stage_move, stage_move_dispatch_failure
+from microclaw.controller import (MicroscopeController, StageMoveError, settle_stage_move,
+                                  stage_move_dispatch_failure)
 from microclaw.safety import (NamedStageLimits, SafetyConfigError, SafetyConstraints,
                               SafetyGuard, StageConstraints, ParsedSafetyConfig)
 from microclaw.tools import move_named_stage, move_stage_z
@@ -117,6 +118,94 @@ def test_06_registered_named_stage_receives_its_own_declared_accuracy():
         move_named_stage(ctrl, guard, "Z", 200)
     assert caught.value.result["tolerance_um"] == 1.5
     assert caught.value.result["verification_kind"] == "configured_accuracy"
+
+
+def _focus_guard(tolerance):
+    return SafetyGuard(SafetyConstraints(stage=StageConstraints(
+        z_min=0, z_max=100, z_move_tolerance_um=tolerance)))
+
+
+def test_06_controller_set_z_delivers_the_declared_core_focus_accuracy():
+    """The Core-focus half of test 06's delivery path.
+
+    A 0.6 um residual is the discrimination: it is above the old 0.5 um
+    constant and below the 2.0 um floor, and the 40 um displacement puts the
+    relative band at 4.0 um. Every band this site could reach WITHOUT the
+    declared value threaded -- relative 4.0, floor 2.0 -- accepts this
+    landing, so the refusal can only come from `stage.z_move_tolerance_um`
+    arriving as `configured_band_um`.
+    """
+    core = ParkedStage(0, 39.4)
+    ctrl = MicroscopeController.__new__(MicroscopeController)
+    ctrl._core = core
+    ctrl._guard = _focus_guard(0.35)
+    with pytest.raises(StageMoveError) as caught:
+        ctrl.set_z(40)
+    assert caught.value.result["tolerance_um"] == 0.35
+    assert caught.value.result["band_source"] == "configured"
+    assert caught.value.result["verification_kind"] == "configured_accuracy"
+    assert settle(ParkedStage(0, 39.4), 40, 0)["within_tolerance"] is True
+
+
+def test_06_sweep_probe_move_delivers_the_declared_core_focus_accuracy():
+    """The same declared value must reach every probe move of a sweep.
+
+    A one-micron plane step gives the relative rule the 2.0 um floor, which
+    accepts the 0.6 um miss; only the declared 0.35 um band refuses it. The
+    sweep reports the band it used, so the exporter never has to ask the live
+    configuration for it.
+    """
+    core = ParkedStage(10, 10)
+    core.set_position = lambda z: setattr(core, "position", float(z) - 0.6)
+    ctrl = type("Ctrl", (), {})()
+    ctrl.core = core
+    ctrl._guard = _focus_guard(0.35)
+    probe = FocusProbe(read=lambda: 1.0, choose=lambda values: 0,
+                       admit=lambda values: None, exposures_per_plane=0,
+                       describe="fixture")
+    with pytest.raises(StageMoveError) as caught:
+        sweep_autofocus(ctrl, 9, 11, 1, settle_ms=0, move_to_best=False,
+                        probe=probe)
+    assert caught.value.result["tolerance_um"] == 0.35
+    assert caught.value.result["band_source"] == "configured"
+
+    ctrl._guard = _focus_guard(None)
+    swept = sweep_autofocus(ctrl, 9, 11, 1, settle_ms=0, move_to_best=False,
+                            probe=probe)
+    assert swept.configured_move_tolerance_um is None
+    ctrl._guard = _focus_guard(0.9)
+    assert sweep_autofocus(ctrl, 9, 11, 1, settle_ms=0, move_to_best=False,
+                           probe=probe).configured_move_tolerance_um == 0.9
+
+
+def test_06_declared_band_survives_a_controller_that_computes_its_guard():
+    """The lookup must not depend on `_guard` sitting in the instance dict.
+
+    `getattr(ctrl, "__dict__", {}).get("_guard")` returned None for a
+    controller exposing `_guard` as a property or through __slots__, and a
+    dropped declared band does not raise -- it silently widens the check to
+    the package rule, which accepts this 0.6 um miss.
+    """
+    core = ParkedStage(10, 10)
+    core.set_position = lambda z: setattr(core, "position", float(z) - 0.6)
+    declared = _focus_guard(0.35)
+
+    class ComputedGuard:
+        core = None
+
+        @property
+        def _guard(self):
+            return declared
+
+    ctrl = ComputedGuard()
+    ctrl.core = core
+    probe = FocusProbe(read=lambda: 1.0, choose=lambda values: 0,
+                       admit=lambda values: None, exposures_per_plane=0,
+                       describe="fixture")
+    with pytest.raises(StageMoveError) as caught:
+        sweep_autofocus(ctrl, 9, 11, 1, settle_ms=0, move_to_best=False,
+                        probe=probe)
+    assert caught.value.result["tolerance_um"] == 0.35
 
 
 def test_07_floor_restoration_is_stricter_than_relative_and_configured_wins():

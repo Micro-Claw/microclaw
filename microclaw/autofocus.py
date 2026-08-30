@@ -27,6 +27,14 @@ class SweepResult:
     stopped_early: bool = field(default=False, compare=False)
     planes_planned: int = field(default=0, compare=False)
     target_found: bool = field(default=False, compare=False)
+    #: The declared Core-focus band this sweep's probe moves were verified
+    #: against, or None where the axis has no declared value and the package
+    #: response rule applied. Recorded rather than looked up again later: the
+    #: standalone exporter copies the band out of the run's record, and a
+    #: safety config edited between the run and the export must not silently
+    #: change what the emitted script verifies (design/66, "Standalone export").
+    configured_move_tolerance_um: Optional[float] = field(default=None,
+                                                          compare=False)
 
 
 @dataclass(frozen=True)
@@ -337,7 +345,7 @@ def sweep_autofocus(
     measured_z_positions = []
     unsettled_indices = []
     arrival_unverifiable_indices = []
-    guard = getattr(ctrl, "__dict__", {}).get("_guard")
+    guard = getattr(ctrl, "_guard", None)
     configured = (guard.stage_move_tolerance(focus_device, core_focus=True)
                   if guard is not None else None)
 
@@ -390,6 +398,7 @@ def sweep_autofocus(
         measured_z_positions=measured_z_positions,
         unsettled_indices=unsettled_indices,
         arrival_unverifiable_indices=arrival_unverifiable_indices,
+        configured_move_tolerance_um=configured,
         stopped_early=len(metric_values) < n,
         planes_planned=n,
         target_found=(probe.stop_when_found and
@@ -400,7 +409,7 @@ def sweep_autofocus(
 def _restore(ctrl, z: float) -> dict:
     focus_device = ctrl.core.get_focus_device()
     start_um = float(ctrl.core.get_position(focus_device))
-    guard = getattr(ctrl, "__dict__", {}).get("_guard")
+    guard = getattr(ctrl, "_guard", None)
     configured = (guard.stage_move_tolerance(focus_device, core_focus=True)
                   if guard is not None else None)
     try:
