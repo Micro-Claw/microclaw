@@ -5344,6 +5344,9 @@ def center_feature(
     affine_coefficients = {key: getattr(affine, key) for key in ("a", "b", "c", "d")}
     context = {"affine_coefficients": affine_coefficients, **calibration}
     residual = None
+    residual_um = None
+    residuals_px = []
+    commanded_corrections_um = []
     for i in range(max_iter + 1):
         feats = find_features(ctrl, guard)
         # The optical path can change under us: the user owns the session and
@@ -5359,6 +5362,11 @@ def center_feature(
         ):
             return {
                 "centered": False, "iterations": i, "residual_px": residual,
+                "residual_um": residual_um, "residuals_px": residuals_px,
+                "smallest_correction_um": (
+                    min(commanded_corrections_um)
+                    if commanded_corrections_um else None
+                ),
                 **context,
                 "error": (
                     "The stage-camera calibration changed during centring — the "
@@ -5382,25 +5390,67 @@ def center_feature(
                     "min_sigma/max_sigma/threshold_rel via find_features, or "
                     "centre by hand."
                 ),
-                "iterations": i, "n_spots": feats["n_spots"], **context,
+                "iterations": i, "n_spots": feats["n_spots"],
+                "residual_um": residual_um, "residuals_px": residuals_px,
+                "smallest_correction_um": (
+                    min(commanded_corrections_um)
+                    if commanded_corrections_um else None
+                ),
+                **context,
             }
-        if math.hypot(*residual) <= tol_px:
+        residual_magnitude_px = math.hypot(*residual)
+        residuals_px.append(residual_magnitude_px)
+        residual_move_um = affine.px_to_um(residual[0], residual[1])
+        residual_um = math.hypot(*residual_move_um)
+        if residual_magnitude_px <= tol_px:
             return {"centered": True, "iterations": i, "residual_px": residual,
+                    "residual_um": residual_um, "residuals_px": residuals_px,
+                    "smallest_correction_um": (
+                        min(commanded_corrections_um)
+                        if commanded_corrections_um else None
+                    ),
                     **context}
         if i == max_iter:
             break
-        dx_um, dy_um = affine.px_to_um(residual[0], residual[1])
+        dx_um, dy_um = residual_move_um
+        commanded_corrections_um.append(math.hypot(dx_um, dy_um))
         move_stage_xy(ctrl, guard, dx_um, dy_um, absolute=False)
+
+    smallest_correction_um = (
+        min(commanded_corrections_um) if commanded_corrections_um else None
+    )
+    if len(residuals_px) < 2:
+        hint = (
+            "Residual is still above tol_px at max_iter; raise max_iter to allow "
+            "more corrections."
+        )
+    elif residuals_px[-1] > residuals_px[0]:
+        hint = (
+            "Residual grew across iterations; the stage-camera calibration may "
+            "be stale or wrong — rerun calibrate_stage_to_camera."
+        )
+    elif residuals_px[-1] < residuals_px[-2]:
+        hint = (
+            "Residual was still falling at max_iter; raise max_iter to allow "
+            "more corrections."
+        )
+    else:
+        hint = (
+            "Residual fell, then stopped improving above tol_px. This may be a "
+            "floor from the stage step size (smallest commanded correction "
+            f"{smallest_correction_um:.2f} µm) or detector repeatability. tol_px "
+            "may be below what this rig can reach; raising tol_px is legitimate."
+        )
 
     return {
         "centered": False,
         "iterations": max_iter,
         "residual_px": residual,
+        "residual_um": residual_um,
+        "residuals_px": residuals_px,
+        "smallest_correction_um": smallest_correction_um,
         **context,
-        "hint": (
-            "Residual did not fall below tol_px. If it GREW between iterations, "
-            "the calibration may be stale — rerun calibrate_stage_to_camera."
-        ),
+        "hint": hint,
     }
 
 
