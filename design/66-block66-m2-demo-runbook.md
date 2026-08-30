@@ -7,6 +7,37 @@ git merge-base --is-ancestor 47331a4 HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 66 implementation is not present" }
 ```
 
+## Step 0 — resolve `<PYTHON>` and prove it runs
+
+Every command below names the interpreter explicitly, because the exported
+script imports `pycromanager` and opens its own `Core()`. It is the interpreter
+of the Microclaw install itself: pycromanager is a core dependency, so the venv
+that runs Microclaw is by definition the one that can import it. Resolve it from
+the **active slot** — never hardcode `env-a`, which is the other build on a
+machine that has updated:
+
+```powershell
+$root = "$env:LOCALAPPDATA\microclaw"
+$PYTHON = $null
+if (Test-Path "$root\active-slot.txt") {
+    $slot = (Get-Content "$root\active-slot.txt" -Raw).Trim()
+    $PYTHON = "$root\env-$slot\Scripts\python.exe"
+} elseif (Test-Path "$root\env\Scripts\python.exe") {
+    $PYTHON = "$root\env\Scripts\python.exe"
+}
+if (-not $PYTHON -or -not (Test-Path $PYTHON)) {
+    throw "no installed microclaw interpreter found; if you run Microclaw from a git checkout, use that checkout's .venv\Scripts\python.exe"
+}
+& $PYTHON -c "import pycromanager, microclaw, sys; print(sys.executable); print(pycromanager.__file__)"
+if ($LASTEXITCODE -ne 0) { throw "this interpreter cannot import pycromanager" }
+Write-Host "PYTHON = $PYTHON"
+```
+
+Substitute the printed path for every `<PYTHON>` below. The import line is the
+test, not `Test-Path`: `python.exe` in a slot is a trampoline onto a uv-managed
+CPython elsewhere on the disk, and a trampoline whose target is gone is still a
+file.
+
 Use a fresh evidence directory and record its literal absolute path. Do not add
 any tolerance setting for this gate. The setup-generated safety config must stay
 unchanged. The operator owns the decision whether disconnecting or powering down
