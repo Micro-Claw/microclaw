@@ -172,7 +172,28 @@ record.
 
 | Block | Scope | Branch | Start commit | Implementation | Rig evidence | Merge | Design reconciliation |
 |---|---|---|---|---|---|---|---|
-| 64a | Sign, centring target, MM as authority, and their export | `design/64-center-feature` | `1f07761` | `6f62a90` + `290998a` + `f2c45d4` + `6776d47` + `3984ac4` + `a400dd6` | **M2 2026-08-30 `gate64-m2` 9/9 PASS + re-run `gate64b-m2` 2/2 PASS** | *(pending)* | *(pending)* |
+| 64a | Sign, centring target, MM as authority, and their export | `design/64-center-feature` (deleted) | `1f07761` | `6f62a90` … `898c888` | **M2 2026-08-30 `gate64-m2` 9/9 PASS + re-run `gate64b-m2` 2/2 PASS** | `9b43c51` **2026-08-30** | **done** — this document; `CLAUDE.md` unchanged, see below |
+
+**Step 10, and why `CLAUDE.md` did not change.** Its engine-contracts section
+collects things a *test fake* got wrong about hardware. This block's defect is
+adjacent but not the same: the fakes were each internally consistent and
+described two different microscopes, which no single-fake rule catches. That
+lesson already exists there in its general form — *a fake that encodes your
+assumption is not a test of it* — and the specific instance belongs here and in
+`design/prompts.md`, not as a ninth contract. Adding one would dilute a section
+whose value is that every entry cost a rig trip.
+
+**Carried forward, not closed by this block:**
+
+- `move_stage_xy` still has no arrival contract (design/35 register, design/63
+  block 63a). Unchanged by this block and now more visible: `center_feature`
+  snaps immediately after a move.
+- `tol_px` is not checked against the stage's step size. On M2 the quantization
+  floor is ~6.3 px and the default tolerance is 5.0, so convergence there is
+  partly luck; the non-convergence hint blames a stale calibration and should
+  also name this.
+- The knowledge base's lost-update race under concurrent launches. The torn-read
+  window is closed; the read-modify-write is not.
 
 **Deviation from the workflow, recorded rather than hidden.** 64a was
 implemented by the coordinator inline instead of being delegated to a runner in
