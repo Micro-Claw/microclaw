@@ -128,7 +128,7 @@ class TestGuardedSeam:
         monkeypatch.setattr(controller, "STAGE_MOVE_REQUIRED_SAMPLES", 2)
         monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
         monkeypatch.setattr(controller, "STAGE_MOVE_POLL_S", 0.0)
-        result = settle_stage_move(core, "DStage", 100.0)
+        result = settle_stage_move(core, "DStage", 100.0, 60.0, "relative", None)
         assert result["measured_um"] == 100.0
         assert result["within_tolerance"] is True
 
@@ -149,7 +149,7 @@ class TestGuardedSeam:
         core.device_busy.return_value = False
         monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0, raising=False)
         with pytest.raises(controller.StageMoveError) as caught:
-            controller.settle_stage_move(core, "S", 100.0)
+            controller.settle_stage_move(core, "S", 100.0, 60.0, "relative", None)
         assert caught.value.result["measured_um"] is None
         assert "non-finite" in caught.value.result["last_device_status"]
         assert "NaN" not in json.dumps(caught.value.result)
@@ -161,7 +161,7 @@ class TestGuardedSeam:
         core.device_busy.return_value = False
         monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
         with pytest.raises(StageMoveError) as caught:
-            settle_stage_move(core, "DStage", 100.0)
+            settle_stage_move(core, "DStage", 100.0, 60.0, "relative", None)
         assert caught.value.result["measured_um"] is None
         assert "Serial command failed" in caught.value.result["last_device_status"]
 

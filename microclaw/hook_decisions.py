@@ -556,14 +556,22 @@ class UntrustedHookAdapter:
             raise RuntimeError(f"named-stage action refused: {exc}") from exc
         # The budget counts attempted dispatches, including writes that raise.
         ctx["remaining"] -= 1
+        start_um = float(ctx["core"].get_position(ctx["device"]))
+        band_policy = "floor" if restoration else "relative"
+        tolerance_lookup = getattr(ctx["guard"], "stage_move_tolerance", None)
+        configured = tolerance_lookup(ctx["device"]) if tolerance_lookup else None
         try:
             try:
                 ctx["core"].set_position(ctx["device"], target)
             except Exception as exc:
                 raise stage_move_dispatch_failure(
-                    ctx["core"], ctx["device"], target, exc,
+                    ctx["core"], ctx["device"], target, start_um,
+                    band_policy, configured, exc,
                 ) from exc
-            result = settle_stage_move(ctx["core"], ctx["device"], target)
+            result = settle_stage_move(
+                ctx["core"], ctx["device"], target, start_um,
+                band_policy, configured,
+            )
             achieved = result["measured_um"]
         except Exception as exc:
             failure_result = exc.result if isinstance(exc, StageMoveError) else {}
@@ -584,6 +592,12 @@ class UntrustedHookAdapter:
         event["named_stage_measured_um"] = achieved
         event["named_stage_tolerance_um"] = result["tolerance_um"]
         event["named_stage_within_tolerance"] = result["within_tolerance"]
+        event["named_stage_start_um"] = result["start_um"]
+        event["named_stage_arrival_residual_um"] = result["arrival_residual_um"]
+        event["named_stage_band_policy"] = result["band_policy"]
+        event["named_stage_band_source"] = result["band_source"]
+        event["named_stage_arrival_unverifiable"] = result["arrival_unverifiable"]
+        event["named_stage_verification_kind"] = result["verification_kind"]
         event["named_stage_error_um"] = achieved - target
         self._accept_event(
             event, action, "named-stage move passed envelope and SafetyGuard",
@@ -591,6 +605,11 @@ class UntrustedHookAdapter:
             achieved_um=achieved, error_um=achieved - target,
             measured_um=achieved, tolerance_um=result["tolerance_um"],
             within_tolerance=result["within_tolerance"],
+            start_um=result["start_um"],
+            arrival_residual_um=result["arrival_residual_um"],
+            band_policy=result["band_policy"], band_source=result["band_source"],
+            arrival_unverifiable=result["arrival_unverifiable"],
+            verification_kind=result["verification_kind"],
             restoration=restoration,
         )
 

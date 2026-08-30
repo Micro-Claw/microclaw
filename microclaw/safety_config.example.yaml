@@ -10,10 +10,12 @@ stage:
   y_max: 6789.0
   z_min: 123.0
   z_max: 7890.0
+  z_move_tolerance_um: 0.37
 named_stages:
   - device: FictionalPiezoZ
     min_um: 12.0
     max_um: 234.0
+    move_tolerance_um: 1.73
 acquisition:
   confirm_above_frames: 500
   confirm_above_duration_s: 1200

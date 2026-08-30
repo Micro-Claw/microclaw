@@ -50,7 +50,7 @@ def test_image_probe_refactor_characterizes_whole_autofocus_result(monkeypatch):
     )
     sweep = SweepResult(
         [49.0, 50.0, 51.0], [5.0, 4.0, 3.0], 49.0, False,
-        [49.0, 50.0, 51.0],
+        [49.0, 50.0, 51.0], arrival_unverifiable_indices=[0, 1, 2],
     )
     expected = autofocus.AutofocusResult(
         sweep, None, 50.0, 50.0, False, False,
@@ -400,12 +400,20 @@ class TestSweep:
         ctrl = MagicMock()
         ctrl.core.get_position.return_value = 50.0
         original = StageMoveError({
-            "requested_um": 49.0, "measured_um": 48.0, "tolerance_um": 0.5,
+            "start_um": 50.0, "requested_um": 49.0, "measured_um": 48.0,
+            "arrival_residual_um": 1.0, "tolerance_um": 0.5,
+            "band_policy": "relative", "band_source": "configured",
+            "arrival_unverifiable": False,
+            "verification_kind": "configured_accuracy",
             "within_tolerance": False, "elapsed_s": 10.0,
             "last_device_status": "busy",
         })
         restore = StageMoveError({
-            "requested_um": 50.0, "measured_um": 48.0, "tolerance_um": 0.5,
+            "start_um": 48.0, "requested_um": 50.0, "measured_um": 48.0,
+            "arrival_residual_um": 2.0, "tolerance_um": 0.5,
+            "band_policy": "floor", "band_source": "configured",
+            "arrival_unverifiable": False,
+            "verification_kind": "configured_accuracy",
             "within_tolerance": False, "elapsed_s": 10.0,
             "last_device_status": "idle",
         })

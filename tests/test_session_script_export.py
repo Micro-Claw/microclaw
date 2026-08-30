@@ -2624,18 +2624,21 @@ def test_stage_move_contract_is_defined_once_however_many_moves(tmp_path):
     ])
     assert source.count("def settle_stage_move") == 1
     assert source.count("class StageMoveError") == 1
-    assert source.count("STAGE_MOVE_TOLERANCE_UM = ") == 1
+    assert source.count("STAGE_MOVE_RESPONSE_BAND_UM = ") == 1
+    assert source.count("STAGE_MOVE_RESPONSE_FRACTION = ") == 1
     assert not _undefined_emitted_names(source)
 
 
 def test_emitted_stage_settle_uses_live_policy_constants(tmp_path, monkeypatch):
-    monkeypatch.setattr(controller, "STAGE_MOVE_TOLERANCE_UM", 0.321)
+    monkeypatch.setattr(controller, "STAGE_MOVE_RESPONSE_BAND_UM", 0.321)
+    monkeypatch.setattr(controller, "STAGE_MOVE_RESPONSE_FRACTION", 0.123)
     monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 7.654)
     _, _, source = export(tmp_path, completed_call(
         "move_named_stage", {"device": "TIRF Stage", "um": 5.0},
         {"device": "TIRF Stage", "requested_um": 5.0, "measured_um": 5.0},
     ))
     assert "0.321" in source
+    assert "0.123" in source
     assert "7.654" in source
 
 
@@ -2938,7 +2941,7 @@ def test_move_named_stage_emits_its_resolved_absolute_target(tmp_path):
          "achieved_um": 1461.2, "error_um": 1.2},
     ))
     assert "core.set_position('TIRF Stage', 1460.0)" in source
-    assert "settle_stage_move(core, 'TIRF Stage', 1460.0)" in source
+    assert "settle_stage_move(core, 'TIRF Stage', 1460.0, None, 'relative', None)" in source
     assert "-40.0" not in source
     assert "# NOT EMITTED" not in source
     assert '"within_tolerance": False' in source
@@ -2974,6 +2977,36 @@ def test_emitted_named_stage_move_runs_success_and_failure_paths(tmp_path):
         })
     assert type(caught.value).__name__ == "StageMoveError"
     assert caught.value.result["within_tolerance"] is False
+
+
+def test_emitted_configured_named_stage_preserves_absolute_accuracy_decision(tmp_path):
+    _, _, source = export(tmp_path, completed_call(
+        "move_named_stage",
+        {"device": "TIRF Stage", "um": 200.0, "absolute": True},
+        {"device": "TIRF Stage", "start_um": 0.0, "requested_um": 200.0,
+         "measured_um": 195.0, "arrival_residual_um": 5.0,
+         "tolerance_um": 1.5, "band_policy": "relative",
+         "band_source": "configured", "arrival_unverifiable": False,
+         "verification_kind": "configured_accuracy", "within_tolerance": False,
+         "elapsed_s": 10.0, "last_device_status": "idle"},
+    ))
+    assert "200.0, 0.0, 'relative', 1.5" in source
+    runnable = source.replace(
+        "from pycromanager import Acquisition, Core, multi_d_acquisition_events", ""
+    ).replace("STAGE_MOVE_TIMEOUT_S = 10.0", "STAGE_MOVE_TIMEOUT_S = 0.0")
+
+    class FakeCore:
+        def set_position(self, device, target): pass
+        def device_busy(self, device): return False
+        def get_position(self, device): return 195.0
+
+    with pytest.raises(RuntimeError) as caught:
+        exec(compile(runnable, "routine.py", "exec"), {
+            "__file__": str(tmp_path / "routine.py"), "Core": FakeCore,
+        })
+    assert type(caught.value).__name__ == "StageMoveError"
+    assert caught.value.result["tolerance_um"] == 1.5
+    assert caught.value.result["verification_kind"] == "configured_accuracy"
 
 
 @pytest.mark.parametrize(("label", "result"), [

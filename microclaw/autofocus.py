@@ -23,6 +23,7 @@ class SweepResult:
     peak_interior: bool
     measured_z_positions: list[float]
     unsettled_indices: list[int] = field(default_factory=list)
+    arrival_unverifiable_indices: list[int] = field(default_factory=list)
     stopped_early: bool = field(default=False, compare=False)
     planes_planned: int = field(default=0, compare=False)
     target_found: bool = field(default=False, compare=False)
@@ -335,15 +336,24 @@ def sweep_autofocus(
     metric_values = []
     measured_z_positions = []
     unsettled_indices = []
+    arrival_unverifiable_indices = []
+    guard = getattr(ctrl, "__dict__", {}).get("_guard")
+    configured = (guard.stage_move_tolerance(focus_device, core_focus=True)
+                  if guard is not None else None)
 
     for z in z_positions:
+        start_um = float(ctrl.core.get_position(focus_device))
         try:
             ctrl.core.set_position(z)
         except Exception as exc:
             raise stage_move_dispatch_failure(
-                ctrl.core, focus_device, z, exc
+                ctrl.core, focus_device, z, start_um, "relative", configured, exc
             ) from exc
-        settled = settle_stage_move(ctrl.core, focus_device, z)
+        settled = settle_stage_move(
+            ctrl.core, focus_device, z, start_um, "relative", configured
+        )
+        if settled["arrival_unverifiable"]:
+            arrival_unverifiable_indices.append(len(metric_values))
         measured_z_positions.append(float(settled["measured_um"]))
         if settle_ms > 0 and probe.exposures_per_plane:
             time.sleep(settle_ms / 1000.0)
@@ -361,14 +371,15 @@ def sweep_autofocus(
     best_idx = probe.choose(metric_values)
     best_z = measured_z_positions[best_idx]
     if move_to_best:
+        start_um = float(ctrl.core.get_position(focus_device))
         try:
             ctrl.core.set_position(best_z)
         except Exception as exc:
             raise stage_move_dispatch_failure(
-                ctrl.core, focus_device, best_z, exc
+                ctrl.core, focus_device, best_z, start_um, "relative", configured, exc
             ) from exc
         best_z = float(settle_stage_move(
-            ctrl.core, focus_device, best_z
+            ctrl.core, focus_device, best_z, start_um, "relative", configured
         )["measured_um"])
 
     return SweepResult(
@@ -378,6 +389,7 @@ def sweep_autofocus(
         peak_interior=0 < best_idx < len(z_positions) - 1,
         measured_z_positions=measured_z_positions,
         unsettled_indices=unsettled_indices,
+        arrival_unverifiable_indices=arrival_unverifiable_indices,
         stopped_early=len(metric_values) < n,
         planes_planned=n,
         target_found=(probe.stop_when_found and
@@ -387,13 +399,19 @@ def sweep_autofocus(
 
 def _restore(ctrl, z: float) -> dict:
     focus_device = ctrl.core.get_focus_device()
+    start_um = float(ctrl.core.get_position(focus_device))
+    guard = getattr(ctrl, "__dict__", {}).get("_guard")
+    configured = (guard.stage_move_tolerance(focus_device, core_focus=True)
+                  if guard is not None else None)
     try:
         ctrl.core.set_position(z)
     except Exception as exc:
         raise stage_move_dispatch_failure(
-            ctrl.core, focus_device, z, exc
+            ctrl.core, focus_device, z, start_um, "floor", configured, exc
         ) from exc
-    return settle_stage_move(ctrl.core, focus_device, z)
+    return settle_stage_move(
+        ctrl.core, focus_device, z, start_um, "floor", configured
+    )
 
 
 def _flat_reason(

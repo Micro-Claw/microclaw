@@ -373,6 +373,11 @@ def _emit_autofocus(params: RecordedParams) -> str:
     probe = params.get("probe", signature.parameters["probe"].default)
     z_min = params.get("z_min_um")
     z_max = params.get("z_max_um")
+    configured = params.get("_export_focus_move_tolerance_um")
+    policy_line = (
+        "mm._guard = SimpleNamespace(stage_move_tolerance="
+        f"lambda device, core_focus=False: {configured!r})"
+    )
     if region == "drawn":
         region = params.result.get("region")
         if region is None:
@@ -400,6 +405,7 @@ def _emit_autofocus(params: RecordedParams) -> str:
             if z_min is not None or dwell_ms is not None else ""
         )
         return "\n".join([
+            policy_line,
             "_autofocus_entry_z = float(core.get_position())",
             lo_line,
             hi_line,
@@ -425,6 +431,7 @@ def _emit_autofocus(params: RecordedParams) -> str:
     extra_args = (f", z_min_um={z_min!r}, z_max_um={z_max!r}"
                   if z_min is not None else "")
     return "\n".join([
+        policy_line,
         "_autofocus_entry_z = float(core.get_position())",
         lo_line,
         hi_line,
@@ -1096,6 +1103,10 @@ class _RecordedSafetyGuard:
             raise SafetyViolation(f"Named stage {{device!r}} has no recorded envelope")
         self._bounded(position_um, envelope["min_um"], envelope["max_um"],
                       f"Named stage {{device}}")
+    def stage_move_tolerance(self, device, *, core_focus=False):
+        if core_focus:
+            return _LIMITS.get("z_move_tolerance_um")
+        return _LIMITS.get("named_stage_move_tolerances_um", {{}}).get(device)
     def check_device_property(self, core, device, prop, value, *, approved_envelope=False):
         envelope = globals().get("_PROPERTY_ENVELOPE")
         if envelope is None or device != envelope["device"] or prop != envelope["property"]:
@@ -1302,7 +1313,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     recorded_log = params.get("log_path") or params.result.get("log_path")
     log_name = Path(recorded_log).name if recorded_log else None
     common = [
-        _export_guard_source(limits), hook_source,
+        _export_guard_source(limits), "mm._guard = guard", hook_source,
         (f"_log_path = _next_available_log_path(_HERE / {log_name!r})"
          if log_name else "_log_path = None"),
         f"hook = {constructor}",
@@ -1689,6 +1700,12 @@ def export_session_script(
                 "z_um": (stage.z_min, stage.z_max),
                 "exposure_ms": (0.0, camera.max_exposure_ms),
                 "analysis_min_snr": guard.analysis_min_snr,
+                "z_move_tolerance_um": getattr(stage, "z_move_tolerance_um", None),
+                "named_stage_move_tolerances_um": {
+                    item.device: getattr(item, "move_tolerance_um", None)
+                    for item in getattr(constraints, "named_stages", [])
+                    if getattr(item, "move_tolerance_um", None) is not None
+                },
             }
             for axis in ("x", "y", "z"):
                 pair = safety_limits[f"{axis}_um"]
@@ -1714,6 +1731,11 @@ def export_session_script(
         ):
             params["_export_safety_limits"] = safety_limits
             params["_export_safety_limits_error"] = safety_limits_error
+        if name == "run_autofocus":
+            lookup = getattr(guard, "stage_move_tolerance", None)
+            params["_export_focus_move_tolerance_um"] = (
+                lookup("", core_focus=True) if lookup else None
+            )
     # Every one of these is reached only by the adaptive block: hashlib/io/json
     # by the hook artifact and log writers, queue by the candidate stream,
     # threading by SurveyProgress, asdict and
@@ -2712,22 +2734,34 @@ def get_z_position(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     return result
 
 
-def _emit_stage_settle(device_expr: str, target: float) -> str:
-    return f"settle_stage_move(core, {device_expr}, {target!r})"
+def _recorded_stage_contract(result: dict) -> tuple[float | None, str, float | None]:
+    start = result.get("start_um")
+    policy = result.get("band_policy", "relative")
+    configured = result.get("tolerance_um") if result.get("band_source") == "configured" else None
+    return start, policy, configured
 
 
-def _emit_stage_dispatch(set_line: str, device_expr: str, target: float) -> str:
+def _emit_stage_settle(device_expr: str, target: float, result: dict) -> str:
+    start, policy, configured = _recorded_stage_contract(result)
+    return (f"settle_stage_move(core, {device_expr}, {target!r}, {start!r}, "
+            f"{policy!r}, {configured!r})")
+
+
+def _emit_stage_dispatch(set_line: str, device_expr: str, target: float,
+                         result: dict) -> str:
+    start, policy, configured = _recorded_stage_contract(result)
     return "\n".join([
         "try:",
         f"    {set_line}",
         "except Exception as _move_exc:",
-        f"    raise stage_move_dispatch_failure(core, {device_expr}, {target!r}, _move_exc) from _move_exc",
+        f"    raise stage_move_dispatch_failure(core, {device_expr}, {target!r}, {start!r}, {policy!r}, {configured!r}, _move_exc) from _move_exc",
     ])
 
 
 def _stage_move_contract_source() -> str:
     constants = "\n".join([
-        f"STAGE_MOVE_TOLERANCE_UM = {move_controller.STAGE_MOVE_TOLERANCE_UM!r}",
+        f"STAGE_MOVE_RESPONSE_BAND_UM = {move_controller.STAGE_MOVE_RESPONSE_BAND_UM!r}",
+        f"STAGE_MOVE_RESPONSE_FRACTION = {move_controller.STAGE_MOVE_RESPONSE_FRACTION!r}",
         f"STAGE_MOVE_TIMEOUT_S = {move_controller.STAGE_MOVE_TIMEOUT_S!r}",
         f"STAGE_MOVE_POLL_S = {move_controller.STAGE_MOVE_POLL_S!r}",
         f"STAGE_MOVE_REQUIRED_SAMPLES = {move_controller.STAGE_MOVE_REQUIRED_SAMPLES!r}",
@@ -2736,6 +2770,7 @@ def _stage_move_contract_source() -> str:
     return "\n".join([
         constants,
         inspect.getsource(move_controller.StageMoveError),
+        inspect.getsource(move_controller._stage_move_band),
         inspect.getsource(move_controller.stage_move_dispatch_failure),
         inspect.getsource(move_controller.settle_stage_move),
     ])
@@ -2748,8 +2783,8 @@ def _emit_move_stage_z(params: RecordedParams) -> str:
     if target is None:
         raise CannotEmit("the focus-stage move recorded no resolved target")
     return "\n".join([
-        _emit_stage_dispatch(f"core.set_position({target!r})", "core.get_focus_device()", target),
-        _emit_stage_settle("core.get_focus_device()", target),
+        _emit_stage_dispatch(f"core.set_position({target!r})", "core.get_focus_device()", target, params.result),
+        _emit_stage_settle("core.get_focus_device()", target, params.result),
     ])
 
 
@@ -2769,14 +2804,20 @@ def move_stage_z(
     guard.check_z(target_z)
 
     device = ctrl.core.get_focus_device()
+    start_um = float(ctrl.core.get_position(device))
+    configured = guard.stage_move_tolerance(device, core_focus=True)
     try:
         if absolute:
             ctrl.core.set_position(target_z)
         else:
             ctrl.core.set_relative_position(z_um)
     except Exception as exc:
-        raise stage_move_dispatch_failure(ctrl.core, device, target_z, exc) from exc
-    return settle_stage_move(ctrl.core, device, target_z)
+        raise stage_move_dispatch_failure(
+            ctrl.core, device, target_z, start_um, "relative", configured, exc
+        ) from exc
+    return settle_stage_move(
+        ctrl.core, device, target_z, start_um, "relative", configured
+    )
 
 
 # --- Named stages (design/14 §6) ---
@@ -2853,9 +2894,9 @@ def _emit_move_named_stage(params: RecordedParams) -> str:
     return "\n".join([
         _emit_stage_dispatch(
             f"core.set_position({result['device']!r}, {result['requested_um']!r})",
-            repr(result["device"]), result["requested_um"],
+            repr(result["device"]), result["requested_um"], result,
         ),
-        _emit_stage_settle(repr(result["device"]), result["requested_um"]),
+        _emit_stage_settle(repr(result["device"]), result["requested_um"], result),
     ])
 
 
@@ -2872,11 +2913,17 @@ def move_named_stage(
     current = float(ctrl.core.get_position(device))
     target = um if absolute else current + um
     guard.check_named_stage(device, target)
+    start_um = float(ctrl.core.get_position(device))
+    configured = guard.stage_move_tolerance(device)
     try:
         ctrl.core.set_position(device, target)
     except Exception as exc:
-        raise stage_move_dispatch_failure(ctrl.core, device, target, exc) from exc
-    result = settle_stage_move(ctrl.core, device, target)
+        raise stage_move_dispatch_failure(
+            ctrl.core, device, target, start_um, "relative", configured, exc
+        ) from exc
+    result = settle_stage_move(
+        ctrl.core, device, target, start_um, "relative", configured
+    )
     return {"device": device, **result}
 
 
@@ -3573,6 +3620,8 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     try:
         z = ctrl.core.get_position()
         state["z_um"] = round(z, 3)
+        if guard._c.stage.z_move_tolerance_um is not None:
+            state["z_move_tolerance_um"] = guard._c.stage.z_move_tolerance_um
         violation = _bounds_violation(guard.check_z, z)
         if violation:
             out_of_bounds.append(violation)
@@ -3586,6 +3635,13 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     # here without weighing the same trade.
     if guard._c.named_stages:
         state["named_stages"] = {}
+        declared_tolerances = {
+            item.device: item.move_tolerance_um
+            for item in guard._c.named_stages
+            if item.move_tolerance_um is not None
+        }
+        if declared_tolerances:
+            state["named_stage_move_tolerances_um"] = declared_tolerances
         for limits in guard._c.named_stages:
             try:
                 position = float(ctrl.core.get_position(limits.device))
@@ -5556,6 +5612,8 @@ def _sweep_payload(sweep, min_contrast: float | None = None,
             round(z, 3) for z in sweep.measured_z_positions
         ],
         "best_z_um": round(sweep.best_z_um, 3),
+        "arrival_unverifiable_count": len(sweep.arrival_unverifiable_indices),
+        "arrival_unverifiable_planes": list(sweep.arrival_unverifiable_indices),
     }
     # peak_interior answers "is the chosen plane away from a sweep boundary",
     # which only means anything about a curve that was swept to its end. An
