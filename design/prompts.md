@@ -8391,3 +8391,53 @@ cannot catch what the implementer and reviewer both assume. **Second time in two
 blocks** (64a did the same), so it is a pattern in this design's blocks and not
 an incident. The review being clean is not evidence the deviation was harmless;
 it found a gap that a step-2 runner would likely have avoided creating.
+
+## design/64 block 64c — `tol_px` against the stage floor (merged 2026-08-30, `4394338`)
+
+The third and last of design/64's carried items. **No rig**, by design: every
+mechanism is a computation over values `center_feature` already held and threw
+away, and the M2 data that sized it was already in `gate64-m2`/`gate64b-m2`.
+Scoring the new hint on a rig would need a session that *fails* to converge —
+dose spent to observe a string.
+
+**The gate's own artifacts sized the block, and two of them said less than the
+gate claimed.** `gate64-m2`'s F2 limb entered at 3.9 px already inside
+`tol_px=5.0` and did **zero iterations** — it passed while measuring nothing
+about convergence, and its own probe comment says so. The single real
+convergence measurement is `gate64b-m2`: 47.0 → 3.9 px in three iterations,
+where 3.9 px is **0.50 µm — less than one quantization step** of a stage that
+quantizes ~0.8 µm. It converged inside a tolerance the stage cannot reliably
+deliver. That is the whole finding, and it came from reading the JSON rather
+than the verdicts.
+
+**The defect was already written into the suite, asserting itself.**
+`test_failure_to_converge_is_finite_and_honest` built a stage quantizing to 2 µm
+— the stage-floor case exactly — and asserted the result said
+`rerun calibrate_stage_to_camera`. A test can pin a misdiagnosis as firmly as it
+pins a behaviour, and this one had been green since 64a.
+
+**An apparent rig defect that dissolved on reading the probe.** Limb F reports
+`centered: false` at a 2.5 px residual against a 5.0 px tolerance, which reads
+as a broken convergence check. `design/64-gate-probe.py:317` passes
+`tol_px=0.0` deliberately, so the loop cannot decide it is already done and skip
+the move. Correct behaviour. **Read the instrument's source before filing a
+defect against the product it measured** — the artifacts alone could not settle
+this, and an hour of "fixing" it was available to be wasted.
+
+**Two designs written the same day collided on a field name.** design/66 defines
+`residual_um` on a single-axis move as the arrival miss; design/67 defined it on
+`center_feature` as the feature's remaining offset. Different quantities, one
+name — and `center_feature` calls `move_stage_xy`, so design/66's XY loop would
+put both in adjacent records of one session, where `residual_um: 0.5` cannot
+distinguish "the stage missed by half a micron" from "the feature is half a
+micron off centre". Caught in coordinator review and renamed to
+`residual_offset_um` on this side, because design/66's rig gate already scores
+on `residual_um` and — as that document itself argues about `tolerance_um` — a
+result field stops being free about one block after it ships. **Two in-flight
+designs are a namespace, and nothing checks it but a reader.**
+
+**Step 2 ran properly here**, unlike 64a and 64b: design written first by the
+coordinator, one block handed to a runner in its own worktree, then reviewed.
+The review found the collision and one classifier edge; the runner's own report
+was accurate but is a handoff, and the suite count in the ledger is the
+coordinator's own run.
