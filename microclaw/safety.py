@@ -77,6 +77,7 @@ class StageConstraints:
     y_max: Optional[float] = None
     z_min: Optional[float] = None
     z_max: Optional[float] = None
+    z_move_tolerance_um: Optional[float] = None
 
 
 @dataclass
@@ -203,6 +204,7 @@ class NamedStageLimits:
     device: str
     min_um: Optional[float] = None
     max_um: Optional[float] = None
+    move_tolerance_um: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -359,6 +361,7 @@ def _stage_ranges(
 
 def _stage_constraints(
     ranges: dict[ActuatorId, RangePolicy],
+    tolerances: dict[ActuatorId, float],
 ) -> tuple[StageConstraints, list[NamedStageLimits]]:
     """Compile all runtime stage limits in one pass over authoritative policies."""
     core: dict[str, float | None] = {}
@@ -368,13 +371,16 @@ def _stage_constraints(
             assert identity.device is not None
             named.append(
                 NamedStageLimits(
-                    identity.device, policy.minimum.bound, policy.maximum.bound
+                    identity.device, policy.minimum.bound, policy.maximum.bound,
+                    tolerances.get(identity),
                 )
             )
         else:
             assert identity.axis is not None
             core[f"{identity.axis}_min"] = policy.minimum.bound
             core[f"{identity.axis}_max"] = policy.maximum.bound
+    focus = ActuatorId("core_focus", None, "stage-position", "z")
+    core["z_move_tolerance_um"] = tolerances.get(focus)
     return StageConstraints(**core), named
 
 
@@ -416,7 +422,8 @@ class ParsedSafetyConfig:
             "workspace_dir", "named_stages", "property_authorization", "acquisition",
         }
         section_keys = {
-            "stage": {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max"},
+            "stage": {"x_min", "x_max", "y_min", "y_max", "z_min", "z_max",
+                      "z_move_tolerance_um", "x_move_tolerance_um", "y_move_tolerance_um"},
             "camera": {"max_exposure_ms"},
             "analysis": {"min_snr"},
             "acquisition": {
@@ -474,6 +481,13 @@ class ParsedSafetyConfig:
             return value
 
         stage_cfg = mapping("stage")
+        for axis in ("x", "y"):
+            key = f"{axis}_move_tolerance_um"
+            if key in stage_cfg:
+                problem(
+                    f"stage.{key}",
+                    "cannot be used until move_stage_xy has an arrival loop",
+                )
         camera_cfg = mapping("camera")
         analysis_cfg = mapping("analysis")
         acquisition_cfg = mapping("acquisition")
@@ -566,7 +580,8 @@ class ParsedSafetyConfig:
                 for key in item.keys() - allowed:
                     problem(f"{location}.{key}", "unknown key")
                 for key, item_value in item.items():
-                    if key in allowed and key not in {"min_um", "max_um", "minimum", "maximum", "full_scale"}:
+                    if key in allowed and key not in {"min_um", "max_um", "move_tolerance_um",
+                                                       "minimum", "maximum", "full_scale"}:
                         typed(f"{location}.{key}", item_value, str)
                 result.append(item)
             return result
@@ -596,7 +611,8 @@ class ParsedSafetyConfig:
             {"device", "property", "kind", "units", "minimum", "maximum", "full_scale"},
         )
         named_cfg = object_list(
-            "named_stages", cfg.get("named_stages"), {"device", "min_um", "max_um"}
+            "named_stages", cfg.get("named_stages"),
+            {"device", "min_um", "max_um", "move_tolerance_um"}
         )
         for name, items in (
             ("forbidden_properties", forbidden_cfg),
@@ -680,6 +696,29 @@ class ParsedSafetyConfig:
             if units != "native" and "full_scale" in item:
                 problem(f"{location}.full_scale", "is only valid with units: native")
         ranges = _stage_ranges(stage_cfg, named_cfg, problem)
+        tolerances: dict[ActuatorId, float] = {}
+        tolerance_fields = [
+            (stage_cfg, "z_move_tolerance_um", "stage.z_move_tolerance_um",
+             ActuatorId("core_focus", None, "stage-position", "z")),
+            *[
+                (item, "move_tolerance_um", f"named_stages[{index}].move_tolerance_um",
+                 ActuatorId("named", item.get("device"), "stage-position"))
+                for index, item in enumerate(named_cfg)
+            ],
+        ]
+        for section, key, location, identity in tolerance_fields:
+            if key not in section:
+                continue
+            try:
+                value = _finite_number(section[key], location, ValueError)
+                if value <= 0:
+                    problem(location, "must be greater than zero")
+                elif identity not in ranges:
+                    problem(location, "requires declared travel bounds for this axis")
+                else:
+                    tolerances[identity] = value
+            except ValueError as exc:
+                problem(location, str(exc))
 
         mode = authorization_cfg.get(
             "mode",
@@ -733,7 +772,7 @@ class ParsedSafetyConfig:
             if categorical_value is not None
             else None
         )
-        stage, named_stages = _stage_constraints(ranges)
+        stage, named_stages = _stage_constraints(ranges, tolerances)
         constraints = SafetyConstraints(
             stage=stage,
             camera=CameraConstraints(**camera_cfg),
@@ -1349,3 +1388,13 @@ class SafetyGuard:
                 "`plugins.allow_hardware_motion: false`. Hardware-motion plugin hooks "
                 "are disabled."
             )
+
+    def stage_move_tolerance(self, device: str, *, core_focus: bool = False
+                             ) -> float | None:
+        """Return a declared absolute arrival band for one authorized axis."""
+        if core_focus:
+            return self._c.stage.z_move_tolerance_um
+        limits = next(
+            (item for item in self._c.named_stages if item.device == device), None
+        )
+        return None if limits is None else limits.move_tolerance_um

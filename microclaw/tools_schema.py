@@ -180,8 +180,13 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Optional recorded tool_use ids to emit. Excluded calls "
-                        "remain visible as SKIPPED comments; dependencies are not inferred."
+                        "Optional recorded tool_use ids to emit. An id is the "
+                        "`toolu_...` identifier of the call itself, never a tool "
+                        "name: passing \"move_named_stage\" is refused as an "
+                        "unknown id. Take the ids from a previous export's "
+                        "`recorded_calls`, which lists every id beside its tool. "
+                        "Excluded calls remain visible as SKIPPED comments; "
+                        "dependencies are not inferred."
                     ),
                 },
             },

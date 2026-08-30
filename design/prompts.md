@@ -8472,3 +8472,67 @@ or about −589 tokens. Across 61a–61c the measured reduction is about −1,42
 tokens versus the design's −1,650 estimate. No additional rig trip was owed:
 the positive Ti observation was 61c's explicit precondition, and the change
 only removes the now-redundant copy it licensed.
+
+## Block 66 — stage-move response, not tolerance (merged 2026-08-30)
+
+**The block changed coordinators mid-flight.** A Codex coordinator ran steps 1–2
+and had begun the diff review when its session ended; a Claude session picked it
+up from the worktree and the transcript. Two things made that recoverable and one
+nearly did not. The branch was clean and fully committed, and the runner's
+rollout recorded its `cwd`, so the session id could be recovered from
+`~/.codex/sessions` — but the runner's **job directory had never been created**:
+prompts and `result.md` sat loose in `/tmp` with no `session-id`, which is the
+one file `codex-runner revise` cannot work without. Retain the job directory as
+the skill says, or a handoff loses the ability to send findings back.
+
+**The gate instrument was the defect, not the product.** Five of round 1's nine
+findings were in the gate, and the three that mattered were one family: the
+scorer looked for `{"tool": ..., "result": ...}` rows, which nothing in
+Microclaw has ever written — a real history is an Anthropic message transcript,
+the tool name lives only in the assistant's `tool_use` block, and a *refused*
+call records `{"error": "StageMoveError: …"}` with no result dict at all. Run
+against real rig histories the scorer reported "found 0" and exited 1: every
+limb of all three modes was dead before the operator touched the rig, and the
+control limb could never have been scored in any case. **The bridge-shaped
+self-test hid both because it wrote the history the scorer expected** — 60b's
+`NDTiffStack*.tif` glob, in a different file. Its fixtures are now produced by
+driving `execute_tool` and `export_session_script`, which also removed a class
+of drift: Microclaw's transcript **is** the exporter's `records`, so one fixture
+serves the history parser and the emitted script and neither can diverge.
+
+**Score a green gate, and score a red one.** The demo run came back with a
+failing `demo.log`; the run was fine and the *invocation* was wrong — `--tool
+move_stage_z` against a `move_named_stage` session. Which tool moved the axis is
+a fact about the session, so the scorer infers it now and the runbook offers one
+command instead of two. Conversely M2's success limb came back all-PASS while
+the mechanism its step named — a selected export via `tool_use_ids` — had never
+run: the agent passed the tool's *name* as an id, was refused, and recovered by
+exporting the whole session, which passed only because that session held nothing
+else emittable. `export_session_script` writes a `# WARNING:` header only for a
+selected export, so the script says which it was; that is a scored limb now, and
+re-scoring M2's own artifacts reports it NOT EXERCISED. **The instrument should
+say what the review prose says.**
+
+**The control limb earned its rig trip by failing.** Disconnecting the TIRF
+Stage produced neither refusal the design predicted: a link that is down fails
+*every* bridge call, so the pre-dispatch read raised before `set_position` and an
+untyped `java.lang.Exception` escaped with none of the move contract. This block
+had widened that exposure — five sites gained a pre-dispatch read that had none.
+Worth stating plainly: **a limb whose only rig observation is a failure is still
+the most valuable limb**, and this one found a defect three green suites and two
+review rounds had not.
+
+**Three of the four product defects came from gate sessions rather than from
+tests**, all at the same seam: what an *agent* does with a tool when the obvious
+call does not work. It passed a tool name as an id; it recovered from a refusal
+by removing the argument; it passed a valid id for the wrong call and got plain
+success back. None is a hardware bug and none was reachable from the suite,
+because every one of them is a decision made after reading a message we wrote.
+
+**A runbook with placeholders is a runbook the operator debugs.** The first
+version shipped `<PYTHON>`, `<CAPTURE>` and `<SHEET>` with an instruction to
+substitute, while Step 0 set `$PYTHON` — so the operator stopped and asked what
+three of them meant. Every command is literal PowerShell now and the operator
+edits three assignments all session. 52c's lesson is not only "no unresolved
+placeholders in a grep"; it is that a step which requires interpretation is a
+step that gets interpreted.

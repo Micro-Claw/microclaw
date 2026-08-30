@@ -609,6 +609,8 @@ class TestNamedStages:
         from microclaw.controller import StageMoveError
         from microclaw.tools import move_named_stage
         # Settling error is real on this rig and was previously invisible.
+        # Two reads: one start (which also resolves a relative target) and one
+        # settle sample.
         stage_ctrl.core.get_position.side_effect = [100.0, 201.1]
         monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
         with pytest.raises(StageMoveError) as caught:
@@ -919,6 +921,19 @@ class TestGetSystemState:
         assert mock_ctrl.core.get_loaded_devices.call_count == 0
         mock_ctrl.core.set_position.assert_not_called()
         mock_ctrl.core.set_xy_position.assert_not_called()
+
+    def test_reports_only_declared_stage_move_tolerances_without_extra_reads(self, mock_ctrl):
+        guard = SafetyGuard(SafetyConstraints(
+            stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=100,
+                                   z_min=0, z_max=100, z_move_tolerance_um=0.37),
+            named_stages=[NamedStageLimits("A", -10, 10, 1.3),
+                          NamedStageLimits("B", -10, 10)],
+        ))
+        mock_ctrl.core.get_position.side_effect = lambda *args: 0.0
+        result = get_system_state(mock_ctrl, guard)
+        assert result["z_move_tolerance_um"] == 0.37
+        assert result["named_stage_move_tolerances_um"] == {"A": 1.3}
+        assert set(result["named_stages"]) == {"A", "B"}
 
     def test_reports_shutter_and_lasers(self, mock_ctrl, unconstrained_guard):
         # design/20 S4: the agent signed off "no lasers were involved" from a
@@ -1974,7 +1989,8 @@ class TestRunAutofocus:
         assert result["fine"]["peak_interior"] is True
         assert set(result["coarse"]) == {
             "z_positions", "measured_z_positions", "metric_curve", "best_z_um",
-            "peak_interior", "contrast"
+            "peak_interior", "contrast", "arrival_unverifiable_count",
+            "arrival_unverifiable_planes"
         }
         assert "region" not in result
 

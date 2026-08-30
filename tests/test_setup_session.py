@@ -261,6 +261,7 @@ def test_writer_round_trips_m5_shape_confirms_exact_text_and_refuses_replay(
         "declared_stage_ranges": 6,
     }
     rendered = target.read_text(encoding="utf-8")
+    assert "tolerance" not in rendered
     assert str(target) in prompts[0]
     assert rendered in prompts[0]
     loaded = yaml.safe_load(rendered)
