@@ -3050,6 +3050,7 @@ class TestCenterFeature:
         monkeypatch.setattr("microclaw.tools._resolve_current_affine", lambda ctrl: (None, {}))
         result = center_feature(mock_ctrl, unconstrained_guard)
         assert "calibrate_stage_to_camera" in result["error"]
+        assert "residual_offset_um" not in result
 
     # test_converges_on_synthetic_scene was DELETED by design/64, not repaired.
     # It hand-injected StageCameraAffine(-px, 0, 0, -px) — the negation of what
@@ -3260,9 +3261,87 @@ class TestCentringAgainstItsOwnCalibration:
         assert result["centered"] is False
         assert result["iterations"] == 2
         assert result["residual_px"] is not None
-        assert "rerun calibrate_stage_to_camera" in result["hint"]
+        assert len(result["residuals_px"]) == result["iterations"] + 1
+        assert result["residuals_px"][-1] == pytest.approx(
+            math.hypot(*result["residual_px"])
+        )
+        assert "stage" in result["hint"].lower()
+        assert "smallest commanded correction" in result["hint"].lower()
+        assert f'{result["smallest_correction_um"]:.2f}' in result["hint"]
+        assert "raising tol_px" in result["hint"]
+        assert "rerun calibrate_stage_to_camera" not in result["hint"]
         # max_iter corrections, and not one more.
         assert len(mock_ctrl.core.set_relative_xy_position.call_args_list) == 2 + 4
+
+    def test_wrong_affine_earns_the_stale_calibration_hint(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(OPTICS_CASES["aligned"], quantum_um=2.0)
+        optics.drive(mock_ctrl, monkeypatch)
+        wrong = StageCameraAffine(0.5, 0.0, 0.0, 0.5, "obj", 1, 0.5)
+        monkeypatch.setattr(
+            "microclaw.tools._resolve_current_affine", lambda ctrl: (wrong, {})
+        )
+
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=2, tol_px=0.05)
+
+        assert result["residuals_px"][-1] > result["residuals_px"][0]
+        assert "rerun calibrate_stage_to_camera" in result["hint"]
+        assert "raising tol_px" not in result["hint"]
+
+    def test_still_improving_at_max_iter_blames_neither_floor_nor_calibration(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.calibration import StageCameraAffine
+        from microclaw.tools import _resolve_current_affine, center_feature
+        optics = SyntheticOptics(OPTICS_CASES["aligned"], quantum_um=0.01)
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        affine = _resolve_current_affine(mock_ctrl)[0]
+        slow = StageCameraAffine(
+            affine.a / 2, affine.b / 2, affine.c / 2, affine.d / 2,
+            affine.objective, affine.binning, affine.pixel_size_um,
+        )
+        monkeypatch.setattr(
+            "microclaw.tools._resolve_current_affine", lambda ctrl: (slow, {})
+        )
+
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=1, tol_px=0.05)
+
+        assert result["residuals_px"][-1] < result["residuals_px"][0]
+        assert "raise max_iter" in result["hint"]
+        assert "stage" not in result["hint"].lower()
+        assert "calibrat" not in result["hint"].lower()
+
+    @pytest.mark.parametrize("case", ["aligned", "rot90_flip"])
+    def test_residual_offset_um_uses_the_resolved_affine(
+        self, case, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import _resolve_current_affine, center_feature
+        optics = SyntheticOptics(OPTICS_CASES[case], quantum_um=2.0)
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+        affine = _resolve_current_affine(mock_ctrl)[0]
+
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=2, tol_px=0.05)
+
+        correction = affine.px_to_um(*result["residual_px"])
+        assert result["residual_offset_um"] == pytest.approx(math.hypot(*correction))
+
+    def test_residual_history_matches_iterations_on_centered_path(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        from microclaw.tools import center_feature
+        optics = SyntheticOptics(OPTICS_CASES["aligned"])
+        self.calibrate(optics, mock_ctrl, unconstrained_guard, monkeypatch)
+
+        result = center_feature(mock_ctrl, unconstrained_guard, max_iter=4, tol_px=3.0)
+
+        assert result["centered"] is True
+        assert len(result["residuals_px"]) == result["iterations"] + 1
+        assert result["residuals_px"][-1] == pytest.approx(
+            math.hypot(*result["residual_px"])
+        )
 
 
 class TestMicroManagerIsTheCalibrationAuthority:

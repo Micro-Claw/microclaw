@@ -118,6 +118,30 @@ genuinely cannot reach the tolerance — and case 3 needs a quantum small enough
 that it would converge given more iterations, or it is case 1 wearing a
 different name.
 
+## Implemented 2026-08-30 — two decisions the implementation forced
+
+**`residual_offset_um`, not `residual_um`.** design/66 (in flight) defines
+`residual_um` on a *single-axis stage move* result as the arrival miss,
+`|measured_um - target_um|`. This block's field is a different quantity — the
+feature's remaining offset, expressed as the stage move that would centre it —
+and `center_feature` calls `move_stage_xy`, so once design/66's XY loop exists
+both would appear under one name in adjacent records of the same session. An
+agent reading `residual_um: 0.5` could not tell whether the stage missed by half
+a micron or the feature is half a micron off centre, and those imply opposite
+actions. Renamed here rather than there because design/66's rig gate already
+scores on `residual_um` and, as that document says of `tolerance_um`, a result
+field becomes load-bearing about one block after it ships.
+
+**The rising test is last-versus-first, and deliberately conservative.** A loop
+that converges and *then* diverges — 100 → 5 → 50 px — is classified
+`plateaued`, not `rising`, because its final residual is still below its first.
+The alternative rule, "worse than the best seen", would catch that case and also
+flag ordinary plateau noise (5.0 → 4.9 → 5.0) as a stale calibration — which is
+precisely the over-blaming this block exists to stop. Being conservative about
+claiming "stale calibration" is the correct direction to err here. Recorded as a
+known limitation rather than fixed: the sequence is in `residuals_px`, so an
+operator who wants that reading has the numbers.
+
 ## Rig gate
 
 **None.** Every mechanism here is a computation over values the loop already

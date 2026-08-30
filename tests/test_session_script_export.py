@@ -3908,10 +3908,14 @@ def test_emitted_center_feature_executes_snap_move_and_wait(tmp_path):
     core = Core()
     _, _, source = export(tmp_path, completed_call(
         "center_feature", {"max_iter": 2, "tol_px": 0.5},
-        {"centered": True, "affine_coefficients": {"a": 1, "b": 0, "c": 0, "d": 1}},
+        {"centered": True, "residuals_px": [2.0, 0.0],
+         "residual_offset_um": 0.0, "smallest_correction_um": 2.0,
+         "affine_coefficients": {"a": 1, "b": 0, "c": 0, "d": 1}},
     ))
     _exec_export_with_core(source, core, tmp_path / "routine.py")
     assert core.snaps == 2
     assert core.moves == [(2.0, 0.0)]
     assert core.waits == ["XY"]
     assert "settle_stage_move" not in source
+    assert "<= 0.5" in source
+    assert "residuals_px" not in source
