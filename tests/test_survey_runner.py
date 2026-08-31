@@ -448,7 +448,7 @@ class TestUntrustedAdapterRunnerWiring:
     ):
         from microclaw import tools
         from microclaw.hook_decisions import (
-            ContinueSurvey, HookResult, StopSurvey, UntrustedHookAdapter,
+            ContinueAcquisition, HookResult, StopAcquisition, UntrustedHookAdapter,
         )
 
         class Decisions:
@@ -457,7 +457,7 @@ class TestUntrustedAdapterRunnerWiring:
 
             def analyze_frame(self, image, metadata):
                 self.calls += 1
-                action = ContinueSurvey() if self.calls == 1 else StopSurvey()
+                action = ContinueAcquisition() if self.calls == 1 else StopAcquisition()
                 return HookResult({"call": self.calls}, [action])
 
         monkeypatch.setattr(tools, "Acquisition", _FakeAcquisition)
@@ -510,7 +510,7 @@ class TestUntrustedAdapterRunnerWiring:
         self, mock_ctrl, unconstrained_guard, tmp_path, monkeypatch
     ):
         """A legacy saved hook can never advance the survey past the seed: it
-        has no channel for ContinueSurvey now that the runner state is
+        has no channel for ContinueAcquisition now that the runner state is
         parent-side. Left to run it idles out max_idle_s and logs "stalled",
         reporting a structural impossibility as a hardware symptom. Refuse it
         before any tile is exposed."""
@@ -1000,10 +1000,10 @@ def _adaptive_hardware_adapter(actions, tmp_path):
 
 def test_adaptive_hardware_is_registered_with_candidate_then_applied_pre_exposure(tmp_path):
     import numpy as np
-    from microclaw.hook_decisions import ContinueSurvey, EmitArtifact, MoveNamedStage
+    from microclaw.hook_decisions import ContinueAcquisition, EmitArtifact, MoveNamedStage
 
     adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
-        (EmitArtifact("frame.bin", b"frame-n"), MoveNamedStage(5), ContinueSurvey()),
+        (EmitArtifact("frame.bin", b"frame-n"), MoveNamedStage(5), ContinueAcquisition()),
         tmp_path,
     )
     adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
@@ -1017,10 +1017,10 @@ def test_adaptive_hardware_is_registered_with_candidate_then_applied_pre_exposur
 
 def test_malformed_adaptive_partition_finishes_without_queue_abort_or_stall(tmp_path):
     import numpy as np
-    from microclaw.hook_decisions import AcquireAt, ContinueSurvey, MoveNamedStage
+    from microclaw.hook_decisions import AcquireAt, ContinueAcquisition, MoveNamedStage
 
     adapter, events, candidates, progress, writes = _adaptive_hardware_adapter(
-        (ContinueSurvey(), MoveNamedStage(5), AcquireAt(1)), tmp_path)
+        (ContinueAcquisition(), MoveNamedStage(5), AcquireAt(1)), tmp_path)
     order = []
     progress.done_early = lambda: order.append("done_early")
     progress.image_done = lambda: order.append("image_done")
@@ -1033,10 +1033,10 @@ def test_malformed_adaptive_partition_finishes_without_queue_abort_or_stall(tmp_
 
 def test_proposal_after_adaptive_handoff_closes_aborts_without_exposure(tmp_path):
     import numpy as np
-    from microclaw.hook_decisions import ContinueSurvey, MoveNamedStage
+    from microclaw.hook_decisions import ContinueAcquisition, MoveNamedStage
 
     adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
-        (MoveNamedStage(5), ContinueSurvey()), tmp_path)
+        (MoveNamedStage(5), ContinueAcquisition()), tmp_path)
     adapter.close_adaptive_handoff()
     adapter.image_process_fn(np.zeros((1, 1)), {"PositionName": "p0", "Axes": {}}, None)
     assert candidates.empty() and writes == []
@@ -1048,9 +1048,9 @@ def test_proposal_after_adaptive_handoff_closes_aborts_without_exposure(tmp_path
 @pytest.mark.parametrize("refusal", ["guard", "cursor"])
 def test_refused_selector_also_refuses_attached_hardware(tmp_path, refusal):
     import numpy as np
-    from microclaw.hook_decisions import AcquireAt, ContinueSurvey, MoveNamedStage
+    from microclaw.hook_decisions import AcquireAt, ContinueAcquisition, MoveNamedStage
 
-    selector = AcquireAt(1) if refusal == "guard" else ContinueSurvey()
+    selector = AcquireAt(1) if refusal == "guard" else ContinueAcquisition()
     adapter, events, candidates, _progress, writes = _adaptive_hardware_adapter(
         (MoveNamedStage(5), selector), tmp_path)
     if refusal == "guard":
@@ -1211,12 +1211,12 @@ class TestRunAdaptiveSurvey:
         import numpy as np
         from microclaw import tools
         from microclaw.hook_decisions import (
-            ContinueSurvey, HookResult, UntrustedHookAdapter,
+            ContinueAcquisition, HookResult, UntrustedHookAdapter,
         )
 
         class ContinueHook:
             def analyze_frame(self, image, metadata):
-                return HookResult({"would_keep": True}, (ContinueSurvey(),))
+                return HookResult({"would_keep": True}, (ContinueAcquisition(),))
 
         adapter = UntrustedHookAdapter(ContinueHook(), str(tmp_path / "hook.json"))
         monkeypatch.setattr(tools, "_resolve_hook", lambda *_args, **_kwargs: adapter)
@@ -1237,7 +1237,7 @@ class TestRunAdaptiveSurvey:
             log_path=str(tmp_path / "hook.json"),
             protocol_params={"n_frames": 1, "interval_s": 0},
         )
-        assert result["hook_actions"] == {"ContinueSurvey": 3, "StopSurvey": 0}
+        assert result["hook_actions"] == {"ContinueAcquisition": 3, "StopAcquisition": 0}
         assert result["frames_acquired"] == 3
         assert "control decisions, not what was found" in result["hint"]
         assert "read_hook_log" in result["hint"]
@@ -1250,7 +1250,7 @@ class TestRunAdaptiveSurvey:
         HookResult.actions defaults to (), so a saved hook may legitimately
         record measurements and propose nothing. Its adapter then holds an empty
         count dict — which is not the same fact as "the hook chose Continue zero
-        times", and reporting it as {"ContinueSurvey": 0} would recreate F8 in
+        times", and reporting it as {"ContinueAcquisition": 0} would recreate F8 in
         the very field added to retire it.
         """
         import numpy as np

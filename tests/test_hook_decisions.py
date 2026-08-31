@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 
 from microclaw.hook_decisions import (
-    AcquireAt, ContinueSurvey, DiscardFrame, EmitArtifact, HookResult,
+    AcquireAt, ContinueAcquisition, DiscardFrame, EmitArtifact, HookResult,
     MoveNamedStage, MoveStage, SetDeviceProperty,
-    RequestAutofocus, SetExposure, SetIlluminationPower, StopSurvey,
+    RequestAutofocus, SetExposure, SetIlluminationPower, StopAcquisition,
     CompositeHook, UntrustedHookAdapter, parse_action,
 )
 from microclaw.hooks import HookBase
@@ -569,7 +569,7 @@ def test_actions_after_refocus_are_counted_and_refused_not_dropped(tmp_path, mon
 
     class Hook:
         def analyze_frame(self, _image, _metadata):
-            return HookResult({}, (RequestAutofocus(), ContinueSurvey()))
+            return HookResult({}, (RequestAutofocus(), ContinueAcquisition()))
 
     sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
@@ -591,9 +591,9 @@ def test_actions_after_refocus_are_counted_and_refused_not_dropped(tmp_path, mon
          "YPosition_um_Intended": 0.0}, object(),
     )
     assert [candidates.get_nowait()["axes"]["position"]] == ["p0"]
-    assert adapter.action_counts == {"RequestAutofocus": 1, "ContinueSurvey": 1}
+    assert adapter.action_counts == {"RequestAutofocus": 1, "ContinueAcquisition": 1}
     refused = adapter._log[-1]
-    assert refused["action"]["kind"] == "ContinueSurvey"
+    assert refused["action"]["kind"] == "ContinueAcquisition"
     assert refused["decision"] == "refused"
     assert refused["reason"] == "not dispatched until the refocused tile is judged"
 
@@ -613,7 +613,7 @@ def test_converged_refocus_plane_is_adopted_by_later_timelapse_tiles(
         def analyze_frame(self, _image, metadata):
             seen.append((metadata["PositionName"], metadata["microclaw_refocused"]))
             return HookResult({}, (
-                ContinueSurvey() if metadata["microclaw_refocused"]
+                ContinueAcquisition() if metadata["microclaw_refocused"]
                 else RequestAutofocus(),
             ))
 
@@ -725,7 +725,7 @@ def test_autofocus_budget_widens_dose_reservation_by_its_maximum():
 
 
 def test_continue_dispatches_next_planned_tile(tmp_path):
-    adapter, candidates, progress = _adapter(ContinueSurvey(), tmp_path)
+    adapter, candidates, progress = _adapter(ContinueAcquisition(), tmp_path)
     adapter.image_process_fn(np.zeros((2, 2)), {"PositionName": "p0"}, object())
     assert candidates.get_nowait()["axes"]["position"] == "p1"
     assert adapter._log[-1]["decision"] == "accepted"
@@ -734,7 +734,7 @@ def test_continue_dispatches_next_planned_tile(tmp_path):
 def test_continue_is_an_accepted_noop_under_a_fixed_plan(tmp_path):
     class Hook:
         def analyze_frame(self, image, metadata):
-            return HookResult({}, (ContinueSurvey(),))
+            return HookResult({}, (ContinueAcquisition(),))
 
     adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
     adapter.image_process_fn(np.zeros((2, 2)), {"PositionName": "p0"}, object())
@@ -744,7 +744,7 @@ def test_continue_is_an_accepted_noop_under_a_fixed_plan(tmp_path):
 
 
 def test_continue_walked_to_end_matches_planned_frame_count(tmp_path):
-    adapter, candidates, progress = _adapter(ContinueSurvey(), tmp_path)
+    adapter, candidates, progress = _adapter(ContinueAcquisition(), tmp_path)
     image = np.zeros((2, 2))
     for i in range(3):
         adapter.image_process_fn(image, {"PositionName": f"p{i}"}, object())
@@ -791,7 +791,7 @@ def test_deferred_acquire_at_records_current_z_deduplicates_and_caps(tmp_path):
 
 
 def test_stop_survey_ends_cleanly_and_is_audited(tmp_path):
-    adapter, candidates, progress = _adapter(StopSurvey(), tmp_path)
+    adapter, candidates, progress = _adapter(StopAcquisition(), tmp_path)
     returned = adapter.image_process_fn(
         np.zeros((2, 2)), {"PositionName": "p0"}, object()
     )
@@ -818,7 +818,7 @@ def test_guard_violation_is_refused_and_logged(tmp_path):
 @pytest.mark.parametrize("action", [
     {"kind": "NoSuchAction"},
     {"kind": "AcquireAt"},
-    {"kind": "StopSurvey", "surprise": True},
+    {"kind": "StopAcquisition", "surprise": True},
 ])
 def test_unknown_or_malformed_action_is_refused_before_dispatch(action, tmp_path):
     adapter, candidates, progress = _adapter(action, tmp_path)
@@ -1138,12 +1138,12 @@ def test_only_one_artifact_may_be_proposed_per_frame(tmp_path):
 
 
 def test_action_list_is_normalized_but_other_iterables_are_rejected():
-    result = HookResult({"score": 1}, [ContinueSurvey()])
-    assert result.actions == (ContinueSurvey(),)
+    result = HookResult({"score": 1}, [ContinueAcquisition()])
+    assert result.actions == (ContinueAcquisition(),)
     with pytest.raises(TypeError, match="list or tuple"):
-        HookResult({"score": 1}, "ContinueSurvey")
+        HookResult({"score": 1}, "ContinueAcquisition")
     with pytest.raises(TypeError, match="list or tuple"):
-        HookResult({"score": 1}, (a for a in [ContinueSurvey()]))
+        HookResult({"score": 1}, (a for a in [ContinueAcquisition()]))
 
 
 def test_malformed_emit_artifact_is_refused_without_aborting_frame(tmp_path):
@@ -1421,7 +1421,7 @@ def test_survey_without_autofocus_budget_keeps_its_axes_untouched():
 
 
 def test_a_finished_plan_is_reported_as_finished_not_as_a_dose_cap(tmp_path, monkeypatch):
-    """M5 2026-08-11 round 3: the last tile's ContinueSurvey said the wrong thing.
+    """M5 2026-08-11 round 3: the last tile's ContinueAcquisition said the wrong thing.
 
     An authorized refocus widens max_events by the re-exposures it may take, so a
     three-tile survey that spent its one re-exposure satisfies BOTH the
@@ -1438,7 +1438,7 @@ def test_a_finished_plan_is_reported_as_finished_not_as_a_dose_cap(tmp_path, mon
             # advance, which is where the wrong message appeared.
             if metadata["PositionName"] == "p0" and not metadata["microclaw_refocused"]:
                 return HookResult({}, (RequestAutofocus(),))
-            return HookResult({}, (ContinueSurvey(),))
+            return HookResult({}, (ContinueAcquisition(),))
 
     sweep = SweepResult([9, 10, 11], [1, 2, 1], 10, True, [9, 10, 11])
     monkeypatch.setattr(tools, "_run_autofocus_passes", lambda *a: AutofocusResult(
@@ -1477,7 +1477,7 @@ def test_a_refused_refocus_still_lets_the_survey_advance(tmp_path):
     """
     class Hook:
         def analyze_frame(self, _image, _metadata):
-            return HookResult({}, (RequestAutofocus(), ContinueSurvey()))
+            return HookResult({}, (RequestAutofocus(), ContinueAcquisition()))
 
     adapter = UntrustedHookAdapter(Hook(), str(tmp_path / "hook.json"))
     candidates, progress = queue.Queue(), SurveyProgress(3)
@@ -1499,7 +1499,7 @@ def test_a_refused_refocus_still_lets_the_survey_advance(tmp_path):
     )
     kinds = [(r["action"]["kind"], r["decision"]) for r in adapter._log
              if r.get("event") == "hook_action"]
-    assert kinds == [("RequestAutofocus", "refused"), ("ContinueSurvey", "accepted")]
+    assert kinds == [("RequestAutofocus", "refused"), ("ContinueAcquisition", "accepted")]
 
 
 def test_composite_batch_threads_child_results_and_keeps_the_none_guard():

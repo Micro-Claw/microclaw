@@ -51,13 +51,19 @@ class SetExposure:
 
 
 @dataclass(frozen=True)
-class ContinueSurvey:
-    kind: str = "ContinueSurvey"
+class ContinueAcquisition:
+    kind: str = "ContinueAcquisition"
 
 
 @dataclass(frozen=True)
-class StopSurvey:
-    kind: str = "StopSurvey"
+class StopAcquisition:
+    kind: str = "StopAcquisition"
+
+
+_RETIRED_ACTION_NAMES = {
+    "ContinueSurvey": "ContinueAcquisition",
+    "StopSurvey": "StopAcquisition",
+}
 
 
 @dataclass(frozen=True)
@@ -101,7 +107,7 @@ class DiscardFrame:
 
 
 HookAction = (
-    MoveStage | AcquireAt | SetExposure | ContinueSurvey | StopSurvey |
+    MoveStage | AcquireAt | SetExposure | ContinueAcquisition | StopAcquisition |
     RequestAutofocus | SetIlluminationPower | MoveNamedStage | SetDeviceProperty | EmitArtifact |
     DiscardFrame
 )
@@ -144,7 +150,7 @@ class HookResult:
 
 _ACTION_TYPES = {
     cls.__dataclass_fields__["kind"].default: cls
-    for cls in (MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey,
+    for cls in (MoveStage, AcquireAt, SetExposure, ContinueAcquisition, StopAcquisition,
                 RequestAutofocus, SetIlluminationPower, MoveNamedStage, SetDeviceProperty,
                 EmitArtifact, DiscardFrame)
 }
@@ -933,7 +939,7 @@ class UntrustedHookAdapter:
             return None
         ctx = self._context
         if ctx is None:
-            if isinstance(action, ContinueSurvey):
+            if isinstance(action, ContinueAcquisition):
                 self._accept(
                     metadata, action,
                     "noop: this runner already continues through its fixed event plan",
@@ -1026,7 +1032,7 @@ class UntrustedHookAdapter:
         if isinstance(action, (MoveStage, SetExposure)):
             self._refuse(metadata, action, "unsupported-by-run_adaptive_survey")
             return
-        if isinstance(action, StopSurvey):
+        if isinstance(action, StopAcquisition):
             ctx["progress"].done_early()
             self._accept(metadata, action, "survey stopped before another tile was dispatched")
             return
@@ -1038,7 +1044,7 @@ class UntrustedHookAdapter:
         # tile and reported "outside committed reservation" -- which reads as a
         # dose cap when the survey had simply run out of tiles. Refusing here
         # dispatches nothing either way, so the order cannot admit an exposure.
-        if isinstance(action, ContinueSurvey) and ctx["cursor"] >= len(events):
+        if isinstance(action, ContinueAcquisition) and ctx["cursor"] >= len(events):
             self._refuse_selector(metadata, action, "planned survey cursor is already at the end")
             return
         deferred_acquire = (
@@ -1050,7 +1056,7 @@ class UntrustedHookAdapter:
                 "outside committed reservation: all planned frame slots are already dispatched",
             )
             return
-        if isinstance(action, ContinueSurvey):
+        if isinstance(action, ContinueAcquisition):
             # The cursor-at-end refusal is made above, before the reservation.
             event = events[ctx["cursor"]]
             ctx["cursor"] += 1
@@ -1122,7 +1128,7 @@ class UntrustedHookAdapter:
         current = tuple(a for a in actions if isinstance(a, (EmitArtifact, DiscardFrame)))
         hardware = tuple(a for a in actions if isinstance(a, (MoveNamedStage, SetDeviceProperty)))
         selectors = tuple(a for a in actions if isinstance(
-            a, (ContinueSurvey, AcquireAt, RequestAutofocus, StopSurvey)
+            a, (ContinueAcquisition, AcquireAt, RequestAutofocus, StopAcquisition)
         ))
         known = current + hardware + selectors
         other = tuple(a for a in actions if a not in known)
@@ -1135,7 +1141,7 @@ class UntrustedHookAdapter:
             discard = discard or isinstance(action, DiscardFrame)
         autofocus = tuple(a for a in selectors if isinstance(a, RequestAutofocus))
         # Without hardware, preserve the established sequential adaptive
-        # contract (notably RequestAutofocus + ContinueSurvey). Cardinality is
+        # contract (notably RequestAutofocus + ContinueAcquisition). Cardinality is
         # a hardware-to-one-event association rule.
         if not hardware:
             assert self._context is not None
@@ -1151,7 +1157,7 @@ class UntrustedHookAdapter:
                     break
             return discard, False
 
-        malformed = len(selectors) != 1 or isinstance(selectors[0], StopSurvey)
+        malformed = len(selectors) != 1 or isinstance(selectors[0], StopAcquisition)
         if malformed:
             reason = ("malformed adaptive action partition: next-frame hardware "
                       "actions require exactly one compatible next-event selector")

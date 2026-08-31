@@ -495,10 +495,11 @@ coordinator, 2026-08-31, with the operator's agreement. What follows replaces
 
 Rename `ContinueSurvey` → `ContinueAcquisition` and `StopSurvey` →
 `StopAcquisition` outright, per §"Decision: one axis-neutral decision
-vocabulary". Roughly 112 references across eleven non-design files: the action
+vocabulary". Measured at 104 references across twelve non-design files: the action
 types and their dispatch in `hook_decisions.py`, `tools.py`, `tools_schema.py`,
-`hook_manager.py`, the hook-authoring skill, `hook_docs`, the saved-hook
-fixtures and the tests. Nothing is owed backward compatibility; there is no
+`hook_manager.py`, the hook-authoring skill, the saved-hook fixture and six test
+modules. `hook_docs` carries none — the built-in hooks drive `candidates` and
+`progress` directly and never name a decision. Nothing is owed backward compatibility; there is no
 alias.
 
 The migration is the part that is not mechanical. A saved hook on a rig that
@@ -524,6 +525,67 @@ No rig gate: the mechanism is a rename with a full suite behind it, and the one
 rig-facing limb — an old saved hook refusing with a useful remedy — is scored
 inside 65c's gate session, where a registry is in front of an operator anyway.
 
+
+### 65b's migration refusal, designed first
+
+**Where.** `_hook_contract_analysis` (`hook_manager.py:107`). It is already the
+resolve-time gate: `load_hook_class` runs it on the pinned source *before*
+`exec_module` (`:354`), so a refusal there lands before the hook object exists,
+which is before the seed exposure. No new call site, no second scan.
+
+**Why the existing scan does not cover it.** After the rename the old names are
+not "unresolvable decision names". `from microclaw.hook_decisions import
+ContinueSurvey` *binds* `ContinueSurvey`, so the missing-name branch (`:200`)
+stays silent and the module dies at `exec_module` with a bare `ImportError` that
+names no replacement. Block 45's shape — `StopSurvey()` with no import line at
+all — is worse: the name is no longer in `decision_names`, so nothing refuses and
+the `NameError` arrives inside the image processor, after the exposure. Both are
+what §"Decision: one axis-neutral decision vocabulary" forbids, and neither is
+caught by leaving the scan as it is.
+
+**The map** lives beside the classes it renames:
+`hook_decisions._RETIRED_ACTION_NAMES = {"ContinueSurvey": "ContinueAcquisition",
+"StopSurvey": "StopAcquisition"}`. Never in `_ACTION_TYPES`, never constructible,
+no alias — it exists to refuse, not to accept.
+
+**The trigger is any identifier occurrence**: an `ast.Name`, an `ast.Attribute`'s
+`attr`, or an `ImportFrom` alias. Never a string constant. A hook that writes
+`import ContinueAcquisition as ContinueSurvey` is refused too, and that is the
+right answer for the reason the missing-name scan already gives at `:143` —
+tracking scopes to permit a hook that shadows the decision vocabulary costs more
+than it buys.
+
+**The message**, once per retired name, in a stable order:
+
+> `ContinueSurvey` was renamed to `ContinueAcquisition` and no longer exists;
+> there is no alias. Replace every occurrence in this hook, including the
+> import: `from microclaw.hook_decisions import ContinueAcquisition`.
+
+It reaches an operator by two paths that are already built, and neither needs
+extending. `load_hook_class` wraps it as *"violates the current hook contract:
+[...]. Review and re-save corrected source before running it."*
+`describe_saved_hook` lists it under `source_reasons` with the
+`read_hook_from_file` → `generate_and_save_hook` remedy — the correct remedy
+here, because the fix is an edit to the file. Leave `_SOURCE_REFUSAL_NOTE`
+(`:433`) alone: its closing enumeration is illustrative, not exhaustive, and this
+error carries its own remedy in its own sentence.
+
+**Evidence for it is a mutation, not a watch-it-fail.** On the pre-rename tree
+the retired names *are* the vocabulary, so the test cannot fail for the stated
+reason. Delete `_RETIRED_ACTION_NAMES` from the renamed tree instead and confirm
+the old-vocabulary fixture loads far enough to die late — an `ImportError` from
+`exec_module` for the importing shape, and a clean load for the bare-call shape.
+
+**Measured, both by the runner and independently by the coordinator**
+(2026-08-31): with the map emptied, the importing shape raises
+`ImportError: cannot import name 'ContinueSurvey' from 'microclaw.hook_decisions'`
+out of `exec_module`, and the bare-call shape returns the loaded class with no
+error at all. The four new tests fail under that mutation and pass without it.
+One trap worth recording, because it inverted both results and looked like a
+contradiction of the runner's report: an editable install resolves `microclaw`
+to the **primary checkout**, so a probe script run from `/tmp` measured the
+pre-rename tree. Run a probe from inside the worktree, and check
+`microclaw.__file__` before believing it.
 **65c — the runner.** Everything above §"Blocks": `max_frames` and the
 successor-function route behind `run_timelapse`, the cap-derived
 `AcquisitionPlan` with accounting separated from the runtime bound, the
@@ -560,7 +622,7 @@ does not track these rows.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 65a | `design65/smlm-skill-accuracy` | `c0629c1` (2026-08-31) | `5a2faad` + `eb9b6ed` (review round 1, four findings) + `5d87df1` (review round 2/3); coordinator `163023f` (ledger move) and the design correction above. Suite **2618 passed / 99 skipped / 3 warnings**, coordinator-run, baseline + 1; 25 test assertions checked individually against all four commits, every one discriminates | **none — no rig surface.** The change is to a shipped documentation file, and what it must not do is *promise* a capability, which is checkable by reading. A rig limb here would be a driven session that asks for adaptive density control and is told the truth — worth folding into the runner block's gate session, not worth a trip of its own |`c92f035` merged 2026-08-31, branch deleted local and origin; design reconciliation `6ebc931` in the same merge |
-| 65b | | | | **none — see the block.** The rename carries the full suite; its one rig-facing limb (an old saved hook refusing with a remedy that names the replacement) is scored inside 65c's gate session | |
+| 65b | `design65/decision-vocabulary-rename` | `5406e0f` (2026-08-31) | `60548e6` (runner, one turn, no revision round) + coordinator `890574c`. Suite **2622 passed / 99 skipped / 3 warnings**, coordinator-run on a clean tree, baseline + 4; the migration refusal's mutation reproduced independently | **none — see the block.** The rename carries the full suite; its one rig-facing limb (an old saved hook refusing with a remedy that names the replacement) is scored inside 65c's gate session | |
 | 65c | | | | **M2 required** — §"Rig gate": three operator-judged limbs (successor dispatch and early stop with no hardware capability granted; an image-derived write to a non-dosing property; a short authorized `Duration0` run on a frame-index predicate). Everything that only computes goes in one script, run against `design/55-gate-probe-selftest.py`'s bridge-shaped fake before it ships | |
 
 **What 65a's three review rounds are worth keeping.** Round 1 returned four

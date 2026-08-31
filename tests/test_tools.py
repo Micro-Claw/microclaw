@@ -5246,7 +5246,7 @@ class TestGenerateAndSaveHook:
             "class block45_one_tile:\n"
             "    def analyze_frame(self, image, metadata):\n"
             "        return HookResult(measurements={'gate': 'block45'}, "
-            "actions=(StopSurvey(),))\n"
+            "actions=(StopAcquisition(),))\n"
         )
 
         result = generate_and_save_hook(
@@ -5258,8 +5258,8 @@ class TestGenerateAndSaveHook:
         assert result["contract_errors"] == [
             "HookResult is called but is not imported or defined. Add: "
             "from microclaw.hook_decisions import HookResult",
-            "StopSurvey is called but is not imported or defined. Add: "
-            "from microclaw.hook_decisions import StopSurvey",
+            "StopAcquisition is called but is not imported or defined. Add: "
+            "from microclaw.hook_decisions import StopAcquisition",
         ]
         assert not (tmp_path / "block45_one_tile.py").exists()
         assert not (tmp_path / "manifest.json").exists()
@@ -5514,7 +5514,7 @@ class TestSaveKnowledgeConfirmation:
     def test_rank_hook_log_skips_interleaved_runner_actions(
         self, mock_ctrl, unconstrained_guard, tmp_path
     ):
-        from microclaw.hook_decisions import ContinueSurvey, UntrustedHookAdapter
+        from microclaw.hook_decisions import ContinueAcquisition, UntrustedHookAdapter
         from microclaw.hooks import HookBase, analysis_observation_record
         metadata = {
             "PositionName": "p0", "XPosition_um_Intended": 1,
@@ -5522,7 +5522,7 @@ class TestSaveKnowledgeConfirmation:
         }
         adapter = UntrustedHookAdapter(object())
         adapter._record(
-            metadata, event="hook_action", action={"kind": ContinueSurvey().kind},
+            metadata, event="hook_action", action={"kind": ContinueAcquisition().kind},
             decision="accepted",
         )
         observation = {

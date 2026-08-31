@@ -8645,3 +8645,45 @@ assertions, each checked individually against all four commits rather than
 trusting the first one to trip; every section split verified to resolve on every
 version, so none could raise `IndexError` instead of asserting. Suite 2618 / 99
 / 3, coordinator-run at every round.
+
+## Block 65b — the decision-vocabulary rename (design/65)
+
+Merged 2026-08-31. `ContinueSurvey`/`StopSurvey` → `ContinueAcquisition`/
+`StopAcquisition`, outright, no alias. One runner turn, no revision round; the
+coordinator's only edits were a realigned ASCII table and a comment.
+
+**Designing the operator-visible part first is what made it one turn.** 103 of
+the 104 references are invisible to anyone but us; the migration refusal is the
+whole block as an operator experiences it, and a rename leaves it for last. The
+coordinator settled it in `design/65` §"65b's migration refusal, designed first"
+*before* writing the runner prompt — insertion point, trigger, message,
+evidence rule — and the prompt then said "do not redesign it". A sweep handed to
+a runner with the refusal left open is a sweep that comes back green with the
+refusal shaped by whatever was convenient.
+
+**Two shapes fail differently and only one was obvious.** After the rename, a
+hook that *imports* the old name still binds it, so the existing missing-name
+scan stays silent and the module dies at `exec_module` with a bare `ImportError`
+naming no replacement. Block 45's shape — the old name called with no import
+line — is worse: the name is no longer in `decision_names`, nothing refuses, and
+the `NameError` arrives inside the image processor, after the exposure. Reading
+`load_hook_class` closely enough to see that it runs `_hook_contract_analysis`
+on pinned source *before* `exec_module` is what made both reachable from one
+insertion point, with no new call site and no second scan.
+
+**An editable install resolves `microclaw` to the primary checkout.** The
+coordinator's independent mutation probe contradicted the runner's report in
+both directions — and the probe was wrong, because it lived in `/tmp`, so
+`sys.path[0]` was `/tmp` and the import found the main checkout's *pre-rename*
+module. Copied into the worktree, it reproduced the runner exactly. `python -m
+pytest` from a worktree is fine (cwd wins); a script by absolute path is not.
+Check `microclaw.__file__` before believing a probe that disagrees.
+
+**Do not run the suite and edit the tree at the same time.** A backgrounded full
+run was invalidated by the coordinator's own mutation landing mid-run, and
+returned an empty output file rather than a failure. Cheap to lose, easy to
+misread as a crash.
+
+**A runner report is not a repo file.** This turn committed its `result.md` to
+the repository root; the coordinator amended it out. Worth naming in the next
+prompt.
