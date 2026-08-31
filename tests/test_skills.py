@@ -158,6 +158,9 @@ def test_htsmlm_skill_preserves_specialized_mapping_and_dose_rules():
 def test_smlm_skill_does_not_promise_unavailable_adaptive_timelapse_hooks():
     body = skills.load_skill_text("smlm")
     density_section = body.split("## Density monitoring", 1)[1].split("\n---", 1)[0]
+    interval_section = body.split("### Frame interval", 1)[1].split("### Number of frames", 1)[0]
+    dstorm_section = body.split("### dSTORM", 1)[1].split("### PALM", 1)[0]
+    frame_count_section = body.split("### Number of frames", 1)[1].split("### Channel selection", 1)[0]
 
     assert "adaptive 405 nm control" not in body
     assert "image_process_fn" not in density_section
@@ -167,6 +170,14 @@ def test_smlm_skill_does_not_promise_unavailable_adaptive_timelapse_hooks():
     assert "not supported today" in density_section
     assert "run_adaptive_survey" in density_section
     assert "planned position list" in density_section
+    assert "spans more than one frame" in interval_section
+    assert "required idle time is the cost" in interval_section
+    assert "the operator may pulse" in dstorm_section
+    assert "The operator gradually increases" in dstorm_section
+    assert "Microclaw does not automate this feedback loop" in dstorm_section
+    assert "the operator may stop" in frame_count_section
+    assert "reviewed built-in example of observation-only" in density_section
+    assert "not the callback shape to copy" in density_section
 
 
 def test_built_wheel_contains_the_source_tree_skill_catalog(tmp_path):

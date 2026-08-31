@@ -47,10 +47,10 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
      - Frame count: ~40,000 frames.
      - Expected AF647 yield: ~6,000 photons/localization.
 
-- Optional 405 nm activation: pulse at low power to increase the localization rate
-  when blinking density drops too low during acquisition. Increase pulse length
-  gradually; stop increasing when maximum pulse length is reached and density
-  is still dropping (acquisition is near complete).
+- Optional 405 nm activation: the operator may pulse at low power when blinking
+  density drops too low during acquisition. The operator gradually increases the
+  pulse length and stops increasing at the maximum; if density is still dropping,
+  the acquisition is near complete. Microclaw does not automate this feedback loop.
 - Ask the user: channel name for main excitation, which STORM regime they want,
   whether a 405 nm activation channel is available, and whether the
   photoswitching buffer is in place.
@@ -103,12 +103,15 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 - Use: run_timelapse(exposure_ms=<value>, ...)
 
 ### Frame interval
-- For an ordinary fixed acquisition, set interval_s=0 to acquire as fast as the
-  camera allows (back-to-back frames).
+- Set interval_s=0 to acquire as fast as the camera allows (back-to-back frames).
+- Do not use a nonzero interval for SMLM unless a bounded, predeclared per-frame
+  `hook_action_plan` spans more than one frame and needs Python between exposures;
+  the required idle time is the cost of applying that schedule.
 
 ### Number of frames
 - Fixed-cell dSTORM:
-    - Slow STORM regime: ~80,000 frames (acquire until 405 nm pulse length maxes out).
+    - Slow STORM regime: ~80,000 frames. In a manually supervised acquisition,
+      the operator may stop when the 405 nm pulse length maxes out.
     - Regular STORM regime: ~40,000 frames.
     - Minimum for a small structure (e.g., centriole): ≥10,000 frames.
 - PALM: 5,000–20,000 frames.
@@ -282,12 +285,13 @@ For long acquisitions it is useful to track per-frame blinking density to detect
 
 Observation-only density logging is supported on `run_timelapse`: a user-authored
 `analyze_frame(image, metadata) -> HookResult | None` hook can measure and log each
-frame. `snr_observer` is the shipped example of this observation-only shape.
+frame. The shipped `snr_observer` is a reviewed built-in example of observation-only
+behavior, not the callback shape to copy for a user-authored hook.
 
 Fixed, predeclared property schedules are also supported with a bounded
-`hook_action_plan` under a `property_envelope`, but require `interval_s > 0`.
-With `interval_s=0`, pycro-manager may hardware-sequence the time axis, so no
-Python callback runs between exposures to apply a per-frame action.
+`hook_action_plan` under a `property_envelope`. A per-frame plan spanning more than
+one frame requires `interval_s > 0`: with zero, pycro-manager may hardware-sequence
+the time axis, so no Python callback runs between exposures to apply an action.
 
 **Current limitation:** image-driven property changes plus a conditional stop in
 one continuous timelapse are not supported today. `run_adaptive_survey` is not a
