@@ -155,6 +155,20 @@ def test_htsmlm_skill_preserves_specialized_mapping_and_dose_rules():
     assert "keep illumination disabled and report the disagreement" in flat
 
 
+def test_smlm_skill_does_not_promise_unavailable_adaptive_timelapse_hooks():
+    body = skills.load_skill_text("smlm")
+    density_section = body.split("## Density monitoring", 1)[1].split("\n---", 1)[0]
+
+    assert "adaptive 405 nm control" not in body
+    assert "image_process_fn" not in density_section
+    assert "signals end-of-acquisition" not in density_section
+    assert "offer to write a hook" not in density_section
+    assert "image-driven property changes plus a conditional stop" in density_section
+    assert "not supported today" in density_section
+    assert "run_adaptive_survey" in density_section
+    assert "planned position list" in density_section
+
+
 def test_built_wheel_contains_the_source_tree_skill_catalog(tmp_path):
     repo = Path(__file__).resolve().parents[1]
     build_source = tmp_path / "source"

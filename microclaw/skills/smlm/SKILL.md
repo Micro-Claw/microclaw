@@ -17,7 +17,7 @@ Microclaw's role is to:
   1. Help the user set up the correct acquisition parameters.
   2. Run the raw-frame stack with run_timelapse (interval_s=0 for max frame rate).
   3. Export the dataset with export_dataset_as_tiff so external software can analyse it.
-  4. Optionally attach a hook for real-time density feedback or adaptive 405 nm control.
+  4. Optionally attach an observation-only hook for real-time density logging.
 
 Microclaw does NOT perform localization fitting — that requires external software
 such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software section).
@@ -103,9 +103,8 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 - Use: run_timelapse(exposure_ms=<value>, ...)
 
 ### Frame interval
-- Set interval_s=0 to acquire as fast as the camera allows (back-to-back frames).
-- Do NOT use a non-zero interval for SMLM — idle time wastes acquisition time
-  without reducing background.
+- For an ordinary fixed acquisition, set interval_s=0 to acquire as fast as the
+  camera allows (back-to-back frames).
 
 ### Number of frames
 - Fixed-cell dSTORM:
@@ -281,14 +280,19 @@ For long acquisitions it is useful to track per-frame blinking density to detect
   - Too few ON molecules (acquisition proceeding too slowly): increase 405 nm
     activation power.
 
-This can be implemented as an image_process_fn hook that:
-  1. Thresholds each frame to count bright local maxima.
-  2. Logs the count per frame.
-  3. Optionally signals end-of-acquisition when density drops below a threshold.
+Observation-only density logging is supported on `run_timelapse`: a user-authored
+`analyze_frame(image, metadata) -> HookResult | None` hook can measure and log each
+frame. `snr_observer` is the shipped example of this observation-only shape.
 
-If the user asks for adaptive density control, offer to write a hook following
-the `load_skill(name="hook-authoring")` pattern. Call `load_skill(name="smlm")` first to confirm
-the SMLM context, then call `load_skill(name="hook-authoring")` for the hook API.
+Fixed, predeclared property schedules are also supported with a bounded
+`hook_action_plan` under a `property_envelope`, but require `interval_s > 0`.
+With `interval_s=0`, pycro-manager may hardware-sequence the time axis, so no
+Python callback runs between exposures to apply a per-frame action.
+
+**Current limitation:** image-driven property changes plus a conditional stop in
+one continuous timelapse are not supported today. `run_adaptive_survey` is not a
+substitute for single-field STORM: it walks a planned position list. Do not offer
+to write an adaptive STORM hook until a single-field adaptive timelapse route exists.
 
 ---
 
