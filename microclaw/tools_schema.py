@@ -1608,7 +1608,7 @@ TOOLS: list[dict[str, Any]] = [
             "ADAPTIVE hook, and the contract depends on where the hook came "
             "from. A SAVED or GENERATED hook implements analyze_frame(image, "
             "metadata) and returns a HookResult whose actions include "
-            "ContinueSurvey (acquire the next planned tile) or StopSurvey (end "
+            "ContinueAcquisition (acquire the next planned tile) or StopAcquisition (end "
             "the scan); the trusted parent, not the hook, dispatches them. It "
             "may also request one refocus of a promising tile when the caller "
             "provides an exposure-bounded autofocus_budget; the refocused frame "

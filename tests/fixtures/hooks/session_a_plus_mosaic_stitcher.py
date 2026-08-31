@@ -13,7 +13,7 @@ blended), matching the saved mosaic_stitcher semantics.
 """
 
 import numpy as np
-from microclaw.hook_decisions import HookResult, ContinueSurvey, EmitArtifact
+from microclaw.hook_decisions import HookResult, ContinueAcquisition, EmitArtifact
 
 
 class PlusMosaicStitcher:
@@ -44,13 +44,13 @@ class PlusMosaicStitcher:
         # keep going rather than guessing a location.
         if x is None or y is None:
             measurements["status"] = "unplaceable_no_intended_xy"
-            return HookResult(measurements, (ContinueSurvey(),))
+            return HookResult(measurements, (ContinueAcquisition(),))
 
         self._tiles.append((float(x), float(y), np.asarray(image)))
 
         # Not all tiles in yet: just continue.
         if len(self._tiles) < self.n_tiles:
-            return HookResult(measurements, (ContinueSurvey(),))
+            return HookResult(measurements, (ContinueAcquisition(),))
 
         # All tiles present -> assemble the mosaic.
         mosaic, extent = self._assemble()
@@ -59,7 +59,7 @@ class PlusMosaicStitcher:
         measurements["extent_um"] = extent
         return HookResult(
             measurements,
-            (EmitArtifact(mosaic, self.out_name), ContinueSurvey()),
+            (EmitArtifact(mosaic, self.out_name), ContinueAcquisition()),
         )
 
     def _assemble(self):

@@ -1094,8 +1094,8 @@ def _adaptive_runner_source() -> str:
 
     decision_items = (
         hook_decisions.MoveStage, hook_decisions.AcquireAt,
-        hook_decisions.SetExposure, hook_decisions.ContinueSurvey,
-        hook_decisions.StopSurvey, hook_decisions.RequestAutofocus,
+        hook_decisions.SetExposure, hook_decisions.ContinueAcquisition,
+        hook_decisions.StopAcquisition, hook_decisions.RequestAutofocus,
         hook_decisions.SetIlluminationPower, hook_decisions.MoveNamedStage,
         hook_decisions.SetDeviceProperty,
         hook_decisions.EmitArtifact,
@@ -1104,11 +1104,11 @@ def _adaptive_runner_source() -> str:
     parts = [f"__version__ = {__version__!r}\n", _stage_move_contract_source()]
     parts.extend(inspect.getsource(item) for item in decision_items)
     parts.extend([
-        "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueSurvey | "
-        "StopSurvey | RequestAutofocus | SetIlluminationPower | MoveNamedStage | SetDeviceProperty | EmitArtifact | "
+        "HookAction = (MoveStage | AcquireAt | SetExposure | ContinueAcquisition | "
+        "StopAcquisition | RequestAutofocus | SetIlluminationPower | MoveNamedStage | SetDeviceProperty | EmitArtifact | "
         "DiscardFrame)\n",
         "_ACTION_TYPES = {cls.__dataclass_fields__['kind'].default: cls for cls in "
-        "(MoveStage, AcquireAt, SetExposure, ContinueSurvey, StopSurvey, "
+        "(MoveStage, AcquireAt, SetExposure, ContinueAcquisition, StopAcquisition, "
         "RequestAutofocus, SetIlluminationPower, MoveNamedStage, SetDeviceProperty, EmitArtifact, DiscardFrame)}\n",
     ])
     parts.extend([
@@ -7944,7 +7944,7 @@ def _acquire_survey_with_detector(
             raise ValueError(
                 f"Adaptive analyze_frame contract failed: {contract_errors[0]} "
                 "This saved hook defines only a legacy image_process_fn, so it "
-                "cannot propose ContinueSurvey or StopSurvey and can never "
+                "cannot propose ContinueAcquisition or StopAcquisition and can never "
                 "advance an adaptive survey past the seed tile. Give it an "
                 "analyze_frame(image, metadata) method, or run it under a "
                 "batched runner (run_tile_acquisition, run_timelapse, "
@@ -8154,7 +8154,7 @@ def run_adaptive_survey(
 
     The hook must implement the adaptive contract, which differs by provenance
     (see hook_docs "Skipping and stopping"). A saved hook returns a HookResult
-    from analyze_frame carrying ContinueSurvey or StopSurvey, and trusted parent
+    from analyze_frame carrying ContinueAcquisition or StopAcquisition, and trusted parent
     code dispatches it; a reviewed built-in keeps the direct contract, where the
     runner sets hook.survey_events / hook.candidates / hook.progress and the hook
     submits the next tile with candidates.put() OR calls progress.done_early(),
@@ -8397,14 +8397,14 @@ def run_adaptive_survey(
     # empty dict is not "zero decisions" — it is a hook that never routed one
     # through the parent, which is the normal shape for a precoded control hook
     # AND for a saved hook that only records measurements (HookResult.actions
-    # defaults to ()). Emitting {"ContinueSurvey": 0} there says, in the one
+    # defaults to ()). Emitting {"ContinueAcquisition": 0} there says, in the one
     # content-shaped field this result has, that the hook decided nothing on a
     # run where it continued at every tile. That is F8's defect in a new key.
     action_counts = getattr(hook, "action_counts", None)
     if action_counts:
         result["hook_actions"] = {
-            "ContinueSurvey": action_counts.get("ContinueSurvey", 0),
-            "StopSurvey": action_counts.get("StopSurvey", 0),
+            "ContinueAcquisition": action_counts.get("ContinueAcquisition", 0),
+            "StopAcquisition": action_counts.get("StopAcquisition", 0),
         }
     result["budget_exhausted"] = progress.exhausted_budget
     result["tiles_planned"] = [

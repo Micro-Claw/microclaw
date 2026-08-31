@@ -139,6 +139,25 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
             )
     from microclaw import hook_decisions
 
+    retired_identifiers: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            retired_identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            retired_identifiers.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            retired_identifiers.update(alias.name for alias in node.names)
+    for retired_name in sorted(
+        retired_identifiers & hook_decisions._RETIRED_ACTION_NAMES.keys()
+    ):
+        replacement = hook_decisions._RETIRED_ACTION_NAMES[retired_name]
+        errors.append(
+            f"`{retired_name}` was renamed to `{replacement}` and no longer exists; "
+            "there is no alias. Replace every occurrence in this hook, including "
+            "the import: `from microclaw.hook_decisions import "
+            f"{replacement}`."
+        )
+
     action_types = {
         cls.__name__: cls for cls in hook_decisions._ACTION_TYPES.values()
     }
@@ -146,7 +165,7 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
     # undefined-name analysis: these names come from one module, so a call to
     # one the source cannot resolve is a certain runtime NameError rather than a
     # guess. M5's block 45 gate produced the case -- a generated hook calling
-    # HookResult and StopSurvey with no import line saved clean, described clean,
+    # HookResult and StopAcquisition with no import line saved clean, described clean,
     # and died inside the image processor after the stage had moved.
     #
     # Bindings are collected from module-level statements plus imports at any

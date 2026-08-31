@@ -142,16 +142,16 @@ only the methods actually implemented by the hook are passed to `Acquisition(...
 
 The saved-hook contract. `HookResult` contains JSON-safe measurements and a list
 or tuple of typed action proposals: MoveStage, MoveNamedStage, SetDeviceProperty, AcquireAt, SetExposure,
-ContinueSurvey, StopSurvey, RequestAutofocus, SetIlluminationPower, EmitArtifact,
+ContinueAcquisition, StopAcquisition, RequestAutofocus, SetIlluminationPower, EmitArtifact,
 or DiscardFrame.
 Runner support for control-flow proposals is:
 
-  runner                              ContinueSurvey        StopSurvey / AcquireAt
+  runner                              ContinueAcquisition        StopAcquisition / AcquireAt
   run_adaptive_survey                 dispatch next tile    supported
   fixed-plan hooked acquisitions      accepted noop         refused
 
 A fixed-plan runner already continues through every committed event, so
-ContinueSurvey changes nothing and is recorded as an accepted noop. Proposals
+ContinueAcquisition changes nothing and is recorded as an accepted noop. Proposals
 that would change behaviour but are unavailable remain refused. The adaptive
 runner guard-checks and reservation-checks every proposal and writes every
 accept/refuse decision to the log.
@@ -245,7 +245,7 @@ custom event key into image metadata. A failed sweep is logged and carried past
 without widening or retrying it.
 
 The second look is still an adaptive survey decision point: it must return
-``ContinueSurvey`` or ``StopSurvey`` (or another supported routing action).
+``ContinueAcquisition`` or ``StopAcquisition`` (or another supported routing action).
 Without a hardware proposal, a routing action beside ``RequestAutofocus`` keeps
 the survey alive if autofocus refuses or does not converge. If autofocus queues
 a focused re-exposure, later actions are refused until those pixels are judged.
@@ -267,7 +267,7 @@ Ask for refocus and also provide the fallback route. If refocus is granted, the
 fallback is deferred and the hook chooses again on the focused frame; if it is
 refused, the fallback advances the scan::
 
-    return HookResult(stats, actions=(RequestAutofocus(), ContinueSurvey()))
+    return HookResult(stats, actions=(RequestAutofocus(), ContinueAcquisition()))
 
 On convergence the survey deliberately adopts the new focus plane. Timelapse
 survey events carry no Z, so the refocused exposure and later tiles remain at
@@ -471,13 +471,13 @@ The trusted parent owns the log so hook
 source cannot forge or omit its action decision record.
 
 ```python
-from microclaw.hook_decisions import ContinueSurvey, HookResult
+from microclaw.hook_decisions import ContinueAcquisition, HookResult
 import numpy as np
 
 class MyHook:
     def analyze_frame(self, image: np.ndarray, metadata: dict):
         # ... your logic ...
-        return HookResult({"key": "value"}, (ContinueSurvey(),))
+        return HookResult({"key": "value"}, (ContinueAcquisition(),))
 ```
 
 Saved source still executes in the hardware-control process. Source review and

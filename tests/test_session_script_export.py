@@ -2006,14 +2006,14 @@ def test_absent_acquire_on_hit_keeps_adaptive_program_byte_identical(tmp_path):
 @pytest.mark.parametrize("guard_body", [
     pytest.param(
         "        try:\n"
-        "            from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "            from microclaw.hook_decisions import ContinueAcquisition, HookResult\n"
         "        except ImportError:\n"
         "            raise\n",
         id="try-wrapped",
     ),
     pytest.param(
         "        if True:\n"
-        "            from microclaw.hook_decisions import ContinueSurvey, HookResult\n",
+        "            from microclaw.hook_decisions import ContinueAcquisition, HookResult\n",
         id="if-guarded",
     ),
 ])
@@ -2044,7 +2044,7 @@ def test_stripping_a_block_sole_package_import_still_emits_valid_python(
         "class Portable:\n"
         "    def analyze_frame(self, image, metadata):\n"
         + guard_body
-        + "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+        + "        return HookResult({}, actions=(ContinueAcquisition(),))\n"
     )
     save_hook("portable", hook_source, "portable", source="user_provided")
 
@@ -2241,10 +2241,10 @@ def test_saved_adaptive_hook_source_and_manifest_pin_are_inlined(
     monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
     monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
     hook_source = (
-        "from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "from microclaw.hook_decisions import ContinueAcquisition, HookResult\n"
         "class Saved:\n"
         "    def analyze_frame(self, image, metadata):\n"
-        "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+        "        return HookResult({}, actions=(ContinueAcquisition(),))\n"
     )
     save_hook("saved", hook_source, "continue", source="user_provided")
     manifest = json.loads((hooks_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -2367,11 +2367,11 @@ def test_refocusing_survey_emits_the_same_budgeted_second_look_program(
     monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
     save_hook(
         "refocus",
-        "from microclaw.hook_decisions import ContinueSurvey, HookResult, RequestAutofocus\n"
+        "from microclaw.hook_decisions import ContinueAcquisition, HookResult, RequestAutofocus\n"
         "class Refocus:\n"
         "    def analyze_frame(self, image, metadata):\n"
         "        if metadata.get('microclaw_refocused'):\n"
-        "            return HookResult({'second_look': True}, actions=(ContinueSurvey(),))\n"
+        "            return HookResult({'second_look': True}, actions=(ContinueAcquisition(),))\n"
         "        return HookResult({}, actions=(RequestAutofocus(),))\n",
         "refocus once", source="user_provided",
     )
@@ -2691,10 +2691,10 @@ def test_a_session_that_writes_its_own_hook_still_exports_a_runnable_script(
     monkeypatch.setattr(manager, "HOOKS_DIR", hooks_dir)
     monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
     hook_source = (
-        "from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+        "from microclaw.hook_decisions import ContinueAcquisition, HookResult\n"
         "class Repeat:\n"
         "    def analyze_frame(self, image, metadata):\n"
-        "        return HookResult({}, actions=(ContinueSurvey(),))\n"
+        "        return HookResult({}, actions=(ContinueAcquisition(),))\n"
     )
     save_hook("repeat", hook_source, "repeat", source="claude_generated")
 
@@ -3431,13 +3431,13 @@ def test_emitted_adaptive_run_executes_decision_loop_and_pre_hardware_move(tmp_p
     monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
     save_hook(
         "adaptive_stage",
-        "from microclaw.hook_decisions import (ContinueSurvey, HookResult, MoveNamedStage, StopSurvey)\n"
+        "from microclaw.hook_decisions import (ContinueAcquisition, HookResult, MoveNamedStage, StopAcquisition)\n"
         "class AdaptiveStage:\n"
         "    def analyze_frame(self, image, metadata):\n"
         "        if metadata['PositionName'] == 'p0':\n"
         "            target = float(image[0, 0]) + 5.0\n"
-        "            return HookResult({'target': target}, (MoveNamedStage(target), ContinueSurvey()))\n"
-        "        return HookResult({}, (StopSurvey(),))\n",
+        "            return HookResult({'target': target}, (MoveNamedStage(target), ContinueAcquisition()))\n"
+        "        return HookResult({}, (StopAcquisition(),))\n",
         "adaptive_stage", source="user_provided",
     )
     _, result, source = export(tmp_path, [call("run_adaptive_survey", {
@@ -3505,12 +3505,12 @@ def test_emitted_hardware_restoration_preserves_acquisition_failure(
     monkeypatch.setattr(manager, "MANIFEST", hooks_dir / "manifest.json")
     save_hook(
         "faulting_stage",
-        "from microclaw.hook_decisions import (ContinueSurvey, HookResult, MoveNamedStage)\n"
+        "from microclaw.hook_decisions import (ContinueAcquisition, HookResult, MoveNamedStage)\n"
         "class FaultingStage:\n"
         "    def analyze_frame(self, image, metadata):\n"
         "        if metadata['PositionName'] == 'p0':\n"
-        "            return HookResult({}, (MoveNamedStage(7.0), ContinueSurvey()))\n"
-        "        return HookResult({}, (ContinueSurvey(),))\n",
+        "            return HookResult({}, (MoveNamedStage(7.0), ContinueAcquisition()))\n"
+        "        return HookResult({}, (ContinueAcquisition(),))\n",
         "faulting_stage", source="user_provided",
     )
     envelope = {"device": "Axis", "min_um": 0.0, "max_um": 10.0,

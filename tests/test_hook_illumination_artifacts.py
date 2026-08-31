@@ -748,14 +748,14 @@ def test_adaptive_tool_restores_named_stage_exactly_once_after_engine_exit(
     import queue
     import numpy as np
     from microclaw.hook_decisions import (
-        ContinueSurvey, HookResult, MoveNamedStage, StopSurvey,
+        ContinueAcquisition, HookResult, MoveNamedStage, StopAcquisition,
     )
 
     class Hook:
         def analyze_frame(self, _image, metadata):
             if metadata["PositionName"] == "p0":
-                return HookResult({}, (MoveNamedStage(110), ContinueSurvey()))
-            return HookResult({}, (StopSurvey(),))
+                return HookResult({}, (MoveNamedStage(110), ContinueAcquisition()))
+            return HookResult({}, (StopAcquisition(),))
 
     position = {"value": 100.0}
     writes = []

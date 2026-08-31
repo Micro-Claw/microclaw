@@ -133,7 +133,21 @@ _MISSING_DECISION_IMPORTS = (
     "class block45_one_tile:\n"
     "    def analyze_frame(self, image, metadata):\n"
     "        return HookResult(measurements={'gate': 'block45'}, "
-    "actions=(StopSurvey(),))\n"
+    "actions=(StopAcquisition(),))\n"
+)
+
+_RETIRED_IMPORT_HOOK = (
+    "from microclaw.hook_decisions import ContinueSurvey, HookResult\n"
+    "class RetiredImportHook:\n"
+    "    def analyze_frame(self, image, metadata):\n"
+    "        return HookResult({}, (ContinueSurvey(),))\n"
+)
+
+_RETIRED_BARE_CALL_HOOK = (
+    "from microclaw.hook_decisions import HookResult\n"
+    "class RetiredBareCallHook:\n"
+    "    def analyze_frame(self, image, metadata):\n"
+    "        return HookResult({}, (StopSurvey(),))\n"
 )
 
 
@@ -145,28 +159,28 @@ def test_static_contract_rejects_rig_hook_with_missing_decision_imports():
     assert errors == [
         "HookResult is called but is not imported or defined. Add: "
         "from microclaw.hook_decisions import HookResult",
-        "StopSurvey is called but is not imported or defined. Add: "
-        "from microclaw.hook_decisions import StopSurvey",
+        "StopAcquisition is called but is not imported or defined. Add: "
+        "from microclaw.hook_decisions import StopAcquisition",
     ]
 
 
 @pytest.mark.parametrize("prefix, result_name, action_name", [
     (
-        "from microclaw.hook_decisions import HookResult, StopSurvey\n",
-        "HookResult", "StopSurvey",
+        "from microclaw.hook_decisions import HookResult, StopAcquisition\n",
+        "HookResult", "StopAcquisition",
     ),
     (
         "from microclaw.hook_decisions import HookResult as Result, "
-        "StopSurvey as Stop\n",
+        "StopAcquisition as Stop\n",
         "Result", "Stop",
     ),
     (
         "import microclaw.hook_decisions as hd\n",
-        "hd.HookResult", "hd.StopSurvey",
+        "hd.HookResult", "hd.StopAcquisition",
     ),
     (
         "from microclaw.hook_decisions import *\n",
-        "HookResult", "StopSurvey",
+        "HookResult", "StopAcquisition",
     ),
 ])
 def test_static_contract_accepts_resolvable_decision_imports(
@@ -178,6 +192,34 @@ def test_static_contract_accepts_resolvable_decision_imports(
         + "    def analyze_frame(self, image, metadata):\n"
         + f"        return {result_name}({{}}, ({action_name}(),))\n"
     )
+    assert validate_hook_contract(code, required_callback="analyze_frame") == []
+
+
+def test_retired_identifiers_cover_attributes_and_import_alias_names_in_sorted_order():
+    code = (
+        "import microclaw.hook_decisions as hd\n"
+        "from elsewhere import StopSurvey as harmless_alias\n"
+        "class H:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        hd.ContinueSurvey()\n"
+        "        hd.ContinueSurvey()\n"
+        "        return None\n"
+    )
+
+    errors = validate_hook_contract(code, required_callback="analyze_frame")
+
+    assert [error.split("`")[1] for error in errors] == [
+        "ContinueSurvey", "StopSurvey",
+    ]
+
+
+def test_retired_words_in_string_constants_do_not_refuse():
+    code = (
+        "class H:\n"
+        "    def analyze_frame(self, image, metadata):\n"
+        "        return 'ContinueSurvey and StopSurvey'\n"
+    )
+
     assert validate_hook_contract(code, required_callback="analyze_frame") == []
 
 
@@ -317,11 +359,84 @@ class TestHashPinnedLoad:
         assert described["resolve_refusal"]["reasons"] == [
             "current hook contract violation: HookResult is called but is not "
             "imported or defined. Add: from microclaw.hook_decisions import HookResult",
-            "current hook contract violation: StopSurvey is called but is not "
-            "imported or defined. Add: from microclaw.hook_decisions import StopSurvey",
+            "current hook contract violation: StopAcquisition is called but is not "
+            "imported or defined. Add: from microclaw.hook_decisions import StopAcquisition",
         ]
-        with pytest.raises(ValueError, match="HookResult is called.*StopSurvey is called"):
+        with pytest.raises(ValueError, match="HookResult is called.*StopAcquisition is called"):
             load_hook_class("block45_one_tile")
+
+    def test_retired_import_is_described_and_refused_before_import(self):
+        save_hook(
+            "retired_import", _RETIRED_IMPORT_HOOK, "pre-rename import",
+            source="claude_generated",
+        )
+        message = (
+            "`ContinueSurvey` was renamed to `ContinueAcquisition` and no longer "
+            "exists; there is no alias. Replace every occurrence in this hook, "
+            "including the import: `from microclaw.hook_decisions import "
+            "ContinueAcquisition`."
+        )
+
+        described = describe_saved_hook("retired_import")
+        try:
+            load_hook_class("retired_import")
+        except Exception as exc:
+            load_error = (type(exc).__name__, str(exc))
+        else:
+            load_error = None
+        assert {
+            "would_refuse": described["resolve_refusal"]["would_refuse"],
+            "reasons": described["resolve_refusal"]["reasons"],
+            "remedy_tool": described["resolve_refusal"]["remedy"]["tool"],
+            "remedy_then": described["resolve_refusal"]["remedy"]["then"],
+            "load_error": load_error,
+        } == {
+            "would_refuse": True,
+            "reasons": [f"current hook contract violation: {message}"],
+            "remedy_tool": "read_hook_from_file",
+            "remedy_then": "generate_and_save_hook(source='user_provided')",
+            "load_error": (
+                "ValueError",
+                "Saved hook 'retired_import' violates the current hook contract: "
+                f"['{message}']. Review and re-save corrected source before running it.",
+            ),
+        }
+
+    def test_retired_bare_call_is_described_and_refused_before_import(self):
+        save_hook(
+            "retired_bare_call", _RETIRED_BARE_CALL_HOOK, "pre-rename bare call",
+            source="claude_generated",
+        )
+        message = (
+            "`StopSurvey` was renamed to `StopAcquisition` and no longer exists; "
+            "there is no alias. Replace every occurrence in this hook, including "
+            "the import: `from microclaw.hook_decisions import StopAcquisition`."
+        )
+
+        described = describe_saved_hook("retired_bare_call")
+        try:
+            load_hook_class("retired_bare_call")
+        except Exception as exc:
+            load_error = (type(exc).__name__, str(exc))
+        else:
+            load_error = None
+        assert {
+            "would_refuse": described["resolve_refusal"]["would_refuse"],
+            "reasons": described["resolve_refusal"]["reasons"],
+            "remedy_tool": described["resolve_refusal"]["remedy"]["tool"],
+            "remedy_then": described["resolve_refusal"]["remedy"]["then"],
+            "load_error": load_error,
+        } == {
+            "would_refuse": True,
+            "reasons": [f"current hook contract violation: {message}"],
+            "remedy_tool": "read_hook_from_file",
+            "remedy_then": "generate_and_save_hook(source='user_provided')",
+            "load_error": (
+                "ValueError",
+                "Saved hook 'retired_bare_call' violates the current hook contract: "
+                f"['{message}']. Review and re-save corrected source before running it.",
+            ),
+        }
 
     def test_stale_session_a_reversed_emit_is_refused_at_load(self):
         source = (Path(__file__).parent / "fixtures" / "hooks" /
