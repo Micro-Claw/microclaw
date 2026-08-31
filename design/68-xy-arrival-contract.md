@@ -228,3 +228,79 @@ mechanism that did not run.
   defaults stay).
 - The cross-plane Z non-response row (design/66) — still owned by the next
   Z-motion integrity block.
+
+
+## M2, 2026-08-31 — scored from the artifacts
+
+Two runs. Every limb has now been exercised; nothing is owed.
+
+**Run 1 (`gate68-m2`), limbs 0/A/B/D/E — PASS.** The numbers agree with each
+other, which is the check the verdict cannot give:
+
+| Limb | Measured |
+|---|---|
+| 0 | commanded 20.0 µm, measured **20.20**, returned within 0.22 µm |
+| A | **settled in 0.984 s**; `measured_um` `[55.7, 225.6]` for `requested_um` `[55.5, 225.7]`, residuals 0.2/0.1 against 2.0 µm bands |
+| B | X moved 200 µm and earned a **20.0 µm relative** band; Y was held and kept the **2.0 µm floor** |
+| D | 85.7 px entry, residuals `[86.4, 12.5, 3.04]`, centred in 2 iterations, **correction 1 sub-band** |
+| E | emitted `settle_xy_move` carrying start `[35.5, 205.7]` → target `[55.5, 225.7]` |
+
+Limb A is this block's claim on hardware: `measured_um` is **not**
+`requested_um`, and the move took nearly a second to settle — a premature
+read-back would have returned the entry position, which is the 22.85 µm miss
+block 56 measured for Z.
+
+Limb D is better than the design hoped for. The smallest commanded correction
+was **1.5875 µm**, below the 2.0 µm floor, so it reported `arrival_unverifiable`
+and the loop **still converged** to 3.04 px. That is §"`center_feature` accepts
+unverifiable corrections", confirmed rather than argued. The arithmetic
+cross-checks: 12.5 px × M2's 0.127 µm/px = 1.5875 µm, exactly the correction
+recorded.
+
+**Run 2 (`gate68-m2-r2`), limb C — PASS, and it took two rounds to get there.**
+The operator disconnected the Core XY device (`SmarActXY`), which is the
+strongest form of the test, not a degenerate one. Round 1 reported FAIL and
+measured nothing; see below. Round 2, from `non_response_control.json`:
+
+- `exception_class: XYStageMoveError` — **typed**, naming `["x", "y"]`. Block 66's
+  control-limb defect, where an untyped `java.lang.Exception` escaped carrying
+  none of the contract, does **not** reproduce for XY.
+- `elapsed_s: 0.0` with `last_device_status: "dispatch_error: ..."` — the
+  refusal came from `read_xy_start_position` **before any write was attempted**.
+  The stage was never commanded.
+- `requested_um: null` on a relative move with no readable start — no fabricated
+  coordinate, which is design/66's rule honoured.
+- `start_um: null`, both bands `floor` 2.0, both `arrival_unverifiable: true`,
+  `verification_kind: response` — internally consistent, and `start_um: null` is
+  the *correct* report when the start is genuinely unknown.
+
+**Looked for and not found.** That refusal message carries the full Java stack
+trace — 1208 characters, 14 newlines — and block 52b lost three rig trips to a
+recorded newline breaking out of its `# SKIPPED` comment and making `ast.parse`
+refuse a whole session's export. Fed the real M2 string through
+`export_session_script`: the script parses and no fragment escapes its comment.
+
+### The gate's round-1 failure was the gate, and its self-test hid it
+
+Round 1's limb C reported `FAIL: java.lang.Exception: ... no sensor present`,
+which reads as a product defect. It is a statement about the gate:
+`entry = read_xy(ctrl.core)` sat **outside** limb C's `try`, and a link that is
+down fails *every* bridge call, so the probe died in its own instrumentation
+before `move_stage_xy` was ever called. The honest verdict for that limb was
+**NOT EXERCISED**, never FAIL.
+
+The part worth keeping is why the dry run did not catch it. `--untyped-failure`
+asserted only that limb C reported **FAIL** — which it did, having died in the
+same pre-read. **A criterion satisfied by the wrong mechanism**, inside the gate
+written to enforce that rule on everyone else. The mode now requires the limb to
+have *reached* the product (its evidence file exists only if it did) and to have
+been refused by type. `CLAUDE.md`'s rule that a gate's own fake gets no review
+pass held; the missing half is that a gate's own **assertion** gets none either,
+and "did it report FAIL?" is exactly as weak an observation channel as design/60
+block 60b's "was a confirmation raised?".
+
+Three smaller gate defects came from the same run: limb 0 printed a raw Java
+traceback at a deliberately disconnected stage instead of NOT EXERCISED; limb C
+scored `start_um: null` as a defect when it is correct on a dead link; and the
+control phase **overwrote** run 1's `gate68_results.json`, whose 5/6 survived
+only in the operator's log. Results are now written per phase.
