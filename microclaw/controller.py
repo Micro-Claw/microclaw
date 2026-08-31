@@ -215,6 +215,244 @@ def settle_stage_move(core, device: str, target_um: float,
             raise StageMoveError(result)
         time.sleep(STAGE_MOVE_POLL_S)
 
+
+class XYStageMoveError(StageMoveError):
+    """An XY stage failed to demonstrate that it reached and settled at its target.
+
+    Subclasses `StageMoveError` so every existing `except StageMoveError` keeps
+    catching, and names the axis (or axes) that did not respond, with that
+    axis's own start, requested and measured value. A pair-shaped message
+    ("started [0, 0], measured [199, 0]") makes the reader do the subtraction
+    that decides which half of the stage is broken.
+    """
+
+    def __init__(self, result: dict, axes: list[str]):
+        self.result = result
+        self.axes = list(axes)
+        start = result["start_um"]
+        requested, measured = result["requested_um"], result["measured_um"]
+        if start is None:
+            target_text = ("no resolved target (relative move)"
+                           if requested is None
+                           else f"requested {requested} um")
+            opening = ("XY stage move could not be verified: the start position "
+                       f"is unavailable, {target_text}, measured {measured} um")
+            closing = "response cannot be assessed without a start position."
+        else:
+            detail = "; ".join(
+                f"{axis.upper()} started {_xy_axis_value(start, axis)} um, "
+                f"requested {_xy_axis_value(requested, axis)} um, "
+                f"measured {_xy_axis_value(measured, axis)} um "
+                f"using {result[f'{axis}_tolerance_um']} um from "
+                f"{result[f'{axis}_band_source']} policy"
+                for axis in self.axes
+            )
+            axis_names = "/".join(axis.upper() for axis in self.axes)
+            opening = ("XY stage move did not demonstrate the requested response "
+                       f"on {axis_names}: {detail}")
+            closing = ("the axis did not move." if start == measured
+                       else "hardware error or incomplete motion remains possible.")
+        RuntimeError.__init__(
+            self,
+            f"{opening} after {result['elapsed_s']} s "
+            f"({result['last_device_status']}); {closing}"
+        )
+
+
+def _xy_axis_value(pair, axis: str):
+    return None if pair is None else pair[0 if axis == "x" else 1]
+
+
+def _xy_move_record(start, requested, measured, band_policy: str,
+                    configured_x: float | None, configured_y: float | None,
+                    within_tolerance: bool, elapsed_s: float, status: str) -> dict:
+    """Assemble design/68's two-axis arrival record — the only writer of it.
+
+    Each axis is banded from its OWN displacement, never from the pair: a 200 um
+    X move alongside a held Y must not hand Y a 20 um band, which is exactly
+    what a `hypot` gate over the two would do. `verification_kind` claims
+    `configured_accuracy` only when BOTH axes were checked against a declared
+    band, because a pair is no more verified than its weaker half.
+    """
+    record: dict = {
+        "start_um": None if start is None else [round(v, 4) for v in start],
+        "requested_um": None if requested is None else [round(v, 4) for v in requested],
+        "measured_um": None if measured is None else [round(v, 4) for v in measured],
+        "band_policy": band_policy,
+        "within_tolerance": within_tolerance,
+        "elapsed_s": round(elapsed_s, 3),
+        "last_device_status": status,
+    }
+    kinds = []
+    for index, axis, configured in ((0, "x", configured_x), (1, "y", configured_y)):
+        target = None if requested is None else requested[index]
+        start_axis = None if start is None else start[index]
+        measured_axis = None if measured is None else measured[index]
+        band, source, kind, unverifiable = _stage_move_band(
+            target, start_axis, band_policy, configured
+        )
+        record[f"{axis}_arrival_residual_um"] = (
+            None if measured_axis is None or target is None
+            else round(abs(measured_axis - target), 4)
+        )
+        record[f"{axis}_tolerance_um"] = band
+        record[f"{axis}_band_source"] = source
+        record[f"{axis}_arrival_unverifiable"] = unverifiable
+        kinds.append(kind)
+    record["verification_kind"] = (
+        "configured_accuracy" if all(kind == "configured_accuracy" for kind in kinds)
+        else "response"
+    )
+    # design/14 SS8 saw a Y move carry a 1.1 um unrequested X excursion that
+    # nothing surfaced. `error_um` is signed and per axis so it stays visible;
+    # it is evidence, never the gate -- an unrequested excursion inside the
+    # floor band is not a failure to respond.
+    record["achieved_um"] = (
+        None if measured is None else [round(v, 3) for v in measured]
+    )
+    record["error_um"] = (
+        None if measured is None or requested is None
+        else [round(measured[index] - requested[index], 3) for index in (0, 1)]
+    )
+    return record
+
+
+def _xy_move_failure(start, requested, measured, band_policy: str,
+                     configured_x: float | None, configured_y: float | None,
+                     elapsed_s: float, status: str) -> XYStageMoveError:
+    record = _xy_move_record(start, requested, measured, band_policy,
+                             configured_x, configured_y, False, elapsed_s, status)
+    axes = [
+        axis for axis in ("x", "y")
+        if record[f"{axis}_arrival_residual_um"] is None
+        or record[f"{axis}_arrival_residual_um"] > record[f"{axis}_tolerance_um"]
+    ]
+    return XYStageMoveError(record, axes or ["x", "y"])
+
+
+def xy_stage_move_dispatch_failure(core, device: str,
+                                   target_x: float | None, target_y: float | None,
+                                   start_x: float | None, start_y: float | None,
+                                   band_policy: str,
+                                   configured_x: float | None,
+                                   configured_y: float | None,
+                                   exc: Exception) -> XYStageMoveError:
+    """Translate an XY driver refusal into the same measured move-failure contract."""
+    try:
+        measured: list[float] | None = [
+            float(core.get_x_position()), float(core.get_y_position())
+        ]
+        if not all(math.isfinite(value) for value in measured):
+            measured = None
+    except Exception:
+        measured = None
+    try:
+        device_state = "busy" if bool(core.device_busy(device)) else "idle"
+    except Exception:
+        device_state = "unavailable"
+    # A relative move whose start could not be read has no resolved absolute
+    # target; reporting one would be a fabrication, so both stay None.
+    requested = (None if target_x is None or target_y is None
+                 else [float(target_x), float(target_y)])
+    start = (None if start_x is None or start_y is None
+             else [float(start_x), float(start_y)])
+    return _xy_move_failure(
+        start, requested, measured, band_policy, configured_x, configured_y,
+        0.0, f"dispatch_error: {type(exc).__name__}: {exc}; {device_state}",
+    )
+
+
+def read_xy_start_position(core, device: str,
+                           target_x: float | None, target_y: float | None,
+                           band_policy: str,
+                           configured_x: float | None,
+                           configured_y: float | None) -> tuple[float, float]:
+    """Read both pre-dispatch coordinates, or refuse with the typed contract.
+
+    The single-axis rationale in `read_stage_start_position` applies unchanged:
+    a stage whose link is down fails every bridge call, not only the write, so
+    this read raises before `set_xy_position` is ever attempted and the refusal
+    carries the move contract instead of a bare serial error.
+    """
+    try:
+        return float(core.get_x_position()), float(core.get_y_position())
+    except Exception as exc:
+        raise xy_stage_move_dispatch_failure(
+            core, device, target_x, target_y, None, None,
+            band_policy, configured_x, configured_y, exc,
+        ) from exc
+
+
+def settle_xy_move(core, device: str, target_x: float, target_y: float,
+                   start_x: float | None, start_y: float | None,
+                   band_policy: str, configured_x: float | None,
+                   configured_y: float | None) -> dict:
+    """Read until BOTH axes are near their own targets and stable together.
+
+    Two scalar reads, not `getXYStagePosition`: the pair is therefore not
+    simultaneous, which is acceptable only because the gate demands stability
+    across `STAGE_MOVE_REQUIRED_SAMPLES` samples spanning
+    `STAGE_MOVE_STABILITY_WINDOW_S` -- a pair read mid-motion cannot satisfy it.
+    The Java pair object would buy nothing and costs the camelCase-field and
+    non-iterable-collection shapes this project has been bitten by twice.
+    """
+    requested = [float(target_x), float(target_y)]
+    start = (None if start_x is None or start_y is None
+             else [float(start_x), float(start_y)])
+    bands = [
+        _stage_move_band(requested[index],
+                         None if start is None else start[index],
+                         band_policy, configured)[0]
+        for index, configured in ((0, configured_x), (1, configured_y))
+    ]
+    started = time.monotonic()
+    in_tolerance: list[float] = []
+    measured: list[float] | None = None
+    status = "unknown"
+    while True:
+        now = time.monotonic()
+        try:
+            status = "busy" if bool(core.device_busy(device)) else "idle"
+        except Exception as exc:  # status is evidence, never the success gate
+            status = f"unavailable: {type(exc).__name__}"
+        try:
+            reading = [float(core.get_x_position()), float(core.get_y_position())]
+            # A non-finite read is a failed read, not a position; NaN never
+            # survives into a result dict, where json.dumps writes it as bare
+            # `NaN` and a strict reader of the history rejects the line.
+            if not all(math.isfinite(value) for value in reading):
+                raise ValueError(f"non-finite position {reading!r}")
+            measured = reading
+        except Exception as exc:
+            in_tolerance.clear()
+            status = f"{status}; position_read_error: {type(exc).__name__}: {exc}"
+            if now - started >= STAGE_MOVE_TIMEOUT_S:
+                raise _xy_move_failure(
+                    start, requested, None, band_policy, configured_x,
+                    configured_y, now - started, status,
+                ) from exc
+            time.sleep(STAGE_MOVE_POLL_S)
+            continue
+        if all(abs(measured[index] - requested[index]) <= bands[index]
+               for index in (0, 1)):
+            in_tolerance.append(now)
+            if len(in_tolerance) > STAGE_MOVE_REQUIRED_SAMPLES:
+                in_tolerance.pop(0)
+            if (len(in_tolerance) == STAGE_MOVE_REQUIRED_SAMPLES and
+                    now - in_tolerance[0] >= STAGE_MOVE_STABILITY_WINDOW_S):
+                return _xy_move_record(
+                    start, requested, measured, band_policy, configured_x,
+                    configured_y, True, now - started, status,
+                )
+        else:
+            in_tolerance.clear()
+        if now - started >= STAGE_MOVE_TIMEOUT_S:
+            raise _xy_move_failure(start, requested, measured, band_policy,
+                                   configured_x, configured_y,
+                                   now - started, status)
+        time.sleep(STAGE_MOVE_POLL_S)
+
+
 if TYPE_CHECKING:
     from microclaw.safety import SafetyGuard
 
@@ -1043,12 +1281,34 @@ class MicroscopeController:
         """Return all stored positions."""
         return list(self._positions)
 
-    def set_xy(self, x_um: float, y_um: float) -> None:
-        """Guarded XY stage write — the single seam every XY move should use."""
+    def set_xy(self, x_um: float, y_um: float) -> dict:
+        """Guarded XY stage write — the single seam every XY move should use.
+
+        Spelled exactly as `set_z` below: guard, declared band, start read,
+        dispatch (typed on failure), settle. `wait_for_device` is gone because
+        a device that is not busy is not a device that arrived (block 56).
+        """
         if self._guard is not None:
             self._guard.check_xy(x_um, y_um)
-        self._core.set_xy_position(x_um, y_um)
-        self._core.wait_for_device(self._core.get_xy_stage_device())
+        device = self._core.get_xy_stage_device()
+        configured_x = (self._guard.stage_move_tolerance(device, core_axis="x")
+                        if self._guard is not None else None)
+        configured_y = (self._guard.stage_move_tolerance(device, core_axis="y")
+                        if self._guard is not None else None)
+        start_x, start_y = read_xy_start_position(
+            self._core, device, x_um, y_um, "relative", configured_x, configured_y
+        )
+        try:
+            self._core.set_xy_position(x_um, y_um)
+        except Exception as exc:
+            raise xy_stage_move_dispatch_failure(
+                self._core, device, x_um, y_um, start_x, start_y,
+                "relative", configured_x, configured_y, exc
+            ) from exc
+        return settle_xy_move(
+            self._core, device, x_um, y_um, start_x, start_y,
+            "relative", configured_x, configured_y
+        )
 
     def set_z(self, z_um: float) -> dict:
         """Guarded focus write — the single seam every Z move should use."""
@@ -1072,19 +1332,23 @@ class MicroscopeController:
             self._core, device, z_um, start_um, "relative", configured
         )
 
-    def go_to_position(self, label: str) -> None:
-        """Move stage to a named position.
+    def go_to_position(self, label: str) -> dict:
+        """Move stage to a named position, returning what each axis measured.
 
         XY is optional: Z-only entries (from 1-axis MultiStagePositions in MM)
-        set only the focus device and never touch XY.
+        set only the focus device and never touch XY. The arrival records are
+        returned rather than dropped because the exporter has to emit the same
+        band this move verified against, and a band it cannot read is a band it
+        would have to guess (design/66 §"Standalone export").
         """
         for pos in self._positions:
             if pos["name"] == label:
+                moves: dict = {}
                 if "x_um" in pos and "y_um" in pos:
-                    self.set_xy(pos["x_um"], pos["y_um"])
+                    moves["xy_move"] = self.set_xy(pos["x_um"], pos["y_um"])
                 if "z_um" in pos:
-                    self.set_z(pos["z_um"])
-                return
+                    moves["z_move"] = self.set_z(pos["z_um"])
+                return moves
         raise KeyError(f"Position '{label}' not found.")
 
     def remove_position(self, label: str) -> None:

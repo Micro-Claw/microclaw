@@ -146,8 +146,10 @@ replacement for it.
   **An emitted step must not be stricter than the tool it reproduces.** 63a's
   first round routed the emitted centring move through `settle_stage_move`, so
   the standalone script would have raised `StageMoveError` where the live tool —
-  which only `wait_for_device`s and *reports* the residual — carried on. XY has
-  no arrival contract; design/56 reached the single-axis moves and not this one.
+  which only `wait_for_device`s and *reports* the residual — carried on. XY had
+  no arrival contract then; **block 64d (design/68, merged 2026-08-31) gave it
+  one**, per axis, and moved the emitted centring step to `settle_xy_move` at
+  the same time as the tool — which is the shape 63a's rejection was asking for.
   **A new capability is not finished until it can appear in an exported
   script** — that is the lesson all three gates taught.
 
@@ -445,6 +447,19 @@ input, ask which fixtures produce that shape, and write one that does.
   (merged 2026-08-19), and `hooks.py`'s focus-recovery jog, the tile path's
   per-position Z and `_emit_go_to_position` still move with a bare
   `core.set_position`. Before adding a Z move, check which of these it is.
+  **XY was the same story one axis-pair over, and block 64d (design/68, merged
+  2026-08-31) closed it**: `settle_xy_move` gates each axis on a band derived
+  from *its own* displacement, because a 200 µm X move alongside a held Y must
+  not hand Y a 20 µm band — which is exactly what a `hypot` gate over the pair
+  does. Three sites took it (`move_stage_xy`, `MicroscopeController.set_xy`, the
+  tile path's per-position XY); hook typed actions have no XY route. Measured on
+  M2: an ordinary 20 µm move settled in **0.984 s**, and `measured_um`
+  `[55.7, 225.6]` was not `requested_um` `[55.5, 225.7]` — the whole point.
+  **A disconnected axis refuses before dispatch**: the pre-read raises, and the
+  refusal carries `start_um: null`, `requested_um: null` for a relative move
+  (never a fabricated coordinate), both bands at the floor and
+  `arrival_unverifiable: true`. `start_um: null` is the *correct* report there,
+  not a defect — a scorer that faults it is wrong about the hardware.
   On the Nikon a successful move reported
   `last_device_status: "busy"` after 0.89 s and ~18 polls — the loop out-waited a
   device that was still moving, which is exactly the point. The defect this

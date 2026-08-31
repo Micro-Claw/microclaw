@@ -320,6 +320,131 @@ class TestMoveStageZ:
 
 
 class TestMoveStageXY:
+    @pytest.mark.parametrize("late_axis", ["x", "y"])
+    def test_not_busy_stage_arriving_on_a_later_poll_succeeds(
+        self, late_axis, unconstrained_guard
+    ):
+        from itertools import chain, repeat
+        from microclaw import controller
+
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        # The late axis must still be out of band AFTER the stability window
+        # could first have been satisfied, or this test cannot fail: a loop that
+        # ignored the band entirely and merely collected
+        # STAGE_MOVE_REQUIRED_SAMPLES readings would return the same value.
+        # Verified by mutation -- with an arrival on the third poll, deleting
+        # the band check outright leaves this test green.
+        late = chain([0.0, 50.0, 62.0, 71.0, 78.0, 84.0, 89.0], repeat(99.0))
+        immediate = chain([0.0], repeat(19.0))
+        if late_axis == "x":
+            core.get_x_position.side_effect = lambda: next(late)
+            core.get_y_position.side_effect = lambda: next(immediate)
+        else:
+            core.get_x_position.side_effect = lambda: next(immediate)
+            core.get_y_position.side_effect = lambda: next(late)
+        ctrl = MagicMock(core=core)
+
+        target = (100.0, 20.0) if late_axis == "x" else (20.0, 100.0)
+        result = move_stage_xy(ctrl, unconstrained_guard, *target)
+
+        assert result["measured_um"] == (
+            [99.0, 19.0] if late_axis == "x" else [19.0, 99.0]
+        )
+        late_reader = core.get_x_position if late_axis == "x" else core.get_y_position
+        assert late_reader.call_count > controller.STAGE_MOVE_REQUIRED_SAMPLES
+        assert core.device_busy.call_count >= controller.STAGE_MOVE_REQUIRED_SAMPLES
+
+    def test_idle_short_of_target_is_measured_and_refused(self, unconstrained_guard,
+                                                          monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        core.get_x_position.side_effect = [0.0, 80.0]
+        core.get_y_position.side_effect = [0.0, 0.0]
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+
+        with pytest.raises(controller.XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 100.0, 0.0)
+
+        assert core.device_busy.call_count == 1
+        assert core.get_x_position.call_count == 2
+        assert caught.value.result["measured_um"] == [80.0, 0.0]
+        assert caught.value.result["requested_um"] == [100.0, 0.0]
+
+    def test_large_x_move_does_not_expand_held_y_band(self, unconstrained_guard,
+                                                      monkeypatch):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        core.get_x_position.side_effect = [0.0, 200.0]
+        core.get_y_position.side_effect = [0.0, 4.0]
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+        monkeypatch.setattr(controller, "STAGE_MOVE_REQUIRED_SAMPLES", 1)
+        monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0)
+
+        with pytest.raises(controller.XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 200.0, 0.0)
+
+        assert caught.value.axes == ["y"]
+        assert caught.value.result["x_tolerance_um"] == 20.0
+        assert caught.value.result["y_tolerance_um"] == 2.0
+
+    def test_one_stationary_axis_is_named_even_when_other_arrives(
+        self, unconstrained_guard, monkeypatch
+    ):
+        from microclaw import controller
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.device_busy.return_value = False
+        core.get_x_position.side_effect = [0.0, 20.0]
+        core.get_y_position.side_effect = [0.0, 0.0]
+        ctrl = MagicMock(core=core)
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+
+        with pytest.raises(controller.XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 20.0, 20.0)
+
+        assert caught.value.axes == ["y"]
+        assert "Y started 0.0 um" in str(caught.value)
+
+    def test_relative_down_link_is_typed_and_never_dispatches(
+        self, unconstrained_guard
+    ):
+        from microclaw.controller import XYStageMoveError
+        core = MagicMock()
+        core.get_xy_stage_device.return_value = "XY"
+        core.get_x_position.side_effect = RuntimeError("link down")
+        core.get_y_position.side_effect = RuntimeError("link down")
+        core.device_busy.side_effect = RuntimeError("link down")
+        ctrl = MagicMock(core=core)
+
+        with pytest.raises(XYStageMoveError) as caught:
+            move_stage_xy(ctrl, unconstrained_guard, 5.0, 6.0, absolute=False)
+
+        assert caught.value.result["start_um"] is None
+        assert caught.value.result["requested_um"] is None
+        assert caught.value.result["measured_um"] is None
+        core.set_relative_xy_position.assert_not_called()
+
+    def test_configured_xy_bands_are_independent_and_claim_accuracy(
+        self, mock_ctrl
+    ):
+        guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(
+            x_min=-100, x_max=100, y_min=-100, y_max=100,
+            x_move_tolerance_um=0.25, y_move_tolerance_um=1.75,
+        )))
+        result = move_stage_xy(mock_ctrl, guard, 10.0, 10.0)
+        assert result["x_tolerance_um"] == 0.25
+        assert result["y_tolerance_um"] == 1.75
+        assert result["x_band_source"] == result["y_band_source"] == "configured"
+        assert result["verification_kind"] == "configured_accuracy"
+
     def test_in_range(self, mock_ctrl, default_guard):
         move_stage_xy(mock_ctrl, default_guard, x_um=100.0, y_um=-50.0)
         mock_ctrl.core.set_xy_position.assert_called_once_with(100.0, -50.0)
@@ -349,7 +474,7 @@ class TestMoveStageXY:
         assert result["y_um"] == 0.0
 
     def test_get_xy_position_reports_bounds_without_moving(self, mock_ctrl):
-        mock_ctrl.core.get_y_position.return_value = 12.5
+        mock_ctrl.core.xy_position.update(y=12.5)
         guard = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=10.0)))
         result = get_xy_position(mock_ctrl, guard)
@@ -360,11 +485,103 @@ class TestMoveStageXY:
 
     def test_settling_error_surfaced(self, mock_ctrl, unconstrained_guard):
         # amr_test carried a 1.1 µm unrequested X excursion nothing surfaced.
-        mock_ctrl.core.get_x_position.return_value = 101.1
-        mock_ctrl.core.get_y_position.return_value = 199.9
+        # The DEVICE chooses the landing, not the caller: this is a stage that
+        # lands 1.1 µm past its X target and 0.1 µm short in Y, both inside the
+        # response floor, so the move succeeds and still reports the excursion.
+        mock_ctrl.core.set_xy_position.side_effect = (
+            lambda x, y: mock_ctrl.core.xy_position.update(x=x + 1.1, y=y - 0.1))
         result = move_stage_xy(mock_ctrl, unconstrained_guard, x_um=100.0, y_um=200.0)
         assert result["achieved_um"] == [101.1, 199.9]
         assert result["error_um"] == [pytest.approx(1.1), pytest.approx(-0.1)]
+        assert result["within_tolerance"] is True
+        assert result["x_arrival_residual_um"] == pytest.approx(1.1)
+        assert result["y_arrival_residual_um"] == pytest.approx(0.1)
+
+
+def test_center_feature_accepts_and_reports_sub_band_correction(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    affine = types.SimpleNamespace(
+        a=1.0, b=0.0, c=0.0, d=1.0,
+        px_to_um=lambda x, y: (float(x), float(y)),
+    )
+    monkeypatch.setattr(tools, "_resolve_current_affine", lambda _ctrl: (affine, {}))
+    readings = iter([
+        {"brightest_feature_offset_px": [1.0, 0.0]},
+        {"brightest_feature_offset_px": [0.0, 0.0]},
+    ])
+    monkeypatch.setattr(tools, "find_features", lambda *_args, **_kwargs: next(readings))
+
+    result = tools.center_feature(
+        mock_ctrl, unconstrained_guard, max_iter=2, tol_px=0.1
+    )
+
+    assert result["centered"] is True
+    assert result["arrival_unverifiable_corrections"] == [0]
+    mock_ctrl.core.set_relative_xy_position.assert_called_once_with(1.0, 0.0)
+
+
+@pytest.mark.parametrize("caller", [
+    "move_stage_xy", "calibrate_stage_to_camera", "center_feature",
+    "go_to_position", "run_multiposition_acquisition", "run_tile_acquisition",
+])
+def test_xy_move_failure_reaches_execute_tool_without_a_followup_move(
+    caller, mock_ctrl, unconstrained_guard, monkeypatch, tmp_path
+):
+    from microclaw.controller import XYStageMoveError
+
+    failure = XYStageMoveError({
+        "start_um": [0.0, 0.0], "requested_um": [20.0, 20.0],
+        "measured_um": [0.0, 0.0], "x_tolerance_um": 2.0,
+        "y_tolerance_um": 2.0, "x_band_source": "floor",
+        "y_band_source": "floor", "elapsed_s": 0.0,
+        "last_device_status": "idle",
+    }, ["x", "y"])
+    moves = MagicMock(side_effect=failure)
+    inputs = {}
+
+    if caller == "move_stage_xy":
+        from microclaw import controller
+        moves = mock_ctrl.core.set_xy_position = MagicMock()
+        monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.0)
+        inputs = {"x_um": 20.0, "y_um": 20.0}
+    elif caller == "calibrate_stage_to_camera":
+        monkeypatch.setattr(tools, "move_stage_xy", moves)
+        monkeypatch.setattr(tools, "snap_to_numpy", lambda _ctrl: np.ones((8, 8)))
+        inputs = {"step_um": 20.0, "pixel_size_hint_um": 1.0}
+    elif caller == "center_feature":
+        affine = types.SimpleNamespace(
+            a=1.0, b=0.0, c=0.0, d=1.0, px_to_um=lambda x, y: (x, y)
+        )
+        monkeypatch.setattr(tools, "_resolve_current_affine", lambda _ctrl: (affine, {}))
+        monkeypatch.setattr(tools, "find_features", lambda *_args, **_kwargs: {
+            "brightest_feature_offset_px": [10.0, 0.0]
+        })
+        monkeypatch.setattr(tools, "move_stage_xy", moves)
+    elif caller == "go_to_position":
+        mock_ctrl.go_to_position = moves
+        mock_ctrl.inspect_current_position_list.return_value = tools.PositionProjection(
+            [{"name": "p", "x_um": 20.0, "y_um": 20.0}], [], []
+        )
+        inputs = {"name": "p"}
+    else:
+        mock_ctrl.core.set_xy_position = moves
+        inputs = {
+            "protocol": "snap", "positions": [
+                {"name": "p1", "x_um": 20.0, "y_um": 20.0},
+                {"name": "p2", "x_um": 30.0, "y_um": 30.0},
+            ],
+        }
+        if caller == "run_tile_acquisition":
+            inputs = {"protocol": "snap", "rows": 1, "cols": 2,
+                      "step_um": 10.0, "return_to_center": False}
+
+    payload = json.loads(tools.execute_tool(
+        caller, inputs, mock_ctrl, unconstrained_guard
+    ))
+
+    assert payload["error"].startswith("XYStageMoveError:")
+    assert moves.call_count == 1
 
 
 class TestCalibrateStageToCamera:
@@ -869,7 +1086,7 @@ class TestGetSystemState:
     def test_reports_xy_out_of_bounds_with_value_and_limit_without_moving(
         self, mock_ctrl
     ):
-        mock_ctrl.core.get_y_position.return_value = 12.5
+        mock_ctrl.core.xy_position.update(y=12.5)
         guard = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=10.0,
                                    z_min=0, z_max=100)))
@@ -881,7 +1098,7 @@ class TestGetSystemState:
         mock_ctrl.core.set_position.assert_not_called()
 
     def test_in_bounds_omits_but_unset_limit_reports_out_of_bounds(self, mock_ctrl):
-        mock_ctrl.core.get_y_position.return_value = 12.5
+        mock_ctrl.core.xy_position.update(y=12.5)
         in_bounds = SafetyGuard(SafetyConstraints(
             stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=20.0,
                                    z_min=0, z_max=100)))
@@ -2328,8 +2545,9 @@ class TestTileAcquisitionMarkPositions:
 
     @pytest.fixture
     def centered_ctrl(self, mock_ctrl):
-        mock_ctrl.core.get_x_position.return_value = 256.0
-        mock_ctrl.core.get_y_position.return_value = 256.0
+        # Park the stage; the fake moves when it is written to, so pinning the
+        # reads instead would model a stage that never responds.
+        mock_ctrl.core.xy_position.update(x=256.0, y=256.0)
         return mock_ctrl
 
     def test_snap_grid_marks_positions_without_save_dir(self, centered_ctrl, unconstrained_guard):
@@ -2536,8 +2754,7 @@ class TestHookedGridAcquisition:
 
     @pytest.fixture
     def centered_ctrl(self, mock_ctrl):
-        mock_ctrl.core.get_x_position.return_value = 0.0
-        mock_ctrl.core.get_y_position.return_value = 0.0
+        mock_ctrl.core.xy_position.update(x=0.0, y=0.0)
         return mock_ctrl
 
     @pytest.fixture
@@ -4783,8 +5000,7 @@ class TestRunAOfflineTools:
 
 class TestMarkPosition:
     def test_saves_position(self, mock_ctrl, unconstrained_guard):
-        mock_ctrl.core.get_x_position.return_value = 100.0
-        mock_ctrl.core.get_y_position.return_value = 200.0
+        mock_ctrl.core.xy_position.update(x=100.0, y=200.0)
         mock_ctrl.core.get_position.return_value = 50.0
         result = mark_position(mock_ctrl, unconstrained_guard, name="test_pos")
         mock_ctrl.add_position.assert_called_once_with("test_pos", 100.0, 200.0, 50.0)
@@ -4794,15 +5010,13 @@ class TestMarkPosition:
 
     def test_xy_safety_check(self, mock_ctrl):
         guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_max=100.0)))
-        mock_ctrl.core.get_x_position.return_value = 200.0
-        mock_ctrl.core.get_y_position.return_value = 0.0
+        mock_ctrl.core.xy_position.update(x=200.0, y=0.0)
         mock_ctrl.core.get_position.return_value = 50.0
         with pytest.raises(SafetyViolation):
             mark_position(mock_ctrl, guard, name="out_of_bounds")
 
     def test_without_z(self, mock_ctrl, unconstrained_guard):
-        mock_ctrl.core.get_x_position.return_value = 10.0
-        mock_ctrl.core.get_y_position.return_value = 20.0
+        mock_ctrl.core.xy_position.update(x=10.0, y=20.0)
         result = mark_position(mock_ctrl, unconstrained_guard, name="no_z", include_z=False)
         assert "z_um" not in result
         mock_ctrl.add_position.assert_called_once_with("no_z", 10.0, 20.0, None)
