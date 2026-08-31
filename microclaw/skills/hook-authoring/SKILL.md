@@ -147,7 +147,11 @@ or DiscardFrame.
 Runner support for control-flow proposals is:
 
   runner                              ContinueAcquisition   StopAcquisition / AcquireAt
-  run_adaptive_survey                 dispatch next tile    supported
+  adaptive time series:               dispatch next frame   StopAcquisition supported;
+    run_timelapse(n_frames=None,                              AcquireAt refused
+      max_frames=..., hook_strategy=...)
+  spatial survey:                     dispatch next tile    supported
+    run_adaptive_survey
   fixed-plan hooked acquisitions      accepted noop         refused
 
 A fixed-plan runner already continues through every committed event, so
@@ -155,6 +159,14 @@ ContinueAcquisition changes nothing and is recorded as an accepted noop. Proposa
 that would change behaviour but are unavailable remain refused. The adaptive
 runner guard-checks and reservation-checks every proposal and writes every
 accept/refuse decision to the log.
+
+For an adaptive time series, the saved hook's pinned registry source must
+reference `ContinueAcquisition` or `StopAcquisition`; otherwise hook resolution
+refuses before acquisition. That source check cheaply rejects the legacy shape
+but does not prove the hook will return a decision. At runtime every image must
+produce exactly one routing decision. A missing, duplicate, malformed, late, or
+over-budget decision fails closed at that image; a missing decision on the first
+image does not idle until `max_idle_s`.
 
 Saved hooks cannot access hardware directly. For predetermined
 ``run_timelapse`` and ``run_zstack`` acquisitions, every named-stage action
@@ -385,17 +397,16 @@ The levers that DO work:
   - Keep a frame out of the dataset: return None from image_process_fn. That
     discards the pixels and nothing else — the hardware activity it came from
     already happened, and future events are unaffected.
-  - Decide per frame whether the next exposure happens at all: the ADAPTIVE
-    survey runner, exposed as the run_adaptive_survey tool.
-    Only the first tile is pre-dispatched; the hook scores each frame as it
-    arrives and either candidates.put()s the next tile or calls
-    progress.done_early(). An event that was never submitted needs no skip
-    mechanism — nothing crosses the bridge, so stopping is simply NOT
-    SUBMITTING. This is the pattern for stop-on-condition ("stop bleaching
-    once N tiles match") and refine-where-interesting. It serializes the
-    acquisition (each tile waits for the previous frame to be scored), so use
-    it only when acquisition behavior genuinely branches on the images; a
-    fixed survey that just reports what it sees keeps the batched runners.
+  - Decide per frame whether the next exposure happens at all: use an adaptive
+    runner. For one field over time, call `run_timelapse` with `n_frames=None`,
+    `max_frames=<dose cap>`, and a saved `hook_strategy`; only time 0 is seeded,
+    and each `ContinueAcquisition` publishes one successor. For a planned
+    position list, use `run_adaptive_survey`; only its first tile is seeded.
+    An event that was never submitted needs no skip mechanism — nothing crosses
+    the bridge, so stopping is simply NOT SUBMITTING. These routes serialize
+    acquisition one image at a time, so use them only when acquisition behavior
+    genuinely branches on the pixels; a fixed run that merely reports what it
+    sees keeps the batched runner.
 
 ## Event dict structure
 
@@ -495,8 +506,11 @@ there is no hard deadline, memory cap, network isolation, or native-crash recove
                                            run_adaptive_survey autofocus_budget
   Redirect stage before hardware moves   pre_hardware_hook_fn (native pycro-manager;
                                            not yet wired by Microclaw)
-  Stop acquiring based on the images     run_adaptive_survey + adaptive hook
-    (stop-on-condition, refine)            (stop = don't submit; NEVER return None)
+  Stop a single-field time series        run_timelapse(n_frames=None,
+    based on each image                     max_frames=...) + adaptive hook
+                                            (stop = don't submit; NEVER return None)
+  Stop/refine a spatial survey           run_adaptive_survey + adaptive hook
+    based on each tile                      (stop = don't submit; NEVER return None)
   Abort everything on a safety limit     raise from any hook (loud, surfaces)
   Generate events dynamically at runtime event_generation_hook_fn (native;
                                            not yet wired by Microclaw)

@@ -302,11 +302,32 @@ last accepted value. With `interval_s=0` and more than one frame, images are sti
 analyzed, but writes land asynchronously with respect to exposures rather than between
 chosen frames.
 
-Image-driven `SetDeviceProperty` and `MoveNamedStage` are refused under a fixed plan;
-those actions must be in a predeclared `hook_action_plan`. An image-driven conditional
-stop is also refused. `run_adaptive_survey` is not a substitute for single-field
-STORM: it walks a planned position list. Do not offer to write an adaptive STORM hook
-until a single-field adaptive timelapse route exists.
+Image-driven `SetDeviceProperty` and `MoveNamedStage` are refused under a fixed
+`run_timelapse`; those actions must be in a predeclared `hook_action_plan`, and an
+image-driven conditional stop is likewise refused on that fixed route.
+`run_adaptive_survey` is not a substitute for single-field STORM: it walks a planned
+position list.
+
+For a single-field adaptive time series, use the separate `max_frames` route. The
+saved hook returns exactly one `ContinueAcquisition` or `StopAcquisition` decision
+for every image, and the parent publishes at most one successor frame. For example,
+after reviewing and saving `density_stop_hook`:
+
+```python
+run_timelapse(
+    hook_strategy="density_stop_hook",
+    n_frames=None,
+    max_frames=80_000,
+    interval_s=0,
+    save_dir="storm",
+    exposure_ms=100,
+)
+```
+
+`max_frames` is the authorized dose cap; the hook may stop earlier but cannot widen
+it. Use this route for image-driven `SetDeviceProperty` or `MoveNamedStage` proposals
+inside their explicit envelopes and for a conditional stop. Do not combine it with
+`hook_action_plan`, whose per-frame actions require a pre-built fixed event list.
 
 ---
 

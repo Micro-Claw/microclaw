@@ -95,7 +95,10 @@ after time 3. A run reaching eight frames failed the early-stop mechanism.
 After the export exists, make the engine-shape observation copy. The first
 command only inserts a recorder immediately around the emitted pre-hardware
 callback and compiles the result; it does not connect or acquire. The second
-command deliberately reproduces this same four-frame, 50 ms run once on M2:
+command deliberately reproduces this same four-frame, 50 ms run once on M2.
+**This is also the export-runs limb:** it proves the emitted program works
+against the real engine, not merely that it compiles. A failure here is an
+export defect first, even if callback-shape evidence is consequently absent.
 
 ```powershell
 uv run python design/65-block65c-gate.py --instrument-export gate65c_density_stop3_export.py --instrumented-out gate65c_density_stop3_instrumented.py
@@ -190,7 +193,8 @@ Record all of:
 - bounded `median_le_s`, `p95_le_s` (these are histogram upper bounds, not exact
   quantiles);
 - every `histogram` bin and count;
-- the largest gap attributable to the hook/run.
+- `max_s`, which on this no-hardware-action route is the largest measured gap
+  including the hook's software contribution.
 
 Label the result **n=1 run from M2**. Do not call it a microscope property and
 do not set a teardown allowance in this session.

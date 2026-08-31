@@ -32,6 +32,17 @@ TREE_ROOT = Path(os.environ.get(
 )).resolve()
 sys.path.insert(0, str(TREE_ROOT))
 
+import microclaw as _imported_microclaw
+
+try:
+    Path(_imported_microclaw.__file__).resolve().relative_to(TREE_ROOT)
+except (AttributeError, ValueError) as error:
+    raise RuntimeError(
+        "Block 65c gate imported microclaw from the wrong tree: "
+        f"requested {TREE_ROOT}, imported "
+        f"{getattr(_imported_microclaw, '__file__', None)}. Refusing evidence."
+    ) from error
+
 RESULTS: list[dict] = []
 
 

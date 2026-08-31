@@ -155,7 +155,7 @@ def test_htsmlm_skill_preserves_specialized_mapping_and_dose_rules():
     assert "keep illumination disabled and report the disagreement" in flat
 
 
-def test_smlm_skill_does_not_promise_unavailable_adaptive_timelapse_hooks():
+def test_smlm_skill_distinguishes_fixed_and_adaptive_timelapse_routes():
     body = skills.load_skill_text("smlm")
     density_section = body.split("## Density monitoring", 1)[1].split("\n---", 1)[0]
     density_flat = " ".join(density_section.split())
@@ -167,9 +167,17 @@ def test_smlm_skill_does_not_promise_unavailable_adaptive_timelapse_hooks():
     assert "image_process_fn" not in density_section
     assert "signals end-of-acquisition" not in density_section
     assert "offer to write a hook" not in density_section
-    assert "conditional stop is also refused" in density_flat
+    assert "conditional stop is likewise refused on that fixed route" in density_flat
     assert "run_adaptive_survey" in density_section
-    assert "planned position list" in density_section
+    assert "planned position list" in density_flat
+    assert "single-field adaptive time series" in density_flat
+    assert 'hook_strategy="density_stop_hook"' in density_section
+    assert "n_frames=None" in density_section
+    assert "max_frames=80_000" in density_section
+    assert "exactly one `ContinueAcquisition` or `StopAcquisition`" in density_flat
+    assert "authorized dose cap" in density_flat
+    assert "cannot widen" in density_flat
+    assert "Do not combine it with" in density_flat
     assert "spans more than one frame" in interval_section
     assert "slows acquisition without reducing background" in interval_section
     assert "the operator may pulse" in dstorm_section
