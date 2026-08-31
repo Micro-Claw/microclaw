@@ -77,6 +77,13 @@ What each outcome means, so you do not have to judge it:
 | PASS | the blocked axis was refused by name, with a typed error carrying `start_um`. This is what we want. |
 | FAIL, "raised `<something>`, not a typed XYStageMoveError" | a real product defect — exactly what block 66 found. Send the log. |
 | FAIL, "a blocked axis reported a successful arrival" | either the axis was not really blocked, or the contract is wrong. Say which you think it was. |
+| NOT EXERCISED | the limb could not reach the product. Never a pass, and never a product defect either. |
+
+**Disconnecting the Core XY device entirely is the best version of this test,
+not a degenerate one.** A link that is down fails *every* bridge call, including
+the position read — so the refusal legitimately carries `start_um: null`, and
+the limb says so rather than faulting it. Blocking a readable axis is the other
+valid shape and is scored differently; both PASS.
 
 Then **restore the cable / power / lock** and confirm the stage moves again:
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 import tempfile
 import time
@@ -285,12 +286,33 @@ def main() -> int:
               if ok else "")
         return 0 if ok else 1
     if args.untyped_failure:
-        ok = require("C_non_response_control", "FAIL",
-                     "A bare bridge exception carries no start_um, no band and "
-                     "no axis. The control limb must call that a failure, not "
-                     "crash and not pass.")
-        print("\nSELFTEST PASS: the control limb rejects an untyped failure."
-              if ok else "")
+        # This mode used to assert only FAIL, and passed for the WRONG reason:
+        # the limb died in its own pre-read and never called move_stage_xy at
+        # all. M2, 2026-08-31, produced exactly that and it looked like a
+        # product defect. The assertion now requires the limb to have REACHED
+        # the product -- the evidence file only exists if it did -- so a limb
+        # that dies in its instrumentation can no longer satisfy this mode.
+        evidence = Path(sys.argv[sys.argv.index("--out") + 1]) / "non_response_control.json"
+        got = by_limb.get("C_non_response_control", {})
+        if not evidence.exists():
+            print(f"\nSELFTEST FAIL: {evidence.name} was never written, so limb C "
+                  "never called move_stage_xy. Whatever it reported, it did not "
+                  "run its mechanism -- that is NOT EXERCISED, never FAIL, and "
+                  "never a pass.")
+            return 1
+        captured = json.loads(evidence.read_text(encoding="utf-8"))
+        if captured.get("exception_class") != "XYStageMoveError":
+            print(f"\nSELFTEST FAIL: a down link produced "
+                  f"{captured.get('exception_class')}, not a typed "
+                  "XYStageMoveError carrying the move contract.")
+            return 1
+        ok = require("C_non_response_control", "PASS",
+                     "A link that fails every bridge call is the canonical "
+                     "non-response: the product must still refuse by type.")
+        if ok:
+            print("\nSELFTEST PASS: a down link reached the product and was "
+                  f"refused by type; start_um={captured['result'].get('start_um')} "
+                  "(legitimately null -- the start is genuinely unknown).")
         return 0 if ok else 1
     if args.blocked_axis:
         ok = require("C_non_response_control", "PASS",

@@ -54,6 +54,20 @@ def read_xy(core):
     return float(core.get_x_position()), float(core.get_y_position())
 
 
+def read_xy_or_none(core):
+    """The entry position, or None when the link cannot answer.
+
+    A disconnected axis fails EVERY bridge call, not only the write — block 66
+    measured that on M2 and design/68's limb C then reproduced it by dying in
+    its own instrumentation. A probe for non-response must not require a
+    readable position to run: not being able to read IS the condition.
+    """
+    try:
+        return read_xy(core)
+    except Exception:
+        return None
+
+
 @limb("0_xy_stage_responds", "the XY stage moves and reports it, measured raw")
 def limb_stage_responds(ctrl, guard, out):
     """Precondition, and deliberately NOT routed through move_stage_xy.
@@ -73,7 +87,18 @@ def limb_stage_responds(ctrl, guard, out):
     global STAGE_DEAD
     step_um = float(getattr(limb_stage_responds, "step_um", 20.0))
     core = ctrl.core
-    entry = read_xy(core)
+    entry = read_xy_or_none(core)
+    if entry is None:
+        # Reached deliberately during the control phase, where the operator has
+        # just disconnected the axis. A raw Java traceback here reads as a
+        # product failure; it is a statement about the cable.
+        STAGE_DEAD = "the XY stage could not be read at all"
+        return "NOT EXERCISED", (
+            "core.get_x_position() raised, so this axis is disconnected or its "
+            "controller is down. That is the expected state DURING the control "
+            "phase (limb C) and a hardware fault at any other time — either way "
+            "this limb measured nothing about the code."
+        )
     guard.check_xy(entry[0] + step_um, entry[1])
 
     core.set_relative_xy_position(step_um, 0.0)
@@ -224,8 +249,16 @@ def limb_non_response(ctrl, guard, out):
     from microclaw.tools import move_stage_xy
 
     step_um = float(getattr(limb_non_response, "step_um", 50.0))
-    entry = read_xy(ctrl.core)
-    captured: dict = {"entry_um": list(entry), "commanded_step_um": step_um}
+    # NOT read_xy: a disconnected axis fails this read too, and an earlier
+    # version put it outside the try below. On M2, 2026-08-31, that is exactly
+    # what happened — the operator disconnected the Core XY device, every bridge
+    # call began raising, and this limb died in its own setup before
+    # move_stage_xy was ever called. It reported FAIL with a raw Java traceback,
+    # which reads as a product defect and is a statement about the gate.
+    entry = read_xy_or_none(ctrl.core)
+    captured: dict = {"entry_um": None if entry is None else list(entry),
+                      "entry_readable": entry is not None,
+                      "commanded_step_um": step_um}
     # BOTH axes, and this is load-bearing. An earlier version commanded X only;
     # against a fake with Y blocked it reported "a blocked axis arrived", which
     # is a confidently wrong verdict, because a Y commanded to move zero
@@ -264,17 +297,26 @@ def limb_non_response(ctrl, guard, out):
         return status
 
     result = captured["result"]
-    if result.get("start_um") is None:
+    # `start_um: None` is the CORRECT report when the link is down: the start
+    # genuinely is unknown, which makes the band the floor and response
+    # unverifiable (design/66, read_stage_start_position). It is only a defect
+    # when the axis was readable and the contract dropped it anyway — which is
+    # why the two cases are scored differently rather than together.
+    if result.get("start_um") is None and captured["entry_readable"]:
         return "FAIL", (
-            "XYStageMoveError was raised but carries start_um: null, so the "
-            "refusal cannot say what the axis was doing before the command. On a "
-            "blocked (not disconnected) axis the start IS readable; a null here "
-            "means the read was skipped or swallowed."
+            "XYStageMoveError was raised but carries start_um: null, while this "
+            "probe could read the position moments earlier. On a blocked (not "
+            "disconnected) axis the start IS readable; a null here means the "
+            "contract skipped or swallowed the read."
         )
     if not captured.get("axes"):
         return "FAIL", "the refusal does not name which axis failed"
+    kind = ("disconnected — the position could not be read either, so "
+            "start_um is legitimately null"
+            if not captured["entry_readable"] else
+            "blocked but readable")
     return "PASS", (
-        f"blocked axis refused: {captured['exception_class']} naming "
+        f"{kind}; refused: {captured['exception_class']} naming "
         f"{captured['axes']}, start_um={result['start_um']}, "
         f"measured_um={result['measured_um']}, bands "
         f"x={result['x_tolerance_um']}/y={result['y_tolerance_um']}, "
@@ -459,6 +501,13 @@ def main() -> int:
                 traceback.format_exc(), encoding="utf-8")
         record(name, mechanism, status, detail)
 
+    # Per-phase, because the control run reuses --out and RESULTS is per
+    # process: the M2 run of 2026-08-31 overwrote run 1's 5/6 with the control
+    # phase's 2 limbs, and run 1's numbers survived only in the operator's log.
+    phase = "control" if args.control else (
+        "limbs-" + "-".join(sorted(selected)) if selected else "full")
+    (out / f"gate68_results_{phase}.json").write_text(
+        json.dumps(RESULTS, indent=2), encoding="utf-8")
     (out / "gate68_results.json").write_text(
         json.dumps(RESULTS, indent=2), encoding="utf-8")
     if selected:
