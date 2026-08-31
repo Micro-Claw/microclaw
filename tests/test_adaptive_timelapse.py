@@ -111,17 +111,32 @@ def test_4_stop_closes_without_publishing_or_waiting():
     _frame(adapter, 0)
     assert candidates.empty()
     assert progress.survey_complete()
+    assert progress.stop_reason == "hook_stop"
 
 
 def test_5_cap_closes_handoff_even_when_hook_always_continues():
     from microclaw.hook_decisions import ContinueAcquisition
+    from microclaw.tools import _survey_event_stream
 
-    adapter, candidates, _ = _configured([(ContinueAcquisition(),)] * 5, cap=2)
+    adapter, candidates, progress = _configured([(ContinueAcquisition(),)] * 5, cap=2)
+    acq = SimpleNamespace(
+        _event_queue=queue.Queue(),
+        _acq=SimpleNamespace(is_finished=lambda: False),
+    )
+    stream = _survey_event_stream(
+        [{"axes": {"time": 0}}], candidates, progress, .1, adapter,
+        adaptive=True, max_events=2,
+    )(acq)
+    assert next(stream)["axes"] == {"time": 0}
     _frame(adapter, 0)
-    assert candidates.get_nowait()["axes"] == {"time": 1}
-    adapter.close_adaptive_handoff()
+    assert next(stream)["axes"] == {"time": 1}
+    assert progress.stop_reason == "cap_reached"
     _frame(adapter, 1)
     assert candidates.empty()
+    assert adapter._log[-1]["reason"] == (
+        "outside committed reservation: all planned frame slots are already dispatched"
+    )
+    stream.close()
 
 
 @pytest.mark.parametrize("proposal", [
@@ -141,11 +156,48 @@ def test_6_missing_and_malformed_decisions_fail_closed_on_first_image(proposal):
     _frame(adapter, 0)
     assert candidates.empty()
     assert progress.survey_complete()
+    assert progress.stop_reason == "routing_refusal"
     assert not any(row.get("event") == "stalled" for row in adapter._log)
 
 
+def test_6_late_decision_after_handoff_close_is_refused():
+    from microclaw.hook_decisions import ContinueAcquisition
+
+    adapter, candidates, _ = _configured([(ContinueAcquisition(),)])
+    adapter.close_adaptive_handoff()
+    _frame(adapter, 0)
+    assert candidates.empty()
+    assert adapter._log[-1]["decision"] == "refused"
+    assert adapter._log[-1]["reason"] == (
+        "adaptive handoff is closed after the final authorized event"
+    )
+
+
+def test_4_successor_guards_coordinates_it_actually_carries():
+    from microclaw.hook_decisions import ContinueAcquisition
+    from microclaw.tools import SurveyProgress
+
+    checked = []
+    adapter = _adapter([(ContinueAcquisition(),)])
+    candidates = queue.Queue()
+    adapter.configure_adaptive(
+        events=[{"axes": {"time": 0}}], candidates=candidates,
+        progress=SurveyProgress(2),
+        guard=SimpleNamespace(check_z=checked.append), max_events=2,
+        successor=lambda index: {"axes": {"time": index}, "z": 12.5},
+        require_routing_decision=True,
+    )
+    _frame(adapter, 0)
+    assert checked == [12.5]
+    assert candidates.get_nowait()["z"] == 12.5
+
+
 def test_7_adaptive_stream_structurally_submits_one_event_at_a_time():
-    """No interval_s=0 refusal: the candidate queue contains at most one event."""
+    """Parent dispatch publishes at most one candidate for each image decision.
+
+    Whether the engine can batch a singly submitted event is an M2 gate limb,
+    not something this fake settles.
+    """
     from microclaw.hook_decisions import ContinueAcquisition
 
     adapter, candidates, _ = _configured([(ContinueAcquisition(),)] * 3)
@@ -155,15 +207,31 @@ def test_7_adaptive_stream_structurally_submits_one_event_at_a_time():
         candidates.get_nowait()
 
 
-def test_9_successor_axes_are_dense_and_unique():
+def test_9_product_successor_preserves_seed_axis_set_and_dense_time(
+    monkeypatch, mock_ctrl, unconstrained_guard, tmp_path
+):
+    from microclaw import tools
     from microclaw.hook_decisions import ContinueAcquisition
 
-    adapter, candidates, _ = _configured([(ContinueAcquisition(),)] * 5, cap=5)
-    axes = [{"time": 0}]
-    for index in range(4):
-        _frame(adapter, index)
-        axes.append(candidates.get_nowait()["axes"])
-    assert axes == [{"time": i} for i in range(5)]
+    adapter = _adapter([(ContinueAcquisition(),)])
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: adapter)
+    captured = {}
+    monkeypatch.setattr(
+        tools, "_acquire_survey_with_detector",
+        lambda *a, **k: captured.update(k) or {"status": "captured"},
+    )
+    tools.run_timelapse(
+        mock_ctrl, unconstrained_guard, n_frames=None, max_frames=5,
+        interval_s=0, save_dir=str(tmp_path), hook_strategy="saved",
+        channel="DAPI",
+    )
+    seed = captured["adaptive_events"][0]
+    successor = captured["adaptive_successor"]
+    events = [seed] + [successor(i) for i in range(1, 5)]
+    axes = [event["axes"] for event in events]
+    assert all(set(axis) == set(axes[0]) == {"time", "channel"} for axis in axes)
+    assert [axis["channel"] for axis in axes] == ["DAPI"] * 5
+    assert [axis["time"] for axis in axes] == list(range(5))
     assert len({tuple(a.items()) for a in axes}) == 5
 
 
@@ -190,29 +258,76 @@ def test_13_cap_plan_and_fallback_runtime_are_separate(monkeypatch, mock_ctrl,
     from microclaw import tools
     from microclaw.hook_decisions import ContinueAcquisition
 
-    adapter = _adapter([(ContinueAcquisition(),)])
+    adapter = _adapter([(ContinueAcquisition(),)] * 5)
     monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: adapter)
-    captured = {}
+    mock_ctrl.core.get_image_width.return_value = 10
+    mock_ctrl.core.get_image_height.return_value = 20
+    mock_ctrl.core.get_bytes_per_pixel.return_value = 2
+    captured_plans, runtime_inputs, progress_events = [], [], []
 
-    def runner(*args, **kwargs):
-        captured.update(kwargs)
-        plan = kwargs["accounting_plan"]
-        return {"status": "ok", "frames_planned": plan.frames,
-                "frames_acquired": 0, "frames_exposed": 0}
+    class Reservation:
+        def __init__(self, plan):
+            self.plan, self.completed_frames, self.overrun_frames = plan, 0, 0
+            self.closed = 0
+        @property
+        def has_overrun(self): return self.overrun_frames > 0
+        def commit_frame(self):
+            if self.completed_frames >= self.plan.frames:
+                self.overrun_frames += 1
+                return False
+            self.completed_frames += 1
+            return True
+        def close(self): self.closed += 1
 
-    monkeypatch.setattr(tools, "_acquire_survey_with_detector", runner)
-    result = tools.run_timelapse(
-        mock_ctrl, unconstrained_guard, n_frames=None, max_frames=37,
-        interval_s=0, save_dir=str(tmp_path), hook_strategy="saved",
-        exposure_ms=5,
+    def authorize(_ctrl, _guard, plan):
+        captured_plans.append(plan)
+        return Reservation(plan)
+
+    class Acquisition:
+        _dataset_disk_location = "/data/adaptive"
+        _exception = None
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self._event_queue = queue.Queue()
+            self._acq = SimpleNamespace(is_finished=lambda: False)
+        def acquire(self, events):
+            for event in events:
+                callback = self.kwargs.get("pre_hardware_hook_fn")
+                if callback: callback(event)
+                self.kwargs["image_process_fn"](
+                    np.zeros((1, 1), dtype=np.uint16),
+                    {"Axes": dict(event["axes"])}, None,
+                )
+                self.kwargs["image_saved_fn"](event["axes"], None)
+        def __exit__(self, *args): pass
+
+    real_ceiling = tools._runtime_ceiling_s
+    monkeypatch.setattr(tools, "_authorize_acquisition", authorize)
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    monkeypatch.setattr(
+        tools, "_runtime_ceiling_s",
+        lambda plan: runtime_inputs.append(plan) or real_ceiling(plan),
     )
+    prior = getattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", None)
+    tools._ACQUISITION_EVENT_CONTEXT.sink = progress_events.append
+    try:
+        result = tools.run_timelapse(
+            mock_ctrl, unconstrained_guard, n_frames=None, max_frames=37,
+            interval_s=0, save_dir=str(tmp_path), hook_strategy="saved",
+            exposure_ms=5,
+        )
+    finally:
+        tools._ACQUISITION_EVENT_CONTEXT.sink = prior
     assert result["frames_planned"] == 37
-    assert captured["accounting_plan"].frames == 37
-    assert captured["accounting_plan"].illuminated_ms == 185
-    assert captured["runtime_plan"] is None
-    assert tools._runtime_ceiling_s(captured["runtime_plan"]) == (
-        tools.FALLBACK_RUNTIME_CEILING_S, True
-    )
+    assert result["frames_acquired"] == result["frames_exposed"] == 37
+    assert result["stop_reason"] == "cap_reached"
+    assert len(captured_plans) == 1
+    assert captured_plans[0].frames == 37
+    assert captured_plans[0].illuminated_ms == 185
+    assert captured_plans[0].estimated_bytes == 37 * 10 * 20 * 2
+    assert runtime_inputs == [None]
+    assert real_ceiling(runtime_inputs[0]) == (tools.FALLBACK_RUNTIME_CEILING_S, True)
+    assert progress_events[-1]["frames_planned"] == 37
 
 
 def test_decision_contract_preflight_uses_pinned_source_scan(tmp_path, monkeypatch):
@@ -229,6 +344,85 @@ def test_decision_contract_preflight_uses_pinned_source_scan(tmp_path, monkeypat
     )
     with pytest.raises(ValueError, match="pinned hook source"):
         manager.load_hook_class("logger", require_acquisition_decision=True)
+
+
+def test_adaptive_artifact_budget_refusal_matches_fixed_error_shape(
+    monkeypatch, mock_ctrl, unconstrained_guard, tmp_path
+):
+    from microclaw import tools
+    from microclaw.hook_decisions import ContinueAcquisition
+
+    adapter = _adapter([(ContinueAcquisition(),)])
+    adapter.can_emit_artifacts = True
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: adapter)
+    result = tools.run_timelapse(
+        mock_ctrl, unconstrained_guard, n_frames=None, max_frames=2,
+        interval_s=0, save_dir=str(tmp_path), hook_strategy="saved",
+    )
+    assert set(result) == {"error"}
+    assert "artifact_limits" in result["error"]
+
+
+def test_survey_result_does_not_gain_timelapse_accounting_or_cadence_keys(
+    monkeypatch, mock_ctrl, unconstrained_guard, tmp_path
+):
+    from microclaw import tools
+    from microclaw.hook_decisions import ContinueAcquisition
+
+    class Reservation:
+        has_overrun = False
+        overrun_frames = 0
+        completed_frames = 0
+        def __init__(self, plan): self.plan = plan
+        def close(self): pass
+
+    adapter = _adapter([(ContinueAcquisition(),)])
+    monkeypatch.setattr(tools, "_authorize_acquisition",
+                        lambda _c, _g, plan: Reservation(plan))
+    monkeypatch.setattr(tools, "_acquire_with_hooks",
+                        lambda *a, **k: "/data/survey")
+    result = tools._acquire_survey_with_detector(
+        mock_ctrl, unconstrained_guard,
+        [{"name": "p0", "x_um": 1.0, "y_um": 2.0}],
+        str(tmp_path), "survey", adapter, tools.SurveyProgress(1), queue.Queue(),
+        adaptive=True, num_time_points=1, time_interval_s=0,
+    )
+    assert not ({"frames_planned", "frames_acquired", "frames_exposed",
+                 "inter_frame_gap_summary"} & set(result))
+
+
+def test_fail_closed_first_image_is_an_error_result_with_routing_reason(
+    monkeypatch, mock_ctrl, unconstrained_guard, tmp_path
+):
+    from microclaw import tools
+
+    adapter = _adapter([()])
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: adapter)
+
+    class Reservation:
+        has_overrun = False
+        overrun_frames = 0
+        def __init__(self, plan): self.plan, self.completed_frames = plan, 0
+        def commit_frame(self): self.completed_frames += 1; return True
+        def close(self): pass
+
+    monkeypatch.setattr(tools, "_authorize_acquisition",
+                        lambda _c, _g, plan: Reservation(plan))
+    def acquire(_g, _d, _n, _events, hook, reservation, **kwargs):
+        hook.image_process_fn(
+            np.zeros((1, 1), dtype=np.uint16), {"Axes": {"time": 0}}, None
+        )
+        reservation.commit_frame()
+        return "/data/fail-closed"
+    monkeypatch.setattr(tools, "_acquire_with_hooks", acquire)
+    result = tools.run_timelapse(
+        mock_ctrl, unconstrained_guard, n_frames=None, max_frames=10,
+        interval_s=0, save_dir=str(tmp_path), hook_strategy="saved",
+    )
+    assert result["stop_reason"] == "routing_refusal"
+    assert result["status"] == "Adaptive acquisition failed closed."
+    assert "error" in result
+    assert result["frames_acquired"] == result["frames_exposed"] == 1
 
 
 def test_8_typed_acquisition_failure_reaches_the_tool_boundary(
@@ -344,7 +538,7 @@ def test_11_existing_export_routes_remain_distinct(tmp_path, monkeypatch):
     assert "def _successor(index):" not in fixed_hooked
 
 
-def test_measured_gap_distribution_reaches_progress_sink_and_result_hook(monkeypatch):
+def test_measured_gap_distribution_is_bounded_in_progress_and_caller_state(monkeypatch):
     from microclaw import tools
     from microclaw.acquisition import AcquisitionPlan
 
@@ -360,6 +554,7 @@ def test_measured_gap_distribution_reaches_progress_sink_and_result_hook(monkeyp
     monkeypatch.setattr(tools, "Acquisition", Acquisition)
     monkeypatch.setattr(tools, "_acquisition_monotonic", lambda: next(ticks))
     hook = SimpleNamespace()
+    cadence = tools._new_gap_summary()
     events = [{"axes": {"time": i}} for i in range(3)]
     plan = AcquisitionPlan(3, 1, 1, 3)
     received = []
@@ -369,10 +564,13 @@ def test_measured_gap_distribution_reaches_progress_sink_and_result_hook(monkeyp
         tools._acquire_with_hooks(
             SimpleNamespace(resolve_in_workspace=lambda p: p), "/data", "cadence",
             events, hook, ctrl=SimpleNamespace(core=SimpleNamespace()), plan=plan,
-            runtime_plan=plan,
+            runtime_plan=plan, cadence_summary=cadence,
         )
     finally:
         tools._ACQUISITION_EVENT_CONTEXT.sink = prior
-    assert len(hook._measured_inter_frame_gaps_s) == 2
-    assert received[-1]["inter_frame_gaps_s"] == hook._measured_inter_frame_gaps_s
-    assert received[-1]["largest_gap_s"] == max(hook._measured_inter_frame_gaps_s)
+    summary = received[-1]["inter_frame_gap_summary"]
+    assert summary == tools._gap_summary_payload(cadence)
+    assert summary["count"] == 2
+    assert set(summary) == {"count", "min_s", "median_s", "p95_s", "max_s", "histogram"}
+    assert len(summary["histogram"]) == len(tools._GAP_HISTOGRAM_UPPER_S)
+    assert not hasattr(hook, "_measured_inter_frame_gaps_s")
