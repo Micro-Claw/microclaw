@@ -8598,3 +8598,50 @@ FAIL, meanwhile, was not a product finding at all.
 newlines of Java stack trace, which is block 52b's exact defect shape. Fed the
 real string through `export_session_script`: parses clean, nothing escapes its
 comment. Worth doing — a passing gate is a place to look for defects.
+
+## Block 65a — the SMLM skill promised a capability microclaw does not have
+
+design/65's documentation block, merged `c92f035` 2026-08-31. Three review
+rounds on a change to one shipped skill file, and the rounds are the content.
+
+**A correction block's characteristic failure is deleting what was true.**
+Round 1 fixed all four named defects and, unasked, removed *"Do NOT use a
+non-zero interval for SMLM — idle time wastes acquisition time without reducing
+background"* — a scientifically correct sentence that was never part of the
+defect — replacing it with "For an ordinary fixed acquisition", which implies an
+unnamed other case. When the brief is "stop the document promising X", the
+diff must be read for what left as well as what changed.
+
+**"Manual scientific choice" is not a category that exists in a file loaded into
+an agent's context.** The runner scoped out `:50-53` (*"increase pulse length
+gradually; stop increasing when maximum pulse length is reached"*) and `:111`
+(*"acquire until 405 nm pulse length maxes out"*) as descriptions of what a
+microscopist does. They are Amr's exact loop written as imperatives, and `:111`
+sits directly above `Use: run_timelapse(n_frames=<value>, ...)`. The fix was
+**attribution, not deletion**: the science is right, the actor was wrong.
+
+**The reviewer put the block's own defect into his own finding, and the runner
+caught it.** Round 2 asserted that image-driven illumination feedback is bounded
+by "ceiling, write budget and restore policy". There is no restore policy —
+`configure_illumination` stores no `restore` key, there is no
+`restore_illumination` beside `restore_named_stage`/`restore_property`, and the
+schema is `additionalProperties: False` over four keys. The runner **stopped
+without editing** and said so, which is what the prompt asked for and what almost
+never happens. Twice in one block, checking an instruction against the code beat
+following it — once where the runner was wrong, once where the reviewer was.
+
+**The under-promise is the same defect as the over-promise.** Round 2's real
+finding was that the round-1 text said "image-driven property changes ... are not
+supported today", which is false: `SetIlluminationPower` dispatches *before* the
+fixed-plan refusal of `SetDeviceProperty`/`MoveNamedStage`, is not gated on the
+adaptive route, and `run_timelapse` passes `illumination_envelope` through
+unconditionally. A hook can drive 405 nm power from the frame it just measured,
+today. **It came straight from design/65's own 65a bullet**, written into the
+skill verbatim — so the design doc was corrected in the same merge. A block that
+copies a design doc's shorthand into a shipped file inherits its imprecision.
+
+**For a documentation block the test is the deliverable's only gate.** 25
+assertions, each checked individually against all four commits rather than
+trusting the first one to trip; every section split verified to resolve on every
+version, so none could raise `IndexError` instead of asserting. Suite 2618 / 99
+/ 3, coordinator-run at every round.
