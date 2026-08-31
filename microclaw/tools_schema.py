@@ -660,10 +660,16 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "n_frames": {"type": "integer", "description": (
-                    "Number of frames. With interval_s=0 and more than one frame, "
+                "n_frames": {"type": ["integer", "null"], "description": (
+                    "Fixed-route frame count. Provide exactly one of n_frames or "
+                    "max_frames; pass null here when max_frames is used. With "
+                    "interval_s=0 and more than one frame, "
                     "the whole time axis is one hardware-sequenced burst; Microclaw's "
                     "Stop button and engine abort may not stop it promptly."
+                )},
+                "max_frames": {"type": "integer", "description": (
+                    "Adaptive-route frame and dose cap. Provide exactly one of "
+                    "n_frames or max_frames; max_frames requires hook_strategy."
                 )},
                 "interval_s": {"type": "number", "description": (
                     "Interval between frames in seconds. Must be nonzero when "

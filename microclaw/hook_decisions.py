@@ -334,7 +334,8 @@ class UntrustedHookAdapter:
 
     def configure_adaptive(self, *, events, candidates, progress, guard,
                            max_events: int, acquire_hits=None, max_hits=None,
-                           read_z=None) -> None:
+                           read_z=None, successor=None,
+                           require_routing_decision: bool = False) -> None:
         if self._autofocus_context is not None:
             # Make the refocus axis DENSE before the plan is dispatched. NDTiff
             # keys each frame by its exact axis set, so a second look carrying
@@ -355,6 +356,8 @@ class UntrustedHookAdapter:
         self._context = {
             "events": list(events), "candidates": candidates, "progress": progress,
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,
+            "successor": successor,
+            "require_routing_decision": require_routing_decision,
         }
         if not events:
             raise ValueError("an adaptive survey requires a seed event")
@@ -1044,7 +1047,9 @@ class UntrustedHookAdapter:
         # tile and reported "outside committed reservation" -- which reads as a
         # dose cap when the survey had simply run out of tiles. Refusing here
         # dispatches nothing either way, so the order cannot admit an exposure.
-        if isinstance(action, ContinueAcquisition) and ctx["cursor"] >= len(events):
+        if (isinstance(action, ContinueAcquisition)
+                and ctx["successor"] is None
+                and ctx["cursor"] >= len(events)):
             self._refuse_selector(metadata, action, "planned survey cursor is already at the end")
             return
         deferred_acquire = (
@@ -1057,8 +1062,13 @@ class UntrustedHookAdapter:
             )
             return
         if isinstance(action, ContinueAcquisition):
-            # The cursor-at-end refusal is made above, before the reservation.
-            event = events[ctx["cursor"]]
+            # A survey indexes its trusted finite plan. A streaming route asks
+            # trusted parent code for exactly one successor instead.
+            if ctx["successor"] is not None:
+                event = ctx["successor"](ctx["cursor"])
+            else:
+                # The cursor-at-end refusal is made above, before reservation.
+                event = events[ctx["cursor"]]
             ctx["cursor"] += 1
         else:
             assert isinstance(action, AcquireAt)
@@ -1084,14 +1094,15 @@ class UntrustedHookAdapter:
                                  "planned positions and is not a unique target")
                     return
                 event = matches[0]
-        try:
-            x, y = self._event_xy(event)
-            ctx["guard"].check_xy(x, y)
-            if event.get("z") is not None:
-                ctx["guard"].check_z(event["z"])
-        except Exception as exc:
-            self._refuse_selector(metadata, action, f"SafetyGuard refused planned event: {exc}")
-            return
+        if ctx["successor"] is None:
+            try:
+                x, y = self._event_xy(event)
+                ctx["guard"].check_xy(x, y)
+                if event.get("z") is not None:
+                    ctx["guard"].check_z(event["z"])
+            except Exception as exc:
+                self._refuse_selector(metadata, action, f"SafetyGuard refused planned event: {exc}")
+                return
         if deferred_acquire:
             label = (event.get("axes") or {}).get("position")
             key = (label, x, y)
@@ -1132,6 +1143,23 @@ class UntrustedHookAdapter:
         ))
         known = current + hardware + selectors
         other = tuple(a for a in actions if a not in known)
+        if self._context is not None and self._context.get("require_routing_decision"):
+            malformed_route = len(selectors) != 1 or not isinstance(
+                selectors[0], (ContinueAcquisition, StopAcquisition)
+            )
+            if malformed_route:
+                reason = (
+                    "malformed adaptive action partition: each image requires "
+                    "exactly one ContinueAcquisition or StopAcquisition decision"
+                )
+                for action in actions:
+                    self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
+                    self._refuse(metadata, action, reason)
+                if not actions:
+                    self._record(metadata, event="hook_action", decision="refused",
+                                 reason=reason)
+                self._context["progress"].done_early()
+                return False, True
         discard = False
         for action in current:
             artifact_hash = self._dispatch(action, metadata)
@@ -1232,6 +1260,8 @@ class UntrustedHookAdapter:
                     self._record(metadata, event="hook_action", decision="refused",
                                  reason=str(exc))
                     if self._context is not None:
+                        if self._context.get("require_routing_decision"):
+                            self._context["progress"].done_early()
                         self._context["progress"].image_done()
                     return image, metadata
                 if sum(isinstance(a, EmitArtifact) for a in actions) > 1:

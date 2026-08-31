@@ -103,8 +103,9 @@ class Reservation:
 
 
 def plan_events(ctrl, events: list, exposure_ms: float | None = None, *,
-                hardware_sequenced_burst: bool = False) -> AcquisitionPlan:
-    frames = len(events)
+                hardware_sequenced_burst: bool = False,
+                frame_count: int | None = None) -> AcquisitionPlan:
+    frames = len(events) if frame_count is None else frame_count
     if frames <= 0:
         raise SafetyViolation("Acquisition plan must contain at least one frame.")
     exposure = (
