@@ -165,7 +165,7 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
     # undefined-name analysis: these names come from one module, so a call to
     # one the source cannot resolve is a certain runtime NameError rather than a
     # guess. M5's block 45 gate produced the case -- a generated hook calling
-    # HookResult and StopAcquisition with no import line saved clean, described clean,
+    # HookResult and a stop decision with no import line saved clean, described clean,
     # and died inside the image processor after the stage had moved.
     #
     # Bindings are collected from module-level statements plus imports at any

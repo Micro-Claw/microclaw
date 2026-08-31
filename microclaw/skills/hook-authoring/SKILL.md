@@ -146,7 +146,7 @@ ContinueAcquisition, StopAcquisition, RequestAutofocus, SetIlluminationPower, Em
 or DiscardFrame.
 Runner support for control-flow proposals is:
 
-  runner                              ContinueAcquisition        StopAcquisition / AcquireAt
+  runner                              ContinueAcquisition   StopAcquisition / AcquireAt
   run_adaptive_survey                 dispatch next tile    supported
   fixed-plan hooked acquisitions      accepted noop         refused
 
