@@ -59,19 +59,90 @@ ships.**
   `gate65c_holdtime_image` and `gate65c_cadence100`, each with a hook log and an
   emitted script.
 
-## Still to score
+## Limb-by-limb
 
-- `gate65c_density_stop3`: hook log vs dataset `time` axes vs emitted script;
-  `stop_reason`; no exposure after the accepted stop.
-- `gate65c_holdtime_image`: requested vs achieved read-back per write, and
-  restoration of the entry value.
-- `gate65c_cadence100`: the full `inter_frame_gap_summary` — this is the
-  measurement design/65 §"Teardown" needs before any per-frame software
-  allowance can be set. Record as **n=1 from M2**.
-- `gate65c-density-instrumented.log` is **0 bytes** although
-  `gate65c_callback_shapes.jsonl` has content — check whether the instrumented
-  export actually ran clean or its stdout was simply not captured. That limb is
-  also the export-actually-runs check.
-- No `gate65c_duration_stop3` anywhere: step 4 appears not to have run. Confirm
-  whether it was `NOT EXERCISED` for want of authorization, or skipped.
-- The 128 KB session history JSONL has not been read.
+**Limb 2, successor dispatch and early stop — PASS.** `max_frames=8`,
+`frames_planned: 8`, `frames_acquired: 4`, `frames_exposed: 4`,
+`stop_reason: hook_stop`. The hook continued at times 0-2 and stopped at 3, so
+exactly four frames were exposed against a cap of eight. Successor dispatch and
+hook-decided stopping both work on the rig.
+
+**Limb 5, the required cadence measurement — PASS, and it is the finding of
+this trip.** 100/100 frames, `stop_reason: hook_stop`, 99 gaps at a **50 ms
+exposure**:
+
+| min_s | mean_s | max_s | count |
+|---|---|---|---|
+| 0.219 | **0.2495** | 0.344 | 99 |
+
+design/65 §"Cadence" said "a few milliseconds of overhead on a 50 ms STORM
+exposure may be scientifically fine; that is a number to publish, not to
+assume." Published: it is not a few milliseconds. It is **~200 ms of software
+per frame on top of a 50 ms exposure — a 5x cadence cost**, ~4 Hz where the
+camera could run ~20 Hz. Amr's 100,000-frame dSTORM would take ~6.9 h on this
+route instead of ~1.4 h. **n=1 from M2**, one hook, one field: not a property of
+microscopes, and not yet attributed between bridge round trip, hook analysis and
+engine dispatch. Attributing it is the next question, not a settled cause.
+
+**The histogram cannot see the data it was built for.** `median_le_s` and
+`p95_le_s` both report **0.5** while the mean is 0.2495 and the max 0.344,
+because the bins step 0.2 -> 0.5 and every measured gap falls in one bucket.
+Renaming them to `_le_` bounds stopped anyone reading 0.5 as a median, but the
+instrument still has no resolution in the decade where this route actually
+lives. **Add bins across 0.2-0.5 s** before the next trip.
+
+**§"Teardown" can now set its allowance** from mean 0.25 s and max 0.344 s —
+conservatively ~0.5 s per frame, recorded as n=1 from M2.
+
+**Limb 3, image-derived non-dosing property — NOT EXERCISED, and the runbook is
+at fault twice.**
+
+1. It named the device `SmaractXY`. The device is **`SmarActXY`**. A literal
+   name that is literally wrong is exactly as dead as a placeholder, which is
+   the defect design/59 cost four rounds to; naming it literally is necessary
+   and not sufficient.
+2. Worse, the limb was **unrunnable by construction**. `SmarActXY` carries
+   declared stage bounds, so design/49's pair-specific refusal rejects *any* raw
+   property write to it: `RigAuthorizationError: Property write
+   SmarActXY.Hold time (ms) was refused because 'SmarActXY' carries declared
+   stage bounds.` No choice of casing would have made this limb run. Pick a
+   non-stage device.
+
+   Incidental evidence worth keeping: that refusal fired **on the adaptive
+   route**, before any write, which shows the bounded-stage guard reaches the
+   new path.
+
+**Limb 4, the authorized `Duration0` run — NOT EXERCISED, with no recorded
+reason.** The agent read the entry value (`Laser Trigger.Duration0 (us)` = 0,
+Integer, limits 0-1048575) and was still reasoning about whether authorization
+admitted the write when the session moved on to limb 5. No hook, no run, no
+artifacts. **This was the dose-bearing limb and the closest thing in the gate to
+the workflow design/65 exists for, and it produced nothing.** The runbook must
+force limb 4 to terminate in an explicit PASS or NOT EXERCISED sentence rather
+than trailing off.
+
+**Engine callback shape — observed.** Four rows, all `{"shape": "dict"}`, no
+lists: at `interval_s=0` this engine handed the pre-hardware callback a single
+event every time. design/65 §"Cadence" wanted this from the engine rather than
+from a fake we wrote. n=1 from M2; it does not legislate batching elsewhere.
+
+## Carried to the next trip
+
+- Fix the gate's absolute/relative `--out` defect and make the selftest drive a
+  relative `--out`; re-run limbs A, B, F.
+- Re-point limb 3 at a **non-stage** device, spelled from that rig's own
+  inventory.
+- Make limb 4 terminate explicitly.
+- Widen the gap histogram across 0.2-0.5 s.
+- `gate65c-density-instrumented.log` is 0 bytes while
+  `gate65c_callback_shapes.jsonl` has content: confirm whether the instrumented
+  export ran clean or its stdout was simply not captured. That limb is also the
+  export-actually-runs check.
+
+## Observed, not a defect
+
+The agent passed a stale `tool_use_id` to `export_session_script`, noticed from
+the returned `recorded_calls` that it had exported the *first* run rather than
+the cadence run, and re-exported. The result payload made its own mistake
+visible, which is the behaviour we want; worth remembering as a usability note,
+not a bug.
