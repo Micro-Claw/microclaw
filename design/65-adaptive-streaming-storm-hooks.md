@@ -489,10 +489,58 @@ last accepted value when the run ends. And its `max_writes` charges only
 flow" step 1 and §"Safety and concurrency" should not be read as promising
 illumination restoration; 65b must not authorize a dose on the assumption of it.
 
-**65b — the runner.** Everything above. After it merges, replace 65a's warning
-with a worked `run_timelapse(hook_strategy=...)` example and make the
-hook-authoring capability table list adaptive time series separately from
-fixed-plan acquisitions and spatial surveys.
+**65b — the vocabulary rename.** *(Split out of the original 65b by the
+coordinator, 2026-08-31, with the operator's agreement. What follows replaces
+"65b — the runner. Everything above.")*
+
+Rename `ContinueSurvey` → `ContinueAcquisition` and `StopSurvey` →
+`StopAcquisition` outright, per §"Decision: one axis-neutral decision
+vocabulary". Roughly 112 references across eleven non-design files: the action
+types and their dispatch in `hook_decisions.py`, `tools.py`, `tools_schema.py`,
+`hook_manager.py`, the hook-authoring skill, `hook_docs`, the saved-hook
+fixtures and the tests. Nothing is owed backward compatibility; there is no
+alias.
+
+The migration is the part that is not mechanical. A saved hook on a rig that
+imports or constructs the old names must **refuse at resolution, before
+acquisition, with a remedy that names the replacement** — not construct
+successfully and die after the seed exposure. `_hook_contract_analysis`'s
+decision-name scan already refuses a name it cannot resolve; what it must gain
+is a message that says which name replaced which. Before 65c's gate, inspect
+each rig's saved-hook registry for old-vocabulary source and migrate it.
+
+**Deliberately not in scope:** `SurveyProgress`, `run_adaptive_survey` and the
+word "tile" in log and refusal strings. §"What is actually missing" lists names
+as survey-specific item (3), but only the *decision vocabulary* is load-bearing
+— renaming the tool is a public-surface change this document did not decide, and
+`SurveyProgress` is internal. A rename block that widens into either is
+over-reaching.
+
+No rig gate: the mechanism is a rename with a full suite behind it, and the one
+rig-facing limb — an old saved hook refusing with a useful remedy — is scored
+inside 65c's gate session, where a registry is in front of an operator anyway.
+
+**65c — the runner.** Everything above §"Blocks": `max_frames` and the
+successor-function route behind `run_timelapse`, the cap-derived
+`AcquisitionPlan` with accounting separated from the runtime bound, the
+three-form exporter, the thirteen tests, and the M2 gate. This is the block that
+creates the single-field adaptive timelapse route, and until it merges the
+sentence 65a shipped — *"do not offer to write an adaptive STORM hook until a
+single-field adaptive timelapse route exists"* — is the truth.
+
+After 65c merges, replace 65a's warning with a worked
+`run_timelapse(hook_strategy=...)` example and make the hook-authoring
+capability table list adaptive time series separately from fixed-plan
+acquisitions and spatial surveys.
+
+**Why the split.** The rename is mechanical and touches eleven files; the route
+is where the defects will be. Bundled, the route's diff is unreadable underneath
+the rename's, and a runner turn can be spent on the rename instead of the
+dispatch rule. Split, the migration refusal also reaches rig registries one
+block earlier, which is the half operators have to act on. The rename is
+coherent alone because the name is *already* axis-neutral on the survey path —
+it describes what `ContinueSurvey` does today, not only what the new route will
+need.
 
 This document changes no code, generated hook, rig configuration or
 authorization policy. It names the missing dispatch rule, the two decisions
@@ -508,7 +556,8 @@ does not track these rows.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 65a | `design65/smlm-skill-accuracy` | `c0629c1` (2026-08-31) | `5a2faad` + `eb9b6ed` (review round 1, four findings) + `5d87df1` (review round 2/3); coordinator `163023f` (ledger move) and the design correction above. Suite **2618 passed / 99 skipped / 3 warnings**, coordinator-run, baseline + 1; 25 test assertions checked individually against all four commits, every one discriminates | **none — no rig surface.** The change is to a shipped documentation file, and what it must not do is *promise* a capability, which is checkable by reading. A rig limb here would be a driven session that asks for adaptive density control and is told the truth — worth folding into the runner block's gate session, not worth a trip of its own |`c92f035` merged 2026-08-31, branch deleted local and origin; design reconciliation `6ebc931` in the same merge |
-| 65b | | | | | |
+| 65b | | | | **none — see the block.** The rename carries the full suite; its one rig-facing limb (an old saved hook refusing with a remedy that names the replacement) is scored inside 65c's gate session | |
+| 65c | | | | **M2 required** — §"Rig gate": three operator-judged limbs (successor dispatch and early stop with no hardware capability granted; an image-derived write to a non-dosing property; a short authorized `Duration0` run on a frame-index predicate). Everything that only computes goes in one script, run against `design/55-gate-probe-selftest.py`'s bridge-shaped fake before it ships | |
 
 **What 65a's three review rounds are worth keeping.** Round 1 returned four
 findings and the runner had scoped two of them out as "manual scientific
