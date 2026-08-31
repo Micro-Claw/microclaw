@@ -271,7 +271,10 @@ def limb_adaptive_export(out):
         save_adaptive_hook(manager)
         result, exported, source, _, _ = adaptive_run_and_export(out)
     tree = ast.parse(source)
-    runnable = source.replace(
+    instrumented_path = out / "adaptive_export_instrumented.py"
+    instrument_export(out / "adaptive_export.py", instrumented_path)
+    instrumented_source = instrumented_path.read_text(encoding="utf-8")
+    runnable = instrumented_source.replace(
         "from pycromanager import Acquisition, Core, multi_d_acquisition_events\n", ""
     )
     before_exec = len(GateAcquisition.instances)
@@ -282,8 +285,8 @@ def limb_adaptive_export(out):
     )
     sys.modules["pycromanager"] = fake_pycromanager
     try:
-        exec(compile(runnable, str(out / "adaptive_export.py"), "exec"), {
-            "__file__": str(out / "adaptive_export.py"),
+        exec(compile(runnable, str(instrumented_path), "exec"), {
+            "__file__": str(instrumented_path),
             "Core": GateCore,
             "Acquisition": GateAcquisition,
             "multi_d_acquisition_events": lambda **kwargs: [{"axes": {"time": 0}}],
@@ -296,6 +299,12 @@ def limb_adaptive_export(out):
     executed = GateAcquisition.instances[before_exec:]
     executed_axes = ([event.get("axes") for event in executed[-1].events]
                      if executed else [])
+    run_markers = [json.loads(line) for line in
+                   (out / "gate65c_instrumented_run.jsonl").read_text(
+                       encoding="utf-8").splitlines()]
+    shape_rows = [json.loads(line) for line in
+                  (out / "gate65c_callback_shapes.jsonl").read_text(
+                      encoding="utf-8").splitlines()]
     failures = []
     restore_tries = [node for node in tree.body if isinstance(node, ast.Try)
                      and any(isinstance(child, ast.With) for child in ast.walk(node))]
@@ -326,6 +335,11 @@ def limb_adaptive_export(out):
         "executes dense stop trace": executed_axes == [
             {"time": 0}, {"time": 1}, {"time": 2}
         ],
+        "owned run markers": run_markers == [
+            {"frames": 0, "marker": "start"},
+            {"frames": 3, "marker": "end"},
+        ],
+        "shape recorder counted every frame": len(shape_rows) == 3,
         "property restorer registered": "('property', 'restore_property'" in source,
         "restore after with on success": success_restores,
         "restore after with on exception": handler_restores,
@@ -494,20 +508,33 @@ def instrument_export(source_path: Path, output_path: Path) -> None:
     injection = [
         "",
         "# BLOCK 65c GATE INSTRUMENTATION: observe the real engine callback shape.",
+        "_gate65c_shape_path = _HERE / 'gate65c_callback_shapes.jsonl'",
+        "_gate65c_run_path = _HERE / 'gate65c_instrumented_run.jsonl'",
+        "_gate65c_shape_path.write_text('', encoding='utf-8')",
+        "_gate65c_run_path.write_text(json.dumps({'marker': 'start', 'frames': 0}, sort_keys=True) + '\\n', encoding='utf-8')",
+        "_gate65c_state = {'frames': 0}",
         "_gate65c_original_pre = _hook_callbacks.get('pre_hardware_hook_fn')",
         "def _gate65c_record_shape(event):",
+        "    _gate65c_state['frames'] += 1",
         "    if isinstance(event, list):",
         "        row = {'shape': 'list', 'length': len(event)}",
         "    else:",
         "        row = {'shape': type(event).__name__, 'length': None}",
-        "    with (_HERE / 'gate65c_callback_shapes.jsonl').open('a', encoding='utf-8') as stream:",
+        "    with _gate65c_shape_path.open('a', encoding='utf-8') as stream:",
         "        stream.write(json.dumps(row, sort_keys=True) + '\\n')",
         "    return _gate65c_original_pre(event) if _gate65c_original_pre else event",
         "_hook_callbacks['pre_hardware_hook_fn'] = _gate65c_record_shape",
         "",
     ]
     index = matches[0] + 1
-    instrumented = "\n".join(lines[:index] + injection + lines[index:]) + "\n"
+    completion = [
+        "",
+        "with _gate65c_run_path.open('a', encoding='utf-8') as stream:",
+        "    stream.write(json.dumps({'marker': 'end', 'frames': _gate65c_state['frames']}, sort_keys=True) + '\\n')",
+    ]
+    instrumented = "\n".join(
+        lines[:index] + injection + lines[index:] + completion
+    ) + "\n"
     ast.parse(instrumented)
     output_path.write_text(instrumented, encoding="utf-8")
 
@@ -528,7 +555,11 @@ def main() -> int:
         return 0
     if args.instrumented_out is not None:
         parser.error("--instrumented-out requires --instrument-export")
-    out = Path(args.out)
+    # Resolve once so the gate reads the same paths that the product's
+    # workspace-resolving exporter writes. The runbook intentionally passes a
+    # relative --out; this makes that shipped shape equivalent to an absolute
+    # selftest path instead of relying on their accidental coincidence.
+    out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     RESULTS.clear()
     print("Block 65c computed gate — no microscope connection or exposure\n")

@@ -3,8 +3,10 @@
 Run from inside the block-65c worktree so this file is the reviewed gate while
 ``--tree`` selects which product it imports:
 
-    python design/65-block65c-gate-selftest.py --tree . --expect implemented
-    python design/65-block65c-gate-selftest.py --tree ../microclaw --expect prechange
+    python design/65-block65c-gate-selftest.py --tree . --expect implemented --out-shape absolute
+    python design/65-block65c-gate-selftest.py --tree . --expect implemented --out-shape relative
+    python design/65-block65c-gate-selftest.py --tree ../microclaw --expect prechange --out-shape absolute
+    python design/65-block65c-gate-selftest.py --tree ../microclaw --expect prechange --out-shape relative
 
 The second command must discriminate: the four new-contract limbs must fail on
 main before 65c, while the existing-route regression limb still passes.
@@ -24,16 +26,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tree", required=True, help="product checkout to import")
     parser.add_argument("--expect", required=True, choices=("implemented", "prechange"))
+    parser.add_argument("--out-shape", required=True, choices=("absolute", "relative"))
     args = parser.parse_args()
     tree = Path(args.tree).resolve()
     gate = Path(__file__).with_name("65-block65c-gate.py").resolve()
-    out = Path(tempfile.mkdtemp(prefix=f"gate65c-{args.expect}-"))
+    run_dir = Path(tempfile.mkdtemp(prefix=f"gate65c-{args.expect}-{args.out_shape}-"))
+    if args.out_shape == "absolute":
+        out = run_dir / "gate65c-absolute"
+        out_arg = str(out)
+    else:
+        out = run_dir / "gate65c-relative"
+        out_arg = "gate65c-relative"
     env = os.environ.copy()
     env["MICROCLAW_GATE_TREE"] = str(tree)
     env["PYTHONPATH"] = str(tree)
     run = subprocess.run(
-        [sys.executable, str(gate), "--out", str(out)],
-        cwd=tree, env=env, text=True, stdout=subprocess.PIPE,
+        [sys.executable, str(gate), "--out", out_arg],
+        cwd=run_dir, env=env, text=True, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, check=False,
     )
     print(run.stdout)
@@ -43,7 +52,8 @@ def main() -> int:
         return 1
     rows = json.loads(result_path.read_text(encoding="utf-8"))
     statuses = {row["limb"]: row["status"] for row in rows}
-    print(f"TREE: {tree}\nPROBE EXIT CODE: {run.returncode}\nSTATUSES: {statuses}")
+    print(f"TREE: {tree}\nOUT SHAPE: {args.out_shape}\n"
+          f"PROBE EXIT CODE: {run.returncode}\nSTATUSES: {statuses}")
 
     if args.expect == "implemented":
         if run.returncode != 0 or any(value != "PASS" for value in statuses.values()):
