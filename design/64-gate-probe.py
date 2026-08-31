@@ -21,6 +21,7 @@ and adopt, and whether the loop converges on a real sample through real optics.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import math
 import sys
@@ -454,18 +455,54 @@ def limb_export(ctrl, guard, out):
     source = script.read_text(encoding="utf-8")
     if "# NOT EMITTED" in source or "RuntimeError('# NOT EMITTED" in source:
         return "FAIL", "center_feature did not emit"
-    if "set_relative_xy_position(-_center_dx_um" in source:
-        return "FAIL", "the exported script still negates the correction"
-    if "set_relative_xy_position(_center_dx_um, _center_dy_um)" not in source:
-        return "FAIL", "the exported script does not apply the affine directly"
+
+    # Structural, not substring. A substring cannot tell a negation rendered
+    # upstream from one rendered here, and block 66's round 1 replaced exactly
+    # this kind of match after an integer target slipped through one. Find the
+    # call and read its actual arguments.
+    tree = ast.parse(source)
+    relative = [node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "set_relative_xy_position"]
+    if not relative:
+        return "FAIL", "the exported script issues no relative XY correction"
+    args = relative[0].args
+    if not all(isinstance(arg, ast.Name) for arg in args):
+        return "FAIL", (
+            "the emitted correction is not the two affine terms as computed; "
+            f"got {[ast.dump(a) for a in args]} — a negation or rescale here is "
+            "the design/64 defect returning by another spelling"
+        )
+    names = [arg.id for arg in args]
+    if names != ["_center_dx_um", "_center_dy_um"]:
+        return "FAIL", f"the emitted correction passes {names}, not the affine result"
     if "brightest_feature_offset_px" not in source:
         return "FAIL", "the exported loop still steers by the aggregate centroid"
+
+    # Added 2026-08-31 by block 64d: the live centring correction is now settled
+    # per axis, so an exported one that merely dispatches is LOOSER than the tool
+    # it reproduces. Before 64d this limb could not have asked for it; after it,
+    # a regression that dropped the contract from the centring emitter would
+    # otherwise leave this gate green.
+    settles = [node for node in ast.walk(tree)
+               if isinstance(node, ast.Call)
+               and isinstance(node.func, ast.Name)
+               and node.func.id == "settle_xy_move"]
+    if not settles:
+        return "FAIL", (
+            "the emitted correction is dispatched but never settled. The live "
+            "center_feature waits for each correction to arrive (design/68); an "
+            "exported step must not be looser than the tool it reproduces."
+        )
     coefficients = payload["center_feature"].get("affine_coefficients", {})
     missing = [f"{v!r}" for v in coefficients.values() if repr(v) not in source]
     if missing:
         return "FAIL", f"emitted affine does not carry the coefficients used: {missing}"
     return "PASS", (f"{script.name} emits the session's own coefficients "
-                    f"{list(coefficients.values())}, unnegated, brightest-punctum target")
+                    f"{list(coefficients.values())}, unnegated, brightest-punctum "
+                    f"target, and settles each correction "
+                    f"({len(settles)} settle_xy_move call(s))")
 
 
 LIMBS = [limb_coupling, limb_affine_readable, limb_affine_resolution,
