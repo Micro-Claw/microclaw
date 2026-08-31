@@ -8920,6 +8920,23 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### design/65 is coordinated and owns its own ledger — added 2026-08-31 **(pointer only)**
+
+**`design/65` is coordinated and owns its own blocks and ledger**, like design/48
+through design/60. This file does not track its rows; it points at them. The doc
+is `design/65-adaptive-streaming-storm-hooks.md`.
+
+Written from Amr's M2 session of 2026-08-29, which did not fail because the agent
+overlooked hooks — it called `list_hooks`, read `get_hook_documentation`, and
+found that the hook action vocabulary and the acquisition runners do not expose
+the same capability. **What is missing is not a runner**: the adaptive stack
+already keys on `axes_signature` and never on XY, and only three things in it are
+survey-specific. The load-bearing one is that `ContinueSurvey` means "dispatch
+`events[cursor]`" over a finite list built from positions.
+
+**The SMLM skill is also wrong twice** and is a shipped file, so the documentation
+correction is its own block and does not wait for the runner.
+
 ### Focus-lock ordering rule was not followed on the Nikon Ti — added 2026-08-30 **(no block)**
 
 `SYSTEM_PROMPT` says: before any operation that engages or adjusts a hardware

@@ -17,7 +17,7 @@ Microclaw's role is to:
   1. Help the user set up the correct acquisition parameters.
   2. Run the raw-frame stack with run_timelapse (interval_s=0 for max frame rate).
   3. Export the dataset with export_dataset_as_tiff so external software can analyse it.
-  4. Optionally attach a hook for real-time density feedback or adaptive 405 nm control.
+  4. Optionally attach an observation-only hook for real-time density logging.
 
 Microclaw does NOT perform localization fitting — that requires external software
 such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software section).
@@ -47,10 +47,10 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
      - Frame count: ~40,000 frames.
      - Expected AF647 yield: ~6,000 photons/localization.
 
-- Optional 405 nm activation: pulse at low power to increase the localization rate
-  when blinking density drops too low during acquisition. Increase pulse length
-  gradually; stop increasing when maximum pulse length is reached and density
-  is still dropping (acquisition is near complete).
+- Optional 405 nm activation: the operator may pulse at low power when blinking
+  density drops too low during acquisition. The operator gradually increases the
+  pulse length and stops increasing at the maximum; if density is still dropping,
+  the acquisition is near complete. Microclaw does not automate this feedback loop.
 - Ask the user: channel name for main excitation, which STORM regime they want,
   whether a 405 nm activation channel is available, and whether the
   photoswitching buffer is in place.
@@ -104,12 +104,14 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 
 ### Frame interval
 - Set interval_s=0 to acquire as fast as the camera allows (back-to-back frames).
-- Do NOT use a non-zero interval for SMLM — idle time wastes acquisition time
-  without reducing background.
+- Do not use a nonzero interval for SMLM unless a bounded, predeclared per-frame
+  `hook_action_plan` spans more than one frame and needs Python between exposures;
+  that idle time slows acquisition without reducing background.
 
 ### Number of frames
 - Fixed-cell dSTORM:
-    - Slow STORM regime: ~80,000 frames (acquire until 405 nm pulse length maxes out).
+    - Slow STORM regime: ~80,000 frames. In a manually supervised acquisition,
+      the operator may stop when the 405 nm pulse length maxes out.
     - Regular STORM regime: ~40,000 frames.
     - Minimum for a small structure (e.g., centriole): ≥10,000 frames.
 - PALM: 5,000–20,000 frames.
@@ -281,14 +283,30 @@ For long acquisitions it is useful to track per-frame blinking density to detect
   - Too few ON molecules (acquisition proceeding too slowly): increase 405 nm
     activation power.
 
-This can be implemented as an image_process_fn hook that:
-  1. Thresholds each frame to count bright local maxima.
-  2. Logs the count per frame.
-  3. Optionally signals end-of-acquisition when density drops below a threshold.
+Observation-only density logging is supported on `run_timelapse`: a user-authored
+`analyze_frame(image, metadata) -> HookResult | None` hook can measure and log each
+frame. The shipped `snr_observer` is a reviewed built-in example of observation-only
+behavior, not the callback shape to copy for a user-authored hook.
 
-If the user asks for adaptive density control, offer to write a hook following
-the `load_skill(name="hook-authoring")` pattern. Call `load_skill(name="smlm")` first to confirm
-the SMLM context, then call `load_skill(name="hook-authoring")` for the hook API.
+Fixed, predeclared property schedules are also supported with a bounded
+`hook_action_plan` under a `property_envelope`. A per-frame plan spanning more than
+one frame requires `interval_s > 0`: with zero, pycro-manager may hardware-sequence
+the time axis, so no Python callback runs between exposures to apply an action.
+
+**Current capability boundary:** on a fixed `run_timelapse`, `analyze_frame` may
+propose image-driven `SetIlluminationPower` after the user explicitly authorizes an
+`illumination_envelope` once before the run; no prompt occurs from the callback thread.
+It is power-only (not shutter control), bounded by a percent ceiling and a budget of
+increasing writes, and has no automatic final restoration: the device stays at the
+last accepted value. With `interval_s=0` and more than one frame, images are still
+analyzed, but writes land asynchronously with respect to exposures rather than between
+chosen frames.
+
+Image-driven `SetDeviceProperty` and `MoveNamedStage` are refused under a fixed plan;
+those actions must be in a predeclared `hook_action_plan`. An image-driven conditional
+stop is also refused. `run_adaptive_survey` is not a substitute for single-field
+STORM: it walks a planned position list. Do not offer to write an adaptive STORM hook
+until a single-field adaptive timelapse route exists.
 
 ---
 

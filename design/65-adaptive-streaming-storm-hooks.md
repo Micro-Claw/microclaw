@@ -460,11 +460,34 @@ misleading agents today, and it is a shipped file in `microclaw/skills/`.
 **65a — documentation, now.** Change the SMLM skill to say: observation-only
 density logging is supported on `run_timelapse`; fixed predeclared property
 schedules are supported with a nonzero interval and a bounded
-`hook_action_plan`; image-driven property changes plus conditional stop are not
-supported in one continuous timelapse today; `run_adaptive_survey` is not a
-substitute for single-field STORM; do not offer to write an adaptive STORM hook
-until the route exists. Fix `:283`'s `image_process_fn` recommendation in the
-same pass.
+`hook_action_plan`; image-driven **device-property** changes plus conditional
+stop are not supported in one continuous timelapse today; `run_adaptive_survey`
+is not a substitute for single-field STORM; do not offer to write an adaptive
+STORM hook until the route exists. Fix `:283`'s `image_process_fn`
+recommendation in the same pass.
+
+**Corrected 2026-08-31, during the block.** That bullet said "image-driven
+property changes", and written into the skill verbatim it produced an
+*under*-promise on the one workflow the section is about. `SetIlluminationPower`
+is dispatched **before** the fixed-plan refusal of `SetDeviceProperty` /
+`MoveNamedStage` (`hook_decisions.py:866`), is not gated on the adaptive route,
+and `run_timelapse` passes `illumination_envelope` through unconditionally — so a
+hook's `analyze_frame` **can** drive 405 nm activation power from the frame it
+just measured, today, inside an authorized envelope. That is exactly why this
+document is about `Laser Trigger.Duration0 (us)`: that rig activates through an
+FPGA pulse duration, a *device property*, which is the refused case. On a rig
+whose 405 activation is a linearized power property, the feedback half of Amr's
+loop is already available and only the stop is missing.
+
+Two bounds this document also states loosely. The illumination envelope has
+**no restore policy** — `configure_illumination` stores no `restore` key, there
+is no `restore_illumination` beside `restore_named_stage` and
+`restore_property`, and the schema is `additionalProperties: False` over
+`device`/`property`/`max_power_percent`/`max_writes`. The device stays at the
+last accepted value when the run ends. And its `max_writes` charges only
+**increasing** writes, so it is a dose-raising budget, not a write count. §"Event
+flow" step 1 and §"Safety and concurrency" should not be read as promising
+illumination restoration; 65b must not authorize a dose on the assumption of it.
 
 **65b — the runner.** Everything above. After it merges, replace 65a's warning
 with a worked `run_timelapse(hook_strategy=...)` example and make the
@@ -475,3 +498,32 @@ This document changes no code, generated hook, rig configuration or
 authorization policy. It names the missing dispatch rule, the two decisions
 that rule forces, and the documentation correction that makes the user-facing
 promise match the capability.
+
+## Run ledger
+
+design/65 is coordinated and owns its own blocks and ledger, like design/48
+through design/60. `design/35-usability-and-pfs-checklist.md` points here and
+does not track these rows.
+
+| block | branch | start | implementation | gate | merge |
+| --- | --- | --- | --- | --- | --- |
+| 65a | `design65/smlm-skill-accuracy` | `c0629c1` (2026-08-31) | `5a2faad` + `eb9b6ed` (review round 1, four findings) + `5d87df1` (review round 2/3); coordinator `163023f` (ledger move) and the design correction above. Suite **2618 passed / 99 skipped / 3 warnings**, coordinator-run, baseline + 1; 25 test assertions checked individually against all four commits, every one discriminates | **none — no rig surface.** The change is to a shipped documentation file, and what it must not do is *promise* a capability, which is checkable by reading. A rig limb here would be a driven session that asks for adaptive density control and is told the truth — worth folding into the runner block's gate session, not worth a trip of its own | |
+| 65b | | | | | |
+
+**What 65a's three review rounds are worth keeping.** Round 1 returned four
+findings and the runner had scoped two of them out as "manual scientific
+choices": `:50-53`'s *"increase pulse length gradually; stop increasing when
+maximum pulse length is reached"* and `:111`'s *"acquire until 405 nm pulse
+length maxes out"*. Both are Amr's loop written as imperatives, in a file loaded
+into an **agent's** context, directly above `Use: run_timelapse(n_frames=...)`.
+The fix was attribution, not deletion — the science is right, the actor was
+wrong. Round 1 also **deleted true guidance that was not the defect** (the
+nonzero-interval rationale), which is the standing hazard of a correction block.
+
+**And the reviewer's own finding was half wrong, caught by the runner.** Round 2
+asserted illumination feedback is bounded by "ceiling, write budget and restore
+policy"; there is no restore policy, and the runner stopped without editing
+rather than write an unshipped capability into a shipped file. That is the
+defect this block exists to fix, committed by its reviewer — and the second time
+in one block that checking an instruction against the code beat following it.
+The substance survived; only the bounding clause was wrong.
