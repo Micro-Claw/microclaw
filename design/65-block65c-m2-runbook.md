@@ -107,43 +107,57 @@ $InstrumentedExit = $LASTEXITCODE
 Get-Content gate65c-density-instrumented.log
 if ($InstrumentedExit -ne 0) { throw "The instrumented exported run failed; callback shape was not established" }
 Get-Content gate65c_callback_shapes.jsonl
+Get-Content gate65c_instrumented_run.jsonl
 ```
 
 Do not run that script until the operator has approved the four-frame
-reproduction. It writes `gate65c_callback_shapes.jsonl` itself, so no transcript
-assumption is involved.
+reproduction. It writes `gate65c_callback_shapes.jsonl` and
+`gate65c_instrumented_run.jsonl` itself, so no transcript assumption is
+involved. The latter must contain a `start` row and an `end` row with
+`"frames": 4`; an absent end row is a failed exported run even if the shape
+file has content.
 
 ## 3 — image-derived non-dosing property, if M2 admits it
 
-First inspect the authorization map and Core inventory for the literal pair
-`SmaractXY.Hold time (ms)`. Use values `10` and `11` only if the property exists,
-is writable, is declared non-dosing, and both values are inside its reviewed
-bounds. It changes controller hold time, not position. If any precondition is
-false, record this limb `NOT EXERCISED`; do not substitute a laser, camera
-exposure, stage position, TTL, PWM, servo, or another convenient property.
+Choose the pair from M2's authorization map and Core inventory by this checkable
+test: the property is writable; its device carries **no declared stage bounds**;
+the property is non-dosing; and two distinct values lie inside its reviewed
+bounds. Design/49 refuses every raw property write to a device carrying declared
+stage bounds, even when the named property itself does not move the stage. Record
+the chosen device, property, two values, bounds, and the evidence for all four
+conditions. If M2 admits no such pair, this limb is legitimately
+`NOT EXERCISED`; do not substitute a laser, camera exposure, stage position,
+TTL, PWM, servo, or another convenient property.
 
 Give the agent this prompt exactly:
 
-> Inspect `SmaractXY.Hold time (ms)` without writing it. If and only if the
-> reviewed M2 authorization admits values `10` and `11`, save
-> `gate65c_holdtime_image` whose image-derived predicate proposes
-> `SetDeviceProperty("11")` on even-density frames and
-> `SetDeviceProperty("10")` on odd-density frames, beside exactly one routing
-> decision. Run `run_timelapse` with `n_frames=null`, `max_frames=4`,
-> `interval_s=0`, `exposure_ms=50`, a property envelope for device
-> `SmaractXY`, property `Hold time (ms)`, allowed values `["10", "11"]`,
-> `max_writes=4`, and restore `entry`. Stop at time 3. Export the recorded call
-> to `gate65c_holdtime_image_export.py`. If the exact pair or authorization is
-> absent, make no write and report `NOT EXERCISED`.
+> Inspect M2's inventory and reviewed authorization without writing. Choose a
+> property only if it is writable, non-dosing, its device carries no declared
+> stage bounds, and two distinct values are inside its reviewed bounds. Record
+> the exact device, property, values, bounds, and why each condition passes. If
+> one exists, save `gate65c_nondosing_image` whose image-derived predicate
+> alternates those two values beside exactly one routing decision. Run
+> `run_timelapse` with `n_frames=null`, `max_frames=4`, `interval_s=0`,
+> `exposure_ms=50`, a property envelope containing that exact pair and values,
+> `max_writes=4`, and restore `entry`. Stop at time 3 and export the recorded
+> call to `gate65c_nondosing_image_export.py`. If no pair passes every test,
+> make no write and end with `LIMB 3 NOT EXERCISED:` followed by the inventory
+> reason.
 
 PASS requires each proposed value to be applied, waited for and read back before
 the next exposure; the entry value must be restored after the acquisition
 context on success. Retain the exception-path restoration result if this run
 happens to fail; do not induce a fault solely to obtain it.
 
+Scoring note from M2 round 1: `SmarActXY.Hold time (ms)` was refused before any
+write because `SmarActXY` carries declared stage bounds. That run did not
+exercise this limb, but it did establish that the bounded-stage guard reaches
+the adaptive route.
+
 ## 4 — authorized FPGA-duration run
 
-This limb uses the exact dose-bearing pair `Laser Trigger.Duration0 (us)` and
+**This is the dose-bearing limb and it must not be left open without a
+verdict.** It uses the exact pair `Laser Trigger.Duration0 (us)` and
 literal values `1` and `2` microseconds. Run it only if M2's already reviewed
 authorization admits that envelope and the operator approves the resulting
 four-frame dose. Do not enable a laser, change `Mode0` or `Sequence0`, or edit a
@@ -162,8 +176,11 @@ Give the agent this prompt exactly:
 > `Laser Trigger`, property `Duration0 (us)`, allowed values `["1", "2"]`,
 > `max_writes=3`, restore `entry`. Export this recorded call to
 > `gate65c_duration_stop3_export.py`. Do not change `Mode0`, `Sequence0`, any
-> laser enable, or the safety configuration. If authorization is absent, make
-> no write and report `NOT EXERCISED`.
+> laser enable, or the safety configuration. If authorization is absent or
+> cannot be established in this session, make no write. In every case, finish
+> with exactly one verdict line: `LIMB 4 PASS: authorized Duration0 run
+> completed and evidence saved`, or `LIMB 4 NOT EXERCISED:` followed by the
+> specific reason. Do not move to limb 5 before writing that line.
 
 PASS requires requested/achieved values 1, 2, 1 on axes 1, 2, 3 respectively,
 the entry value restored, `stop_reason: hook_stop`, and no exposure after time
@@ -233,8 +250,10 @@ after accepted stop shown explicitly.
 The gate selftest is run against both checkouts from inside this worktree:
 
 ```powershell
-uv run python design/65-block65c-gate-selftest.py --tree . --expect implemented
-uv run python design/65-block65c-gate-selftest.py --tree ..\microclaw --expect prechange
+uv run python design/65-block65c-gate-selftest.py --tree . --expect implemented --out-shape absolute
+uv run python design/65-block65c-gate-selftest.py --tree . --expect implemented --out-shape relative
+uv run python design/65-block65c-gate-selftest.py --tree ..\microclaw --expect prechange --out-shape absolute
+uv run python design/65-block65c-gate-selftest.py --tree ..\microclaw --expect prechange --out-shape relative
 ```
 
 The accepted tree must report 6/6 PASS. Main before 65c must fail limbs A–E
