@@ -475,3 +475,14 @@ This document changes no code, generated hook, rig configuration or
 authorization policy. It names the missing dispatch rule, the two decisions
 that rule forces, and the documentation correction that makes the user-facing
 promise match the capability.
+
+## Run ledger
+
+design/65 is coordinated and owns its own blocks and ledger, like design/48
+through design/60. `design/35-usability-and-pfs-checklist.md` points here and
+does not track these rows.
+
+| block | branch | start | implementation | gate | merge |
+| --- | --- | --- | --- | --- | --- |
+| 65a | `design65/smlm-skill-accuracy` | `c0629c1` (2026-08-31) | | **none — no rig surface.** The change is to a shipped documentation file, and what it must not do is *promise* a capability, which is checkable by reading. A rig limb here would be a driven session that asks for adaptive density control and is told the truth — worth folding into the runner block's gate session, not worth a trip of its own | |
+| 65b | | | | | |
