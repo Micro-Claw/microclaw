@@ -126,7 +126,20 @@ lists: at `interval_s=0` this engine handed the pre-hardware callback a single
 event every time. design/65 §"Cadence" wanted this from the engine rather than
 from a fake we wrote. n=1 from M2; it does not legislate batching elsewhere.
 
-## Carried to the next trip
+## Fixed after the trip (2026-08-31, `baf79e2`/`ed03f64`/`695deb9`)
+
+All five carried items below are done and verified by the coordinator: the
+selftest now takes `--out-shape {absolute,relative}` and all four combinations
+discriminate (implemented 6/6 both shapes; pre-change A-E FAIL with control F
+PASS both shapes); limb 3 selects its pair by the four-condition test with
+design/49's rule stated; limb 4 must end in an explicit verdict line before the
+session moves on; the histogram gained 0.25/0.3/0.35/0.4/0.45 so it resolves the
+~0.25 s regime M2 measured; and the instrumented script writes its own
+`gate65c_instrumented_run.jsonl` start/end rows, where a missing end row is a
+failed exported run even if the shape file has content. Suite 2647 passed / 99
+skipped. `_runtime_ceiling_s` deliberately unchanged.
+
+## Was carried to the next trip
 
 - Fix the gate's absolute/relative `--out` defect and make the selftest drive a
   relative `--out`; re-run limbs A, B, F.
