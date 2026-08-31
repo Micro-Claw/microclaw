@@ -8536,3 +8536,65 @@ three of them meant. Every command is literal PowerShell now and the operator
 edits three assignments all session. 52c's lesson is not only "no unresolved
 placeholders in a grep"; it is that a step which requires interpretation is a
 step that gets interpreted.
+
+## design/68 block 64d — the XY arrival contract (merged 2026-08-31)
+
+design/64's last open carried-forward row, and design/67 had named the
+precondition exactly: *"after design/66 lands."* It landed the day before. Three
+documents had already specified the block — design/66 the per-axis field names,
+design/67 the deferral, and `safety.py:485` a config key refusing with *"cannot
+be used until move_stage_xy has an arrival loop."* **When three places point at
+the same missing thing, the block is already written; the coordinator's job is
+to notice, not to design.**
+
+**Two runner turns were killed by the account spend limit, the sixth and
+seventh this workflow has seen.** The first died mid-implementation with 648
+uncommitted lines and no report — product complete, tests absent. `CLAUDE.md`'s
+rule worked: verify the tree yourself, commit it plainly as unreviewed, hand it
+on with that in writing. The second died *after* committing its fix. Neither
+loss cost a redo, because both left their work in the tree and the ledger row
+says which commits nobody reviewed.
+
+**Review round 1 found that the block's central test could not fail.** The
+delayed-arrival limb — the one thing this block exists to create — had its late
+axis arrive on exactly the third poll, which *is*
+`STAGE_MOVE_REQUIRED_SAMPLES`. A loop that ignored the per-axis band entirely
+and merely collected three readings across the stability window returned the
+same value. Established by mutation, not by reading: `if True:` in place of the
+band check left both parameterizations green. **Mutation is the tool for a test
+whose subject is timing or order**, because there is no pre-fix tree on which it
+fails for the stated reason.
+
+**The gate's self-test earned its keep and then failed at the same job.** It
+caught, off-rig, that limb C commanded a move along X only — an operator
+blocking Y would have watched a correctly blocked axis trivially satisfy its
+band. But it *missed* that limb C's own `entry = read_xy(...)` sat outside its
+`try`, so on M2 the disconnected link raised there and the limb died in its
+instrumentation, reporting FAIL where the truth was NOT EXERCISED. The reason it
+missed it is the lesson: `--untyped-failure` asserted only **that limb C
+reported FAIL**, which it did, for the wrong reason. **A criterion satisfied by
+the wrong mechanism, inside the gate written to enforce that rule on everyone
+else.** design/60 block 60b's "the test's observation channel silently became
+the definition of the behaviour" reappeared one block later, in the gate rather
+than the product. A gate's own fake gets no review pass — and neither does its
+own assertion.
+
+**The operator's instinct beat the runbook's menu.** The runbook offered
+"disconnect, power down, or engage a hard stop"; disconnecting the Core XY
+device outright is the *strongest* of those, because a link that is down fails
+every bridge call and therefore also exercises the pre-dispatch read. The gate
+had quietly assumed the weaker shape by requiring a readable `start_um`. Round 2
+scores the two cases separately, and `start_um: null` is now correct rather than
+a defect.
+
+**Score a green gate, and score a red one too.** Run 1's 5/6 PASS carried the
+block's real evidence — `measured_um` ≠ `requested_um`, 0.984 s of settling, and
+a 1.5875 µm sub-band correction that `center_feature` reported and did not
+refuse, converging anyway. That last one is a design claim confirmed rather than
+argued, and its arithmetic cross-checks against M2's own pixel size. Run 1's
+FAIL, meanwhile, was not a product finding at all.
+
+**One thing looked for and not found.** The M2 refusal message carries 14
+newlines of Java stack trace, which is block 52b's exact defect shape. Fed the
+real string through `export_session_script`: parses clean, nothing escapes its
+comment. Worth doing — a passing gate is a place to look for defects.
