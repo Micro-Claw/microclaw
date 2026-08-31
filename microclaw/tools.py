@@ -4003,7 +4003,7 @@ _GAP_HISTOGRAM_UPPER_S = (
 
 
 def _new_gap_summary() -> dict[str, Any]:
-    return {"count": 0, "min_s": None, "max_s": None,
+    return {"count": 0, "min_s": None, "max_s": None, "sum_s": 0.0,
             "bins": [0] * len(_GAP_HISTOGRAM_UPPER_S)}
 
 
@@ -4011,6 +4011,7 @@ def _record_gap(summary: dict[str, Any], gap_s: float) -> None:
     summary["count"] += 1
     summary["min_s"] = gap_s if summary["min_s"] is None else min(summary["min_s"], gap_s)
     summary["max_s"] = gap_s if summary["max_s"] is None else max(summary["max_s"], gap_s)
+    summary["sum_s"] += gap_s
     index = next(i for i, upper in enumerate(_GAP_HISTOGRAM_UPPER_S) if gap_s <= upper)
     summary["bins"][index] += 1
 
@@ -4027,11 +4028,16 @@ def _gap_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
             if seen >= target:
                 return summary["max_s"] if math.isinf(upper) else upper
         return summary["max_s"]
+    # min/max/mean are exact; the two percentiles are the BIN UPPER BOUND the
+    # quantile falls in, named so nobody sizes design/65's per-frame software
+    # allowance off a number that is only an upper bound. The allowance comes
+    # from mean_s and max_s.
     return {
         "count": count,
         "min_s": summary["min_s"],
-        "median_s": percentile(0.5),
-        "p95_s": percentile(0.95),
+        "mean_s": (summary["sum_s"] / count) if count else None,
+        "median_le_s": percentile(0.5),
+        "p95_le_s": percentile(0.95),
         "max_s": summary["max_s"],
         "histogram": [
             {"upper_s": (None if math.isinf(upper) else upper), "count": bucket_count}
@@ -7920,9 +7926,17 @@ class SurveyProgress:
             self._done_early = True
             self._stop_reason = "cap_reached"
 
-    def cap_reached(self) -> None:
+    def note_stop_reason(self, reason: str) -> None:
+        """Record WHY the stream ended without claiming the hook ended it.
+
+        done_early() is the hook's control decision, and run_adaptive_survey
+        renders it as ", stopped early by the hook." with a hint saying the
+        field "describes the hook's control decisions". A watchdog stall, an
+        engine abort and the dose cap are none of those, so they record a
+        reason and leave _done_early alone.
+        """
         with self._lock:
-            self._stop_reason = "cap_reached"
+            self._stop_reason = reason
 
     @property
     def exhausted_budget(self) -> bool:
@@ -8019,7 +8033,7 @@ def _survey_event_stream(
                         emitted += 1
                         if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
                             hook.close_adaptive_handoff()
-                            progress.cap_reached()
+                            progress.note_stop_reason("cap_reached")
                         yield survey_events[0]  # the ONLY pre-dispatched event
                 else:
                     yield from survey_events      # dispatched in microseconds...
@@ -8040,7 +8054,7 @@ def _survey_event_stream(
                         emitted += 1
                         if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
                             hook.close_adaptive_handoff()
-                            progress.cap_reached()
+                            progress.note_stop_reason("cap_reached")
                         yield event
                         continue
 
@@ -8053,7 +8067,7 @@ def _survey_event_stream(
 
                     if acq_finished():
                         hook.note_aborted()
-                        progress.done_early("abort")
+                        progress.note_stop_reason("abort")
                         return
 
                     # Images still arriving means the rig is alive; reset the
@@ -8065,7 +8079,7 @@ def _survey_event_stream(
 
                     if time.monotonic() - last_activity > max_idle_s:
                         hook.note_stalled(max_idle_s)   # loud in the log, not silent
-                        progress.done_early("stall")
+                        progress.note_stop_reason("stall")
                         return
             finally:
                 # The generator OWNS the terminator (design/24 Fix 2a, spike

@@ -571,6 +571,13 @@ def test_measured_gap_distribution_is_bounded_in_progress_and_caller_state(monke
     summary = received[-1]["inter_frame_gap_summary"]
     assert summary == tools._gap_summary_payload(cadence)
     assert summary["count"] == 2
-    assert set(summary) == {"count", "min_s", "median_s", "p95_s", "max_s", "histogram"}
+    assert set(summary) == {"count", "min_s", "mean_s", "median_le_s", "p95_le_s",
+                            "max_s", "histogram"}
+    # The allowance design/65 §Teardown asks M2 for is sized off exact numbers;
+    # the two percentiles are only the bin upper bound and say so in their
+    # names, so mean_s must be the exact arithmetic mean of the two gaps.
+    assert summary["mean_s"] == pytest.approx(
+        (summary["min_s"] + summary["max_s"]) / 2, rel=1e-9
+    )
     assert len(summary["histogram"]) == len(tools._GAP_HISTOGRAM_UPPER_S)
     assert not hasattr(hook, "_measured_inter_frame_gaps_s")
