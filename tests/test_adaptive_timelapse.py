@@ -580,4 +580,24 @@ def test_measured_gap_distribution_is_bounded_in_progress_and_caller_state(monke
         (summary["min_s"] + summary["max_s"]) / 2, rel=1e-9
     )
     assert len(summary["histogram"]) == len(tools._GAP_HISTOGRAM_UPPER_S)
+    assert len(summary["histogram"]) == 23
+    assert [row["upper_s"] for row in summary["histogram"][8:14]] == [
+        0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+    ]
     assert not hasattr(hook, "_measured_inter_frame_gaps_s")
+
+
+def test_gap_histogram_resolves_the_measured_m2_cadence_regime():
+    from microclaw import tools
+
+    summary = tools._new_gap_summary()
+    # M2 measured 99 gaps between 0.219 and 0.344 s. Keep a distribution in
+    # that same regime so collapsing 0.2 -> 0.5 makes both bounds fail here.
+    for gap in [0.219] * 49 + [0.25] * 45 + [0.344] * 5:
+        tools._record_gap(summary, gap)
+    payload = tools._gap_summary_payload(summary)
+    assert payload["count"] == 99
+    assert payload["median_le_s"] == 0.25
+    assert payload["p95_le_s"] == 0.35
+    assert payload["min_s"] == 0.219
+    assert payload["max_s"] == 0.344
