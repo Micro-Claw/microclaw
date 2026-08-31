@@ -106,7 +106,7 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 - Set interval_s=0 to acquire as fast as the camera allows (back-to-back frames).
 - Do not use a nonzero interval for SMLM unless a bounded, predeclared per-frame
   `hook_action_plan` spans more than one frame and needs Python between exposures;
-  the required idle time is the cost of applying that schedule.
+  that idle time slows acquisition without reducing background.
 
 ### Number of frames
 - Fixed-cell dSTORM:
@@ -293,10 +293,20 @@ Fixed, predeclared property schedules are also supported with a bounded
 one frame requires `interval_s > 0`: with zero, pycro-manager may hardware-sequence
 the time axis, so no Python callback runs between exposures to apply an action.
 
-**Current limitation:** image-driven property changes plus a conditional stop in
-one continuous timelapse are not supported today. `run_adaptive_survey` is not a
-substitute for single-field STORM: it walks a planned position list. Do not offer
-to write an adaptive STORM hook until a single-field adaptive timelapse route exists.
+**Current capability boundary:** on a fixed `run_timelapse`, `analyze_frame` may
+propose image-driven `SetIlluminationPower` after the user explicitly authorizes an
+`illumination_envelope` once before the run; no prompt occurs from the callback thread.
+It is power-only (not shutter control), bounded by a percent ceiling and a budget of
+increasing writes, and has no automatic final restoration: the device stays at the
+last accepted value. With `interval_s=0` and more than one frame, images are still
+analyzed, but writes land asynchronously with respect to exposures rather than between
+chosen frames.
+
+Image-driven `SetDeviceProperty` and `MoveNamedStage` are refused under a fixed plan;
+those actions must be in a predeclared `hook_action_plan`. An image-driven conditional
+stop is also refused. `run_adaptive_survey` is not a substitute for single-field
+STORM: it walks a planned position list. Do not offer to write an adaptive STORM hook
+until a single-field adaptive timelapse route exists.
 
 ---
 
