@@ -509,6 +509,10 @@ decision-name scan already refuses a name it cannot resolve; what it must gain
 is a message that says which name replaced which. Before 65c's gate, inspect
 each rig's saved-hook registry for old-vocabulary source and migrate it.
 
+**That message is the only part of this block an operator ever sees**, and it is
+the part a rename leaves for last — 111 of the 112 edits are invisible to
+everyone but us. Design it first, not after the sweep is green.
+
 **Deliberately not in scope:** `SurveyProgress`, `run_adaptive_survey` and the
 word "tile" in log and refusal strings. §"What is actually missing" lists names
 as survey-specific item (3), but only the *decision vocabulary* is load-bearing
