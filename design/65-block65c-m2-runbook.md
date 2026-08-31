@@ -92,6 +92,24 @@ Give the agent this prompt exactly:
 PASS requires axes 0, 1, 2, 3 exactly, `stop_reason: hook_stop`, and no exposure
 after time 3. A run reaching eight frames failed the early-stop mechanism.
 
+After the export exists, make the engine-shape observation copy. The first
+command only inserts a recorder immediately around the emitted pre-hardware
+callback and compiles the result; it does not connect or acquire. The second
+command deliberately reproduces this same four-frame, 50 ms run once on M2:
+
+```powershell
+uv run python design/65-block65c-gate.py --instrument-export gate65c_density_stop3_export.py --instrumented-out gate65c_density_stop3_instrumented.py
+uv run python gate65c_density_stop3_instrumented.py > gate65c-density-instrumented.log 2>&1
+$InstrumentedExit = $LASTEXITCODE
+Get-Content gate65c-density-instrumented.log
+if ($InstrumentedExit -ne 0) { throw "The instrumented exported run failed; callback shape was not established" }
+Get-Content gate65c_callback_shapes.jsonl
+```
+
+Do not run that script until the operator has approved the four-frame
+reproduction. It writes `gate65c_callback_shapes.jsonl` itself, so no transcript
+assumption is involved.
+
 ## 3 — image-derived non-dosing property, if M2 admits it
 
 First inspect the authorization map and Core inventory for the literal pair
@@ -179,14 +197,14 @@ do not set a teardown allowance in this session.
 
 ## 6 — engine callback-shape observation
 
-For the Step 5 run, record the actual event object received by the engine-facing
-pre-hardware callback on each of the 100 submissions: `dict`, or `list` plus its
-length. This observation must come from the real pycro-manager callback, not
-from the candidate queue and not from the off-rig fake. If the session tooling
-does not expose that engine-side type, report this limb `NOT EXERCISED`; do not
-infer “single event” from one-at-a-time parent publication.
+Use the instrumented Step 2 reproduction to record the actual event object
+received by the engine-facing pre-hardware callback on each of its four
+submissions: `dict`, or `list` plus its length. This observation comes from the
+real pycro-manager callback before delegating to the unmodified emitted hook;
+it does not infer from the candidate queue or from the off-rig fake. If the
+JSONL is absent or has fewer than four rows, report this limb `NOT EXERCISED`.
 
-Report counts such as `dict: 100, list: 0` or `dict: 0, list(len=1): 100`, plus
+Report counts such as `dict: 4, list: 0` or `dict: 0, list(len=1): 4`, plus
 the pycro-manager version. Label it **n=1 run from M2**. This settles only what
 that engine did in this run at `interval_s=0`; it does not legislate batching on
 other microscopes.

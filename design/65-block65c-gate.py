@@ -465,10 +465,58 @@ LIMBS = [limb_adaptive_export, limb_rule_not_trace, limb_contract_preflight,
          limb_retired_vocabulary, limb_shape_refusals, limb_existing_routes]
 
 
+def instrument_export(source_path: Path, output_path: Path) -> None:
+    """Add an engine-callback shape recorder to an already emitted script.
+
+    This transformation performs no acquisition.  The operator runs the
+    resulting standalone export on M2; its wrapper observes the object supplied
+    by pycro-manager before delegating to the original pre-hardware callback.
+    """
+    source = source_path.read_text(encoding="utf-8")
+    anchor = "_hook_callbacks = {name: callback for name, callback in "
+    lines = source.splitlines()
+    matches = [index for index, line in enumerate(lines) if line.startswith(anchor)]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one emitted _hook_callbacks assignment, found {len(matches)}"
+        )
+    injection = [
+        "",
+        "# BLOCK 65c GATE INSTRUMENTATION: observe the real engine callback shape.",
+        "_gate65c_original_pre = _hook_callbacks.get('pre_hardware_hook_fn')",
+        "def _gate65c_record_shape(event):",
+        "    if isinstance(event, list):",
+        "        row = {'shape': 'list', 'length': len(event)}",
+        "    else:",
+        "        row = {'shape': type(event).__name__, 'length': None}",
+        "    with (_HERE / 'gate65c_callback_shapes.jsonl').open('a', encoding='utf-8') as stream:",
+        "        stream.write(json.dumps(row, sort_keys=True) + '\\n')",
+        "    return _gate65c_original_pre(event) if _gate65c_original_pre else event",
+        "_hook_callbacks['pre_hardware_hook_fn'] = _gate65c_record_shape",
+        "",
+    ]
+    index = matches[0] + 1
+    instrumented = "\n".join(lines[:index] + injection + lines[index:]) + "\n"
+    ast.parse(instrumented)
+    output_path.write_text(instrumented, encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="gate65c", help="evidence directory")
+    parser.add_argument("--instrument-export", default=None,
+                        help="emitted adaptive script to instrument; performs no run")
+    parser.add_argument("--instrumented-out", default=None,
+                        help="output path required with --instrument-export")
     args = parser.parse_args()
+    if args.instrument_export is not None:
+        if args.instrumented_out is None:
+            parser.error("--instrumented-out is required with --instrument-export")
+        instrument_export(Path(args.instrument_export), Path(args.instrumented_out))
+        print(f"instrumented export: {Path(args.instrumented_out).resolve()}")
+        return 0
+    if args.instrumented_out is not None:
+        parser.error("--instrumented-out requires --instrument-export")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     RESULTS.clear()
