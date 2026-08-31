@@ -358,6 +358,7 @@ class UntrustedHookAdapter:
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,
             "successor": successor,
             "require_routing_decision": require_routing_decision,
+            "closed": False,
         }
         if not events:
             raise ValueError("an adaptive survey requires a seed event")
@@ -379,6 +380,8 @@ class UntrustedHookAdapter:
             signature = self.axes_signature(events[0])
             coordinator["plan"][signature] = (0, ())
         if acquire_hits is not None:
+            if successor is not None:
+                raise ValueError("acquire_hits cannot be combined with a successor route")
             self._context.update(
                 acquire_hits=acquire_hits, max_hits=max_hits, read_z=read_z,
             )
@@ -671,6 +674,8 @@ class UntrustedHookAdapter:
 
     def close_adaptive_handoff(self) -> None:
         """Prevent decisions made after the final authorized yield becoming writes."""
+        if self._context is not None:
+            self._context["closed"] = True
         if self._fixed_plan_context is not None and self._fixed_plan_context.get("adaptive"):
             self._fixed_plan_context["closed"] = True
 
@@ -680,6 +685,13 @@ class UntrustedHookAdapter:
         ctx = self._context
         coordinator = self._fixed_plan_context
         assert ctx is not None
+        if ctx.get("closed"):
+            reason = "adaptive handoff is closed after the final authorized event"
+            for action in actions:
+                self._refuse(metadata, action, reason)
+            if not actions:
+                self._record(metadata, event="hook_action", decision="refused", reason=reason)
+            return False
         if coordinator is None:
             ctx["candidates"].put(event)
             ctx["emitted"] += 1
@@ -814,6 +826,14 @@ class UntrustedHookAdapter:
         if self._context is not None:
             self._context["selector_refusal_reason"] = reason
         self._refuse(metadata, action, reason)
+
+    def _done_early(self, reason: str) -> None:
+        assert self._context is not None
+        progress = self._context["progress"]
+        if self._context.get("require_routing_decision"):
+            progress.done_early(reason)
+        else:
+            progress.done_early()
 
     def _accept(self, metadata: dict, action: HookAction, reason: str,
                 **fields: Any) -> None:
@@ -1036,7 +1056,7 @@ class UntrustedHookAdapter:
             self._refuse(metadata, action, "unsupported-by-run_adaptive_survey")
             return
         if isinstance(action, StopAcquisition):
-            ctx["progress"].done_early()
+            self._done_early("hook_stop")
             self._accept(metadata, action, "survey stopped before another tile was dispatched")
             return
         events = ctx["events"]
@@ -1094,16 +1114,21 @@ class UntrustedHookAdapter:
                                  "planned positions and is not a unique target")
                     return
                 event = matches[0]
-        if ctx["successor"] is None:
-            try:
+        try:
+            has_x, has_y = event.get("x") is not None, event.get("y") is not None
+            if has_x != has_y:
+                raise ValueError("event carries only one XY coordinate")
+            x = y = None
+            if has_x:
                 x, y = self._event_xy(event)
                 ctx["guard"].check_xy(x, y)
-                if event.get("z") is not None:
-                    ctx["guard"].check_z(event["z"])
-            except Exception as exc:
-                self._refuse_selector(metadata, action, f"SafetyGuard refused planned event: {exc}")
-                return
+            if event.get("z") is not None:
+                ctx["guard"].check_z(event["z"])
+        except Exception as exc:
+            self._refuse_selector(metadata, action, f"SafetyGuard refused planned event: {exc}")
+            return
         if deferred_acquire:
+            assert ctx["successor"] is None and x is not None and y is not None
             label = (event.get("axes") or {}).get("position")
             key = (label, x, y)
             if any(hit["_key"] == key for hit in ctx["acquire_hits"]):
@@ -1158,7 +1183,7 @@ class UntrustedHookAdapter:
                 if not actions:
                     self._record(metadata, event="hook_action", decision="refused",
                                  reason=reason)
-                self._context["progress"].done_early()
+                self._done_early("routing_refusal")
                 return False, True
         discard = False
         for action in current:
@@ -1193,7 +1218,7 @@ class UntrustedHookAdapter:
                 self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
                 self._refuse(metadata, action, reason)
             assert self._context is not None
-            self._context["progress"].done_early()
+            self._done_early("routing_refusal")
             return discard, True
         if autofocus:
             self._dispatch(autofocus[0], metadata)
@@ -1261,7 +1286,7 @@ class UntrustedHookAdapter:
                                  reason=str(exc))
                     if self._context is not None:
                         if self._context.get("require_routing_decision"):
-                            self._context["progress"].done_early()
+                            self._done_early("routing_refusal")
                         self._context["progress"].image_done()
                     return image, metadata
                 if sum(isinstance(a, EmitArtifact) for a in actions) > 1:

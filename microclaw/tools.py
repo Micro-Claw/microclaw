@@ -1551,7 +1551,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             *( [
                 "def _successor(index):",
                 "    event = dict(events[0])",
-                "    event['axes'] = {'time': index}",
+                "    event['axes'] = {**(events[0].get('axes') or {}), 'time': index}",
                 f"    if {params['interval_s']!r} > 0: event['min_start_time'] = {params['interval_s']!r} * index",
                 "    else: event.pop('min_start_time', None)",
                 "    return event",
@@ -2267,11 +2267,13 @@ class _HookedAcquisitionFailure(RuntimeError):
 
     def __init__(self, error: Exception, dataset_path: str,
                  *, frames_exposed: int | None = None,
-                 last_hardware_state: dict[str, Any] | None = None) -> None:
+                 last_hardware_state: dict[str, Any] | None = None,
+                 cadence: dict[str, Any] | None = None) -> None:
         super().__init__(str(error))
         self.dataset_path = dataset_path
         self.frames_exposed = frames_exposed
         self.last_hardware_state = last_hardware_state
+        self.cadence = cadence
 
 
 class AcquisitionUnterminated(RuntimeError):
@@ -2281,7 +2283,8 @@ class AcquisitionUnterminated(RuntimeError):
                  frames_accounted: int, engine_exception: BaseException | None,
                  camera_sequence_running: bool | None, teardown_running: bool,
                  expired_bound: str, bound_s: float, fallback_ceiling: bool,
-                 positions_completed: list[dict[str, Any]] | None = None) -> None:
+                 positions_completed: list[dict[str, Any]] | None = None,
+                 cadence: dict[str, Any] | None = None) -> None:
         super().__init__("pycro-manager teardown did not complete")
         self.dataset_path = dataset_path
         self.frames_planned = frames_planned
@@ -2298,6 +2301,7 @@ class AcquisitionUnterminated(RuntimeError):
         # here on its way out; nothing is ever discovered from the filesystem,
         # because guessing a dataset path is design/38 F7's original defect.
         self.positions_completed = positions_completed
+        self.cadence = cadence
 
 
 def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
@@ -2400,6 +2404,8 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
                 "written by Micro-Manager independently of it and readable now: "
                 + ", ".join(paths)
             ))
+    if exc.cadence is not None:
+        result["inter_frame_gap_summary"] = exc.cadence
     return result
 
 
@@ -2433,6 +2439,8 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
         result["frames_exposed"] = exc.frames_exposed
     if exc.last_hardware_state is not None:
         result["last_hardware_state"] = exc.last_hardware_state
+    if exc.cadence is not None:
+        result["inter_frame_gap_summary"] = exc.cadence
     return result
 
 
@@ -3988,6 +3996,48 @@ def _build_acquisition_events(
 
 
 _RUNTIME_FROM_ACCOUNTING_PLAN = object()
+_GAP_HISTOGRAM_UPPER_S = (
+    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+    1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, float("inf"),
+)
+
+
+def _new_gap_summary() -> dict[str, Any]:
+    return {"count": 0, "min_s": None, "max_s": None,
+            "bins": [0] * len(_GAP_HISTOGRAM_UPPER_S)}
+
+
+def _record_gap(summary: dict[str, Any], gap_s: float) -> None:
+    summary["count"] += 1
+    summary["min_s"] = gap_s if summary["min_s"] is None else min(summary["min_s"], gap_s)
+    summary["max_s"] = gap_s if summary["max_s"] is None else max(summary["max_s"], gap_s)
+    index = next(i for i, upper in enumerate(_GAP_HISTOGRAM_UPPER_S) if gap_s <= upper)
+    summary["bins"][index] += 1
+
+
+def _gap_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
+    count = summary["count"]
+    def percentile(fraction: float) -> float | None:
+        if not count:
+            return None
+        target = max(1, math.ceil(count * fraction))
+        seen = 0
+        for upper, bucket_count in zip(_GAP_HISTOGRAM_UPPER_S, summary["bins"]):
+            seen += bucket_count
+            if seen >= target:
+                return summary["max_s"] if math.isinf(upper) else upper
+        return summary["max_s"]
+    return {
+        "count": count,
+        "min_s": summary["min_s"],
+        "median_s": percentile(0.5),
+        "p95_s": percentile(0.95),
+        "max_s": summary["max_s"],
+        "histogram": [
+            {"upper_s": (None if math.isinf(upper) else upper), "count": bucket_count}
+            for upper, bucket_count in zip(_GAP_HISTOGRAM_UPPER_S, summary["bins"])
+        ],
+    }
 
 
 def _acquire_with_hooks(
@@ -4002,6 +4052,7 @@ def _acquire_with_hooks(
     ctrl: MicroscopeController,
     plan: AcquisitionPlan | None = None,
     runtime_plan: AcquisitionPlan | None | object = _RUNTIME_FROM_ACCOUNTING_PLAN,
+    cadence_summary: dict[str, Any] | None = None,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
 
@@ -4059,8 +4110,9 @@ def _acquire_with_hooks(
     frame_state = {
         "count": 0, "last_saved": started, "previous_saved": None,
         "largest_gap": 0.0,
-        "gaps": [],
     }
+    report_cadence = cadence_summary is not None
+    cadence_summary = cadence_summary if cadence_summary is not None else _new_gap_summary()
     frame_lock = threading.Lock()
     event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
     progress_state = {"last_emitted": None}
@@ -4070,7 +4122,7 @@ def _acquire_with_hooks(
             saved_at = _acquisition_monotonic()
             previous = frame_state["previous_saved"]
             if previous is not None:
-                frame_state["gaps"].append(saved_at - previous)
+                _record_gap(cadence_summary, saved_at - previous)
                 frame_state["largest_gap"] = max(
                     frame_state["largest_gap"], saved_at - previous
                 )
@@ -4088,7 +4140,7 @@ def _acquire_with_hooks(
             )
             if emit_progress:
                 progress_state["last_emitted"] = saved_at
-                measured_gaps = list(frame_state["gaps"])
+                measured_cadence = _gap_summary_payload(cadence_summary)
         if reservation is not None:
             # pycro-manager 1.0.2 calls this after the image is on disk. Unlike
             # image_process_fn, its arguments contain no pixel array, so plain
@@ -4108,8 +4160,7 @@ def _acquire_with_hooks(
                     "type": "acquisition_progress",
                     "frames_accounted": count,
                     "frames_planned": plan.frames if plan is not None else None,
-                    "inter_frame_gaps_s": measured_gaps,
-                    "largest_gap_s": max(measured_gaps, default=0.0),
+                    "inter_frame_gap_summary": measured_cadence,
                 })
             finally:
                 if event_sink is not None:
@@ -4255,13 +4306,11 @@ def _acquire_with_hooks(
                     camera_sequence_running=camera, teardown_running=True,
                     expired_bound=expired_bound, bound_s=bound_s,
                     fallback_ceiling=fallback,
+                    cadence=(_gap_summary_payload(cadence_summary)
+                             if report_cadence else None),
                 )
         if "exc" in outcome:
             raise outcome["exc"]
-        with frame_lock:
-            measured_gaps = list(frame_state["gaps"])
-        if hook is not None:
-            hook._measured_inter_frame_gaps_s = measured_gaps
     except AcquisitionUnterminated:
         raise
     except Exception as exc:
@@ -4307,6 +4356,8 @@ def _acquire_with_hooks(
                 frames_exposed=(None if reservation is None
                                 else reservation.completed_frames),
                 last_hardware_state=last_state,
+                cadence=(_gap_summary_payload(cadence_summary)
+                         if report_cadence else None),
             ) from exc
         raise
     finally:
@@ -4626,7 +4677,7 @@ def run_timelapse(
 
         def successor(index: int) -> dict:
             event = dict(seed)
-            event["axes"] = {"time": index}
+            event["axes"] = {**(seed.get("axes") or {}), "time": index}
             if interval_s > 0:
                 event["min_start_time"] = interval_s * index
             else:
@@ -4641,17 +4692,20 @@ def run_timelapse(
         candidates: queue.Queue = queue.Queue()
         started_at = datetime.now(timezone.utc)
         started = time.monotonic()
-        result = _acquire_survey_with_detector(
-            ctrl, guard, [], save_dir, name, hook, progress, candidates,
-            channel=channel, exposure_ms=exposure_ms, adaptive=True,
-            illumination_envelope=illumination_envelope,
-            artifact_limits=artifact_limits,
-            named_stage_envelope=named_stage_envelope,
-            property_envelope=property_envelope,
-            adaptive_events=events, adaptive_max_events=max_frames,
-            adaptive_successor=successor, require_routing_decision=True,
-            accounting_plan=cap_plan, runtime_plan=None,
-        )
+        try:
+            result = _acquire_survey_with_detector(
+                ctrl, guard, [], save_dir, name, hook, progress, candidates,
+                channel=channel, exposure_ms=exposure_ms, adaptive=True,
+                illumination_envelope=illumination_envelope,
+                artifact_limits=artifact_limits,
+                named_stage_envelope=named_stage_envelope,
+                property_envelope=property_envelope,
+                adaptive_events=events, adaptive_max_events=max_frames,
+                adaptive_successor=successor, require_routing_decision=True,
+                accounting_plan=cap_plan, runtime_plan=None,
+            )
+        except _HookArtifactBudgetError as exc:
+            return {"error": str(exc)}
         result.update(
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
@@ -7819,6 +7873,7 @@ class SurveyProgress:
         self._n_survey, self._lock, self._done = n_survey, threading.Lock(), 0
         self._done_early = False
         self._budget_exhausted = False
+        self._stop_reason: str | None = None
 
     def image_done(self) -> None:
         with self._lock:
@@ -7847,7 +7902,7 @@ class SurveyProgress:
         with self._lock:
             self._n_survey += 1
 
-    def done_early(self) -> None:
+    def done_early(self, reason: str = "hook_stop") -> None:
         """The hook decided the survey is over before n_survey images came
         back — the adaptive runner's stop signal (design/27 Fix 4). Counting
         alone can never get there: an early stop means the remaining tiles
@@ -7857,11 +7912,17 @@ class SurveyProgress:
         """
         with self._lock:
             self._done_early = True
+            self._stop_reason = reason
 
     def budget_exhausted(self) -> None:
         with self._lock:
             self._budget_exhausted = True
             self._done_early = True
+            self._stop_reason = "cap_reached"
+
+    def cap_reached(self) -> None:
+        with self._lock:
+            self._stop_reason = "cap_reached"
 
     @property
     def exhausted_budget(self) -> bool:
@@ -7880,6 +7941,11 @@ class SurveyProgress:
         acquired 4 (the 20260716_140329 misreport)."""
         with self._lock:
             return self._done_early
+
+    @property
+    def stop_reason(self) -> str | None:
+        with self._lock:
+            return self._stop_reason
 
     def survey_complete(self) -> bool:
         with self._lock:
@@ -7953,6 +8019,7 @@ def _survey_event_stream(
                         emitted += 1
                         if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
                             hook.close_adaptive_handoff()
+                            progress.cap_reached()
                         yield survey_events[0]  # the ONLY pre-dispatched event
                 else:
                     yield from survey_events      # dispatched in microseconds...
@@ -7973,6 +8040,7 @@ def _survey_event_stream(
                         emitted += 1
                         if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
                             hook.close_adaptive_handoff()
+                            progress.cap_reached()
                         yield event
                         continue
 
@@ -7985,6 +8053,7 @@ def _survey_event_stream(
 
                     if acq_finished():
                         hook.note_aborted()
+                        progress.done_early("abort")
                         return
 
                     # Images still arriving means the rig is alive; reset the
@@ -7996,6 +8065,7 @@ def _survey_event_stream(
 
                     if time.monotonic() - last_activity > max_idle_s:
                         hook.note_stalled(max_idle_s)   # loud in the log, not silent
+                        progress.done_early("stall")
                         return
             finally:
                 # The generator OWNS the terminator (design/24 Fix 2a, spike
@@ -8203,6 +8273,7 @@ def _acquire_survey_with_detector(
     acquire_reservation = None
     search_channel_effects = None
     planned_acquire_effects = None
+    cadence = _new_gap_summary()
     try:
         if acquire_plan is not None:
             acquire_reservation = _authorize_acquisition(ctrl, guard, acquire_plan)
@@ -8218,6 +8289,7 @@ def _acquire_survey_with_detector(
             guard, save_dir, name, events, hook, reservation=reservation,
             ctrl=ctrl, plan=survey_plan,
             runtime_plan=(runtime_plan if accounting_plan is not None else survey_plan),
+            cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
         # The two fixed runners already translate this; the survey runner did
@@ -8241,21 +8313,31 @@ def _acquire_survey_with_detector(
         raise
     stage_restoration = getattr(hook, "_named_stage_restoration", None)
     property_restoration = getattr(hook, "_property_restoration", None)
-    route_result = ({
-        "status": "Adaptive acquisition complete.",
-    } if adaptive_successor is not None else {
-        "status": f"Survey acquisition complete across {len(positions)} position(s).",
-        "positions": len(positions),
-    })
+    if adaptive_successor is not None:
+        stop_reason = progress.stop_reason or "completed"
+        route_result = {
+            "status": ("Adaptive acquisition failed closed."
+                       if stop_reason == "routing_refusal"
+                       else "Adaptive acquisition complete."),
+            "stop_reason": stop_reason,
+            "frames_planned": survey_plan.frames,
+            "frames_acquired": reservation.completed_frames,
+            "frames_exposed": reservation.completed_frames,
+            "inter_frame_gap_summary": _gap_summary_payload(cadence),
+        }
+        if stop_reason == "routing_refusal":
+            route_result["error"] = (
+                "Adaptive acquisition stopped at an image because its hook did "
+                "not return exactly one routing decision."
+            )
+    else:
+        route_result = {
+            "status": f"Survey acquisition complete across {len(positions)} position(s).",
+            "positions": len(positions),
+        }
     return _adaptive_result(
         dataset_path, hook.log_path,
         **route_result,
-        frames_planned=survey_plan.frames,
-        frames_acquired=(reservation.completed_frames if reservation is not None else None),
-        frames_exposed=(reservation.completed_frames if reservation is not None else None),
-        measured_inter_frame_gaps_s=getattr(
-            hook, "_measured_inter_frame_gaps_s", []
-        ),
         **(_reservation_report(reservation) if reservation is not None else {}),
         **({"_acquire_reservation": acquire_reservation}
            if acquire_reservation is not None else {}),
