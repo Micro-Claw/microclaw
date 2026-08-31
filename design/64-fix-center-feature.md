@@ -232,7 +232,7 @@ reason the trip exists — report NOT EXERCISED, which is never a pass.
 | E | **the control that must fire** — a gradient refuses AND the stage does not move |
 | F | **one** correction cuts the residual to under 0.6× — the sign test |
 | F2 | the loop reaches tolerance, re-measured independently after it returns |
-| G | the exported script carries the same unnegated affine and target |
+| G | the exported script carries the same unnegated affine and target, **and settles each correction** (added by block 64d) |
 
 **What the gate is NOT for.** The sign convention is settled off-rig — twice,
 numerically and against MM's own source — so no rig limb is asked to establish
@@ -285,6 +285,26 @@ blaming hardware, later.
 python design/64-gate-probe-selftest.py --demo-camera
         -> limb 0 NOT EXERCISED, F/F2/G NOT EXERCISED, no FAIL
 ```
+
+## The emitted centring shape changed under this gate — 2026-08-31
+
+Block 64d (design/68) gave XY an arrival contract, so `center_feature`'s
+emitted correction is no longer a bare `set_relative_xy_position` followed by
+`wait_for_device`: it reads a start, dispatches inside a typed handler, and
+calls `settle_xy_move`. This document's limb G was written against the old
+shape and **still passed**, which is the problem — it checked the sign by
+substring and knew nothing about the contract, so a regression that dropped the
+settle from the centring emitter would have left the centring gate green.
+
+Limb G now reads the call structurally: `set_relative_xy_position` must receive
+exactly the two affine terms as computed (a negation shows up as a `UnaryOp`
+and is reported as such, rather than being missed by a substring that no longer
+matches), and at least one `settle_xy_move` call must be present. Both were
+watched failing under mutation of the emitter — dropping the settle, and
+negating the correction — before this was written down.
+
+The sign convention itself is unchanged and still settled off-rig; limb F
+remains what catches a flip, and none of this asks the rig for anything new.
 
 ## Required tests — and where they landed
 
