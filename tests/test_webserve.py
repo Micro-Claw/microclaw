@@ -5,6 +5,7 @@ call — so these cover the properties that actually matter for a browser endpoi
 wired to real hardware: one turn at a time, no cross-origin driving, no key
 echoed back, and a refusal to bind beyond localhost without an opt-in.
 """
+import asyncio
 import contextlib
 import json
 import os
@@ -832,6 +833,50 @@ def test_browser_poll_lifetime_and_timeout_resolution_are_wired_once(client):
     # Polling reconciles banner/grant state only; streamed transcript events
     # still pass through the one existing apply-and-paint loop.
     assert html.count("applyEvent(live, ev, state);") == 1
+
+
+def test_quiet_prompt_stream_keeps_one_getter_and_delivers_after_a_ping(
+    session, monkeypatch
+):
+    monkeypatch.setattr(webserve, "KEEPALIVE_S", 0.01)
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("test-key", None))
+
+    def delayed_agent(*args, **kwargs):
+        time.sleep(0.015)
+        yield {"type": "round_start"}
+
+    monkeypatch.setattr(webserve, "run_agent_iter", delayed_agent)
+    app = build_app(session)
+    endpoint = next(
+        route.endpoint for route in app.routes
+        if getattr(route, "path", None) == "/api/prompt"
+    )
+
+    async def exercise():
+        request = types.SimpleNamespace(state=types.SimpleNamespace(identity="loopback"))
+        response = await endpoint(webserve.Prompt(message="go"), request)
+        stream = response.body_iterator
+        first = await anext(stream)
+        chunks = [first]
+        def has_round_start(chunk):
+            return '"round_start"' in (
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+            )
+        while not any(has_round_start(chunk) for chunk in chunks):
+            chunks.append(await anext(stream))
+        await stream.aclose()
+        await asyncio.sleep(0)
+        queue_getters = [
+            task for task in asyncio.all_tasks()
+            if task is not asyncio.current_task() and "Queue.get" in repr(task.get_coro())
+        ]
+        return chunks, queue_getters
+
+    chunks, queue_getters = asyncio.run(exercise())
+    assert chunks[0] == ": ping\n\n"
+    assert sum('"round_start"' in (c.decode() if isinstance(c, bytes) else c)
+               for c in chunks) == 1
+    assert queue_getters == []
 
 
 def test_browser_acquisition_grant_lookup_compares_structured_magnitude(session):

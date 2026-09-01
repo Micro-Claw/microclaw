@@ -128,7 +128,7 @@ def test_serve_inlines_recovery_without_requiring_it_in_history_viewer():
     served = load_page("serve.html")
     history = load_page("history_viewer.html")
     assert RECOVERY_JS_TAG not in served
-    assert "global.Recovery = { create };" in served
+    assert "global.Recovery = { create, sseEvents };" in served
     assert RECOVERY_JS_TAG not in history
     assert "global.Recovery = { create };" not in history
 

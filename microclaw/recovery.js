@@ -5,6 +5,25 @@
 (function (global) {
   "use strict";
 
+  async function* sseEvents(body, onFrame = () => {}) {
+    const reader = body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buf += value;
+      let frameEnd;
+      while ((frameEnd = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, frameEnd);
+        buf = buf.slice(frameEnd + 2);
+        onFrame();
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("data:")) yield JSON.parse(line.slice(5));
+        }
+      }
+    }
+  }
+
   function create(options) {
     const fetchState = options.fetch;
     const now = options.now;
@@ -19,6 +38,9 @@
     const showRemaining = options.showRemaining;
     const notePollFailure = options.notePollFailure;
     const needsPairing = options.needsPairing;
+    const noteStreamSilence = options.noteStreamSilence || (() => {});
+    const settleRecovered = options.settleRecovered || (() => {});
+    const silenceMs = options.silenceMs == null ? 30000 : options.silenceMs;
     let recoveryActive = false;
     let pollInFlight = false;
     let pollTimer = null;
@@ -26,6 +48,34 @@
     let currentTurnId = null;
     let displayedResolutionId = null;
     let deadlineMs = null;
+    let silenceTimer = null;
+    let streamSilenceDetected = false;
+
+    function armSilenceTimer() {
+      clearSilenceTimer();
+      silenceTimer = setTimer(markStreamSilent, silenceMs);
+    }
+
+    function clearSilenceTimer() {
+      if (silenceTimer !== null) clearTimer(silenceTimer);
+      silenceTimer = null;
+    }
+
+    function markStreamSilent() {
+      silenceTimer = null;
+      if (streamSilenceDetected) return;
+      streamSilenceDetected = true;
+      noteStreamSilence();
+    }
+
+    function settleIfRecovered(state) {
+      if (!streamSilenceDetected || !state || state.running !== false) return false;
+      streamSilenceDetected = false;
+      clearSilenceTimer();
+      stopConfirmationRecovery();
+      settleRecovered();
+      return true;
+    }
 
     function reconcileGrants(grants) {
       const incoming = (grants || []).map((grant) => grant.id);
@@ -79,6 +129,7 @@
           hideConfirm(confirmId);
         }
       }
+      settleIfRecovered(pending);
       return pending;
     }
 
@@ -125,9 +176,10 @@
     return {
       reconcileConfirmation, reconcileGrants, startConfirmationRecovery,
       stopConfirmationRecovery, pollConfirmation, resumeConfirmationRecovery,
-      setTurnId, now,
+      setTurnId, armSilenceTimer, clearSilenceTimer, markStreamSilent,
+      settleIfRecovered, now,
     };
   }
 
-  global.Recovery = { create };
+  global.Recovery = { create, sseEvents };
 })(typeof window !== "undefined" ? window : globalThis);
