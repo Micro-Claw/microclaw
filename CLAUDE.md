@@ -360,6 +360,31 @@ because a block looks small.
    ask. A gate's interpreter is part of its instrument. (design/62 F7 has the
    detail.)
 
+   **Write a gate step from the gates that already ran on that machine, not from
+   the design.** The runbook is the last thing written and the first thing a
+   machine rejects, and every environment fact it needs has already been settled
+   by an earlier gate that ran there. Block 69a's gate cost **four** operator
+   round trips on its own step 0, and each one was a fact already in the repo:
+   the capture form (`design/68`'s `> file 2>&1` after a warm-up, and
+   `scripts/updater-launcher.ps1` / `design/58-block58e` launching a long-running
+   `serve` with `Start-Process` and capturing *nothing*, because — as `CLAUDE.md`
+   already said — **PowerShell does not capture a native child process's
+   stdout**); that `microclaw serve` is silent under redirect until it dies,
+   which is a standing register row from block 4d; and how to save a browser log,
+   which `design/58-block58d` spells out with menu paths. Before writing a step,
+   `grep design/*.md` for the command you are about to invent. Diagnosing from
+   the error text instead is how four versions of one step get shipped, each
+   fixing the symptom the last one exposed.
+
+   Two corollaries that block also paid for. **Name the browser, the shell and
+   the interpreter** — a gate whose deliverable is what an operator sees is as
+   dependent on the browser as on the interpreter, and 69a's runbook gave Chrome
+   menu paths to a machine that opens Firefox. And **an emulation is not an
+   interruption**: Firefox's DevTools throttling does not apply to loopback, so
+   an "go offline for 60 s" limb against `127.0.0.1` measured nothing and the
+   countdown kept running throughout. Before asking an operator to break a
+   transport, check that the mechanism you named can break *that* transport.
+
    **And if every step of a gate is a literal command, it is a program — ship it
    as one.** Block 58a's gate went out as seven copy-paste PowerShell blocks and
    came back reporting `BLOCK 58a DEMO GATE PASSED` over five failed limbs:
