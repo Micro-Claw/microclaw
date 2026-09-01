@@ -15,6 +15,21 @@ The same wall stands in front of contributors. A skill that wants `napari`, or a
 plate reader that wants `pandas`, has two options: add the dependency to the
 default install and tax every rig, or write another sentence nobody can act on.
 
+There is a second, larger ownership problem. If accepting a community skill
+means copying its files and dependency pins into this repository, MicroClaw
+silently becomes the maintainer of that skill. We would have to review routine
+releases, update pins when Python or a package changes, and decide what to do
+when the original author disappears. A separate repository to which authors
+send pull requests changes the queue, but not the ownership: we would still
+merge, publish, and appear to warrant every version in it.
+
+There is also a product-state problem that a command-line installer can mostly
+avoid. A GUI catalog looks authoritative. If it says a skill is available, an
+install later fails, and the skill disappears on the next launch, the user sees
+MicroClaw contradict itself. Network failures, yanked wheels, incompatible
+Python versions, and abandoned releases are normal package-management states;
+they must be represented rather than collapsed into "available" or "absent."
+
 We already own machinery for exactly this shape of problem — locating uv,
 building an environment, proving the built thing starts, carrying state across
 two slots, and reporting all of it in a browser banner (design/58). The question
@@ -25,11 +40,12 @@ a second one.
 
 Yes, with one correction and one narrowing.
 
-**The correction.** The plan's stated goal 1 — *"it keeps project dependencies
-out of our pyproject.toml"* — is the wrong target, and taking it literally
-removes the property that makes the feature safe. Extras belong **in**
-`pyproject.toml`; what they stay out of is the *default* dependency list, which
-is where the tax actually is. `pyproject.toml` is what gives an extension a
+**The correction for first-party extensions.** The plan's stated goal 1 — *"it
+keeps project dependencies out of our pyproject.toml"* — is the wrong target,
+and taking it literally removes the property that makes the feature safe.
+Extras belong **in** `pyproject.toml`; what they stay out of is the *default*
+dependency list, which is where the tax actually is. `pyproject.toml` is what
+gives an extension a
 resolvable version range, a review in the block workflow, and — decisively — a
 place in the built wheel's own metadata. Requirement strings that live in a
 `SKILL.md` instead are strings a contributor can change without touching
@@ -43,6 +59,11 @@ the plan's vetting property holds — it just holds through packaging metadata
 instead of through free text. Goal 2 (a user cannot find the venv) is fully
 served either way, and it is the goal that matters.
 
+That conclusion applies only to code MicroClaw owns and imports in its own
+process. It must not become the admission rule for third-party skills. Community
+skills need a separate package boundary so their author, not MicroClaw, owns
+their releases and dependency policy.
+
 **The narrowing.** Do not reuse the *slot* half of design/58. Staging rebuilds
 the inactive environment and requires a restart; that is right for replacing
 Microclaw and wrong for adding `h5py`, which must be usable in the session that
@@ -51,6 +72,110 @@ asked for it. Reuse the smaller pieces — uv discovery, atomic state next to
 and install into the environment that is running.
 
 ## Decision
+
+### Split first-party extensions from community skill packages
+
+Keep the extra-based mechanism in this design for first-party integrations such
+as `ilastik`: they extend MicroClaw code, run in MicroClaw's process, and
+therefore must be reviewed and constrained with MicroClaw itself.
+
+Add a separate community package mechanism rather than accepting community
+skills into this repository. Its units and ownership are:
+
+```text
+publisher-owned source repository
+        |
+        | CI builds, tests, signs and publishes an immutable release
+        v
+skill package repository / registry
+        |
+        | catalog metadata points to package + exact release + digest
+        v
+MicroClaw stages package and its locked environment, verifies, then activates
+```
+
+A skill package contains its `SKILL.md`, assets, a manifest, and a dependency
+lock for every supported platform/Python combination. The manifest includes a
+stable package ID, publisher identity, version, compatible MicroClaw and Python
+ranges, entry points/capabilities, license, source and issue URLs, and the
+release digest. Releases are immutable. The publisher produces new releases,
+updates dependency locks, and marks obsolete releases as yanked. MicroClaw owns
+only the package protocol, installer, trust policy, and catalog UI—not the skill
+or its pins.
+
+Do not make a pull-request repository of copied skill files the primary
+solution. A lightweight registry repository is reasonable if it contains only
+signed catalog records that point to publisher-owned artifacts. This gives us a
+reviewable discovery and delisting surface without transferring maintenance.
+The artifact store could initially be GitHub Releases or a Python package index;
+we do not need to operate a ClawHub-like service to establish the boundary.
+Publishing from a GitHub repository via CI is preferable to letting the GUI run
+arbitrary npm or pip package names supplied by a catalog entry.
+
+Dependencies for community skills do not enter MicroClaw's environment. Each
+installed package gets an environment under the user data directory, keyed by
+package ID and release digest. Installation uses the publisher's lock and
+requires hashes; it never resolves an unbounded dependency set into the running
+server. Package code executes out of process through a small, versioned protocol
+with declared capabilities. A Markdown-only skill needs no environment. This
+isolation lets a publisher choose and pin dependencies without upgrading
+MicroClaw's `numpy`, and permits two skills to pin different versions. A
+community package that requires in-process imports or new privileged MicroClaw
+APIs is not a community skill; it is a first-party extension proposal and
+follows the reviewed extra path above.
+
+The first implementation can deliberately support only pure Markdown skills,
+then add isolated executable entry points once the process protocol and
+capability model exist. It must not temporarily install third-party dependencies
+into MicroClaw's venv: that shortcut destroys the ownership and safety boundary
+the package mechanism is meant to create.
+
+### Treat GUI installation as a durable transaction, not a promise
+
+The catalog uses distinct states and never equates discovery with usability:
+
+- **Available** means the registry has a compatible, non-yanked release. It is
+  an invitation to attempt installation, not a claim that this machine can
+  install it.
+- **Checking** performs local compatibility and disk checks and fetches the
+  signed manifest/lock. The confirmation screen shows publisher, version,
+  permissions, download size, and the registry's last successful verification
+  platform/date.
+- **Installing** downloads and builds into a temporary directory. MicroClaw
+  verifies signatures/digests, locked dependencies, declared files, entry-point
+  startup, and a package self-check before changing active state.
+- **Installed / Ready** is written only after verification and an atomic rename.
+  The receipt records the exact release, digest, lock digest, publisher, granted
+  capabilities, verification result, and install time.
+- **Install failed** is a durable state with the attempted version and a useful
+  reason (network, incompatible platform, resolution, verification, or package
+  self-check). The catalog entry remains visible with Retry, Report to publisher,
+  and View details actions. Failure never creates a partially installed skill.
+- **Needs repair** means a receipt exists but local verification fails at a later
+  startup. Keep the skill visible and disabled, explain why, and offer Repair or
+  Remove. Never silently delete it or present it as never installed.
+
+Activation is transactional: keep the previous verified release active until
+the candidate passes, atomically switch an `active` pointer, and retain one
+previous release for rollback. On a failed update, continue using the previous
+release. On a failed first install, remove only the staging directory. Registry
+unavailability at startup uses a cached, signed last-known-good catalog and does
+not affect already installed packages. A yanked or newly incompatible release
+gets a warning; it is not remotely uninstalled.
+
+The catalog should also lower the probability of offering a doomed install.
+Only show releases whose declared OS, architecture, Python, MicroClaw, and
+capabilities match locally. Registry CI should install and self-check each
+release on supported targets and expose the result and age, but this remains
+evidence, not a guarantee—local installation is still the authority. Default
+sorting can favor verified and recently maintained skills, while abandoned
+skills remain visibly third-party and may be delisted from discovery without
+altering existing installations.
+
+This preserves the ease of a GUI without pretending package installation is
+infallible. The command-line path and GUI call the same installer/state machine;
+the GUI is not a second package manager. A future CLI is useful for authors,
+automation, and support, but users need not know it exists.
 
 ### An extension is an extra, named by the browser, resolved from our own metadata
 
@@ -230,7 +355,9 @@ at the panel, and that is the whole agent-side change. If sessions are later
 measured stalling on this, that measurement buys the tool, and it bolts onto
 this shape unchanged.
 
-**No package specs outside `pyproject.toml`.** See the correction above.
+**No first-party package specs outside `pyproject.toml`.** See the correction
+above. Community package locks belong to the community artifact and are never
+merged into MicroClaw's project metadata.
 
 **No new slot, no restart, no second staging path.** An extension is added to
 the running environment; the update system stays the only thing that builds
@@ -252,8 +379,11 @@ restart to add one wheel, and it does nothing on an unmanaged install. Keep it
 in reserve for the constraint-conflict case if that ever turns out to be common;
 it is not the default.
 
-**Requirements in `SKILL.md`.** The plan's original shape. Loses the allowlist,
-loses resolution, and puts the strings that reach uv's argv in a document.
+**Requirements in an in-tree `SKILL.md`.** The plan's original shape. Loses the
+allowlist, loses resolution, and puts the strings that reach uv's argv in a
+document. This does not reject dependencies in a signed community package
+manifest/lock installed into an isolated environment; that is a different trust
+and execution boundary.
 
 **Derive the panel text instead of `EXTENSIONS`.** "ilastik — installs h5py" is
 free and needs no table. Rejected on the project's own ease-of-use rule: the
@@ -266,6 +396,12 @@ startup reconcile already covers with a button.
 ---
 
 ## Blocks
+
+Blocks 70a–70c below implement the first-party extension path. The community
+registry, package format, isolation protocol, and shared CLI/GUI installer need
+a separate design and blocks before accepting external skills. They are not a
+small addition to 70a: making them one would encourage the unsafe interim state
+where community dependencies are installed into MicroClaw's live environment.
 
 Two rig trips, both the demo machine. Nothing here needs a microscope: no
 motion, no dose, no bridge. M2/M5/Nikon are not involved.
@@ -399,6 +535,15 @@ installing returns the body alone.
    automatically?** This plan says no — network on startup, without a button.
    Say so if you want it automatic; it is a two-line change and a different
    gate limb.
+3. **What is the initial community artifact transport?** The recommendation is
+   publisher-owned GitHub Releases plus a small reviewed registry of signed
+   pointers, then move artifacts behind a dedicated service only if scale or
+   availability requires it. A copied-skills repository is explicitly not the
+   recommendation.
+4. **What may a community skill execute in v1?** The safest useful first cut is
+   Markdown/assets only. Executable packages should wait for the out-of-process
+   protocol, capability grants, signing policy, and revocation story rather than
+   inherit the current process's filesystem and hardware authority.
 
 ## Run ledger
 
