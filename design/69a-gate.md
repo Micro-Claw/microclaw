@@ -33,22 +33,33 @@ exactly as it does in every other runbook.
 
 ```powershell
 New-Item -ItemType Directory -Force block69a-evidence | Out-Null
-uv run microclaw serve > block69a-evidence\server-console.log 2>&1
-```
-
-**`microclaw serve` was historically silent under any redirect until it died** —
-design/35's register, from block 4d's gate: block-buffered stdout and a loop
-that never returns. Block 69a-3 gives the event lines `flush=True` and the
-startup banner already had it, so the file fills while the server runs. Confirm
-that in a **second** PowerShell window:
-
-```powershell
-cd D:\Code\microclaw
+$Server = Start-Process -FilePath "uv" `
+  -ArgumentList "run","microclaw","serve" `
+  -RedirectStandardOutput "block69a-evidence\server-console.log" `
+  -RedirectStandardError  "block69a-evidence\server-stderr.log" `
+  -NoNewWindow -PassThru
+Start-Sleep -Seconds 8
 Get-Content block69a-evidence\server-console.log -Tail 5
 ```
 
-`Microclaw GUI: http://127.0.0.1:8000  (Ctrl-C to stop)` means it is up. Keep
-this window; the capture check before the five-minute limb uses it.
+**Why `Start-Process` and not `> file`.** PowerShell 5.1 does not capture a
+native child process's stdout — `CLAUDE.md` records this and block 58e's gate
+says the same in a comment, which is why both existing launches of `serve` in
+this repo (`scripts/updater-launcher.ps1`, `design/58-block58e-demo-gate.ps1`)
+use `Start-Process -NoNewWindow` and capture nothing. A `> file` redirect leaves
+the log empty for a process that never exits, which is design/35's register row
+from block 4d and is what happened on the first run of this gate.
+`-RedirectStandardOutput` hands the child its own file handle, so the server
+writes to the file directly and PowerShell is not in the middle.
+
+You must see `Microclaw GUI: http://127.0.0.1:8000  (Ctrl-C to stop)` in that
+`Get-Content` output. **If the file is still empty, stop and report it** — the
+gate cannot be scored without the server's event log, and everything after this
+line costs a five-minute wait.
+
+Stop the server at the end with `Stop-Process -Id $Server.Id`, not Ctrl-C. A
+hard stop is safe here: block 69a-3 gives the event lines `flush=True`, so each
+one is on disk when it is written rather than at exit.
 
 Leave the first PowerShell window running. In the browser, open DevTools, select the
 Console tab, enable **Preserve log**, and clear the console. The server console
@@ -122,7 +133,7 @@ comparison. This is limb 5.
 ## 3. Save and compute
 
 Save the DevTools console as described in step 0, then stop the server with
-Ctrl-C. Run this command unedited from the checkout:
+`Stop-Process -Id $Server.Id`. Run this command unedited from the checkout:
 
 ```powershell
 uv run python design/69a-gate.py --server-log block69a-evidence\server-console.log --browser-log block69a-evidence\browser-console.log --forbidden PAYLOAD_69A_GATE_SECRET --log block69a-evidence\computed-score.log
