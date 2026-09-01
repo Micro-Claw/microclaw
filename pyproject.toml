@@ -54,6 +54,7 @@ microclaw = [
     "serve.html",
     "transcript.css",
     "transcript.js",
+    "recovery.js",
     "favicon.ico",
     "safety_config.example.yaml",
     "skills/*/*.md",

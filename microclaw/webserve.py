@@ -207,6 +207,8 @@ class _Pending:
         self.subject = subject
         self.grant_metadata = grant_metadata
         self.grant_id: str | None = None
+        self.deadline = _monotonic() + CONFIRM_TIMEOUT_S
+        self.decision: str | None = None
         # threading queue, not asyncio: confirm() blocks on the turn thread
         # while /api/confirm answers from the event loop.
         self.reply: queue.Queue = queue.Queue(maxsize=1)
@@ -356,6 +358,8 @@ class Session:
         # re-surface a banner the one-shot stream already delivered.
         self._emit = None
         self.pending: _Pending | None = None
+        self.last_resolution: dict | None = None
+        self.current_turn_id: str | None = None
         self.audit_records: list[dict] = []
         confirmation_path = self.history_fn.replace("_history.jsonl", "_confirmations.jsonl")
         self.confirmation_audit = AuditLog(confirmation_path, enabled=self.save)
@@ -430,17 +434,21 @@ class Session:
         emit = self._emit
         confirmation_id = uuid.uuid4().hex
         identity = self.current_identity
+        p = None
 
         def decided(
             decision: str, decided_by: str = identity, grant_id: str | None = None,
             grant_identity: str | None = None,
         ) -> bool:
-            return self._audit_confirmation(
+            approved = self._audit_confirmation(
                 summary=summary, kind=kind, subject=subject,
                 decision=decision, confirmation_id=confirmation_id,
                 identity=decided_by, grant_id=grant_id,
                 grant_identity=grant_identity,
             )
+            if p is not None:
+                p.decision = decision
+            return approved
 
         grant = tools.SESSION_GRANTS.granted(kind, subject, grant_metadata)
         if grant is not None:
@@ -462,8 +470,7 @@ class Session:
               "summary": summary, "kind": kind, "subject": subject,
               "grantable": tools.SessionGrants.is_grantable(kind, subject)})
         try:
-            deadline = _monotonic() + CONFIRM_TIMEOUT_S
-            while _monotonic() < deadline:
+            while _monotonic() < p.deadline:
                 if self.cancel.is_set():
                     print("[microclaw] Turn stopped; confirmation declined.")
                     return decided("declined:stopped")     # Stop button: deny
@@ -487,8 +494,13 @@ class Session:
             print("[microclaw] Confirmation timed out; declined.")
             return decided("declined:timeout")             # deadline: deny
         finally:
-            self.pending = None
-            emit({"type": "confirm_resolved", "id": p.id})
+            if p is not None:
+                resolution = {"id": p.id}
+                if p.decision is not None:
+                    resolution.update(turn_id=self.current_turn_id, decision=p.decision)
+                    self.last_resolution = dict(resolution)
+                self.pending = None
+                emit({"type": "confirm_resolved", **resolution})
 
 
 class SetupSession(Session):
@@ -897,6 +909,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         # window in which a second prompt passes the check above.
         await session.lock.acquire()
         session.cancel.clear()
+        session.current_turn_id = uuid.uuid4().hex
+        session.last_resolution = None
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
@@ -980,7 +994,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         return StreamingResponse(
             events(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no",
+                     "X-Microclaw-Turn-ID": session.current_turn_id},
         )
 
     @app.post("/api/stop")
@@ -1010,13 +1025,19 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         strands the turn until the deadline. serve.html fetches it on load.
         """
         p = session.pending
-        grants = tools.SESSION_GRANTS.active()
-        if p is None:
-            return JSONResponse({"grants": grants})
-        return JSONResponse({"id": p.id, "summary": p.summary, "kind": p.kind,
-                             "subject": p.subject,
-                             "grantable": tools.SessionGrants.is_grantable(p.kind, p.subject),
-                             "grants": grants})
+        payload = {
+            "grants": tools.SESSION_GRANTS.active(),
+            "running": session.lock.locked(),
+            "turn_id": session.current_turn_id,
+            "last_resolution": session.last_resolution,
+        }
+        if p is not None:
+            payload.update(
+                id=p.id, summary=p.summary, kind=p.kind, subject=p.subject,
+                grantable=tools.SessionGrants.is_grantable(p.kind, p.subject),
+                remaining_s=max(0.0, p.deadline - _monotonic()),
+            )
+        return JSONResponse(payload)
 
     @app.post("/api/confirm")
     async def post_confirm(c: Confirm, request: Request):

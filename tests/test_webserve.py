@@ -99,6 +99,8 @@ def session():
         cancel=threading.Event(),
         _emit=None,
         pending=None,
+        last_resolution=None,
+        current_turn_id=None,
         audit_records=[],
         current_identity="loopback",
         # A fake session stands in for a normal one, so it carries the same
@@ -812,12 +814,24 @@ def test_a_confirm_with_no_stream_bound_denies(session):
     # A confirmation that cannot reach the operator must never become a yes.
     assert session._emit is None
     assert session.confirm("Save knowledge x") is False
+    assert session.last_resolution is None
 
 
 def test_browser_renders_acquisition_progress_in_the_pending_status(client):
     html = client.get("/").text
     assert 'case "acquisition_progress"' in html
     assert "`frames ${accounted} / ${planned}`" in html
+
+
+def test_browser_poll_lifetime_and_timeout_resolution_are_wired_once(client):
+    html = client.get("/").text
+    assert html.count("confirmationRecovery.startConfirmationRecovery();") == 1
+    assert html.count("confirmationRecovery.stopConfirmationRecovery();") == 1
+    assert 'hideConfirm(ev.id, ev.decision)' in html
+    assert "Confirmation timed out and was declined" in html
+    # Polling reconciles banner/grant state only; streamed transcript events
+    # still pass through the one existing apply-and-paint loop.
+    assert html.count("applyEvent(live, ev, state);") == 1
 
 
 def test_browser_acquisition_grant_lookup_compares_structured_magnitude(session):
@@ -881,7 +895,8 @@ def test_the_browser_can_approve_a_pending_confirm(session, client, fast_confirm
     thread.join(timeout=5)
     assert box["answer"] is True
     assert session.pending is None
-    assert events[-1] == {"type": "confirm_resolved", "id": pid}
+    assert events[-1] == {"type": "confirm_resolved", "id": pid,
+                          "turn_id": None, "decision": "approved"}
 
 
 def test_the_browser_can_decline_a_pending_confirm(session, client, fast_confirm_poll):
@@ -975,6 +990,7 @@ def test_auto_approval_audits_acting_operator_and_grant_author_separately(sessio
     session.current_identity = "acting-operator"
 
     assert session.confirm("enable 561", "illumination", "enable") is True
+    assert session.last_resolution is None
 
     record = session.audit_records[-1]
     assert record["identity"] == "acting-operator"
@@ -1008,14 +1024,25 @@ def test_get_confirm_resurfaces_a_pending_banner(session, client, fast_confirm_p
     pid = session.pending.id
 
     body = client.get("/api/confirm").json()
-    assert body == {"id": pid, "summary": "Save knowledge devices/X:\nX: {a: 1}",
-                    "kind": "illumination", "subject": None,
-                    "grantable": False, "grants": []}
+    assert body["id"] == pid
+    assert body["summary"] == "Save knowledge devices/X:\nX: {a: 1}"
+    assert body["kind"] == "illumination"
+    assert body["subject"] is None
+    assert body["grantable"] is False
+    assert body["grants"] == []
+    assert body["running"] is False
+    assert body["turn_id"] is None
+    assert body["last_resolution"] is None
+    assert 0 < body["remaining_s"] <= webserve.CONFIRM_TIMEOUT_S
 
     client.post("/api/confirm", json={"id": pid, "approve": False})
     thread.join(timeout=5)
     assert box["answer"] is False
-    assert client.get("/api/confirm").json() == {"grants": []}
+    resolved = client.get("/api/confirm").json()
+    assert resolved["grants"] == []
+    assert resolved["last_resolution"] == {
+        "id": pid, "turn_id": None, "decision": "declined",
+    }
 
 
 def test_stop_during_a_pending_confirm_denies(session, client, fast_confirm_poll):
@@ -1034,9 +1061,88 @@ def test_an_unanswered_confirm_denies_at_the_deadline(session, monkeypatch):
     # later read is already past it.
     ticks = iter([0.0])
     monkeypatch.setattr(webserve, "_monotonic", lambda: next(ticks, 1e9))
+    monkeypatch.setattr(webserve, "CONFIRM_TIMEOUT_S", 0.1)
     session._emit = lambda event: None
+    session.current_turn_id = "turn-timeout"
     assert session.confirm("Save knowledge x") is False
     assert session.pending is None
+    assert session.last_resolution["turn_id"] == "turn-timeout"
+    assert session.last_resolution["decision"] == "declined:timeout"
+
+
+def test_audit_failure_publishes_no_authoritative_resolution(session, monkeypatch):
+    pending = webserve._Pending("pending-id", "Proceed?", "knowledge", None)
+    pending.reply.put((True, "browser"))
+    monkeypatch.setattr(webserve, "_Pending", lambda *args, **kwargs: pending)
+    events = []
+    session._emit = events.append
+    session.current_turn_id = "turn-1"
+
+    def fail_audit(**kwargs):
+        raise OSError("audit volume is read-only")
+
+    session._audit_confirmation = fail_audit
+    with pytest.raises(OSError, match="read-only"):
+        session.confirm("Proceed?")
+
+    assert session.last_resolution is None
+    assert session.pending is None
+    assert events[-1] == {"type": "confirm_resolved", "id": "pending-id"}
+
+
+def test_missing_session_grant_publishes_no_resolution(session, monkeypatch):
+    pending = webserve._Pending(
+        "pending-id", "Enable illumination", "illumination", "enable"
+    )
+    pending.reply.put(("session", "browser"))
+    monkeypatch.setattr(webserve, "_Pending", lambda *args, **kwargs: pending)
+    events = []
+    session._emit = events.append
+    session.current_turn_id = "turn-1"
+
+    with pytest.raises(RuntimeError, match="grant disappeared"):
+        session.confirm("Enable illumination", "illumination", "enable")
+
+    assert session.last_resolution is None
+    assert session.pending is None
+    assert events[-1] == {"type": "confirm_resolved", "id": "pending-id"}
+
+
+def test_polling_pending_state_cannot_extend_or_answer_a_confirmation(
+    session, client, monkeypatch
+):
+    now = [10.0]
+    monkeypatch.setattr(webserve, "_monotonic", lambda: now[0])
+    monkeypatch.setattr(webserve, "CONFIRM_TIMEOUT_S", 2.0)
+    pending = webserve._Pending("c1", "Proceed?", "knowledge", None)
+    session.pending = pending
+    deadline = pending.deadline
+
+    first = client.get("/api/confirm").json()
+    now[0] = 11.25
+    second = client.get("/api/confirm").json()
+
+    assert first["remaining_s"] == 2.0
+    assert second["remaining_s"] == 0.75
+    assert pending.deadline == deadline
+    assert pending.reply.empty()
+
+
+def test_resolution_survives_turn_completion_and_clears_on_next_accepted_prompt(
+    session, client, monkeypatch
+):
+    session.current_turn_id = "finished-turn"
+    session.last_resolution = {
+        "id": "c1", "turn_id": "finished-turn", "decision": "declined",
+    }
+    assert session.lock.locked() is False
+    assert client.get("/api/confirm").json()["last_resolution"]["id"] == "c1"
+
+    monkeypatch.setattr(webserve, "run_agent_iter", lambda *args, **kwargs: iter(()))
+    response = client.post("/api/prompt", json={"message": "next"})
+    assert response.status_code == 200
+    assert response.headers["X-Microclaw-Turn-ID"] != "finished-turn"
+    assert session.last_resolution is None
 
 
 def test_run_turn_binds_the_emit_channel_for_confirmations(session, client, monkeypatch):
@@ -1900,6 +2006,23 @@ def test_auth_failure_rate_limit_trips_then_recovers(remote, monkeypatch):
     assert client.get("/api/history", headers=TLS).status_code == 429
     now[0] += webserve.RATE_WINDOW_S
     assert client.get("/api/history", headers=TLS).status_code == 401
+
+
+def test_one_unauthorized_confirmation_poll_leaves_post_confirm_available(
+    session, remote, fast_confirm_poll
+):
+    client, _ = remote
+    thread, _, box = _start_confirm(session)
+    pid = session.pending.id
+
+    assert client.get("/api/confirm", headers=TLS).status_code == 401
+    approved = client.post(
+        "/api/confirm", headers=_bearer(), json={"id": pid, "approve": True}
+    )
+
+    assert approved.status_code == 200
+    thread.join(timeout=5)
+    assert box["answer"] is True
 
 
 def test_pair_attempt_rate_limit_trips_then_recovers(remote, monkeypatch):
