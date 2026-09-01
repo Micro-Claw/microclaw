@@ -1228,6 +1228,58 @@ scorer fix, so a checkout at `4f4443f` would have satisfied it while running the
 broken limb 8. Repinned to `0a2090e`, keeping the `--is-ancestor` form so a
 later runbook amendment still satisfies it.
 
+### Demo gate round 1, 2026-09-01 — scored from the artifacts
+
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/block69a-evidence`
+(confirmation audit, history JSONL, `computed-score.log`, a DevTools screenshot,
+and a **0-byte** `server-console.log`). Run from `design69a/event-sequencing`
+before the capture corrections landed.
+
+| limb | verdict | evidence |
+| --- | --- | --- |
+| 1 pending banner + countdown | **PASS** | operator observed both states |
+| 2 silence | **NOT EXERCISED** | see below — not a failure of the product |
+| 3 composer after settle | not reported | |
+| 4 timeout outranks stale progress | **PASS** | history `[5]` runs the 2-frame acquisition *before* the 100k request at `[9]`, so `frames 2 / 2` was genuinely competing; audit records `declined:timeout` at 19:59:24 |
+| 5 reload recovers the same pending ID | **PASS** | screenshot shows the full banner restored after a reload |
+| 6, 7 sequence arithmetic | **NOT EXERCISED** | no server log, no console log |
+| 8 payload-free logging | **falsely PASSED** | scorer defect, below |
+
+**The gate found a real product defect, and it is this incident's own shape.**
+`startConfirmationRecovery()` has one call site, inside `runTurn`. Boot calls
+`reconcileConfirmation()` **once** and never starts the loop, so a page reloaded
+while a confirmation is pending shows the banner and is then inert — no
+countdown, no stale-banner removal, and **no timeout disclosure**, because
+`last_resolution` is only ever fetched by the poll. The operator sits in front of
+a live banner, the confirmation expires, and the page tells them nothing.
+
+The screenshot is the evidence: after the reload the Network panel shows the boot
+sequence and then exactly **one** `confirm` request, not one per second; the ~200
+requests over 3.54 min are the polling from before the reload. **2786 tests, a
+discriminating selftest and two review rounds all missed it**, because
+§"Tests" asks that a reload recover the same pending ID — which it does — and
+nothing asserts the reloaded page keeps polling. Revision 1 made a reloaded page
+able to *match* a resolution; nothing starts the loop that would fetch one.
+
+**Limb 2 measured nothing, and the tell was the countdown.** The operator set
+Firefox's Network throttling to Offline for 60 s and the countdown **kept
+updating** — and the countdown is poll-driven, so `127.0.0.1` was still being
+served. **Firefox's throttling does not apply to loopback.** Keepalives kept
+arriving and silence correctly never fired. Split for round 2: keepalive
+*arrival* over a real browser stays on the rig, where a real HTTP stack is the
+point; the 30 s detector is settled off-rig by `run_browser_turn`, whose
+`read()` genuinely never resolves.
+
+**L8 passed on an empty log**, which is the gate breaking the rule it exists to
+enforce. Its checks are negative assertions — no `text_delta` line, no payload
+marker — and an empty file satisfies both. A limb that cannot fail is not a
+criterion (block 58a). L6 and L7 must be audited for the same shape.
+
+**Four operator round trips went to step 0 alone**, none of them to the product.
+That cost is written up generically in `CLAUDE.md` step 6; the short version is
+that every fact needed was already in `design/` and the runbook was written from
+this design instead.
+
 ### Coordination log
 
 - **2026-09-01, assignment.** Blocks cut three ways above; the design's own
