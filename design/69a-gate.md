@@ -61,12 +61,27 @@ Stop the server at the end with `Stop-Process -Id $Server.Id`, not Ctrl-C. A
 hard stop is safe here: block 69a-3 gives the event lines `flush=True`, so each
 one is on disk when it is written rather than at exit.
 
-Leave the first PowerShell window running. In the browser, open DevTools, select the
-Console tab, enable **Preserve log**, and clear the console. The server console
-and browser console from this same session are both required. At the end,
-right-click the DevTools console and choose **Save as…**, saving it as
-`block69a-evidence\browser-console.log`. Do not substitute a screenshot: the
-computed comparison needs the text and turn IDs.
+Leave the first PowerShell window running.
+
+**The browser is Firefox** (the desktop shortcut's default on this machine).
+Press **F12**, and set up both panels now — the two artifacts below are
+different things and a screenshot substitutes for neither:
+
+- **Network** tab → tick **Persist Logs**. At the end, export it with the
+  download-arrow button, or right-click any request → **Save All As HAR**, to
+  `block69a-evidence\network.har`. This is the same capture block 58d's gate
+  uses, and it is what shows whether the 1 Hz recovery poll was actually
+  running.
+- **Console** tab → tick **Persist Logs**, then clear it. This is where limb 7's
+  evidence lives: block 69a-3 writes `... last applied seq: N` through
+  `console.warn`, and **a HAR does not contain console messages**. At the end,
+  right-click in the console output → **Export Visible Messages To → File**,
+  saving as `block69a-evidence\browser-console.log`.
+
+If that export item is not in your Firefox's menu, do not hunt for it: type
+`last applied seq` in the console's **Filter output** box, select all, copy, and
+paste into `block69a-evidence\browser-console.log`. Those lines are the only
+console content the scorer reads.
 
 Use the recognizable marker `PAYLOAD_69A_GATE_SECRET` in the forced
 confirmation's operator-facing summary. It must be visible in the banner and
