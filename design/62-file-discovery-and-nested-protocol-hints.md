@@ -606,6 +606,48 @@ executable checks; `_protocol_shape_kwargs` does default `interval_s` to 0; the
 inline refusal does cover only `hook_strategy` and `HOOK_CAPABILITY_ARGS`;
 `fn` is in scope at `execute_tool`'s `except Exception` boundary (`:10709`).
 
+### F4 — `z_step_um` means two different things on the same tool
+
+Found by the coordinator running 62b's preserved tests, 2026-09-01. Exactly one
+of that file's 32 registry parameterizations failed, and the reason is not a test
+bug.
+
+`run_multiposition_with_autofocus` accepts **`z_step_um` at the top level** —
+schema description *"Fine step size for autofocus in µm"*, paired with
+`z_range_um` — **and** takes `protocol_params`, whose `z_step_um` is the zstack
+protocol's plane spacing. Two genuinely different quantities, same name, same
+tool. Measured: it is the only overlap among the four, and the tool is already
+marked deprecated in its own description.
+
+```text
+run_multiposition_with_autofocus  top-level overlap with the eight: ['z_step_um']
+run_tile_acquisition              none
+run_multiposition_acquisition     none
+run_adaptive_survey               none
+```
+
+Two consequences:
+
+- **Decision 4 behaves correctly here, by luck rather than design.** A top-level
+  `z_step_um` on that tool *binds*, so no `TypeError` is raised and the hint never
+  fires — which is the right outcome. But the eight-key list was written on the
+  assumption that these keys are never legitimate top-level parameters of a tool
+  that also takes `protocol_params`, and on one tool that assumption is false.
+  The correct test is not to drop the combination but to **assert** it: that
+  `z_step_um` binds on this tool and produces no nested hint. A silently skipped
+  parameterization would leave the assumption unexamined.
+- **Decision 2's shared description needs one disambiguating clause.** Its
+  literal sentence — "Put channel and exposure_ms here, never at the top level" —
+  names only the two keys that are *not* in collision, so it is not false. But an
+  agent reading it on the autofocus wrapper sees `z_step_um` published in two
+  places with nothing distinguishing them. Say what the nested Z keys are (the
+  acquisition protocol's plane spacing) so the focus-search parameter is not
+  confusable with it. This can be done in the shared constant without breaking
+  the same-object identity that acceptance test 5 requires.
+
+Renaming either parameter is **out of scope** — it is a public surface change
+design/62 did not decide, on a deprecated tool.
+
 ### F3 — acceptance test 9 is an API spend, not a runner task
 
 Test 9 replays turn 73's payload through a model with the old and the new
