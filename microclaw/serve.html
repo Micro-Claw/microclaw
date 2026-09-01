@@ -478,28 +478,11 @@
   });
 
   // ---- streaming a turn ----
-  // Minimal SSE reader over the POST response body: frames are separated by a
-  // blank line, and every frame we emit is a single data: line of JSON.
+  // The minimal SSE reader lives in recovery.js so complete-frame activity can
+  // be tested beside the silence reconciler. Events are one data: line; quiet
+  // turns also carry comment frames.
   // EventSource can't be used here — it is GET-only, and a GET that drives the
   // stage is a CSRF hole (an <img src> from any tab, with no Origin to refuse).
-  async function* sseEvents(body) {
-    const reader = body.pipeThrough(new TextDecoderStream()).getReader();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) return;
-      buf += value;
-      let i;
-      while ((i = buf.indexOf("\n\n")) !== -1) {
-        const frame = buf.slice(0, i);
-        buf = buf.slice(i + 2);
-        for (const line of frame.split("\n")) {
-          if (line.startsWith("data:")) yield JSON.parse(line.slice(5));
-        }
-      }
-    }
-  }
-
   // Apply one event to the client-side mirror of history.
   function applyEvent(live, ev, state) {
     switch (ev.type) {
@@ -529,7 +512,8 @@
         const accounted = Number(ev.frames_accounted).toLocaleString();
         const planned = ev.frames_planned == null
           ? "?" : Number(ev.frames_planned).toLocaleString();
-        $("pending-text").textContent = `frames ${accounted} / ${planned}`;
+        pendingProgress = `frames ${accounted} / ${planned}`;
+        renderPendingText();
         break;
       }
       // Confirmations are banner state, not transcript content.
@@ -542,6 +526,20 @@
   // The turn thread is blocked on this answer; an unanswered banner denies at
   // the server's deadline. A page reload re-surfaces it via GET /api/confirm.
   let confirmId = null;
+  let pendingConfirmation = null;
+  let pendingResolution = null;
+  let pendingProgress = null;
+  let pendingDefault = "MicroClaw is working…";
+  let streamSilenceDetected = false;
+  let activeTurnAbort = null;
+  let recoverySettled = false;
+
+  function renderPendingText() {
+    $("pending-text").textContent = pendingConfirmation ||
+      pendingResolution ||
+      (streamSilenceDetected ? "Live updates interrupted; checking Microclaw…" : null) ||
+      pendingProgress || pendingDefault;
+  }
 
   const confirmationRecovery = Recovery.create({
     fetch: apiFetch,
@@ -556,13 +554,25 @@
     showConfirm,
     hideConfirm,
     showRemaining: seconds => {
-      if (confirmId) $("pending-text").textContent =
-        `Waiting for your confirmation. ${seconds}s remaining.`;
+      if (confirmId) {
+        pendingConfirmation = `Waiting for your confirmation. ${seconds}s remaining.`;
+        renderPendingText();
+      }
     },
     notePollFailure: failures => {
       if (failures === 3) toast("Confirmation status is temporarily unavailable; retrying.");
     },
     needsPairing: () => toast("This browser session needs re-pairing."),
+    noteStreamSilence: () => {
+      if (streamSilenceDetected) return;
+      streamSilenceDetected = true;
+      renderPendingText();
+    },
+    settleRecovered: () => {
+      streamSilenceDetected = false;
+      recoverySettled = true;
+      activeTurnAbort?.abort();
+    },
   });
 
   function showGrants(grants) {
@@ -609,7 +619,8 @@
     $("confirm-banner").classList.remove("hidden");
     // The turn is waiting on the operator, and the spinner must not claim
     // otherwise — "working…" is how a pending confirm reads as a hang.
-    $("pending-text").textContent = "Waiting for your confirmation.";
+    pendingConfirmation = "Waiting for your confirmation.";
+    renderPendingText();
     // Unconditional, unlike the stick-to-bottom follow: an approval request is
     // allowed to interrupt reading.
     scrollToBottom(true);
@@ -618,10 +629,12 @@
   function hideConfirm(id, decision) {
     if (id && confirmId && id !== confirmId) return;
     confirmId = null;
+    pendingConfirmation = null;
     $("confirm-banner").classList.add("hidden");
-    $("pending-text").textContent = decision === "declined:timeout"
+    pendingResolution = decision === "declined:timeout"
       ? "Confirmation timed out and was declined"
-      : "MicroClaw is working…";
+      : null;
+    renderPendingText();
   }
 
   async function answerConfirm(approve) {
@@ -642,13 +655,23 @@
   $("confirm-decline").addEventListener("click", () => answerConfirm(false));
 
   async function runTurn(text) {
+    recoverySettled = false;
+    streamSilenceDetected = false;
+    pendingResolution = null;
+    pendingProgress = null;
+    pendingDefault = "MicroClaw is working…";
+    renderPendingText();
+    const turnAbort = new AbortController();
+    activeTurnAbort = turnAbort;
     const res = await apiFetch("/api/prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text }),
+      signal: turnAbort.signal,
     });
     if (!res.ok) {
       toast(res.status === 409 ? "A turn is already running." : await detail(res));
+      activeTurnAbort = null;
       return false;
     }
     const live = history.concat([{ role: "user", content: text }]);
@@ -656,13 +679,21 @@
     paint(live, true);
     confirmationRecovery.setTurnId(res.headers.get("X-Microclaw-Turn-ID"));
     confirmationRecovery.startConfirmationRecovery();
+    confirmationRecovery.armSilenceTimer();
     try {
-      for await (const ev of sseEvents(res.body)) {
+      for await (const ev of Recovery.sseEvents(
+        res.body, confirmationRecovery.armSilenceTimer
+      )) {
         applyEvent(live, ev, state);
         schedulePaint(live);
       }
+    } catch (err) {
+      if (!(err.name === "AbortError" && recoverySettled)) throw err;
+      return true;
     } finally {
+      activeTurnAbort = null;
       confirmationRecovery.stopConfirmationRecovery();
+      confirmationRecovery.clearSilenceTimer();
     }
     return true;
   }

@@ -98,6 +98,7 @@ _TURN_DONE = object()
 # and a short poll rather than a sleep.
 CONFIRM_TIMEOUT_S = 300.0
 CONFIRM_POLL_S = 0.5
+KEEPALIVE_S = 10.0
 _monotonic = time.monotonic
 
 REMOTE_TOKEN_MIN_CHARS = 32
@@ -983,11 +984,22 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         async def events():
             # A client that vanishes leaves this generator closed and the worker
             # thread running; it finishes the turn, saves, and releases the lock.
-            while True:
-                event = await queue.get()
-                if event is _TURN_DONE:
-                    return
-                yield _sse(event)
+            pending_get = asyncio.ensure_future(queue.get())
+            try:
+                while True:
+                    done, _ = await asyncio.wait(
+                        {pending_get}, timeout=KEEPALIVE_S
+                    )
+                    if not done:
+                        yield ": ping\n\n"
+                        continue
+                    event = pending_get.result()
+                    if event is _TURN_DONE:
+                        return
+                    pending_get = asyncio.ensure_future(queue.get())
+                    yield _sse(event)
+            finally:
+                pending_get.cancel()
 
         # No compression middleware on this app: GZipMiddleware buffers the
         # stream and the events all arrive at the end, in one lump.
