@@ -11,12 +11,30 @@ In PowerShell at the checkout, verify the implementation is present:
 ```powershell
 git merge-base --is-ancestor 0a2090e HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 69a implementation is not checked out" }
-node --version
 New-Item -ItemType Directory -Force block69a-evidence | Out-Null
-uv run microclaw serve 2>&1 | Tee-Object -FilePath block69a-evidence\server-console.log
+uv run microclaw serve > block69a-evidence\server-console.log 2>&1
 ```
 
-Leave that PowerShell window running. In the browser, open DevTools, select the
+**File redirection, not a pipeline.** `... 2>&1 | Tee-Object` wraps every line
+uv writes to stderr — including its ordinary `Building microclaw @ file:///...`
+progress — in a PowerShell `NativeCommandError`, which is how the first attempt
+at this gate died. Redirecting straight to a file never involves a cmdlet and
+cannot do that. There is deliberately no `node` check: node is needed for the
+off-rig JS suite, never for this gate.
+
+The console output now goes to the file rather than the window, so confirm the
+server actually started by opening a **second** PowerShell in the checkout and
+running:
+
+```powershell
+Get-Content block69a-evidence\server-console.log -Tail 5
+```
+
+A line reading `Microclaw GUI: http://127.0.0.1:8000  (Ctrl-C to stop)` means it
+is up; that print flushes, so it appears immediately. Keep this second window —
+the capture check before the five-minute limb uses it too.
+
+Leave the first PowerShell window running. In the browser, open DevTools, select the
 Console tab, enable **Preserve log**, and clear the console. The server console
 and browser console from this same session are both required. At the end,
 right-click the DevTools console and choose **Save as…**, saving it as
@@ -102,5 +120,7 @@ sequence with the matching server turn. Limb 8 rejects per-delta event lines and
 the recognizable payload marker. The scorer owns `computed-score.log`; a shell
 transcript is not its evidence.
 
-Return `server-console.log`, `browser-console.log`, `computed-score.log`, the
-node version, both confirmation IDs, and the five human limb observations.
+Return `server-console.log`, `browser-console.log`, `computed-score.log`, both
+confirmation IDs, and the five human limb observations. `uv run` prints its
+ordinary `Building microclaw @ file:///...` progress to stderr here; with no
+pipeline in this command that is display only, not a failure.
