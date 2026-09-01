@@ -2,7 +2,7 @@
 name = "microclaw"
 version = "0.1.0"
 license = "BSD-3-Clause"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.40.0",
     "pycromanager>=1.0.2",

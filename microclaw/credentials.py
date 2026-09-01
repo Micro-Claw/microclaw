@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import stat
 from pathlib import Path
 
@@ -31,7 +30,6 @@ _KEYRING_SERVICE = "microclaw"
 _KEYRING_USERNAME = "anthropic-api-key"
 
 _TOML_KEY = "anthropic_api_key"
-_TOML_RE = re.compile(r'^\s*anthropic_api_key\s*=\s*"(.*)"\s*$', re.M)
 
 
 def config_path() -> Path:
@@ -60,13 +58,9 @@ def _read_config_key() -> str | None:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    # tomllib is 3.11+; we support 3.10, and this file has exactly one key.
+    import tomllib
     try:
-        import tomllib
         return tomllib.loads(text).get(_TOML_KEY) or None
-    except ImportError:
-        m = _TOML_RE.search(text)
-        return json.loads(f'"{m.group(1)}"') if m else None
     except Exception:
         return None
 
