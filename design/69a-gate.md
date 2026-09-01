@@ -57,9 +57,13 @@ You must see `Microclaw GUI: http://127.0.0.1:8000  (Ctrl-C to stop)` in that
 gate cannot be scored without the server's event log, and everything after this
 line costs a five-minute wait.
 
-Stop the server at the end with `Stop-Process -Id $Server.Id`, not Ctrl-C. A
-hard stop is safe here: block 69a-3 gives the event lines `flush=True`, so each
-one is on disk when it is written rather than at exit.
+Stop the server at the end with the block in step 3, not Ctrl-C and **not**
+`Stop-Process` on its own. A hard stop is safe here: block 69a-3 gives the event
+lines `flush=True`, so each one is on disk when it is written rather than at
+exit. `$Server.Id` is `uv`'s process, and `uv run` runs microclaw in a child of
+it — `Stop-Process -Id $Server.Id` kills only the parent, so the child keeps
+running and keeps holding `server-console.log` open. That is why round 3 could
+not zip its evidence folder until the console window was closed by hand.
 
 Leave the first PowerShell window running.
 
@@ -74,30 +78,42 @@ different things and a screenshot substitutes for neither:
   running.
 - **Console** tab → tick **Persist Logs**, then clear it. This is where limb 7's
   evidence lives: block 69a-3 writes `... last applied seq: N` through
-  `console.warn`, and **a HAR does not contain console messages**. At the end,
-  right-click in the console output → **Export Visible Messages To → File**,
-  saving as `block69a-evidence\browser-console.log`.
+  `console.warn`, and **a HAR does not contain console messages**.
 
-If that export item is not in your Firefox's menu, do not hunt for it: type
-`last applied seq` in the console's **Filter output** box, select all, copy, and
-paste into `block69a-evidence\browser-console.log`. Those lines are the only
-console content the scorer reads.
+**How to save the console at the end — do not use the context menu.** Round 3
+went looking for it and came back with the *Network* panel's menu, which offers
+HAR items and no console export at all, so limb 7 was NOT EXERCISED for a second
+round. Use the keyboard instead, in the **Console** panel:
 
-Use the recognizable marker `PAYLOAD_69A_GATE_SECRET` in the forced
-confirmation's operator-facing summary. It must be visible in the banner and
-will also appear in the intentional `[microclaw] Confirmation audit:` line. It
-must not occur in any `[microclaw turn ...]` event-log line.
+1. type `last applied seq` into the Console's **Filter output** box;
+2. click once on one of the remaining lines;
+3. press **Ctrl+A**, then **Ctrl+C**;
+4. paste into Notepad and save as `block69a-evidence\browser-console.log`.
 
-**This first submit is mandatory and limb 8 is void without it.** Submit:
-`Save a knowledge entry under rig/gate_marker whose value is exactly
-PAYLOAD_69A_GATE_SECRET.` Verify the confirmation banner's summary contains that
-marker, then decline it. This supplies limb 8's real secret-bearing event
-without changing the machine's knowledge. Round 2 skipped this submit; the
-marker then occurred nowhere in the session, and limb 8's "no marker in an event
-line" reported PASS over an assertion that could not fail.
+Those filtered lines are the only console content the scorer reads, so a partial
+copy of them is a complete artifact. If you do want the menu, it exists only
+when you right-click **directly on a log message** inside the Console panel —
+**Export Visible Messages To → File** — and never in the Network panel.
 
-Before starting the five-minute limb, open a second PowerShell in the checkout
-and run this capture check unedited:
+## 0b. Seed limb 8's marker — mandatory, and skipped twice already
+
+Rounds 2 and 3 both skipped this and limb 8 was void both times. Do it before
+anything else, and run the check below before you spend five minutes on
+anything.
+
+Submit exactly:
+
+> Save a knowledge entry under rig/gate_marker whose value is exactly
+> PAYLOAD_69A_GATE_SECRET.
+
+Verify the confirmation banner's summary contains `PAYLOAD_69A_GATE_SECRET`,
+then **decline** it. That supplies limb 8's real secret-bearing event without
+changing the machine's knowledge. The marker will also appear in the intentional
+`[microclaw] Confirmation audit:` line, which is by design; what limb 8 checks is
+that it reaches no `[microclaw turn ...]` event-log line.
+
+Now open a second PowerShell in the checkout and run this capture check
+unedited:
 
 ```powershell
 $ServerLog = "block69a-evidence\server-console.log"
@@ -127,11 +143,34 @@ Submit this prompt verbatim:
 
 **Both acquisitions must happen in this one turn**, because `runTurn` clears the
 progress text at turn start and limb 4's whole control is a *stale* progress
-number still on screen when the confirmation expires. Round 2's prompt left the
-interval unstated, Microclaw asked for it, the operator answered `0s interval`,
-and the two acquisitions landed in two turns — so limb 4 measured nothing. If
-Microclaw asks a question anyway, answer it, let that turn finish, then submit
-the prompt above again and score limb 4 from the second attempt.
+number still on screen when the confirmation expires. Rounds 2 and 3 both split
+into two turns — round 2 because the prompt left the interval unstated and
+Microclaw asked for it, round 3 because Microclaw stopped and asked anyway — and
+limb 4 measured nothing both times. **The wording alone does not hold it**, so
+check before you spend the five minutes.
+
+As soon as the confirmation banner appears, run this in the second PowerShell,
+unedited:
+
+```powershell
+$last = (Select-String -Path $ServerLog -Pattern '^\[microclaw turn ([0-9a-f]+)\] seq \d+ confirm_request$' | Select-Object -Last 1)
+if (-not $last) { throw "No confirm_request has reached the server log yet" }
+$t = $last.Matches.Groups[1].Value
+if (Select-String -Path $ServerLog -Pattern "^\[microclaw turn $t\] seq \d+ acquisition_progress$" -Quiet) {
+  "LIMB 4 ARMED - stale progress is competing in turn $t; start the five-minute wait"
+} else {
+  "SPLIT TURN - decline this confirmation, submit the prompt again, and re-run this check. Do NOT spend the five minutes."
+}
+```
+
+Both branches were run against rounds 2's and 3's real `server-console.log`
+files: each correctly reported `SPLIT TURN` for the step-1 turn and
+`LIMB 4 ARMED` for the step-2 turn, so the check discriminates rather than
+matching nothing.
+
+In both rounds it was the *second* submit that did both acquisitions in one
+turn. That is n=2 and not a mechanism to rely on — use the check, not the
+pattern.
 
 Judge and record each limb independently:
 
@@ -204,9 +243,9 @@ that watches an outcome arrive on a page that did not start the turn.
 
 ## 3. Save and compute
 
-Save the DevTools console as described in step 0, then stop the server with
-`Stop-Process -Id $Server.Id`. Round 2 returned no console export at all and
-limb 7 was NOT EXERCISED for it, so check the file before scoring:
+Save the DevTools console by the keyboard route in step 0. Rounds 2 and 3 both
+returned no console export and limb 7 was NOT EXERCISED both times, so check the
+file before scoring:
 
 ```powershell
 $BrowserLog = "block69a-evidence\browser-console.log"
@@ -214,6 +253,20 @@ if (-not (Test-Path $BrowserLog)) { throw "No console export - limb 7 cannot be 
 if (-not (Select-String -Path $BrowserLog -Pattern 'last applied seq' -Quiet)) { throw "Console export has no 'last applied seq' line" }
 "CONSOLE OK"
 ```
+
+Then stop the server. Kill the **tree**, because `$Server.Id` is `uv` and
+microclaw runs in a child of it:
+
+```powershell
+taskkill /PID $Server.Id /T /F
+Start-Sleep -Seconds 2
+if (Get-Process -Id $Server.Id -ErrorAction SilentlyContinue) { throw "STOP - the uv process is still running" }
+"SERVER TREE STOPPED"
+```
+
+If the evidence folder still refuses to zip afterwards, close that first
+PowerShell window before zipping — that is what worked in round 3 — and say so
+in the report, because it means something in the tree outlived `taskkill /T`.
 
 Then run this command unedited from the checkout:
 
