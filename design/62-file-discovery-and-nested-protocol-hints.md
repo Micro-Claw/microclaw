@@ -776,7 +776,7 @@ accepted from a runner report.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | turn 1 assigned 2026-09-01, **killed mid-flight by a Codex account usage limit** at 11:45; preserved unreviewed as `d1da105` and pushed. Tests only — a `write_ilastik_project` HDF5 fixture and three of the four acceptance tests; **no product change at all**, neither `ilastik_adapter.py` nor `completed_dataset.py` touched. Its accidental value is that it *is* step 3's pre-fix evidence, captured by the coordinator before any fix exists: tests 1 and 2 fail `DID NOT RAISE ValueError` (construction opens nothing today) and test 3 fails `FileNotFoundError ... missing-dataset` out of `ndstorage/_superclass.py:28` — **turn 51 of the session reproduced verbatim**, which is this block's whole thesis. Fixture itself unverified |  **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
+| 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with tests only and no product change; preserved as `d1da105`. Revision 1 (`a5ee7a0`) resumed the same session and implemented Decision 1. **Coordinator-run suite: 2698 passed / 99 skipped / 3 warnings = 2797 collected, +4 over 62b, exactly the four acceptance tests, zero failures** (Python 3.11.15 — see the Python-floor note). `completed_dataset.py` needed **no change**: `cls(**parameters)` was already its first statement, so the reorder alone puts the refusal ahead of both the `output_dir` mkdir and `Dataset(dataset_path)`. The assignment prompt's "two files" was over-specified and the runner correctly left it alone. **Evidence:** the killed turn's own three tests are the pre-fix record — tests 1 and 2 `DID NOT RAISE ValueError` (construction opened nothing) and test 3 `FileNotFoundError ... missing-dataset` from `ndstorage/_superclass.py:28`, which is **turn 51 reproduced verbatim**; the runner re-took them and its log shows 4 collected, 3 failed, the 4th passing as the regression limb it is. **Its report was a 5-line self-link containing none of the demanded evidence** — a process defect, not worth a round, because the evidence exists in the command log and the coordinator verified the rest directly: `BUILTIN_ADAPTERS` maps names to classes with no introspective instantiation (so `__init__` doing I/O is safe), and **the fixture was checked against the code that reads it** — `LabelSets/<lane>/<block>.attrs['axistags']` for the resolution, `ClassifierForests/known_labels` for the trained set, `0.127` avoiding ilastik's 1-means-unset sentinel | **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | merged 2026-09-01, branch deleted local and origin |
 | 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with edits landed; preserved unreviewed as `1d69416`. Revision 1 (`0327b32` + `f5a2557`) resumed the same session at 14:24 once the quota reset and closed every finding. Coordinator correction `822e386` removed a `result.md` the runner had committed into the repository root — a job artifact, not a repo file; content preserved in the job directory and folded into this row. **Coordinator-run suite: 2694 passed / 99 skipped / 3 warnings = 2793 collected, baseline +36, zero failures.** The runner reported 9 failures as host/sandbox artifacts and that reconciles *exactly* — its 2685 + 9 = 2694 — every one passing in the baseline environment, so they were environmental. **Its stated cause is retracted:** it attributed two of them to a Python **3.10** sandbox lacking `BaseException.add_note`, the coordinator repeated that as fact, and it does not hold up — its command log records no interpreter version and it invoked bare `python` in the same login shell that resolves to the 3.11.15 conda env, where `add_note` exists. 62a's runner logged `Python 3.11.15` explicitly. **The real cause of those two failures is unknown and was not established.** What is verified is that they pass in the baseline environment. The episode did surface a genuine, separate defect — see the Python-floor note below. **Evidence:** 31 pre-fix failures on the positive hint limb, each `assert 'protocol_params' in <the generic argument hint>`; test 5's identity claim proved by **mutation** (`{**_PROTOCOL_PARAMS_SCHEMA}`) because a pre-fix run fails on the constant's absence and proves nothing; and — unasked — conditions 2 and 3 of Decision 4 mutated *separately*, each shown load-bearing. The runner stated plainly that the two negative limbs and F4's collision limb pass pre-fix by design and cannot honestly be made to fail. **Coordinator-verified independently:** all four top-level sites are the same object, `acquire_on_hit`'s is not, and the shared description carries both 'never at the top level' and F4's autofocus clause | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Acceptance test 9 runs once after 62d, against the final wording — F3 | merged 2026-09-01, branch deleted local and origin |
 | 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
 | 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
@@ -865,3 +865,93 @@ and the then-unused `re` import removed.
 and is now *below* the declared floor. Every design/62 baseline — 2658, then 2694
 after 62b, then 2698 after 62a — was measured there. Re-baseline on 3.12 after
 the environment is rebuilt rather than comparing numbers across interpreters.
+
+## Session boundary, 2026-09-01 — read this first when resuming
+
+**Where design/62 stands: 62a and 62b are merged. 62c is next.**
+
+| block | state |
+| --- | --- |
+| 62a | **merged**, branch and worktree gone |
+| 62b | **merged**, branch and worktree gone |
+| 62c | **not started.** Decision 3 only. Depends on 62b (merged), so it is assignable now. The operator's `interval_s` decision is already taken — see §"The intentional break, stated before it ships" — so nothing blocks assignment |
+| 62d | after 62c, same shared-file reason |
+| test 9 | **after 62d**, once, against the final shipped wording. Priced at ~$17 for n=24 over two conditions; see F3 |
+
+No worktrees are live. Nothing is unpushed. There is no rig or demo gate anywhere
+in this block, and no runbook to write.
+
+### The toolchain changed under this block — do not compare numbers across it
+
+The development environment moved from **conda / Python 3.11.15** to
+**uv / Python 3.12.14** partway through, because `requires-python` was corrected
+to `>=3.12` (see the Python-floor note above) and the coordinator environment was
+then below its own floor.
+
+```bash
+# the environment of record from here on
+uv venv --python 3.12
+uv pip install -e ".[serve,test,ilastik]"
+uv run pytest -q
+```
+
+**Baselines, and which interpreter each was taken on:**
+
+| measurement | suite | interpreter |
+| --- | --- | --- |
+| before design/62 | 2658 passed / 99 skipped = 2757 | conda 3.11.15 |
+| after 62b | 2694 / 99 = 2793 | conda 3.11.15 |
+| after 62a | 2698 / 99 = 2797 | conda 3.11.15 |
+| **after the uv migration — the live baseline** | see the row below | **uv 3.12.14** |
+
+62c must be measured against the **3.12** number, not against 2698. Take it
+fresh on `main` before assigning, because two things landed after 62a that touch
+the count's environment rather than its content: the Python floor, and the wheel
+test below.
+
+**Two traps this migration produced, both worth knowing before you run anything:**
+
+- `uv pip install` targets an **active conda environment** in preference to the
+  local `.venv`. It reported `Using Python 3.11.15 environment at:
+  miniforge3/envs/microclaw` and failed the resolve against the new floor.
+  `conda deactivate`, or use `uv run`.
+- **`uv venv` installs no pip *module*** — measured:
+
+  | venv created by | `python -m pip` |
+  | --- | --- |
+  | `uv venv` (what the README says) | `No module named pip` |
+  | `uv venv --seed` | pip 26.2.1 |
+  | `python -m venv` (stdlib) | pip 25.0.1 |
+
+  `uv pip` is **not** pip: it is a subcommand of the `uv` binary, uv's own
+  reimplementation of pip's CLI, needing no `pip` module anywhere. That is why
+  uv feels like it ships pip while a plain `uv venv` has none.
+
+  `test_built_wheel_contains_the_source_tree_skill_catalog` shelled out to
+  `sys.executable -m pip wheel`, whose hidden assumption is "the running
+  interpreter has the pip module" — true for conda and for stdlib venvs, which
+  install pip by default, and false for a plain `uv venv`. So the test could not
+  pass in the project's own documented toolchain.
+
+  It now builds with the **isolated venv's** pip, which
+  `EnvBuilder(with_pip=True)` bootstraps via `ensurepip` (stdlib, always
+  present). `--seed` was rejected as the fix: it would make the test depend on
+  how each developer happened to create their venv. It was also **not** made to
+  skip when pip is absent — that would retire a packaging invariant silently.
+
+  Recorded because the coordinator caused the first half of it: `requires-python`
+  was merged to `main` after running only 16 targeted credentials tests, leaving
+  `main` red on a test whose reach nobody had checked. A change to project
+  metadata has repo-wide reach — run the whole suite.
+
+### Deferred, deliberately
+
+**h5py as a non-optional dependency.** Raised by the operator and then withdrawn
+the same day: *"don't include h5py in the non-development install. not yet."*
+Revisit **after design/62 closes**. Context worth keeping for that conversation:
+the optional-extra skip is already a tracked concern in this repo —
+`design/26-block9a-gate.md:210` tells the operator to watch the skip count for
+exactly this, and `tests/test_ilastik_adapter.py` carries a deliberate `skipif`
+naming the extra — so keeping it optional is a considered position, not an
+oversight. The development install now asks for `ilastik` explicitly (README) so
+those tests do not silently skip for a developer.
