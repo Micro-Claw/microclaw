@@ -788,6 +788,137 @@ console. A report with only one of them cannot distinguish "never emitted" from
 "absent at the browser", which is the whole reason the sequencing ships. The
 gate step must say to save both, or it will come back with one.
 
+## Blocks
+
+Coordinated from 2026-09-01. **design/69a owns its own blocks and ledger**, like
+design/48 through design/62 and design/65;
+`design/35-usability-and-pfs-checklist.md` points here and does not track these
+rows. The ten steps in `CLAUDE.md` §"The block workflow" govern; where this
+section and that one disagree, that one wins.
+
+**This is demo-machine work end to end.** No M5, no M2, no Nikon. §"Gate" says
+so and the operator reaffirmed it at assignment (2026-09-01): almost everything
+here settles off-rig under node and pytest, and what is left is one driven
+session in a real browser on the demo machine. That session scores all three
+blocks at once rather than one gate per block — the operator's time is the
+budget, and there is nothing microscope-specific to observe. Do not book
+instrument time for any of this.
+
+**Strictly sequential.** All three blocks touch `serve.html` and `webserve.py`;
+69a-2's silence detector consumes 69a-1's reconciler, and 69a-3's gate scores
+the whole design. One worktree, one runner, one block at a time.
+
+### 69a-1 — the recovery module, the poll, and the server state it reads
+
+§"Poll confirmation state for the lifetime of every active turn", §"Show the
+deadline", and the `get_confirm` stub. Covers investigation limbs 1, 2, 5 and 6.
+
+Two commits, in this order, because the diff is otherwise unreadable:
+
+1. **The harness, with no behaviour change.** Move the confirmation, grant and
+   boot-recovery reconciliation out of `serve.html`'s inline `<script>` into a
+   new `recovery.js` beside `transcript.js`, exporting pure reconciliation over
+   an injected `fetch` and an injected clock, with the DOM calls left in
+   `serve.html` as injected callbacks. Drive it under node in
+   `tests/test_recovery_js.py`, following `tests/test_transcript_js.py`'s
+   pattern exactly — `global.window = {}`, `require`, and
+   `pytest.mark.skipif(shutil.which("node") is None)`. Route boot's existing
+   `/api/confirm` fetch (`serve.html:794-798`) through the same reconciler in
+   this commit; two paths that can raise a banner is the thing §"Using the
+   stubs" warns about.
+2. **The poll.** `startConfirmationRecovery` / `stopConfirmationRecovery` /
+   `pollConfirmation` / `reconcileConfirmation` per the stubs, called from
+   `runTurn` and its `finally`; 1 Hz, one request in flight, suspended while the
+   document is hidden and resumed immediately on `visibilitychange`; a 401
+   stops the chain and performs no final fetch; other failures back off without
+   hiding a visible banner; `reconcileGrants` diffs against rendered grant IDs
+   and calls `showGrants` only on a change.
+
+Server side, same block: `_Pending.deadline` set at construction, `p.decision`
+stashed by `decided()` and promoted in the `finally`, `Session.last_resolution`
+and `Session.current_turn_id` initialised in `_initialize` (which both `Session`
+and `SetupSession` route through), the turn ID assigned and `last_resolution`
+cleared at the top of `post_prompt` and echoed as `X-Microclaw-Turn-ID`, and
+`GET /api/confirm` collapsed to one `payload` carrying `grants`, `running`,
+`turn_id`, `last_resolution` and — when pending — `remaining_s`. The banner
+countdown and `hideConfirm`'s timeout wording ship here too: on a healthy
+stream, `confirm_resolved` carries the decision and `hideConfirm` renders it, so
+a timeout stops reading `MicroClaw is working…`.
+
+### 69a-2 — keepalive, silence, and the recovered abort
+
+§"Make the stream's silence observable, and recover the outcome" and §"Abort the
+stalled fetch when recovery settles". Covers limbs 3 and 4.
+
+Server: the keepalive inside `events()`, with **one getter task held across
+iterations** and the *wait* timed out — not `asyncio.wait_for` around
+`queue.get()` — plus the `finally` that cancels it when the client disconnects.
+Client: `sseEvents` gains a complete-frame callback that a `: ping` comment
+fires and partial bytes do not; the silence timer is armed at turn start as well
+as on every frame; `noteStreamSilence` is idempotent and must not talk over
+`Waiting for your confirmation.`; `settleIfRecovered` settles a silence-detected
+turn when the poll reports `running: false`, and aborts the POST through an
+`AbortController` so the composer's one exit path runs. `runTurn` catches its
+own deliberate abort and returns `true`, so the prompt is not handed back.
+
+Limb 3 owns the recovered abort — assert `send.disabled` and the composer
+contents, not only the transcript — and an `AbortError` recovery did not cause
+must still propagate.
+
+### 69a-3 — sequence numbers, the log, and the gate
+
+§"Number every emitted event, so the next occurrence is diagnosable".
+
+The counter is a `nonlocal` assigned **inside the `call_soon_threadsafe`
+callback**, never in `emit`, because block 60a's `microclaw-acq-teardown` waiter
+reaches `emit` from a second thread. `_TURN_DONE` passes through unstamped and
+still ends the stream by identity; the caller's dict is never mutated. The log
+records one line per non-`text_delta` event plus one turn summary, and carries
+type, turn and sequence only — never a payload, because `AuditLog.add_secret`
+redaction does not reach a `print`. The browser writes its last applied `seq` to
+the devtools console on silence and on settle, and nowhere else: no endpoint, no
+client state posted back.
+
+**The gate ships in this block** and scores 69a-1, 69a-2 and 69a-3 together.
+Runbook on the branch as `design/69a-gate.md` per step 4, with its computed
+scorer as `design/69a-gate.py` and a bridge-shaped self-test as
+`design/69a-gate-selftest.py`, following design/60 through design/63. The
+wording limbs — what the operator sees under pending, interrupted and timed-out
+— are the half only a person at the screen can score and stay prose steps; the
+sequence comparison is arithmetic over two saved logs and belongs in the
+scorer, run independently per limb, exiting nonzero, owning its own log file.
+The gate step must say to save **both** the server console and the browser
+devtools console: with one of them the disconnect limb reports nothing.
+
+### What the coordinator pinned before assignment (2026-09-01)
+
+Read against `main` at `9f18133`. These are facts the stubs assume and do not
+state.
+
+- **A new `.js` file is not free.** `assets.py` inlines exactly two assets by
+  fixed tag and **raises** when a tag is missing (`assets.py:58`), and
+  `load_page` is called for `history_viewer.html` as well as `serve.html`. A
+  `recovery.js` tag exists only in `serve.html`, so the inline table has to
+  become page-aware rather than gain a third unconditional row.
+  `tests/test_history_viewer.py:120` asserts the current shape and moves with
+  it. `pyproject.toml`'s `[tool.setuptools.package-data]` lists the four
+  bundled assets by name; a fifth that is not listed is missing from every
+  wheel and every installed machine, and the demo machine is an installed
+  machine.
+- **`recovery.js` must load the way `transcript.js` does** — a plain script
+  attaching to `window`, not an ES module — because the inliner wraps it in
+  `<script>…</script>` and `serve.html` runs under `"use strict"` in one IIFE
+  scope. `tests/test_transcript_js.py` is the working example of driving it
+  under node.
+- **`CONFIRM_TIMEOUT_S` is module-level** (`webserve.py:99`), so the short
+  deadline the tests need is a monkeypatch, not a new argument.
+- **Both session classes route through `Session._initialize`**
+  (`webserve.py:336`, called again at `:523` by `SetupSession`), so
+  `last_resolution` and `current_turn_id` need one initialisation site.
+- **Node is present on the coordinator's machine** (v25.2.1). Record whether it
+  was present when the suite ran: a skipped node test is not evidence, and this
+  block's entire off-rig case rests on those tests.
+
 ## Out of scope
 
 - Changing acquisition confirmation thresholds.
@@ -877,3 +1008,30 @@ session itself, and any confirmation that this session was in fact launched the
 normal way. **The mechanism remains unidentified**, which is the honest state —
 the recovery above is designed to hold whatever it turns out to be, and the
 event sequencing is what would name it next time.
+
+## Run ledger
+
+design/69a is coordinated and owns its own blocks and ledger, like design/48
+through design/62 and design/65. `design/35-usability-and-pfs-checklist.md`
+points here and does not track these rows.
+
+Baseline before the first block: `main` `9f18133`, coordinator-run suite
+**2756 passed / 99 skipped / 2 warnings** (2026-09-01, `uv run pytest -q`).
+Node **v25.2.1** present on the coordinator's machine, so no JS test skipped
+for its absence — record that again on every block, because this design's
+entire off-rig case rests on tests that skip silently without it.
+
+| block | branch | start | implementation | gate | merge |
+| --- | --- | --- | --- | --- | --- |
+| 69a-1 | `design69a/recovery-poll` | `9f18133` (2026-09-01) | | scored with 69a-3 | |
+| 69a-2 | `design69a/keepalive-and-abort` | | | scored with 69a-3 | |
+| 69a-3 | `design69a/event-sequencing` | | | **demo machine, one driven session**, scores all three blocks | |
+
+### Coordination log
+
+- **2026-09-01, assignment.** Blocks cut three ways above; the design's own
+  ordering ("the harness comes first") decides 69a-1's two commits. Confirmed
+  with the operator that this is demo-machine work throughout and that one gate
+  session at the end covers all three blocks rather than three sessions.
+  Codex runner unavailable until 19:25 CEST; 69a-1 is queued behind a watcher
+  rather than implemented inline, per step 2.

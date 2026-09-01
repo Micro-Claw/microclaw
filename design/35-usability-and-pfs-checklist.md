@@ -8920,6 +8920,34 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### design/69a is coordinated and owns its own checklist — added 2026-09-01 **(pointer only)**
+
+**`design/69a` is coordinated and owns its own blocks and ledger**, like
+design/48 through design/62 and design/65. This file does not track its rows; it
+points at them. The doc is
+`design/69a-browser-confirmation-delivery.md`, three blocks, **69a-1 to 69a-3**.
+
+From the first Zeiss session: a 700-frame acquisition entered the confirmation
+gate, the server denied it at the five-minute deadline, and the operator saw
+neither the confirmation nor the completed response — only `MicroClaw is
+working…`, and restarted Microclaw. The gate failed **safe**; the delivery
+failed. `confirm_request` is pushed exactly once on the POST response stream and
+`GET /api/confirm` is polled only at page load, so a stream that goes silent
+while the page stays open hides a safety decision for its whole deadline.
+
+**The mechanism is still unidentified and the design says so.** An open, silent
+stream is the leading explanation, not a fact — an ordinarily *closed* stream
+already recovers through the composer's `refresh()`. That is why the block ships
+per-event sequence numbers as well as the recovery: without them a recurrence is
+diagnosed exactly as badly as this one was.
+
+**No microscope.** The gate is one driven session in a real browser on the demo
+machine — a forced confirmation, networking disabled for ~60 s mid-turn, and the
+operator reading the wording under pending / interrupted / timed-out. Everything
+else settles off-rig under node, which is itself part of the block: `serve.html`'s
+inline script has **zero** test coverage today, so the first commit extracts the
+reconciler into a module beside `transcript.js`. Do not book instrument time.
+
 ### design/62 is coordinated and owns its own checklist — added 2026-09-01, **CLOSED 2026-09-01** **(pointer only)**
 
 **`design/62` is coordinated and owns its own blocks, checklist and ledger**,
