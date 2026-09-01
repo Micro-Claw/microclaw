@@ -10713,7 +10713,34 @@ def execute_tool(
         # a hardware error" on a FileNotFoundError sends the model to the stage.
         return json.dumps({
             "error": f"{type(e).__name__}: {humanize_java_error(e)}",
-            "hint": hint_for_error(e),
+            "hint": _hint_for_tool_error(fn, e),
         })
     finally:
         _ACQUISITION_EVENT_CONTEXT.sink = previous_sink
+
+
+_NESTED_PROTOCOL_PARAM_KEYS = {
+    "exposure_ms", "channel", "n_frames", "interval_s", "laser_slot",
+    "z_start_um", "z_end_um", "z_step_um",
+}
+_UNEXPECTED_KEYWORD_RE = re.compile(
+    r"^([A-Za-z_]\w*)\(\) got an unexpected keyword argument ['\"]([^'\"]+)['\"]"
+)
+
+
+def _hint_for_tool_error(fn: Callable, exc: Exception) -> str:
+    """Target binding hints to the selected registry function only."""
+    match = _UNEXPECTED_KEYWORD_RE.match(str(exc)) if isinstance(exc, TypeError) else None
+    if (
+        match
+        and match.group(1) == fn.__name__
+        and match.group(2) in _NESTED_PROTOCOL_PARAM_KEYS
+        and "protocol_params" in inspect.signature(fn).parameters
+    ):
+        key = match.group(2)
+        example = "100" if key == "exposure_ms" else "..."
+        return (
+            f"`{key}` is a per-position protocol parameter; pass "
+            f'protocol_params={{..., "{key}": {example}}}.'
+        )
+    return hint_for_error(exc)

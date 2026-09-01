@@ -1,5 +1,35 @@
 from typing import Any
 
+_PROTOCOL_PARAMS_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Parameters for the selected per-position protocol. Put channel and "
+        "exposure_ms here, never at the top level. Valid shapes: timelapse: "
+        "{n_frames, interval_s, optional channel, optional exposure_ms, optional "
+        "laser_slot}; zstack: {z_start_um, z_end_um, z_step_um, optional channel, "
+        "optional exposure_ms}."
+    ),
+    "properties": {
+        "channel": {
+            "type": "string",
+            "description": "Optional channel for each frame.",
+        },
+        "exposure_ms": {
+            "type": "number",
+            "description": "Optional exposure in ms for each frame.",
+        },
+        "n_frames": {"type": "integer"},
+        "interval_s": {"type": "number"},
+        "laser_slot": {
+            "type": "integer",
+            "description": "Timelapse only: EMU trigger slot to pre-flight.",
+        },
+        "z_start_um": {"type": "number"},
+        "z_end_um": {"type": "number"},
+        "z_step_um": {"type": "number"},
+    },
+}
+
 _HOOK_ILLUMINATION_ENVELOPE_SCHEMA = {
     "type": "object",
     "description": (
@@ -1355,14 +1385,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Dataset name prefix (default 'multipos').",
                     "default": "multipos",
                 },
-                "protocol_params": {
-                    "type": "object",
-                    "description": (
-                        "Extra parameters forwarded to the per-position protocol. "
-                        "For zstack: z_start_um, z_end_um, z_step_um. "
-                        "For timelapse: n_frames, interval_s."
-                    ),
-                },
+                "protocol_params": _PROTOCOL_PARAMS_SCHEMA,
                 "mark_positions": {
                     "type": "boolean",
                     "description": (
@@ -1471,14 +1494,7 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                     "default": "tile",
                 },
-                "protocol_params": {
-                    "type": "object",
-                    "description": (
-                        "Extra parameters forwarded to the per-position protocol. "
-                        "For zstack: z_start_um, z_end_um, z_step_um. "
-                        "For timelapse: n_frames, interval_s."
-                    ),
-                },
+                "protocol_params": _PROTOCOL_PARAMS_SCHEMA,
                 "mark_positions": {
                     "type": "boolean",
                     "description": (
@@ -1591,10 +1607,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Wait time after each Z move in ms (default 50).",
                     "default": 50,
                 },
-                "protocol_params": {
-                    "type": "object",
-                    "description": "Extra parameters forwarded to the per-position protocol.",
-                },
+                "protocol_params": _PROTOCOL_PARAMS_SCHEMA,
                 "preserve_unsupported": {
                     "type": "boolean",
                     "description": "Retry after explicit approval to preserve and omit unrelated unsupported-device entries.",
@@ -1693,15 +1706,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Dataset name prefix (default 'survey').",
                     "default": "survey",
                 },
-                "protocol_params": {
-                    "type": "object",
-                    "description": (
-                        "Per-position protocol parameters. "
-                        "For zstack: z_start_um, z_end_um, z_step_um. "
-                        "For timelapse: n_frames, interval_s. "
-                        "Optionally channel and exposure_ms for either."
-                    ),
-                },
+                "protocol_params": _PROTOCOL_PARAMS_SCHEMA,
                 "hook_params": {
                     "type": "object",
                     "description": "Parameters passed to the hook constructor.",
