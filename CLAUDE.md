@@ -302,6 +302,21 @@ because a block looks small.
    evidence at all and had to be checked off-rig afterwards. Write the command so
    that running it unedited either works or fails loudly.
 
+   **A literal command must be established, never guessed.** The rule above asks
+   for the exact line; it is not permission to invent one. 62d's gate runbook
+   shipped `py -3 design\62-block62d-demo-gate.py` for a machine that is a `uv`
+   install — the Windows launcher resolves to a system interpreter with none of
+   microclaw's dependencies, so the gate would have died on
+   `from microclaw import tools` before a single limb ran. The convention was
+   already recorded (`uv run`, and design/60's runbook used it); this was recorded
+   information not applied, not information missing. The cost is not only the
+   wrong line: **a guessed command reads as a deliberate instruction**, so the
+   operator assumes it is load-bearing — *"I would've done uv run on my own, but
+   because you wrote py -3 i was confused and thought it was something extra."*
+   So: check what is recorded, **run the prescribed line yourself** (which also
+   tells you what benign output to warn about), and if you still cannot pin the
+   invocation down, ask. A gate's interpreter is part of its instrument.
+
    **And if every step of a gate is a literal command, it is a program — ship it
    as one.** Block 58a's gate went out as seven copy-paste PowerShell blocks and
    came back reporting `BLOCK 58a DEMO GATE PASSED` over five failed limbs:
