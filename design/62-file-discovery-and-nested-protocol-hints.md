@@ -693,6 +693,77 @@ does not gate any block's merge. If it is never run, that is recorded here as a
 priced, deliberate decline — not left as a blank. See
 [[feedback_no_credit_overage]] and [[feedback_one_measurement_is_not_a_property]].
 
+### F5 — corrections at 62c's assignment, coordinator-verified on `main` at `e10f61f`
+
+Baseline re-taken on the environment of record immediately before assigning:
+**2698 passed / 99 skipped / 2 warnings in 171.79 s**, exit 0 — the live baseline
+exactly. Line numbers below are `e10f61f`; navigate by symbol regardless (F2).
+
+**F1 understates the reach: `acquire_on_hit` meets the widened helper at two
+sites, and one of them is the zstack branch.** F1 says that branch "does not call
+`_protocol_shape_kwargs` at all". True of the acquire *phase* — `:8651` is the
+timelapse-only call — and false of the *plan* phase:
+`_plan_protocol_repetitions(ctrl, acquire_protocol, acquire_shape_for_plan,
+max_hits)` at `:8605` runs for **both** protocols, and for zstack it is handed a
+dict translated from `z_offset_*` to the absolute shared names at `:8534-8542`,
+with every remaining key of `acquire_params` splatted in at `:8543-8546`.
+
+**Decision on the question F1 leaves open — no case of its own; both
+`acquire_on_hit` branches stay in the widened helper.** By the time either
+reaches it the keys already *are* the shared table's: timelapse passes
+`acquire_params` unchanged, zstack passes translated absolute names. The
+relative-offset contract stays where it is (`:8527` refuses absolute
+`z_start_um`/`z_end_um`; `:8534` requires the three offsets) — 62c must not move
+or duplicate it. Two consequences to **assert**, not assume:
+
+- an `acquire_on_hit` timelapse omitting `interval_s` now refuses, at plan time,
+  before the first search frame. That is the approved `interval_s` break arriving
+  on a second path. The operator's decision covers it — `acquire_on_hit`'s
+  published shape already lists `interval_s` — and it is recorded here rather
+  than discovered afterwards.
+- `channel` and `laser_slot` are legal in the shared timelapse table and are
+  **not** part of `acquire_on_hit`'s shape. 62c must not start refusing them
+  there. `channel` inside `acquire_on_hit.protocol_params` today reaches the
+  *plan* (`_plan_protocol_repetitions` reads `params.get("channel")`) and never
+  the *run* (`_build_acquisition_events(channel=None, ...)`). Pre-existing and
+  out of scope — recorded beside 62b's residual, not fixed here.
+
+**The inline hook-capability refusal exists exactly once**, at `:6929-6940` in
+`run_multiposition_acquisition`. `run_adaptive_survey` has none. So folding the
+check into the helper and calling it at all four boundaries **adds** that refusal
+to the survey and to the deprecated wrapper. A widening, not a break: a
+capability key inside `protocol_params` is silently discarded on the survey path
+today — `params` is read there only for `channel` and `exposure_ms` — which is
+the design/55 shape, a capability accepted, dropped, and the run reporting
+success. Intended; say so in the block.
+
+**`n_frames` is not timelapse's only frame-count key.** `run_timelapse` takes
+`n_frames: int | None` **and** `max_frames: int | None` and requires exactly one,
+with `max_frames` requiring `hook_strategy` — which `protocol_params` already
+refuses. `max_frames` in `protocol_params` fails today at the planner's
+`params["n_frames"]`, so refusing it as an incompatible key changes nothing
+observable and stops the two spellings disagreeing. Refuse it; do not plumb it.
+
+**Placement per boundary, verified by reading each tool's first statements:**
+
+| tool | put the preflight | because |
+| --- | --- | --- |
+| `run_tile_acquisition` | before the center defaulting | its first statement is `ctrl.core.get_x_position()` |
+| `run_multiposition_acquisition` | before `_preflight_native_positions` | nothing touches `ctrl` or the position list before it |
+| `run_multiposition_with_autofocus` | after the `missing`-args check, before `resolve_in_workspace` | `protocol` is `None`-able there, so it cannot be validated any earlier |
+| `run_adaptive_survey` | the existing `_protocol_shape_kwargs` call site suffices | nothing between the tool's first line and that call reads `ctrl`, `guard` or the position list |
+
+**`snap` reaches the helper on no path today**: the plain multiposition guard is
+`if protocol != "snap"` around `_plan_protocol_repetitions`, the hooked branch
+refuses `snap` outright, and the survey and wrapper refuse it earlier still. Test
+6's "assert the snap route reaches it at all" is a real limb, not a formality.
+
+**Do not add `additionalProperties` to `_PROTOCOL_PARAMS_SCHEMA`.** The runtime
+refusal is Decision 3's mechanism; a schema-level one is a public-surface change
+design/62 did not decide. Do add one clause naming `snap` as taking none, so the
+refusal 62c ships is published — description text does not affect the
+same-object identity acceptance test 5 asserts.
+
 ## The gate story: no microscope, and that is by design
 
 §"Rig gate" above says none, and it is right — the five decisions are two
@@ -778,7 +849,7 @@ accepted from a runner report.
 | --- | --- | --- | --- | --- | --- |
 | 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with tests only and no product change; preserved as `d1da105`. Revision 1 (`a5ee7a0`) resumed the same session and implemented Decision 1. **Coordinator-run suite: 2698 passed / 99 skipped / 3 warnings = 2797 collected, +4 over 62b, exactly the four acceptance tests, zero failures** (Python 3.11.15 — see the Python-floor note). `completed_dataset.py` needed **no change**: `cls(**parameters)` was already its first statement, so the reorder alone puts the refusal ahead of both the `output_dir` mkdir and `Dataset(dataset_path)`. The assignment prompt's "two files" was over-specified and the runner correctly left it alone. **Evidence:** the killed turn's own three tests are the pre-fix record — tests 1 and 2 `DID NOT RAISE ValueError` (construction opened nothing) and test 3 `FileNotFoundError ... missing-dataset` from `ndstorage/_superclass.py:28`, which is **turn 51 reproduced verbatim**; the runner re-took them and its log shows 4 collected, 3 failed, the 4th passing as the regression limb it is. **Its report was a 5-line self-link containing none of the demanded evidence** — a process defect, not worth a round, because the evidence exists in the command log and the coordinator verified the rest directly: `BUILTIN_ADAPTERS` maps names to classes with no introspective instantiation (so `__init__` doing I/O is safe), and **the fixture was checked against the code that reads it** — `LabelSets/<lane>/<block>.attrs['axistags']` for the resolution, `ClassifierForests/known_labels` for the trained set, `0.127` avoiding ilastik's 1-means-unset sentinel | **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | merged 2026-09-01, branch deleted local and origin |
 | 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with edits landed; preserved unreviewed as `1d69416`. Revision 1 (`0327b32` + `f5a2557`) resumed the same session at 14:24 once the quota reset and closed every finding. Coordinator correction `822e386` removed a `result.md` the runner had committed into the repository root — a job artifact, not a repo file; content preserved in the job directory and folded into this row. **Coordinator-run suite: 2694 passed / 99 skipped / 3 warnings = 2793 collected, baseline +36, zero failures.** The runner reported 9 failures as host/sandbox artifacts and that reconciles *exactly* — its 2685 + 9 = 2694 — every one passing in the baseline environment, so they were environmental. **Its stated cause is retracted:** it attributed two of them to a Python **3.10** sandbox lacking `BaseException.add_note`, the coordinator repeated that as fact, and it does not hold up — its command log records no interpreter version and it invoked bare `python` in the same login shell that resolves to the 3.11.15 conda env, where `add_note` exists. 62a's runner logged `Python 3.11.15` explicitly. **The real cause of those two failures is unknown and was not established.** What is verified is that they pass in the baseline environment. The episode did surface a genuine, separate defect — see the Python-floor note below. **Evidence:** 31 pre-fix failures on the positive hint limb, each `assert 'protocol_params' in <the generic argument hint>`; test 5's identity claim proved by **mutation** (`{**_PROTOCOL_PARAMS_SCHEMA}`) because a pre-fix run fails on the constant's absence and proves nothing; and — unasked — conditions 2 and 3 of Decision 4 mutated *separately*, each shown load-bearing. The runner stated plainly that the two negative limbs and F4's collision limb pass pre-fix by design and cannot honestly be made to fail. **Coordinator-verified independently:** all four top-level sites are the same object, `acquire_on_hit`'s is not, and the shared description carries both 'never at the top level' and F4's autofocus clause | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Acceptance test 9 runs once after 62d, against the final wording — F3 | merged 2026-09-01, branch deleted local and origin |
-| 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
+| 62c | `design62/protocol-preflight` | `e10f61f` (2026-09-01) | **assigned 2026-09-01.** Coordinator re-took the baseline on the environment of record first: 2698 passed / 99 skipped / 2 warnings in 171.79 s, exit 0. Findings handed to the runner as F5 — F1's reach corrected (two `acquire_on_hit` call sites, the zstack one included), the owed F1 decision taken (no separate case), placement fixed per boundary, `max_frames` refused, no `additionalProperties` | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
 | 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
 
 
@@ -874,7 +945,7 @@ the environment is rebuilt rather than comparing numbers across interpreters.
 | --- | --- |
 | 62a | **merged**, branch and worktree gone |
 | 62b | **merged**, branch and worktree gone |
-| 62c | **not started.** Decision 3 only. Depends on 62b (merged), so it is assignable now. The operator's `interval_s` decision is already taken — see §"The intentional break, stated before it ships" — so nothing blocks assignment |
+| 62c | **assigned 2026-09-01**, branch `design62/protocol-preflight` off `e10f61f`, runner in its own worktree. Decision 3 only. Read F5 before reviewing it |
 | 62d | after 62c, same shared-file reason |
 | test 9 | **after 62d**, once, against the final shipped wording. Priced at ~$17 for n=24 over two conditions; see F3 |
 
