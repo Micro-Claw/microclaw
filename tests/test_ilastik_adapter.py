@@ -22,6 +22,108 @@ from microclaw.safety import SafetyConstraints, SafetyGuard
 LABELS = [b"BG", b"apo_mito", b"healthy_mito"]
 
 
+def write_ilastik_project(path, *, labels=LABELS, resolution_um=0.127):
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as handle:
+        pixel_classification = handle.create_group("PixelClassification")
+        pixel_classification.create_dataset("LabelNames", data=np.array(labels))
+        handle.create_dataset("ilastikVersion", data=np.bytes_("1.4.1"))
+        label_set = pixel_classification.create_group("LabelSets/labels000")
+        block = label_set.create_dataset(
+            "block0000", data=np.zeros((2, 2, 1), dtype=np.uint8)
+        )
+        block.attrs["axistags"] = json.dumps({
+            "axes": [
+                {"key": "y", "resolution": resolution_um},
+                {"key": "x", "resolution": resolution_um},
+                {"key": "c", "resolution": 0},
+            ]
+        })
+        forests = pixel_classification.create_group("ClassifierForests")
+        forests.create_dataset("known_labels", data=np.arange(1, len(labels) + 1))
+    return path
+
+
+def test_project_labels_are_refused_during_construction_without_ilastik(tmp_path, monkeypatch):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    monkeypatch.setattr(
+        ilastik_adapter, "discover_ilastik",
+        lambda: (_ for _ in ()).throw(AssertionError("ilastik discovery must not run")),
+    )
+
+    with pytest.raises(ValueError) as refusal:
+        IlastikCompletedDatasetAdapter(
+            project, "__unknown__", "__numerator__", "__denominator__"
+        )
+
+    message = str(refusal.value)
+    assert "available labels" in message
+    assert all(label.decode("utf-8") in message for label in LABELS)
+
+
+def test_project_digest_is_checked_before_hdf5_and_stored_on_adapter(tmp_path, monkeypatch):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    actual_digest = hashlib.sha256(project.read_bytes()).hexdigest()
+    import h5py
+
+    opened = []
+    real_file = h5py.File
+    monkeypatch.setattr(h5py, "File", lambda *args, **kwargs: opened.append(args) or real_file(*args, **kwargs))
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", project_sha256="0" * 64
+        )
+    assert opened == []
+
+    verified = IlastikCompletedDatasetAdapter(
+        project, "BG", "apo_mito", "healthy_mito", project_sha256=actual_digest
+    )
+    computed = IlastikCompletedDatasetAdapter(
+        project, "BG", "apo_mito", "healthy_mito"
+    )
+    assert (verified.project_sha256, verified.project_sha256_source) == (
+        actual_digest, "verified"
+    )
+    assert (computed.project_sha256, computed.project_sha256_source) == (
+        actual_digest, "computed"
+    )
+
+
+def test_saved_dataset_label_probe_precedes_missing_dataset_and_output_creation(tmp_path):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    output_dir = tmp_path / "probe-output"
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+
+    with pytest.raises(ValueError, match="available labels.*apo_mito"):
+        completed_dataset.run_analysis_on_saved_dataset(
+            guard, str(tmp_path / "missing-dataset"),
+            "ilastik_pixel_classification", {}, "frames", {
+                "project_path": str(project),
+                "background_label": "__unknown__",
+                "numerator_label": "__numerator__",
+                "denominator_label": "__denominator__",
+            }, str(output_dir),
+        )
+    assert not output_dir.exists()
+
+
+def test_saved_dataset_with_correct_labels_still_fails_on_missing_dataset(tmp_path):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    output_dir = tmp_path / "analysis-output"
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+
+    with pytest.raises(FileNotFoundError, match="missing-dataset"):
+        completed_dataset.run_analysis_on_saved_dataset(
+            guard, str(tmp_path / "missing-dataset"),
+            "ilastik_pixel_classification", {}, "frames", {
+                "project_path": str(project),
+                "background_label": "BG",
+                "numerator_label": "apo_mito",
+                "denominator_label": "healthy_mito",
+            }, str(output_dir),
+        )
+
+
 def recorded_output():
     fixture = Path(__file__).parent / "fixtures" / "ilastik" / "recorded_probabilities.npz"
     data = np.load(fixture, allow_pickle=False)
