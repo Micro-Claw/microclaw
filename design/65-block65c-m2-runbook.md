@@ -214,7 +214,50 @@ Record all of:
   including the hook's software contribution.
 
 Label the result **n=1 run from M2**. Do not call it a microscope property and
-do not set a teardown allowance in this session.
+do not infer a cause from this one measurement. The 2026-08-31 measurement
+(99 gaps at 50 ms: min 0.219 s, mean 0.2495 s, max 0.344 s) supports the
+currently approved 0.5 s/frame teardown allowance; these additional runs test
+attribution and do not silently revise it.
+
+### 5A — hardware-sequenced fixed baseline
+
+This is the same field, exposure and frame count as Step 5, without a hook.
+Give the agent this prompt exactly:
+
+> Without starting live view, run plain `run_timelapse` on the same field with
+> `n_frames=100`, `interval_s=0`, `exposure_ms=50`, `save_dir=data`, and dataset
+> name `gate65c_fixed100_baseline`. Do not attach a hook or any envelope. Return
+> the complete `inter_frame_gap_summary`. End with exactly one verdict line:
+> `LIMB 5A PASS: fixed baseline summary saved`, or `LIMB 5A NOT EXERCISED:`
+> followed by the specific reason.
+
+Record the complete summary and label it **n=1 run from M2**. This is the
+hardware-sequenced baseline observed in this run, not a general camera rate.
+
+### 5B — routing-only adaptive observation
+
+This removes density analysis while retaining one-at-a-time adaptive dispatch.
+Give the agent this prompt exactly:
+
+> Save `gate65c_continue_only100`, whose `analyze_frame` reads only the time
+> axis and immediately returns one `ContinueAcquisition` for every image. It
+> must perform no density analysis, image statistics, hardware action or
+> artifact write. Without starting live view, run `run_timelapse` on the same
+> field with `n_frames=null`, `max_frames=100`, `interval_s=0`,
+> `exposure_ms=50`, `save_dir=data`, dataset name
+> `gate65c_continue_only100`, and no hardware or artifact envelope. Return the
+> complete `inter_frame_gap_summary` and `stop_reason`. End with exactly one
+> verdict line: `LIMB 5B PASS: routing-only summary saved`, or
+> `LIMB 5B NOT EXERCISED:` followed by the specific reason.
+
+PASS requires 100 frames and `stop_reason: cap_reached`. Record the complete
+summary and label it **n=1 run from M2**.
+
+Place the complete Step 5 density-and-routing, Step 5A fixed, and Step 5B
+routing-only `inter_frame_gap_summary` objects side by side. Report differences
+as three observations from one rig and one run of each shape. Do not conclude
+that the hook, bridge, engine or camera caused any difference; these limbs
+provide the missing baseline for a later attribution decision.
 
 ## 6 — engine callback-shape observation
 

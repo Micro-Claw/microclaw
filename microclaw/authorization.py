@@ -1568,12 +1568,67 @@ _RAW_WRITE_PATHS = frozenset({
 })
 
 
-def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
+def _property_declaration_example(ctrl: Any, device: str, prop: str) -> str:
+    """Return the one legal config stanza supported by live property shape."""
+    core = getattr(ctrl, "core", None)
+    if core is None:
+        return (
+            "Live property shape is unavailable, so no declaration can be generated; "
+            "inspect the connected device before changing authorization."
+        )
+    try:
+        allowed = _strings(core.get_allowed_property_values(device, prop))
+    except Exception:
+        allowed = []
+    if allowed:
+        return (
+            "Declare this discrete pair as:\n"
+            "property_authorization:\n"
+            "  allowed_categorical:\n"
+            f"    - {{device: {json.dumps(device)}, property: {json.dumps(prop)}}}"
+        )
+    try:
+        has_limits = bool(core.has_property_limits(device, prop))
+    except Exception:
+        has_limits = False
+    if has_limits:
+        low = float(core.get_property_lower_limit(device, prop))
+        high = float(core.get_property_upper_limit(device, prop))
+        return (
+            "Declare this driver-bounded numeric pair, after reviewing its safe "
+            "range and native unit, as:\n"
+            "property_authorization:\n"
+            "  allowed_numeric:\n"
+            f"    - {{device: {json.dumps(device)}, property: {json.dumps(prop)}, "
+            f"kind: bounded-numeric, units: native, minimum: {low:g}, maximum: {high:g}}}"
+        )
+    return (
+        "This property has neither a discrete driver value list nor driver limits, "
+        "so no bounded declaration can be generated from live evidence. Establish "
+        "its hardware semantics and safe bounds first."
+    )
+
+
+def authorize_property_write(
+    ctrl: Any, device: str, prop: str, *, approved_envelope: bool = False,
+) -> None:
     """Enforce the attached reviewed/excluded decision on any raw write path."""
     report = getattr(ctrl, "authorization_map", None)
     if report is None:
         # Invariant: startup attaches this before exposing production mutation paths.
         return
+    matches = [
+        entry for entry in report.entries
+        if entry.device == device and entry.property == prop
+        and entry.path in _RAW_WRITE_PATHS
+    ]
+    if any(entry.classification == "excluded" for entry in matches):
+        raise RigAuthorizationError(
+            f"Property write {device}.{prop} was refused because it is excluded from "
+            "the authorization map. No declaration can override an explicit exclusion. "
+            "The operator must deliberately remove the exact exclusion, review the "
+            "property's hardware effect, and restart so the authorization map is rebuilt."
+        )
     typed_pair = any(
         entry.device == device
         and entry.property == prop
@@ -1581,42 +1636,35 @@ def authorize_property_write(ctrl: Any, device: str, prop: str) -> None:
         and entry.path in _RAW_WRITE_PATHS
         for entry in report.entries
     )
-    if (
-        report.property_writes_unrestricted
-        and device in report.bounded_stage_devices
-        and not typed_pair
-    ):
+    if device in report.bounded_stage_devices and not typed_pair:
         raise RigAuthorizationError(
             f"Property write {device}.{prop} was refused because {device!r} carries "
             "declared stage bounds. Raw property writes cannot route around those "
             "bounds; use move_stage_xy for XY motion, move_stage_z for the focus "
-            "drive, or move_named_stage for a named stage."
+            "drive, or move_named_stage for a named stage. "
+            + _property_declaration_example(ctrl, device, prop)
+            + " This declaration documents the property's kind but does not override "
+              "the bounded-stage raw-write refusal."
         )
     if report.property_writes_unrestricted:
         return
-    matches = [
-        entry for entry in report.entries
-        if entry.device == device and entry.property == prop
-        and entry.path in _RAW_WRITE_PATHS
-    ]
     admitted = {
         "reviewed_categorical_property", "built_in_typed_capability",
         "typed_continuous_actuator",
     }
-    if (
-        not matches
-        or any(entry.classification == "excluded" for entry in matches)
-        or not any(entry.classification in admitted for entry in matches)
-    ):
+    if not matches and approved_envelope:
+        # An approved envelope is an exact, bounded, confirmed capability: it
+        # names one pair, intersects numeric bounds with the driver, budgets
+        # writes, and defines restoration. On camera-triggered rigs a property
+        # may modulate a pulse that already occurs rather than enable a new
+        # emission path; the envelope bounds that modulation. This generic rule
+        # never overrides an explicit exclusion or a bounded-stage device.
+        return
+    if not matches or not any(entry.classification in admitted for entry in matches):
         raise RigAuthorizationError(
-            f"Property write {device}.{prop} was refused because it is excluded from "
-            "the authorization map. No legal declaration can be named from this runtime "
-            "refusal alone: an explicitly excluded property must stay unavailable until "
-            "its exclusion is deliberately removed, and an unclassified property needs "
-            "its hardware semantics established first. Then declare this exact pair in "
-            "the matching top-level list: `property_authorization.allowed_categorical`, "
-            "`property_authorization.allowed_numeric`, `illumination.shutters`, or "
-            "`illumination.power_properties`."
+            f"Property write {device}.{prop} was refused because the exact pair is "
+            "unclassified in the authorization map. "
+            + _property_declaration_example(ctrl, device, prop)
         )
 
 

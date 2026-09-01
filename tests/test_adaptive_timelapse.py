@@ -253,8 +253,9 @@ def test_12_shape_refusals_precede_paths_events_and_hardware(monkeypatch):
     assert touched == []
 
 
-def test_13_cap_plan_and_fallback_runtime_are_separate(monkeypatch, mock_ctrl,
-                                                        unconstrained_guard, tmp_path):
+def test_13_cap_accounting_and_measured_runtime_allowance_are_separate(
+    monkeypatch, mock_ctrl, unconstrained_guard, tmp_path,
+):
     from microclaw import tools
     from microclaw.hook_decisions import ContinueAcquisition
 
@@ -325,9 +326,39 @@ def test_13_cap_plan_and_fallback_runtime_are_separate(monkeypatch, mock_ctrl,
     assert captured_plans[0].frames == 37
     assert captured_plans[0].illuminated_ms == 185
     assert captured_plans[0].estimated_bytes == 37 * 10 * 20 * 2
-    assert runtime_inputs == [None]
-    assert real_ceiling(runtime_inputs[0]) == (tools.FALLBACK_RUNTIME_CEILING_S, True)
+    assert len(runtime_inputs) == 2
+    runtime_plan = runtime_inputs[0]
+    assert runtime_inputs[1] is runtime_plan
+    assert runtime_plan is not captured_plans[0]
+    assert runtime_plan.frames == 37
+    assert runtime_plan.exposure_ms_per_frame == 5
+    assert runtime_plan.estimated_bytes == captured_plans[0].estimated_bytes
+    assert runtime_plan.estimated_duration_s == pytest.approx(18.685)
+    assert runtime_plan.software_allowance_s_per_frame == 0.5
+    assert "n=1 from M2" in runtime_plan.software_allowance_evidence
+    assert real_ceiling(runtime_plan) == (pytest.approx(318.685), False)
+    assert captured_plans[0].software_allowance_s_per_frame == 0
+    assert captured_plans[0].software_allowance_evidence is None
+    assert result["runtime_bound_plan"]["estimated_duration_s"] == pytest.approx(18.685)
+    assert result["runtime_bound_plan"]["runtime_ceiling_s"] == pytest.approx(318.685)
+    assert result["runtime_bound_plan"]["fallback_ceiling"] is False
+    assert "n=1 from M2" in result["runtime_bound_plan"]["software_allowance_evidence"]
     assert progress_events[-1]["frames_planned"] == 37
+
+
+def test_adaptive_runtime_allowance_reproduces_m2_100k_frame_sanity_check():
+    from microclaw import tools
+    from microclaw.acquisition import AcquisitionPlan
+
+    accounting = AcquisitionPlan(
+        frames=100_000, exposure_ms_per_frame=50,
+        estimated_duration_s=5_000, estimated_bytes=1,
+    )
+    runtime = tools._adaptive_timelapse_runtime_plan(accounting, interval_s=0)
+    assert accounting.estimated_duration_s == 5_000
+    assert accounting.software_allowance_s_per_frame == 0
+    assert runtime.estimated_duration_s == 55_000
+    assert tools._runtime_ceiling_s(runtime) == (82_500, False)
 
 
 def test_decision_contract_preflight_uses_pinned_source_scan(tmp_path, monkeypatch):

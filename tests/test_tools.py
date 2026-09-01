@@ -4131,6 +4131,7 @@ class TestTimelapseTriggerPreflight:
         result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
                                save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
+        assert result["inter_frame_gap_summary"]["count"] == 0
         assert result["trigger_preflight"] == {
             "guarantee": "trigger line is armed",
             "checked": [

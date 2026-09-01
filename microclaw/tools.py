@@ -131,6 +131,16 @@ STALL_GAP_MULTIPLIER = 5.0
 # Only callers with no computable plan use this last-resort bound. A day is
 # deliberately generous, but finite: absence of a plan must never mean forever.
 FALLBACK_RUNTIME_CEILING_S = 24 * 60 * 60.0
+# M2, n=1 on 2026-08-31: at 50 ms exposure, 99 adaptive inter-frame
+# gaps measured min 0.219 s, mean 0.2495 s, max 0.344 s. The operator approved
+# rounding the measured maximum upward to 0.5 s/frame. This affects teardown
+# supervision only; dose, disk, reservation, and frames_planned remain on the
+# cap-derived accounting plan.
+ADAPTIVE_TIMELAPSE_SOFTWARE_ALLOWANCE_S_PER_FRAME = 0.5
+ADAPTIVE_TIMELAPSE_ALLOWANCE_EVIDENCE = (
+    "n=1 from M2, 2026-08-31; 99 gaps at 50 ms exposure: "
+    "min 0.219 s, mean 0.2495 s, max 0.344 s"
+)
 _ACQUISITION_POLL_S = 1.0
 _ACQUISITION_EVENT_CONTEXT = threading.local()
 
@@ -149,6 +159,34 @@ def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool]:
         return FALLBACK_RUNTIME_CEILING_S, True
     estimate = plan.estimated_duration_s
     return max(estimate * 1.5, estimate + 300.0), False
+
+
+def _adaptive_timelapse_runtime_plan(
+    accounting_plan: AcquisitionPlan, *, interval_s: float,
+) -> AcquisitionPlan:
+    """Widen teardown time only, from the measured M2 software cadence."""
+    scheduled_duration_s = (
+        max(0, accounting_plan.frames - 1) * max(0.0, float(interval_s))
+        + accounting_plan.exposure_ms_per_frame / 1000.0
+    )
+    base_duration_s = max(
+        accounting_plan.estimated_duration_s, scheduled_duration_s,
+    )
+    return AcquisitionPlan(
+        frames=accounting_plan.frames,
+        exposure_ms_per_frame=accounting_plan.exposure_ms_per_frame,
+        estimated_duration_s=(
+            base_duration_s
+            + accounting_plan.frames
+            * ADAPTIVE_TIMELAPSE_SOFTWARE_ALLOWANCE_S_PER_FRAME
+        ),
+        estimated_bytes=accounting_plan.estimated_bytes,
+        hardware_sequenced_burst=False,
+        software_allowance_s_per_frame=(
+            ADAPTIVE_TIMELAPSE_SOFTWARE_ALLOWANCE_S_PER_FRAME
+        ),
+        software_allowance_evidence=ADAPTIVE_TIMELAPSE_ALLOWANCE_EVIDENCE,
+    )
 
 
 def _stall_quiet_s(largest_observed_gap_s: float) -> float:
@@ -1149,7 +1187,7 @@ def _finite_number_text(value, label):
     if not math.isfinite(number): raise SafetyViolation(f"{{label}} must be finite")
     return number
 
-def authorize_property_write(ctrl, device, prop):
+def authorize_property_write(ctrl, device, prop, *, approved_envelope=False):
     # The recorded live run already passed its authorization map, and the
     # emitted guard below pins the exact approved device/property pair so no
     # other pair is reachable through this standalone action path.
@@ -4695,6 +4733,9 @@ def run_timelapse(
             ctrl, events, exposure_ms, frame_count=max_frames,
             hardware_sequenced_burst=False,
         )
+        runtime_bound_plan = _adaptive_timelapse_runtime_plan(
+            cap_plan, interval_s=interval_s,
+        )
         progress = SurveyProgress(max_frames)
         candidates: queue.Queue = queue.Queue()
         started_at = datetime.now(timezone.utc)
@@ -4709,7 +4750,7 @@ def run_timelapse(
                 property_envelope=property_envelope,
                 adaptive_events=events, adaptive_max_events=max_frames,
                 adaptive_successor=successor, require_routing_decision=True,
-                accounting_plan=cap_plan, runtime_plan=None,
+                accounting_plan=cap_plan, runtime_plan=runtime_bound_plan,
             )
         except _HookArtifactBudgetError as exc:
             return {"error": str(exc)}
@@ -4717,6 +4758,18 @@ def run_timelapse(
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
             duration_s=round(time.monotonic() - started, 6),
+            runtime_bound_plan={
+                "frames": runtime_bound_plan.frames,
+                "estimated_duration_s": runtime_bound_plan.estimated_duration_s,
+                "software_allowance_s_per_frame": (
+                    runtime_bound_plan.software_allowance_s_per_frame
+                ),
+                "software_allowance_evidence": (
+                    runtime_bound_plan.software_allowance_evidence
+                ),
+                "runtime_ceiling_s": _runtime_ceiling_s(runtime_bound_plan)[0],
+                "fallback_ceiling": False,
+            },
         )
         if trigger_preflight is not None:
             result["trigger_preflight"] = trigger_preflight
@@ -4734,16 +4787,18 @@ def run_timelapse(
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
+    cadence = _new_gap_summary()
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
-            ctrl=ctrl, plan=plan, runtime_plan=plan,
+            ctrl=ctrl, plan=plan, runtime_plan=plan, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
     result = {
         "status": "Timelapse complete.", "dataset_path": dataset_path,
+        "inter_frame_gap_summary": _gap_summary_payload(cadence),
         **_reservation_report(reservation),
     }
     if trigger_preflight is not None:
@@ -7391,6 +7446,8 @@ def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
         # Autofocus snaps are analyzed in memory and are not stored.
         estimated_bytes=plan.estimated_bytes,
         hardware_sequenced_burst=plan.hardware_sequenced_burst,
+        software_allowance_s_per_frame=plan.software_allowance_s_per_frame,
+        software_allowance_evidence=plan.software_allowance_evidence,
     )
 
 
@@ -7690,7 +7747,7 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         from microclaw.authorization import authorize_property_write
         from microclaw.safety import _finite_number_text
         device, prop, values, low, high, _writes, initial, restore = property_config
-        authorize_property_write(ctrl, device, prop)
+        authorize_property_write(ctrl, device, prop, approved_envelope=True)
         restore_value = initial if restore == "entry" else (
             restore["value"] if isinstance(restore, dict) else None
         )

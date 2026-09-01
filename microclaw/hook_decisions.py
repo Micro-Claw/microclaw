@@ -485,7 +485,10 @@ class UntrustedHookAdapter:
             self._refuse_event(event, action, "authorized property write budget exhausted")
             raise RuntimeError("property action refused: write budget exhausted")
         try:
-            authorize_property_write(ctx["ctrl"], ctx["device"], ctx["property"])
+            authorize_property_write(
+                ctx["ctrl"], ctx["device"], ctx["property"],
+                approved_envelope=True,
+            )
             ctx["guard"].check_device_property(
                 ctx["core"], ctx["device"], ctx["property"], value,
                 approved_envelope=True,

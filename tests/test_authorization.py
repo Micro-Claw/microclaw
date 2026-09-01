@@ -448,10 +448,10 @@ def test_fully_reviewed_categorical_preset_is_authorized_and_runtime_gated():
     )
     authorize_channel(ctrl, "DAPI")
     authorize_property_write(ctrl, "Wheel", "Label")
-    with pytest.raises(RigAuthorizationError, match="excluded") as exc:
+    with pytest.raises(RigAuthorizationError, match="unclassified") as exc:
         authorize_property_write(ctrl, "Wheel", "Speed")
-    assert "property_authorization.allowed_categorical" in str(exc.value)
-    assert "property_authorization.allowed_numeric" in str(exc.value)
+    assert "property_authorization:\n  allowed_categorical:" in str(exc.value)
+    assert "property_authorization.allowed_numeric" not in str(exc.value)
 
 
 def test_excluded_preset_effect_fails_and_is_not_runtime_authorized():
@@ -801,7 +801,7 @@ def test_declared_unloaded_device_demotes_via_device_absence(capsys):
     assert "declared device 'NotLoaded' is not loaded" in report.diagnostics[0].message
     with pytest.raises(RigAuthorizationError, match="excluded") as exc:
         authorize_property_write(ctrl, "NotLoaded", "Mode")
-    assert "property_authorization.allowed_categorical" in str(exc.value)
+    assert "No declaration can override an explicit exclusion" in str(exc.value)
     assert "declared device 'NotLoaded' is not loaded" in capsys.readouterr().err
 
 
@@ -982,6 +982,78 @@ def test_channel_preset_entry_does_not_unlock_the_bounded_stage_raw_route():
         authorize_property_write(ctrl, "PIZStage", "Position")
 
 
+def _property_authorization_ctrl(*, entries=(), bounded=(), categorical=True):
+    core = Core()
+    core.get_allowed_property_values = (
+        (lambda device, prop: ["Off", "On"])
+        if categorical else (lambda device, prop: [])
+    )
+    core.has_property_limits = lambda device, prop: not categorical
+    core.get_property_lower_limit = lambda device, prop: 0
+    core.get_property_upper_limit = lambda device, prop: 1048575
+    return SimpleNamespace(
+        core=core,
+        authorization_map=AuthorizationMap(
+            "guaranteed", "complete", True, entries=list(entries),
+            property_writes_unrestricted=False,
+            bounded_stage_devices=frozenset(bounded),
+        ),
+    )
+
+
+def test_approved_envelope_authorizes_an_unclassified_property_pair():
+    ctrl = _property_authorization_ctrl(categorical=False)
+    authorize_property_write(
+        ctrl, "Pulse Modulator", "Duration", approved_envelope=True,
+    )
+
+
+def test_approved_envelope_does_not_override_explicit_exclusion():
+    ctrl = _property_authorization_ctrl(entries=[AuthorizationEntry(
+        path="generic-property", classification="excluded",
+        device="Pulse Modulator", property="Duration",
+    )], categorical=False)
+    with pytest.raises(RigAuthorizationError, match="No declaration can override"):
+        authorize_property_write(
+            ctrl, "Pulse Modulator", "Duration", approved_envelope=True,
+        )
+
+
+def test_approved_envelope_does_not_override_bounded_stage_device():
+    ctrl = _property_authorization_ctrl(
+        bounded={"Bounded Stage"}, categorical=False,
+    )
+    with pytest.raises(RigAuthorizationError, match="bounded-stage raw-write refusal"):
+        authorize_property_write(
+            ctrl, "Bounded Stage", "Hold time", approved_envelope=True,
+        )
+
+
+def test_unclassified_numeric_refusal_names_one_literal_numeric_stanza():
+    ctrl = _property_authorization_ctrl(categorical=False)
+    with pytest.raises(RigAuthorizationError) as exc:
+        authorize_property_write(ctrl, "Pulse Modulator", "Duration")
+    message = str(exc.value)
+    assert "property_authorization:\n  allowed_numeric:" in message
+    assert "device: \"Pulse Modulator\"" in message
+    assert "property: \"Duration\"" in message
+    assert "kind: bounded-numeric" in message
+    assert "units: native" in message
+    assert "minimum: 0" in message and "maximum: 1.04858e+06" in message
+    assert "allowed_categorical" not in message
+
+
+def test_unclassified_discrete_refusal_names_one_literal_categorical_stanza():
+    ctrl = _property_authorization_ctrl(categorical=True)
+    with pytest.raises(RigAuthorizationError) as exc:
+        authorize_property_write(ctrl, "Selector", "Mode")
+    message = str(exc.value)
+    assert "property_authorization:\n  allowed_categorical:" in message
+    assert 'device: "Selector"' in message
+    assert 'property: "Mode"' in message
+    assert "allowed_numeric" not in message
+
+
 @pytest.mark.parametrize(
     ("maximum", "step", "message"),
     [
@@ -1037,7 +1109,7 @@ def test_unclassified_and_over_limit_illumination_writes_fail():
     config = parsed(illumination=illumination_policy())
     validate_live_rig(ctrl, config)
     guard = SafetyGuard(config.constraints)
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "Laser", "UnknownPower")
     authorize_property_write(ctrl, "Laser", "Power")
     with pytest.raises(SafetyViolation, match="max_power_percent"):
@@ -1358,7 +1430,7 @@ def test_state_device_auto_classifies_its_discrete_position():
     assert set(categorical_entries(report)) == {
         ("FilterWheel", "Label"), ("FilterWheel", "State")
     }
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "FilterWheel", "Speed")
 
 
@@ -1378,7 +1450,7 @@ def test_shutter_device_is_never_auto_classified():
     }
     ctrl = Controller(core)
     validate_live_rig(ctrl, parsed())
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "Blocker", "State")
     assert any(
         entry.path == "connected-device-inventory" and entry.device == "Blocker"
@@ -1399,7 +1471,7 @@ def test_core_shutter_is_never_auto_classified_even_when_typed_state_device():
     report = validate_live_rig(ctrl, parsed())
     assert ("FilterWheel", "Label") in categorical_entries(report)
     assert ("Slider", "Label") not in categorical_entries(report)
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "Slider", "Label")
 
     # Same carve-out for a state device the operator reviewed as illumination.
@@ -1411,7 +1483,7 @@ def test_core_shutter_is_never_auto_classified_even_when_typed_state_device():
             shutters=[IlluminationProperty("Slider", "Label", "Open", "Closed")],
         )),
     )
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "Slider", "State")
 
 
@@ -1464,7 +1536,7 @@ def test_non_state_devices_are_unaffected_by_auto_classification():
     report = validate_live_rig(ctrl, parsed())
     assert categorical_entries(report) == {}
     for device in ("Sensor", "Hub", "Port", "SecondZ", "ReadOnlySensor"):
-        with pytest.raises(RigAuthorizationError, match="excluded"):
+        with pytest.raises(RigAuthorizationError, match="unclassified"):
             authorize_property_write(ctrl, device, "Label")
 
 
@@ -1482,7 +1554,7 @@ def test_unreadable_device_facts_fail_closed(break_it):
     ctrl = Controller(core)
     report = validate_live_rig(ctrl, parsed())
     assert categorical_entries(report) == {}
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "FilterWheel", "Label")
 
 
@@ -1498,7 +1570,7 @@ def test_excluded_and_forbidden_pairs_still_win_over_auto_classification():
     assert categorical_entries(report) == {}
     with pytest.raises(RigAuthorizationError, match="excluded"):
         authorize_property_write(ctrl, "FilterWheel", "State")
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "FilterWheel", "Label")
     with pytest.raises(SafetyViolation):
         guard.check_property("FilterWheel", "Label")
@@ -1515,8 +1587,11 @@ def test_runtime_allowlist_admits_auto_classified_write_and_refuses_excluded():
     authorize_property_write(ctrl, "FilterWheel", "Label")
     guard.check_device_property(ctrl.core, "FilterWheel", "Label", "DAPI")
 
-    for device, prop in (("Piezo", "Position"), ("FilterWheel", "Speed")):
-        with pytest.raises(RigAuthorizationError, match="excluded"):
+    for device, prop, reason in (
+        ("Piezo", "Position", "excluded"),
+        ("FilterWheel", "Speed", "unclassified"),
+    ):
+        with pytest.raises(RigAuthorizationError, match=reason):
             authorize_property_write(ctrl, device, prop)
         with pytest.raises(SafetyViolation, match="allowed_properties"):
             guard.check_property(device, prop)
@@ -1566,7 +1641,7 @@ def test_declaring_one_position_property_does_not_auto_admit_the_other_m5():
     assert entries[("iChrome-MLE-TCP", "Label")].source == "declared"
 
     authorize_property_write(ctrl, "iChrome-MLE-TCP", "Label")
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "iChrome-MLE-TCP", "State")
     with pytest.raises(SafetyViolation, match="allowed_properties"):
         guard.check_property("iChrome-MLE-TCP", "State")
@@ -1581,7 +1656,7 @@ def test_declaring_one_position_property_rules_out_the_other(declared, key):
     ctrl = Controller(core)
     report = validate_live_rig(ctrl, parsed(**{key: {("Selector", declared)}}))
     assert ("Selector", other) not in categorical_entries(report)
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "Selector", other)
 
 
@@ -1590,7 +1665,7 @@ def test_a_forbidden_position_property_also_rules_out_the_other():
     ctrl = Controller(core)
     report = validate_live_rig(ctrl, parsed(forbidden={("Selector", "State")}))
     assert categorical_entries(report) == {}
-    with pytest.raises(RigAuthorizationError, match="excluded"):
+    with pytest.raises(RigAuthorizationError, match="unclassified"):
         authorize_property_write(ctrl, "Selector", "Label")
 
 

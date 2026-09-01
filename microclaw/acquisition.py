@@ -19,6 +19,10 @@ class AcquisitionPlan:
     # one hardware sequence. Other zero-min-start-time shapes (such as a
     # z-stack) must not be inferred to have this property.
     hardware_sequenced_burst: bool = False
+    # Runtime-only software overhead measured for a route. Zero/None on dose,
+    # disk, reservation, and ordinary runtime plans.
+    software_allowance_s_per_frame: float = 0.0
+    software_allowance_evidence: str | None = None
 
     @property
     def illuminated_ms(self) -> float:
