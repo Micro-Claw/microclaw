@@ -533,6 +533,8 @@
   let streamSilenceDetected = false;
   let activeTurnAbort = null;
   let recoverySettled = false;
+  let lastAppliedSeq = null;
+  let diagnosticTurnId = null;
 
   function renderPendingText() {
     $("pending-text").textContent = pendingConfirmation ||
@@ -566,6 +568,8 @@
     noteStreamSilence: () => {
       if (streamSilenceDetected) return;
       streamSilenceDetected = true;
+      console.warn("Microclaw stream silence; turn:", diagnosticTurnId,
+        "last applied seq:", lastAppliedSeq);
       renderPendingText();
     },
     settleRecovered: () => {
@@ -657,6 +661,7 @@
   async function runTurn(text) {
     recoverySettled = false;
     streamSilenceDetected = false;
+    lastAppliedSeq = null;
     pendingResolution = null;
     pendingProgress = null;
     pendingDefault = "MicroClaw is working…";
@@ -677,7 +682,8 @@
     const live = history.concat([{ role: "user", content: text }]);
     const state = { asst: null };
     paint(live, true);
-    confirmationRecovery.setTurnId(res.headers.get("X-Microclaw-Turn-ID"));
+    diagnosticTurnId = res.headers.get("X-Microclaw-Turn-ID");
+    confirmationRecovery.setTurnId(diagnosticTurnId);
     confirmationRecovery.startConfirmationRecovery();
     confirmationRecovery.armSilenceTimer();
     try {
@@ -685,6 +691,7 @@
         res.body, confirmationRecovery.armSilenceTimer
       )) {
         applyEvent(live, ev, state);
+        if (Number.isInteger(ev.seq)) lastAppliedSeq = ev.seq;
         schedulePaint(live);
       }
     } catch (err) {
@@ -694,6 +701,8 @@
       activeTurnAbort = null;
       confirmationRecovery.stopConfirmationRecovery();
       confirmationRecovery.clearSilenceTimer();
+      console.warn("Microclaw turn settled; turn:", diagnosticTurnId,
+        "last applied seq:", lastAppliedSeq);
     }
     return true;
   }

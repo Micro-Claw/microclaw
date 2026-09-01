@@ -916,10 +916,30 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         turn_identity = request.state.identity
+        seq = 0
+        text_delta_count = 0
 
         def emit(event):
+            def deliver():
+                nonlocal seq, text_delta_count
+                if event is _TURN_DONE:
+                    print(
+                        f"[microclaw turn {session.current_turn_id}] done: "
+                        f"{seq} events ({text_delta_count} text_delta), final seq {seq}"
+                    )
+                    queue.put_nowait(event)
+                    return
+                seq += 1
+                event_type = event.get("type")
+                stamped = {**event, "seq": seq}
+                queue.put_nowait(stamped)
+                if event_type == "text_delta":
+                    text_delta_count += 1
+                else:
+                    print(f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}")
+
             try:
-                loop.call_soon_threadsafe(queue.put_nowait, event)
+                loop.call_soon_threadsafe(deliver)
             except RuntimeError:
                 pass  # Ctrl-C closed the loop mid-turn; serve()'s finally saves.
 

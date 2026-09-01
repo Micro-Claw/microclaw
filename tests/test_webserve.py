@@ -618,8 +618,8 @@ def test_prompt_streams_events_and_appends_to_history(session, client, monkeypat
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/event-stream")
     assert _events(res) == [
-        {"type": "round_start", "iteration": 0},
-        {"type": "done", "reply": "channel set to DAPI"},
+        {"type": "round_start", "iteration": 0, "seq": 1},
+        {"type": "done", "reply": "channel set to DAPI", "seq": 2},
     ]
 
     # The stripped prompt is what reached the agent, and history is the server's.
@@ -647,6 +647,76 @@ def test_tool_lifecycle_reaches_the_browser_one_event_at_a_time(session, client,
 
     types_ = [e["type"] for e in _events(client.post("/api/prompt", json={"message": "go"}))]
     assert types_ == ["round_start", "tool_use", "tool_result", "done"]
+
+
+def test_event_sequences_restart_each_turn_and_do_not_mutate_callers(
+    session, client, monkeypatch
+):
+    original = {"type": "round_start", "iteration": 0}
+
+    def fake(*args, **kwargs):
+        yield original
+        yield {"type": "done"}
+
+    monkeypatch.setattr(webserve, "run_agent_iter", fake)
+    first = _events(client.post("/api/prompt", json={"message": "one"}))
+    second = _events(client.post("/api/prompt", json={"message": "two"}))
+    assert [event["seq"] for event in first] == [1, 2]
+    assert [event["seq"] for event in second] == [1, 2]
+    assert original == {"type": "round_start", "iteration": 0}
+
+
+def test_sequence_delivery_order_includes_a_real_second_emitting_thread(
+    session, client, monkeypatch
+):
+    helper_was_a_different_thread = []
+
+    def fake(*args, **kwargs):
+        yield {"type": "round_start", "source": "turn-before"}
+
+        def helper():
+            helper_was_a_different_thread.append(
+                threading.current_thread() is not threading.main_thread()
+            )
+            session._emit({"type": "acquisition_progress", "source": "teardown"})
+
+        thread = threading.Thread(target=helper, name="test-acq-teardown")
+        thread.start()
+        thread.join()
+        yield {"type": "done", "source": "turn-after"}
+
+    monkeypatch.setattr(webserve, "run_agent_iter", fake)
+    events = _events(client.post("/api/prompt", json={"message": "go"}))
+    assert helper_was_a_different_thread == [True]
+    assert [(event["source"], event["seq"]) for event in events] == [
+        ("turn-before", 1), ("teardown", 2), ("turn-after", 3),
+    ]
+
+
+def test_turn_done_is_unstamped_ends_by_identity_and_logging_is_payload_free(
+    session, client, monkeypatch, capsys
+):
+    secret = "RECOGNISABLE-CONFIRM-SUMMARY"
+
+    def fake(*args, **kwargs):
+        for index in range(40):
+            yield {"type": "text_delta", "text": f"token-{index}"}
+        yield {"type": "confirm_request", "id": "c1", "summary": secret}
+        yield {"type": "done", "reply": "finished"}
+
+    monkeypatch.setattr(webserve, "run_agent_iter", fake)
+    events = _events(client.post("/api/prompt", json={"message": "go"}))
+    output = capsys.readouterr().out
+    lines = [line for line in output.splitlines() if line.startswith("[microclaw turn ")]
+
+    assert [event["seq"] for event in events] == list(range(1, 43))
+    assert len(lines) == 3  # confirm_request, done, and the one turn summary
+    assert not any(" seq " in line and line.endswith(" text_delta") for line in lines)
+    assert "done: 42 events (40 text_delta), final seq 42" in lines[-1]
+    assert secret not in output
+    # Receiving exactly the yielded events proves the unstamped sentinel was
+    # still recognized by identity and ended the generator rather than leaking.
+    assert all(event.get("type") != str(webserve._TURN_DONE) for event in events)
 
 
 def test_prompt_passes_the_session_model_through(session, client, monkeypatch):
