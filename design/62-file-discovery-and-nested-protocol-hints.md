@@ -777,7 +777,7 @@ accepted from a runner report.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | turn 1 assigned 2026-09-01, **killed mid-flight by a Codex account usage limit** at 11:45; preserved unreviewed as `d1da105` and pushed. Tests only — a `write_ilastik_project` HDF5 fixture and three of the four acceptance tests; **no product change at all**, neither `ilastik_adapter.py` nor `completed_dataset.py` touched. Its accidental value is that it *is* step 3's pre-fix evidence, captured by the coordinator before any fix exists: tests 1 and 2 fail `DID NOT RAISE ValueError` (construction opens nothing today) and test 3 fails `FileNotFoundError ... missing-dataset` out of `ndstorage/_superclass.py:28` — **turn 51 of the session reproduced verbatim**, which is this block's whole thesis. Fixture itself unverified |  **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
-| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with edits landed; preserved unreviewed as `1d69416`. Revision 1 (`0327b32` + `f5a2557`) resumed the same session at 14:24 once the quota reset and closed every finding. Coordinator correction `822e386` removed a `result.md` the runner had committed into the repository root — a job artifact, not a repo file; content preserved in the job directory and folded into this row. **Coordinator-run suite: 2694 passed / 99 skipped / 3 warnings = 2793 collected, baseline +36, zero failures.** The runner reported 9 failures as host/sandbox artifacts and that reconciles *exactly* — its 2685 + 9 = 2694 — every one passing in the baseline environment; its sandbox is Python **3.10** (no `BaseException.add_note`) with no network and a binary-incompatible h5py/NumPy pair. **Evidence:** 31 pre-fix failures on the positive hint limb, each `assert 'protocol_params' in <the generic argument hint>`; test 5's identity claim proved by **mutation** (`{**_PROTOCOL_PARAMS_SCHEMA}`) because a pre-fix run fails on the constant's absence and proves nothing; and — unasked — conditions 2 and 3 of Decision 4 mutated *separately*, each shown load-bearing. The runner stated plainly that the two negative limbs and F4's collision limb pass pre-fix by design and cannot honestly be made to fail. **Coordinator-verified independently:** all four top-level sites are the same object, `acquire_on_hit`'s is not, and the shared description carries both 'never at the top level' and F4's autofocus clause | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Acceptance test 9 runs once after 62d, against the final wording — F3 | merged 2026-09-01, branch deleted local and origin |
+| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with edits landed; preserved unreviewed as `1d69416`. Revision 1 (`0327b32` + `f5a2557`) resumed the same session at 14:24 once the quota reset and closed every finding. Coordinator correction `822e386` removed a `result.md` the runner had committed into the repository root — a job artifact, not a repo file; content preserved in the job directory and folded into this row. **Coordinator-run suite: 2694 passed / 99 skipped / 3 warnings = 2793 collected, baseline +36, zero failures.** The runner reported 9 failures as host/sandbox artifacts and that reconciles *exactly* — its 2685 + 9 = 2694 — every one passing in the baseline environment, so they were environmental. **Its stated cause is retracted:** it attributed two of them to a Python **3.10** sandbox lacking `BaseException.add_note`, the coordinator repeated that as fact, and it does not hold up — its command log records no interpreter version and it invoked bare `python` in the same login shell that resolves to the 3.11.15 conda env, where `add_note` exists. 62a's runner logged `Python 3.11.15` explicitly. **The real cause of those two failures is unknown and was not established.** What is verified is that they pass in the baseline environment. The episode did surface a genuine, separate defect — see the Python-floor note below. **Evidence:** 31 pre-fix failures on the positive hint limb, each `assert 'protocol_params' in <the generic argument hint>`; test 5's identity claim proved by **mutation** (`{**_PROTOCOL_PARAMS_SCHEMA}`) because a pre-fix run fails on the constant's absence and proves nothing; and — unasked — conditions 2 and 3 of Decision 4 mutated *separately*, each shown load-bearing. The runner stated plainly that the two negative limbs and F4's collision limb pass pre-fix by design and cannot honestly be made to fail. **Coordinator-verified independently:** all four top-level sites are the same object, `acquire_on_hit`'s is not, and the shared description carries both 'never at the top level' and F4's autofocus clause | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Acceptance test 9 runs once after 62d, against the final wording — F3 | merged 2026-09-01, branch deleted local and origin |
 | 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
 | 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
 
@@ -830,3 +830,38 @@ block.** Whoever writes it must not reuse `_PROTOCOL_PARAMS_SCHEMA`.
 `protocol_params={..., "<key>": value}` rather than invent eight per-key
 literals. Accepted: the design gave a literal for one key only, and a wrong-typed
 example on the other seven would be worse than a placeholder.
+
+### Out-of-band: the Python floor was a false claim (fixed 2026-09-01)
+
+Not a design/62 row. Found because the operator questioned a version number in
+62b's runner report, which is worth recording as its own lesson: **an unverified
+number in a handoff, repeated by the reviewer, is how a false fact enters a
+design document.** The coordinator restated the runner's "Python 3.10" claim as
+established, and it was not.
+
+What the check actually found, all coordinator-verified:
+
+| source | declared |
+| --- | --- |
+| `pyproject.toml` | `requires-python = ">=3.10"` |
+| `microclaw/autofocus.py` `:524`, `:558`, `:630` | `BaseException.add_note` — **3.11+, unguarded** |
+| `microclaw/credentials.py` (was `:63`) | a tomllib fallback commented *"we support 3.10"* |
+| `README.md:134`, `install.bat` ×3 | `--python 3.12` |
+
+The `add_note` sites are not cosmetic. Each is inside
+`except Exception as restore_exc:` within `except StageMoveError as move_exc:`,
+so on 3.10 the `AttributeError` propagates *instead of* the `raise` beneath it —
+the typed `StageMoveError` never reaches its boundary, on precisely the path
+where the stage move failed **and** its restore failed. That is `CLAUDE.md`'s own
+rule reproduced: *a typed exception is only as good as the handlers between it
+and its boundary.*
+
+Fixed at `68d81c2`: `requires-python = ">=3.12"`, matching what the installer has
+always done, and `credentials.py`'s fallback deleted outright per *no legacy
+anchoring* rather than made consistent — `tomllib` imported plainly, `_TOML_RE`
+and the then-unused `re` import removed.
+
+**Baseline caveat this creates.** The coordinator environment is Python 3.11.15
+and is now *below* the declared floor. Every design/62 baseline — 2658, then 2694
+after 62b, then 2698 after 62a — was measured there. Re-baseline on 3.12 after
+the environment is rebuilt rather than comparing numbers across interpreters.
