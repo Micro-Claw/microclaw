@@ -116,18 +116,27 @@ def score(server_path: Path | None, browser_path: Path | None, forbidden: list[s
     def payload_limb():
         if server is None:
             raise NotExercised("server console log is required")
+        # Confirmation audits intentionally print their operator-facing summary.
+        # This limb scores only the event records introduced by block 69a-3.
+        event_log_lines = [
+            line for line in server.splitlines()
+            if line.strip().startswith("[microclaw turn ")
+        ]
         leaked_delta = any(
             EVENT.fullmatch(line.strip()) and EVENT.fullmatch(line.strip()).group(3) == "text_delta"
-            for line in server.splitlines()
+            for line in event_log_lines
         )
         if leaked_delta:
             raise AssertionError("server log contains a per-text_delta event line")
-        leaked = [token for token in forbidden if token and token in server]
+        leaked = [
+            token for token in forbidden
+            if token and any(token in line for line in event_log_lines)
+        ]
         if leaked:
             raise AssertionError("server log contains forbidden payload marker(s): " + ", ".join(leaked))
         if not forbidden:
             raise NotExercised("supply --forbidden with the recognizable confirmation marker")
-        return "no text_delta event line and no recognizable payload marker"
+        return "event log has no text_delta line and no recognizable payload marker"
 
     limb("L8 payload-free logging", payload_limb)
     return results

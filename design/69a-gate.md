@@ -25,12 +25,25 @@ computed comparison needs the text and turn IDs.
 
 Use the recognizable marker `PAYLOAD_69A_GATE_SECRET` in the forced
 confirmation's operator-facing summary. It must be visible in the banner and
-must not occur in `server-console.log`.
+will also appear in the intentional `[microclaw] Confirmation audit:` line. It
+must not occur in any `[microclaw turn ...]` event-log line.
 
 First submit: `Save a knowledge entry under rig/gate_marker whose value is
 exactly PAYLOAD_69A_GATE_SECRET.` Verify the confirmation banner's summary
 contains that marker, then decline it. This supplies limb 8's real secret-bearing
 event without changing the machine's knowledge.
+
+Before starting the five-minute limb, open a second PowerShell in the checkout
+and run this capture check unedited:
+
+```powershell
+$ServerLog = "block69a-evidence\server-console.log"
+if (-not (Test-Path $ServerLog)) { throw "Server console log does not exist" }
+if ((Get-Item $ServerLog).Length -eq 0) { throw "Server console log is still empty" }
+if (-not (Select-String -Path $ServerLog -Pattern '^\[microclaw turn [0-9a-f]+\] seq \d+ ' -Quiet)) { throw "No block 69a event line has reached the server log" }
+```
+
+Stop here if it throws. This check must succeed while the server is still alive.
 
 ## 1. Pending, silence, recovery, and the timeout priority
 
@@ -40,25 +53,25 @@ Submit this prompt verbatim:
 > Then request a 100000-frame timelapse. Do not replace either acquisition with
 > a description; call the acquisition tool for each.
 
-Judge and record each observation independently:
+Judge and record each limb independently:
 
-1. After the second acquisition requests confirmation, the banner is visible.
+- **Limb 1.** After the second acquisition requests confirmation, the banner is visible.
    The status must first read `Waiting for your confirmation.` and then include
-   `Ns remaining.` as the poll updates it. This is limb 1.
-2. While that confirmation is pending, disable networking for about 60 seconds
+   `Ns remaining.` as the poll updates it.
+- **Limb 2.** While that confirmation is pending, disable networking for about 60 seconds
    in DevTools. The banner must remain visible and the status must become exactly
    `Live updates interrupted; checking Microclaw…`. Re-enable networking without
-   reloading. This is limb 2.
-3. Do not approve or decline. `CONFIRM_TIMEOUT_S` is 300 seconds and has no
+   reloading.
+- **Limb 4.** Do not approve or decline. `CONFIRM_TIMEOUT_S` is 300 seconds and has no
    configuration path, so this limb costs a real five-minute wait. Do not patch
    or shorten it: this production timeout path is the incident's mechanism.
    Because the same turn already emitted `frames N / M`, expiry must replace
    that competing progress text with exactly
    `Confirmation timed out and was declined`. A frozen `frames N / M` fails
    limb 4 even if the refusal later appears in the transcript.
-4. Let recovery finish without reloading. The composer must be usable, the
+- **Limb 3.** Let recovery finish without reloading. The composer must be usable, the
    spinner must be gone, and the submitted prompt must not be restored into the
-   message box. This is limb 3.
+   message box.
 
 Do not collapse these into one verdict. In particular, limb 4 is the
 load-bearing control: it reaches timeout disclosure with acquisition progress

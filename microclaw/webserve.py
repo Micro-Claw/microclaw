@@ -925,7 +925,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 if event is _TURN_DONE:
                     print(
                         f"[microclaw turn {session.current_turn_id}] done: "
-                        f"{seq} events ({text_delta_count} text_delta), final seq {seq}"
+                        f"{seq} events ({text_delta_count} text_delta), final seq {seq}",
+                        flush=True,
                     )
                     queue.put_nowait(event)
                     return
@@ -936,7 +937,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 if event_type == "text_delta":
                     text_delta_count += 1
                 else:
-                    print(f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}")
+                    print(
+                        f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}",
+                        flush=True,
+                    )
 
             try:
                 loop.call_soon_threadsafe(deliver)

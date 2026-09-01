@@ -6,6 +6,7 @@ wired to real hardware: one turn at a time, no cross-origin driving, no key
 echoed back, and a refusal to bind beyond localhost without an opt-in.
 """
 import asyncio
+import builtins
 import contextlib
 import json
 import os
@@ -717,6 +718,25 @@ def test_turn_done_is_unstamped_ends_by_identity_and_logging_is_payload_free(
     # Receiving exactly the yielded events proves the unstamped sentinel was
     # still recognized by identity and ended the generator rather than leaking.
     assert all(event.get("type") != str(webserve._TURN_DONE) for event in events)
+
+
+def test_event_log_lines_flush_while_the_server_is_still_running(
+    session, client, monkeypatch
+):
+    printed = []
+    real_print = builtins.print
+
+    def capture(*args, **kwargs):
+        if args and str(args[0]).startswith("[microclaw turn "):
+            printed.append((str(args[0]), kwargs.get("flush")))
+        return real_print(*args, **kwargs)
+
+    monkeypatch.setattr(builtins, "print", capture)
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter())
+    client.post("/api/prompt", json={"message": "go"})
+
+    assert len(printed) == 3  # round_start, done, and summary
+    assert all(flush is True for _, flush in printed)
 
 
 def test_prompt_passes_the_session_model_through(session, client, monkeypatch):

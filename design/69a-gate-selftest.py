@@ -29,7 +29,7 @@ def check(name, condition, detail=""):
 
 
 TURN_SCRIPT = r'''
-import contextlib, json, threading, types, sys
+import contextlib, json, threading, time, types, sys
 from pathlib import Path
 from fastapi.testclient import TestClient
 from microclaw import credentials, webserve
@@ -47,12 +47,21 @@ s = types.SimpleNamespace(
     cancel=threading.Event(), _emit=None, pending=None, last_resolution=None,
     current_turn_id=None, audit_records=[], current_identity="loopback",
     mode=webserve.SessionMode.NORMAL, tool_schemas=[], tool_registry={})
+s._audit_confirmation = webserve.Session._audit_confirmation.__get__(s)
+s.confirm = webserve.Session.confirm.__get__(s)
 credentials.load_api_key = lambda: ("test-key", "selftest")
 marker = sys.argv[3]
 def turn(*args, **kwargs):
     yield {"type": "round_start"}
     for i in range(12): yield {"type": "text_delta", "text": "payload-token-" + str(i)}
-    yield {"type": "confirm_request", "id": "confirm-selftest", "summary": marker}
+    def decline_real_confirmation():
+        while s.pending is None: time.sleep(0.001)
+        s.pending.reply.put((False, "browser"))
+    answer = threading.Thread(target=decline_real_confirmation)
+    answer.start()
+    s.confirm("Save knowledge rig/gate_marker: " + marker,
+              kind="knowledge", subject="rig/gate_marker")
+    answer.join()
     yield {"type": "done", "reply": "complete"}
 webserve.run_agent_iter = turn
 with Path(sys.argv[1]).open("w", encoding="utf-8") as output, contextlib.redirect_stdout(output):
@@ -104,6 +113,9 @@ def main():
         code, report = run(root, "good", good_server, good_browser, marker)
         check("69a tree: gate passes on real product output",
               code == 0 and "COMPUTED GATE PASSED" in report)
+        check("product artifact contains a real confirmation audit with its summary",
+              "[microclaw] Confirmation audit:" in good_server.read_text(encoding="utf-8")
+              and marker in good_server.read_text(encoding="utf-8"))
         code, report = run(root, "main", main_server, main_browser, marker)
         check("main tree: gate fails because its events have no seq",
               code != 0 and "COMPUTED GATE FAILED" in report,
@@ -112,31 +124,36 @@ def main():
         # Each computed limb has a red control on the good tree.
         broken6 = root / "broken6.log"
         text = good_server.read_text(encoding="utf-8")
-        broken6.write_text(text.replace("final seq 15", "final seq 14"), encoding="utf-8")
+        summary = next(
+            match for line in text.splitlines()
+            if (match := gate.SUMMARY.fullmatch(line))
+        )
+        final = int(summary.group(4))
+        broken6.write_text(
+            text.replace(f"final seq {final}", f"final seq {final - 1}"),
+            encoding="utf-8",
+        )
         code, report = run(root, "fail-l6", broken6, good_browser, marker)
         check("L6 can fail", code != 0 and report.startswith("FAIL: L6"))
 
         broken7 = root / "broken7.log"
-        broken7.write_text(good_browser.read_text(encoding="utf-8").replace(
-            "turn settled;", "turn settled;").replace("last applied seq: 15", "last applied seq: 14", 1),
-            encoding="utf-8")
-        # Make the settled record red regardless of which replacement was first.
+        broken7.write_text(good_browser.read_text(encoding="utf-8"), encoding="utf-8")
         lines = broken7.read_text(encoding="utf-8").splitlines()
-        lines[-1] = lines[-1].rsplit(" ", 1)[0] + " 14"
+        lines[-1] = lines[-1].rsplit(" ", 1)[0] + f" {final - 1}"
         broken7.write_text("\n".join(lines) + "\n", encoding="utf-8")
         code, report = run(root, "fail-l7", good_server, broken7, marker)
         check("L7 can fail", code != 0 and "FAIL: L7" in report)
 
         broken8 = root / "broken8.log"
-        broken8.write_text(text + marker + "\n", encoding="utf-8")
+        turn_id = summary.group(1)
+        broken8.write_text(
+            text + f"[microclaw turn {turn_id}] diagnostic {marker}\n",
+            encoding="utf-8",
+        )
         code, report = run(root, "fail-l8", broken8, good_browser, marker)
         check("L8 can fail", code != 0 and "FAIL: L8" in report)
 
         delta8 = root / "delta8.log"
-        turn_id = next(
-            match.group(1) for line in text.splitlines()
-            if (match := gate.SUMMARY.fullmatch(line))
-        )
         delta8.write_text(
             text + f"[microclaw turn {turn_id}] seq 1 text_delta\n",
             encoding="utf-8",
