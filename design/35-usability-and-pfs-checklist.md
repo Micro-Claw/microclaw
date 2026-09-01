@@ -8920,14 +8920,22 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
-### design/62 is coordinated and owns its own checklist — added 2026-09-01 **(pointer only)**
+### design/62 is coordinated and owns its own checklist — added 2026-09-01, **CLOSED 2026-09-01** **(pointer only)**
 
 **`design/62` is coordinated and owns its own blocks, checklist and ledger**,
 like design/48 through design/60 and design/65. This file does not track its
 rows; it points at them. The doc is
 `design/62-file-discovery-and-nested-protocol-hints.md`, four blocks,
-**62a–62d**, plus a coordinator-findings section (F1–F3) that must be read
-before any of them is assigned.
+**62a–62d**, plus a coordinator-findings section — **F1–F8**, not F1–F3 as this
+pointer first said — that must be read before touching anything it covers.
+
+**All four blocks merged 2026-09-01; acceptance test 9 declined on value against
+price. Nothing is owed.** Two things a later reader should carry: `interval_s` is
+now required on three paths (an approved break — the hooked multiposition branch
+used to succeed by silently taking the planner's 0), and F8 is a bounds defect
+*older than the block that found it* — `Path.is_symlink()` is `False` for a
+Windows junction, so `inspect_artifacts` recursion escaped its root until 62d
+fixed it with `os.path.isjunction`. The design had called that "already true".
 
 It is a **discoverability** block, from one M5 session's three capability
 failures: an ilastik project's label names could not be read without acquiring a
