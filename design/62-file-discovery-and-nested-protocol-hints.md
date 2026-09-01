@@ -423,7 +423,10 @@ tool must have returned the path.
 - Match basenames only. Reject separators and `..` in `name_glob`, so `paths`
   remains the sole search root.
 - Deterministic, case-insensitive name order on Windows.
-- Do not follow directory symlinks/junctions during recursion (already true).
+- Do not follow directory symlinks/junctions during recursion. **This said
+  "(already true)" and was false** — see F8. `Path.is_symlink()` returns `False`
+  for a Windows junction, so the guard never fired and recursion left the
+  requested root. Fixed in block 62d with `os.path.isjunction` (3.12+).
 - Do not read contents or write a manifest unless asked.
 - Keep `guard.resolve_readable_path`, which is deliberately *not* confined by
   `workspace_dir` (`safety.py:1313-1325`) — which is exactly why "require an
@@ -763,6 +766,58 @@ refusal is Decision 3's mechanism; a schema-level one is a public-surface change
 design/62 did not decide. Do add one clause naming `snap` as taking none, so the
 refusal 62c ships is published — description text does not affect the
 same-object identity acceptance test 5 asserts.
+
+### F8 — "already true" was false: junctions were followed, and it is older than this block
+
+Block 62d's demo gate, round 1, on the demo machine:
+
+```text
+Path.is_symlink() on the junction: False
+[FAIL] D: recursion followed the junction:
+        ['control_reached.ilp', 'must_not_be_reached.ilp']
+```
+
+§"Bounds and privacy" asserted *"Do not follow directory symlinks/junctions
+during recursion (already true)"*. It was not true. `Path.is_symlink()` is
+`False` for a junction created with `mklink /J`, so `not entry.is_symlink()`
+never fired, recursion descended it, and `inspect_artifacts` enumerated a file
+**outside** the requested root — which under `hash=true` it would also have
+hashed. That contradicts this document's own rule that `paths` is the sole search
+root. **The guard is pre-existing, so the defect is older than block 62d**; only
+`recursive` is new. Fixed with `os.path.isjunction`, which exists on the declared
+3.12 floor and returns `False` on POSIX.
+
+**This is the limb nobody nominated.** The implementer's demo-machine list named
+four claims, two of which could not have failed (case-insensitive matching and
+ordering are pure Python over `entry.name`, asserted in the suite). The
+coordinator dropped those two and added this one, precisely because the document
+asserted a property about a Windows-only object that nothing had ever tested. It
+is the only limb that found anything — *a claim in a design doc marked "already
+true" is a claim with no test behind it.*
+
+The regression test encodes the **measured** shape rather than an assumption: a
+plain directory that `is_symlink()` genuinely denies and `os.path.isjunction` is
+patched to claim, which is what the rig produced. Pre-fix it fails with the
+gate's own match list.
+
+**And round 1's other three limbs were the gate's fault, not the product's.** It
+required `%USERPROFILE%\Downloads`, absent on that machine, so A and C reported
+**FAIL** — for a reason that said nothing about the code — and B could not run.
+Two lessons, both already in `CLAUDE.md` and both re-earned: *a gate must not
+require configuration the product does not require*, and a limb whose mechanism
+never ran must say so rather than report FAIL, because FAIL points suspicion at
+the product. The gate now builds a Windows fixture it owns and takes no
+arguments. Its self-test had driven the limb functions directly and never
+executed `main()`, so `build_fixture`, argument handling and cleanup were
+uncovered — *a fixture that cannot reach the code is not coverage of it*, applied
+to gate code.
+
+**One more, from the fix itself.** Inserting `_is_link_like` immediately above
+`def inspect_artifacts` put it *between* `@emits_nothing` and its function, so the
+decorator bound to the private helper and a **registered tool silently lost its
+export decision**. `test_every_registered_tool_has_exactly_one_export_decision`
+caught it on the first run — the test design/63 block 63a added after eleven
+tools shipped undecorated, doing exactly the job it was written for.
 
 ### F7 — the runbook's own command was a guess, caught by the operator
 
