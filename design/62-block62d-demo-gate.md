@@ -15,7 +15,7 @@ git checkout design62/inspect-artifacts-discovery
 git merge-base --is-ancestor ddb60a8 HEAD
 if ($LASTEXITCODE -eq 0) { "implementation present" } else { "WRONG TREE - stop" }
 
-uv run python design\62-block62d-demo-gate.py --downloads "$env:USERPROFILE\Downloads"
+uv run python design\62-block62d-demo-gate.py
 "exit code: $LASTEXITCODE"
 ```
 
@@ -55,6 +55,26 @@ produced the result.
 case-insensitive *ordering* are pure Python over `entry.name`, asserted directly
 in `tests/test_inspect_artifacts_discovery.py`. A Windows run of them could not
 fail, and a limb that cannot fail is not a criterion.
+
+## Round 2 — what changed since the first run
+
+Round 1 found a **real product defect** and a **defect in this gate**.
+
+- **Product, now fixed:** `Path.is_symlink()` returned `False` for a junction on
+  this machine, so recursion descended it and enumerated files *outside* the
+  requested root. design/62 asserted that not following junctions was "already
+  true"; it was not. The guard now also tests `os.path.isjunction` (3.12+, the
+  project floor). Limb D re-run is the confirmation, and its log line
+  `Path.is_symlink() on the junction: False` is the evidence that the old guard
+  could not have worked.
+- **This gate, now fixed:** it required `%USERPROFILE%\Downloads`, which does not
+  exist on this machine, so limbs A and C reported **FAIL** for a reason that said
+  nothing about the product and B could not run at all. A gate must not require
+  what the product does not require. **It now builds its own Windows fixture and
+  takes no arguments.** A missing folder can no longer produce a FAIL.
+
+`--real-folder "<path>"` is optional: it repeats limb C once against a folder you
+did not create. Skip it unless you happen to have one handy.
 
 ## Reading the result
 

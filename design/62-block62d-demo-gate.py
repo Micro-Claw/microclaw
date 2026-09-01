@@ -5,7 +5,10 @@ every limb is a computation, so per CLAUDE.md it ships as one script that runs
 them all, reports each **independently**, owns its own log, and exits nonzero
 if any limb fails.
 
-    py -3 design\62-block62d-demo-gate.py --downloads "C:\Users\<you>\Downloads"
+    uv run python design\62-block62d-demo-gate.py
+
+Optionally add --real-folder "<a folder with files>" for one extra pass of limb C
+against a folder you did not create; the gate needs no such folder to run.
 
 Limbs, and why each one needs this machine. Two claims the implementer listed
 were dropped deliberately: case-insensitive *matching* and case-insensitive
@@ -86,17 +89,37 @@ def guard_for(*, workspace: str | None = None) -> MagicMock:
     return guard
 
 
-def limb_a(downloads: Path) -> dict | None:
+def build_fixture() -> Path:
+    """A real Windows directory the gate owns.
+
+    Round 1 required the operator's `%USERPROFILE%\\Downloads`, which does not
+    exist on the demo machine -- so limbs A and C reported FAIL for a reason that
+    said nothing about the product, and B could not run at all. A gate must not
+    require what the product does not require. Everything A, B and C claim is
+    about *Windows* path behaviour, and a temp directory is as drive-rooted as
+    Downloads is.
+    """
+    root = Path(tempfile.mkdtemp(prefix="microclaw62d_subject_"))
+    for name in ("260825_Mito-classify_M5.ilp", "Zebra.tif", "apple.tif",
+                 "Beta.tif", "notes.txt", "readme.TXT"):
+        (root / name).write_bytes(b"x" * 8)
+    nested = root / "Sub Folder"
+    nested.mkdir()
+    (nested / "deep_m5.ilp").write_bytes(b"y" * 4)
+    return root
+
+
+def limb_a(subject: Path) -> dict | None:
     say("A. a real Windows folder resolves and traverses")
     if not IS_WINDOWS:
         record("A", "NOT EXERCISED", "not Windows; drive-letter roots do not exist here")
         return None
-    if not downloads.is_dir():
-        record("A", "FAIL", f"{downloads} is not a directory")
+    if not subject.is_dir():
+        record("A", "NOT EXERCISED", f"{subject} is not a directory, so nothing was traversed")
         return None
     started = time.monotonic()
     result = tools.inspect_artifacts(
-        MagicMock(), guard_for(), [str(downloads)],
+        MagicMock(), guard_for(), [str(subject)],
         name_glob="*", recursive=False, hash=False,
     )
     elapsed = time.monotonic() - started
@@ -112,7 +135,7 @@ def limb_a(downloads: Path) -> dict | None:
         return result
     if not result["matches"]:
         record("A", "NOT EXERCISED",
-               f"{downloads} has no top-level files, so path shape proved nothing")
+               f"{subject} has no top-level files, so path shape proved nothing")
         return result
     if "\\" not in drive_shaped[0]:
         record("A", "FAIL", f"returned path has no backslash separator: {drive_shaped[0]}")
@@ -150,39 +173,39 @@ def limb_b(previous: dict | None) -> None:
                         f"scope recorded {result['scope']}")
 
 
-def limb_c(downloads: Path) -> None:
-    say("C. a bound is not an absence")
+def limb_c(subject: Path, *, label: str = "C") -> None:
+    say(f"{label}. a bound is not an absence" + ("" if label == "C" else " (real folder)"))
     if not IS_WINDOWS:
-        record("C", "NOT EXERCISED", "needs the real folder this decision was written for")
+        record(label, "NOT EXERCISED", "Windows-only pass; the rule itself is asserted in the suite")
         return
-    if not downloads.is_dir():
-        record("C", "FAIL", f"{downloads} is not a directory")
+    if not subject.is_dir():
+        record(label, "NOT EXERCISED", f"{subject} is not a directory, so no census was taken")
         return
     census = tools.inspect_artifacts(
-        MagicMock(), guard_for(), [str(downloads)],
+        MagicMock(), guard_for(), [str(subject)],
         recursive=True, hash=False, max_files=100000,
     )
     if "error" in census:
-        record("C", "FAIL", f"census failed: {census['error']}")
+        record(label, "FAIL", f"census failed: {census['error']}")
         return
     total = census["examined_count"]
     if total < 3:
-        record("C", "NOT EXERCISED",
-               f"{downloads} holds only {total} files; cannot place a match beyond a bound")
+        record(label, "NOT EXERCISED",
+               f"{subject} holds only {total} files; cannot place a match beyond a bound")
         return
     bound = max(1, total - 1)
     # Ask for something that certainly does not exist under a bound that
     # certainly trips, then for something under a bound that does not.
     tripped = tools.inspect_artifacts(
-        MagicMock(), guard_for(), [str(downloads)],
+        MagicMock(), guard_for(), [str(subject)],
         name_glob="*.__microclaw_no_such_extension__", recursive=True,
         hash=False, max_files=bound,
     )
     if "error" in tripped:
-        record("C", "FAIL", f"discovery refused instead of truncating: {tripped['error']}")
+        record(label, "FAIL", f"discovery refused instead of truncating: {tripped['error']}")
         return
     complete = tools.inspect_artifacts(
-        MagicMock(), guard_for(), [str(downloads)],
+        MagicMock(), guard_for(), [str(subject)],
         name_glob="*.__microclaw_no_such_extension__", recursive=True,
         hash=False, max_files=100000,
     )
@@ -198,9 +221,9 @@ def limb_c(downloads: Path) -> None:
         problems.append("the unbounded control was itself truncated, so the "
                         "two cases are indistinguishable")
     if problems:
-        record("C", "FAIL", "; ".join(problems))
+        record(label, "FAIL", "; ".join(problems))
         return
-    record("C", "PASS",
+    record(label, "PASS",
            f"{total} files examined unbounded (truncated=False, a real negative); "
            f"at max_files={bound} the same absent pattern gives matches=[] with "
            f"truncated=True and examined_count={bound} — distinguishable")
@@ -270,26 +293,35 @@ def limb_d() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--downloads", required=True,
-                        help=r'the real folder to search, e.g. "C:\Users\you\Downloads"')
+    parser.add_argument("--real-folder", default=None,
+                        help="optional: an existing folder to repeat limb C against")
     parser.add_argument("--log", default="block62d-demo-gate.log")
     args = parser.parse_args()
 
-    downloads = Path(args.downloads)
     say("=== design/62 block 62d demo gate ===")
     say(f"platform={sys.platform} os.name={os.name} python={sys.version.split()[0]}")
     say(f"microclaw={tools.__file__}")
-    say(f"downloads={downloads}")
+    subject = build_fixture() if IS_WINDOWS else Path(tempfile.mkdtemp())
+    say(f"subject={subject}  (built by this gate; removed at the end)")
+    say(f"real_folder={args.real_folder or '(none supplied)'}")
     say("")
 
-    previous = limb_a(downloads)
-    say("")
-    limb_b(previous)
-    say("")
-    limb_c(downloads)
-    say("")
-    limb_d()
-    say("")
+    try:
+        previous = limb_a(subject)
+        say("")
+        limb_b(previous)
+        say("")
+        limb_c(subject)
+        say("")
+        limb_d()
+        say("")
+        if args.real_folder:
+            limb_c(Path(args.real_folder), label="E")
+            say("")
+    finally:
+        shutil.rmtree(subject, ignore_errors=True)
+        say(f"subject removed: {subject} exists={subject.exists()}")
+        say("")
 
     failed = [r for r in RESULTS if r[1] == "FAIL"]
     unexercised = [r for r in RESULTS if r[1] == "NOT EXERCISED"]
