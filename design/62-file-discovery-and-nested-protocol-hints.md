@@ -764,6 +764,30 @@ design/62 did not decide. Do add one clause naming `snap` as taking none, so the
 refusal 62c ships is published — description text does not affect the
 same-object identity acceptance test 5 asserts.
 
+### F7 — the runbook's own command was a guess, caught by the operator
+
+Recorded because it is the third time this repository has paid for it. 62d's
+runbook shipped `py -3 design\62-block62d-demo-gate.py`. The demo machine is a
+uv install of microclaw, and the Windows Python launcher resolves to a *system*
+interpreter carrying none of microclaw's 46 dependencies — so the gate would have
+died on `from microclaw import tools` before running a limb, on a trip booked to
+run it. The convention was already written down (`uv run`, design/60's runbook,
+and a standing note that rig runbooks use it) and was simply not applied.
+
+Fixed to `uv run python …`, and then **the prescribed command was actually run**,
+which is the half that keeps getting skipped: *a selftest must drive the
+invocation the runbook prescribes, not a convenient one.* Doing so also produced
+two things the runbook now states so they are not reported as failures — `uv run`
+syncs or builds the project environment on first use, and importing microclaw
+prints an upstream `SyntaxWarning` from `mmpycorex/install.py` — and confirmed
+the gate's second line names the tree it imported
+(`microclaw=…/microclaw-62d/microclaw/tools.py`), which the operator is now asked
+to check. That last one matters because the same `sys.path` trap inverted a
+coordinator probe earlier the same day.
+
+**The rule, stated for the next runbook:** a gate's interpreter is part of its
+instrument. Name the one the machine has, and run the line you wrote.
+
 ### F6 — corrections at 62d's assignment, coordinator-verified on `main` at `54991bf`
 
 Baseline re-taken before assigning: **2738 passed / 99 skipped / 2 warnings**,
@@ -1014,7 +1038,7 @@ the environment is rebuilt rather than comparing numbers across interpreters.
 | 62a | **merged**, branch and worktree gone |
 | 62b | **merged**, branch and worktree gone |
 | 62c | **merged 2026-09-01** at `48e6d19`, branch and worktree gone. The `interval_s` break is live, on two paths — plain and hooked multiposition, and `acquire_on_hit`'s timelapse |
-| 62d | **implementation merged-ready, gate pushed and awaiting the operator.** Branch `design62/inspect-artifacts-discovery` at `2718898`. Run `design/62-block62d-demo-gate.md` on the demo machine; four limbs, one command, no microscope |
+| 62d | **implementation merged-ready, gate pushed and awaiting the operator.** Check out `design62/inspect-artifacts-discovery` and read `design/62-block62d-demo-gate.md`; four limbs, one command, no microscope. Do not name a tip hash here — the runbook pins the implementation with `merge-base --is-ancestor` precisely so it can be amended, and it has been once already |
 | test 9 | **after 62d**, once, against the final shipped wording. Priced at ~$17 for n=24 over two conditions; see F3 |
 
 No worktrees are live. Nothing is unpushed. There is no rig or demo gate anywhere
