@@ -122,6 +122,10 @@ def score(server_path: Path | None, browser_path: Path | None, forbidden: list[s
             line for line in server.splitlines()
             if line.strip().startswith("[microclaw turn ")
         ]
+        if not any(EVENT.fullmatch(line.strip()) for line in event_log_lines):
+            raise NotExercised("server log has no block 69a event line")
+        if not any(SUMMARY.fullmatch(line.strip()) for line in event_log_lines):
+            raise NotExercised("server log has no turn summary")
         leaked_delta = any(
             EVENT.fullmatch(line.strip()) and EVENT.fullmatch(line.strip()).group(3) == "text_delta"
             for line in event_log_lines

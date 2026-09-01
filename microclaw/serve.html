@@ -868,7 +868,7 @@
       await refresh();
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.
-      await confirmationRecovery.reconcileConfirmation();
+      await confirmationRecovery.startFromBoot();
     } catch (err) { toast("Could not reach the MicroClaw server: " + err.message); }
     msg.focus();
   })();

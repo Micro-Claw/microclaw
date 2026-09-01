@@ -57,6 +57,54 @@ def test_boot_reconciliation_with_no_pending_confirmation_is_a_no_op_when_empty(
     assert result["state"] == state
 
 
+def test_reload_boot_starts_polling_while_running_and_stops_when_turn_settles():
+    result = run_node(f"""
+      let visible = true, pairing = 0, calls = 0, clock = 0;
+      const timers = [], failures = [];
+      const states = [
+        {{grants: [], running: true, turn_id: 'turn-reloaded'}},
+        {{grants: [], running: true, turn_id: 'turn-reloaded'}},
+        {{grants: [], running: false, turn_id: 'turn-reloaded'}},
+      ];
+      const fetch = async () => {{ calls += 1; return {{status: 200, ok: true,
+        json: async () => states.shift()}}; }};
+      const recovery = window.Recovery.create({{{BASE_OPTIONS} fetch,
+        now: () => clock,
+        setTimeout: (fn, delay) => {{ timers.push({{fn, delay}}); return timers.length; }},
+      }});
+      const bootState = await recovery.startFromBoot();
+      await new Promise(setImmediate);
+      const afterBoot = calls;
+      clock += 1000;
+      const timer = timers.pop();
+      await timer.fn();
+      await new Promise(setImmediate);
+      process.stdout.write(JSON.stringify({{
+        afterBoot, calls, timers: timers.length, adopted: bootState.turn_id
+      }}));
+    """)
+    assert result == {
+        "afterBoot": 2,
+        "calls": 3,
+        "timers": 0,
+        "adopted": "turn-reloaded",
+    }
+
+
+def test_reload_boot_with_no_running_turn_starts_no_poll_loop():
+    result = run_node(f"""
+      let visible = true, pairing = 0, calls = 0;
+      const timers = [], failures = [];
+      const fetch = async () => {{ calls += 1; return {{status: 200, ok: true,
+        json: async () => ({{grants: [], running: false}})}}; }};
+      const recovery = window.Recovery.create({{{BASE_OPTIONS} fetch}});
+      await recovery.startFromBoot();
+      await new Promise(setImmediate);
+      process.stdout.write(JSON.stringify({{calls, timers: timers.length}}));
+    """)
+    assert result == {"calls": 1, "timers": 0}
+
+
 def test_same_pending_id_and_grant_ids_are_reconciliation_no_ops():
     state = {"id": "c1", "grants": [{"id": "g1"}, {"id": "g2"}]}
     assert reconcile(state, confirm_id="c1", grant_ids=("g1", "g2"))["calls"] == []

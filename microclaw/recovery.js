@@ -130,6 +130,7 @@
         }
       }
       settleIfRecovered(pending);
+      if (pending.running === false) stopConfirmationRecovery();
       return pending;
     }
 
@@ -169,13 +170,24 @@
       void pollConfirmation();
     }
 
+    function startIfRunning(state) {
+      if (state && state.running === true) startConfirmationRecovery();
+    }
+
+    async function startFromBoot() {
+      const state = await reconcileConfirmation();
+      startIfRunning(state);
+      return state;
+    }
+
     function resumeConfirmationRecovery() {
       if (recoveryActive && isVisible()) void pollConfirmation();
     }
 
     return {
       reconcileConfirmation, reconcileGrants, startConfirmationRecovery,
-      stopConfirmationRecovery, pollConfirmation, resumeConfirmationRecovery,
+      startIfRunning, startFromBoot, stopConfirmationRecovery, pollConfirmation,
+      resumeConfirmationRecovery,
       setTurnId, armSilenceTimer, clearSilenceTimer, markStreamSilent,
       settleIfRecovered, now,
     };

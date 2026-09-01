@@ -105,7 +105,7 @@ if (-not (Select-String -Path $ServerLog -Pattern '^\[microclaw turn [0-9a-f]+\]
 
 Stop here if it throws. This check must succeed while the server is still alive.
 
-## 1. Pending, silence, recovery, and the timeout priority
+## 1. Pending, keepalive delivery, recovery, and the timeout priority
 
 Submit this prompt verbatim:
 
@@ -118,35 +118,27 @@ Judge and record each limb independently:
 - **Limb 1.** After the second acquisition requests confirmation, the banner is visible.
    The status must first read `Waiting for your confirmation.` and then include
    `Ns remaining.` as the poll updates it.
-- **Limb 2.** While that confirmation is pending, set DevTools **Network →
-   Throttling → Offline** for about 60 seconds, then set it back to **No
-   throttling** *without reloading*. The banner must remain visible and the
-   status must become exactly `Live updates interrupted; checking Microclaw…`.
+- **Limb 2a — real-browser keepalives.** Leave the confirmation pending and
+   select its long-running `POST /api/prompt` request in Firefox's **Network**
+   panel. Open that request's **Response** tab. The turn thread is blocked on
+   the confirmation and emits no semantic events, so the streaming response
+   must accumulate a `: ping` comment frame about every 10 seconds. Watch for
+   35 seconds and require at least three complete `: ping` frames, each followed
+   by a blank line. Keep the request in the HAR saved at the end of the gate.
+   Fewer than three frames is a FAIL; a Firefox build that cannot display or
+   export the live response makes 2a NOT EXERCISED, never PASS.
 
-   **The demo machine's default browser is Firefox**, and Firefox's Network
-   panel throttling dropdown offers bandwidth profiles only — there is no
-   `Offline` entry there, unlike Chrome. In Firefox use the menu bar: press
-   **Alt** to reveal it, then **File → Work Offline**, and untick it the same
-   way afterwards. That is browser-wide rather than tab-scoped, but it is still
-   only Firefox and cannot touch a Remote Desktop session.
-
-   **If that item is missing or does not interrupt the stream, do limb 2 in
-   Edge** — open the same URL there and use **F12 → Network →** the toolbar
-   dropdown reading **No throttling → Offline** (alternative route: DevTools
-   **⋮ → More tools → Network conditions**, tick **Offline**). The limb tests
-   SSE delivery, `fetch` and `AbortController`, all standard, so it is equally
-   valid in Edge; the other limbs can stay in Firefox. Say which browser each
-   limb was observed in.
-
-   This is **page-scoped**: it blocks only this tab's requests. It does not touch
-   the machine's network adapter and cannot affect a Remote Desktop or SSH
-   session, so it is safe when the demo machine is being driven remotely — which
-   it normally is. Do not disable the adapter itself.
-
-   Silence is declared after 30 s with no complete frame (three missed 10 s
-   keepalives), so 60 s offline clears it comfortably. If you cannot reach the
-   throttling control at all, report limb 2 as **NOT EXERCISED** — that is not a
-   pass, and it is one of the two things this gate exists for.
+- **Limb 2b — off-rig silence detector.** No browser menu on this loopback
+   deployment can create the required open-but-silent transport: Firefox's
+   offline/throttling controls continue serving `127.0.0.1`, while stopping the
+   server closes the stream and tests a different path. The 30-second detector
+   is therefore settled off-rig by
+   `test_stream_silent_from_its_first_byte_is_armed_and_settles_once` and
+   `run_browser_turn` in `tests/test_recovery_js.py`. Their `reader.read()`
+   genuinely never resolves; the injected clock fires after 30 seconds, the UI
+   renders `Live updates interrupted; checking Microclaw…`, recovery settles
+   once, and the composer is restored without prompt resubmission. Do not try to
+   reproduce 2b through another browser menu on the demo machine.
 - **Limb 4.** Do not approve or decline. `CONFIRM_TIMEOUT_S` is 300 seconds and has no
    configuration path, so this limb costs a real five-minute wait. Do not patch
    or shorten it: this production timeout path is the incident's mechanism.

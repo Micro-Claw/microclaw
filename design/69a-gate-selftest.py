@@ -98,6 +98,13 @@ def run(root, name, server=None, browser=None, marker="PAYLOAD_69A_SELFTEST"):
     return code, log.read_text(encoding="utf-8")
 
 
+def status_of(report, limb):
+    return next(
+        line.split(":", 1)[0] for line in report.splitlines()
+        if f": {limb} " in line
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--main-tree", required=True, type=Path)
@@ -166,6 +173,23 @@ def main():
         check("missing artifacts are NOT EXERCISED and nonzero",
               code != 0 and report.count("NOT EXERCISED") == 3)
         check("scorer owns its log file", (root / "missing-score.log").is_file())
+
+        empty = root / "empty-server.log"
+        empty.write_text("", encoding="utf-8")
+        code, report = run(root, "empty-server", empty, good_browser, marker)
+        check("empty server log makes L6-L8 NOT EXERCISED and exits nonzero",
+              code != 0 and all(status_of(report, limb) == "NOT EXERCISED"
+                                for limb in ("L6", "L7", "L8")))
+
+        eventless = root / "eventless-server.log"
+        eventless.write_text(
+            "[microclaw] Confirmation audit: " + marker + "\n",
+            encoding="utf-8",
+        )
+        code, report = run(root, "eventless-server", eventless, good_browser, marker)
+        check("eventless server log makes L6-L8 NOT EXERCISED and exits nonzero",
+              code != 0 and all(status_of(report, limb) == "NOT EXERCISED"
+                                for limb in ("L6", "L7", "L8")))
 
     failed = [name for name, ok in CHECKS if not ok]
     print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} selftest checks passed")

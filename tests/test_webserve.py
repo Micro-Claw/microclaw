@@ -917,6 +917,7 @@ def test_browser_renders_acquisition_progress_in_the_pending_status(client):
 def test_browser_poll_lifetime_and_timeout_resolution_are_wired_once(client):
     html = client.get("/").text
     assert html.count("confirmationRecovery.startConfirmationRecovery();") == 1
+    assert html.count("confirmationRecovery.startFromBoot();") == 1
     assert html.count("confirmationRecovery.stopConfirmationRecovery();") == 1
     assert 'hideConfirm(ev.id, ev.decision)' in html
     assert "Confirmation timed out and was declined" in html
