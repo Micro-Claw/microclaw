@@ -128,6 +128,36 @@ def test_snap_route_reaches_preflight_before_default_tile_center(tmp_path):
     ctrl.core.get_y_position.assert_not_called()
 
 
+@pytest.mark.parametrize(("params", "expected"), [
+    ({"exposure_ms": 5}, "contains incompatible key 'exposure_ms'"),
+    ({"n_frames": 1, "interval_s": 0},
+     "contains incompatible keys 'interval_s', 'n_frames'"),
+])
+def test_snap_multiposition_route_reaches_preflight(params, expected, monkeypatch):
+    """Acceptance test 6 names the plain multiposition planning path, which is
+    guarded by `if protocol != "snap"` and so reached the helper on no path at
+    all before this block. The tile route above covers the other one."""
+    ctrl, guard = MagicMock(), MagicMock()
+    seen = []
+    original = tools._protocol_shape_kwargs
+
+    def record(protocol, supplied):
+        seen.append(protocol)
+        return original(protocol, supplied)
+
+    monkeypatch.setattr(tools, "_protocol_shape_kwargs", record)
+    result = tools.run_multiposition_acquisition(
+        ctrl, guard, protocol="snap",
+        positions=[{"name": "p", "x_um": 0, "y_um": 0}],
+        protocol_params=params,
+    )
+
+    assert expected in result["error"]
+    assert seen == ["snap"]
+    assert ctrl.mock_calls == []
+    assert guard.mock_calls == []
+
+
 def test_execute_tool_refuses_forwarding_case_before_stage_or_camera(monkeypatch):
     ctrl, guard = MagicMock(), MagicMock()
     run_zstack = MagicMock()
