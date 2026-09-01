@@ -8920,11 +8920,28 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
-### design/65 is coordinated and owns its own ledger — added 2026-08-31 **(pointer only)**
+### design/65 — **CLOSED 2026-09-01**, two rows carried back here — added 2026-08-31 **(pointer only)**
 
-**`design/65` is coordinated and owns its own blocks and ledger**, like design/48
-through design/60. This file does not track its rows; it points at them. The doc
-is `design/65-adaptive-streaming-storm-hooks.md`.
+**`design/65` was coordinated and owned its own blocks and ledger**, like
+design/48 through design/60. This file did not track its rows; it pointed at
+them. The doc is `design/65-adaptive-streaming-storm-hooks.md`.
+
+**All three blocks merged; `main` `fac5c78`.** `run_timelapse(n_frames=None,
+max_frames=N, hook_strategy=...)` is the single-field adaptive route. Gate
+scoring is `design/65-block65c-m2-scoring.md`; the runbook and computed gate are
+`design/65-block65c-m5-runbook.md` and `design/65-block65c-gate*.py`.
+
+**Two things design/65 could not close, carried here because a closed doc is not
+where an open item gets seen:**
+
+| row | evidence | disposition |
+| --- | --- | --- |
+| A hook that computes genuinely **different targets per frame** has never run on a rig | M5 limb 4's hook proposed the same value on all three writes; the 1<->2 transitions were demonstrated by the entry and restoration writes instead. The write/read-back mechanism is proven; the hook's own value *selection* is not | **open, no block.** One short adaptive run whose predicate produces at least two distinct targets would close it |
+| The two cadence measurements **differ by 2.7x between rigs**, each n=1 | 50 ms exposure, same shape: M2 0.2495 s mean, M5 0.0912 s. M5's fixed baseline was 0.0502 s, so adaptive dispatch cost ~41 ms/frame there | **open, informational.** Neither number is "the" cadence and a third rig is a third observation, not a tiebreak. The 0.5 s/frame teardown allowance bounds both |
+
+The "5x cadence cost" figure that circulated mid-block was wrong: it compared
+the M2 measurement to a *theoretical* camera frame rate with no fixed-route
+baseline taken on any rig. See [[feedback_one_measurement_is_not_a_property]].
 
 Written from Amr's M2 session of 2026-08-29, which did not fail because the agent
 overlooked hooks — it called `list_hooks`, read `get_hook_documentation`, and
