@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import venv
 
 import pytest
@@ -208,15 +207,24 @@ def test_built_wheel_contains_the_source_tree_skill_catalog(tmp_path):
     )
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
+    # Build with the ISOLATED venv's pip, not the running interpreter's. `uv
+    # venv` installs no pip at all and uv is this project's supported toolchain
+    # (README, and install.bat builds every rig with it), so a `sys.executable
+    # -m pip` here cannot run in the documented dev environment -- it failed
+    # with "No module named pip" the first time anyone ran the suite under uv.
+    # EnvBuilder bootstraps pip via ensurepip, so this needs nothing of the
+    # outer environment, and the isolation the comment below relies on is the
+    # same either way. Skipping when pip is absent would be worse than failing:
+    # it would retire a packaging invariant silently.
+    environment = tmp_path / "wheel-venv"
+    venv.EnvBuilder(with_pip=True).create(environment)
+    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", ".", "--no-deps",
+        [str(interpreter), "-m", "pip", "wheel", ".", "--no-deps",
          "--wheel-dir", str(wheelhouse)],
         cwd=build_source, check=True, capture_output=True, text=True,
     )
     wheel = next(wheelhouse.glob("microclaw-*.whl"))
-    environment = tmp_path / "wheel-venv"
-    venv.EnvBuilder(with_pip=True).create(environment)
-    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     subprocess.run(
         [str(interpreter), "-m", "pip", "install", "--no-deps", str(wheel)],
         cwd=tmp_path, check=True, capture_output=True, text=True,

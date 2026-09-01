@@ -132,12 +132,22 @@ CPython for you, so nothing needs to be installed first.
 
 ```bash
 uv venv --python 3.12
-uv pip install -e ".[serve,test]"
+uv pip install -e ".[serve,test,ilastik]"
 uv run pytest
 ```
 
-An existing conda environment works fine too — `pip install -e ".[serve,test]"`
-inside it does the same thing.
+`ilastik` is optional for *running* Microclaw but belongs in a development
+install: without `h5py`, `tests/test_ilastik_adapter.py` **skips** rather than
+fails, so the suite stays green while quietly testing less. Watch the skip count,
+not just the pass count.
+
+An existing conda environment works fine too — `pip install -e
+".[serve,test,ilastik]"` inside it does the same thing — provided it is Python
+3.12 or newer, which `requires-python` now enforces.
+
+If a `conda` environment is active, `uv pip install` targets **that**
+environment rather than the local `.venv`; `conda deactivate` first, or use
+`uv run`, which always resolves to `.venv`.
 
 Under `uv`, prefix the commands below with `uv run` (`uv run microclaw ...`,
 `uv run pytest`). In an activated conda environment they work as written.
