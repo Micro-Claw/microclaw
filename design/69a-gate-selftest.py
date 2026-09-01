@@ -72,8 +72,13 @@ for frame in response.text.split("\n\n"):
         if line.startswith("data:"): events.append(json.loads(line[5:]))
 turn_id = response.headers["X-Microclaw-Turn-ID"]
 last = events[-1].get("seq")
+# The browser console of a healthy gate session carries one `turn settled` line
+# per completed turn and NO `stream silence` line: keepalives arrive every 10 s
+# and the detector fires at 30 s, so silence cannot occur on loopback, which is
+# why limb 2b is settled off-rig. Writing a silence line here made the fake
+# encode an assumption the gate machine contradicts, and hid a scorer that
+# demanded one -- which would have reported NOT EXERCISED forever.
 Path(sys.argv[2]).write_text(
-    f"Microclaw stream silence; turn: {turn_id} last applied seq: {last}\n"
     f"Microclaw turn settled; turn: {turn_id} last applied seq: {last}\n",
     encoding="utf-8")
 '''
@@ -151,6 +156,20 @@ def main():
         code, report = run(root, "fail-l7", good_server, broken7, marker)
         check("L7 can fail", code != 0 and "FAIL: L7" in report)
 
+        # A silence line is no longer required, but one that IS captured must
+        # still be scored against its server turn -- otherwise dropping the
+        # requirement would have dropped the check with it.
+        silent7 = root / "silence7.log"
+        silent7.write_text(
+            good_browser.read_text(encoding="utf-8")
+            + f"Microclaw stream silence; turn: {summary.group(1)} "
+              f"last applied seq: {final + 1}\n",
+            encoding="utf-8",
+        )
+        code, report = run(root, "fail-l7-silence", good_server, silent7, marker)
+        check("a captured silence record is still checked against the server",
+              code != 0 and "FAIL: L7" in report)
+
         broken8 = root / "broken8.log"
         turn_id = summary.group(1)
         broken8.write_text(
@@ -168,6 +187,16 @@ def main():
         code, report = run(root, "fail-l8-delta", delta8, good_browser, marker)
         check("L8 can fail on a per-delta event line",
               code != 0 and "FAIL: L8" in report)
+
+        # Round 2's operator skipped the marker-seeding submit, so the marker
+        # occurred nowhere in the session and L8 "passed" on an assertion that
+        # could not fail. Scoring a real artifact against a marker it never
+        # carried must report NOT EXERCISED.
+        code, report = run(root, "unseeded-l8", good_server, good_browser,
+                           "MARKER_THIS_SESSION_NEVER_CARRIED")
+        check("an unseeded marker makes L8 NOT EXERCISED, never PASS",
+              code != 0 and status_of(report, "L8") == "NOT EXERCISED",
+              report.strip().replace("\n", " | "))
 
         code, report = run(root, "missing")
         check("missing artifacts are NOT EXERCISED and nonzero",

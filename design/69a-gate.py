@@ -89,8 +89,11 @@ def score(server_path: Path | None, browser_path: Path | None, forbidden: list[s
         records = [(kind, turn, value) for kind, turn, value in BROWSER.findall(browser)]
         if not records:
             raise NotExercised("browser log has no last-applied-seq warning")
-        if not any(kind == "stream silence" for kind, _, _ in records):
-            raise NotExercised("the disconnect/silence warning was not captured")
+        # A silence record is not required, and demanding one made this limb
+        # unreachable on the gate machine: keepalives arrive every 10 s and the
+        # detector fires at 30 s, so a healthy loopback session never emits one,
+        # which is why limb 2b settles the detector off-rig. A silence record
+        # that *is* present is still checked against its server turn below.
         settled = 0
         for kind, turn, raw in records:
             if turn not in summaries:
@@ -140,7 +143,22 @@ def score(server_path: Path | None, browser_path: Path | None, forbidden: list[s
             raise AssertionError("server log contains forbidden payload marker(s): " + ", ".join(leaked))
         if not forbidden:
             raise NotExercised("supply --forbidden with the recognizable confirmation marker")
-        return "event log has no text_delta line and no recognizable payload marker"
+        # A marker the session never carried cannot be found in an event line,
+        # so its absence would be a pass this limb could not fail. Round 2's
+        # operator skipped the seeding submit and L8 "passed" over 0 occurrences
+        # of the marker anywhere. Require the marker to have entered the session
+        # first — `Session._audit_confirmation` prints it deliberately, and that
+        # intentional line is what makes the negative assertion meaningful.
+        absent = [token for token in forbidden if token and token not in server]
+        if absent:
+            raise NotExercised(
+                "the marker never entered this session, so its absence proves "
+                "nothing: " + ", ".join(absent)
+            )
+        return (
+            "the marker reached the session's audit line, and the event log has "
+            "no text_delta line and no recognizable payload marker"
+        )
 
     limb("L8 payload-free logging", payload_limb)
     return results

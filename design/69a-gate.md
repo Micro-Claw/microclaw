@@ -88,10 +88,13 @@ confirmation's operator-facing summary. It must be visible in the banner and
 will also appear in the intentional `[microclaw] Confirmation audit:` line. It
 must not occur in any `[microclaw turn ...]` event-log line.
 
-First submit: `Save a knowledge entry under rig/gate_marker whose value is
-exactly PAYLOAD_69A_GATE_SECRET.` Verify the confirmation banner's summary
-contains that marker, then decline it. This supplies limb 8's real secret-bearing
-event without changing the machine's knowledge.
+**This first submit is mandatory and limb 8 is void without it.** Submit:
+`Save a knowledge entry under rig/gate_marker whose value is exactly
+PAYLOAD_69A_GATE_SECRET.` Verify the confirmation banner's summary contains that
+marker, then decline it. This supplies limb 8's real secret-bearing event
+without changing the machine's knowledge. Round 2 skipped this submit; the
+marker then occurred nowhere in the session, and limb 8's "no marker in an event
+line" reported PASS over an assertion that could not fail.
 
 Before starting the five-minute limb, open a second PowerShell in the checkout
 and run this capture check unedited:
@@ -101,17 +104,34 @@ $ServerLog = "block69a-evidence\server-console.log"
 if (-not (Test-Path $ServerLog)) { throw "Server console log does not exist" }
 if ((Get-Item $ServerLog).Length -eq 0) { throw "Server console log is still empty" }
 if (-not (Select-String -Path $ServerLog -Pattern '^\[microclaw turn [0-9a-f]+\] seq \d+ ' -Quiet)) { throw "No block 69a event line has reached the server log" }
+if (-not (Select-String -Path $ServerLog -Pattern 'PAYLOAD_69A_GATE_SECRET' -Quiet)) { throw "The marker submit above was skipped - limb 8 cannot be scored" }
+"CAPTURE OK - server log is live and the marker reached it"
 ```
 
 Stop here if it throws. This check must succeed while the server is still alive.
+
+**Do not clear or re-open the Network panel after this point.** Its `POST
+/api/prompt` entry must be in the panel from the instant you submit, or limb 2a
+has no stream to read. Round 2's HAR began twelve seconds after the submit and
+that request was never captured.
 
 ## 1. Pending, keepalive delivery, recovery, and the timeout priority
 
 Submit this prompt verbatim:
 
-> First acquire exactly 2 demo-camera frames so acquisition progress is shown.
-> Then request a 100000-frame timelapse. Do not replace either acquisition with
-> a description; call the acquisition tool for each.
+> First acquire exactly 2 demo-camera frames as a timelapse with interval 0 s,
+> so acquisition progress is shown. Then, without stopping to ask me anything,
+> request a 100000-frame timelapse with interval 0 s. Do not replace either
+> acquisition with a description; call the acquisition tool for each, and do
+> both in this one reply.
+
+**Both acquisitions must happen in this one turn**, because `runTurn` clears the
+progress text at turn start and limb 4's whole control is a *stale* progress
+number still on screen when the confirmation expires. Round 2's prompt left the
+interval unstated, Microclaw asked for it, the operator answered `0s interval`,
+and the two acquisitions landed in two turns — so limb 4 measured nothing. If
+Microclaw asks a question anyway, answer it, let that turn finish, then submit
+the prompt above again and score limb 4 from the second attempt.
 
 Judge and record each limb independently:
 
@@ -157,15 +177,45 @@ already competing below it.
 ## 2. Reload recovery
 
 Submit the same prompt again. When the forced confirmation appears, copy its ID
-from the pending-confirmation response in DevTools Network (`GET /api/confirm`).
-Reload the page while it is still pending. The same confirmation must reappear;
-copy the ID again and verify the two IDs are identical. Decline it after the
-comparison. This is limb 5.
+from the pending-confirmation response in DevTools Network (`GET /api/confirm`),
+then reload the page while it is still pending.
+
+This step costs a second real five-minute wait, at limb 5d. That is deliberate:
+the reloaded page is where the Zeiss incident happened, and 5d is the only limb
+that watches an outcome arrive on a page that did not start the turn.
+
+- **Limb 5a — the same confirmation returns.** The banner reappears; copy the ID
+   again and verify the two IDs are identical.
+- **Limb 5b — the reloaded page keeps polling.** The Network panel must show a
+   `GET /api/confirm` about once a second, not a single request after boot. Round
+   1 failed this and round 2 passed it (20 polls at 1.02 s); it is the standing
+   regression check for `691700f`, and it is scoreable from the HAR alone.
+- **Limb 5c — the reloaded page shows the turn.** This is what round 2 found
+   broken. The spinner and status row must be visible, the countdown must keep
+   decrementing, the Stop button must be present, and the composer must be
+   disabled while the turn runs. A live banner above an *empty* status row is a
+   FAIL: the poll was already running in round 2 and rendered its countdown into
+   a hidden element.
+- **Limb 5d — the outcome reaches the reloaded page.** Do not decline and do not
+   reload again. Let this confirmation time out. The status must become exactly
+   `Confirmation timed out and was declined`, the agent's following reply must
+   then appear in the transcript **without a manual reload**, and the composer
+   must be released. Any of the three missing is a FAIL.
 
 ## 3. Save and compute
 
 Save the DevTools console as described in step 0, then stop the server with
-`Stop-Process -Id $Server.Id`. Run this command unedited from the checkout:
+`Stop-Process -Id $Server.Id`. Round 2 returned no console export at all and
+limb 7 was NOT EXERCISED for it, so check the file before scoring:
+
+```powershell
+$BrowserLog = "block69a-evidence\browser-console.log"
+if (-not (Test-Path $BrowserLog)) { throw "No console export - limb 7 cannot be scored" }
+if (-not (Select-String -Path $BrowserLog -Pattern 'last applied seq' -Quiet)) { throw "Console export has no 'last applied seq' line" }
+"CONSOLE OK"
+```
+
+Then run this command unedited from the checkout:
 
 ```powershell
 uv run python design/69a-gate.py --server-log block69a-evidence\server-console.log --browser-log block69a-evidence\browser-console.log --forbidden PAYLOAD_69A_GATE_SECRET --log block69a-evidence\computed-score.log
@@ -175,11 +225,16 @@ if ($LASTEXITCODE -ne 0) { throw "Block 69a computed gate failed" }
 The script reports limbs 6–8 independently and exits nonzero for either `FAIL`
 or `NOT EXERCISED`. Limb 6 checks each server turn's sequence arithmetic and
 summary count. Limb 7 requires both logs and compares the browser's last applied
-sequence with the matching server turn. Limb 8 rejects per-delta event lines and
-the recognizable payload marker. The scorer owns `computed-score.log`; a shell
-transcript is not its evidence.
+sequence with the matching server turn; it needs a `turn settled` line and does
+**not** require a `stream silence` line, which this machine cannot produce.
+Limb 8 rejects per-delta event lines and the recognizable payload marker, and
+reports NOT EXERCISED — never PASS — if the marker never entered the session at
+all. The scorer owns `computed-score.log`; a shell transcript is not its
+evidence.
 
-Return `server-console.log`, `browser-console.log`, `computed-score.log`, both
-confirmation IDs, and the five human limb observations. `uv run` prints its
-ordinary `Building microclaw @ file:///...` progress to stderr here; with no
-pipeline in this command that is display only, not a failure.
+Return `server-console.log`, `browser-console.log`, `network.har`,
+`computed-score.log`, both confirmation IDs, and a verdict for each of the eight
+human limbs — 1, 2a, 3, 4, 5a, 5b, 5c, 5d — not one verdict for the session.
+`uv run` prints its ordinary `Building microclaw @ file:///...` progress to
+stderr here; with no pipeline in this command that is display only, not a
+failure.

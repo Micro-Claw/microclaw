@@ -1047,7 +1047,7 @@ entire off-rig case rests on tests that skip silently without it.
 | --- | --- | --- | --- | --- | --- |
 | 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
 | 69a-2 | `design69a/keepalive-and-abort` (deleted) | `60ae1b3` (2026-09-01) | `26cc47b` + `142b90f` (`main` merged mid-block, see below) + `c2cfdab` (review round 1, one product finding and two coordinator corrections). Suite **2782 / 99 / 2**, coordinator-run, baseline + 6; node **v25.2.1** | scored with 69a-3 | `2bcb136` |
-| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review 1) + `691700f` (review 2, the gate's defect) + coordinator runbook/test corrections through `2716497`. Suite **2788 / 99 / 2**, coordinator-run; selftest **11/11**, coordinator-run on both trees | **round 1 run 2026-09-01 — 3 PASS, 1 defect found, re-run owed.** `2716497` on `origin` | not yet |
+| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review 1) + `691700f` (review 2, the gate's defect) + coordinator runbook/test corrections through `2716497`. Suite **2788 / 99 / 2**, coordinator-run; selftest **11/11**, coordinator-run on both trees | **round 1 — 3 PASS, 1 product defect (`691700f`). round 2 — reload poll confirmed from the HAR, one product defect (reloaded page never enters the busy presentation), three gate defects, five limbs NOT EXERCISED. Round 3 owed.** Selftest **13/13** after the corrections | not yet |
 
 ### What block 69a-1 cost, and what it proved
 
@@ -1280,6 +1280,114 @@ That cost is written up generically in `CLAUDE.md` step 6; the short version is
 that every fact needed was already in `design/` and the runbook was written from
 this design instead.
 
+### Demo gate round 2, 2026-09-01 — scored from the artifacts
+
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/block69a-evidence-round2`
+— a **5,343-byte** `server-console.log` (round 1's was 0), a 1.2 MB HAR, the
+confirmation audit, the history JSONL, `computed-score.log`, and a DevTools
+screenshot. Run from `design69a/event-sequencing` at `2716497`.
+
+**`691700f` works, and the HAR proves it without an operator judgement.** The
+page reloaded at 22:37:32.248; after the boot sequence, `GET /api/confirm` runs
+continuously at a 1.02 s median for the remaining 19 s of the capture — 20 polls,
+the same pending ID `dd5760d7…` before and after, each response carrying
+`remaining_s: 276.4`. Round 1's screenshot showed exactly **one** confirm request
+after boot. That regression is closed and limb 5 is the standing check for it.
+
+| limb | verdict | evidence |
+| --- | --- | --- |
+| 1 banner + countdown | operator observation owed | the server served `remaining_s` at 1 Hz across the whole pending window |
+| 2a `: ping` frames | **NOT EXERCISED** | the only captured stream was aborted by the reload 7 s into its quiet window — under the 10 s keepalive. Zero pings is arithmetic, not a failure. The earlier turn's `POST` was never captured: the HAR recording began 12 s after that submit |
+| 2b silence detector | settled off-rig | `tests/test_recovery_js.py` 20/20, node **v25.2.1**, coordinator-run |
+| 3 composer after settle | operator observation owed | |
+| 4 timeout outranks stale progress | **NOT EXERCISED** | turn `79b414f1` emitted no `acquisition_progress` at all; the 2-frame run was the *previous* turn (`086e59ac`) and `runTurn` clears `pendingProgress` at turn start. The prompt left the interval unstated, Microclaw asked, the operator answered `0s interval` — and that reply split the turn |
+| 5 reload | **PASS**, both halves | same ID, and the poll continues (above) |
+| 6 sequence arithmetic | **PASS** | 2 turns, final seq equals emitted-event count in both |
+| 7 browser last-applied seq | **NOT EXERCISED** | no console export was returned |
+| 8 payload-free logging | **vacuous PASS** | `PAYLOAD_69A_GATE_SECRET` occurs **0 times** in the whole session: the seeding submit was skipped, so the negative assertion had nothing to be negative about |
+
+**The gate found the defect underneath the one it found in round 1, and it is
+the incident.** `#pending` is `class="hidden"` in the markup (`serve.html:205`)
+and only `setBusy(true)` unhides it (`:446`) — called from exactly one place, the
+composer's submit handler (`:719`). A reloaded page never runs it. So the poll
+that `691700f` correctly started renders the countdown, the silence message and
+`hideConfirm`'s `Confirmation timed out and was declined` into a **hidden
+element**; there is no Stop button; the composer stays enabled while a turn is
+live; and when the turn ends nothing calls `refresh()`, so the agent's reply
+never appears. §"Make the stream's silence observable" item 4 requires that
+refresh, but `settleIfRecovered` gates it on `streamSilenceDetected`
+(`recovery.js:72`), which a reloaded page never sets — it has no stream to go
+silent. An operator who comes back to the screen sees a banner, gets no
+countdown, is told nothing when it expires, and never sees the answer. That is
+the Zeiss session, reproduced by the blocks written to fix it.
+
+**Why 2,788 tests missed it.** `browser_turn_snippets()`
+(`tests/test_recovery_js.py:377`) extracts `setBusy`, the recovery wiring block,
+`runTurn` and the submit handler out of `serve.html` — and **not the boot IIFE**,
+which *is* the reload path. Every reload test drives `Recovery` directly with
+stub callbacks, so `showRemaining` lands in a JS array and no fixture can observe
+that the element it targets is hidden. *A fixture that cannot reach the code is
+not coverage of it*, in the block whose premise is that untested browser code
+caused the incident — the same sentence round 1 earned, one layer down.
+
+**Three defects in the gate, all the coordinator's, all fixed before round 3:**
+
+- **L8 still could not fail.** Round 1 taught that an empty log satisfies a
+  negative assertion; round 2 showed that a marker which never entered the
+  session does too. The scorer now reports NOT EXERCISED unless the marker
+  reaches the server log at all — which `Session._audit_confirmation` prints
+  deliberately — and the runbook's capture check greps for it while the server
+  is still alive. Third occurrence of this shape in one gate.
+- **L7 required a `stream silence` line the machine cannot produce.** Keepalives
+  are 10 s (`KEEPALIVE_S`) and the detector is 30 s, and limb 2b moved the
+  detector off-rig — so the limb would have reported NOT EXERCISED forever. It
+  now requires the `turn settled` record and validates any silence record that
+  *is* present. **The selftest slept through it because its fake browser log
+  wrote the silence line by hand**: a fake encoding the assumption, inside the
+  instrument written to enforce that rule, for the second block running. The
+  fake is now the demo machine's shape, with a separate control proving a
+  captured silence record is still checked.
+- **Limb 4's prompt did not hold both acquisitions in one turn.** Fixed by
+  pinning the interval in the prompt so nothing is asked, stating why the single
+  turn is the whole control, and telling the operator to re-submit if Microclaw
+  asks anyway.
+
+Selftest after the corrections: **13/13**, coordinator-run on both trees, every
+control firing for its stated reason. Re-scoring round 2's own artifacts with the
+corrected scorer turns limb 8 from `PASS` into
+`NOT EXERCISED: the marker never entered this session, so its absence proves
+nothing` — the discrimination demonstrated on real evidence, not only on a
+fixture.
+
+### What a page reloaded mid-turn must present
+
+**Operator decision, 2026-09-01: the reloaded page adopts the running turn in
+full.** When boot's `GET /api/confirm` reports `running: true`, the page enters
+the same presentation state the tab that started the turn would be in —
+`setBusy(true)`: spinner and status row visible, Stop available, composer
+disabled. When the poll reports `running: false`, it `refresh()`es the transcript
+and releases the composer.
+
+The rejected alternative was to unhide the status row alone. It was rejected
+because the composer being live during a running turn invites a submit the
+server can only answer with a 409, and because Stop is a plain `POST` that works
+without a stream — a page that can show the operator a five-minute wait but not
+offer to end it is the wrong half of the incident to fix.
+
+Three things the implementation must get right, each of which is a way this can
+go wrong rather than a restatement of the decision:
+
+- **`settleIfRecovered` cannot be the release path.** It returns early unless
+  `streamSilenceDetected`, and a reloaded page never sets it. The adopted turn's
+  release is keyed on `running` going false, on its own.
+- **Releasing must be idempotent and must not fight a real turn.** A page that
+  adopted a turn and then submits a new prompt has two owners of `busy`; the
+  adoption must not call `setBusy(false)` under a turn the page is itself
+  running.
+- **`refresh()` on settle is the outcome delivery, not a nicety.** It is the
+  half of the incident where the completed response never reached the operator,
+  and limb 5d is the only thing that watches it happen.
+
 ### Where a fresh session picks this up
 
 **Everything below is on `origin`. Nothing needed to continue lives in a
@@ -1288,29 +1396,35 @@ runner's session cannot be revised from a new session, and does not need to be �
 its work is committed.
 
 **State:** 69a-1 and 69a-2 are merged. 69a-3 is implemented and pushed on
-`design69a/event-sequencing` (`2716497`), **not merged**, because it owns the
-gate for all three blocks and the gate has not yet passed.
+`design69a/event-sequencing`, **not merged**, because it owns the gate for all
+three blocks and the gate has not yet passed. Round 2 found a product defect —
+§"What a page reloaded mid-turn must present" carries the ruling — which is
+being fixed on that same branch under `CLAUDE.md` step 7 rather than as a fourth
+block: one branch, one gate, one merge.
 
-**What round 2 of the gate must show.** Check out that branch on the demo
-machine and run `design/69a-gate.md` from step 0. It differs from round 1 in
-four ways, each from round 1's own failures:
+**What round 3 of the gate must show.** Check out that branch on the demo
+machine and run `design/69a-gate.md` from step 0. It differs from round 2 in
+five ways, each from round 2's own failures:
 
-1. The server is launched with `Start-Process -RedirectStandardOutput`, because
-   PowerShell does not capture a native child's stdout and round 1 came back
-   with a 0-byte `server-console.log`.
-2. Step 0 warms uv unredirected first — a cold tree's rebuild writes to stderr,
-   which terminates any redirected command under this shell's
-   `$ErrorActionPreference = 'Stop'`.
-3. Limb 2 is split: 2a watches for `: ping` frames in Firefox's Response tab
-   (three in 35 s), 2b is declared settled off-rig.
-4. Both browser artifacts are named separately — the HAR **and** the console
-   export, because limb 7's evidence is `console.warn` output that a HAR does
-   not contain.
+1. The marker submit in step 0 is mandatory and the capture check greps for the
+   marker while the server is still alive; without it limb 8 is void, and the
+   scorer now says so instead of passing.
+2. Step 1's prompt pins `interval 0 s` and forbids a clarifying question, so both
+   acquisitions land in one turn and limb 4's stale-progress control exists.
+3. The Network panel must not be cleared or re-opened after the first submit —
+   round 2's HAR began after the submit it needed to capture, so limb 2a had no
+   stream.
+4. Limb 5 is four limbs: 5a same ID, 5b the poll continues (HAR-scoreable),
+   **5c the reloaded page shows spinner, countdown, Stop and a disabled
+   composer**, and **5d the timeout disclosure and the agent's reply reach that
+   page without a manual reload**. 5c and 5d are the ruling's acceptance
+   evidence and cost a second five-minute wait.
+5. Step 3 checks the console export exists and contains `last applied seq`
+   before scoring, because round 2 returned no console export and limb 7 was
+   NOT EXERCISED for it.
 
-**The limbs still owed:** 2a, 3, 6, 7, 8. Limbs 1, 4 and 5 passed in round 1 and
-a second observation of them is a bonus, not a requirement — but the reload limb
-is now also the regression check for `691700f`, so it is worth re-running
-deliberately.
+**The limbs still owed:** 1, 2a, 3, 4, 5a–5d, 7, 8. Only limbs 5a/5b and 6 came
+back established from round 2.
 
 **When the gate passes:** merge the branch to `main`, push, delete it locally and
 on `origin`, fill this row's merge and design-reconciliation cells, and run the
@@ -1318,9 +1432,11 @@ post-merge design gate. `design/35`'s pointer section for design/69a needs its
 closing state written at the same time.
 
 **Verification already done by the coordinator, so it need not be repeated:**
-suite 2788/99/2; selftest 11/11 on both trees, discriminating; every new test in
-69a-3 watched failing on `main` or under mutation, including the reload-poll test
-whose mutation now fails on `scheduledAfterBoot` rather than crashing.
+suite 2788/99/2 at `2716497`; selftest **13/13** on both trees after the round-2
+corrections, every control firing for its stated reason; `tests/test_recovery_js.py`
+20/20 with node **v25.2.1** present, so limb 2b's off-rig settlement is real; and
+the corrected scorer re-run against round 2's own artifacts, where it turns limb
+8's false PASS into NOT EXERCISED.
 
 ### Coordination log
 
