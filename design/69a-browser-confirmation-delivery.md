@@ -1388,6 +1388,26 @@ go wrong rather than a restatement of the decision:
   half of the incident where the completed response never reached the operator,
   and limb 5d is the only thing that watches it happen.
 
+Implemented at `3a6318d`. `settleIfRecovered` became the single settlement path
+for both arrival modes — its predicate takes `streamSilenceDetected` *or*
+`adoptedTurn` as recovery ownership — rather than growing a reload-only twin,
+and `adoptedTurn` is cleared before its async callback so a repeat reconcile is
+idempotent and a later page-owned turn cannot be unlocked by stale adoption
+state. A 401 releases the adoption **without** a refresh, which is unauthorized
+on that path. Verified by the coordinator: the new test fails on `a4a16b8` by
+assertion — `pendingHidden: true, stopHidden: true` while
+`pendingText: "Waiting for your confirmation. 42s remaining."` is present, and
+`refreshes` never leaving the boot-only value of 1 — which is the defect stated
+exactly, not a missing helper. Suite **2789 / 99 / 2**, baseline + 1.
+
+**One thing this leaves open, raised by the implementer and not widened into the
+block.** After a 401 the adoption is released, so a recovered confirmation banner
+can sit above a re-enabled composer while every request needs re-pairing, and the
+notice is a toast rather than a persistent banner. It looks actionable and is
+not. This is unreachable on loopback — the middleware returns `identity =
+"loopback"` before any auth runs — so no demo gate can see it; it belongs to
+whichever design next touches `--allow-remote` pairing.
+
 ### Where a fresh session picks this up
 
 **Everything below is on `origin`. Nothing needed to continue lives in a

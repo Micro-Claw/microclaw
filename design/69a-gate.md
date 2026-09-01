@@ -11,7 +11,7 @@ cd D:\Code\microclaw
 git fetch origin
 git checkout design69a/event-sequencing
 git pull
-git merge-base --is-ancestor 691700f HEAD
+git merge-base --is-ancestor 3a6318d HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" }
 else { "STOP - wrong tree, do not run the gate" }
 ```
