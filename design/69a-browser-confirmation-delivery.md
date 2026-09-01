@@ -1047,7 +1047,7 @@ entire off-rig case rests on tests that skip silently without it.
 | --- | --- | --- | --- | --- | --- |
 | 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
 | 69a-2 | `design69a/keepalive-and-abort` (deleted) | `60ae1b3` (2026-09-01) | `26cc47b` + `142b90f` (`main` merged mid-block, see below) + `c2cfdab` (review round 1, one product finding and two coordinator corrections). Suite **2782 / 99 / 2**, coordinator-run, baseline + 6; node **v25.2.1** | scored with 69a-3 | `2bcb136` |
-| 69a-3 | `design69a/event-sequencing` | | | **demo machine, one driven session**, scores all three blocks | |
+| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review round 1, two gate findings) + `dfb3d88` (coordinator, runbook pin). Suite **2786 / 99 / 2**, coordinator-run, baseline + 4; selftest **9/9**, coordinator-run on both trees; node **v25.2.1** | **PUSHED, AWAITING THE DEMO-MACHINE SESSION** — `dfb3d88` on `origin` | not yet |
 
 ### What block 69a-1 cost, and what it proved
 
@@ -1182,6 +1182,52 @@ failure and not the incident. That is what makes limb 3 evidence rather than
 assertion, and it is the first time this project has executed `serve.html`'s
 own control flow in a test.
 
+### What block 69a-3 cost, and what it proved
+
+**Both review findings were in the gate, not the product** — the half that gets
+no review pass and runs unattended in front of an operator.
+
+**Limb 8 would have failed on the rig for behaviour that is deliberate.** The
+runbook seeds a recognizable marker into a confirmation summary, and
+`Session._audit_confirmation` **prints that summary to stdout by design**;
+`confirm()`'s docstring says why — under `--allow-remote` it is the only record
+the person standing at the microscope can see. The scorer tested the marker
+against the whole log, so the gate would have returned FAIL after a session that
+cost a five-minute timeout wait, and the failure would have said nothing true.
+Limb 8's real claim is narrower: no event payload reaches the **event** log.
+
+**And the gate's own selftest could not catch it.** Its artifact came from a turn
+that raises no confirmation, so no audit line ever existed, and the L8-can-fail
+check injected the marker artificially — *a fake that encodes your assumption is
+not a test of it*, inside the instrument written to enforce that rule. The fix
+was to generate the artifact through the real `Session.confirm` decline path.
+**Verified by mutation**: reverting the scorer to the whole-log check flips the
+selftest's "gate passes on real product output" from `ok` to `FAIL`, so it now
+discriminates on the defect it previously slept through.
+
+**The server console log was empty for the entire session.** Python
+block-buffers stdout when it is not a terminal and none of this block's log lines
+flushed — measured, **0 bytes** reach the redirected file while the process runs.
+Every computed limb therefore hung on Ctrl-C shutting down cleanly through a
+PowerShell pipeline, with no way for the operator to notice mid-session. That is
+58e's empty transcript again. Fixed with `flush=True` (a flushed write also
+flushes output queued before it, so ordering with the unflushed audit line is
+preserved) plus a live capture check in the runbook **before** the five-minute
+limb, because a setup failure found after the expensive limb costs the session.
+
+**Two things the coordinator checked rather than assumed**, both of which look
+like passes when they are not: the runbook's capture-check regex was run against
+output the product actually produced (4 matching lines — a regex that matches
+nothing reads exactly like a passing check, which is 52c's defect); and
+`emit_progress` was read to confirm it fires on the first frame *and* the final
+planned frame, so the runbook's 2-frame acquisition genuinely sets the competing
+`frames 2 / 2` that makes limb 4 a control which can fail.
+
+**The runbook's pin was one commit too early** — `0adbcd2`, which predates the
+scorer fix, so a checkout at `4f4443f` would have satisfied it while running the
+broken limb 8. Repinned to `0a2090e`, keeping the `--is-ancestor` form so a
+later runbook amendment still satisfies it.
+
 ### Coordination log
 
 - **2026-09-01, assignment.** Blocks cut three ways above; the design's own
@@ -1202,4 +1248,14 @@ own control flow in a test.
   reach: a suite command never run in its worktree (69a-1), and a design section
   committed after its worktree was cut (69a-2). Both are now in `CLAUDE.md`
   step 2.
-- **69a-3 is next**, and it owns the gate for all three blocks.
+- **2026-09-01, 69a-3 implemented and pushed, not merged.** `dfb3d88` is on
+  `origin/design69a/event-sequencing`. Unlike 69a-1 and 69a-2 this block owns a
+  gate, so it stays on its branch until the demo-machine session passes —
+  workflow steps 5 through 8. **The session scores all three blocks**, and it is
+  the only place the poll, the keepalive, the abort and the sequencing are seen
+  working together by a person.
+- **What the operator needs to know before booking it:** it costs a real
+  five-minute wait at limb 4, because `CONFIRM_TIMEOUT_S` has no configuration
+  path and shortening it would gate a path the product does not have; and it
+  requires **both** the server console log and the browser devtools console, or
+  limb 7 reports NOT EXERCISED, which is the entire reason sequencing ships.
