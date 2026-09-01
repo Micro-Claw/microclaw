@@ -203,3 +203,27 @@ measured and reproduced across two runs. The "5x cost" framing compared it to a
 baseline was ever taken. Two attribution limbs are now in the runbook: a plain
 fixed 100-frame run, and an adaptive run whose hook does no density analysis.
 Until those run, the honest statement is ~0.25 s/frame, n=1, unattributed.
+
+## M2 access ended; remaining limbs moved to M5 (2026-09-01)
+
+M2 is no longer available. Its two rounds remain the evidence for the computed
+gate (`6/6 PASS` in round 2), successor dispatch and early stop (axes 0–3,
+4/8 frames, `hook_stop`), the emitted script actually running (script-owned
+start/end markers at 0/4 frames), the engine callback shape (four `dict`
+callbacks at `interval_s=0`), the adaptive bounded-stage refusal, and the first
+50 ms cadence observation (99 gaps; min 0.219 s, mean 0.2495 s, max 0.344 s).
+Those limbs are closed and must not be rerun on M5 merely to reproduce them.
+
+Moved to M5 because they have no rig evidence: limb 3's image-derived write to
+a non-dosing property; limb 4's authorized FPGA activation-pulse-duration run;
+and the refusing control for C1, where an otherwise-unclassified property
+envelope on a bounded-stage device must still refuse before any write. The
+fixed, density-and-routing, and routing-only 100-frame cadence set also moves to
+M5 as one comparable attribution set on the same field. Repeating the density
+run is deliberate: M5 supplies a second observation, not a confirmation of M2;
+if the numbers differ, both stand.
+
+The retargeted runbook does not assert an M5 device label and contains no value
+placeholder. The connected agent discovers and echoes the exact pair, entry
+value and bounds, then uses that same pair later in the same prompt. This avoids
+both M2's wrong hardcoded label and block 52c's unexecuted placeholder shape.
