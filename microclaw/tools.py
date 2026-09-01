@@ -10738,9 +10738,8 @@ def _hint_for_tool_error(fn: Callable, exc: Exception) -> str:
         and "protocol_params" in inspect.signature(fn).parameters
     ):
         key = match.group(2)
-        example = "100" if key == "exposure_ms" else "..."
         return (
             f"`{key}` is a per-position protocol parameter; pass "
-            f'protocol_params={{..., "{key}": {example}}}.'
+            f'protocol_params={{..., "{key}": value}}.'
         )
     return hint_for_error(exc)
