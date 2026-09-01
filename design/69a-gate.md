@@ -12,19 +12,39 @@ In PowerShell at the checkout, verify the implementation is present:
 git merge-base --is-ancestor 0a2090e HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 69a implementation is not checked out" }
 New-Item -ItemType Directory -Force block69a-evidence | Out-Null
-uv run microclaw serve > block69a-evidence\server-console.log 2>&1
 ```
 
-**File redirection, not a pipeline.** `... 2>&1 | Tee-Object` wraps every line
-uv writes to stderr — including its ordinary `Building microclaw @ file:///...`
-progress — in a PowerShell `NativeCommandError`, which is how the first attempt
-at this gate died. Redirecting straight to a file never involves a cmdlet and
-cannot do that. There is deliberately no `node` check: node is needed for the
-off-rig JS suite, never for this gate.
+**First, prove the capture mechanism in two seconds.** Two earlier forms of the
+next command failed on the demo machine before the server ever started, so this
+runs the same shape against a trivial program instead of a five-minute session:
 
-The console output now goes to the file rather than the window, so confirm the
-server actually started by opening a **second** PowerShell in the checkout and
-running:
+```powershell
+uv run python -c "import sys; sys.stderr.write('to stderr\n'); print('to stdout')" > block69a-evidence\probe.log
+Get-Content block69a-evidence\probe.log
+```
+
+`to stdout` must appear in the file. `to stderr` and uv's
+`Building microclaw @ file:///...` progress may appear in the window in red;
+that is expected and is not a failure. **If instead PowerShell raises
+`NativeCommandError`, stop and report it** — do not start the session.
+
+**Stdout only. Never `2>&1`.** Merging a native command's stderr into a
+PowerShell stream wraps each line in a `NativeCommandError`, and uv writes its
+ordinary build progress to stderr; that is what killed the first two attempts at
+this gate, with `| Tee-Object` and then with `> file 2>&1`. The merge is what
+does it, not the destination. Nothing this gate scores is on stderr — every line
+the scorer reads is a bare `print` to stdout — so there is no reason to merge.
+There is also deliberately no `node` check: node runs the off-rig JS suite, never
+this gate.
+
+Now start the server:
+
+```powershell
+uv run microclaw serve > block69a-evidence\server-console.log
+```
+
+The console output now goes to the file, so confirm the server started by
+opening a **second** PowerShell in the checkout:
 
 ```powershell
 Get-Content block69a-evidence\server-console.log -Tail 5
