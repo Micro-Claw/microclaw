@@ -303,19 +303,15 @@ because a block looks small.
    that running it unedited either works or fails loudly.
 
    **A literal command must be established, never guessed.** The rule above asks
-   for the exact line; it is not permission to invent one. 62d's gate runbook
-   shipped `py -3 design\62-block62d-demo-gate.py` for a machine that is a `uv`
-   install — the Windows launcher resolves to a system interpreter with none of
-   microclaw's dependencies, so the gate would have died on
-   `from microclaw import tools` before a single limb ran. The convention was
-   already recorded (`uv run`, and design/60's runbook used it); this was recorded
-   information not applied, not information missing. The cost is not only the
-   wrong line: **a guessed command reads as a deliberate instruction**, so the
-   operator assumes it is load-bearing — *"I would've done uv run on my own, but
-   because you wrote py -3 i was confused and thought it was something extra."*
-   So: check what is recorded, **run the prescribed line yourself** (which also
-   tells you what benign output to warn about), and if you still cannot pin the
-   invocation down, ask. A gate's interpreter is part of its instrument.
+   for the exact line; it is not permission to invent one. A guessed command does
+   not read as a guess — it reads as a deliberate instruction, so the operator
+   assumes it is load-bearing and spends time on it. 62d shipped `py -3` for a
+   machine that is a `uv` install, where that interpreter has none of microclaw's
+   dependencies; the convention was already recorded and simply not applied. So
+   check what is recorded, **run the prescribed line yourself** — which also tells
+   you which benign output to warn about — and if you still cannot pin it down,
+   ask. A gate's interpreter is part of its instrument. (design/62 F7 has the
+   detail.)
 
    **And if every step of a gate is a literal command, it is a program — ship it
    as one.** Block 58a's gate went out as seven copy-paste PowerShell blocks and
