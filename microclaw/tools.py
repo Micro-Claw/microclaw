@@ -1,5 +1,6 @@
 from __future__ import annotations
 import ast
+import fnmatch
 import inspect
 import hashlib
 import itertools
@@ -9304,6 +9305,19 @@ def validate_positions(
     return {"accepted": accepted, "rejected": rejected, "clipped": 0}
 
 
+def _is_link_like(entry: Path) -> bool:
+    """True for anything recursion must not descend into.
+
+    `is_symlink()` alone is not that predicate on Windows: measured on the demo
+    machine, `Path.is_symlink()` returns **False** for a junction created with
+    `mklink /J`, so a junction in the tree was traversed and files outside the
+    requested root were enumerated. design/62 asserted this was "already true";
+    block 62d's gate proved it false. `os.path.isjunction` is 3.12+ (the
+    project floor) and returns False on POSIX.
+    """
+    return entry.is_symlink() or os.path.isjunction(entry)
+
+
 @emits_nothing
 def inspect_artifacts(
     ctrl: MicroscopeController,
@@ -9314,29 +9328,77 @@ def inspect_artifacts(
     max_total_bytes: int = 1024 * 1024 * 1024,
     max_depth: int = 16,
     hash: bool = True,
+    name_glob: str = "*",
+    recursive: bool = True,
 ) -> dict:
-    """Survey local artifacts deterministically, then optionally hash them."""
+    """Search local artifacts deterministically, then optionally hash them."""
     limits = (max_files, max_total_bytes, max_depth)
     if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
            for value in limits):
         return {"error": "Artifact inspection limits must be positive integers."}
     if not isinstance(hash, bool):
         return {"error": "hash must be true or false."}
+    if not isinstance(recursive, bool):
+        return {"error": "recursive must be true or false."}
+    if (not isinstance(name_glob, str) or not name_glob
+            or "/" in name_glob or "\\" in name_glob or ".." in name_glob):
+        return {
+            "error": "name_glob must be a non-empty basename pattern without "
+                     "a slash, backslash, or '..'."
+        }
     files: set[Path] = set()
+    examined: set[Path] = set()
     survey_by_path: dict[Path, dict] = {}
+    discovery = not hash and manifest_path is None
+    order_key = lambda path: (str(path).lower(), str(path))
+    # One shape for one key. A `scope` that is a string in discovery and an
+    # object in provenance is design/62's own F4 -- one name, two meanings, same
+    # tool -- moved from the request into the response. "top-level" vs
+    # "recursive" is already carried by scope["recursive"].
+    requested_scope = {
+        "name_glob": name_glob,
+        "recursive": recursive,
+        "max_files": max_files,
+        "max_total_bytes": max_total_bytes,
+        "max_depth": max_depth,
+    }
 
     def survey() -> list[dict]:
-        return [survey_by_path[path] for path in sorted(survey_by_path, key=str)]
+        return [survey_by_path[path] for path in sorted(survey_by_path, key=order_key)]
 
     def refusal(message: str) -> dict:
         return {
             "error": message,
             "survey": survey(),
             "survey_totals": {
-                "file_count": len(files),
-                "total_bytes": sum(path.stat().st_size for path in files),
+                "file_count": len(examined),
+                "total_bytes": sum(path.stat().st_size for path in examined),
             },
         }
+
+    def discovery_result(*, truncated: bool) -> dict:
+        matched = sorted(files, key=order_key)
+        artifacts = [
+            {"path": str(path), "size_bytes": path.stat().st_size}
+            for path in matched
+        ]
+        return {
+            "matches": [str(path) for path in matched],
+            "examined_count": len(examined),
+            "truncated": truncated,
+            "scope": requested_scope,
+            "scope_complete": not truncated,
+            "artifact_count": len(artifacts),
+            "total_bytes": sum(item["size_bytes"] for item in artifacts),
+            "hashes_computed": False,
+            "artifacts": artifacts,
+            "survey": survey(),
+        }
+
+    def incomplete(message: str) -> dict:
+        if discovery:
+            return discovery_result(truncated=True)
+        return refusal(message)
 
     for raw in paths:
         resolved = Path(guard.resolve_readable_path(raw))
@@ -9349,30 +9411,35 @@ def inspect_artifacts(
                 direct_count = 0
                 direct_bytes = 0
                 try:
-                    entries = sorted(directory.iterdir(), key=lambda path: str(path))
+                    entries = sorted(directory.iterdir(), key=order_key)
                 except OSError as exc:
                     return refusal(f"Cannot list artifact directory {directory}: {exc}")
                 children = []
                 for entry in entries:
-                    if entry.is_dir() and not entry.is_symlink():
-                        children.append(entry)
-                        continue
-                    if not entry.is_file():
-                        continue
-                    size = entry.stat().st_size
+                    try:
+                        if entry.is_dir() and not _is_link_like(entry):
+                            children.append(entry)
+                            continue
+                        if not entry.is_file():
+                            continue
+                        size = entry.stat().st_size
+                    except OSError as exc:
+                        return refusal(f"Cannot inspect artifact entry {entry}: {exc}")
                     direct_count += 1
                     direct_bytes += size
-                    if entry not in files and len(files) >= max_files:
+                    if entry not in examined and len(examined) >= max_files:
                         survey_by_path[directory] = {
                             "path": str(directory), "depth": depth,
                             "direct_file_count": direct_count,
                             "direct_bytes": direct_bytes,
                         }
-                        return refusal(
+                        return incomplete(
                             f"Artifact inspection reached max_files={max_files}; "
                             "use the directory survey or narrow paths."
                         )
-                    files.add(entry)
+                    examined.add(entry)
+                    if fnmatch.fnmatchcase(entry.name.lower(), name_glob.lower()):
+                        files.add(entry)
                     if hash and sum(path.stat().st_size for path in files) > max_total_bytes:
                         survey_by_path[directory] = {
                             "path": str(directory), "depth": depth,
@@ -9387,16 +9454,21 @@ def inspect_artifacts(
                     "path": str(directory), "depth": depth,
                     "direct_file_count": direct_count, "direct_bytes": direct_bytes,
                 }
-                if children and depth >= max_depth:
-                    return refusal(
+                if recursive and children and depth >= max_depth:
+                    return incomplete(
                         f"Artifact inspection reached max_depth={max_depth}; "
                         "use the directory survey or narrow paths."
                     )
-                pending.extend((child, depth + 1) for child in reversed(children))
+                if recursive:
+                    pending.extend((child, depth + 1) for child in reversed(children))
         else:
-            if resolved not in files and len(files) >= max_files:
-                return refusal(f"Artifact inspection reached max_files={max_files}.")
-            files.add(resolved)
+            if resolved not in examined and len(examined) >= max_files:
+                return incomplete(f"Artifact inspection reached max_files={max_files}.")
+            examined.add(resolved)
+            if fnmatch.fnmatchcase(resolved.name.lower(), name_glob.lower()):
+                files.add(resolved)
+    if discovery:
+        return discovery_result(truncated=False)
     total_bytes = sum(path.stat().st_size for path in files)
     if hash and total_bytes > max_total_bytes:
         return refusal(
@@ -9404,7 +9476,7 @@ def inspect_artifacts(
             f"max_total_bytes={max_total_bytes}."
         )
     artifacts = []
-    for path in sorted(files, key=lambda p: str(p)):
+    for path in sorted(files, key=order_key):
         artifact = {"path": str(path), "size_bytes": path.stat().st_size}
         if hash:
             digest = hashlib.sha256()
@@ -9413,8 +9485,14 @@ def inspect_artifacts(
                     digest.update(block)
             artifact["sha256"] = digest.hexdigest()
         artifacts.append(artifact)
-    result = {"artifact_count": len(artifacts), "total_bytes": total_bytes,
-              "hashes_computed": hash, "artifacts": artifacts, "survey": survey()}
+    result = {
+        "artifact_count": len(artifacts),
+        "total_bytes": total_bytes,
+        "hashes_computed": hash,
+        "artifacts": artifacts,
+        "survey": survey(),
+        "scope": requested_scope,
+    }
     if manifest_path:
         manifest_path = guard.resolve_in_workspace(manifest_path)
         Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)

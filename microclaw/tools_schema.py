@@ -1786,7 +1786,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "path": {"type": "string",
-                         "description": "The artifact path a tool returned."},
+                         "description": "The direct path to the image or dataset artifact to open."},
                 "analyze": {"type": "boolean", "description":
                     "Also read the pixels into this conversation so you can "
                     "measure or describe them. Default false. Set it ONLY when "
@@ -1881,17 +1881,33 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "inspect_artifacts",
         "description": (
-            "Recursively enumerate files under workspace artifact paths and compute "
-            "their size and optional SHA-256 within deterministic file-count, byte, "
-            "and depth bounds. Refusals include a per-directory count/byte survey so "
-            "a caller can narrow the next request. Optionally save a JSON manifest."
+            "List or search a local folder the user named, to resolve an incomplete "
+            "filename. Use this when the user says a file is in Downloads, Desktop, "
+            "or another named folder but does not give its exact path. Returns "
+            "absolute candidate paths; pass the chosen direct path to the consuming "
+            "tool. With hash=true it also computes SHA-256 for provenance. Reads "
+            "directory metadata only — never file contents unless hashing was asked "
+            "for — and touches no hardware. Optionally saves a JSON manifest."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "paths": {"type": "array", "items": {"type": "string"}},
-                "manifest_path": {"type": "string"},
-                "max_files": {"type": "integer", "minimum": 1, "default": 1000},
+                "paths": {"type": "array", "items": {"type": "string"},
+                          "description": "Explicit file or directory paths to inspect; no home or whole-machine search is inferred."},
+                "name_glob": {"type": "string", "default": "*",
+                              "description": "Case-insensitive glob matched against basenames only. Must not contain /, \\, or ..."},
+                "recursive": {"type": "boolean", "default": True,
+                              "description": "Search child directories. False returns the complete top-level scope and is not truncation."},
+                "manifest_path": {"type": "string", "description":
+                    "Write the provenance result as JSON. A hash=true call or "
+                    "a call supplying manifest_path refuses if traversal is "
+                    "incomplete, and writes no partial manifest."},
+                "max_files": {"type": "integer", "minimum": 1, "default": 1000,
+                              "description":
+                    "Maximum regular files examined, not matches returned. In "
+                    "discovery, empty matches with truncated=true and "
+                    "examined_count means not found within the bound, not that "
+                    "the requested scope contains no matching file."},
                 "max_total_bytes": {"type": "integer", "minimum": 1,
                                     "default": 1073741824},
                 "max_depth": {"type": "integer", "minimum": 1, "default": 16},
