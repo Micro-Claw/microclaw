@@ -6,62 +6,46 @@ session, from `design69a/event-sequencing`. It scores blocks 69a-1, 69a-2 and
 
 ## 0. Pin and capture
 
-**Before anything else, relax this shell's error preference.** The demo
-machine's PowerShell runs with `$ErrorActionPreference = 'Stop'`, which turns
-*any* native command's write to stderr into a terminating error. `uv` writes
-`Building microclaw @ file:///...` to stderr whenever it rebuilds — which a
-freshly checked-out branch guarantees — so under `Stop` the gate dies on the
-line that starts the server. Three attempts at this gate died that way, with
-`| Tee-Object`, with `> file 2>&1`, and with `> file`. The command form was
-never the difference.
-
-Run this **first, in every PowerShell window you use for this gate**, and put it
-back at the end:
+## 0. Pin, warm uv, and capture
 
 ```powershell
-$PrevEAP = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-```
-
-Then verify the implementation is present:
-
-```powershell
+cd D:\Code\microclaw
+git fetch origin
+git checkout design69a/event-sequencing
+git pull
 git merge-base --is-ancestor 0a2090e HEAD
-if ($LASTEXITCODE -ne 0) { throw "Block 69a implementation is not checked out" }
+if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" }
+else { "STOP - wrong tree, do not run the gate" }
+```
+
+**Warm uv once, unredirected.** A freshly checked-out branch leaves uv a rebuild
+to do, and it writes `Building microclaw @ file:///...` to stderr. This shell
+runs with `$ErrorActionPreference = 'Stop'`, so that line terminates any
+*redirected* uv command — which is why the first commands of this gate died and
+why the same `> file 2>&1` form has worked in every other runbook for months:
+by the time those ran, uv had nothing left to build.
+
+```powershell
+uv run python -c "print('uv warm')"
+```
+
+Let it build. Red build text here is expected and harmless — nothing is
+redirected, so nothing terminates. Every redirected command below then behaves
+exactly as it does in every other runbook.
+
+```powershell
 New-Item -ItemType Directory -Force block69a-evidence | Out-Null
+uv run microclaw serve > block69a-evidence\server-console.log 2>&1
 ```
 
-**Prove the capture in two seconds** before spending a session on it:
+**`microclaw serve` was historically silent under any redirect until it died** —
+design/35's register, from block 4d's gate: block-buffered stdout and a loop
+that never returns. Block 69a-3 gives the event lines `flush=True` and the
+startup banner already had it, so the file fills while the server runs. Confirm
+that in a **second** PowerShell window:
 
 ```powershell
-uv run python -c "import sys; sys.stderr.write('to stderr\n'); print('to stdout')" > block69a-evidence\probe.log
-Get-Content block69a-evidence\probe.log
-```
-
-`to stdout` must be in the file. `to stderr`, and uv's build progress, appear in
-the window — that is expected now, not a failure. If PowerShell still raises
-`NativeCommandError`, stop and report it.
-
-**Stdout only, deliberately.** Nothing this gate scores is on stderr: every line
-the scorer reads is a bare `print` to stdout — the `[microclaw turn ...]` event
-lines, the confirmation audit, the startup banner. Merging stderr would add
-nothing and is what `2>&1` does. There is also no `node` check: node runs the
-off-rig JS suite, never this gate.
-
-Now start the server:
-
-```powershell
-uv run microclaw serve > block69a-evidence\server-console.log
-```
-
-**`microclaw serve` was historically silent under any redirect until it died**
-(design/35's register, from block 4d's gate: block-buffered stdout and a loop
-that never returns). Block 69a-3 gives the event lines `flush=True`, and the
-startup banner already had it, so the file now fills while the server runs —
-which is what the next check confirms. In a **second** PowerShell window (set its
-error preference too):
-
-```powershell
+cd D:\Code\microclaw
 Get-Content block69a-evidence\server-console.log -Tail 5
 ```
 
@@ -158,14 +142,3 @@ Return `server-console.log`, `browser-console.log`, `computed-score.log`, both
 confirmation IDs, and the five human limb observations. `uv run` prints its
 ordinary `Building microclaw @ file:///...` progress to stderr here; with no
 pipeline in this command that is display only, not a failure.
-
-## 4. Restore
-
-In each PowerShell window you used:
-
-```powershell
-$ErrorActionPreference = $PrevEAP
-```
-
-A gate must not leave production state changed. This one only relaxes a
-preference inside the operator's own windows, but it says so and puts it back.
