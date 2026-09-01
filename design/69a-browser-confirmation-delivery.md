@@ -1024,7 +1024,7 @@ entire off-rig case rests on tests that skip silently without it.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
-| 69a-2 | `design69a/keepalive-and-abort` | | | scored with 69a-3 | |
+| 69a-2 | `design69a/keepalive-and-abort` | `60ae1b3` (2026-09-01) | | scored with 69a-3 | |
 | 69a-3 | `design69a/event-sequencing` | | | **demo machine, one driven session**, scores all three blocks | |
 
 ### What block 69a-1 cost, and what it proved
@@ -1077,6 +1077,35 @@ carried commit SHAs and a suite count both rounds. Not worth a third turn — th
 coordinator reads the diff anyway — but a runner report that answers only the
 mechanical questions is a report that has told you nothing you could not have
 counted yourself.
+
+### A gap 69a-2 found before it started: `pending-text` has four writers
+
+The design speaks of replacing `MicroClaw is working…` as though that element
+had one other state. It now has four, and three of them are live on `main`:
+
+| writer | text |
+| --- | --- |
+| `hideConfirm` / default | `MicroClaw is working…` |
+| `showConfirm` (`serve.html:612`) | `Waiting for your confirmation.` |
+| 69a-1's countdown (`:559`) | `Waiting for your confirmation. Ns remaining.`, rewritten at 1 Hz |
+| design/60b's `acquisition_progress` (`:532`) | `frames N / M`, per progress event |
+
+69a-2 adds a fifth, `Live updates interrupted; checking Microclaw…`. The design
+states one ordering rule — the silence message must not talk over a live
+confirmation, because *telling an operator about connectivity on top of the
+approval they are being asked for inverts the priority the banner exists to
+assert*. It does not rule on the progress counter, which did not exist when that
+sentence was written.
+
+**Decided at assignment: confirmation > silence > progress > default.** Silence
+outranks progress because a progress number that stopped updating is worse than
+no number — it is a stale reading presented as a live one, which is this
+document's own complaint about `MicroClaw is working…`. Progress cannot arrive
+*during* silence anyway, since it travels on the stream that went quiet; the
+ordering matters when the two race at a recovery boundary.
+
+Four unsynchronised assignments to one element is the actual defect. Resolving
+them in one place is folding, not a layer.
 
 ### Coordination log
 

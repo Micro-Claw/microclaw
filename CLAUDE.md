@@ -252,6 +252,53 @@ because a block looks small.
    the revise path only, so on a machine whose `config.toml` carries a field this
    Codex version rejects, revisions fail while starts keep working.
 
+   **On CLI 0.152.0 the *start* turn's reviewer is confirmed live** (block 69a-1,
+   2026-09-01): it refused the runner's attempt to retry a failing command with
+   escalation, quoting the prompt's own no-network instruction back — a
+   coordinator constraint enforced against the agent's workaround. That is three
+   versions past the 0.149.1 the `codex-runner` skill documents, and
+   `--strict-config` accepted this machine's config on the revise path. It does
+   **not** answer the paragraph above: that question is about a *revision*
+   requesting an escalation, and this was a start turn. Still open.
+
+   **Provision the runner's worktree before you write its prompt.** A fresh
+   worktree has no `.venv`, so `uv run pytest` resolves against `uv.lock`, reaches
+   for PyPI, and dies — the runner sandbox has no network. Create the venv
+   (`uv venv --python 3.12` then
+   `uv pip install --python .venv/bin/python -e ".[serve,test,ilastik]"`), **run
+   the suite in it yourself**, and hand over the command you ran —
+   `.venv/bin/python -m pytest -q`, which does no resolution at all — together
+   with the benign warning it prints, so the runner does not report it as a
+   finding. Check `import microclaw` resolves to the *worktree's* tree, not the
+   primary checkout's. This is *a literal command must be established, never
+   guessed* (step 6) applied to a runner prompt rather than a rig runbook; block
+   69a-1 lost its whole first turn to it, and the runner was right to stop.
+
+   **The coordinator's own tooling is code nobody reviews.** The wrapper scripts
+   around `run-codex.sh` — waiters, retry loops, launchers — get no review pass,
+   exactly like gate code, and they run unattended. Block 69a-2's launcher was
+   derived from another job's with `sed` and shipped two defects, both caught
+   only by printing the patched file back: `start` **refuses** a job directory
+   that already holds a `session-id`, so a retry loop must clear it between
+   attempts, while `revise` **requires** one and must not — deriving either from
+   the other inverts that; and a stale prompt filename survived the substitution,
+   which would have fed the wrong file to the runner. Print the file after
+   patching, enumerate every path it names, and check that the ones which must
+   exist do. Never trust the `sed`.
+
+   **A long wait before launching work must outlive the session.** A
+   `run_in_background` Bash task, `Monitor` and `CronCreate` are all
+   session-scoped and die with it — measured: a tracked waiter was killed at 52
+   minutes, well before its window. Put the wait and the launch in a script
+   started with `nohup` and **verify it reparented** (`ps -o pid,ppid` showing
+   PPID 1); layer the session-scoped mechanisms on top only as notification.
+   Give it an atomic `mkdir` lock so a second launcher stands down rather than
+   double-starting, and a give-up hour. And a usage window opens *late*: 69a-1's
+   first attempt fired at 19:25:02 against a limit that said "try again at 7:25
+   PM" and was refused, so retry on a usage-limit error — and only on that,
+   because any other failure is a real handoff failure that must stop for the
+   coordinator instead of being buried under eleven more attempts.
+
    **What three blocks did show**: turns get killed mid-flight — five so far. A
    turn that dies *early* is discarded; one that dies *at the end*, with its
    edits landed, is preserved, committed by the coordinator with a message
