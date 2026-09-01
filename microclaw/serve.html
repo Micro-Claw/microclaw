@@ -534,7 +534,7 @@
       }
       // Confirmations are banner state, not transcript content.
       case "confirm_request": showConfirm(ev); break;
-      case "confirm_resolved": hideConfirm(ev.id); break;
+      case "confirm_resolved": hideConfirm(ev.id, ev.decision); break;
     }
   }
 
@@ -546,12 +546,23 @@
   const confirmationRecovery = Recovery.create({
     fetch: apiFetch,
     now: () => Date.now(),
+    setTimeout: (fn, delay) => window.setTimeout(fn, delay),
+    clearTimeout: id => window.clearTimeout(id),
+    isVisible: () => document.visibilityState === "visible",
     getConfirmId: () => confirmId,
     getGrantIds: () => Array.from(
       $("grant-chips").querySelectorAll(".grant-chip"), chip => chip.dataset.grantId),
     showGrants,
     showConfirm,
     hideConfirm,
+    showRemaining: seconds => {
+      if (confirmId) $("pending-text").textContent =
+        `Waiting for your confirmation. ${seconds}s remaining.`;
+    },
+    notePollFailure: failures => {
+      if (failures === 3) toast("Confirmation status is temporarily unavailable; retrying.");
+    },
+    needsPairing: () => toast("This browser session needs re-pairing."),
   });
 
   function showGrants(grants) {
@@ -604,11 +615,13 @@
     scrollToBottom(true);
   }
 
-  function hideConfirm(id) {
+  function hideConfirm(id, decision) {
     if (id && confirmId && id !== confirmId) return;
     confirmId = null;
     $("confirm-banner").classList.add("hidden");
-    $("pending-text").textContent = "MicroClaw is working…";
+    $("pending-text").textContent = decision === "declined:timeout"
+      ? "Confirmation timed out and was declined"
+      : "MicroClaw is working…";
   }
 
   async function answerConfirm(approve) {
@@ -641,12 +654,21 @@
     const live = history.concat([{ role: "user", content: text }]);
     const state = { asst: null };
     paint(live, true);
-    for await (const ev of sseEvents(res.body)) {
-      applyEvent(live, ev, state);
-      schedulePaint(live);
+    confirmationRecovery.setTurnId(res.headers.get("X-Microclaw-Turn-ID"));
+    confirmationRecovery.startConfirmationRecovery();
+    try {
+      for await (const ev of sseEvents(res.body)) {
+        applyEvent(live, ev, state);
+        schedulePaint(live);
+      }
+    } finally {
+      confirmationRecovery.stopConfirmationRecovery();
     }
     return true;
   }
+
+  document.addEventListener("visibilitychange", () =>
+    confirmationRecovery.resumeConfirmationRecovery());
 
   $("composer").addEventListener("submit", async (e) => {
     e.preventDefault();
