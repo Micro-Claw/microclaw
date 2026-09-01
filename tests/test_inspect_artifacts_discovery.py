@@ -248,6 +248,43 @@ def test_scope_reports_one_shape_in_discovery_and_in_provenance(
     }
 
 
+def test_recursion_does_not_descend_a_junction(
+        mock_ctrl, unconstrained_guard, tmp_path, monkeypatch):
+    """A real directory that is_symlink() denies and isjunction() confirms.
+
+    This fake encodes the **measured** Windows behaviour, not an assumption:
+    block 62d's demo gate reported `Path.is_symlink() on the junction: False`
+    and the traversal then reached `must_not_be_reached.ilp` through it. So the
+    fixture is a plain directory (is_symlink() is genuinely False for it) that
+    os.path.isjunction is told to claim, which is exactly the shape the rig
+    produced. Windows itself remains the only place the real object exists.
+    """
+    inside = tmp_path / "tree"
+    plain = inside / "plain_subdir"
+    plain.mkdir(parents=True)
+    (plain / "control_reached.ilp").touch()
+    linked = inside / "junction_to_elsewhere"
+    linked.mkdir()
+    (linked / "must_not_be_reached.ilp").touch()
+
+    real_isjunction = os.path.isjunction
+    monkeypatch.setattr(
+        os.path, "isjunction",
+        lambda path: Path(path) == linked or real_isjunction(path),
+    )
+    result = _inspect(
+        mock_ctrl, unconstrained_guard, inside,
+        name_glob="*.ilp", recursive=True, hash=False,
+    )
+
+    names = sorted(Path(match).name for match in result["matches"])
+    # The control: recursion must still work, or "absent" proves nothing.
+    assert "control_reached.ilp" in names
+    assert "must_not_be_reached.ilp" not in names, (
+        "recursion descended a junction and enumerated files outside the root"
+    )
+
+
 def test_inspect_artifacts_schema_publishes_discovery_contract():
     schema = next(item for item in TOOLS if item["name"] == "inspect_artifacts")
     properties = schema["input_schema"]["properties"]

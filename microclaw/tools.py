@@ -9305,6 +9305,19 @@ def validate_positions(
     return {"accepted": accepted, "rejected": rejected, "clipped": 0}
 
 
+def _is_link_like(entry: Path) -> bool:
+    """True for anything recursion must not descend into.
+
+    `is_symlink()` alone is not that predicate on Windows: measured on the demo
+    machine, `Path.is_symlink()` returns **False** for a junction created with
+    `mklink /J`, so a junction in the tree was traversed and files outside the
+    requested root were enumerated. design/62 asserted this was "already true";
+    block 62d's gate proved it false. `os.path.isjunction` is 3.12+ (the
+    project floor) and returns False on POSIX.
+    """
+    return entry.is_symlink() or os.path.isjunction(entry)
+
+
 @emits_nothing
 def inspect_artifacts(
     ctrl: MicroscopeController,
@@ -9404,7 +9417,7 @@ def inspect_artifacts(
                 children = []
                 for entry in entries:
                     try:
-                        if entry.is_dir() and not entry.is_symlink():
+                        if entry.is_dir() and not _is_link_like(entry):
                             children.append(entry)
                             continue
                         if not entry.is_file():
