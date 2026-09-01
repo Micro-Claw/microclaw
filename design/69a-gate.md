@@ -9,7 +9,7 @@ session, from `design69a/event-sequencing`. It scores blocks 69a-1, 69a-2 and
 In PowerShell at the checkout, verify the implementation is present:
 
 ```powershell
-git merge-base --is-ancestor 0adbcd2 HEAD
+git merge-base --is-ancestor 0a2090e HEAD
 if ($LASTEXITCODE -ne 0) { throw "Block 69a implementation is not checked out" }
 node --version
 New-Item -ItemType Directory -Force block69a-evidence | Out-Null
