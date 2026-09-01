@@ -216,6 +216,7 @@
 </form>
 
 <script src="transcript.js"></script>
+<script src="recovery.js"></script>
 <script>
 (function () {
   "use strict";
@@ -542,12 +543,24 @@
   // the server's deadline. A page reload re-surfaces it via GET /api/confirm.
   let confirmId = null;
 
+  const confirmationRecovery = Recovery.create({
+    fetch: apiFetch,
+    now: () => Date.now(),
+    getConfirmId: () => confirmId,
+    getGrantIds: () => Array.from(
+      $("grant-chips").querySelectorAll(".grant-chip"), chip => chip.dataset.grantId),
+    showGrants,
+    showConfirm,
+    hideConfirm,
+  });
+
   function showGrants(grants) {
     const box = $("grant-chips");
     box.replaceChildren();
     for (const grant of grants || []) {
       const chip = document.createElement("span");
       chip.className = "grant-chip";
+      chip.dataset.grantId = grant.id;
       chip.append(document.createTextNode(grant.kind + ": " + grant.subject + " approved "));
       const revoke = document.createElement("button");
       revoke.type = "button";
@@ -793,9 +806,7 @@
       await refresh();
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.
-      const pending = await (await apiFetch("/api/confirm")).json();
-      showGrants(pending.grants);
-      if (pending.id) showConfirm(pending);
+      await confirmationRecovery.reconcileConfirmation();
     } catch (err) { toast("Could not reach the MicroClaw server: " + err.message); }
     msg.focus();
   })();

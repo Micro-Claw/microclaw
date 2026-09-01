@@ -13,7 +13,7 @@ from importlib import resources
 
 import pytest
 
-from microclaw.assets import CSS_TAG, JS_TAG, load_page
+from microclaw.assets import CSS_TAG, JS_TAG, RECOVERY_JS_TAG, load_page
 from microclaw.__main__ import view_history
 
 TOKEN = "__MICROCLAW_HISTORY_DATA__"
@@ -124,6 +124,15 @@ def test_load_page_inlines_both_assets(page):
     assert "--tool-line:" in html            # transcript.css
 
 
+def test_serve_inlines_recovery_without_requiring_it_in_history_viewer():
+    served = load_page("serve.html")
+    history = load_page("history_viewer.html")
+    assert RECOVERY_JS_TAG not in served
+    assert "global.Recovery = { create };" in served
+    assert RECOVERY_JS_TAG not in history
+    assert "global.Recovery = { create };" not in history
+
+
 def test_view_history_output_is_self_contained(tmp_path):
     """It is written to a temp directory, where transcript.css/js are not siblings."""
     src = tmp_path / "h.json"
@@ -131,4 +140,3 @@ def test_view_history_output_is_self_contained(tmp_path):
     html = view_history(src, open_browser=False).read_text(encoding="utf-8")
     assert 'href="transcript.css"' not in html
     assert 'src="transcript.js"' not in html
-

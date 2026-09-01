@@ -1,4 +1,4 @@
-"""Inline the shared transcript CSS/JS into a page.
+"""Inline the browser assets used by a bundled page.
 
 history_viewer.html and serve.html both `<link>`/`<script src>` transcript.css
 and transcript.js, so either opens correctly straight from the source tree. But
@@ -12,6 +12,7 @@ from importlib import resources
 
 CSS_TAG = '<link rel="stylesheet" href="transcript.css">'
 JS_TAG = '<script src="transcript.js"></script>'
+RECOVERY_JS_TAG = '<script src="recovery.js"></script>'
 
 ICON = "favicon.ico"
 
@@ -49,12 +50,15 @@ def materialize_icon(dest, name: str = ICON):
 
 
 def load_page(name: str) -> str:
-    """Read a bundled HTML page with transcript.css/transcript.js inlined."""
+    """Read a bundled HTML page with each of its known assets inlined."""
     html = _read(name)
-    for tag, asset, open_, close in (
+    assets = [
         (CSS_TAG, "transcript.css", "<style>", "</style>"),
         (JS_TAG, "transcript.js", "<script>", "</script>"),
-    ):
+    ]
+    if name == "serve.html":
+        assets.append((RECOVERY_JS_TAG, "recovery.js", "<script>", "</script>"))
+    for tag, asset, open_, close in assets:
         if tag not in html:
             raise RuntimeError(f"{name} no longer contains {tag!r}; assets.py is stale.")
         html = html.replace(tag, f"{open_}\n{_read(asset)}\n{close}", 1)
