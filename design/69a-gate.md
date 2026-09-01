@@ -6,7 +6,24 @@ session, from `design69a/event-sequencing`. It scores blocks 69a-1, 69a-2 and
 
 ## 0. Pin and capture
 
-In PowerShell at the checkout, verify the implementation is present:
+**Before anything else, relax this shell's error preference.** The demo
+machine's PowerShell runs with `$ErrorActionPreference = 'Stop'`, which turns
+*any* native command's write to stderr into a terminating error. `uv` writes
+`Building microclaw @ file:///...` to stderr whenever it rebuilds — which a
+freshly checked-out branch guarantees — so under `Stop` the gate dies on the
+line that starts the server. Three attempts at this gate died that way, with
+`| Tee-Object`, with `> file 2>&1`, and with `> file`. The command form was
+never the difference.
+
+Run this **first, in every PowerShell window you use for this gate**, and put it
+back at the end:
+
+```powershell
+$PrevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+```
+
+Then verify the implementation is present:
 
 ```powershell
 git merge-base --is-ancestor 0a2090e HEAD
@@ -14,28 +31,22 @@ if ($LASTEXITCODE -ne 0) { throw "Block 69a implementation is not checked out" }
 New-Item -ItemType Directory -Force block69a-evidence | Out-Null
 ```
 
-**First, prove the capture mechanism in two seconds.** Two earlier forms of the
-next command failed on the demo machine before the server ever started, so this
-runs the same shape against a trivial program instead of a five-minute session:
+**Prove the capture in two seconds** before spending a session on it:
 
 ```powershell
 uv run python -c "import sys; sys.stderr.write('to stderr\n'); print('to stdout')" > block69a-evidence\probe.log
 Get-Content block69a-evidence\probe.log
 ```
 
-`to stdout` must appear in the file. `to stderr` and uv's
-`Building microclaw @ file:///...` progress may appear in the window in red;
-that is expected and is not a failure. **If instead PowerShell raises
-`NativeCommandError`, stop and report it** — do not start the session.
+`to stdout` must be in the file. `to stderr`, and uv's build progress, appear in
+the window — that is expected now, not a failure. If PowerShell still raises
+`NativeCommandError`, stop and report it.
 
-**Stdout only. Never `2>&1`.** Merging a native command's stderr into a
-PowerShell stream wraps each line in a `NativeCommandError`, and uv writes its
-ordinary build progress to stderr; that is what killed the first two attempts at
-this gate, with `| Tee-Object` and then with `> file 2>&1`. The merge is what
-does it, not the destination. Nothing this gate scores is on stderr — every line
-the scorer reads is a bare `print` to stdout — so there is no reason to merge.
-There is also deliberately no `node` check: node runs the off-rig JS suite, never
-this gate.
+**Stdout only, deliberately.** Nothing this gate scores is on stderr: every line
+the scorer reads is a bare `print` to stdout — the `[microclaw turn ...]` event
+lines, the confirmation audit, the startup banner. Merging stderr would add
+nothing and is what `2>&1` does. There is also no `node` check: node runs the
+off-rig JS suite, never this gate.
 
 Now start the server:
 
@@ -43,16 +54,19 @@ Now start the server:
 uv run microclaw serve > block69a-evidence\server-console.log
 ```
 
-The console output now goes to the file, so confirm the server started by
-opening a **second** PowerShell in the checkout:
+**`microclaw serve` was historically silent under any redirect until it died**
+(design/35's register, from block 4d's gate: block-buffered stdout and a loop
+that never returns). Block 69a-3 gives the event lines `flush=True`, and the
+startup banner already had it, so the file now fills while the server runs —
+which is what the next check confirms. In a **second** PowerShell window (set its
+error preference too):
 
 ```powershell
 Get-Content block69a-evidence\server-console.log -Tail 5
 ```
 
-A line reading `Microclaw GUI: http://127.0.0.1:8000  (Ctrl-C to stop)` means it
-is up; that print flushes, so it appears immediately. Keep this second window —
-the capture check before the five-minute limb uses it too.
+`Microclaw GUI: http://127.0.0.1:8000  (Ctrl-C to stop)` means it is up. Keep
+this window; the capture check before the five-minute limb uses it.
 
 Leave the first PowerShell window running. In the browser, open DevTools, select the
 Console tab, enable **Preserve log**, and clear the console. The server console
@@ -144,3 +158,14 @@ Return `server-console.log`, `browser-console.log`, `computed-score.log`, both
 confirmation IDs, and the five human limb observations. `uv run` prints its
 ordinary `Building microclaw @ file:///...` progress to stderr here; with no
 pipeline in this command that is display only, not a failure.
+
+## 4. Restore
+
+In each PowerShell window you used:
+
+```powershell
+$ErrorActionPreference = $PrevEAP
+```
+
+A gate must not leave production state changed. This one only relaxes a
+preference inside the operator's own windows, but it says so and puts it back.
