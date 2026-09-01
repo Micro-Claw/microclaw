@@ -777,7 +777,7 @@ accepted from a runner report.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | turn 1 assigned 2026-09-01, **killed mid-flight by a Codex account usage limit** at 11:45; preserved unreviewed as `d1da105` and pushed. Tests only — a `write_ilastik_project` HDF5 fixture and three of the four acceptance tests; **no product change at all**, neither `ilastik_adapter.py` nor `completed_dataset.py` touched. Its accidental value is that it *is* step 3's pre-fix evidence, captured by the coordinator before any fix exists: tests 1 and 2 fail `DID NOT RAISE ValueError` (construction opens nothing today) and test 3 fails `FileNotFoundError ... missing-dataset` out of `ndstorage/_superclass.py:28` — **turn 51 of the session reproduced verbatim**, which is this block's whole thesis. Fixture itself unverified |  **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
-| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | turn 1 assigned 2026-09-01, **killed by the same usage limit** at 11:45 but later, with edits landed; preserved unreviewed as `1d69416` and pushed. Substantively **both decisions**: `_PROTOCOL_PARAMS_SCHEMA` used as the same object by all four top-level sites (coordinator-verified: 1 distinct object across the four) with `acquire_on_hit` correctly left alone per F1, and `_hint_for_tool_error(fn, exc)` carrying all three of Decision 4's conditions. Absent: every piece of evidence — no pre-fix failures, no test-5 mutation, no suite run, no report. Its 118 test lines run **35 passed / 1 failed**, and that one failure is a real finding for the next turn: `execute_tool` reports `Missing required arguments` *before* signature binding, so a limb that passes only the nested key never reaches the `TypeError` on a tool with required arguments — the test must supply them | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Test 9's replay is F3's priced coordinator limb, approved to run subject to a stated estimate, and does not gate this merge | |
+| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with edits landed; preserved unreviewed as `1d69416`. Revision 1 (`0327b32` + `f5a2557`) resumed the same session at 14:24 once the quota reset and closed every finding. Coordinator correction `822e386` removed a `result.md` the runner had committed into the repository root — a job artifact, not a repo file; content preserved in the job directory and folded into this row. **Coordinator-run suite: 2694 passed / 99 skipped / 3 warnings = 2793 collected, baseline +36, zero failures.** The runner reported 9 failures as host/sandbox artifacts and that reconciles *exactly* — its 2685 + 9 = 2694 — every one passing in the baseline environment; its sandbox is Python **3.10** (no `BaseException.add_note`) with no network and a binary-incompatible h5py/NumPy pair. **Evidence:** 31 pre-fix failures on the positive hint limb, each `assert 'protocol_params' in <the generic argument hint>`; test 5's identity claim proved by **mutation** (`{**_PROTOCOL_PARAMS_SCHEMA}`) because a pre-fix run fails on the constant's absence and proves nothing; and — unasked — conditions 2 and 3 of Decision 4 mutated *separately*, each shown load-bearing. The runner stated plainly that the two negative limbs and F4's collision limb pass pre-fix by design and cannot honestly be made to fail. **Coordinator-verified independently:** all four top-level sites are the same object, `acquire_on_hit`'s is not, and the shared description carries both 'never at the top level' and F4's autofocus clause | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Acceptance test 9 runs once after 62d, against the final wording — F3 | merged 2026-09-01, branch deleted local and origin |
 | 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
 | 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
 
@@ -804,3 +804,29 @@ forward in writing. What the rule does not say, and should: **run the killed
 turn's tests before handing them on.** Doing so turned 62a's abandoned turn into
 this block's pre-fix evidence and found a test defect in 62b's — two things the
 next turn would otherwise have spent its own budget discovering.
+
+### What block 62b's two turns are worth keeping
+
+**Running a killed turn's tests is how F4 was found.** The coordinator's rule
+after the usage-limit kill was to preserve the edits and hand them forward; what
+actually produced a finding was *executing* them. Exactly one of 32
+parameterizations failed, and reading the failure rather than patching it exposed
+that `z_step_um` names two different quantities on one tool. Nothing in the
+design document knew this, and no review round would have found it by reading —
+the collision is invisible unless you bind the signature. **Run what a dead turn
+left behind before writing its revision prompt.**
+
+**A residual, recorded rather than fixed.** `acquire_on_hit.protocol_params` is
+published as a bare `{"type": "object"}`; its keys are documented only in the
+parent `acquire_on_hit.description`. That is the same shape as the defect this
+block exists to remove — a parameter set accepted but not published as
+properties — and it is pre-existing, not introduced here. 62b deliberately left
+it alone because F1 forbids pointing the shared constant at it and its real
+schema (relative Z offsets, no `channel`) has never been written out. **Open, no
+block.** Whoever writes it must not reuse `_PROTOCOL_PARAMS_SCHEMA`.
+
+**One deviation from the design, accepted.** Decision 4's example text reads
+`protocol_params={..., "exposure_ms": 100}`. The runner generalized it to
+`protocol_params={..., "<key>": value}` rather than invent eight per-key
+literals. Accepted: the design gave a literal for one key only, and a wrong-typed
+example on the other seven would be worse than a placeholder.
