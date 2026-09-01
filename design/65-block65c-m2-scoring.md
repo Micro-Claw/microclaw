@@ -159,3 +159,47 @@ the returned `recorded_calls` that it had exported the *first* run rather than
 the cadence run, and re-exported. The result payload made its own mistake
 visible, which is the behaviour we want; worth remembering as a usability note,
 not a bug.
+
+## M2 round 2 (2026-09-01) and what it changed
+
+Computed gate **6/6 PASS on the rig** — the absolute/relative `--out` fix held.
+`gate65c_instrumented_run.jsonl` carried `{"frames": 0, "marker": "start"}` and
+`{"frames": 4, "marker": "end"}`, so **the emitted script provably ran against
+the real engine**, which is block 52b's export-actually-runs check passing on
+M2. `gate65c-density-instrumented.log` is still 0 bytes; the markers now prove
+that is a stdout-capture artifact and not a failed run, which is exactly what
+they were added for.
+
+**Limb 4 was refused again, and that produced the block's most useful product
+finding.** `authorize_property_write` required the exact pair to be classified
+in the startup authorization map, and it treated *unclassified* and
+*explicitly excluded* as one case with one message — the message that says no
+legal declaration can be named. Meanwhile
+`SafetyGuard.check_device_property` **already** accepted the same write under
+`approved_envelope=True`. Two gates on one write disagreed about whether an
+explicit envelope is authorization.
+
+The operator's decision, recorded because it is theirs: on a camera-triggered
+rig the laser pulse is already occurring, so `Duration0` modulates a pulse that
+happens anyway rather than enabling a new emission path, and the envelope's
+bounds, write budget and restore policy are the control. It must work by
+default. Implemented generically — an approved envelope admits an
+**unclassified** pair; an explicit exclusion and a bounded-stage device still
+refuse, and the bounded-stage check had to become unconditional so the envelope
+route could not become a hole around it.
+
+Refusals now emit one literal YAML stanza chosen from the property's live shape
+instead of a four-stanza menu. The operator's standard for this was
+*"If I don't know, no user will be able to figure it out."*
+
+**Teardown allowance adopted** at 0.5 s/frame (measured max 0.344 s rounded up),
+applied to the runtime bound only; dose, disk, reservation and `frames_planned`
+still come from the cap. It *tightens* the 24 h fallback rather than loosening
+it. Labelled n=1 from M2.
+
+**The cadence comparison was overstated and is corrected.** ~0.25 s/frame is
+measured and reproduced across two runs. The "5x cost" framing compared it to a
+*theoretical* camera rate, not to a measured fixed-route baseline on M2 — no
+baseline was ever taken. Two attribution limbs are now in the runbook: a plain
+fixed 100-frame run, and an adaptive run whose hook does no density analysis.
+Until those run, the honest statement is ~0.25 s/frame, n=1, unattributed.
