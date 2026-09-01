@@ -259,3 +259,27 @@ observations from M5, not universal properties. They supersede the earlier
 “5x” framing: M2's approximately 0.25 s cadence remains a valid n=1 observation
 from that machine, but it is not the cadence of the route and is not a baseline
 for M5.
+
+## M5 round 2 (2026-09-01) — limb 4 PASS, and the block's rig evidence is complete
+
+Scored from artifacts, not the verdict line.
+
+- `stop_reason: hook_stop`, `frames_planned: 8`, `frames_acquired: 4`,
+  `frames_exposed: 4` — the hook stopped at time 3 and the cap was never
+  reached.
+- **Three hook writes against `max_writes=3`, then a fourth restoration write.**
+  `property_restoration: {policy: entry, entry_value: "1",
+  last_known_value: "1", restored: true}`, and requested == achieved on every
+  one of the four. This is the restoration-budget fix evidenced on the rig: the
+  identical run failed here in round 1 with "write budget exhausted".
+- Both approved values were exercised across the run — entry `1` -> `2` on the
+  hook writes, `2` -> `1` on restoration — although the hook itself proposed
+  `2` every time, so within-run value *selection* by the hook is not evidenced.
+  The write/read-back mechanism is.
+- The emitted script parses, is 3481 lines, imports nothing from `microclaw`,
+  and carries `def _successor(index):`, `require_routing_decision=True`, the
+  `inspect.getsource`-inlined `_survey_event_stream` and `UntrustedHookAdapter`,
+  and the cap in both `max_events=8` and `SurveyProgress(8)`.
+
+Every limb of design/65's rig gate now has evidence on a microscope, across M2
+rounds 1-2 and M5 rounds 1-2.
