@@ -707,8 +707,8 @@ accepted from a runner report.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 62a | `design62/ilastik-project-before-dataset` | | | **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
-| 62b | `design62/protocol-params-schema-and-hint` | | | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Test 9's replay is F3's priced coordinator limb, approved to run subject to a stated estimate, and does not gate this merge | |
+| 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | assigned to a Codex runner 2026-09-01, concurrently with 62b in a separate worktree |  **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
+| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | assigned to a Codex runner 2026-09-01, concurrently with 62a in a separate worktree | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Test 9's replay is F3's priced coordinator limb, approved to run subject to a stated estimate, and does not gate this merge | |
 | 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
 | 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
 
