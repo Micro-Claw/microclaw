@@ -1047,7 +1047,7 @@ entire off-rig case rests on tests that skip silently without it.
 | --- | --- | --- | --- | --- | --- |
 | 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
 | 69a-2 | `design69a/keepalive-and-abort` (deleted) | `60ae1b3` (2026-09-01) | `26cc47b` + `142b90f` (`main` merged mid-block, see below) + `c2cfdab` (review round 1, one product finding and two coordinator corrections). Suite **2782 / 99 / 2**, coordinator-run, baseline + 6; node **v25.2.1** | scored with 69a-3 | `2bcb136` |
-| 69a-3 | `design69a/event-sequencing` | | | **demo machine, one driven session**, scores all three blocks | |
+| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review 1) + `691700f` (review 2, the gate's defect) + coordinator runbook/test corrections through `2716497`. Suite **2788 / 99 / 2**, coordinator-run; selftest **11/11**, coordinator-run on both trees | **round 1 run 2026-09-01 — 3 PASS, 1 defect found, re-run owed.** `2716497` on `origin` | not yet |
 
 ### What block 69a-1 cost, and what it proved
 
@@ -1182,6 +1182,146 @@ failure and not the incident. That is what makes limb 3 evidence rather than
 assertion, and it is the first time this project has executed `serve.html`'s
 own control flow in a test.
 
+### What block 69a-3 cost, and what it proved
+
+**Both review findings were in the gate, not the product** — the half that gets
+no review pass and runs unattended in front of an operator.
+
+**Limb 8 would have failed on the rig for behaviour that is deliberate.** The
+runbook seeds a recognizable marker into a confirmation summary, and
+`Session._audit_confirmation` **prints that summary to stdout by design**;
+`confirm()`'s docstring says why — under `--allow-remote` it is the only record
+the person standing at the microscope can see. The scorer tested the marker
+against the whole log, so the gate would have returned FAIL after a session that
+cost a five-minute timeout wait, and the failure would have said nothing true.
+Limb 8's real claim is narrower: no event payload reaches the **event** log.
+
+**And the gate's own selftest could not catch it.** Its artifact came from a turn
+that raises no confirmation, so no audit line ever existed, and the L8-can-fail
+check injected the marker artificially — *a fake that encodes your assumption is
+not a test of it*, inside the instrument written to enforce that rule. The fix
+was to generate the artifact through the real `Session.confirm` decline path.
+**Verified by mutation**: reverting the scorer to the whole-log check flips the
+selftest's "gate passes on real product output" from `ok` to `FAIL`, so it now
+discriminates on the defect it previously slept through.
+
+**The server console log was empty for the entire session.** Python
+block-buffers stdout when it is not a terminal and none of this block's log lines
+flushed — measured, **0 bytes** reach the redirected file while the process runs.
+Every computed limb therefore hung on Ctrl-C shutting down cleanly through a
+PowerShell pipeline, with no way for the operator to notice mid-session. That is
+58e's empty transcript again. Fixed with `flush=True` (a flushed write also
+flushes output queued before it, so ordering with the unflushed audit line is
+preserved) plus a live capture check in the runbook **before** the five-minute
+limb, because a setup failure found after the expensive limb costs the session.
+
+**Two things the coordinator checked rather than assumed**, both of which look
+like passes when they are not: the runbook's capture-check regex was run against
+output the product actually produced (4 matching lines — a regex that matches
+nothing reads exactly like a passing check, which is 52c's defect); and
+`emit_progress` was read to confirm it fires on the first frame *and* the final
+planned frame, so the runbook's 2-frame acquisition genuinely sets the competing
+`frames 2 / 2` that makes limb 4 a control which can fail.
+
+**The runbook's pin was one commit too early** — `0adbcd2`, which predates the
+scorer fix, so a checkout at `4f4443f` would have satisfied it while running the
+broken limb 8. Repinned to `0a2090e`, keeping the `--is-ancestor` form so a
+later runbook amendment still satisfies it.
+
+### Demo gate round 1, 2026-09-01 — scored from the artifacts
+
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/block69a-evidence`
+(confirmation audit, history JSONL, `computed-score.log`, a DevTools screenshot,
+and a **0-byte** `server-console.log`). Run from `design69a/event-sequencing`
+before the capture corrections landed.
+
+| limb | verdict | evidence |
+| --- | --- | --- |
+| 1 pending banner + countdown | **PASS** | operator observed both states |
+| 2 silence | **NOT EXERCISED** | see below — not a failure of the product |
+| 3 composer after settle | not reported | |
+| 4 timeout outranks stale progress | **PASS** | history `[5]` runs the 2-frame acquisition *before* the 100k request at `[9]`, so `frames 2 / 2` was genuinely competing; audit records `declined:timeout` at 19:59:24 |
+| 5 reload recovers the same pending ID | **PASS** | screenshot shows the full banner restored after a reload |
+| 6, 7 sequence arithmetic | **NOT EXERCISED** | no server log, no console log |
+| 8 payload-free logging | **falsely PASSED** | scorer defect, below |
+
+**The gate found a real product defect, and it is this incident's own shape.**
+`startConfirmationRecovery()` has one call site, inside `runTurn`. Boot calls
+`reconcileConfirmation()` **once** and never starts the loop, so a page reloaded
+while a confirmation is pending shows the banner and is then inert — no
+countdown, no stale-banner removal, and **no timeout disclosure**, because
+`last_resolution` is only ever fetched by the poll. The operator sits in front of
+a live banner, the confirmation expires, and the page tells them nothing.
+
+The screenshot is the evidence: after the reload the Network panel shows the boot
+sequence and then exactly **one** `confirm` request, not one per second; the ~200
+requests over 3.54 min are the polling from before the reload. **2786 tests, a
+discriminating selftest and two review rounds all missed it**, because
+§"Tests" asks that a reload recover the same pending ID — which it does — and
+nothing asserts the reloaded page keeps polling. Revision 1 made a reloaded page
+able to *match* a resolution; nothing starts the loop that would fetch one.
+
+**Limb 2 measured nothing, and the tell was the countdown.** The operator set
+Firefox's Network throttling to Offline for 60 s and the countdown **kept
+updating** — and the countdown is poll-driven, so `127.0.0.1` was still being
+served. **Firefox's throttling does not apply to loopback.** Keepalives kept
+arriving and silence correctly never fired. Split for round 2: keepalive
+*arrival* over a real browser stays on the rig, where a real HTTP stack is the
+point; the 30 s detector is settled off-rig by `run_browser_turn`, whose
+`read()` genuinely never resolves.
+
+**L8 passed on an empty log**, which is the gate breaking the rule it exists to
+enforce. Its checks are negative assertions — no `text_delta` line, no payload
+marker — and an empty file satisfies both. A limb that cannot fail is not a
+criterion (block 58a). L6 and L7 must be audited for the same shape.
+
+**Four operator round trips went to step 0 alone**, none of them to the product.
+That cost is written up generically in `CLAUDE.md` step 6; the short version is
+that every fact needed was already in `design/` and the runbook was written from
+this design instead.
+
+### Where a fresh session picks this up
+
+**Everything below is on `origin`. Nothing needed to continue lives in a
+scratchpad.** The Codex job directory for 69a-3 is session-scoped and gone; the
+runner's session cannot be revised from a new session, and does not need to be —
+its work is committed.
+
+**State:** 69a-1 and 69a-2 are merged. 69a-3 is implemented and pushed on
+`design69a/event-sequencing` (`2716497`), **not merged**, because it owns the
+gate for all three blocks and the gate has not yet passed.
+
+**What round 2 of the gate must show.** Check out that branch on the demo
+machine and run `design/69a-gate.md` from step 0. It differs from round 1 in
+four ways, each from round 1's own failures:
+
+1. The server is launched with `Start-Process -RedirectStandardOutput`, because
+   PowerShell does not capture a native child's stdout and round 1 came back
+   with a 0-byte `server-console.log`.
+2. Step 0 warms uv unredirected first — a cold tree's rebuild writes to stderr,
+   which terminates any redirected command under this shell's
+   `$ErrorActionPreference = 'Stop'`.
+3. Limb 2 is split: 2a watches for `: ping` frames in Firefox's Response tab
+   (three in 35 s), 2b is declared settled off-rig.
+4. Both browser artifacts are named separately — the HAR **and** the console
+   export, because limb 7's evidence is `console.warn` output that a HAR does
+   not contain.
+
+**The limbs still owed:** 2a, 3, 6, 7, 8. Limbs 1, 4 and 5 passed in round 1 and
+a second observation of them is a bonus, not a requirement — but the reload limb
+is now also the regression check for `691700f`, so it is worth re-running
+deliberately.
+
+**When the gate passes:** merge the branch to `main`, push, delete it locally and
+on `origin`, fill this row's merge and design-reconciliation cells, and run the
+post-merge design gate. `design/35`'s pointer section for design/69a needs its
+closing state written at the same time.
+
+**Verification already done by the coordinator, so it need not be repeated:**
+suite 2788/99/2; selftest 11/11 on both trees, discriminating; every new test in
+69a-3 watched failing on `main` or under mutation, including the reload-poll test
+whose mutation now fails on `scheduledAfterBoot` rather than crashing.
+
 ### Coordination log
 
 - **2026-09-01, assignment.** Blocks cut three ways above; the design's own
@@ -1202,4 +1342,14 @@ own control flow in a test.
   reach: a suite command never run in its worktree (69a-1), and a design section
   committed after its worktree was cut (69a-2). Both are now in `CLAUDE.md`
   step 2.
-- **69a-3 is next**, and it owns the gate for all three blocks.
+- **2026-09-01, 69a-3 implemented and pushed, not merged.** `dfb3d88` is on
+  `origin/design69a/event-sequencing`. Unlike 69a-1 and 69a-2 this block owns a
+  gate, so it stays on its branch until the demo-machine session passes —
+  workflow steps 5 through 8. **The session scores all three blocks**, and it is
+  the only place the poll, the keepalive, the abort and the sequencing are seen
+  working together by a person.
+- **What the operator needs to know before booking it:** it costs a real
+  five-minute wait at limb 4, because `CONFIRM_TIMEOUT_S` has no configuration
+  path and shortening it would gate a path the product does not have; and it
+  requires **both** the server console log and the browser devtools console, or
+  limb 7 reports NOT EXERCISED, which is the entire reason sequencing ships.
