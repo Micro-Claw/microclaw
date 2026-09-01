@@ -642,3 +642,56 @@ rather than write an unshipped capability into a shipped file. That is the
 defect this block exists to fix, committed by its reviewer — and the second time
 in one block that checking an instruction against the code beat following it.
 The substance survived; only the bounding clause was wrong.
+
+## Post-merge design gate (2026-09-01)
+
+Reconciling this document to what was actually measured. Three statements above
+were written before any rig saw the route and are now superseded.
+
+**§"Cadence: measure it, do not legislate it" is answered.** It asked for two
+things and got both. The engine's own callbacks, observed on M2 through an
+instrumented copy of the emitted script, were `dict` on all four submissions at
+`interval_s=0` — never a list — so a singly submitted event was not batched in
+that run. And the cadence was measured on two rigs at a 50 ms exposure:
+
+| observation | mean gap | rig |
+| --- | --- | --- |
+| fixed `n_frames=100`, hardware-sequenced | 0.0502 s | M5 |
+| adaptive, hook runs density analysis | 0.0912 s | M5 |
+| adaptive, hook runs no analysis | 0.0909 s | M5 |
+| adaptive, hook runs density analysis | 0.2495 s | M2 |
+
+Adaptive dispatch costs ~41 ms per frame over the hardware-sequenced baseline on
+M5, and the hook's own analysis is free within measurement error. **No refusal
+of `interval_s=0` was added**, per this section's instruction not to legislate.
+Both rigs are n=1 and neither number is "the" cadence; M2 and M5 differ by 2.7x
+on the same shape.
+
+**A correction this document should carry, because the mistake is instructive.**
+After M2 alone, the coordinator described the route as a "5x cadence cost". That
+compared a measurement against a *theoretical* camera frame rate — no fixed-route
+baseline had been taken on any rig. The attribution limbs that produced the table
+above exist because of that error. §"Cadence" already said to publish the number
+rather than assume it; the same discipline applies to the comparison.
+
+**§"Teardown"'s allowance now exists.** It said "Until the cadence gate has run
+there is no allowance to set: do not invent one." The gate has run, and the
+adopted allowance is **0.5 s per frame** — M2's measured maximum rounded up with
+headroom, which also bounds M5's. It widens the runtime-bound plan only; dose,
+disk, reservation and `frames_planned` still come from the cap. For a
+100,000-frame run it yields a ~22.9 h ceiling, which *tightens* design/60's 24 h
+fallback rather than loosening it. Revise it from evidence; it is two rigs, not
+a property of microscopes.
+
+**§"Blocks"'s post-merge documentation item was completed early, inside 65c.**
+It said to replace 65a's warning after 65c merged. That ordering was wrong: the
+gate session is an agent reading the shipped skills, and both still said an
+image-driven conditional stop was refused. The skills were corrected before the
+gate ran (`0d0a8ec`), and the hook-authoring capability table now lists adaptive
+time series separately from fixed-plan acquisitions and spatial surveys.
+
+**What the route does not yet have.** The hook's own value *selection* across a
+run is thinly evidenced — M5's limb 4 hook proposed the same value on all three
+writes, so the 1↔2 transitions were demonstrated by the entry and restoration
+writes rather than by the hook varying its proposal. The mechanism is proven;
+a hook that computes genuinely different targets per frame has not run on a rig.
