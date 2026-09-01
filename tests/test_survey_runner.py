@@ -1491,11 +1491,13 @@ class TestRunAdaptiveSurvey:
                             lambda *_a: {"config_group": "Channel", "planned": True})
         result = tools.run_adaptive_survey(
             mock_ctrl, unconstrained_guard, protocol="timelapse",
-            protocol_params={"n_frames": 1, "channel": "561", "exposure_ms": 5},
+            protocol_params={"n_frames": 1, "interval_s": 0,
+                             "channel": "561", "exposure_ms": 5},
             positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="saved",
             acquire_on_hit={
                 "channel": "488", "protocol": "timelapse", "max_hits": 2,
-                "protocol_params": {"n_frames": 2, "exposure_ms": 20},
+                "protocol_params": {"n_frames": 2, "interval_s": 0,
+                                    "exposure_ms": 20},
             },
         )
         assert channels == ["561"]
@@ -1511,10 +1513,11 @@ class TestRunAdaptiveSurvey:
 
         result = run_adaptive_survey(
             mock_ctrl, unconstrained_guard, protocol="timelapse",
-            protocol_params={"n_frames": 1, "channel": "561"},
+            protocol_params={"n_frames": 1, "interval_s": 0, "channel": "561"},
             positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="probe",
             acquire_on_hit={"channel": "488", "protocol": "timelapse",
-                            "protocol_params": {"n_frames": 1}, "max_hits": 1},
+                            "protocol_params": {"n_frames": 1, "interval_s": 0},
+                            "max_hits": 1},
         )
         assert "registry built-in 'probe'" in result["error"]
         assert "typed AcquireAt actions" in result["error"]
@@ -1540,10 +1543,11 @@ class TestRunAdaptiveSurvey:
                             lambda *_a, **_k: writes.append(True))
         result = tools.run_adaptive_survey(
             mock_ctrl, unconstrained_guard, protocol="timelapse",
-            protocol_params={"n_frames": 1, "channel": "561"},
+            protocol_params={"n_frames": 1, "interval_s": 0, "channel": "561"},
             positions=self._positions(1), save_dir=str(tmp_path), hook_strategy="saved",
             acquire_on_hit={"channel": "488", "protocol": "timelapse",
-                            "protocol_params": {"n_frames": 1}, "max_hits": 1},
+                            "protocol_params": {"n_frames": 1, "interval_s": 0},
+                            "max_hits": 1},
         )
         assert result == {"error": "bad acquire plan"}
         assert writes == []

@@ -6713,14 +6713,58 @@ def import_mm_positions(
 # --- Multiposition acquisition ---
 
 def _protocol_shape_kwargs(protocol: str, params: dict) -> dict:
-    """protocol_params (tool-facing) -> multi_d_acquisition_events kwargs."""
+    """Validate protocol_params and return acquisition-event shape kwargs."""
+    required = {
+        "timelapse": ("n_frames", "interval_s"),
+        "zstack": ("z_start_um", "z_end_um", "z_step_um"),
+        "snap": (),
+    }
+    allowed = {
+        "timelapse": {*required["timelapse"], "channel", "exposure_ms", "laser_slot"},
+        "zstack": {*required["zstack"], "channel", "exposure_ms"},
+        "snap": set(),
+    }
+    if protocol not in required:
+        raise ValueError(f"Unknown protocol '{protocol}'.")
+
+    supplied_capabilities = [
+        key for key in ("hook_strategy", *HOOK_CAPABILITY_ARGS)
+        if params.get(key) is not None
+    ]
+    if supplied_capabilities:
+        raise ValueError(
+            "protocol_params cannot carry per-run hook capabilities in a "
+            "reserved multiposition protocol: " + ", ".join(supplied_capabilities)
+        )
+
+    missing = [key for key in required[protocol] if key not in params]
+    if missing:
+        quoted = ", ".join(f"'{key}'" for key in missing)
+        raise ValueError(f"protocol_params for '{protocol}' is missing {quoted}.")
+    incompatible = sorted(key for key in params if key not in allowed[protocol])
+    if incompatible:
+        noun = "key" if len(incompatible) == 1 else "keys"
+        quoted = ", ".join(f"'{key}'" for key in incompatible)
+        message = (
+            f"protocol_params for '{protocol}' contains incompatible {noun} {quoted}"
+        )
+        if protocol == "zstack" and any(key in {
+            "n_frames", "interval_s", "laser_slot", "max_frames"
+        } for key in incompatible):
+            message += "; timelapse parameters do not apply to a zstack"
+        elif protocol == "timelapse" and any(key in {
+            "z_start_um", "z_end_um", "z_step_um"
+        } for key in incompatible):
+            message += "; zstack parameters do not apply to a timelapse"
+        raise ValueError(message + ".")
+
     if protocol == "zstack":
         return {"z_start": params["z_start_um"], "z_end": params["z_end_um"],
                 "z_step": params["z_step_um"]}
     if protocol == "timelapse":
         return {"num_time_points": params["n_frames"],
-                "time_interval_s": params.get("interval_s", 0)}
-    raise ValueError(f"Unknown protocol '{protocol}'.")
+                "time_interval_s": params["interval_s"]}
+    return {}
 
 
 def _plan_protocol_repetitions(
@@ -6921,21 +6965,16 @@ def run_multiposition_acquisition(
         return {"error": "Provide either position_names or positions."}
     if protocol != "snap" and not save_dir:
         return {"error": f"save_dir is required for protocol '{protocol}'."}
+    params = protocol_params or {}
+    try:
+        shape = _protocol_shape_kwargs(protocol, params)
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
     if save_dir:
         # Resolve the root before the per-position directories are derived from
         # it, so mkdir never creates a tree outside a configured workspace.
         save_dir = guard.resolve_in_workspace(save_dir)
 
-    params = protocol_params or {}
-    supplied = [
-        key for key in ("hook_strategy", *HOOK_CAPABILITY_ARGS)
-        if params.get(key) is not None
-    ]
-    if supplied:
-        return {
-            "error": "protocol_params cannot carry per-run hook capabilities in a "
-            "reserved multiposition protocol: " + ", ".join(supplied)
-        }
     results = []
 
     projection = None
@@ -6969,12 +7008,6 @@ def run_multiposition_acquisition(
         if results:
             return {"error": "Positions not found in position list: "
                              f"{[r['position'] for r in results]}"}
-        try:
-            shape = _protocol_shape_kwargs(protocol, params)
-        except ValueError as e:
-            return {"error": str(e)}
-        except KeyError as e:
-            return {"error": f"protocol_params for '{protocol}' is missing {e}."}
         if mark_positions:
             # Match the non-hooked path: validate coordinates before publishing
             # anything to the operator's native position list.
@@ -7149,6 +7182,10 @@ def run_tile_acquisition(
     hook_strategy runs one hooked Acquisition across the whole grid; see
     run_multiposition_acquisition.
     """
+    try:
+        _protocol_shape_kwargs(protocol, protocol_params or {})
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
     center_x = ctrl.core.get_x_position() if center_x_um is None else center_x_um
     center_y = ctrl.core.get_y_position() if center_y_um is None else center_y_um
     if center_x_um is not None and center_y_um is not None:
@@ -7235,14 +7272,18 @@ def run_multiposition_with_autofocus(
     ) if value is None]
     if missing:
         return {"error": f"Missing required arguments: {missing}."}
-    save_dir = guard.resolve_in_workspace(save_dir)  # before any forwarded move
-    if autofocus_method != "coarse_then_fine":
-        return {"error": "The deprecated wrapper only forwards coarse_then_fine autofocus."}
     if protocol == "snap":
         return {
             "error": "The deprecated wrapper cannot compose autofocus with display-only "
                      "snap. Use protocol='timelapse' with n_frames=1 and interval_s=0."
         }
+    try:
+        _protocol_shape_kwargs(protocol, protocol_params or {})
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc)}
+    save_dir = guard.resolve_in_workspace(save_dir)  # before any forwarded move
+    if autofocus_method != "coarse_then_fine":
+        return {"error": "The deprecated wrapper only forwards coarse_then_fine autofocus."}
     compatibility_log = str(Path(save_dir) / f"{name}_autofocus_log.json")
     result = run_multiposition_acquisition(
         ctrl, guard, protocol=protocol, save_dir=save_dir,
