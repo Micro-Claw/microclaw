@@ -8,7 +8,8 @@ _PROTOCOL_PARAMS_SCHEMA = {
         "{n_frames, interval_s, optional channel, optional exposure_ms, optional "
         "laser_slot}; zstack: {z_start_um, z_end_um, z_step_um, optional channel, "
         "optional exposure_ms}. The nested Z keys describe the acquisition "
-        "protocol's planes and spacing, not an autofocus search."
+        "protocol's planes and spacing, not an autofocus search. snap takes no "
+        "protocol_params."
     ),
     "properties": {
         "channel": {

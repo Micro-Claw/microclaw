@@ -2343,7 +2343,8 @@ class TestRunMultipositionWithAutofocus:
         forward = MagicMock()
         monkeypatch.setattr("microclaw.tools.run_multiposition_acquisition", forward)
         kwargs = dict(position_names=["P1"], z_range_um=10.0, z_step_um=1.0,
-                      protocol="timelapse", save_dir=str(tmp_path))
+                      protocol="timelapse", save_dir=str(tmp_path),
+                      protocol_params={"n_frames": 1, "interval_s": 0})
         kwargs[omitted] = None
         result = run_multiposition_with_autofocus(
             patched_ctrl, unconstrained_guard, **kwargs
@@ -2363,8 +2364,11 @@ class TestRunMultipositionWithAutofocus:
         forward = MagicMock()
         monkeypatch.setattr("microclaw.tools.run_multiposition_acquisition", forward)
         kwargs = dict(position_names=["P1"], z_range_um=10.0, z_step_um=1.0,
-                      protocol="timelapse", save_dir=str(tmp_path))
+                      protocol="timelapse", save_dir=str(tmp_path),
+                      protocol_params={"n_frames": 1, "interval_s": 0})
         kwargs.update(override)
+        if override.get("protocol") == "snap":
+            kwargs["protocol_params"] = {}
         result = run_multiposition_with_autofocus(
             patched_ctrl, unconstrained_guard, **kwargs
         )
@@ -2401,6 +2405,7 @@ class TestRunMultipositionWithAutofocus:
             position_names=["P1"],
             z_range_um=10.0, z_step_um=1.0,
             protocol="timelapse", save_dir=str(tmp_path),
+            protocol_params={"n_frames": 1, "interval_s": 0},
         )
         assert result["position_list_conflict"]["issues"][0]["code"] == "unsafe_coordinate"
         mock_ctrl.go_to_position.assert_not_called()
