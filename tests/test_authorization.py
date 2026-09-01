@@ -12,6 +12,7 @@ from microclaw.authorization import (
     authorize_path,
     authorize_channel,
     authorize_property_write,
+    property_write_authorization_info,
     validate_live_rig,
 )
 from microclaw.safety import (
@@ -1027,6 +1028,43 @@ def test_approved_envelope_does_not_override_bounded_stage_device():
         authorize_property_write(
             ctrl, "Bounded Stage", "Hold time", approved_envelope=True,
         )
+
+
+def test_property_info_reports_authorization_without_attempting_a_write():
+    from microclaw.tools import get_device_property_info
+
+    class Vector:
+        def size(self): return 0
+
+    core = SimpleNamespace(
+        is_property_read_only=lambda *_: False,
+        is_property_pre_init=lambda *_: False,
+        get_property_type=lambda *_: "Integer",
+        get_allowed_property_values=lambda *_: Vector(),
+        has_property_limits=lambda *_: True,
+        get_property_lower_limit=lambda *_: 0,
+        get_property_upper_limit=lambda *_: 10,
+        get_property=lambda *_: "1",
+        set_property=lambda *_: pytest.fail("read-only inspection attempted a write"),
+    )
+    ctrl = SimpleNamespace(
+        core=core,
+        authorization_map=AuthorizationMap(
+            "guaranteed", "complete", True,
+            property_writes_unrestricted=False,
+        ),
+    )
+    guard = SafetyGuard(SafetyConstraints())
+    info = get_device_property_info(ctrl, guard, "Pulse", "Duration")
+    assert info["authorization"] == property_write_authorization_info(
+        ctrl, "Pulse", "Duration",
+    )
+    assert info["authorization"]["classification"] == "unclassified"
+    assert info["authorization"]["raw_write_disposition"] == (
+        "admitted_only_under_approved_envelope"
+    )
+    assert info["authorization"]["raw_write_admitted"] is False
+    assert info["authorization"]["approved_envelope_admitted"] is True
 
 
 def test_unclassified_numeric_refusal_names_one_literal_numeric_stanza():

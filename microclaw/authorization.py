@@ -1609,6 +1609,71 @@ def _property_declaration_example(ctrl: Any, device: str, prop: str) -> str:
     )
 
 
+def property_write_authorization_info(ctrl: Any, device: str, prop: str) -> dict:
+    """Describe the authorization-map decision for one raw property pair.
+
+    This is policy inspection only: it performs no write and invokes no guard.
+    Keep it as the single classifier used by both the read tool and the mutating
+    authorization gate so an agent never has to spend a write to discover the
+    policy that would govern it.
+    """
+    report = getattr(ctrl, "authorization_map", None)
+    if report is None:
+        return {
+            "map_available": False,
+            "classification": "authorization_map_unavailable",
+            "classifications": [],
+            "raw_write_disposition": "startup_invariant_unavailable",
+            "raw_write_admitted": False,
+            "approved_envelope_admitted": False,
+            "property_writes_unrestricted": False,
+            "device_has_declared_stage_bounds": False,
+        }
+    matches = [
+        entry for entry in report.entries
+        if entry.device == device and entry.property == prop
+        and entry.path in _RAW_WRITE_PATHS
+    ]
+    classifications = sorted({entry.classification for entry in matches})
+    excluded = "excluded" in classifications
+    typed_pair = "built_in_typed_capability" in classifications
+    bounded_stage = device in report.bounded_stage_devices
+    admitted = {
+        "reviewed_categorical_property", "built_in_typed_capability",
+        "typed_continuous_actuator",
+    }
+    unrestricted = bool(report.property_writes_unrestricted)
+    if excluded:
+        disposition = "refused_as_excluded"
+        raw_admitted = envelope_admitted = False
+    elif bounded_stage and not typed_pair:
+        disposition = "refused_bounded_stage"
+        raw_admitted = envelope_admitted = False
+    elif unrestricted or any(item in admitted for item in classifications):
+        disposition = "admitted"
+        raw_admitted = envelope_admitted = True
+    elif not matches:
+        disposition = "admitted_only_under_approved_envelope"
+        raw_admitted, envelope_admitted = False, True
+    else:
+        disposition = "refused_by_classification"
+        raw_admitted = envelope_admitted = False
+    classification = (
+        "unclassified" if not classifications else
+        classifications[0] if len(classifications) == 1 else "multiple"
+    )
+    return {
+        "map_available": True,
+        "classification": classification,
+        "classifications": classifications,
+        "raw_write_disposition": disposition,
+        "raw_write_admitted": raw_admitted,
+        "approved_envelope_admitted": envelope_admitted,
+        "property_writes_unrestricted": unrestricted,
+        "device_has_declared_stage_bounds": bounded_stage,
+    }
+
+
 def authorize_property_write(
     ctrl: Any, device: str, prop: str, *, approved_envelope: bool = False,
 ) -> None:
@@ -1622,21 +1687,15 @@ def authorize_property_write(
         if entry.device == device and entry.property == prop
         and entry.path in _RAW_WRITE_PATHS
     ]
-    if any(entry.classification == "excluded" for entry in matches):
+    policy = property_write_authorization_info(ctrl, device, prop)
+    if policy["raw_write_disposition"] == "refused_as_excluded":
         raise RigAuthorizationError(
             f"Property write {device}.{prop} was refused because it is excluded from "
             "the authorization map. No declaration can override an explicit exclusion. "
             "The operator must deliberately remove the exact exclusion, review the "
             "property's hardware effect, and restart so the authorization map is rebuilt."
         )
-    typed_pair = any(
-        entry.device == device
-        and entry.property == prop
-        and entry.classification == "built_in_typed_capability"
-        and entry.path in _RAW_WRITE_PATHS
-        for entry in report.entries
-    )
-    if device in report.bounded_stage_devices and not typed_pair:
+    if policy["raw_write_disposition"] == "refused_bounded_stage":
         raise RigAuthorizationError(
             f"Property write {device}.{prop} was refused because {device!r} carries "
             "declared stage bounds. Raw property writes cannot route around those "
@@ -1646,13 +1705,9 @@ def authorize_property_write(
             + " This declaration documents the property's kind but does not override "
               "the bounded-stage raw-write refusal."
         )
-    if report.property_writes_unrestricted:
+    if policy["raw_write_admitted"]:
         return
-    admitted = {
-        "reviewed_categorical_property", "built_in_typed_capability",
-        "typed_continuous_actuator",
-    }
-    if not matches and approved_envelope:
+    if policy["approved_envelope_admitted"] and approved_envelope:
         # An approved envelope is an exact, bounded, confirmed capability: it
         # names one pair, intersects numeric bounds with the driver, budgets
         # writes, and defines restoration. On camera-triggered rigs a property
@@ -1660,12 +1715,17 @@ def authorize_property_write(
         # emission path; the envelope bounds that modulation. This generic rule
         # never overrides an explicit exclusion or a bounded-stage device.
         return
-    if not matches or not any(entry.classification in admitted for entry in matches):
+    if not matches:
         raise RigAuthorizationError(
             f"Property write {device}.{prop} was refused because the exact pair is "
             "unclassified in the authorization map. "
             + _property_declaration_example(ctrl, device, prop)
         )
+    raise RigAuthorizationError(
+        f"Property write {device}.{prop} was refused because its authorization "
+        f"classification is {policy['classification']!r}; that classification "
+        "does not admit raw property writes or approved envelopes."
+    )
 
 
 def authorize_channel(

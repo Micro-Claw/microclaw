@@ -23,12 +23,11 @@ _HOOK_NAMED_STAGE_ENVELOPE_SCHEMA = {
     "type": "object",
     "description": (
         "One labelled stage, inclusive interval, attempted-write budget, and "
-        "explicit restoration policy. Two rules callers get wrong, both refused "
-        "before the run starts: max_writes must cover every planned move PLUS "
-        "one reserved restoration write unless restore is 'leave' -- three "
-        "planned moves restoring to entry needs 4, not 3. And min_um/max_um "
-        "must contain every planned position AND the restoration target, so a "
-        "sweep of 40-140 that restores to 20 needs an interval starting at 20."
+        "explicit restoration policy. max_writes caps hook-proposed moves only; "
+        "the restoration promised by this envelope is not charged to that budget. "
+        "Every planned position and an explicit restore value must be inside "
+        "min_um/max_um. The exact recorded entry position used by restore='entry' "
+        "may lie outside that proposal interval."
     ),
     "properties": {
         "device": {"type": "string", "minLength": 1},
@@ -49,9 +48,11 @@ _HOOK_PROPERTY_ENVELOPE_SCHEMA = {
     "description": (
         "One exact device/property, categorical values or numeric interval, "
         "attempted-write budget, and explicit restoration policy. max_writes "
-        "must cover every planned write PLUS one reserved restoration write "
-        "unless restore is 'leave', and the allowed values or interval must "
-        "contain the restoration target as well as every planned value."
+        "caps hook-proposed writes only; the restoration promised by this "
+        "envelope is not charged to that budget. Every planned value and an "
+        "explicit restore value must be inside the approved set or interval. "
+        "The exact recorded entry value used by restore='entry' may lie outside "
+        "the proposal bounds."
     ),
     "properties": {
         "device": {"type": "string", "minLength": 1},
@@ -2266,7 +2267,11 @@ TOOLS: list[dict[str, Any]] = [
             "Return metadata for a single Micro-Manager device property: "
             "its current value, data type (String/Float/Integer), whether it is "
             "read-only or pre-init only, the list of allowed values for enum "
-            "properties, and numeric limits. Always call this before "
+            "properties, numeric limits, and the exact pair's read-only "
+            "authorization classification. The authorization result says whether "
+            "a raw write is admitted, explicitly excluded, admitted only through "
+            "an approved envelope, or blocked because the device carries declared "
+            "stage bounds. Always call this before "
             "set_device_property on a property you have not used before."
         ),
         "input_schema": {

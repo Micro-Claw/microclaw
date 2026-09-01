@@ -1053,7 +1053,8 @@ class SafetyGuard:
                 )
 
     def check_device_property(self, core, device: str, prop: str, value: str,
-                              *, approved_envelope: bool = False) -> None:
+                              *, approved_envelope: bool = False,
+                              restoration_entry: bool = False) -> None:
         """Guard a raw `set_property` write on a guarded axis, then apply the
         denylist/allowlist from check_property.
 
@@ -1066,6 +1067,10 @@ class SafetyGuard:
         raw writes require allowlist mode; configured illumination pairs instead
         use their exact code-owned typed capability and check_illumination.
         """
+        # restoration_entry is intentionally not a bypass here. The adapter
+        # uses it only to distinguish the envelope's exact recorded entry from
+        # an arbitrary target; forbidden properties and typed safety bounds
+        # remain active in this broader guard.
         typed_pair = TypedActuatorId(device, prop) in self._typed_actuators
         illumination_pair = self.is_illumination_enable(device, prop) or any(
             item.device == device and item.property == prop
@@ -1284,7 +1289,8 @@ class SafetyGuard:
             readings.append(reading)
         return readings
 
-    def check_named_stage(self, device: str, pos: float) -> None:
+    def check_named_stage(self, device: str, pos: float, *,
+                          restoration_entry: bool = False) -> None:
         """Guard a stage addressed by label against its per-device travel limits.
 
         Fails closed: a stage with no named_stages entry may not be moved at
@@ -1292,6 +1298,9 @@ class SafetyGuard:
         the core focus device, and applying it to (say) a ±3 mm TIRF steering
         axis would be wrong in both directions.
         """
+        # restoration_entry does not bypass the rig's declared travel limits.
+        # It tells the adapter only that this is the exact entry position, so
+        # its narrower proposal envelope may be skipped during teardown.
         pos = _finite_number(pos, f"Position for named stage {device}")
         lim = next(
             (l for l in self._c.named_stages if l.device == device), None

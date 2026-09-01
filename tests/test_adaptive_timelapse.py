@@ -114,6 +114,29 @@ def test_4_stop_closes_without_publishing_or_waiting():
     assert progress.stop_reason == "hook_stop"
 
 
+def test_hook_stop_wins_when_the_same_frame_also_reaches_the_cap():
+    from microclaw.hook_decisions import ContinueAcquisition, StopAcquisition
+    from microclaw.tools import _survey_event_stream
+
+    adapter, candidates, progress = _configured(
+        [(ContinueAcquisition(),), (StopAcquisition(),)], cap=2,
+    )
+    acq = SimpleNamespace(
+        _event_queue=queue.Queue(),
+        _acq=SimpleNamespace(is_finished=lambda: False),
+    )
+    stream = _survey_event_stream(
+        [{"axes": {"time": 0}}], candidates, progress, .1, adapter,
+        adaptive=True, max_events=2,
+    )(acq)
+    next(stream)
+    _frame(adapter, 0)
+    next(stream)  # records cap_reached as the final authorized event is yielded
+    _frame(adapter, 1)  # the later explicit decision must win in the result source
+    assert progress.stop_reason == "hook_stop"
+    stream.close()
+
+
 def test_5_cap_closes_handoff_even_when_hook_always_continues():
     from microclaw.hook_decisions import ContinueAcquisition
     from microclaw.tools import _survey_event_stream

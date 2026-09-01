@@ -3514,7 +3514,9 @@ def test_emitted_hardware_restoration_preserves_acquisition_failure(
         "faulting_stage", source="user_provided",
     )
     envelope = {"device": "Axis", "min_um": 0.0, "max_um": 10.0,
-                "max_writes": 2, "restore": "entry"}
+                # The one hook proposal consumes the whole budget; restoration
+                # is the emitted envelope's teardown promise, not proposal 2.
+                "max_writes": 1, "restore": "entry"}
     if emitter == "adaptive":
         tool_name = "run_adaptive_survey"
         params = {
@@ -4296,3 +4298,25 @@ def test_a_selection_that_emits_nothing_says_so_in_its_status(tmp_path):
                                        tool_use_ids=[move_id])
     assert real["emitted_calls"] == 1
     assert real["status"] == "Session script exported."
+
+
+def test_failed_adaptive_call_exports_no_trace_and_explains_why(tmp_path):
+    records = completed_call(
+        "run_timelapse",
+        {"n_frames": None, "max_frames": 4, "interval_s": 0,
+         "save_dir": "session", "hook_strategy": "saved"},
+        {"error": "property restoration failed: write budget exhausted"},
+    )
+    _, result, source = export(tmp_path, records)
+    assert result["emitted_calls"] == 0
+    assert "every recorded mutating call failed" in result["status"]
+    assert result["skipped_failed_calls"] == [{
+        "tool": "run_timelapse",
+        "reason": (
+            "the recorded call did not succeed: property restoration failed: "
+            "write budget exhausted"
+        ),
+    }]
+    assert "SKIPPED: run_timelapse" in source
+    assert "completed nothing here" in source
+    assert "Acquisition(" not in source

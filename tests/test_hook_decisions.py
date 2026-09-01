@@ -239,11 +239,79 @@ def test_named_stage_entry_restoration_uses_same_guard_move_wait_readback():
         max_writes=1, initial_value=12, restore="entry", action_plan={0: ()},
     )
     report = adapter.restore_named_stage()
-    guard.check_named_stage.assert_called_once_with("fixture-stage", 12.0)
+    guard.check_named_stage.assert_called_once_with(
+        "fixture-stage", 12.0, restoration_entry=True,
+    )
     core.set_position.assert_called_once_with("fixture-stage", 12.0)
     core.device_busy.assert_called_with("fixture-stage")
     assert report == {"policy": "entry", "entry_um": 12,
                       "last_known_um": 12.0, "restored": True}
+
+
+def test_property_entry_restoration_is_outside_proposal_bounds_and_budget():
+    """All max_writes slots belong to the hook; exact entry teardown is extra."""
+    state = {"value": "ENTRY"}
+    core = MagicMock()
+    core.get_property_type.return_value = "String"
+    core.get_property.side_effect = lambda *_: state["value"]
+    core.set_property.side_effect = lambda _d, _p, value: state.update(value=value)
+    ctrl = MagicMock(core=core, authorization_map=None)
+    guard = MagicMock()
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=guard, device="Wheel", property="State",
+        allowed_values=("A", "B"), min_value=None, max_value=None,
+        max_writes=1, initial_value="ENTRY", restore="entry",
+        action_plan=_axes_plan(({}, (SetDeviceProperty("B"),))),
+    )
+    adapter.pre_hardware_hook_fn({"axes": {}})
+    assert adapter._property_context["remaining"] == 0
+    report = adapter.restore_property()
+    assert state["value"] == "ENTRY"
+    assert core.set_property.call_args_list[-1].args == ("Wheel", "State", "ENTRY")
+    assert guard.check_device_property.call_args_list[-1].kwargs == {
+        "approved_envelope": True, "restoration_entry": True,
+    }
+    assert report["restored"] is True
+
+
+def test_arbitrary_property_restoration_target_still_obeys_envelope():
+    core = MagicMock()
+    ctrl = MagicMock(core=core, authorization_map=None)
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_property(
+        ctrl=ctrl, guard=MagicMock(), device="Wheel", property="State",
+        allowed_values=("A", "B"), min_value=None, max_value=None,
+        max_writes=1, initial_value="ENTRY", restore={"value": "ARBITRARY"},
+        action_plan={},
+    )
+    with pytest.raises(RuntimeError, match="outside authorized values"):
+        adapter.restore_property()
+    core.set_property.assert_not_called()
+
+
+def test_named_stage_entry_restoration_is_outside_proposal_bounds_and_budget():
+    state = {"position": 5.0}
+    core, guard = MagicMock(), MagicMock()
+    core.get_position.side_effect = lambda *_: state["position"]
+    core.set_position.side_effect = lambda _device, value: state.update(position=value)
+    core.device_busy.return_value = False
+    guard.stage_move_tolerance.return_value = None
+    adapter = UntrustedHookAdapter(object())
+    adapter.configure_named_stage(
+        core=core, guard=guard, device="fixture-stage", min_um=10, max_um=20,
+        max_writes=1, initial_value=5, restore="entry",
+        action_plan=_axes_plan(({}, (MoveNamedStage(15),))),
+    )
+    adapter.pre_hardware_hook_fn({"axes": {}})
+    assert adapter._named_stage_context["remaining"] == 0
+    report = adapter.restore_named_stage()
+    assert state["position"] == 5.0
+    assert core.set_position.call_args_list[-1].args == ("fixture-stage", 5.0)
+    guard.check_named_stage.assert_called_with(
+        "fixture-stage", 5.0, restoration_entry=True,
+    )
+    assert report["restored"] is True
 
 
 def test_named_stage_failed_restoration_is_loud_and_not_success():

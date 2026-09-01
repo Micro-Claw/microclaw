@@ -468,11 +468,12 @@ class UntrustedHookAdapter:
             self._refuse_event(event, action, "no property envelope was authorized for this run")
             raise RuntimeError("property action refused: no authorized envelope")
         value = action.value
-        if ctx["allowed_values"] is not None:
+        restoring_entry = restoration and value == ctx["initial_value"]
+        if not restoring_entry and ctx["allowed_values"] is not None:
             if value not in ctx["allowed_values"]:
                 self._refuse_event(event, action, "proposal is outside the authorized property values")
                 raise RuntimeError("property action refused: outside authorized values")
-        else:
+        elif not restoring_entry:
             try:
                 number = _finite_number_text(value, "SetDeviceProperty.value")
             except Exception as exc:
@@ -481,7 +482,7 @@ class UntrustedHookAdapter:
             if number < ctx["min"] or number > ctx["max"]:
                 self._refuse_event(event, action, "proposal is outside the authorized property interval")
                 raise RuntimeError("property action refused: outside authorized interval")
-        if ctx["remaining"] <= 0:
+        if not restoration and ctx["remaining"] <= 0:
             self._refuse_event(event, action, "authorized property write budget exhausted")
             raise RuntimeError("property action refused: write budget exhausted")
         try:
@@ -489,9 +490,12 @@ class UntrustedHookAdapter:
                 ctx["ctrl"], ctx["device"], ctx["property"],
                 approved_envelope=True,
             )
+            guard_kwargs = {"approved_envelope": True}
+            if restoring_entry:
+                guard_kwargs["restoration_entry"] = True
             ctx["guard"].check_device_property(
                 ctx["core"], ctx["device"], ctx["property"], value,
-                approved_envelope=True,
+                **guard_kwargs,
             )
             ctx["guard"].check_illumination(
                 ctx["core"], ctx["device"], ctx["property"], value,
@@ -500,7 +504,10 @@ class UntrustedHookAdapter:
         except Exception as exc:
             self._refuse_event(event, action, f"property write refused: {exc}")
             raise RuntimeError(f"property action refused: {exc}") from exc
-        ctx["remaining"] -= 1
+        # max_writes caps hook proposals. Restoration is the envelope's own
+        # teardown promise, not another proposal and never consumes that cap.
+        if not restoration:
+            ctx["remaining"] -= 1
         try:
             ctx["core"].set_property(ctx["device"], ctx["property"], value)
             ctx["core"].wait_for_device(ctx["device"])
@@ -559,19 +566,26 @@ class UntrustedHookAdapter:
             self._refuse_event(event, action, "no named-stage envelope was authorized for this run")
             raise RuntimeError("named-stage action refused: no authorized envelope")
         target = float(action.position_um)
-        if target < ctx["min_um"] or target > ctx["max_um"]:
+        restoring_entry = restoration and target == ctx["initial_value"]
+        if not restoring_entry and (target < ctx["min_um"] or target > ctx["max_um"]):
             self._refuse_event(event, action, "proposal is outside the authorized named-stage interval")
             raise RuntimeError("named-stage action refused: outside authorized interval")
-        if ctx["remaining"] <= 0:
+        if not restoration and ctx["remaining"] <= 0:
             self._refuse_event(event, action, "authorized named-stage write budget exhausted")
             raise RuntimeError("named-stage action refused: write budget exhausted")
         try:
-            ctx["guard"].check_named_stage(ctx["device"], target)
+            if restoring_entry:
+                ctx["guard"].check_named_stage(
+                    ctx["device"], target, restoration_entry=True,
+                )
+            else:
+                ctx["guard"].check_named_stage(ctx["device"], target)
         except Exception as exc:
             self._refuse_event(event, action, f"SafetyGuard refused named-stage motion: {exc}")
             raise RuntimeError(f"named-stage action refused: {exc}") from exc
         # The budget counts attempted dispatches, including writes that raise.
-        ctx["remaining"] -= 1
+        if not restoration:
+            ctx["remaining"] -= 1
         band_policy = "floor" if restoration else "relative"
         tolerance_lookup = getattr(ctx["guard"], "stage_move_tolerance", None)
         configured = tolerance_lookup(ctx["device"]) if tolerance_lookup else None

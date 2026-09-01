@@ -1216,12 +1216,13 @@ class _RecordedSafetyGuard:
         self._bounded(z, _LIMITS["z_um"][0], _LIMITS["z_um"][1], "Z")
     def check_exposure(self, exposure_ms):
         self._bounded(exposure_ms, 0.0, _LIMITS["exposure_ms"][1], "Exposure")
-    def check_named_stage(self, device, position_um):
+    def check_named_stage(self, device, position_um, *, restoration_entry=False):
         envelope = globals().get("_NAMED_STAGE_ENVELOPE")
         if envelope is None or device != envelope["device"]:
             raise SafetyViolation(f"Named stage {{device!r}} has no recorded envelope")
-        self._bounded(position_um, envelope["min_um"], envelope["max_um"],
-                      f"Named stage {{device}}")
+        if not restoration_entry:
+            self._bounded(position_um, envelope["min_um"], envelope["max_um"],
+                          f"Named stage {{device}}")
 
     def stage_move_tolerance(self, device, *, core_focus=False, core_axis=None):
         if core_focus:
@@ -1229,10 +1230,13 @@ class _RecordedSafetyGuard:
         if core_axis is not None:
             return _LIMITS.get(f"{{core_axis}}_move_tolerance_um")
         return _LIMITS.get("named_stage_move_tolerances_um", {{}}).get(device)
-    def check_device_property(self, core, device, prop, value, *, approved_envelope=False):
+    def check_device_property(self, core, device, prop, value, *, approved_envelope=False,
+                              restoration_entry=False):
         envelope = globals().get("_PROPERTY_ENVELOPE")
         if envelope is None or device != envelope["device"] or prop != envelope["property"]:
             raise SafetyViolation(f"Property {{device}}.{{prop}} has no recorded envelope")
+        if restoration_entry:
+            return
         if "allowed_values" in envelope:
             if value not in envelope["allowed_values"]:
                 raise SafetyViolation("Property value is outside the recorded values")
@@ -1944,6 +1948,7 @@ def export_session_script(
     body_lines: list[str] = []
     emitted = 0
     emitted_ids: list[str] = []
+    skipped_failed_calls: list[dict[str, str]] = []
 
     def one_line(reason: object) -> str:
         """Fold a recorded message onto one line so it stays inside its comment.
@@ -2002,6 +2007,7 @@ def export_session_script(
                 body_lines.append(
                     "# The session completed nothing here, so neither does this script."
                 )
+                skipped_failed_calls.append({"tool": name, "reason": one_line(reason)})
             continue
         try:
             rendered = renderer(params)
@@ -2102,9 +2108,17 @@ def export_session_script(
         ],
         "artifact": {"kind": "python", "path": str(path)},
     }
+    if skipped_failed_calls:
+        result["skipped_failed_calls"] = skipped_failed_calls
     if selected_ids is not None:
         result["selection_warning"] = selection_warning
-    if selected_ids is not None and emitted == 0:
+    if emitted == 0 and skipped_failed_calls:
+        result["status"] = (
+            "Session script exported, but it performs no hardware step: every "
+            "recorded mutating call failed and was skipped. See "
+            "skipped_failed_calls and the script's SKIPPED comments."
+        )
+    elif selected_ids is not None and emitted == 0:
         # Every selected id was real but none of them emits a hardware step, so
         # the script runs and does nothing. Seen on the demo machine (block 66's
         # gate, 2026-08-30): asked to export only its move, an agent passed the
@@ -3612,6 +3626,10 @@ def get_device_property_info(
             "minimum": policy.minimum,
             "maximum": policy.maximum,
         }
+    from microclaw.authorization import property_write_authorization_info
+    info["authorization"] = property_write_authorization_info(
+        ctrl, device, property,
+    )
     return info
 
 
@@ -7720,12 +7738,11 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             axes_plan[signature] = (index, parsed_plan[index])
     if named_config is not None:
         device, low, high, writes, initial, restore = named_config
-        reserved = 0 if restore == "leave" else 1
         planned_writes = sum(isinstance(action, MoveNamedStage)
                              for actions in parsed_plan.values() for action in actions)
-        if planned_writes + reserved > writes:
-            raise ValueError("hook_action_plan would consume the write reserved for restoration.")
-        restore_target = initial if restore == "entry" else (
+        if planned_writes > writes:
+            raise ValueError("hook_action_plan exceeds the named-stage write budget.")
+        restore_target = (
             restore.get("value") if isinstance(restore, dict) else None
         )
         targets = [a.position_um for actions in parsed_plan.values() for a in actions
@@ -7739,16 +7756,15 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             if target < low or target > high:
                 raise ValueError("named-stage planned or restoration position is outside the envelope.")
             guard.check_named_stage(device, target)
-    property_reserved = 0 if property_config is None or property_config[-1] == "leave" else 1
     property_planned = sum(isinstance(a, SetDeviceProperty) for actions in parsed_plan.values() for a in actions)
-    if property_config is not None and property_planned + property_reserved > property_config[5]:
-        raise ValueError("hook_action_plan would consume the property write reserved for restoration.")
+    if property_config is not None and property_planned > property_config[5]:
+        raise ValueError("hook_action_plan exceeds the property write budget.")
     if property_config is not None:
         from microclaw.authorization import authorize_property_write
         from microclaw.safety import _finite_number_text
         device, prop, values, low, high, _writes, initial, restore = property_config
         authorize_property_write(ctrl, device, prop, approved_envelope=True)
-        restore_value = initial if restore == "entry" else (
+        restore_value = (
             restore["value"] if isinstance(restore, dict) else None
         )
         planned_values = [
@@ -7994,6 +8010,13 @@ class SurveyProgress:
         reason and leave _done_early alone.
         """
         with self._lock:
+            # The final cap-authorized event is yielded before its image can
+            # return a decision. An explicit StopAcquisition on that image is
+            # therefore later and more informative than the coincident cap.
+            # Conversely, the stream's cap bookkeeping must never overwrite a
+            # hook stop that has already arrived.
+            if self._stop_reason == "hook_stop" and reason == "cap_reached":
+                return
             self._stop_reason = reason
 
     @property
