@@ -707,8 +707,31 @@ accepted from a runner report.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | assigned to a Codex runner 2026-09-01, concurrently with 62b in a separate worktree |  **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
-| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | assigned to a Codex runner 2026-09-01, concurrently with 62a in a separate worktree | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Test 9's replay is F3's priced coordinator limb, approved to run subject to a stated estimate, and does not gate this merge | |
+| 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | turn 1 assigned 2026-09-01, **killed mid-flight by a Codex account usage limit** at 11:45; preserved unreviewed as `d1da105` and pushed. Tests only — a `write_ilastik_project` HDF5 fixture and three of the four acceptance tests; **no product change at all**, neither `ilastik_adapter.py` nor `completed_dataset.py` touched. Its accidental value is that it *is* step 3's pre-fix evidence, captured by the coordinator before any fix exists: tests 1 and 2 fail `DID NOT RAISE ValueError` (construction opens nothing today) and test 3 fails `FileNotFoundError ... missing-dataset` out of `ndstorage/_superclass.py:28` — **turn 51 of the session reproduced verbatim**, which is this block's whole thesis. Fixture itself unverified |  **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
+| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | turn 1 assigned 2026-09-01, **killed by the same usage limit** at 11:45 but later, with edits landed; preserved unreviewed as `1d69416` and pushed. Substantively **both decisions**: `_PROTOCOL_PARAMS_SCHEMA` used as the same object by all four top-level sites (coordinator-verified: 1 distinct object across the four) with `acquire_on_hit` correctly left alone per F1, and `_hint_for_tool_error(fn, exc)` carrying all three of Decision 4's conditions. Absent: every piece of evidence — no pre-fix failures, no test-5 mutation, no suite run, no report. Its 118 test lines run **35 passed / 1 failed**, and that one failure is a real finding for the next turn: `execute_tool` reports `Missing required arguments` *before* signature binding, so a limb that passes only the nested key never reaches the `TypeError` on a tool with required arguments — the test must supply them | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Test 9's replay is F3's priced coordinator limb, approved to run subject to a stated estimate, and does not gate this merge | |
 | 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
 | 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
 
+
+### Coordination note: two concurrent runners share one account quota
+
+Both 62a and 62b were assigned at 11:42 on 2026-09-01 and **both turns died at
+11:45 on the same Codex account usage limit**, five minutes in. The blocks were
+correctly independent — different files, different worktrees, no merge conflict
+— but independence at the *repository* level is not independence at the *quota*
+level, and running them concurrently spent the limit at twice the rate for no
+schedule benefit, since neither finished.
+
+`CLAUDE.md` §"The block workflow" step 2 records what a killed turn costs and how
+to preserve it. It does not yet record this: **concurrency is free in worktrees
+and not free in tokens.** Prefer sequential assignment unless a block is genuinely
+blocked waiting on something else, and if two do run concurrently, expect the
+limit sooner rather than later.
+
+The preserved-turn rule worked exactly as written. 62a died early enough that only
+tests existed and 62b died late enough that both product changes had landed; both
+were committed with the state stated plainly in the message, pushed, and handed
+forward in writing. What the rule does not say, and should: **run the killed
+turn's tests before handing them on.** Doing so turned 62a's abandoned turn into
+this block's pre-fix evidence and found a test defect in 62b's — two things the
+next turn would otherwise have spent its own budget discovering.
