@@ -8687,3 +8687,66 @@ misread as a crash.
 **A runner report is not a repo file.** This turn committed its `result.md` to
 the repository root; the coordinator amended it out. Worth naming in the next
 prompt.
+
+## design/65 block 65c — the single-field adaptive timelapse route
+
+Coordinated 2026-08-31 to 2026-09-01. Four rig sessions on two microscopes.
+Codex runner throughout; the coordinator reviewed every diff and re-ran the
+suite itself.
+
+**Two runner turns were killed mid-block by Codex usage limits**, and the two
+deaths needed different handling. One died *after* committing and before
+validating: its edits were preserved, the coordinator ran the suite and reviewed
+the diff, and the ledger recorded plainly that the work was self-unreviewed. One
+died with edits *uncommitted*: reviewed and committed by the coordinator with
+the same disclosure. Neither was discarded, and neither was trusted. The
+workflow's existing rule covered both; what it did not say is that the
+coordinator then owes the runner's own missing step — for the second, that was
+re-reading the runbook prompts against the skills the same turn had rewritten.
+
+**A green suite hid a real defect twice, and both times the fake was the
+reason.** The successor replaced the seed's whole `axes` dict, dropping the
+`channel` axis from frames 1..N — design/43's dense-axis failure one axis over —
+and the test missed it because the fixture supplied its own successor lambda
+instead of driving the product's. Later, design row 13 monkeypatched the entire
+runner and asserted on the mock's own return value. Both were found by reading
+the diff, not by running it.
+
+**The gate's harness failed in the one shape the gate ships in.** Three computed
+limbs read back an export path the product had resolved elsewhere; those
+coincide only when `--out` is absolute, and the selftest only ever passed
+`tempfile.mkdtemp()` while the runbook told the operator to pass a relative
+path. It cost three limbs of a rig trip including the existing-route control, so
+that trip ran with no working control at all. Reproduced off-rig in one command
+afterwards. **A selftest must drive the invocation the runbook actually
+prescribes**, not a convenient one.
+
+**A literal device name that is literally wrong is as dead as a placeholder.**
+The runbook named `SmaractXY`; the device was `SmarActXY`, and worse it carried
+declared stage bounds, so design/49 refuses every raw property write to it and
+no spelling could have worked. Naming a device literally is necessary and not
+sufficient — the limb also has to be *possible*. The fix that worked was to have
+the connected agent discover the exact pair and continue in the same request:
+no name asserted off-rig, and nothing for a human to transcribe.
+
+**The documentation that a gate's agent loads is part of the gate.** Both
+shipped skills still said an image-driven conditional stop was refused and that
+no adaptive STORM hook should be offered, while every driven limb asked an agent
+to write exactly that. design/65 had scheduled that correction for *after* 65c
+merged; the gate proved the ordering wrong, because the gate session is an agent
+reading those files. Caught in review, before the trip.
+
+**Three of the four best findings came from limbs that failed, or refused.**
+Restoration losing to the write budget, the missing read-only authorization
+classification, and the two gates disagreeing about whether an envelope is
+authorization — none were reachable from a passing run. The block's own
+prohibition against treating a green gate as evidence is what kept them visible.
+
+**And a number the design refused to assume, measured twice and read wrong
+once.** M2 gave ~0.25 s per frame at 50 ms exposure; the coordinator called that
+a "5x cadence cost" by comparing it to a *theoretical* camera rate with no
+baseline ever taken. The attribution limbs added afterwards measured M5 at
+fixed 0.0502 s, adaptive 0.0912 s, adaptive-without-analysis 0.0909 s — ~41 ms
+of dispatch, analysis free, ~1.8x. Both rigs stand at n=1. The lesson is the
+one design/65 wrote down before any of this: publish the number, and do not
+compare a measurement to an assumption.
