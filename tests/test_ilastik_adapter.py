@@ -22,6 +22,108 @@ from microclaw.safety import SafetyConstraints, SafetyGuard
 LABELS = [b"BG", b"apo_mito", b"healthy_mito"]
 
 
+def write_ilastik_project(path, *, labels=LABELS, resolution_um=0.127):
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as handle:
+        pixel_classification = handle.create_group("PixelClassification")
+        pixel_classification.create_dataset("LabelNames", data=np.array(labels))
+        handle.create_dataset("ilastikVersion", data=np.bytes_("1.4.1"))
+        label_set = pixel_classification.create_group("LabelSets/labels000")
+        block = label_set.create_dataset(
+            "block0000", data=np.zeros((2, 2, 1), dtype=np.uint8)
+        )
+        block.attrs["axistags"] = json.dumps({
+            "axes": [
+                {"key": "y", "resolution": resolution_um},
+                {"key": "x", "resolution": resolution_um},
+                {"key": "c", "resolution": 0},
+            ]
+        })
+        forests = pixel_classification.create_group("ClassifierForests")
+        forests.create_dataset("known_labels", data=np.arange(1, len(labels) + 1))
+    return path
+
+
+def test_project_labels_are_refused_during_construction_without_ilastik(tmp_path, monkeypatch):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    monkeypatch.setattr(
+        ilastik_adapter, "discover_ilastik",
+        lambda: (_ for _ in ()).throw(AssertionError("ilastik discovery must not run")),
+    )
+
+    with pytest.raises(ValueError) as refusal:
+        IlastikCompletedDatasetAdapter(
+            project, "__unknown__", "__numerator__", "__denominator__"
+        )
+
+    message = str(refusal.value)
+    assert "available labels" in message
+    assert all(label.decode("utf-8") in message for label in LABELS)
+
+
+def test_project_digest_is_checked_before_hdf5_and_stored_on_adapter(tmp_path, monkeypatch):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    actual_digest = hashlib.sha256(project.read_bytes()).hexdigest()
+    import h5py
+
+    opened = []
+    real_file = h5py.File
+    monkeypatch.setattr(h5py, "File", lambda *args, **kwargs: opened.append(args) or real_file(*args, **kwargs))
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", project_sha256="0" * 64
+        )
+    assert opened == []
+
+    verified = IlastikCompletedDatasetAdapter(
+        project, "BG", "apo_mito", "healthy_mito", project_sha256=actual_digest
+    )
+    computed = IlastikCompletedDatasetAdapter(
+        project, "BG", "apo_mito", "healthy_mito"
+    )
+    assert (verified.project_sha256, verified.project_sha256_source) == (
+        actual_digest, "verified"
+    )
+    assert (computed.project_sha256, computed.project_sha256_source) == (
+        actual_digest, "computed"
+    )
+
+
+def test_saved_dataset_label_probe_precedes_missing_dataset_and_output_creation(tmp_path):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    output_dir = tmp_path / "probe-output"
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+
+    with pytest.raises(ValueError, match="available labels.*apo_mito"):
+        completed_dataset.run_analysis_on_saved_dataset(
+            guard, str(tmp_path / "missing-dataset"),
+            "ilastik_pixel_classification", {}, "frames", {
+                "project_path": str(project),
+                "background_label": "__unknown__",
+                "numerator_label": "__numerator__",
+                "denominator_label": "__denominator__",
+            }, str(output_dir),
+        )
+    assert not output_dir.exists()
+
+
+def test_saved_dataset_with_correct_labels_still_fails_on_missing_dataset(tmp_path):
+    project = write_ilastik_project(tmp_path / "model.ilp")
+    output_dir = tmp_path / "analysis-output"
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+
+    with pytest.raises(FileNotFoundError, match="missing-dataset"):
+        completed_dataset.run_analysis_on_saved_dataset(
+            guard, str(tmp_path / "missing-dataset"),
+            "ilastik_pixel_classification", {}, "frames", {
+                "project_path": str(project),
+                "background_label": "BG",
+                "numerator_label": "apo_mito",
+                "denominator_label": "healthy_mito",
+            }, str(output_dir),
+        )
+
+
 def recorded_output():
     fixture = Path(__file__).parent / "fixtures" / "ilastik" / "recorded_probabilities.npz"
     data = np.load(fixture, allow_pickle=False)
@@ -113,14 +215,15 @@ class FakeFile:
             return FakeDataset(self.probabilities, {"axistags": self.axistags})
         if key == "ilastikVersion":
             return FakeDataset(np.array(b"9.8.7"))
+        if key == "PixelClassification/ClassifierForests/known_labels":
+            raise KeyError(key)
         return FakeDataset(np.array(LABELS))
 
 
 def adapter(tmp_path):
     executable = tmp_path / "python"
     executable.write_bytes(b"executable")
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     return IlastikCompletedDatasetAdapter(
         project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
         project_sha256=hashlib.sha256(project.read_bytes()).hexdigest(), timeout_s=2,
@@ -156,7 +259,7 @@ def test_batch_is_one_absolute_invocation_and_cleans_intermediates(tmp_path, mon
     ))
     result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
     assert result[0]["result"]["coordinates"] == {"position": 0}
-    assert result[0]["parameters"]["project_ilastik_version"] == "9.8.7"
+    assert result[0]["parameters"]["project_ilastik_version"] == "1.4.1"
     assert not work_seen[0].exists()
     assert decimate_field(FakeView().read_image())[0].shape == (256, 256)
 
@@ -310,15 +413,18 @@ def test_timeout_is_killed_and_intermediates_are_cleaned(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("case", ["missing", "mismatch"])
 def test_project_must_exist_and_match_hash(tmp_path, case):
-    instance = adapter(tmp_path)
     if case == "missing":
-        instance.project_path.unlink()
+        project = tmp_path / "missing.ilp"
+        digest = None
         expected = FileNotFoundError
     else:
-        instance.project_path.write_bytes(b"changed")
+        project = write_ilastik_project(tmp_path / "model.ilp")
+        digest = "0" * 64
         expected = ValueError
     with pytest.raises(expected):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", project_sha256=digest,
+        )
 
 
 class StageView(FakeView):
@@ -373,11 +479,6 @@ def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkey
     # was the whole point, so this asserts the subprocess never happens.
     probabilities, axistags, _ = recorded_output()
     base = adapter(tmp_path)
-    instance = IlastikCompletedDatasetAdapter(
-        base.project_path, "BG", "mitochondria", "healthy_mito",
-        executable_path=base.executable_path,
-        project_sha256=base.project_sha256, timeout_s=2,
-    )
     launched = []
 
     def run(command, **kwargs):
@@ -393,7 +494,11 @@ def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkey
         File=lambda path, mode: FakeFile(path, mode, Path("never"), probabilities, axistags)
     ))
     with pytest.raises(ValueError, match="absent.*mitochondria"):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            base.project_path, "BG", "mitochondria", "healthy_mito",
+            executable_path=base.executable_path,
+            project_sha256=base.project_sha256, timeout_s=2,
+        )
     assert launched == []
 
 
@@ -481,8 +586,7 @@ def test_the_project_hash_is_recorded_when_the_caller_supplies_none(tmp_path, mo
     probabilities, axistags, _ = recorded_output()
     executable = tmp_path / "python"
     executable.write_bytes(b"executable")
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     instance = IlastikCompletedDatasetAdapter(
         project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
         timeout_s=2,
@@ -502,19 +606,18 @@ def test_the_project_hash_is_recorded_when_the_caller_supplies_none(tmp_path, mo
 
 
 def test_a_supplied_hash_is_still_verified_and_still_refuses(tmp_path):
-    instance = adapter(tmp_path)
-    assert instance.project_sha256 is not None
-    instance.project_path.write_bytes(b"changed underneath us")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     with pytest.raises(ValueError, match="sha256 mismatch"):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", project_sha256="0" * 64,
+        )
 
 
 def test_it_finds_ilastik_rather_than_asking_where_it_lives(tmp_path, monkeypatch):
     # Nobody should have to tell Microclaw where ilastik is installed to score
     # their own project with it.
     probabilities, axistags, _ = recorded_output()
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     found = tmp_path / "discovered_ilastik"
     found.write_bytes(b"executable")
     monkeypatch.setattr(ilastik_adapter, "discover_ilastik", lambda: (found, None))
@@ -535,8 +638,7 @@ def test_it_finds_ilastik_rather_than_asking_where_it_lives(tmp_path, monkeypatc
 
 
 def test_when_it_cannot_find_ilastik_it_asks_for_the_path(tmp_path, monkeypatch):
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     monkeypatch.setattr(ilastik_adapter, "discover_ilastik", lambda: None)
     instance = IlastikCompletedDatasetAdapter(project, "BG", "apo_mito", "healthy_mito",
                                               timeout_s=2)
@@ -582,11 +684,11 @@ def test_a_class_nobody_trained_cannot_be_a_ratio_denominator(tmp_path, monkeypa
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
         File=lambda path, mode: PartlyTrained(path, mode, Path("never"),
                                               probabilities, axistags)))
-    instance = IlastikCompletedDatasetAdapter(
-        project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
-        timeout_s=2)
     with pytest.raises(ValueError, match="never trained on them"):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
+            timeout_s=2,
+        )
 
 
 def test_a_failed_batch_reports_what_ilastik_said(tmp_path, monkeypatch):

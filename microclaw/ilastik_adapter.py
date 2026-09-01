@@ -344,6 +344,62 @@ class IlastikCompletedDatasetAdapter:
         self.ratio_key = str(ratio_key)
         self.label_semantics = dict(label_semantics or {})
 
+        if not self.project_path.is_file():
+            raise FileNotFoundError(f"ilastik project not found: {self.project_path}")
+        # design/26 F4 asks for the project to be hash-PINNED IN THE MANIFEST.
+        # That is provenance, and provenance is something Microclaw can take
+        # for itself: on first use there is nothing for the caller to have
+        # pinned against, and making them paste a digest to run their own
+        # classifier is the paragraph-of-explanation this project rejects.
+        # Supply one and it is verified; omit it and it is recorded. Verify a
+        # supplied pin before interpreting the project's HDF5 bytes.
+        actual_hash = _sha256(self.project_path)
+        if self.project_sha256 is None:
+            self.project_sha256_source = "computed"
+        elif actual_hash != self.project_sha256:
+            raise ValueError(
+                f"ilastik project sha256 mismatch: expected {self.project_sha256}, "
+                f"got {actual_hash}"
+            )
+        else:
+            self.project_sha256_source = "verified"
+        self.project_sha256 = actual_hash
+        try:
+            import h5py
+        except (ImportError, ValueError) as error:
+            raise RuntimeError(
+                "ilastik HDF5 support is unavailable; install the microclaw[ilastik] "
+                "extra in Microclaw's environment"
+            ) from error
+        with h5py.File(self.project_path, "r") as project:
+            label_names = list(project["PixelClassification/LabelNames"][()])
+            self.label_names = [
+                item.decode("utf-8") if isinstance(item, bytes) else str(item)
+                for item in label_names
+            ]
+            version_value = project["ilastikVersion"][()]
+            if isinstance(version_value, np.ndarray):
+                version_value = version_value.item()
+            self.ilastik_version = (
+                version_value.decode("utf-8")
+                if isinstance(version_value, bytes) else str(version_value)
+            )
+            self.training_resolution_um = _training_resolution_um(project)
+            _check_configured_labels(
+                self.label_names, self.background_label,
+                self.numerator_label, self.denominator_label,
+            )
+            trained = _trained_labels(project, self.label_names)
+            if trained is not None:
+                untrained = {self.numerator_label, self.denominator_label} - trained
+                if untrained:
+                    raise ValueError(
+                        f"the project names {sorted(untrained)!r} but never trained on "
+                        f"them: ilastik exports an all-zero channel for a class nobody "
+                        f"drew, so a ratio against it would be pinned at 1.000 and read "
+                        f"as a confident result. Trained labels: {sorted(trained)!r}."
+                    )
+
     def analyze_completed_dataset(self, dataset_view, selection, context):
         if self.executable_path is None:
             discovered = discover_ilastik()
@@ -361,23 +417,6 @@ class IlastikCompletedDatasetAdapter:
             raise FileNotFoundError(f"ilastik executable not found: {self.executable_path}")
         if self.launcher_script_path is not None and not self.launcher_script_path.is_file():
             raise FileNotFoundError(f"ilastik launcher script not found: {self.launcher_script_path}")
-        if not self.project_path.is_file():
-            raise FileNotFoundError(f"ilastik project not found: {self.project_path}")
-        # design/26 F4 asks for the project to be hash-PINNED IN THE MANIFEST.
-        # That is provenance, and provenance is something Microclaw can take
-        # for itself: on first use there is nothing for the caller to have
-        # pinned against, and making them paste a digest to run their own
-        # classifier is the paragraph-of-explanation this project rejects.
-        # Supply one and it is verified; omit it and it is recorded.
-        actual_hash = _sha256(self.project_path)
-        if self.project_sha256 is None:
-            sha_source = "computed"
-        elif actual_hash != self.project_sha256:
-            raise ValueError(
-                f"ilastik project sha256 mismatch: expected {self.project_sha256}, got {actual_hash}"
-            )
-        else:
-            sha_source = "verified"
         try:
             import h5py
         except (ImportError, ValueError) as error:
@@ -385,32 +424,6 @@ class IlastikCompletedDatasetAdapter:
                 "ilastik HDF5 support is unavailable; install the microclaw[ilastik] "
                 "extra in Microclaw's environment"
             ) from error
-        with h5py.File(self.project_path, "r") as project:
-            label_names = list(project["PixelClassification/LabelNames"][()])
-            version_value = project["ilastikVersion"][()]
-            if isinstance(version_value, np.ndarray):
-                version_value = version_value.item()
-            ilastik_version = (version_value.decode("utf-8")
-                               if isinstance(version_value, bytes) else str(version_value))
-            training_resolution_um = _training_resolution_um(project)
-        # Check the caller's labels the moment the project's are known. This
-        # lived in pool_probability_map, which runs only after the batch, so a
-        # mistyped label was refused *after* ilastik had scored every field --
-        # measured at 116 s on nine demo tiles, and minutes on a real survey.
-            names = [item.decode("utf-8") if isinstance(item, bytes) else str(item)
-                     for item in label_names]
-            _check_configured_labels(names, self.background_label,
-                                     self.numerator_label, self.denominator_label)
-            trained = _trained_labels(project, names)
-            if trained is not None:
-                untrained = {self.numerator_label, self.denominator_label} - trained
-                if untrained:
-                    raise ValueError(
-                        f"the project names {sorted(untrained)!r} but never trained on "
-                        f"them: ilastik exports an all-zero channel for a class nobody "
-                        f"drew, so a ratio against it would be pinned at 1.000 and read "
-                        f"as a confident result. Trained labels: {sorted(trained)!r}."
-                    )
         with tempfile.TemporaryDirectory(prefix="microclaw-ilastik-") as temporary:
             work = Path(temporary).resolve()
             inputs = []
@@ -426,7 +439,7 @@ class IlastikCompletedDatasetAdapter:
                     native_um = _native_pixel_size_um(dataset_view, item)
                 stride, stride_mode = choose_stride(
                     np.asarray(image).shape, native_pixel_size_um=native_um,
-                    training_resolution_um=training_resolution_um,
+                    training_resolution_um=self.training_resolution_um,
                     target_size=self.target_size,
                 )
                 path = work / f"field_{index:06d}.tiff"
@@ -475,7 +488,7 @@ class IlastikCompletedDatasetAdapter:
                     dataset = handle["exported_data"]
                     pooled = pool_probability_map(
                         dataset[()], axistags=dataset.attrs["axistags"],
-                        label_names=label_names, background_label=self.background_label,
+                        label_names=self.label_names, background_label=self.background_label,
                         numerator_label=self.numerator_label,
                         denominator_label=self.denominator_label,
                         coverage_floor=self.coverage_floor,
@@ -496,18 +509,18 @@ class IlastikCompletedDatasetAdapter:
                         # for what it is and record the executable beside it,
                         # rather than asserting an analyzer version nothing here
                         # verified.
-                        "project_ilastik_version": ilastik_version,
+                        "project_ilastik_version": self.ilastik_version,
                         "decimation_stride": stride_used,
                         "decimation_mode": stride_mode,
                         "native_pixel_size_um": native_um,
                         "effective_pixel_size_um": (
                             None if native_um is None else native_um * stride_used),
-                        "project_training_resolution_um": training_resolution_um,
+                        "project_training_resolution_um": self.training_resolution_um,
                         "executable_path": str(self.executable_path),
                         "launcher_script_path": (str(self.launcher_script_path)
                                                  if self.launcher_script_path else None),
-                        "project_sha256": actual_hash,
-                        "project_sha256_source": sha_source,
+                        "project_sha256": self.project_sha256,
+                        "project_sha256_source": self.project_sha256_source,
                         "target_size": self.target_size,
                         "coverage_floor": self.coverage_floor,
                         "high_percentiles": list(self.high_percentiles),
