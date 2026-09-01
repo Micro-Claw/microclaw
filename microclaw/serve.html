@@ -527,6 +527,7 @@
   // the server's deadline. A page reload re-surfaces it via GET /api/confirm.
   let confirmId = null;
   let pendingConfirmation = null;
+  let pendingResolution = null;
   let pendingProgress = null;
   let pendingDefault = "MicroClaw is working…";
   let streamSilenceDetected = false;
@@ -535,6 +536,7 @@
 
   function renderPendingText() {
     $("pending-text").textContent = pendingConfirmation ||
+      pendingResolution ||
       (streamSilenceDetected ? "Live updates interrupted; checking Microclaw…" : null) ||
       pendingProgress || pendingDefault;
   }
@@ -629,9 +631,9 @@
     confirmId = null;
     pendingConfirmation = null;
     $("confirm-banner").classList.add("hidden");
-    pendingDefault = decision === "declined:timeout"
+    pendingResolution = decision === "declined:timeout"
       ? "Confirmation timed out and was declined"
-      : "MicroClaw is working…";
+      : null;
     renderPendingText();
   }
 
@@ -655,6 +657,7 @@
   async function runTurn(text) {
     recoverySettled = false;
     streamSilenceDetected = false;
+    pendingResolution = null;
     pendingProgress = null;
     pendingDefault = "MicroClaw is working…";
     renderPendingText();

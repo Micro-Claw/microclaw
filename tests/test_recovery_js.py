@@ -278,13 +278,44 @@ def test_stream_silent_from_its_first_byte_is_armed_and_settles_once():
     }
 
 
-def test_pending_text_priority_is_confirmation_silence_progress_default():
+def test_pending_text_priority_includes_authoritative_resolution_disclosure():
     html = resources.files("microclaw").joinpath("serve.html").read_text(
         encoding="utf-8"
     )
-    assert "pendingConfirmation ||" in html
-    assert '(streamSilenceDetected ? "Live updates interrupted; checking Microclaw…" : null) ||' in html
-    assert "pendingProgress || pendingDefault" in html
+    start = html.index("  let pendingConfirmation = null;")
+    end = html.index("\n\n  const confirmationRecovery", start)
+    resolver = html[start:end]
+    result = run_node(f"""
+      const pendingText = {{textContent: ''}};
+      function $(id) {{
+        if (id !== 'pending-text') throw new Error(`unexpected element ${{id}}`);
+        return pendingText;
+      }}
+      {resolver}
+      const cases = {{}};
+      pendingProgress = 'frames 700 / 700';
+      pendingResolution = 'Confirmation timed out and was declined';
+      renderPendingText(); cases.staleProgressTimeout = pendingText.textContent;
+      streamSilenceDetected = true;
+      renderPendingText(); cases.silenceTimeout = pendingText.textContent;
+      pendingConfirmation = 'Waiting for your confirmation.';
+      renderPendingText(); cases.confirmationWins = pendingText.textContent;
+      pendingConfirmation = null; streamSilenceDetected = false;
+      renderPendingText(); cases.timeoutAlone = pendingText.textContent;
+      pendingResolution = null; streamSilenceDetected = true;
+      renderPendingText(); cases.silenceProgress = pendingText.textContent;
+      streamSilenceDetected = false;
+      renderPendingText(); cases.progressDefault = pendingText.textContent;
+      process.stdout.write(JSON.stringify(cases));
+    """)
+    assert result == {
+        "staleProgressTimeout": "Confirmation timed out and was declined",
+        "silenceTimeout": "Confirmation timed out and was declined",
+        "confirmationWins": "Waiting for your confirmation.",
+        "timeoutAlone": "Confirmation timed out and was declined",
+        "silenceProgress": "Live updates interrupted; checking Microclaw…",
+        "progressDefault": "frames 700 / 700",
+    }
     assert html.count('$("pending-text").textContent =') == 1
 
 
