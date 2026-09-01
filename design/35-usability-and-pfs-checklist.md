@@ -8920,6 +8920,31 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### design/62 is coordinated and owns its own checklist — added 2026-09-01 **(pointer only)**
+
+**`design/62` is coordinated and owns its own blocks, checklist and ledger**,
+like design/48 through design/60 and design/65. This file does not track its
+rows; it points at them. The doc is
+`design/62-file-discovery-and-nested-protocol-hints.md`, four blocks,
+**62a–62d**, plus a coordinator-findings section (F1–F3) that must be read
+before any of them is assigned.
+
+It is a **discoverability** block, from one M5 session's three capability
+failures: an ilastik project's label names could not be read without acquiring a
+survey first, `protocol_params` did not publish what goes in it, and no tool
+advertises itself as the route from "it's in Downloads with M5 in the name" to a
+path.
+
+**No microscope.** §"Rig gate" is `None` and the coordinator reaffirmed it at
+assignment: two pure-Python reorderings, a local filesystem, a JSON schema, and
+a replay against a payload the rig already produced. One demo-machine limb, in
+62d, for Windows path semantics. Do not book a session for any of this.
+
+**One intentional break, decided by the operator at assignment.** 62c removes a
+currently-working call — a hooked multiposition timelapse that omits
+`interval_s` succeeds on `main` and now refuses. Decided 2026-09-01: require it.
+Tracked in that document's §"The intentional break, stated before it ships".
+
 ### design/65 — **CLOSED 2026-09-01**, two rows carried back here — added 2026-08-31 **(pointer only)**
 
 **`design/65` was coordinated and owned its own blocks and ledger**, like

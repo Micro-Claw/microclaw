@@ -538,3 +538,177 @@ rig already produced. Do not book a session for this block.
   project's label names is not interpretation.
 - No compatibility support for top-level acquisition parameters that belong to
   the selected protocol.
+
+## Coordinator findings at assignment — 2026-09-01
+
+Read this before assigning any block. Three corrections to the document above,
+found by checking its claims against `main` at `586c666`.
+
+### F1 — there is a **fifth** `protocol_params`, and its shape is different
+
+Decision 2 says "one `_PROTOCOL_PARAMS_SCHEMA` constant, used by
+`run_tile_acquisition`, `run_multiposition_acquisition`,
+`run_multiposition_with_autofocus` and `run_adaptive_survey`". Those four exist
+and the prose is as described. But `run_adaptive_survey` publishes a **second**
+`protocol_params`, nested inside `acquire_on_hit` (`tools_schema.py:1751`), and
+its documented shape is not the shared one:
+
+```text
+acquire_on_hit.protocol_params
+  timelapse: {n_frames, interval_s, exposure_ms}          # no channel
+  zstack:    {z_offset_start_um, z_offset_end_um,          # RELATIVE to the hit
+              z_step_um, exposure_ms}                      # no channel
+```
+
+`channel` is deliberately absent — `acquire_on_hit.channel` is applied once
+after the search, not per frame — and its Z keys are **offsets from the hit's
+own Z**, resolved at `tools.py:8652-8657`, which is why that branch does not
+call `_protocol_shape_kwargs` at all.
+
+Two consequences, and neither is optional:
+
+- **Decision 2 must not reach it.** Publishing the shared constant here would
+  advertise `channel`, `laser_slot` and absolute `z_start_um` on a path that
+  accepts none of them, and would drop the three `z_offset_*` keys that path
+  requires — the exact defect this block exists to remove, introduced by its own
+  fix. Acceptance test 5's "assert the four schemas are the same object" gains a
+  negative limb: assert `acquire_on_hit`'s is **not** that object.
+- **Decision 3 already reaches it, whether the block intends it or not.** The
+  timelapse branch calls `_protocol_shape_kwargs(acquire_protocol,
+  acquire_params)` at `tools.py:8651`. Widening that helper to refuse an
+  incompatible key therefore lands on `acquire_on_hit` too. Under the shared
+  table `{n_frames, interval_s, exposure_ms}` happens to be legal, so the likely
+  outcome is "no change" — but that is a coincidence to be **asserted**, not
+  assumed. 62c owes a test that an `acquire_on_hit` timelapse still plans, and a
+  decision (stated in the block) on whether its zstack branch gets a case of its
+  own or stays out of the helper.
+
+### F2 — every line number in this document is stale by roughly +940
+
+The document was written before design/63 through design/68 landed. Verified
+positions on `main` at `586c666`:
+
+| document says | actually |
+| --- | --- |
+| `_protocol_shape_kwargs`, `tools.py:5775` | `tools.py:6715` |
+| inline hook-capability refusal, `:5964-5972` | `:6929-6940` |
+| `_run_protocol_at` splat, `:5887-5895` | `_run_protocol_at` at `:6748` |
+| `if protocol != "snap"` guard, `:6083` | `:6922` (`save_dir`) and `:6964` (hook) |
+| `inspect_artifacts` depth refusal, `:8305` | `:9349` |
+| `hint_for_error`, `errors.py:67` | unchanged |
+| `ilastik_adapter.py:389` / `:395` | unchanged |
+| `completed_dataset.py:367-369` | `:367-369`, unchanged |
+
+Hand runners **symbol names**, and tell them the document's line numbers are
+approximate. Everything the document asserts about the *code* was confirmed:
+the project-open block does sit inside `analyze_completed_dataset` after the
+executable checks; `_protocol_shape_kwargs` does default `interval_s` to 0; the
+inline refusal does cover only `hook_strategy` and `HOOK_CAPABILITY_ARGS`;
+`fn` is in scope at `execute_tool`'s `except Exception` boundary (`:10709`).
+
+### F3 — acceptance test 9 is an API spend, not a runner task
+
+Test 9 replays turn 73's payload through a model with the old and the new
+schema. `design/59-hint-replay-spike.py` exists but is written around design/59's
+orientation payload and its two recorded session transcripts; it needs adapting.
+The payload is present at
+`~/Documents/Documents - Beyonce/Projects/Micro-Claw/sarah-check-downloads/20260827_160401_908523_microclaw_history.jsonl`.
+
+This limb is **coordinator-owned and priced before it runs**, not handed to an
+implementation runner: it costs API credits, and the document's own instruction
+("size the sample before reading a difference") means a useful run is tens of
+samples across two conditions, not one. It does not gate 62b's merge.
+
+**Operator decision, 2026-09-01: run it, priced first.** The coordinator adapts
+the spike and states a sample size and a token estimate for the two conditions
+*before* spending anything; the operator approves or declines the spend at that
+point. If declined, the outcome is recorded here as a deliberate non-run, not
+left as a blank — see [[feedback_no_credit_overage]].
+
+## The gate story: no microscope, and that is by design
+
+§"Rig gate" above says none, and it is right — the five decisions are two
+pure-Python reorderings, a local filesystem, a JSON schema, and a replay against
+a payload the rig already produced. **No block of design/62 books a session on
+M5, M2 or the Nikon, and no block ships a rig-gate runbook.** Reaffirmed with
+the operator 2026-09-01: microscope access is not readily available right now,
+which costs this block nothing.
+
+Where a limb wants a machine that is not a microscope, it is the **demo
+machine** — Windows path semantics for Decision 5 (`name_glob` against
+backslash-separated basenames, case-insensitive ordering, a real `Downloads`
+folder with a subtree) are the only thing macOS cannot settle. That is a demo
+limb, folded into 62d, and it is the sole gate this whole block asks anyone to
+run.
+
+## Blocks
+
+Four blocks. The split is by rollback boundary, not by file: Decision 3 is the
+only behaviour change in design/62 and it removes a currently-working call, so it
+gets a branch of its own rather than arriving inside a hint fix.
+
+**62a — the ilastik project opens before the dataset.** Decision 1 alone.
+Acceptance tests 1–4. Touches `microclaw/ilastik_adapter.py` and
+`microclaw/completed_dataset.py` and nothing else, so it may run **concurrently
+with 62b** in a separate worktree. This is the block the session actually paid
+for: it is the one that stops a survey being acquired to read a string out of an
+HDF5 file.
+
+**62b — one published `protocol_params` schema, and a hint that cannot
+misroute.** Decisions 2 and 4. Acceptance tests 5 and 8, plus F1's negative limb.
+No acquisition behaviour changes: a malformed call is refused today by Python
+signature binding and is still refused, only with a hint that names
+`protocol_params`. Test 9 is not in this block — see F3.
+
+**62c — the protocol preflight.** Decision 3 alone. Acceptance tests 6 and 7,
+plus F1's `acquire_on_hit` assertion. **Depends on 62b merged**: it shares
+`tools.py` and `tools_schema.py`, and the refusal it adds is what the schema 62b
+publishes points at. This is the intentional break — see the ledger row.
+
+**62d — discovery folded into `inspect_artifacts`.** Decision 5. Acceptance
+tests 10–14, plus the demo-machine path-semantics limb. **Depends on 62c
+merged** for the same shared-file reason. Assigned last deliberately: §3 scores
+it as the weakest of the three observed failures, and a discovery tool would not
+have unblocked the turn it came from.
+
+### The intentional break, stated before it ships
+
+62c makes `run_multiposition_acquisition(protocol="timelapse",
+protocol_params={"n_frames": 5})` refuse. On `main` that call **succeeds** on the
+hooked branch, which never calls `run_timelapse` and so silently takes the
+planner's `interval_s=0`; on the plain branch it already fails, but only after
+the stage has moved. Design/62 argues the tolerance was accidental and the
+published shape already lists `interval_s`, and this coordinator agrees — but it
+is a working call being removed, and `CLAUDE.md` requires that be the operator's
+decision rather than the implementer's. Confirm before 62c is assigned; it does
+not block 62a, 62b or 62d.
+
+It is a refusal, not a confirmation: nothing stops to ask a human, and the
+decline is the refusal itself. No prompt is added anywhere in design/62.
+
+**Operator decision, 2026-09-01: require `interval_s`.** Refuse the omission at
+every public boundary, as Decision 3 specifies. The two alternatives were
+considered and rejected: publishing `interval_s: {default: 0}` would have to give
+`run_timelapse` a default it does not have, spreading the disagreement rather
+than closing it; and deferring the limb while shipping the incompatible-key
+refusal leaves the plain branch still failing *after* the stage has moved, which
+is the defect the block exists for. 62c is unblocked.
+
+## Run ledger
+
+design/62 is coordinated and owns its own blocks and ledger, like design/48
+through design/60 and design/65. `design/35-usability-and-pfs-checklist.md`
+points here and does not track these rows.
+
+**Baseline on `main` at `586c666`, coordinator-measured on a clean tree, macOS:
+2658 passed / 99 skipped / 3 warnings = 2757 collected, 181 s.** Every block's
+suite number is read against this, and re-run by the coordinator rather than
+accepted from a runner report.
+
+| block | branch | start | implementation | gate | merge |
+| --- | --- | --- | --- | --- | --- |
+| 62a | `design62/ilastik-project-before-dataset` | | | **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
+| 62b | `design62/protocol-params-schema-and-hint` | | | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Test 9's replay is F3's priced coordinator limb, approved to run subject to a stated estimate, and does not gate this merge | |
+| 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
+| 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
+
