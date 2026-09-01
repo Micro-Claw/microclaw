@@ -903,6 +903,9 @@ def test_browser_poll_lifetime_and_timeout_resolution_are_wired_once(client):
     # Polling reconciles banner/grant state only; streamed transcript events
     # still pass through the one existing apply-and-paint loop.
     assert html.count("applyEvent(live, ev, state);") == 1
+    assert html.count('console.warn("Microclaw stream silence; turn:"') == 1
+    assert html.count('console.warn("Microclaw turn settled; turn:"') == 1
+    assert "if (Number.isInteger(ev.seq)) lastAppliedSeq = ev.seq;" in html
 
 
 def test_quiet_prompt_stream_keeps_one_getter_and_delivers_after_a_ping(
