@@ -770,9 +770,25 @@ of §1's harness. Two things are not, and they are what the gate is for:
   and the browser's network disabled for ~60 s while the turn runs. Score it from
   the artifacts: the confirmation audit's decision, the banner the operator saw
   and when, and whether the composer was usable afterwards without a reload.
-- **That the operator sees what the design claims they see.** The wording under
-  each state — pending, interrupted, timed out — is the deliverable. Nobody but a
-  person at the screen can score it.
+- **That the operator sees what the design claims they see.** The wording is the
+  deliverable, and nobody but a person at the screen can score it. This sentence
+  said "pending, interrupted, timed out" when it was written. **There are now
+  five states, and the gate must exercise them as a priority order, not as a
+  list** — the block-69a-2 defect was not a wrong string, it was a correct string
+  the resolver never reached:
+
+  | tier | text |
+  | --- | --- |
+  | 1 confirmation | `Waiting for your confirmation.`, then `… Ns remaining.` once the poll starts |
+  | 2 resolution disclosure | `Confirmation timed out and was declined` |
+  | 3 silence | `Live updates interrupted; checking Microclaw…` |
+  | 4 progress | `frames N / M` |
+  | 5 default | `MicroClaw is working…` |
+
+  A limb that reaches a state with nothing below it competing proves almost
+  nothing. The one that matters is a turn which has **already emitted acquisition
+  progress** before the confirmation times out, because that is where the
+  disclosure was masked, and it is the incident's own shape.
 
 Save the server console log **and** the browser devtools console from the same
 session. The disconnect limb is scored by comparing the emitted sequence numbers
@@ -781,6 +797,12 @@ reports nothing.
 
 No new rig capability is needed, so the demo machine is sufficient and neither
 M5 nor M2 is required.
+
+**One gate session scores all three blocks.** 69a-1 and 69a-2 merged without
+gates of their own — the same call design/65 made for 65a and 65b — so this
+session is the only place the poll, the keepalive, the abort and the sequencing
+are seen working together by a person. Sizing it as if it covered only 69a-3
+would leave the other two ungated on `main`.
 
 **Collect both halves of the sequence evidence.** The server's turn summary is
 in the console log; the browser's last applied sequence is in the devtools
