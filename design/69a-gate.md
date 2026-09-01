@@ -4,8 +4,6 @@ Run this entire gate on the Windows demo machine, in one Microclaw browser
 session, from `design69a/event-sequencing`. It scores blocks 69a-1, 69a-2 and
 69a-3 together. It opens no Micro-Manager bridge beyond the normal demo session.
 
-## 0. Pin and capture
-
 ## 0. Pin, warm uv, and capture
 
 ```powershell
