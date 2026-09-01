@@ -2367,8 +2367,6 @@ class TestRunMultipositionWithAutofocus:
                       protocol="timelapse", save_dir=str(tmp_path),
                       protocol_params={"n_frames": 1, "interval_s": 0})
         kwargs.update(override)
-        if override.get("protocol") == "snap":
-            kwargs["protocol_params"] = {}
         result = run_multiposition_with_autofocus(
             patched_ctrl, unconstrained_guard, **kwargs
         )

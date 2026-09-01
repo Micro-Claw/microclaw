@@ -6737,20 +6737,24 @@ def _protocol_shape_kwargs(protocol: str, params: dict) -> dict:
             "reserved multiposition protocol: " + ", ".join(supplied_capabilities)
         )
 
-    for key in required[protocol]:
-        if key not in params:
-            raise ValueError(f"protocol_params for '{protocol}' is missing '{key}'.")
-    incompatible = next((key for key in params if key not in allowed[protocol]), None)
-    if incompatible is not None:
+    missing = [key for key in required[protocol] if key not in params]
+    if missing:
+        quoted = ", ".join(f"'{key}'" for key in missing)
+        raise ValueError(f"protocol_params for '{protocol}' is missing {quoted}.")
+    incompatible = sorted(key for key in params if key not in allowed[protocol])
+    if incompatible:
+        noun = "key" if len(incompatible) == 1 else "keys"
+        quoted = ", ".join(f"'{key}'" for key in incompatible)
         message = (
-            f"protocol_params for '{protocol}' contains incompatible key "
-            f"'{incompatible}'"
+            f"protocol_params for '{protocol}' contains incompatible {noun} {quoted}"
         )
-        if protocol == "zstack" and incompatible in {"n_frames", "interval_s"}:
+        if protocol == "zstack" and any(key in {
+            "n_frames", "interval_s", "laser_slot", "max_frames"
+        } for key in incompatible):
             message += "; timelapse parameters do not apply to a zstack"
-        elif protocol == "timelapse" and incompatible in {
+        elif protocol == "timelapse" and any(key in {
             "z_start_um", "z_end_um", "z_step_um"
-        }:
+        } for key in incompatible):
             message += "; zstack parameters do not apply to a timelapse"
         raise ValueError(message + ".")
 
@@ -7268,6 +7272,11 @@ def run_multiposition_with_autofocus(
     ) if value is None]
     if missing:
         return {"error": f"Missing required arguments: {missing}."}
+    if protocol == "snap":
+        return {
+            "error": "The deprecated wrapper cannot compose autofocus with display-only "
+                     "snap. Use protocol='timelapse' with n_frames=1 and interval_s=0."
+        }
     try:
         _protocol_shape_kwargs(protocol, protocol_params or {})
     except (ValueError, KeyError) as exc:
@@ -7275,11 +7284,6 @@ def run_multiposition_with_autofocus(
     save_dir = guard.resolve_in_workspace(save_dir)  # before any forwarded move
     if autofocus_method != "coarse_then_fine":
         return {"error": "The deprecated wrapper only forwards coarse_then_fine autofocus."}
-    if protocol == "snap":
-        return {
-            "error": "The deprecated wrapper cannot compose autofocus with display-only "
-                     "snap. Use protocol='timelapse' with n_frames=1 and interval_s=0."
-        }
     compatibility_log = str(Path(save_dir) / f"{name}_autofocus_log.json")
     result = run_multiposition_acquisition(
         ctrl, guard, protocol=protocol, save_dir=save_dir,
