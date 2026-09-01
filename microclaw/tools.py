@@ -9338,6 +9338,17 @@ def inspect_artifacts(
     survey_by_path: dict[Path, dict] = {}
     discovery = not hash and manifest_path is None
     order_key = lambda path: (str(path).lower(), str(path))
+    # One shape for one key. A `scope` that is a string in discovery and an
+    # object in provenance is design/62's own F4 -- one name, two meanings, same
+    # tool -- moved from the request into the response. "top-level" vs
+    # "recursive" is already carried by scope["recursive"].
+    requested_scope = {
+        "name_glob": name_glob,
+        "recursive": recursive,
+        "max_files": max_files,
+        "max_total_bytes": max_total_bytes,
+        "max_depth": max_depth,
+    }
 
     def survey() -> list[dict]:
         return [survey_by_path[path] for path in sorted(survey_by_path, key=order_key)]
@@ -9362,7 +9373,7 @@ def inspect_artifacts(
             "matches": [str(path) for path in matched],
             "examined_count": len(examined),
             "truncated": truncated,
-            "scope": "top-level" if not recursive else "recursive",
+            "scope": requested_scope,
             "scope_complete": not truncated,
             "artifact_count": len(artifacts),
             "total_bytes": sum(item["size_bytes"] for item in artifacts),
@@ -9467,13 +9478,7 @@ def inspect_artifacts(
         "hashes_computed": hash,
         "artifacts": artifacts,
         "survey": survey(),
-        "scope": {
-            "name_glob": name_glob,
-            "recursive": recursive,
-            "max_files": max_files,
-            "max_total_bytes": max_total_bytes,
-            "max_depth": max_depth,
-        },
+        "scope": requested_scope,
     }
     if manifest_path:
         manifest_path = guard.resolve_in_workspace(manifest_path)

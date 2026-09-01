@@ -38,7 +38,8 @@ def test_discovers_mixed_case_basename_without_reading_contents(
     assert result["matches"] == [str(project.resolve())]
     assert result["hashes_computed"] is False
     assert result["truncated"] is False
-    assert result["scope"] == "top-level"
+    assert result["scope"]["recursive"] is False
+    assert result["scope"]["name_glob"] == "*M5*.ilp"
     assert result["scope_complete"] is True
 
 
@@ -218,6 +219,33 @@ def test_written_manifest_records_its_exact_provenance_scope(
     }
     assert result["scope"] == expected_scope
     assert json.loads(manifest.read_text(encoding="utf-8"))["scope"] == expected_scope
+
+
+def test_scope_reports_one_shape_in_discovery_and_in_provenance(
+        mock_ctrl, unconstrained_guard, tmp_path):
+    """One key, one type.
+
+    design/62's own F4 is `z_step_um` naming two different quantities on one
+    tool; a result key that is a string in one mode and an object in the other
+    is that same defect moved from the request into the response. A caller
+    reading result["scope"] must not have to know which mode ran.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.tif").touch()
+
+    common = dict(name_glob="*.tif", recursive=False, max_files=9,
+                  max_total_bytes=11, max_depth=3)
+    discovery = _inspect(mock_ctrl, unconstrained_guard, root,
+                         hash=False, **common)
+    provenance = _inspect(mock_ctrl, unconstrained_guard, root,
+                          hash=True, **common)
+
+    assert discovery["scope"] == provenance["scope"]
+    assert discovery["scope"] == {
+        "name_glob": "*.tif", "recursive": False,
+        "max_files": 9, "max_total_bytes": 11, "max_depth": 3,
+    }
 
 
 def test_inspect_artifacts_schema_publishes_discovery_contract():
