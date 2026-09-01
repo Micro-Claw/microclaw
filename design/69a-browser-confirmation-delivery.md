@@ -1047,7 +1047,7 @@ entire off-rig case rests on tests that skip silently without it.
 | --- | --- | --- | --- | --- | --- |
 | 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
 | 69a-2 | `design69a/keepalive-and-abort` (deleted) | `60ae1b3` (2026-09-01) | `26cc47b` + `142b90f` (`main` merged mid-block, see below) + `c2cfdab` (review round 1, one product finding and two coordinator corrections). Suite **2782 / 99 / 2**, coordinator-run, baseline + 6; node **v25.2.1** | scored with 69a-3 | `2bcb136` |
-| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review round 1, two gate findings) + `dfb3d88` (coordinator, runbook pin). Suite **2786 / 99 / 2**, coordinator-run, baseline + 4; selftest **9/9**, coordinator-run on both trees; node **v25.2.1** | **PUSHED, AWAITING THE DEMO-MACHINE SESSION** — `dfb3d88` on `origin` | not yet |
+| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review 1) + `691700f` (review 2, the gate's defect) + coordinator runbook/test corrections through `2716497`. Suite **2788 / 99 / 2**, coordinator-run; selftest **11/11**, coordinator-run on both trees | **round 1 run 2026-09-01 — 3 PASS, 1 defect found, re-run owed.** `2716497` on `origin` | not yet |
 
 ### What block 69a-1 cost, and what it proved
 
@@ -1279,6 +1279,48 @@ criterion (block 58a). L6 and L7 must be audited for the same shape.
 That cost is written up generically in `CLAUDE.md` step 6; the short version is
 that every fact needed was already in `design/` and the runbook was written from
 this design instead.
+
+### Where a fresh session picks this up
+
+**Everything below is on `origin`. Nothing needed to continue lives in a
+scratchpad.** The Codex job directory for 69a-3 is session-scoped and gone; the
+runner's session cannot be revised from a new session, and does not need to be —
+its work is committed.
+
+**State:** 69a-1 and 69a-2 are merged. 69a-3 is implemented and pushed on
+`design69a/event-sequencing` (`2716497`), **not merged**, because it owns the
+gate for all three blocks and the gate has not yet passed.
+
+**What round 2 of the gate must show.** Check out that branch on the demo
+machine and run `design/69a-gate.md` from step 0. It differs from round 1 in
+four ways, each from round 1's own failures:
+
+1. The server is launched with `Start-Process -RedirectStandardOutput`, because
+   PowerShell does not capture a native child's stdout and round 1 came back
+   with a 0-byte `server-console.log`.
+2. Step 0 warms uv unredirected first — a cold tree's rebuild writes to stderr,
+   which terminates any redirected command under this shell's
+   `$ErrorActionPreference = 'Stop'`.
+3. Limb 2 is split: 2a watches for `: ping` frames in Firefox's Response tab
+   (three in 35 s), 2b is declared settled off-rig.
+4. Both browser artifacts are named separately — the HAR **and** the console
+   export, because limb 7's evidence is `console.warn` output that a HAR does
+   not contain.
+
+**The limbs still owed:** 2a, 3, 6, 7, 8. Limbs 1, 4 and 5 passed in round 1 and
+a second observation of them is a bonus, not a requirement — but the reload limb
+is now also the regression check for `691700f`, so it is worth re-running
+deliberately.
+
+**When the gate passes:** merge the branch to `main`, push, delete it locally and
+on `origin`, fill this row's merge and design-reconciliation cells, and run the
+post-merge design gate. `design/35`'s pointer section for design/69a needs its
+closing state written at the same time.
+
+**Verification already done by the coordinator, so it need not be repeated:**
+suite 2788/99/2; selftest 11/11 on both trees, discriminating; every new test in
+69a-3 watched failing on `main` or under mutation, including the reload-poll test
+whose mutation now fails on `scheduledAfterBoot` rather than crashing.
 
 ### Coordination log
 
