@@ -318,8 +318,8 @@ def test_stream_silent_from_its_first_byte_is_armed_and_settles_once():
       const armedAtStart = timers[0].delay;
       timers[0].fn();
       recovery.markStreamSilent();
-      const didSettle = recovery.settleIfRecovered({{running: false}});
-      const didSettleTwice = recovery.settleIfRecovered({{running: false}});
+      const didSettle = await recovery.settleIfRecovered({{running: false}});
+      const didSettleTwice = await recovery.settleIfRecovered({{running: false}});
       process.stdout.write(JSON.stringify({{
         armedAtStart, silent, settled, didSettle, didSettleTwice
       }}));
@@ -392,6 +392,193 @@ def browser_turn_snippets():
         html[turn_start:turn_end],
         html[submit_start:submit_end],
     ))
+
+
+def browser_boot_snippets():
+    html = resources.files("microclaw").joinpath("serve.html").read_text(
+        encoding="utf-8"
+    )
+    set_busy_start = html.index("  function setBusy(on)")
+    set_busy_end = html.index("\n\n  // ---- stop ----", set_busy_start)
+    recovery_start = html.index("  let confirmId = null;")
+    recovery_end = html.index("\n\n  function showGrants", recovery_start)
+    boot_start = html.index("  // ---- boot ----")
+    boot_end = html.index("\n})();\n</script>", boot_start)
+    return "\n".join((
+        html[set_busy_start:set_busy_end],
+        html[recovery_start:recovery_end],
+        html[boot_start:boot_end],
+    ))
+
+
+def run_browser_boot(confirm_steps, *, ownership_probe=False):
+    path = resources.files("microclaw").joinpath("recovery.js")
+    snippets = browser_boot_snippets()
+    script = f"""
+      global.window = {{}};
+      require({json.dumps(str(path))});
+      global.Recovery = window.Recovery;
+      const elements = new Map(), timers = new Map();
+      let nextTimer = 0, refreshes = 0, toasts = [];
+      function element(id) {{
+        if (!elements.has(id)) {{
+          const classes = new Set(
+            id === 'pending' || id === 'stop' ? ['hidden'] : []);
+          elements.set(id, {{
+            disabled: false, textContent: '', dataset: {{}},
+            classList: {{
+              toggle(name, force) {{ force ? classes.add(name) : classes.delete(name); }},
+              add(name) {{ classes.add(name); }}, remove(name) {{ classes.delete(name); }},
+              contains(name) {{ return classes.has(name); }}
+            }},
+            focus() {{}}, querySelectorAll() {{ return []; }},
+          }});
+        }}
+        return elements.get(id);
+      }}
+      function $(id) {{ return element(id); }}
+      const msg = element('msg'), send = element('send');
+      let busy = false, hasKey = true, history = [];
+      const steps = {json.dumps(confirm_steps)};
+      async function apiFetch(url) {{
+        if (url === '/api/key') return {{status: 200, ok: true, json: async () => ({{}})}};
+        if (url === '/api/model') return {{status: 200, ok: true,
+          json: async () => ({{model: 'test'}})}};
+        if (url === '/api/confirm') {{
+          const step = steps.shift();
+          if (step.failure) throw new Error(step.failure);
+          return {{status: step.status || 200, ok: !step.status,
+            json: async () => step.state}};
+        }}
+        throw new Error('unexpected URL ' + url);
+      }}
+      function toast(message) {{ toasts.push(message); }}
+      function showKey() {{}}
+      function showModel() {{}}
+      async function refreshUpdate() {{}}
+      async function refresh() {{ refreshes += 1; }}
+      async function pairBrowser() {{ return true; }}
+      function showGrants() {{}}
+      function showConfirm(p) {{ confirmId = p.id; }}
+      function hideConfirm() {{ confirmId = null; }}
+      window.setTimeout = (fn, delay) => {{
+        const id = ++nextTimer; timers.set(id, {{fn, delay}}); return id;
+      }};
+      window.clearTimeout = id => timers.delete(id);
+      window.history = {{replaceState() {{}}}};
+      global.location = {{hash: '', pathname: '/', search: ''}};
+      global.document = {{visibilityState: 'visible'}};
+      {snippets}
+      async function drain() {{
+        await new Promise(setImmediate); await new Promise(setImmediate);
+      }}
+      async function tick() {{
+        const timer = [...timers.values()][0];
+        if (timer) {{ timers.clear(); await timer.fn(); await drain(); }}
+      }}
+      await drain();
+      const afterBoot = {{
+        pendingHidden: element('pending').classList.contains('hidden'),
+        stopHidden: element('stop').classList.contains('hidden'),
+        sendDisabled: send.disabled, msgDisabled: msg.disabled,
+        pendingText: element('pending-text').textContent,
+        refreshes,
+      }};
+      await tick();
+      const afterFailure = {{
+        pendingHidden: element('pending').classList.contains('hidden'),
+        sendDisabled: send.disabled, msgDisabled: msg.disabled, refreshes,
+      }};
+      await tick();
+      const afterSettle = {{
+        pendingHidden: element('pending').classList.contains('hidden'),
+        stopHidden: element('stop').classList.contains('hidden'),
+        sendDisabled: send.disabled, msgDisabled: msg.disabled, refreshes,
+      }};
+      let afterOwnedPoll = null;
+      if ({str(ownership_probe).lower()}) {{
+        setBusy(true);
+        await confirmationRecovery.reconcileConfirmation();
+        afterOwnedPoll = {{
+          pendingHidden: element('pending').classList.contains('hidden'),
+          sendDisabled: send.disabled, msgDisabled: msg.disabled, refreshes,
+        }};
+      }}
+      process.stdout.write(JSON.stringify({{
+        afterBoot, afterFailure, afterSettle, afterOwnedPoll, toasts
+      }}));
+    """
+    wrapper = "(async () => {\n" + script + "\n})().catch(e => { console.error(e); process.exit(1); });"
+    result = subprocess.run(
+        ["node", "-e", wrapper], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_serve_boot_adopts_running_turn_survives_failure_and_releases_at_end():
+    running = {
+        "id": "confirm-1", "grants": [], "running": True,
+        "turn_id": "turn-1", "remaining_s": 42,
+    }
+    result = {
+        "running": run_browser_boot([
+            {"state": running},
+            {"state": running},
+            {"failure": "temporary outage"},
+            {"state": {"grants": [], "running": False, "turn_id": "turn-1"}},
+            {"state": {"grants": [], "running": False, "turn_id": "turn-2"}},
+        ], ownership_probe=True),
+        "idle": run_browser_boot([
+            {"state": {"grants": [], "running": False}},
+        ])["afterBoot"],
+        "pairing": run_browser_boot([
+            {"state": running}, {"state": running}, {"status": 401},
+        ]),
+    }
+    expected = {"running": {
+        "afterBoot": {
+            "pendingHidden": False, "stopHidden": False,
+            "sendDisabled": True, "msgDisabled": True,
+            "pendingText": "Waiting for your confirmation. 42s remaining.",
+            "refreshes": 1,
+        },
+        "afterFailure": {
+            "pendingHidden": False, "sendDisabled": True,
+            "msgDisabled": True, "refreshes": 1,
+        },
+        "afterSettle": {
+            "pendingHidden": True, "stopHidden": True,
+            "sendDisabled": False, "msgDisabled": False, "refreshes": 2,
+        },
+        "afterOwnedPoll": {
+            "pendingHidden": False, "sendDisabled": True,
+            "msgDisabled": True, "refreshes": 2,
+        },
+        "toasts": [],
+    }, "idle": {
+        "pendingHidden": True, "stopHidden": True,
+        "sendDisabled": False, "msgDisabled": False,
+        "pendingText": "", "refreshes": 1,
+    }, "pairing": {
+        "afterBoot": {
+            "pendingHidden": False, "stopHidden": False,
+            "sendDisabled": True, "msgDisabled": True,
+            "pendingText": "Waiting for your confirmation. 42s remaining.",
+            "refreshes": 1,
+        },
+        "afterFailure": {
+            "pendingHidden": True, "sendDisabled": False,
+            "msgDisabled": False, "refreshes": 1,
+        },
+        "afterSettle": {
+            "pendingHidden": True, "stopHidden": True,
+            "sendDisabled": False, "msgDisabled": False, "refreshes": 1,
+        },
+        "afterOwnedPoll": None,
+        "toasts": ["This browser session needs re-pairing."],
+    }}
+    assert result == expected, json.dumps(result, sort_keys=True)
 
 
 def run_browser_turn(*, unrelated_abort=False):

@@ -39,6 +39,7 @@
     const notePollFailure = options.notePollFailure;
     const needsPairing = options.needsPairing;
     const noteStreamSilence = options.noteStreamSilence || (() => {});
+    const adoptRunningTurn = options.adoptRunningTurn || (() => {});
     const settleRecovered = options.settleRecovered || (() => {});
     const silenceMs = options.silenceMs == null ? 30000 : options.silenceMs;
     let recoveryActive = false;
@@ -50,6 +51,7 @@
     let deadlineMs = null;
     let silenceTimer = null;
     let streamSilenceDetected = false;
+    let adoptedTurn = false;
 
     function armSilenceTimer() {
       clearSilenceTimer();
@@ -68,12 +70,16 @@
       noteStreamSilence();
     }
 
-    function settleIfRecovered(state) {
-      if (!streamSilenceDetected || !state || state.running !== false) return false;
+    async function settleIfRecovered(state, stoppedLearning = false) {
+      const turnStopped = state && state.running === false;
+      if ((!turnStopped && !(stoppedLearning && adoptedTurn)) ||
+          (!streamSilenceDetected && !adoptedTurn)) return false;
+      const adopted = adoptedTurn;
+      adoptedTurn = false;
       streamSilenceDetected = false;
       clearSilenceTimer();
       stopConfirmationRecovery();
-      settleRecovered();
+      await settleRecovered({ adopted, stoppedLearning });
       return true;
     }
 
@@ -103,6 +109,7 @@
     async function reconcileConfirmation() {
       const response = await fetchState("/api/confirm");
       if (response.status === 401) {
+        await settleIfRecovered(null, true);
         stopConfirmationRecovery();
         needsPairing();
         return null;
@@ -129,7 +136,7 @@
           hideConfirm(confirmId);
         }
       }
-      settleIfRecovered(pending);
+      await settleIfRecovered(pending);
       if (pending.running === false) stopConfirmationRecovery();
       return pending;
     }
@@ -176,6 +183,10 @@
 
     async function startFromBoot() {
       const state = await reconcileConfirmation();
+      if (state && state.running === true) {
+        adoptedTurn = true;
+        adoptRunningTurn();
+      }
       startIfRunning(state);
       return state;
     }

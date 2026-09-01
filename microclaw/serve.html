@@ -565,6 +565,7 @@
       if (failures === 3) toast("Confirmation status is temporarily unavailable; retrying.");
     },
     needsPairing: () => toast("This browser session needs re-pairing."),
+    adoptRunningTurn: () => setBusy(true),
     noteStreamSilence: () => {
       if (streamSilenceDetected) return;
       streamSilenceDetected = true;
@@ -572,7 +573,14 @@
         "last applied seq:", lastAppliedSeq);
       renderPendingText();
     },
-    settleRecovered: () => {
+    settleRecovered: async ({ adopted, stoppedLearning }) => {
+      if (adopted) {
+        if (!stoppedLearning) {
+          try { await refresh(); } catch (err) { toast(err.message); }
+        }
+        setBusy(false);
+        return;
+      }
       streamSilenceDetected = false;
       recoverySettled = true;
       activeTurnAbort?.abort();
