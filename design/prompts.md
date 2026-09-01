@@ -8750,3 +8750,89 @@ fixed 0.0502 s, adaptive 0.0912 s, adaptive-without-analysis 0.0909 s — ~41 ms
 of dispatch, analysis free, ~1.8x. Both rigs stand at n=1. The lesson is the
 one design/65 wrote down before any of this: publish the number, and do not
 compare a measurement to an assumption.
+
+## design/62 blocks 62a and 62b — notes live in the design doc
+
+Recorded here for findability, not duplicated: both blocks' coordination notes
+were written into `design/62-file-discovery-and-nested-protocol-hints.md`
+instead of this file — §"Coordination note: two concurrent runners share one
+account quota", §"What block 62b's two turns are worth keeping", and the
+out-of-band Python-floor note. That is a deviation from step 9 and the reason
+this pointer exists; `CLAUDE.md` wins, so 62c's notes are below.
+
+The two most reusable things in there: **concurrency is free in worktrees and
+not free in tokens** — 62a and 62b were assigned five minutes apart and both
+Codex turns died on the same account usage limit, spending the quota at twice
+the rate for no schedule benefit — and **run a killed turn's tests before
+writing its revision prompt**, which is how F4 was found.
+
+## design/62 block 62c — the protocol preflight (merged 2026-09-01, `48e6d19`)
+
+Decision 3. One helper widened, four boundaries calling it, one approved break.
+Two Codex turns and one coordinator commit; suite 2698 → 2738, zero failures.
+
+**A finding can be right about the mechanism and wrong about its extent.** F1
+told the runner that `run_adaptive_survey`'s `acquire_on_hit` reaches
+`_protocol_shape_kwargs` at one site and that its zstack branch "does not call
+it at all". The first half was true, the second was false: the *plan* phase
+calls it for both protocols, handing the zstack branch a dict already translated
+from `z_offset_*` to the absolute shared names. Found by grepping every caller
+of the helper rather than reading the site the document named. When a finding
+says "this reaches that", the check is `grep -n '<helper>' ` and reading each
+hit, not trusting the count.
+
+**The tell for an accepted regression was in the test diff, not the product
+diff.** The implementation moved a preflight above the deprecated wrapper's
+`protocol == "snap"` refusal, so a snap call carrying parameters lost the useful
+"use protocol='timelapse' with n_frames=1 and interval_s=0" guidance and got a
+generic incompatible-key message instead. Nothing in the product diff looked
+wrong. What gave it away was two lines added to an *existing* test —
+`if override.get("protocol") == "snap": kwargs["protocol_params"] = {}` — which
+exist only to route the test around the new behaviour. **Read what an
+implementation changed in the tests it did not write.** `run_adaptive_survey`
+was the control: its snap refusal already preceded its helper call, so it kept
+the good message, which is how the regression could be named rather than argued.
+
+**A criterion's plural can be load-bearing.** Acceptance test 6 said "reports
+missing required key**s**". The first implementation reported one — the first
+missing key, the first incompatible key — which is defensible in isolation and
+indefensible in a block whose observed failure 2 is titled *"costs one round
+trip"*: a caller omitting both timelapse keys pays two, and a six-key zstack case
+pays three. The block existed to remove that cost and was reintroducing it one
+key at a time.
+
+**The stronger assertion was cheaper than the weaker one, and already true.**
+The boundary test wired five named `side_effect`s into one mock and asserted
+that mock was never called — encoding the assumption that those five names are
+the whole hardware surface, with `MagicMock` silently absorbing every other
+call. `assert ctrl.mock_calls == [] and guard.mock_calls == []` is two lines,
+cannot rot as the code grows, and passed at all eight parameterizations on the
+unrevised tree. Measured before asking for it, which is what made it an
+instruction rather than a suggestion.
+
+**Grep the suite for a path's distinguishing key before assuming coverage.**
+`z_offset_start_um` appeared in exactly one test in the repository, inside an
+assertion about a *description string*. No test had ever driven an
+`acquire_on_hit` zstack — so the widening landed on an entirely uncovered path.
+It survived, verified by hand, but nothing pinned it. The new limbs carry a
+`reaches_shared_helper` flag so a reader can tell a pre-existing boundary
+refusal from the new widening.
+
+**An outcome-shaped criterion gets satisfied by a different route — off-rig
+too.** Acceptance test 6 named the plain multiposition planning path, guarded by
+`if protocol != "snap"`, as the route that had to start reaching the helper. The
+implementation asserted the *tile* route instead, which also reaches it, so the
+criterion's own path stayed unpinned through two review rounds. Same shape as
+52b's rig-gate lesson, with no rig involved. The coordinator added the limb;
+pre-fix it fails `KeyError: 'error'`, because on `main` that call **succeeds and
+silently discards** the snap parameters it was handed.
+
+**And the coordinator's own probe measured the wrong tree.** Two verification
+probes were run as `python /abs/path/probe.py` from inside the worktree, which
+puts the *script's* directory on `sys.path[0]`; the editable install then
+resolved `microclaw` to the primary checkout, so the probe measured `main` while
+appearing to measure the branch. `PYTHONPATH=<worktree>` fixes it; printing
+`microclaw.__file__` first would have caught it. The bad run was not wasted — it
+happened to reproduce the runner's pre-fix `TypeError` on `main` — but it very
+nearly recorded a pass for code that had not been exercised. Established for
+this repository already, and re-learned anyway: see the editable-install note.
