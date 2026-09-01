@@ -902,12 +902,21 @@ uv run pytest -q
 | before design/62 | 2658 passed / 99 skipped = 2757 | conda 3.11.15 |
 | after 62b | 2694 / 99 = 2793 | conda 3.11.15 |
 | after 62a | 2698 / 99 = 2797 | conda 3.11.15 |
-| **after the uv migration — the live baseline** | see the row below | **uv 3.12.14** |
+| **after the uv migration — THE LIVE BASELINE** | **2698 passed / 99 skipped / 2 warnings = 2797** | **uv 3.12.14** |
 
-62c must be measured against the **3.12** number, not against 2698. Take it
-fresh on `main` before assigning, because two things landed after 62a that touch
-the count's environment rather than its content: the Python floor, and the wheel
-test below.
+**Measure 62c against 2698 / 99 / 2.** The pass and skip counts are unchanged
+across the migration, which is the reassuring part: the same 2797 tests collect
+and the same 99 skip, so no test started skipping when the interpreter moved (h5py
+is installed in the uv env, so `test_ilastik_adapter.py` genuinely runs).
+
+**The warning count differs — 3 on conda 3.11, 2 on uv 3.12 — and the cause was
+not identified.** Both remaining warnings are the same `UserWarning` from
+`tools.py:5736`/`:5737` (`phase_cross_correlation` on an empty field, from
+`test_featureless_field_returns_error_not_garbage`). The third warning on 3.11
+was not captured before that environment stopped being the one of record. Do not
+read "2 warnings" as a regression against a remembered 3, and do not invent a
+reason for the difference — this document already had to retract one borrowed
+causal claim (see the 62b row).
 
 **Two traps this migration produced, both worth knowing before you run anything:**
 
