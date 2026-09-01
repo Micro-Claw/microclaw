@@ -75,16 +75,23 @@ def test_reload_boot_starts_polling_while_running_and_stops_when_turn_settles():
       const bootState = await recovery.startFromBoot();
       await new Promise(setImmediate);
       const afterBoot = calls;
+      const scheduledAfterBoot = timers.length;
       clock += 1000;
+      // Report the absence rather than crashing on it: a boot that never starts
+      // the loop schedules nothing, and that is the defect this test exists for.
       const timer = timers.pop();
-      await timer.fn();
-      await new Promise(setImmediate);
+      if (timer) {{ await timer.fn(); await new Promise(setImmediate); }}
       process.stdout.write(JSON.stringify({{
-        afterBoot, calls, timers: timers.length, adopted: bootState.turn_id
+        afterBoot, scheduledAfterBoot, calls, timers: timers.length,
+        adopted: bootState.turn_id
       }}));
     """)
+    # scheduledAfterBoot is the assertion that matters: boot must leave a poll
+    # armed. Without it a reloaded page shows the banner and then goes inert -
+    # no countdown, no stale-banner removal, and no timeout disclosure.
     assert result == {
         "afterBoot": 2,
+        "scheduledAfterBoot": 1,
         "calls": 3,
         "timers": 0,
         "adopted": "turn-reloaded",
