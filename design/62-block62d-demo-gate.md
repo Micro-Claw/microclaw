@@ -15,7 +15,7 @@ git checkout design62/inspect-artifacts-discovery
 git merge-base --is-ancestor ddb60a8 HEAD
 if ($LASTEXITCODE -eq 0) { "implementation present" } else { "WRONG TREE - stop" }
 
-py -3 design\62-block62d-demo-gate.py --downloads "$env:USERPROFILE\Downloads"
+uv run python design\62-block62d-demo-gate.py --downloads "$env:USERPROFILE\Downloads"
 "exit code: $LASTEXITCODE"
 ```
 
@@ -23,11 +23,24 @@ Then send me `block62d-demo-gate.log` from the current directory. The script
 writes its own log, because PowerShell 5.1's `Start-Transcript` does not capture
 a native child process's stdout — that came back empty twice on design/58.
 
-If `py -3` is not on PATH, use the project's own interpreter
-(`.venv\Scripts\python.exe` or whatever `install.bat` created). The script needs
-nothing installed beyond microclaw itself, and **no safety config and no
-`workspace_dir`** — the product does not require one for a read-only listing, so
-the gate must not either.
+`uv run` because the demo machine is a uv install of microclaw — that is this
+repo's standing convention for rig-facing commands. Do **not** use bare `python`
+or `py -3`: the Windows launcher would hand you a system interpreter with none of
+microclaw's dependencies, and the gate would die on `from microclaw import tools`
+before running a single limb.
+
+Two things you will see and should ignore, both confirmed on macOS with this
+exact command: `uv run` may first sync or build the project environment (a few
+seconds, once per checkout), and importing microclaw prints a `SyntaxWarning:
+invalid escape sequence '\P'` from `mmpycorex/install.py`. That warning is
+upstream and pre-existing — not a gate failure.
+
+The script needs **no safety config and no `workspace_dir`** — the product does
+not require one for a read-only listing, so the gate must not either. It also
+prints the `microclaw=` path it actually imported, on its second line: confirm
+that path is your checkout of this branch and not an installed copy, because the
+gate puts the repo first on `sys.path` and I want the log to prove which tree
+produced the result.
 
 ## What it checks, and what it cannot
 
