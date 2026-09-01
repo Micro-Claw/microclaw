@@ -108,10 +108,20 @@ Judge and record each limb independently:
    throttling** *without reloading*. The banner must remain visible and the
    status must become exactly `Live updates interrupted; checking Microclaw…`.
 
-   In Chrome or Edge: **F12 → Network**, then the toolbar dropdown reading
-   **No throttling** → **Offline**; set it back to **No throttling** after.
-   (Alternative route: DevTools **⋮ → More tools → Network conditions**, tick
-   **Offline**.) Firefox has the same dropdown on its **Network** panel.
+   **The demo machine's default browser is Firefox**, and Firefox's Network
+   panel throttling dropdown offers bandwidth profiles only — there is no
+   `Offline` entry there, unlike Chrome. In Firefox use the menu bar: press
+   **Alt** to reveal it, then **File → Work Offline**, and untick it the same
+   way afterwards. That is browser-wide rather than tab-scoped, but it is still
+   only Firefox and cannot touch a Remote Desktop session.
+
+   **If that item is missing or does not interrupt the stream, do limb 2 in
+   Edge** — open the same URL there and use **F12 → Network →** the toolbar
+   dropdown reading **No throttling → Offline** (alternative route: DevTools
+   **⋮ → More tools → Network conditions**, tick **Offline**). The limb tests
+   SSE delivery, `fetch` and `AbortController`, all standard, so it is equally
+   valid in Edge; the other limbs can stay in Firefox. Say which browser each
+   limb was observed in.
 
    This is **page-scoped**: it blocks only this tab's requests. It does not touch
    the machine's network adapter and cannot affect a Remote Desktop or SSH
