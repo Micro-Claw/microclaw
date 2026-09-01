@@ -215,14 +215,15 @@ class FakeFile:
             return FakeDataset(self.probabilities, {"axistags": self.axistags})
         if key == "ilastikVersion":
             return FakeDataset(np.array(b"9.8.7"))
+        if key == "PixelClassification/ClassifierForests/known_labels":
+            raise KeyError(key)
         return FakeDataset(np.array(LABELS))
 
 
 def adapter(tmp_path):
     executable = tmp_path / "python"
     executable.write_bytes(b"executable")
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     return IlastikCompletedDatasetAdapter(
         project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
         project_sha256=hashlib.sha256(project.read_bytes()).hexdigest(), timeout_s=2,
@@ -258,7 +259,7 @@ def test_batch_is_one_absolute_invocation_and_cleans_intermediates(tmp_path, mon
     ))
     result = instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
     assert result[0]["result"]["coordinates"] == {"position": 0}
-    assert result[0]["parameters"]["project_ilastik_version"] == "9.8.7"
+    assert result[0]["parameters"]["project_ilastik_version"] == "1.4.1"
     assert not work_seen[0].exists()
     assert decimate_field(FakeView().read_image())[0].shape == (256, 256)
 
@@ -412,15 +413,18 @@ def test_timeout_is_killed_and_intermediates_are_cleaned(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("case", ["missing", "mismatch"])
 def test_project_must_exist_and_match_hash(tmp_path, case):
-    instance = adapter(tmp_path)
     if case == "missing":
-        instance.project_path.unlink()
+        project = tmp_path / "missing.ilp"
+        digest = None
         expected = FileNotFoundError
     else:
-        instance.project_path.write_bytes(b"changed")
+        project = write_ilastik_project(tmp_path / "model.ilp")
+        digest = "0" * 64
         expected = ValueError
     with pytest.raises(expected):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", project_sha256=digest,
+        )
 
 
 class StageView(FakeView):
@@ -475,11 +479,6 @@ def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkey
     # was the whole point, so this asserts the subprocess never happens.
     probabilities, axistags, _ = recorded_output()
     base = adapter(tmp_path)
-    instance = IlastikCompletedDatasetAdapter(
-        base.project_path, "BG", "mitochondria", "healthy_mito",
-        executable_path=base.executable_path,
-        project_sha256=base.project_sha256, timeout_s=2,
-    )
     launched = []
 
     def run(command, **kwargs):
@@ -495,7 +494,11 @@ def test_a_mistyped_label_is_refused_before_ilastik_is_launched(tmp_path, monkey
         File=lambda path, mode: FakeFile(path, mode, Path("never"), probabilities, axistags)
     ))
     with pytest.raises(ValueError, match="absent.*mitochondria"):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            base.project_path, "BG", "mitochondria", "healthy_mito",
+            executable_path=base.executable_path,
+            project_sha256=base.project_sha256, timeout_s=2,
+        )
     assert launched == []
 
 
@@ -583,8 +586,7 @@ def test_the_project_hash_is_recorded_when_the_caller_supplies_none(tmp_path, mo
     probabilities, axistags, _ = recorded_output()
     executable = tmp_path / "python"
     executable.write_bytes(b"executable")
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     instance = IlastikCompletedDatasetAdapter(
         project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
         timeout_s=2,
@@ -604,19 +606,18 @@ def test_the_project_hash_is_recorded_when_the_caller_supplies_none(tmp_path, mo
 
 
 def test_a_supplied_hash_is_still_verified_and_still_refuses(tmp_path):
-    instance = adapter(tmp_path)
-    assert instance.project_sha256 is not None
-    instance.project_path.write_bytes(b"changed underneath us")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     with pytest.raises(ValueError, match="sha256 mismatch"):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", project_sha256="0" * 64,
+        )
 
 
 def test_it_finds_ilastik_rather_than_asking_where_it_lives(tmp_path, monkeypatch):
     # Nobody should have to tell Microclaw where ilastik is installed to score
     # their own project with it.
     probabilities, axistags, _ = recorded_output()
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     found = tmp_path / "discovered_ilastik"
     found.write_bytes(b"executable")
     monkeypatch.setattr(ilastik_adapter, "discover_ilastik", lambda: (found, None))
@@ -637,8 +638,7 @@ def test_it_finds_ilastik_rather_than_asking_where_it_lives(tmp_path, monkeypatc
 
 
 def test_when_it_cannot_find_ilastik_it_asks_for_the_path(tmp_path, monkeypatch):
-    project = tmp_path / "model.ilp"
-    project.write_bytes(b"pinned project")
+    project = write_ilastik_project(tmp_path / "model.ilp")
     monkeypatch.setattr(ilastik_adapter, "discover_ilastik", lambda: None)
     instance = IlastikCompletedDatasetAdapter(project, "BG", "apo_mito", "healthy_mito",
                                               timeout_s=2)
@@ -684,11 +684,11 @@ def test_a_class_nobody_trained_cannot_be_a_ratio_denominator(tmp_path, monkeypa
     monkeypatch.setitem(sys.modules, "h5py", SimpleNamespace(
         File=lambda path, mode: PartlyTrained(path, mode, Path("never"),
                                               probabilities, axistags)))
-    instance = IlastikCompletedDatasetAdapter(
-        project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
-        timeout_s=2)
     with pytest.raises(ValueError, match="never trained on them"):
-        instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
+        IlastikCompletedDatasetAdapter(
+            project, "BG", "apo_mito", "healthy_mito", executable_path=executable,
+            timeout_s=2,
+        )
 
 
 def test_a_failed_batch_reports_what_ilastik_said(tmp_path, monkeypatch):
