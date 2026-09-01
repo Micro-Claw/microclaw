@@ -606,6 +606,48 @@ executable checks; `_protocol_shape_kwargs` does default `interval_s` to 0; the
 inline refusal does cover only `hook_strategy` and `HOOK_CAPABILITY_ARGS`;
 `fn` is in scope at `execute_tool`'s `except Exception` boundary (`:10709`).
 
+### F4 — `z_step_um` means two different things on the same tool
+
+Found by the coordinator running 62b's preserved tests, 2026-09-01. Exactly one
+of that file's 32 registry parameterizations failed, and the reason is not a test
+bug.
+
+`run_multiposition_with_autofocus` accepts **`z_step_um` at the top level** —
+schema description *"Fine step size for autofocus in µm"*, paired with
+`z_range_um` — **and** takes `protocol_params`, whose `z_step_um` is the zstack
+protocol's plane spacing. Two genuinely different quantities, same name, same
+tool. Measured: it is the only overlap among the four, and the tool is already
+marked deprecated in its own description.
+
+```text
+run_multiposition_with_autofocus  top-level overlap with the eight: ['z_step_um']
+run_tile_acquisition              none
+run_multiposition_acquisition     none
+run_adaptive_survey               none
+```
+
+Two consequences:
+
+- **Decision 4 behaves correctly here, by luck rather than design.** A top-level
+  `z_step_um` on that tool *binds*, so no `TypeError` is raised and the hint never
+  fires — which is the right outcome. But the eight-key list was written on the
+  assumption that these keys are never legitimate top-level parameters of a tool
+  that also takes `protocol_params`, and on one tool that assumption is false.
+  The correct test is not to drop the combination but to **assert** it: that
+  `z_step_um` binds on this tool and produces no nested hint. A silently skipped
+  parameterization would leave the assumption unexamined.
+- **Decision 2's shared description needs one disambiguating clause.** Its
+  literal sentence — "Put channel and exposure_ms here, never at the top level" —
+  names only the two keys that are *not* in collision, so it is not false. But an
+  agent reading it on the autofocus wrapper sees `z_step_um` published in two
+  places with nothing distinguishing them. Say what the nested Z keys are (the
+  acquisition protocol's plane spacing) so the focus-search parameter is not
+  confusable with it. This can be done in the shared constant without breaking
+  the same-object identity that acceptance test 5 requires.
+
+Renaming either parameter is **out of scope** — it is a public surface change
+design/62 did not decide, on a deprecated tool.
+
 ### F3 — acceptance test 9 is an API spend, not a runner task
 
 Test 9 replays turn 73's payload through a model with the old and the new
@@ -619,11 +661,37 @@ implementation runner: it costs API credits, and the document's own instruction
 ("size the sample before reading a difference") means a useful run is tens of
 samples across two conditions, not one. It does not gate 62b's merge.
 
-**Operator decision, 2026-09-01: run it, priced first.** The coordinator adapts
-the spike and states a sample size and a token estimate for the two conditions
-*before* spending anything; the operator approves or declines the spend at that
-point. If declined, the outcome is recorded here as a deliberate non-run, not
-left as a blank — see [[feedback_no_credit_overage]].
+**Operator decision, 2026-09-01, revised the same day: priced now, run last.**
+
+Priced by the coordinator against the real payload rather than estimated. Input
+is **111,643 tokens per sample** — 272 kB of history prefix (messages 0–72),
+89 kB of tool schemas, 29 kB of system prompt — on `claude-opus-4-8`, which is
+`agent.DEFAULT_MODEL` and therefore the model the session itself ran. At $5/$25
+per 1M with cache reads at 0.1x:
+
+| per condition | 1 turn/sample | 3 turns/sample |
+| --- | --- | --- |
+| n=8 | $1.49 | $3.18 |
+| n=24 | $3.18 | $8.26 |
+| n=48 | $5.72 | $15.88 |
+
+Two conditions, so double it. The coordinator recommended **n=24 per condition,
+~$17, ceiling $25**: multi-turn is the likely case (design/59's spike had to loop
+until a decision, because a single response returned `NEITHER` for all 24 samples
+while the model was still gathering), and n=24 is the floor for reading a
+difference at all, since design/59 measured **5/8 then 15/16 on identical
+wording**.
+
+**The operator deferred it to the end of the block, and was right to.** What
+test 9 measures *is* the schema's description text, and 62b and 62c can both
+still change that text — 62b already owes it a disambiguating clause from F4
+below. A run now would price a draft and have to be repeated, which is the one
+thing this limb must not do at ~$17 a pass.
+
+So: **run it once, after 62d merges, against the final shipped wording.** It
+does not gate any block's merge. If it is never run, that is recorded here as a
+priced, deliberate decline — not left as a blank. See
+[[feedback_no_credit_overage]] and [[feedback_one_measurement_is_not_a_property]].
 
 ## The gate story: no microscope, and that is by design
 
@@ -667,7 +735,8 @@ publishes points at. This is the intentional break — see the ledger row.
 
 **62d — discovery folded into `inspect_artifacts`.** Decision 5. Acceptance
 tests 10–14, plus the demo-machine path-semantics limb. **Depends on 62c
-merged** for the same shared-file reason. Assigned last deliberately: §3 scores
+merged** for the same shared-file reason. **Acceptance test 9 runs after this
+block merges, once, against the final wording** — see F3. Assigned last deliberately: §3 scores
 it as the weakest of the three observed failures, and a discovery tool would not
 have unblocked the turn it came from.
 
@@ -707,8 +776,57 @@ accepted from a runner report.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 62a | `design62/ilastik-project-before-dataset` | | | **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
-| 62b | `design62/protocol-params-schema-and-hint` | | | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Test 9's replay is F3's priced coordinator limb, approved to run subject to a stated estimate, and does not gate this merge | |
+| 62a | `design62/ilastik-project-before-dataset` | `8176145` (2026-09-01) | turn 1 assigned 2026-09-01, **killed mid-flight by a Codex account usage limit** at 11:45; preserved unreviewed as `d1da105` and pushed. Tests only — a `write_ilastik_project` HDF5 fixture and three of the four acceptance tests; **no product change at all**, neither `ilastik_adapter.py` nor `completed_dataset.py` touched. Its accidental value is that it *is* step 3's pre-fix evidence, captured by the coordinator before any fix exists: tests 1 and 2 fail `DID NOT RAISE ValueError` (construction opens nothing today) and test 3 fails `FileNotFoundError ... missing-dataset` out of `ndstorage/_superclass.py:28` — **turn 51 of the session reproduced verbatim**, which is this block's whole thesis. Fixture itself unverified |  **none — no rig, no demo.** Tests 1–4 are pure-Python ordering with no dataset, no ilastik installation and no hardware; test 1's whole point is that it runs with neither | |
+| 62b | `design62/protocol-params-schema-and-hint` | `8176145` (2026-09-01) | **turn 1 killed by a Codex usage limit** at 11:45 with edits landed; preserved unreviewed as `1d69416`. Revision 1 (`0327b32` + `f5a2557`) resumed the same session at 14:24 once the quota reset and closed every finding. Coordinator correction `822e386` removed a `result.md` the runner had committed into the repository root — a job artifact, not a repo file; content preserved in the job directory and folded into this row. **Coordinator-run suite: 2694 passed / 99 skipped / 3 warnings = 2793 collected, baseline +36, zero failures.** The runner reported 9 failures as host/sandbox artifacts and that reconciles *exactly* — its 2685 + 9 = 2694 — every one passing in the baseline environment; its sandbox is Python **3.10** (no `BaseException.add_note`) with no network and a binary-incompatible h5py/NumPy pair. **Evidence:** 31 pre-fix failures on the positive hint limb, each `assert 'protocol_params' in <the generic argument hint>`; test 5's identity claim proved by **mutation** (`{**_PROTOCOL_PARAMS_SCHEMA}`) because a pre-fix run fails on the constant's absence and proves nothing; and — unasked — conditions 2 and 3 of Decision 4 mutated *separately*, each shown load-bearing. The runner stated plainly that the two negative limbs and F4's collision limb pass pre-fix by design and cannot honestly be made to fail. **Coordinator-verified independently:** all four top-level sites are the same object, `acquire_on_hit`'s is not, and the shared description carries both 'never at the top level' and F4's autofocus clause | **none — no rig, no demo.** A schema is checked by reading it and the hint by driving `execute_tool`. Acceptance test 9 runs once after 62d, against the final wording — F3 | merged 2026-09-01, branch deleted local and origin |
 | 62c | `design62/protocol-preflight` | | | **none — no rig, no demo.** Every limb asserts a refusal happens *before* a hardware call, which is measured by counting calls on a fake | |
 | 62d | `design62/inspect-artifacts-discovery` | | | **demo machine, one limb.** Windows basename matching, case-insensitive order and a real `Downloads` subtree; everything else settles on macOS. Runs as a script against a fake built from `pathlib`/`os.scandir` behaviour, not from our caller — the lesson design/60's gate paid for | |
 
+
+### Coordination note: two concurrent runners share one account quota
+
+Both 62a and 62b were assigned at 11:42 on 2026-09-01 and **both turns died at
+11:45 on the same Codex account usage limit**, five minutes in. The blocks were
+correctly independent — different files, different worktrees, no merge conflict
+— but independence at the *repository* level is not independence at the *quota*
+level, and running them concurrently spent the limit at twice the rate for no
+schedule benefit, since neither finished.
+
+`CLAUDE.md` §"The block workflow" step 2 records what a killed turn costs and how
+to preserve it. It does not yet record this: **concurrency is free in worktrees
+and not free in tokens.** Prefer sequential assignment unless a block is genuinely
+blocked waiting on something else, and if two do run concurrently, expect the
+limit sooner rather than later.
+
+The preserved-turn rule worked exactly as written. 62a died early enough that only
+tests existed and 62b died late enough that both product changes had landed; both
+were committed with the state stated plainly in the message, pushed, and handed
+forward in writing. What the rule does not say, and should: **run the killed
+turn's tests before handing them on.** Doing so turned 62a's abandoned turn into
+this block's pre-fix evidence and found a test defect in 62b's — two things the
+next turn would otherwise have spent its own budget discovering.
+
+### What block 62b's two turns are worth keeping
+
+**Running a killed turn's tests is how F4 was found.** The coordinator's rule
+after the usage-limit kill was to preserve the edits and hand them forward; what
+actually produced a finding was *executing* them. Exactly one of 32
+parameterizations failed, and reading the failure rather than patching it exposed
+that `z_step_um` names two different quantities on one tool. Nothing in the
+design document knew this, and no review round would have found it by reading —
+the collision is invisible unless you bind the signature. **Run what a dead turn
+left behind before writing its revision prompt.**
+
+**A residual, recorded rather than fixed.** `acquire_on_hit.protocol_params` is
+published as a bare `{"type": "object"}`; its keys are documented only in the
+parent `acquire_on_hit.description`. That is the same shape as the defect this
+block exists to remove — a parameter set accepted but not published as
+properties — and it is pre-existing, not introduced here. 62b deliberately left
+it alone because F1 forbids pointing the shared constant at it and its real
+schema (relative Z offsets, no `channel`) has never been written out. **Open, no
+block.** Whoever writes it must not reuse `_PROTOCOL_PARAMS_SCHEMA`.
+
+**One deviation from the design, accepted.** Decision 4's example text reads
+`protocol_params={..., "exposure_ms": 100}`. The runner generalized it to
+`protocol_params={..., "<key>": value}` rather than invent eight per-key
+literals. Accepted: the design gave a literal for one key only, and a wrong-typed
+example on the other seven would be worse than a placeholder.
