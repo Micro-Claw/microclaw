@@ -1023,9 +1023,60 @@ entire off-rig case rests on tests that skip silently without it.
 
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
-| 69a-1 | `design69a/recovery-poll` | `9f18133` (2026-09-01) | | scored with 69a-3 | |
+| 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
 | 69a-2 | `design69a/keepalive-and-abort` | | | scored with 69a-3 | |
 | 69a-3 | `design69a/event-sequencing` | | | **demo machine, one driven session**, scores all three blocks | |
+
+### What block 69a-1 cost, and what it proved
+
+**Review round 1 returned four defects and every one failed on the pre-fix tree
+for its stated reason.** The load-bearing one reproduced the incident's own
+shape: `reconcileConfirmation` compared `resolution.id === confirmId`
+unconditionally, so a **reloaded page — where `confirmId` is null — could never
+match**, and the turn-ID adoption written for exactly that case was unreachable.
+Driven against the runner's own helper, a reloaded page produced `[]`: no calls,
+no banner, no explanation. An operator who comes back to the screen is told
+nothing, which is what happened at the Zeiss microscope.
+
+**The test named for that path did not exercise it.** It asserted
+`reconcile(state, confirm_id="c1")` — a page with the banner already up, not a
+reload. `CLAUDE.md`'s *a fixture that cannot reach the code is not coverage of
+it*, in a block whose whole premise is that untested browser code caused the
+incident. Probing the scenario by hand is what found it; reading the assertion
+would not have.
+
+**The second defect is worth keeping for its evidence.** `decided()` stashed the
+decision *before* `_audit_confirmation` returned, and `AuditLog.append` does
+`mkdir`/`open`/`write`/`fsync` (`conversation.py:153-163`). On the pre-fix tree
+the new test prints it exactly:
+`assert {'id': 'pending-id', 'turn_id': 'turn-1', 'decision': 'approved'} is None`
+— an approval published to the browser for a confirmation the audit log never
+recorded.
+
+**Two process findings, both the coordinator's:**
+
+- **The runner prompt prescribed a command that had never been run.** It said
+  `uv run pytest`; a fresh worktree has no `.venv`, so the first turn reached
+  for PyPI inside a no-network sandbox and stopped. That is `CLAUDE.md`'s *a
+  literal command must be established, never guessed* — written for rig
+  runbooks, and just as true of a runner prompt. The fix was to provision the
+  worktree's `.venv`, **run** `.venv/bin/python -m pytest -q` first, and hand
+  over the established command along with the benign `mmpycorex` SyntaxWarning
+  it prints. Provision the worktree before writing the prompt, not after.
+- **Codex's automatic approval reviewer is live on CLI 0.152.0**, three versions
+  past what the `codex-runner` skill documents. It refused the runner's attempt
+  to retry the failing command with escalation, citing the prompt's own
+  no-network instruction — it enforced a coordinator constraint against the
+  agent's workaround. `--strict-config` also accepted 0.152.0's config on the
+  revise path. Both halves of the version-drift question are answered
+  positively; the skill's note can stop being a caveat.
+
+**What the runner did not deliver, twice asked:** the six contract decisions
+from §"Using the stubs" and anything found wrong in the design. `result.md`
+carried commit SHAs and a suite count both rounds. Not worth a third turn — the
+coordinator reads the diff anyway — but a runner report that answers only the
+mechanical questions is a report that has told you nothing you could not have
+counted yourself.
 
 ### Coordination log
 
@@ -1035,3 +1086,9 @@ entire off-rig case rests on tests that skip silently without it.
   session at the end covers all three blocks rather than three sessions.
   Codex runner unavailable until 19:25 CEST; 69a-1 is queued behind a watcher
   rather than implemented inline, per step 2.
+- **2026-09-01, 69a-1 merged** at `fe32d6d`, branch and worktree deleted local
+  and on `origin`. One start turn (lost to the environment defect above), two
+  revision turns. The 19:25 usage window did not open on the second: the first
+  attempt fired at 19:25:02 and was refused with *try again at 7:25 PM*, so the
+  launcher retries on a usage-limit error and stops for the coordinator on any
+  other failure.
