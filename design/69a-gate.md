@@ -108,6 +108,11 @@ Judge and record each limb independently:
    throttling** *without reloading*. The banner must remain visible and the
    status must become exactly `Live updates interrupted; checking Microclaw…`.
 
+   In Chrome or Edge: **F12 → Network**, then the toolbar dropdown reading
+   **No throttling** → **Offline**; set it back to **No throttling** after.
+   (Alternative route: DevTools **⋮ → More tools → Network conditions**, tick
+   **Offline**.) Firefox has the same dropdown on its **Network** panel.
+
    This is **page-scoped**: it blocks only this tab's requests. It does not touch
    the machine's network adapter and cannot affect a Remote Desktop or SSH
    session, so it is safe when the demo machine is being driven remotely — which
