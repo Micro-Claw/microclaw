@@ -499,7 +499,8 @@ re-introduce prose in two places.
    synthetic now: test 7 proves the malformed public call is stopped by
    preflight, while this test proves the defensive translator does not misread
    an internal exception.
-9. **Replay, not string presence.** Tests 5 and 8 assert the words exist, which is
+9. **DECLINED 2026-09-01 — not run, by operator decision; F3 says why.**
+   **Replay, not string presence.** Tests 5 and 8 assert the words exist, which is
    not evidence a model reads them. Run `design/59-hint-replay-spike.py` against
    turn 73's recorded payload with the old and the new schema and count how
    often `exposure_ms` lands nested. Size the sample before reading a
@@ -693,10 +694,36 @@ still change that text — 62b already owes it a disambiguating clause from F4
 below. A run now would price a draft and have to be repeated, which is the one
 thing this limb must not do at ~$17 a pass.
 
-So: **run it once, after 62d merges, against the final shipped wording.** It
-does not gate any block's merge. If it is never run, that is recorded here as a
-priced, deliberate decline — not left as a blank. See
-[[feedback_no_credit_overage]] and [[feedback_one_measurement_is_not_a_property]].
+**Operator decision, 2026-09-01, after 62d merged: DECLINED. Test 9 will not be
+run.** This is the priced, deliberate decline the paragraph above provided for —
+not a blank. The reasoning, in the order it matters:
+
+- **No outcome would change a decision.** Better: the wording is already shipped.
+  Same: we would not revert it, because the description is better documentation
+  regardless. Worse: at n=24 it could not be told from noise, since design/59
+  measured **5/8 then 15/16 on identical wording**.
+- **The prize shrank to almost nothing.** Turn 73's `exposure_ms` sat at the *top
+  level*, which Python signature binding rejects **before the function body** — no
+  hardware, no dose, re-verified after 62d (`hardware touched: False`). The cost
+  was always exactly one wasted call.
+- **And 62b's own hint contaminates the measurement.** Decision 4 now returns
+  `` `exposure_ms` is a per-position protocol parameter; pass protocol_params={...,
+  "exposure_ms": value}. `` So test 9 counts a *first-try* rate whose consequence
+  this same block neutralised: the retry is guided and lands. It would price a
+  number we have already made cheap.
+
+**What is still worth knowing, and what it would take.** The general question —
+*do parameter descriptions actually move agent behaviour?* — is one this project
+leans on constantly (see [[feedback_rules_belong_in_parameter_descriptions]]). It
+deserves an answer, but turn 73 is the wrong vehicle, precisely because the hint
+rescues the caller either way. That experiment needs a wording change where the
+description is the **only** recovery path, and a sample sized against design/59's
+measured variance rather than against a budget. If it is ever run it should be its
+own design note, not a limb bolted to this one.
+
+A cheaper run was considered and rejected: n=8 is ~$6, and design/59 already
+showed n=8 buys noise. See [[feedback_no_credit_overage]] and
+[[feedback_one_measurement_is_not_a_property]].
 
 ### F5 — corrections at 62c's assignment, coordinator-verified on `main` at `e10f61f`
 
@@ -1088,7 +1115,14 @@ the environment is rebuilt rather than comparing numbers across interpreters.
 
 ## Session boundary, 2026-09-01 — read this first when resuming
 
-**Where design/62 stands: all four blocks are merged (2026-09-01). The only outstanding item is acceptance test 9, which is a priced API spend and needs the operator's go-ahead.**
+**design/62 is CLOSED, 2026-09-01.** All four blocks merged; acceptance test 9
+declined on value against price (F3). Nothing is owed, no gate is outstanding, and
+`main` stands at 2756 passed / 99 skipped / 2 warnings.
+
+Two residuals are recorded and deliberately unfixed, both in `acquire_on_hit`:
+`channel` inside its `protocol_params` reaches the plan and never the run, and
+that parameter is still published as a bare `{"type": "object"}`. Whoever writes
+its real schema must not reuse `_PROTOCOL_PARAMS_SCHEMA` (F1).
 
 | block | state |
 | --- | --- |
@@ -1096,7 +1130,7 @@ the environment is rebuilt rather than comparing numbers across interpreters.
 | 62b | **merged**, branch and worktree gone |
 | 62c | **merged 2026-09-01** at `48e6d19`, branch and worktree gone. The `interval_s` break is live, on two paths — plain and hooked multiposition, and `acquire_on_hit`'s timelapse |
 | 62d | **merged 2026-09-01** at `d697f20`, branch and worktree gone, demo gate passed 4/4 on round 2 |
-| test 9 | **the only thing design/62 still owes.** 62d is merged, so the wording is final. Once, ~$17 for n=24 over two conditions — needs the operator's go-ahead before any spend; see F3 |
+| test 9 | **DECLINED 2026-09-01** — priced and deliberate, not a blank. No outcome would have changed a decision, and 62b's own hint neutralised the cost it measured. F3 |
 
 No worktrees are live. Nothing is unpushed. There is no rig or demo gate anywhere
 in this block, and no runbook to write.
