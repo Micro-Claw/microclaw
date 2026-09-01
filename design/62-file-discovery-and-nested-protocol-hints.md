@@ -661,11 +661,37 @@ implementation runner: it costs API credits, and the document's own instruction
 ("size the sample before reading a difference") means a useful run is tens of
 samples across two conditions, not one. It does not gate 62b's merge.
 
-**Operator decision, 2026-09-01: run it, priced first.** The coordinator adapts
-the spike and states a sample size and a token estimate for the two conditions
-*before* spending anything; the operator approves or declines the spend at that
-point. If declined, the outcome is recorded here as a deliberate non-run, not
-left as a blank — see [[feedback_no_credit_overage]].
+**Operator decision, 2026-09-01, revised the same day: priced now, run last.**
+
+Priced by the coordinator against the real payload rather than estimated. Input
+is **111,643 tokens per sample** — 272 kB of history prefix (messages 0–72),
+89 kB of tool schemas, 29 kB of system prompt — on `claude-opus-4-8`, which is
+`agent.DEFAULT_MODEL` and therefore the model the session itself ran. At $5/$25
+per 1M with cache reads at 0.1x:
+
+| per condition | 1 turn/sample | 3 turns/sample |
+| --- | --- | --- |
+| n=8 | $1.49 | $3.18 |
+| n=24 | $3.18 | $8.26 |
+| n=48 | $5.72 | $15.88 |
+
+Two conditions, so double it. The coordinator recommended **n=24 per condition,
+~$17, ceiling $25**: multi-turn is the likely case (design/59's spike had to loop
+until a decision, because a single response returned `NEITHER` for all 24 samples
+while the model was still gathering), and n=24 is the floor for reading a
+difference at all, since design/59 measured **5/8 then 15/16 on identical
+wording**.
+
+**The operator deferred it to the end of the block, and was right to.** What
+test 9 measures *is* the schema's description text, and 62b and 62c can both
+still change that text — 62b already owes it a disambiguating clause from F4
+below. A run now would price a draft and have to be repeated, which is the one
+thing this limb must not do at ~$17 a pass.
+
+So: **run it once, after 62d merges, against the final shipped wording.** It
+does not gate any block's merge. If it is never run, that is recorded here as a
+priced, deliberate decline — not left as a blank. See
+[[feedback_no_credit_overage]] and [[feedback_one_measurement_is_not_a_property]].
 
 ## The gate story: no microscope, and that is by design
 
@@ -709,7 +735,8 @@ publishes points at. This is the intentional break — see the ledger row.
 
 **62d — discovery folded into `inspect_artifacts`.** Decision 5. Acceptance
 tests 10–14, plus the demo-machine path-semantics limb. **Depends on 62c
-merged** for the same shared-file reason. Assigned last deliberately: §3 scores
+merged** for the same shared-file reason. **Acceptance test 9 runs after this
+block merges, once, against the final wording** — see F3. Assigned last deliberately: §3 scores
 it as the weakest of the three observed failures, and a discovery tool would not
 have unblocked the turn it came from.
 
