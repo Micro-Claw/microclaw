@@ -245,6 +245,19 @@ class TestIdleWatchdog:
         assert rig.stalled, "a stall must be loud in the log, not silent"
         assert time.monotonic() - t0 < 10.0
 
+    def test_a_stall_is_not_reported_as_the_hook_stopping_the_survey(self):
+        """A watchdog stall is not a hook control decision. run_adaptive_survey
+        renders stopped_early as ", stopped early by the hook." and its hint
+        says the field "describes the hook's control decisions", so a stall
+        that flips it makes the survey result say something untrue about the
+        hook. The stop REASON may be recorded; done_early may not be set."""
+        rig = _Rig(n_tiles=8, max_idle_s=0.3)
+        rig.run(rig.detector(hits=set()), dwell_s=0.02, camera_stalls_at=4)
+        assert rig.stalled
+        assert not rig.progress.stopped_early, \
+            "a stalled survey must not report that its hook stopped it early"
+        assert rig.progress.stop_reason == "stall"
+
 
 # ── abort: the terminator and the log word (Fix 2a / A_10, A_9) ──────────────
 

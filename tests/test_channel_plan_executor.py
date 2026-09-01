@@ -619,7 +619,7 @@ def test_preset_entries_do_not_authorize_raw_property_writes(device, prop, value
     # must come from the map, proving neither half of the two-gate design is
     # load-bearing alone.
     guard = make_guard(categorical=[(device, prop)])
-    with pytest.raises(RigAuthorizationError, match="excluded from the authorization map"):
+    with pytest.raises(RigAuthorizationError, match="unclassified in the authorization map"):
         set_device_property(ctrl, guard, device, prop, value)
     assert core.calls == []
 

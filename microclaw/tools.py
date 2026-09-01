@@ -131,6 +131,16 @@ STALL_GAP_MULTIPLIER = 5.0
 # Only callers with no computable plan use this last-resort bound. A day is
 # deliberately generous, but finite: absence of a plan must never mean forever.
 FALLBACK_RUNTIME_CEILING_S = 24 * 60 * 60.0
+# M2, n=1 on 2026-08-31: at 50 ms exposure, 99 adaptive inter-frame
+# gaps measured min 0.219 s, mean 0.2495 s, max 0.344 s. The operator approved
+# rounding the measured maximum upward to 0.5 s/frame. This affects teardown
+# supervision only; dose, disk, reservation, and frames_planned remain on the
+# cap-derived accounting plan.
+ADAPTIVE_TIMELAPSE_SOFTWARE_ALLOWANCE_S_PER_FRAME = 0.5
+ADAPTIVE_TIMELAPSE_ALLOWANCE_EVIDENCE = (
+    "n=1 from M2, 2026-08-31; 99 gaps at 50 ms exposure: "
+    "min 0.219 s, mean 0.2495 s, max 0.344 s"
+)
 _ACQUISITION_POLL_S = 1.0
 _ACQUISITION_EVENT_CONTEXT = threading.local()
 
@@ -149,6 +159,34 @@ def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool]:
         return FALLBACK_RUNTIME_CEILING_S, True
     estimate = plan.estimated_duration_s
     return max(estimate * 1.5, estimate + 300.0), False
+
+
+def _adaptive_timelapse_runtime_plan(
+    accounting_plan: AcquisitionPlan, *, interval_s: float,
+) -> AcquisitionPlan:
+    """Widen teardown time only, from the measured M2 software cadence."""
+    scheduled_duration_s = (
+        max(0, accounting_plan.frames - 1) * max(0.0, float(interval_s))
+        + accounting_plan.exposure_ms_per_frame / 1000.0
+    )
+    base_duration_s = max(
+        accounting_plan.estimated_duration_s, scheduled_duration_s,
+    )
+    return AcquisitionPlan(
+        frames=accounting_plan.frames,
+        exposure_ms_per_frame=accounting_plan.exposure_ms_per_frame,
+        estimated_duration_s=(
+            base_duration_s
+            + accounting_plan.frames
+            * ADAPTIVE_TIMELAPSE_SOFTWARE_ALLOWANCE_S_PER_FRAME
+        ),
+        estimated_bytes=accounting_plan.estimated_bytes,
+        hardware_sequenced_burst=False,
+        software_allowance_s_per_frame=(
+            ADAPTIVE_TIMELAPSE_SOFTWARE_ALLOWANCE_S_PER_FRAME
+        ),
+        software_allowance_evidence=ADAPTIVE_TIMELAPSE_ALLOWANCE_EVIDENCE,
+    )
 
 
 def _stall_quiet_s(largest_observed_gap_s: float) -> float:
@@ -1149,7 +1187,7 @@ def _finite_number_text(value, label):
     if not math.isfinite(number): raise SafetyViolation(f"{{label}} must be finite")
     return number
 
-def authorize_property_write(ctrl, device, prop):
+def authorize_property_write(ctrl, device, prop, *, approved_envelope=False):
     # The recorded live run already passed its authorization map, and the
     # emitted guard below pins the exact approved device/property pair so no
     # other pair is reachable through this standalone action path.
@@ -1178,12 +1216,13 @@ class _RecordedSafetyGuard:
         self._bounded(z, _LIMITS["z_um"][0], _LIMITS["z_um"][1], "Z")
     def check_exposure(self, exposure_ms):
         self._bounded(exposure_ms, 0.0, _LIMITS["exposure_ms"][1], "Exposure")
-    def check_named_stage(self, device, position_um):
+    def check_named_stage(self, device, position_um, *, restoration_entry=False):
         envelope = globals().get("_NAMED_STAGE_ENVELOPE")
         if envelope is None or device != envelope["device"]:
             raise SafetyViolation(f"Named stage {{device!r}} has no recorded envelope")
-        self._bounded(position_um, envelope["min_um"], envelope["max_um"],
-                      f"Named stage {{device}}")
+        if not restoration_entry:
+            self._bounded(position_um, envelope["min_um"], envelope["max_um"],
+                          f"Named stage {{device}}")
 
     def stage_move_tolerance(self, device, *, core_focus=False, core_axis=None):
         if core_focus:
@@ -1191,10 +1230,13 @@ class _RecordedSafetyGuard:
         if core_axis is not None:
             return _LIMITS.get(f"{{core_axis}}_move_tolerance_um")
         return _LIMITS.get("named_stage_move_tolerances_um", {{}}).get(device)
-    def check_device_property(self, core, device, prop, value, *, approved_envelope=False):
+    def check_device_property(self, core, device, prop, value, *, approved_envelope=False,
+                              restoration_entry=False):
         envelope = globals().get("_PROPERTY_ENVELOPE")
         if envelope is None or device != envelope["device"] or prop != envelope["property"]:
             raise SafetyViolation(f"Property {{device}}.{{prop}} has no recorded envelope")
+        if restoration_entry:
+            return
         if "allowed_values" in envelope:
             if value not in envelope["allowed_values"]:
                 raise SafetyViolation("Property value is outside the recorded values")
@@ -1353,6 +1395,12 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     named_stage_envelope = params.get("named_stage_envelope")
     property_envelope = params.get("property_envelope")
     hook_action_plan = params.get("hook_action_plan")
+    adaptive_timelapse = kind == "timelapse" and params.get("max_frames") is not None
+    if adaptive_timelapse and hook_action_plan is not None:
+        raise CannotEmit(
+            "max_frames is incompatible with hook_action_plan because future events "
+            "are selected at runtime"
+        )
     if kind == "survey" and hook_action_plan is not None:
         raise CannotEmit("run_adaptive_survey rejects hook_action_plan; decisions select events at runtime")
     if (named_stage_envelope is not None or property_envelope is not None or
@@ -1412,12 +1460,25 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             f"guard.check_z({params['z_start_um']!r})",
             f"guard.check_z({params['z_end_um']!r})",
         ])
-    elif kind == "timelapse":
+    elif kind == "timelapse" and not adaptive_timelapse:
+        if params.get("n_frames") is None:
+            raise CannotEmit(
+                "the hooked fixed timelapse record has no n_frames count"
+            )
         shape = {"num_time_points": params["n_frames"],
                  "time_interval_s": params["interval_s"]}
     else:
-        positions = params.get("positions")
-        if positions is None:
+        positions = None if adaptive_timelapse else params.get("positions")
+        if adaptive_timelapse:
+            shape = {"num_time_points": 1,
+                     "time_interval_s": params["interval_s"]}
+            protocol = "timelapse"
+            pp = {
+                "exposure_ms": params.get("exposure_ms"),
+                "channel": params.get("channel"),
+            }
+            acquire_on_hit = None
+        elif positions is None:
             # The run itself recorded the coordinates it resolved, so a name
             # this exporter cannot re-derive is not a dead end. Same
             # result-derived route _emit_multiposition takes at :162-173, and
@@ -1443,12 +1504,17 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                     "_position_resolution_error",
                     "the record contains no resolved adaptive survey seed positions",
                 ))
-        if not positions or any(p.get("name") is None or p.get("x_um") is None
-                                or p.get("y_um") is None for p in positions):
+        if not adaptive_timelapse and (
+            not positions or any(
+                p.get("name") is None or p.get("x_um") is None
+                or p.get("y_um") is None for p in positions
+            )
+        ):
             raise CannotEmit("the record contains an incomplete adaptive survey seed position")
-        protocol = params.get("protocol")
-        pp = dict(params.get("protocol_params") or {})
-        acquire_on_hit = params.get("acquire_on_hit")
+        if not adaptive_timelapse:
+            protocol = params.get("protocol")
+            pp = dict(params.get("protocol_params") or {})
+            acquire_on_hit = params.get("acquire_on_hit")
         if acquire_on_hit is not None:
             if not saved:
                 raise CannotEmit(
@@ -1472,7 +1538,9 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             common.append(_emit_recorded_channel_effects(
                 search_effect, pp.get("channel"), label="search channel"
             ))
-        if protocol == "timelapse":
+        if adaptive_timelapse:
+            pass
+        elif protocol == "timelapse":
             shape = {"num_time_points": pp["n_frames"],
                      "time_interval_s": pp.get("interval_s", 0)}
         elif protocol == "zstack":
@@ -1480,11 +1548,12 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                      "z_step": pp["z_step_um"]}
         else:
             raise CannotEmit(f"unknown recorded adaptive survey protocol {protocol!r}")
-        shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in positions]
-        shape["position_labels"] = [p["name"] for p in positions]
-        common.extend(
-            f"guard.check_xy({p['x_um']!r}, {p['y_um']!r})" for p in positions
-        )
+        if not adaptive_timelapse:
+            shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in positions]
+            shape["position_labels"] = [p["name"] for p in positions]
+            common.extend(
+                f"guard.check_xy({p['x_um']!r}, {p['y_um']!r})" for p in positions
+            )
         if protocol == "zstack":
             common.extend([
                 f"guard.check_z({pp['z_start_um']!r})",
@@ -1499,6 +1568,13 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 shape["channel_exposures_ms"] = [pp["exposure_ms"]]
         elif pp.get("exposure_ms") is not None:
             common.append(f"core.set_exposure({pp['exposure_ms']!r})")
+        adaptive_cap = params["max_frames"] if adaptive_timelapse else None
+        adaptive_max_expression = (
+            repr(adaptive_cap) if adaptive_timelapse else f"len(events){_plus_reexposures}"
+        )
+        progress_total_expression = (
+            repr(adaptive_cap) if adaptive_timelapse else "len(events)"
+        )
         adaptive_configuration = (
             f"hook.configure_adaptive(events=events, candidates=candidates, "
             f"progress=progress, guard=guard, max_events=len(events){_plus_reexposures}, "
@@ -1506,12 +1582,22 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             "read_z=core.get_position)"
             if acquire_on_hit is not None and saved else
             f"hook.configure_adaptive(events=events, candidates=candidates, "
-            f"progress=progress, guard=guard, max_events=len(events){_plus_reexposures})"
+            f"progress=progress, guard=guard, max_events={adaptive_max_expression}"
+            + (", successor=_successor, require_routing_decision=True)"
+               if adaptive_timelapse else ")")
         )
         if acquire_on_hit is not None:
             common.append("hits = []")
         common.extend([
             f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
+            *( [
+                "def _successor(index):",
+                "    event = dict(events[0])",
+                "    event['axes'] = {**(events[0].get('axes') or {}), 'time': index}",
+                f"    if {params['interval_s']!r} > 0: event['min_start_time'] = {params['interval_s']!r} * index",
+                "    else: event.pop('min_start_time', None)",
+                "    return event",
+            ] if adaptive_timelapse else [] ),
             *( [f"_NAMED_STAGE_ENVELOPE = {named_stage_envelope!r}",
                 "print('HOOK HARDWARE CONTROL FOR THIS RUN -- bounds enforced below')",
                 "print(f\"Named stage: {_NAMED_STAGE_ENVELOPE['device']}; approved interval {_NAMED_STAGE_ENVELOPE['min_um']}-{_NAMED_STAGE_ENVELOPE['max_um']} um; maximum writes {_NAMED_STAGE_ENVELOPE['max_writes']}; restore {_NAMED_STAGE_ENVELOPE['restore']!r}\")",
@@ -1525,10 +1611,10 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 "hook.configure_property(ctrl=mm, guard=guard, device=_PROPERTY_ENVELOPE['device'], property=_PROPERTY_ENVELOPE['property'], allowed_values=_property_values, min_value=_PROPERTY_ENVELOPE.get('min'), max_value=_PROPERTY_ENVELOPE.get('max'), max_writes=_PROPERTY_ENVELOPE['max_writes'], initial_value=str(core.get_property(_PROPERTY_ENVELOPE['device'], _PROPERTY_ENVELOPE['property'])), restore=_PROPERTY_ENVELOPE['restore'], action_plan=None)"]
                if property_envelope is not None else [] ),
             "candidates = queue.Queue()",
-            "progress = SurveyProgress(len(events))",
+            f"progress = SurveyProgress({progress_total_expression})",
             *( (["# Standalone scripts cannot query focus-lock state; disengage the lock before running.", f"hook.configure_autofocus(ctrl=mm, guard=guard, focus_lock_check=None, **{autofocus_budget!r}, sweep_exposures={autofocus_sweep_exposures!r})"] if autofocus_budget is not None else []) if saved else [] ),
             *( [adaptive_configuration] if saved else ["hook.survey_events = events", "hook.candidates = candidates", "hook.progress = progress"] ),
-            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events=len(events){_plus_reexposures})",
+            f"event_source = _survey_event_stream(events, candidates, progress, {params.get('max_idle_s', 60.0)!r}, hook, adaptive=True, max_events={adaptive_max_expression})",
             "_hook_callbacks = {name: callback for name, callback in {"
             "'image_process_fn': getattr(hook, 'image_process_fn', None), "
             "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
@@ -1653,9 +1739,13 @@ def _emit_zstack(params: RecordedParams) -> str:
 
 
 def _emit_timelapse(params: RecordedParams) -> str:
+    if params.get("max_frames") is not None:
+        return _emit_adaptive(params, "timelapse", "timelapse")
     if (params.get("hook_strategy") or
             params.get("hook_action_plan") is not None):
         return _emit_adaptive(params, "timelapse", "timelapse")
+    if params.get("n_frames") is None:
+        raise CannotEmit("the fixed timelapse record has no n_frames count")
     return _emit_acquisition({
         "num_time_points": params["n_frames"],
         "time_interval_s": params["interval_s"],
@@ -1858,6 +1948,7 @@ def export_session_script(
     body_lines: list[str] = []
     emitted = 0
     emitted_ids: list[str] = []
+    skipped_failed_calls: list[dict[str, str]] = []
 
     def one_line(reason: object) -> str:
         """Fold a recorded message onto one line so it stays inside its comment.
@@ -1916,6 +2007,7 @@ def export_session_script(
                 body_lines.append(
                     "# The session completed nothing here, so neither does this script."
                 )
+                skipped_failed_calls.append({"tool": name, "reason": one_line(reason)})
             continue
         try:
             rendered = renderer(params)
@@ -2016,9 +2108,17 @@ def export_session_script(
         ],
         "artifact": {"kind": "python", "path": str(path)},
     }
+    if skipped_failed_calls:
+        result["skipped_failed_calls"] = skipped_failed_calls
     if selected_ids is not None:
         result["selection_warning"] = selection_warning
-    if selected_ids is not None and emitted == 0:
+    if emitted == 0 and skipped_failed_calls:
+        result["status"] = (
+            "Session script exported, but it performs no hardware step: every "
+            "recorded mutating call failed and was skipped. See "
+            "skipped_failed_calls and the script's SKIPPED comments."
+        )
+    elif selected_ids is not None and emitted == 0:
         # Every selected id was real but none of them emits a hardware step, so
         # the script runs and does nothing. Seen on the demo machine (block 66's
         # gate, 2026-08-30): asked to export only its move, an agent passed the
@@ -2219,11 +2319,13 @@ class _HookedAcquisitionFailure(RuntimeError):
 
     def __init__(self, error: Exception, dataset_path: str,
                  *, frames_exposed: int | None = None,
-                 last_hardware_state: dict[str, Any] | None = None) -> None:
+                 last_hardware_state: dict[str, Any] | None = None,
+                 cadence: dict[str, Any] | None = None) -> None:
         super().__init__(str(error))
         self.dataset_path = dataset_path
         self.frames_exposed = frames_exposed
         self.last_hardware_state = last_hardware_state
+        self.cadence = cadence
 
 
 class AcquisitionUnterminated(RuntimeError):
@@ -2233,7 +2335,8 @@ class AcquisitionUnterminated(RuntimeError):
                  frames_accounted: int, engine_exception: BaseException | None,
                  camera_sequence_running: bool | None, teardown_running: bool,
                  expired_bound: str, bound_s: float, fallback_ceiling: bool,
-                 positions_completed: list[dict[str, Any]] | None = None) -> None:
+                 positions_completed: list[dict[str, Any]] | None = None,
+                 cadence: dict[str, Any] | None = None) -> None:
         super().__init__("pycro-manager teardown did not complete")
         self.dataset_path = dataset_path
         self.frames_planned = frames_planned
@@ -2250,6 +2353,7 @@ class AcquisitionUnterminated(RuntimeError):
         # here on its way out; nothing is ever discovered from the filesystem,
         # because guessing a dataset path is design/38 F7's original defect.
         self.positions_completed = positions_completed
+        self.cadence = cadence
 
 
 def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
@@ -2352,6 +2456,8 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
                 "written by Micro-Manager independently of it and readable now: "
                 + ", ".join(paths)
             ))
+    if exc.cadence is not None:
+        result["inter_frame_gap_summary"] = exc.cadence
     return result
 
 
@@ -2385,6 +2491,8 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
         result["frames_exposed"] = exc.frames_exposed
     if exc.last_hardware_state is not None:
         result["last_hardware_state"] = exc.last_hardware_state
+    if exc.cadence is not None:
+        result["inter_frame_gap_summary"] = exc.cadence
     return result
 
 
@@ -3518,6 +3626,10 @@ def get_device_property_info(
             "minimum": policy.minimum,
             "maximum": policy.maximum,
         }
+    from microclaw.authorization import property_write_authorization_info
+    info["authorization"] = property_write_authorization_info(
+        ctrl, device, property,
+    )
     return info
 
 
@@ -3939,6 +4051,58 @@ def _build_acquisition_events(
     return multi_d_acquisition_events(**acq_kwargs)
 
 
+_RUNTIME_FROM_ACCOUNTING_PLAN = object()
+_GAP_HISTOGRAM_UPPER_S = (
+    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2,
+    0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
+    1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, float("inf"),
+)
+
+
+def _new_gap_summary() -> dict[str, Any]:
+    return {"count": 0, "min_s": None, "max_s": None, "sum_s": 0.0,
+            "bins": [0] * len(_GAP_HISTOGRAM_UPPER_S)}
+
+
+def _record_gap(summary: dict[str, Any], gap_s: float) -> None:
+    summary["count"] += 1
+    summary["min_s"] = gap_s if summary["min_s"] is None else min(summary["min_s"], gap_s)
+    summary["max_s"] = gap_s if summary["max_s"] is None else max(summary["max_s"], gap_s)
+    summary["sum_s"] += gap_s
+    index = next(i for i, upper in enumerate(_GAP_HISTOGRAM_UPPER_S) if gap_s <= upper)
+    summary["bins"][index] += 1
+
+
+def _gap_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
+    count = summary["count"]
+    def percentile(fraction: float) -> float | None:
+        if not count:
+            return None
+        target = max(1, math.ceil(count * fraction))
+        seen = 0
+        for upper, bucket_count in zip(_GAP_HISTOGRAM_UPPER_S, summary["bins"]):
+            seen += bucket_count
+            if seen >= target:
+                return summary["max_s"] if math.isinf(upper) else upper
+        return summary["max_s"]
+    # min/max/mean are exact; the two percentiles are the BIN UPPER BOUND the
+    # quantile falls in, named so nobody sizes design/65's per-frame software
+    # allowance off a number that is only an upper bound. The allowance comes
+    # from mean_s and max_s.
+    return {
+        "count": count,
+        "min_s": summary["min_s"],
+        "mean_s": (summary["sum_s"] / count) if count else None,
+        "median_le_s": percentile(0.5),
+        "p95_le_s": percentile(0.95),
+        "max_s": summary["max_s"],
+        "histogram": [
+            {"upper_s": (None if math.isinf(upper) else upper), "count": bucket_count}
+            for upper, bucket_count in zip(_GAP_HISTOGRAM_UPPER_S, summary["bins"])
+        ],
+    }
+
+
 def _acquire_with_hooks(
     guard: SafetyGuard,
     save_dir: str,
@@ -3950,13 +4114,16 @@ def _acquire_with_hooks(
     *,
     ctrl: MicroscopeController,
     plan: AcquisitionPlan | None = None,
+    runtime_plan: AcquisitionPlan | None | object = _RUNTIME_FROM_ACCOUNTING_PLAN,
+    cadence_summary: dict[str, Any] | None = None,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
 
     Returns the on-disk dataset path. `ctrl` is required because expiry must
     measure camera state and attach the session refusal. `plan` supplies the
-    normal duration-derived ceiling; all five production callers pass one. A
-    missing plan uses the finite named fallback and is disclosed in the result.
+    accounting and progress disclosure. `runtime_plan` independently supplies
+    the duration-derived ceiling; a missing runtime plan uses the finite named
+    fallback and is disclosed in the result.
 
     A hook is any object exposing
     post_hardware_hook_fn and/or image_process_fn; both are optional and are
@@ -4007,6 +4174,8 @@ def _acquire_with_hooks(
         "count": 0, "last_saved": started, "previous_saved": None,
         "largest_gap": 0.0,
     }
+    report_cadence = cadence_summary is not None
+    cadence_summary = cadence_summary if cadence_summary is not None else _new_gap_summary()
     frame_lock = threading.Lock()
     event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
     progress_state = {"last_emitted": None}
@@ -4016,6 +4185,7 @@ def _acquire_with_hooks(
             saved_at = _acquisition_monotonic()
             previous = frame_state["previous_saved"]
             if previous is not None:
+                _record_gap(cadence_summary, saved_at - previous)
                 frame_state["largest_gap"] = max(
                     frame_state["largest_gap"], saved_at - previous
                 )
@@ -4033,6 +4203,7 @@ def _acquire_with_hooks(
             )
             if emit_progress:
                 progress_state["last_emitted"] = saved_at
+                measured_cadence = _gap_summary_payload(cadence_summary)
         if reservation is not None:
             # pycro-manager 1.0.2 calls this after the image is on disk. Unlike
             # image_process_fn, its arguments contain no pixel array, so plain
@@ -4052,6 +4223,7 @@ def _acquire_with_hooks(
                     "type": "acquisition_progress",
                     "frames_accounted": count,
                     "frames_planned": plan.frames if plan is not None else None,
+                    "inter_frame_gap_summary": measured_cadence,
                 })
             finally:
                 if event_sink is not None:
@@ -4149,7 +4321,10 @@ def _acquire_with_hooks(
         waiter = threading.Thread(target=finish, name="microclaw-acq-teardown", daemon=True)
         waiter_started = True
         waiter.start()
-        runtime_bound, fallback = _runtime_ceiling_s(plan)
+        runtime_input = (
+            plan if runtime_plan is _RUNTIME_FROM_ACCOUNTING_PLAN else runtime_plan
+        )
+        runtime_bound, fallback = _runtime_ceiling_s(runtime_input)
         runtime_deadline = started + runtime_bound
         error_deadline = None
         engine_exc = None
@@ -4194,6 +4369,8 @@ def _acquire_with_hooks(
                     camera_sequence_running=camera, teardown_running=True,
                     expired_bound=expired_bound, bound_s=bound_s,
                     fallback_ceiling=fallback,
+                    cadence=(_gap_summary_payload(cadence_summary)
+                             if report_cadence else None),
                 )
         if "exc" in outcome:
             raise outcome["exc"]
@@ -4242,6 +4419,8 @@ def _acquire_with_hooks(
                 frames_exposed=(None if reservation is None
                                 else reservation.completed_frames),
                 last_hardware_state=last_state,
+                cadence=(_gap_summary_payload(cadence_summary)
+                         if report_cadence else None),
             ) from exc
         raise
     finally:
@@ -4353,7 +4532,7 @@ def run_zstack(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
-            ctrl=ctrl, plan=plan,
+            ctrl=ctrl, plan=plan, runtime_plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -4452,7 +4631,7 @@ def shutter_declared_illumination(
 def run_timelapse(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
-    n_frames: int,
+    n_frames: int | None,
     interval_s: float,
     save_dir: str,
     channel: str | None = None,
@@ -4467,8 +4646,23 @@ def run_timelapse(
     property_envelope: dict | None = None,
     hook_action_plan: list[dict] | None = None,
     artifact_limits: dict | None = None,
+    max_frames: int | None = None,
     _reservation: Reservation | None = None,
 ) -> dict:
+    if (n_frames is None) == (max_frames is None):
+        raise ValueError("Provide exactly one of n_frames or max_frames.")
+    if max_frames is not None and hook_strategy is None:
+        raise ValueError("max_frames requires hook_strategy.")
+    if max_frames is not None and hook_action_plan is not None:
+        raise ValueError(
+            "max_frames is incompatible with hook_action_plan because future "
+            "events do not exist until the preceding image is analyzed."
+        )
+    if max_frames is not None and (
+        isinstance(max_frames, bool) or not isinstance(max_frames, int)
+        or max_frames <= 0
+    ):
+        raise ValueError("max_frames must be a positive integer.")
     save_dir = guard.resolve_in_workspace(save_dir)   # before any hardware moves
     carries_hardware_capability = any(
         value is not None for value in (
@@ -4484,7 +4678,7 @@ def run_timelapse(
             "Acquisition and one hook log across every position. A "
             "hook_action_plan has no such route: its indices address one run's events."
         )
-    if hook_action_plan is not None and n_frames > 1 and interval_s == 0:
+    if hook_action_plan is not None and n_frames is not None and n_frames > 1 and interval_s == 0:
         raise ValueError(
             "interval_s=0 lets the engine hardware-sequence the time axis, and a "
             "sequenced burst runs with no software between exposures, so a "
@@ -4504,7 +4698,8 @@ def run_timelapse(
     # mutation without changing the order of any observable hardware action.
     events = _build_acquisition_events(
         channel=channel, exposure_ms=exposure_ms,
-        num_time_points=n_frames, time_interval_s=interval_s,
+        num_time_points=(n_frames if n_frames is not None else 1),
+        time_interval_s=interval_s,
     )
     carries_plan = hook_action_plan is not None
     hook = None
@@ -4516,7 +4711,14 @@ def run_timelapse(
     )
     if hook_strategy:
         try:
-            hook = _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+            hook = (
+                _resolve_hook(
+                    ctrl, guard, hook_strategy, hook_params, log_path,
+                    require_acquisition_decision=True,
+                )
+                if max_frames is not None else
+                _resolve_hook(ctrl, guard, hook_strategy, hook_params, log_path)
+            )
         except ValueError as exc:
             return {"error": str(exc)}
     elif carries_plan:
@@ -4525,13 +4727,71 @@ def run_timelapse(
     try:
         # Unconditional and ahead of set_exposure: a capability with no hook to
         # carry it refuses before the camera is changed.
-        _configure_hook_capabilities(
-            hook, ctrl, guard, save_dir, name, illumination_envelope,
-            artifact_limits, named_stage_envelope, hook_action_plan, events,
-            property_envelope=property_envelope,
-        )
+        if max_frames is None:
+            _configure_hook_capabilities(
+                hook, ctrl, guard, save_dir, name, illumination_envelope,
+                artifact_limits, named_stage_envelope, hook_action_plan, events,
+                property_envelope=property_envelope,
+            )
     except _HookArtifactBudgetError as exc:
         return {"error": str(exc)}
+    if max_frames is not None:
+        seed = events[0]
+
+        def successor(index: int) -> dict:
+            event = dict(seed)
+            event["axes"] = {**(seed.get("axes") or {}), "time": index}
+            if interval_s > 0:
+                event["min_start_time"] = interval_s * index
+            else:
+                event.pop("min_start_time", None)
+            return event
+
+        cap_plan = plan_events(
+            ctrl, events, exposure_ms, frame_count=max_frames,
+            hardware_sequenced_burst=False,
+        )
+        runtime_bound_plan = _adaptive_timelapse_runtime_plan(
+            cap_plan, interval_s=interval_s,
+        )
+        progress = SurveyProgress(max_frames)
+        candidates: queue.Queue = queue.Queue()
+        started_at = datetime.now(timezone.utc)
+        started = time.monotonic()
+        try:
+            result = _acquire_survey_with_detector(
+                ctrl, guard, [], save_dir, name, hook, progress, candidates,
+                channel=channel, exposure_ms=exposure_ms, adaptive=True,
+                illumination_envelope=illumination_envelope,
+                artifact_limits=artifact_limits,
+                named_stage_envelope=named_stage_envelope,
+                property_envelope=property_envelope,
+                adaptive_events=events, adaptive_max_events=max_frames,
+                adaptive_successor=successor, require_routing_decision=True,
+                accounting_plan=cap_plan, runtime_plan=runtime_bound_plan,
+            )
+        except _HookArtifactBudgetError as exc:
+            return {"error": str(exc)}
+        result.update(
+            started_at=started_at.isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            duration_s=round(time.monotonic() - started, 6),
+            runtime_bound_plan={
+                "frames": runtime_bound_plan.frames,
+                "estimated_duration_s": runtime_bound_plan.estimated_duration_s,
+                "software_allowance_s_per_frame": (
+                    runtime_bound_plan.software_allowance_s_per_frame
+                ),
+                "software_allowance_evidence": (
+                    runtime_bound_plan.software_allowance_evidence
+                ),
+                "runtime_ceiling_s": _runtime_ceiling_s(runtime_bound_plan)[0],
+                "fallback_ceiling": False,
+            },
+        )
+        if trigger_preflight is not None:
+            result["trigger_preflight"] = trigger_preflight
+        return result
     # Without a channel, events carry no exposure, so set it directly. This is
     # the preamble's only mutation and therefore stays below the guard.
     if not channel and exposure_ms is not None:
@@ -4545,16 +4805,18 @@ def run_timelapse(
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
+    cadence = _new_gap_summary()
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             close_reservation=_reservation is None,
-            ctrl=ctrl, plan=plan,
+            ctrl=ctrl, plan=plan, runtime_plan=plan, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
     result = {
         "status": "Timelapse complete.", "dataset_path": dataset_path,
+        "inter_frame_gap_summary": _gap_summary_payload(cadence),
         **_reservation_report(reservation),
     }
     if trigger_preflight is not None:
@@ -7064,6 +7326,8 @@ def _resolve_hook(
     hook_strategy: str,
     hook_params: dict | None,
     log_path: str | None,
+    *,
+    require_acquisition_decision: bool = False,
 ) -> Any:
     """Instantiate a hook with an explicit provenance-based trust category.
 
@@ -7083,10 +7347,18 @@ def _resolve_hook(
         params["log_path"] = log_path
 
     if hook_strategy in PRECODED_HOOK_REGISTRY:
+        if require_acquisition_decision:
+            raise ValueError(
+                "The max_frames route requires a saved, hash-pinned hook whose "
+                "source references ContinueAcquisition or StopAcquisition."
+            )
         hook_cls = PRECODED_HOOK_REGISTRY[hook_strategy]
         trusted_builtin = True
     elif hook_strategy in list_saved_hooks():
-        hook_cls = load_hook_class(hook_strategy)
+        hook_cls = (
+            load_hook_class(hook_strategy, require_acquisition_decision=True)
+            if require_acquisition_decision else load_hook_class(hook_strategy)
+        )
         trusted_builtin = False
     else:
         raise ValueError(
@@ -7192,6 +7464,8 @@ def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
         # Autofocus snaps are analyzed in memory and are not stored.
         estimated_bytes=plan.estimated_bytes,
         hardware_sequenced_burst=plan.hardware_sequenced_burst,
+        software_allowance_s_per_frame=plan.software_allowance_s_per_frame,
+        software_allowance_evidence=plan.software_allowance_evidence,
     )
 
 
@@ -7464,12 +7738,11 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             axes_plan[signature] = (index, parsed_plan[index])
     if named_config is not None:
         device, low, high, writes, initial, restore = named_config
-        reserved = 0 if restore == "leave" else 1
         planned_writes = sum(isinstance(action, MoveNamedStage)
                              for actions in parsed_plan.values() for action in actions)
-        if planned_writes + reserved > writes:
-            raise ValueError("hook_action_plan would consume the write reserved for restoration.")
-        restore_target = initial if restore == "entry" else (
+        if planned_writes > writes:
+            raise ValueError("hook_action_plan exceeds the named-stage write budget.")
+        restore_target = (
             restore.get("value") if isinstance(restore, dict) else None
         )
         targets = [a.position_um for actions in parsed_plan.values() for a in actions
@@ -7483,16 +7756,15 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
             if target < low or target > high:
                 raise ValueError("named-stage planned or restoration position is outside the envelope.")
             guard.check_named_stage(device, target)
-    property_reserved = 0 if property_config is None or property_config[-1] == "leave" else 1
     property_planned = sum(isinstance(a, SetDeviceProperty) for actions in parsed_plan.values() for a in actions)
-    if property_config is not None and property_planned + property_reserved > property_config[5]:
-        raise ValueError("hook_action_plan would consume the property write reserved for restoration.")
+    if property_config is not None and property_planned > property_config[5]:
+        raise ValueError("hook_action_plan exceeds the property write budget.")
     if property_config is not None:
         from microclaw.authorization import authorize_property_write
         from microclaw.safety import _finite_number_text
         device, prop, values, low, high, _writes, initial, restore = property_config
-        authorize_property_write(ctrl, device, prop)
-        restore_value = initial if restore == "entry" else (
+        authorize_property_write(ctrl, device, prop, approved_envelope=True)
+        restore_value = (
             restore["value"] if isinstance(restore, dict) else None
         )
         planned_values = [
@@ -7647,7 +7919,7 @@ def _acquire_positions_with_hook(
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
-            ctrl=ctrl, plan=plan,
+            ctrl=ctrl, plan=plan, runtime_plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
         return _hooked_failure_result(exc, log_path)
@@ -7681,6 +7953,7 @@ class SurveyProgress:
         self._n_survey, self._lock, self._done = n_survey, threading.Lock(), 0
         self._done_early = False
         self._budget_exhausted = False
+        self._stop_reason: str | None = None
 
     def image_done(self) -> None:
         with self._lock:
@@ -7709,7 +7982,7 @@ class SurveyProgress:
         with self._lock:
             self._n_survey += 1
 
-    def done_early(self) -> None:
+    def done_early(self, reason: str = "hook_stop") -> None:
         """The hook decided the survey is over before n_survey images came
         back — the adaptive runner's stop signal (design/27 Fix 4). Counting
         alone can never get there: an early stop means the remaining tiles
@@ -7719,11 +7992,32 @@ class SurveyProgress:
         """
         with self._lock:
             self._done_early = True
+            self._stop_reason = reason
 
     def budget_exhausted(self) -> None:
         with self._lock:
             self._budget_exhausted = True
             self._done_early = True
+            self._stop_reason = "cap_reached"
+
+    def note_stop_reason(self, reason: str) -> None:
+        """Record WHY the stream ended without claiming the hook ended it.
+
+        done_early() is the hook's control decision, and run_adaptive_survey
+        renders it as ", stopped early by the hook." with a hint saying the
+        field "describes the hook's control decisions". A watchdog stall, an
+        engine abort and the dose cap are none of those, so they record a
+        reason and leave _done_early alone.
+        """
+        with self._lock:
+            # The final cap-authorized event is yielded before its image can
+            # return a decision. An explicit StopAcquisition on that image is
+            # therefore later and more informative than the coincident cap.
+            # Conversely, the stream's cap bookkeeping must never overwrite a
+            # hook stop that has already arrived.
+            if self._stop_reason == "hook_stop" and reason == "cap_reached":
+                return
+            self._stop_reason = reason
 
     @property
     def exhausted_budget(self) -> bool:
@@ -7742,6 +8036,11 @@ class SurveyProgress:
         acquired 4 (the 20260716_140329 misreport)."""
         with self._lock:
             return self._done_early
+
+    @property
+    def stop_reason(self) -> str | None:
+        with self._lock:
+            return self._stop_reason
 
     def survey_complete(self) -> bool:
         with self._lock:
@@ -7815,6 +8114,7 @@ def _survey_event_stream(
                         emitted += 1
                         if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
                             hook.close_adaptive_handoff()
+                            progress.note_stop_reason("cap_reached")
                         yield survey_events[0]  # the ONLY pre-dispatched event
                 else:
                     yield from survey_events      # dispatched in microseconds...
@@ -7835,6 +8135,7 @@ def _survey_event_stream(
                         emitted += 1
                         if max_events is not None and emitted >= max_events and hasattr(hook, "close_adaptive_handoff"):
                             hook.close_adaptive_handoff()
+                            progress.note_stop_reason("cap_reached")
                         yield event
                         continue
 
@@ -7847,6 +8148,7 @@ def _survey_event_stream(
 
                     if acq_finished():
                         hook.note_aborted()
+                        progress.note_stop_reason("abort")
                         return
 
                     # Images still arriving means the rig is alive; reset the
@@ -7858,6 +8160,7 @@ def _survey_event_stream(
 
                     if time.monotonic() - last_activity > max_idle_s:
                         hook.note_stalled(max_idle_s)   # loud in the log, not silent
+                        progress.note_stop_reason("stall")
                         return
             finally:
                 # The generator OWNS the terminator (design/24 Fix 2a, spike
@@ -7897,6 +8200,12 @@ def _acquire_survey_with_detector(
     acquire_max_hits: int | None = None,
     search_phase_channel: str | None = None,
     acquire_phase_channel: str | None = None,
+    adaptive_events: list[dict] | None = None,
+    adaptive_max_events: int | None = None,
+    adaptive_successor: Callable[[int], dict] | None = None,
+    require_routing_decision: bool = False,
+    accounting_plan: AcquisitionPlan | None = None,
+    runtime_plan: AcquisitionPlan | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """One survey acquisition whose event stream a detector hook can EXTEND.
@@ -7967,7 +8276,7 @@ def _acquire_survey_with_detector(
         if not channel:
             ctrl.core.set_exposure(exposure_ms)   # eventless exposure; see run_zstack
 
-    survey_events = _build_acquisition_events(
+    survey_events = adaptive_events or _build_acquisition_events(
         channel=channel, exposure_ms=exposure_ms,
         position_labels=[p["name"] for p in positions],
         xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
@@ -8019,15 +8328,18 @@ def _acquire_survey_with_detector(
     # the authorized budget -- see that method for what sizing it up front cost.
     # max_events below is the dose *cap* and does carry the budget, which is a
     # different quantity from what the survey expects to receive.
-    progress.set_total(len(survey_events))
+    progress.set_total(adaptive_max_events or len(survey_events))
 
     if isinstance(hook, UntrustedHookAdapter):
         if adaptive:
             hook.configure_adaptive(
                 events=survey_events, candidates=candidates, progress=progress,
-                guard=guard, max_events=len(survey_events) + autofocus_reexposures,
+                guard=guard,
+                max_events=(adaptive_max_events or len(survey_events)) + autofocus_reexposures,
                 acquire_hits=acquire_hits, max_hits=acquire_max_hits,
                 read_z=ctrl.core.get_position if acquire_hits is not None else None,
+                successor=adaptive_successor,
+                require_routing_decision=require_routing_decision,
             )
     else:
         # Reviewed built-ins retain the legacy direct control contract.
@@ -8042,10 +8354,10 @@ def _acquire_survey_with_detector(
         hook.survey_events = survey_events
     events = _survey_event_stream(survey_events, candidates, progress, max_idle_s, hook,
                                   adaptive=adaptive,
-                                  max_events=(len(survey_events) + autofocus_reexposures)
+                                  max_events=((adaptive_max_events or len(survey_events)) + autofocus_reexposures)
                                   if adaptive else None)
     survey_plan = _plan_with_hook_dose(
-        plan_events(ctrl, survey_events, exposure_ms), hook
+        accounting_plan or plan_events(ctrl, survey_events, exposure_ms), hook
     )
     reservation = (
         _authorize_acquisition(
@@ -8056,6 +8368,7 @@ def _acquire_survey_with_detector(
     acquire_reservation = None
     search_channel_effects = None
     planned_acquire_effects = None
+    cadence = _new_gap_summary()
     try:
         if acquire_plan is not None:
             acquire_reservation = _authorize_acquisition(ctrl, guard, acquire_plan)
@@ -8070,6 +8383,8 @@ def _acquire_survey_with_detector(
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             ctrl=ctrl, plan=survey_plan,
+            runtime_plan=(runtime_plan if accounting_plan is not None else survey_plan),
+            cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
         # The two fixed runners already translate this; the survey runner did
@@ -8093,10 +8408,31 @@ def _acquire_survey_with_detector(
         raise
     stage_restoration = getattr(hook, "_named_stage_restoration", None)
     property_restoration = getattr(hook, "_property_restoration", None)
+    if adaptive_successor is not None:
+        stop_reason = progress.stop_reason or "completed"
+        route_result = {
+            "status": ("Adaptive acquisition failed closed."
+                       if stop_reason == "routing_refusal"
+                       else "Adaptive acquisition complete."),
+            "stop_reason": stop_reason,
+            "frames_planned": survey_plan.frames,
+            "frames_acquired": reservation.completed_frames,
+            "frames_exposed": reservation.completed_frames,
+            "inter_frame_gap_summary": _gap_summary_payload(cadence),
+        }
+        if stop_reason == "routing_refusal":
+            route_result["error"] = (
+                "Adaptive acquisition stopped at an image because its hook did "
+                "not return exactly one routing decision."
+            )
+    else:
+        route_result = {
+            "status": f"Survey acquisition complete across {len(positions)} position(s).",
+            "positions": len(positions),
+        }
     return _adaptive_result(
         dataset_path, hook.log_path,
-        status=f"Survey acquisition complete across {len(positions)} position(s).",
-        positions=len(positions),
+        **route_result,
         **(_reservation_report(reservation) if reservation is not None else {}),
         **({"_acquire_reservation": acquire_reservation}
            if acquire_reservation is not None else {}),
@@ -8332,7 +8668,7 @@ def run_adaptive_survey(
                 acquire_path = _acquire_with_hooks(
                     guard, save_dir, f"{name}_acquire", acquire_events,
                     reservation=acquire_reservation,
-                    ctrl=ctrl, plan=acquire_plan,
+                    ctrl=ctrl, plan=acquire_plan, runtime_plan=acquire_plan,
                 )
                 hits_acquired = len(hits)
                 result["acquire_dataset_path"] = acquire_path

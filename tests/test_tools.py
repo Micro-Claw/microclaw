@@ -4131,6 +4131,7 @@ class TestTimelapseTriggerPreflight:
         result = run_timelapse(mock_ctrl, unconstrained_guard, n_frames=100, interval_s=0,
                                save_dir="/tmp", laser_slot=3)
         assert result["status"] == "Timelapse complete."
+        assert result["inter_frame_gap_summary"]["count"] == 0
         assert result["trigger_preflight"] == {
             "guarantee": "trigger line is armed",
             "checked": [
@@ -6071,6 +6072,22 @@ class TestHookAuthoringSkill:
             "What should the microscope do", "NOT a questionnaire",
         ):
             assert term in doc
+
+    def test_capability_table_carries_adaptive_time_series_contract(self):
+        from microclaw.skills import load_skill_text
+
+        doc = load_skill_text("hook-authoring")
+        flat = " ".join(doc.split())
+        assert "adaptive time series:" in doc
+        assert "run_timelapse(n_frames=None" in doc
+        assert "max_frames=..., hook_strategy=...)" in doc
+        assert "spatial survey:" in doc
+        assert "fixed-plan hooked acquisitions" in doc
+        assert "pinned registry source must reference" in flat
+        assert "resolution refuses before acquisition" in flat
+        assert "every image must produce exactly one routing decision" in flat
+        assert "does not idle until `max_idle_s`" in flat
+        assert "run_adaptive_survey" in doc
 
 
 class TestGetFullDeviceState:

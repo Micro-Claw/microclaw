@@ -104,7 +104,9 @@ def lint_hook_code(code: str) -> list[str]:
     return warnings
 
 
-def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
+def _hook_contract_analysis(
+    code: str, *, require_acquisition_decision: bool = False
+) -> tuple[list[str], bool]:
     """Statically reject hook source that cannot satisfy the runner contract.
 
     This deliberately does not import or execute the source: without an actual
@@ -126,6 +128,21 @@ def _hook_contract_analysis(code: str) -> tuple[list[str], bool]:
             "image_process_fn(self, image, metadata, event_queue)."
         ], False
     errors: list[str] = []
+    if require_acquisition_decision:
+        identifiers = {
+            node.id if isinstance(node, ast.Name) else node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Name, ast.Attribute))
+        }
+        if not identifiers.intersection(
+            {"ContinueAcquisition", "StopAcquisition"}
+        ):
+            errors.append(
+                "This adaptive route requires pinned hook source that references "
+                "ContinueAcquisition or StopAcquisition. This preflight rejects "
+                "the legacy callback shape; it does not prove that every frame "
+                "will return a routing decision."
+            )
     for cls in hooks:
         fn = next(item for item in cls.body if getattr(item, "name", None) in
                   {"analyze_frame", "image_process_fn"})
@@ -358,7 +375,7 @@ def select_hook_class(module, verbs):
     return None
 
 
-def load_hook_class(name: str):
+def load_hook_class(name: str, *, require_acquisition_decision: bool = False):
     """Dynamically import a saved hook and return its class.
 
     Verifies the on-disk bytes against the hash pinned at save time (refusing a
@@ -370,7 +387,9 @@ def load_hook_class(name: str):
     entry = manifest[name]
     source = verify_saved_hook_bytes(name, entry)
     code = source.decode("utf-8")
-    contract_errors, can_emit_artifacts = _hook_contract_analysis(code)
+    contract_errors, can_emit_artifacts = _hook_contract_analysis(
+        code, require_acquisition_decision=require_acquisition_decision
+    )
     if contract_errors:
         raise ValueError(
             f"Saved hook '{name}' violates the current hook contract: "

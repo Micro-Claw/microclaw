@@ -342,7 +342,7 @@ def test_declined_named_stage_confirmation_means_no_acquisition_or_write(
     ctrl.core.set_position.assert_not_called()
 
 
-def test_fixed_named_stage_plan_over_budget_refuses_during_validation(
+def test_fixed_named_stage_plan_may_consume_full_budget_before_restoration(
     monkeypatch, tmp_path
 ):
     ctrl = MagicMock()
@@ -352,8 +352,7 @@ def test_fixed_named_stage_plan_over_budget_refuses_during_validation(
     guard = SafetyGuard(SafetyConstraints(
         named_stages=[NamedStageLimits("fixture-stage", 10, 20)]
     ))
-    with pytest.raises(ValueError, match="reserved for restoration"):
-        tools._configure_hook_capabilities(
+    tools._configure_hook_capabilities(
             UntrustedHookAdapter(object()), ctrl, guard, str(tmp_path), "run",
             None, None,
             {"device": "fixture-stage", "min_um": 10, "max_um": 20,
@@ -368,7 +367,7 @@ def test_fixed_named_stage_plan_over_budget_refuses_during_validation(
             ],
             [{"axes": {"time": 0}}, {"axes": {"time": 1}}],
         )
-    confirm.assert_not_called()
+    confirm.assert_called_once()
     ctrl.core.set_position.assert_not_called()
 
 
@@ -598,10 +597,10 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
 def test_schema_states_the_three_rules_the_rig_kept_rediscovering(): 
     """Every constraint refused at plan time must be findable before the call.
 
-    Three demo sessions in a row spent one call each rediscovering the same
-    three rules -- nonzero interval_s for a per-frame plan, a write budget of
-    plan-length-plus-one when restoring, and an envelope that contains the
-    restoration target. All three are statically knowable, and a caller reads
+    The parameter descriptions must state the nonzero interval rule and the
+    restoration contract: max_writes counts hook proposals, explicit restore
+    targets stay bounded, and the exact recorded entry may be outside proposal
+    bounds without consuming a proposal slot. These are statically knowable, and a caller reads
     the PARAMETER description while filling that parameter in, not the tool's
     prose. `CLAUDE.md`: a feature that needs a paragraph of explanation before
     it can be called is a design problem.
@@ -619,8 +618,9 @@ def test_schema_states_the_three_rules_the_rig_kept_rediscovering():
     for tool_name in ("run_timelapse", "run_zstack"):
         tool = next(t for t in TOOLS if t["name"] == tool_name)
         envelope = tool["input_schema"]["properties"]["named_stage_envelope"]
-        assert "restoration write" in envelope["description"]
-        assert "restoration target" in envelope["description"]
+        assert "hook-proposed" in envelope["description"]
+        assert "not charged" in envelope["description"]
+        assert "exact recorded entry" in envelope["description"]
 
 
 def test_plan_only_default_logs_do_not_collide(monkeypatch, tmp_path):
@@ -641,8 +641,6 @@ def test_plan_only_default_logs_do_not_collide(monkeypatch, tmp_path):
     [
         ({"device": "TITIRF", "min_um": 0, "max_um": 2000,
           "max_writes": 4, "restore": "leave"}, True, "outside the envelope"),
-        ({"device": "TITIRF", "min_um": 0, "max_um": 7000,
-          "max_writes": 3, "restore": "entry"}, True, "reserved for restoration"),
         ({"device": "TITIRF", "min_um": 0, "max_um": 7000,
           "max_writes": 4, "restore": "entry"}, False, "declined.*not started"),
     ],

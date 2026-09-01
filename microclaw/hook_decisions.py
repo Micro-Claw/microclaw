@@ -334,7 +334,8 @@ class UntrustedHookAdapter:
 
     def configure_adaptive(self, *, events, candidates, progress, guard,
                            max_events: int, acquire_hits=None, max_hits=None,
-                           read_z=None) -> None:
+                           read_z=None, successor=None,
+                           require_routing_decision: bool = False) -> None:
         if self._autofocus_context is not None:
             # Make the refocus axis DENSE before the plan is dispatched. NDTiff
             # keys each frame by its exact axis set, so a second look carrying
@@ -355,6 +356,9 @@ class UntrustedHookAdapter:
         self._context = {
             "events": list(events), "candidates": candidates, "progress": progress,
             "guard": guard, "max_events": max_events, "emitted": 1, "cursor": 1,
+            "successor": successor,
+            "require_routing_decision": require_routing_decision,
+            "closed": False,
         }
         if not events:
             raise ValueError("an adaptive survey requires a seed event")
@@ -376,6 +380,8 @@ class UntrustedHookAdapter:
             signature = self.axes_signature(events[0])
             coordinator["plan"][signature] = (0, ())
         if acquire_hits is not None:
+            if successor is not None:
+                raise ValueError("acquire_hits cannot be combined with a successor route")
             self._context.update(
                 acquire_hits=acquire_hits, max_hits=max_hits, read_z=read_z,
             )
@@ -462,11 +468,12 @@ class UntrustedHookAdapter:
             self._refuse_event(event, action, "no property envelope was authorized for this run")
             raise RuntimeError("property action refused: no authorized envelope")
         value = action.value
-        if ctx["allowed_values"] is not None:
+        restoring_entry = restoration and value == ctx["initial_value"]
+        if not restoring_entry and ctx["allowed_values"] is not None:
             if value not in ctx["allowed_values"]:
                 self._refuse_event(event, action, "proposal is outside the authorized property values")
                 raise RuntimeError("property action refused: outside authorized values")
-        else:
+        elif not restoring_entry:
             try:
                 number = _finite_number_text(value, "SetDeviceProperty.value")
             except Exception as exc:
@@ -475,14 +482,20 @@ class UntrustedHookAdapter:
             if number < ctx["min"] or number > ctx["max"]:
                 self._refuse_event(event, action, "proposal is outside the authorized property interval")
                 raise RuntimeError("property action refused: outside authorized interval")
-        if ctx["remaining"] <= 0:
+        if not restoration and ctx["remaining"] <= 0:
             self._refuse_event(event, action, "authorized property write budget exhausted")
             raise RuntimeError("property action refused: write budget exhausted")
         try:
-            authorize_property_write(ctx["ctrl"], ctx["device"], ctx["property"])
+            authorize_property_write(
+                ctx["ctrl"], ctx["device"], ctx["property"],
+                approved_envelope=True,
+            )
+            guard_kwargs = {"approved_envelope": True}
+            if restoring_entry:
+                guard_kwargs["restoration_entry"] = True
             ctx["guard"].check_device_property(
                 ctx["core"], ctx["device"], ctx["property"], value,
-                approved_envelope=True,
+                **guard_kwargs,
             )
             ctx["guard"].check_illumination(
                 ctx["core"], ctx["device"], ctx["property"], value,
@@ -491,7 +504,10 @@ class UntrustedHookAdapter:
         except Exception as exc:
             self._refuse_event(event, action, f"property write refused: {exc}")
             raise RuntimeError(f"property action refused: {exc}") from exc
-        ctx["remaining"] -= 1
+        # max_writes caps hook proposals. Restoration is the envelope's own
+        # teardown promise, not another proposal and never consumes that cap.
+        if not restoration:
+            ctx["remaining"] -= 1
         try:
             ctx["core"].set_property(ctx["device"], ctx["property"], value)
             ctx["core"].wait_for_device(ctx["device"])
@@ -550,19 +566,26 @@ class UntrustedHookAdapter:
             self._refuse_event(event, action, "no named-stage envelope was authorized for this run")
             raise RuntimeError("named-stage action refused: no authorized envelope")
         target = float(action.position_um)
-        if target < ctx["min_um"] or target > ctx["max_um"]:
+        restoring_entry = restoration and target == ctx["initial_value"]
+        if not restoring_entry and (target < ctx["min_um"] or target > ctx["max_um"]):
             self._refuse_event(event, action, "proposal is outside the authorized named-stage interval")
             raise RuntimeError("named-stage action refused: outside authorized interval")
-        if ctx["remaining"] <= 0:
+        if not restoration and ctx["remaining"] <= 0:
             self._refuse_event(event, action, "authorized named-stage write budget exhausted")
             raise RuntimeError("named-stage action refused: write budget exhausted")
         try:
-            ctx["guard"].check_named_stage(ctx["device"], target)
+            if restoring_entry:
+                ctx["guard"].check_named_stage(
+                    ctx["device"], target, restoration_entry=True,
+                )
+            else:
+                ctx["guard"].check_named_stage(ctx["device"], target)
         except Exception as exc:
             self._refuse_event(event, action, f"SafetyGuard refused named-stage motion: {exc}")
             raise RuntimeError(f"named-stage action refused: {exc}") from exc
         # The budget counts attempted dispatches, including writes that raise.
-        ctx["remaining"] -= 1
+        if not restoration:
+            ctx["remaining"] -= 1
         band_policy = "floor" if restoration else "relative"
         tolerance_lookup = getattr(ctx["guard"], "stage_move_tolerance", None)
         configured = tolerance_lookup(ctx["device"]) if tolerance_lookup else None
@@ -668,6 +691,8 @@ class UntrustedHookAdapter:
 
     def close_adaptive_handoff(self) -> None:
         """Prevent decisions made after the final authorized yield becoming writes."""
+        if self._context is not None:
+            self._context["closed"] = True
         if self._fixed_plan_context is not None and self._fixed_plan_context.get("adaptive"):
             self._fixed_plan_context["closed"] = True
 
@@ -677,6 +702,13 @@ class UntrustedHookAdapter:
         ctx = self._context
         coordinator = self._fixed_plan_context
         assert ctx is not None
+        if ctx.get("closed"):
+            reason = "adaptive handoff is closed after the final authorized event"
+            for action in actions:
+                self._refuse(metadata, action, reason)
+            if not actions:
+                self._record(metadata, event="hook_action", decision="refused", reason=reason)
+            return False
         if coordinator is None:
             ctx["candidates"].put(event)
             ctx["emitted"] += 1
@@ -811,6 +843,14 @@ class UntrustedHookAdapter:
         if self._context is not None:
             self._context["selector_refusal_reason"] = reason
         self._refuse(metadata, action, reason)
+
+    def _done_early(self, reason: str) -> None:
+        assert self._context is not None
+        progress = self._context["progress"]
+        if self._context.get("require_routing_decision"):
+            progress.done_early(reason)
+        else:
+            progress.done_early()
 
     def _accept(self, metadata: dict, action: HookAction, reason: str,
                 **fields: Any) -> None:
@@ -1033,7 +1073,7 @@ class UntrustedHookAdapter:
             self._refuse(metadata, action, "unsupported-by-run_adaptive_survey")
             return
         if isinstance(action, StopAcquisition):
-            ctx["progress"].done_early()
+            self._done_early("hook_stop")
             self._accept(metadata, action, "survey stopped before another tile was dispatched")
             return
         events = ctx["events"]
@@ -1044,7 +1084,9 @@ class UntrustedHookAdapter:
         # tile and reported "outside committed reservation" -- which reads as a
         # dose cap when the survey had simply run out of tiles. Refusing here
         # dispatches nothing either way, so the order cannot admit an exposure.
-        if isinstance(action, ContinueAcquisition) and ctx["cursor"] >= len(events):
+        if (isinstance(action, ContinueAcquisition)
+                and ctx["successor"] is None
+                and ctx["cursor"] >= len(events)):
             self._refuse_selector(metadata, action, "planned survey cursor is already at the end")
             return
         deferred_acquire = (
@@ -1057,8 +1099,13 @@ class UntrustedHookAdapter:
             )
             return
         if isinstance(action, ContinueAcquisition):
-            # The cursor-at-end refusal is made above, before the reservation.
-            event = events[ctx["cursor"]]
+            # A survey indexes its trusted finite plan. A streaming route asks
+            # trusted parent code for exactly one successor instead.
+            if ctx["successor"] is not None:
+                event = ctx["successor"](ctx["cursor"])
+            else:
+                # The cursor-at-end refusal is made above, before reservation.
+                event = events[ctx["cursor"]]
             ctx["cursor"] += 1
         else:
             assert isinstance(action, AcquireAt)
@@ -1085,14 +1132,20 @@ class UntrustedHookAdapter:
                     return
                 event = matches[0]
         try:
-            x, y = self._event_xy(event)
-            ctx["guard"].check_xy(x, y)
+            has_x, has_y = event.get("x") is not None, event.get("y") is not None
+            if has_x != has_y:
+                raise ValueError("event carries only one XY coordinate")
+            x = y = None
+            if has_x:
+                x, y = self._event_xy(event)
+                ctx["guard"].check_xy(x, y)
             if event.get("z") is not None:
                 ctx["guard"].check_z(event["z"])
         except Exception as exc:
             self._refuse_selector(metadata, action, f"SafetyGuard refused planned event: {exc}")
             return
         if deferred_acquire:
+            assert ctx["successor"] is None and x is not None and y is not None
             label = (event.get("axes") or {}).get("position")
             key = (label, x, y)
             if any(hit["_key"] == key for hit in ctx["acquire_hits"]):
@@ -1132,6 +1185,23 @@ class UntrustedHookAdapter:
         ))
         known = current + hardware + selectors
         other = tuple(a for a in actions if a not in known)
+        if self._context is not None and self._context.get("require_routing_decision"):
+            malformed_route = len(selectors) != 1 or not isinstance(
+                selectors[0], (ContinueAcquisition, StopAcquisition)
+            )
+            if malformed_route:
+                reason = (
+                    "malformed adaptive action partition: each image requires "
+                    "exactly one ContinueAcquisition or StopAcquisition decision"
+                )
+                for action in actions:
+                    self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
+                    self._refuse(metadata, action, reason)
+                if not actions:
+                    self._record(metadata, event="hook_action", decision="refused",
+                                 reason=reason)
+                self._done_early("routing_refusal")
+                return False, True
         discard = False
         for action in current:
             artifact_hash = self._dispatch(action, metadata)
@@ -1165,7 +1235,7 @@ class UntrustedHookAdapter:
                 self._action_counts[action.kind] = self._action_counts.get(action.kind, 0) + 1
                 self._refuse(metadata, action, reason)
             assert self._context is not None
-            self._context["progress"].done_early()
+            self._done_early("routing_refusal")
             return discard, True
         if autofocus:
             self._dispatch(autofocus[0], metadata)
@@ -1232,6 +1302,8 @@ class UntrustedHookAdapter:
                     self._record(metadata, event="hook_action", decision="refused",
                                  reason=str(exc))
                     if self._context is not None:
+                        if self._context.get("require_routing_decision"):
+                            self._done_early("routing_refusal")
                         self._context["progress"].image_done()
                     return image, metadata
                 if sum(isinstance(a, EmitArtifact) for a in actions) > 1:
