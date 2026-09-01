@@ -1024,7 +1024,7 @@ entire off-rig case rests on tests that skip silently without it.
 | block | branch | start | implementation | gate | merge |
 | --- | --- | --- | --- | --- | --- |
 | 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
-| 69a-2 | `design69a/keepalive-and-abort` | `60ae1b3` (2026-09-01) | | scored with 69a-3 | |
+| 69a-2 | `design69a/keepalive-and-abort` (deleted) | `60ae1b3` (2026-09-01) | `26cc47b` + `142b90f` (`main` merged mid-block, see below) + `c2cfdab` (review round 1, one product finding and two coordinator corrections). Suite **2782 / 99 / 2**, coordinator-run, baseline + 6; node **v25.2.1** | scored with 69a-3 | `2bcb136` |
 | 69a-3 | `design69a/event-sequencing` | | | **demo machine, one driven session**, scores all three blocks | |
 
 ### What block 69a-1 cost, and what it proved
@@ -1107,6 +1107,59 @@ ordering matters when the two race at a recovery boundary.
 Four unsynchronised assignments to one element is the actual defect. Resolving
 them in one place is folding, not a layer.
 
+### What block 69a-2 cost, and what it proved
+
+**The coordinator's own ruling was the block's one product defect.**
+§"A gap 69a-2 found before it started" ranked
+`confirmation > silence > progress > default` and did not rank the *resolved*
+timeout wording, so the implementation put it in the bottom tier — reasonably,
+and it said so rather than hiding the choice. `pendingProgress` is cleared only
+at turn start, so once any acquisition in a turn has emitted progress, a later
+confirmation that timed out was masked by a frozen frame count. Driving the
+implementation's own resolver:
+
+```
+stale progress + timeout -> "frames 700 / 700"
+silence + timeout        -> "Live updates interrupted; checking Microclaw…"
+timeout alone            -> "Confirmation timed out and was declined"
+```
+
+The first line is this incident's own shape — a 700-frame acquisition whose
+refusal the operator never saw — reproduced by the fix for it. The reasoning
+that put silence above progress (*a number that stopped updating is a stale
+reading presented as a live one*) applies one tier further down, and the
+disclosure is stronger still: it is the authoritative outcome of a decision the
+operator is owed. **Corrected ruling:
+`confirmation > resolution disclosure > silence > progress > default`**, with
+its own slot rather than an overloaded `pendingDefault`.
+
+**A ruling written in a coordination note is not a ruling the runner can read.**
+The worktree was created from `60ae1b3`; the ruling was committed afterwards as
+`0ce9705`; the prompt then cited `0ce9705` as the branch point. It was false —
+`git merge-base --is-ancestor 0ce9705 HEAD` in that worktree — and the runner
+reported the section as nonexistent rather than pretending to have read it. It
+implemented the ruling correctly only because the prompt carried the table
+inline. `CLAUDE.md` step 1 already says a worktree sees committed history; the
+missing half is that the worktree must be created **from** the commit carrying
+them, which `--is-ancestor` will answer in one line.
+
+**The runner declined a widening and was right.** Asked to consider clearing
+`pendingProgress` when an acquisition finishes, it reported that no
+acquisition-finished event exists and refused to invent completion semantics.
+Checked: the emitted acquisition events are `acquisition_diagnostic`,
+`acquisition_disclosure` and `acquisition_progress`, and the browser switches on
+none that signal completion. The tier fix removes the harm without the
+invention. **Whether a `tool_result` for an acquisition tool should clear the
+progress slot is a real question this block deliberately left open.**
+
+**The harness is the block's most valuable artifact.** `run_browser_turn`
+extracts the live `setBusy`, `runTurn` and composer-submit source out of
+`serve.html` and executes it under node against a `read()` that **genuinely
+never resolves** — not one that resolves with nothing, which is a different
+failure and not the incident. That is what makes limb 3 evidence rather than
+assertion, and it is the first time this project has executed `serve.html`'s
+own control flow in a test.
+
 ### Coordination log
 
 - **2026-09-01, assignment.** Blocks cut three ways above; the design's own
@@ -1121,3 +1174,10 @@ them in one place is folding, not a layer.
   attempt fired at 19:25:02 and was refused with *try again at 7:25 PM*, so the
   launcher retries on a usage-limit error and stops for the coordinator on any
   other failure.
+- **2026-09-01, 69a-2 merged** at `2bcb136`, branch and worktree deleted local
+  and on `origin`. One start turn, one revision. Three coordinator defects in
+  two blocks, all the same family — telling a runner about something it cannot
+  reach: a suite command never run in its worktree (69a-1), and a design section
+  committed after its worktree was cut (69a-2). Both are now in `CLAUDE.md`
+  step 2.
+- **69a-3 is next**, and it owns the gate for all three blocks.
