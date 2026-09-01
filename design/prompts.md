@@ -8836,3 +8836,69 @@ appearing to measure the branch. `PYTHONPATH=<worktree>` fixes it; printing
 happened to reproduce the runner's pre-fix `TypeError` on `main` — but it very
 nearly recorded a pass for code that had not been exercised. Established for
 this repository already, and re-learned anyway: see the editable-install note.
+
+## design/62 block 62d — discovery folded into `inspect_artifacts` (merged 2026-09-01, `d697f20`)
+
+Decision 5. One revision round, four coordinator commits, two demo-gate rounds.
+Suite 2738 → 2756.
+
+**A claim marked "already true" is a claim with no test behind it.** §"Bounds and
+privacy" said *"Do not follow directory symlinks/junctions during recursion
+(already true)"*. On Windows `Path.is_symlink()` returns **False** for a junction,
+so the guard never fired, recursion descended it, and `inspect_artifacts`
+enumerated a file outside the requested root — which under `hash=true` it would
+also have hashed. The guard was pre-existing, so the defect was older than the
+block that found it. This is the single highest-value thing either gate round
+produced, and it came from the limb **nobody nominated**: the implementer's list
+of four demo-machine claims contained two that could not fail (case-insensitive
+matching and ordering are pure Python over `entry.name`, already asserted in the
+suite), and the coordinator dropped those and added this one precisely because
+the document asserted a property about a Windows-only object that nothing tested.
+**Read a design doc's parenthetical assurances as a to-do list.**
+
+**A gate that reports FAIL where its mechanism never ran points suspicion at the
+product.** Round 1 required `%USERPROFILE%\Downloads`, which does not exist on
+the demo machine; three limbs died on it, two of them labelled FAIL. Both halves
+were already written down — *a gate must not require configuration the product
+does not require* (design/60), and NOT EXERCISED is not a pass — and the second
+half has a corollary this block adds: **NOT EXERCISED is also not a FAIL.**
+Mislabelling cost more than the missing evidence did, because it aimed the next
+hour at the wrong subject. The gate now builds a Windows fixture it owns and
+takes no arguments.
+
+**The gate's self-test drove the limb functions and never executed `main()`**, so
+`build_fixture`, argument handling and cleanup were uncovered — *a fixture that
+cannot reach the code is not coverage of it*, applied to gate code. Driving
+`main()` end to end immediately caught three wrong assertions of the
+coordinator's own and a malformed comprehension. Earlier the same self-test had
+caught a `\U` escape that made the gate a syntax error on line 1, an `os.name`
+mutation that made `pathlib` construct `WindowsPath`, and a control that silently
+did not fire because `rglob` does not cross a symlinked directory. **Six defects
+in gate code, none of which reached the operator** — that is what the self-test
+budget buys.
+
+**Score a PASS from the artifacts anyway.** Round 2 reported 4/4. The checks the
+log does not state: the reported sha256 is exactly `sha256(b'x'*8)`, so hashing
+read real bytes rather than a stub; limb A's 6 top-level and limb C's 7 recursive
+agree with the fixture's shape from two independent calls; `truncated=False` with
+a child directory present confirms *`recursive=false` is not truncation*; and
+**`is_symlink()=False` is identical in both rounds**, which is what makes the
+before/after a controlled comparison rather than a coincidence.
+
+**The review findings, for shape.** The strongest was measured, not read: both
+new arguments could write a SHA-256 manifest covering 2 of 3 files on disk with
+**no key recording the narrowing** — Decision 5's own *"a partial hash set must
+never look like a complete manifest"* reached by a route the bound refusal does
+not cover. The tell that it was fixable rather than removable: the *pre-existing*
+`hash=False` case already discloses itself via `hashes_computed`. Also `max_files`
+had **no description at all**, so the examined-not-matched rule and the
+truncated-negative reading were enforced in a test and invisible to the model —
+in the block that exists because a parameter was accepted and not published.
+
+**And the coordinator's own fix broke an invariant.** Inserting the new helper
+immediately above `def inspect_artifacts` put it between `@emits_nothing` and its
+function, so the decorator bound to the private helper and a **registered tool
+silently lost its export decision**. `test_every_registered_tool_has_exactly_one_export_decision`
+caught it on the first run — design/63's test doing exactly the job eleven
+undecorated tools paid for. When inserting a function above another, check what
+is directly above the insertion point.
