@@ -8902,3 +8902,37 @@ silently lost its export decision**. `test_every_registered_tool_has_exactly_one
 caught it on the first run — design/63's test doing exactly the job eleven
 undecorated tools paid for. When inserting a function above another, check what
 is directly above the insertion point.
+
+## design/62 — the closing decision: a priced measurement, declined (2026-09-01)
+
+Acceptance test 9 was to replay a real session payload through the model under
+the old and new schema and count how often `exposure_ms` landed nested. Priced by
+the coordinator against the real payload — 111,643 input tokens per sample,
+~$17 for n=24 across two conditions — deferred to last so it would score the
+final wording, and then **declined**.
+
+**The reason worth keeping: the block neutralised its own measurement.** Test 9
+counts a *first-try* rate. Turn 73's mistake was a top-level `exposure_ms`, which
+Python signature binding rejects before the function body — no hardware, no dose,
+one wasted call — and 62b's Decision 4 now returns a hint naming
+`protocol_params` and giving the corrected shape, so the retry is guided and
+lands. The consequence being measured had been made cheap by the same work that
+prompted the measurement. Add design/59's variance (**5/8 then 15/16 on identical
+wording**), and no outcome — better, same, or worse — would have changed a
+decision.
+
+**Two general rules out of it.** First: **before spending on a measurement, write
+down what each outcome would change.** If the answer is "nothing" for every
+branch, the number is interesting rather than decision-relevant, and this
+project's standing rule is not to spend on interesting. Second: **a measurement
+designed early can be invalidated by the work it was designed to check** — test 9
+was written when the malformed call's cost was unmitigated, and by the time it was
+due, two blocks had mitigated it. Re-derive a deferred measurement's value at the
+moment you would spend it, not at the moment you planned it.
+
+**What the decline does not close.** The underlying question — do parameter
+descriptions actually move agent behaviour? — is one this repo leans on
+constantly and still has only one measurement behind it. It wants a vehicle where
+the description is the **only** recovery path, not one where a hint rescues the
+caller, and a sample sized against measured variance rather than a budget. That
+is its own design note if anyone wants it.
