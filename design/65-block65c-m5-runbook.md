@@ -115,7 +115,9 @@ capabilities use a pre-existing exemption and are not a control for that change.
 
 ## M5 limb 3 — image-derived write to a non-dosing property
 
-This limb was never exercised on M2. Keep the four-condition selection test:
+This limb was never exercised on M2 and **PASSED on M5 on 2026-09-01** with
+image-derived writes to `Thorlabs ELL6.State`, read-back, and entry restoration.
+Keep the four-condition selection test for any deliberate rerun:
 the pair is writable; its device has no declared stage bounds; the property is
 non-dosing; and two distinct values lie inside reviewed bounds. Design/49
 refuses every raw property write to a device with declared stage bounds, even
@@ -127,9 +129,11 @@ Give the connected agent this prompt exactly:
 > writing. Discover a property only if it is writable, non-dosing, its device
 > carries no declared stage bounds, and two distinct values are inside its
 > reviewed or driver-intersected bounds. Report the exact device, property,
-> entry value, two values, bounds, authorization-map classification, and
-> evidence for all four conditions before any write. The exact pair must be
-> unclassified rather than explicitly excluded, so its approved envelope
+> entry value, two values, bounds, and the `get_device_property_info`
+> authorization classification and disposition for that exact pair, and
+> evidence for all four conditions before any write. Read that classification;
+> do not submit an envelope merely to discover it. The exact pair must report
+> `admitted_only_under_approved_envelope`, not `refused_as_excluded`, so its envelope
 > exercises C1's admitting half. Do not choose a laser, camera exposure, stage
 > position, TTL, PWM, servo, or pre-init `Number of X` property. If a pair
 > exists, continue in this
@@ -155,8 +159,12 @@ accepted stop. If M5 has no pair passing all four conditions, make no write.
 
 ## M5 limb 4 — discovered FPGA activation-pulse duration
 
-This dose-bearing limb was never exercised in either M2 round and is the limb
-closest to the workflow design/65 exists for. It must not be left open.
+This dose-bearing limb was never exercised in either M2 round. On M5 it finally
+ran writes at times 0–2 with read-back and stopped at time 3, then **FAILED**
+because restoration was charged as a fourth write after the three proposal
+slots were consumed. The product fix makes restoration the envelope's uncharged
+promise; this limb remains the closest to the workflow design/65 exists for and
+must not be left open on a retry.
 
 On M5, activation-path dose is **level × duration**. Microclaw separately bounds
 the level; htSMLM ramps the FPGA activation-pulse duration written here. The
@@ -171,10 +179,13 @@ connected agent this single prompt exactly:
 > the exact htSMLM/MicroFPGA property that sets activation pulse length. Do not
 > guess a label and do not ask the operator to transcribe one. Report the exact
 > device, exact property, entry value, type, driver limits or discrete values,
-> units, authorization-map classification, and the smallest two distinct safe
-> single-digit-microsecond values inside the intersected bounds. Proceed only
-> if the pair is unclassified, not explicitly excluded, so the approved
-> envelope exercises C1's admitting half. Also report the separately bounded
+> units, and the classification and disposition returned for this exact pair by
+> `get_device_property_info`. This is a read-only policy query: do not submit an
+> envelope to discover the classification. If it reports
+> `admitted_only_under_approved_envelope`, proceed; if it reports
+> `refused_as_excluded` or `refused_bounded_stage`, stop with `NOT EXERCISED`.
+> Report the smallest two distinct safe single-digit-microsecond values inside
+> the intersected bounds. Also report the separately bounded
 > activation level and calculate or state the resulting level × duration dose envelope;
 > the duration envelope controls only one factor. Pause for the operator's
 > explicit approval of that dose. If approved, continue in this same request
@@ -187,8 +198,11 @@ connected agent this single prompt exactly:
 > `save_dir=data`, dataset name `gate65c_m5_fpga_duration_stop3`,
 > `hook_strategy=gate65c_m5_fpga_duration_stop3`, and a `property_envelope`
 > for the discovered exact pair with only those values, `max_writes=3`, and
-> `restore: entry`. Do not enable a laser, alter TTL arming, edit a safety
-> configuration, substitute a direct property tool, or start live view. Export
+> `restore: entry`. The duration register is on the same MicroFPGA device as
+> other trigger controls: **do write the discovered duration register**, but do
+> not change `Mode0`, `Sequence0`, any laser enable, or any other TTL-arming
+> setting. Do not edit a safety configuration, substitute a direct property
+> tool, or start live view. Export
 > the recorded call to `gate65c_m5_fpga_duration_stop3_export.py`. End with
 > exactly one line: `M5 LIMB 4 PASS: authorized FPGA duration run and evidence
 > saved`, `M5 LIMB 4 FAIL:` followed by evidence, or `M5 LIMB 4 NOT EXERCISED:`

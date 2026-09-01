@@ -227,3 +227,35 @@ The retargeted runbook does not assert an M5 device label and contains no value
 placeholder. The connected agent discovers and echoes the exact pair, entry
 value and bounds, then uses that same pair later in the same prompt. This avoids
 both M2's wrong hardcoded label and block 52c's unexecuted placeholder shape.
+
+## M5 gate (2026-09-01)
+
+**Limb 3 — PASS.** The image-derived route wrote `Thorlabs ELL6.State`, waited,
+read back the achieved values, and restored the entry value. This is the first
+rig evidence for this limb and exercises C1's admitting half. The refusing
+control also fired: an envelope naming an explicitly excluded pair was refused
+before a write.
+
+**Limb 4 — mechanism exercised, restoration FAIL.** The discovered FPGA pulse
+duration register was written from decisions at times 0–2 with read-back, and
+the hook returned `StopAcquisition` at time 3. The three planned writes consumed
+`max_writes=3`; teardown then incorrectly charged `restore: entry` as a fourth
+write, refused it as `write budget exhausted`, and left duration at 2 instead
+of entry 1. The operator manually restored entry 1 out of envelope. This is a
+product defect, not a missing authorization or an unexercised mechanism.
+
+**Cadence attribution, n=1 observation from M5.** At the same field and 50 ms
+exposure, each run reported 99 gaps:
+
+| Route | Mean inter-frame gap |
+|---|---:|
+| fixed `n_frames=100`, hardware sequenced | 0.0502 s |
+| adaptive, density analysis | 0.0912 s |
+| adaptive, no analysis | 0.0909 s |
+
+The two adaptive observations cost about 41 ms/frame over the measured fixed
+baseline; the density-analysis difference was about 0.3 ms/frame. These are
+observations from M5, not universal properties. They supersede the earlier
+“5x” framing: M2's approximately 0.25 s cadence remains a valid n=1 observation
+from that machine, but it is not the cadence of the route and is not a baseline
+for M5.
