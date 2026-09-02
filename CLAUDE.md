@@ -465,6 +465,31 @@ because a block looks small.
    has no pixel-size configs". The gate would have reported "no pixel-size config
    has a dependency", which reads as a fact about the machine. An enumeration
    that fails must say so; an empty list is a statement, not a silence.
+
+   **A limb must not score the block's own central workflow as a failure.**
+   design/69a's round-4 gate reported
+   `turn 995951c2: settled at 3, server finished at 15`, and the limb was written
+   to read that as lost delivery. The HAR said otherwise: that stream was cut at
+   the operator's **reload**, at exactly `max_seq 3`, and a page navigated away
+   from mid-turn runs its `finally` on the way out and logs what it had applied.
+   Reloading mid-confirmation is the workflow design/69a exists to make safe —
+   its own gate was failing it. When a limb asserts equality, ask which
+   *supported* operations break the equality, and report those instead of failing
+   them; keep the assertions that nothing else explains (here: at least one turn
+   delivered end to end, and no settle claiming a sequence the server never
+   emitted).
+
+   **A setup step skipped three times should be deleted, not repeated.** The same
+   gate asked the operator to seed a recognizable marker so a payload-leak limb
+   had something to look for. It was missed in rounds 2, 3 and 4 — through a
+   rewrite that made it mandatory, moved it to its own numbered step and added a
+   check that throws. The fix was to stop asking: the limb seeds itself from the
+   session's own confirmation summaries, which the product already prints
+   deliberately and which *are* the payload that must not leak. That is stronger
+   evidence as well as no work — 100 `text_delta` events across 8 turns producing
+   no event line, rather than one planted string's absence. **A gate that needs
+   the operator to create its own subject is a gate looking in the wrong place**:
+   prefer a check seeded from what the session produces anyway.
 7. **Fix, sized to the finding.** Small corrections: do them yourself on the
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.
