@@ -8936,3 +8936,69 @@ constantly and still has only one measurement behind it. It wants a vehicle wher
 the description is the **only** recovery path, not one where a hint rescues the
 caller, and a sample sized against measured variance rather than a budget. That
 is its own design note if anyone wants it.
+
+## design/72 block 72a — a raised write leaves state unknown (merged 2026-09-02)
+
+One block, one demo-machine gate, closed R50, R51 and R60. Suite 2789 → 2804.
+
+**Both runner turns were killed mid-flight by the harness** — seven now across
+the project, so this is the normal case. Two things came out of it worth reusing.
+
+**A killed turn's session is recoverable, and the wrapper makes it look like it
+is not.** `run-codex.sh` writes `session-id` only after a clean exit, so a killed
+turn leaves the file absent and `revise` refuses. The id is the `thread_id` on
+the first line of `<stem>.events.jsonl`, and the wrapper's own extraction
+recovers it — writing that file by hand is byte-for-byte what the wrapper would
+have written, not a fabrication. The resumed turn demonstrably kept context: it
+answered review findings by number. Use this instead of restarting a block.
+
+**Check what a killed turn's working tree still holds.** Turn 2 was killed *while
+running a prescribed mutation* and left it applied — D3's `try` widened over the
+success-path read, which is precisely the defect test 5 forbids. Reading "one
+uncommitted file" as unfinished work and merging it would have shipped it. The
+right move was to harvest the mutation evidence while it was applied, then revert.
+
+**Review's load-bearing finding came from probing, not from reading the diff.**
+The executor reused a sentence written for the standalone tools, where nothing
+follows the read; in the executor the rollback runs next, so with a successful
+rollback the message said `rolled_back=['A.Label']` and "the state you asked for
+is on the device now. Do not retry" — while the device read `old`. **Its own test
+codified the contradiction**, asserting the token was present. The second
+consequence is what forced the fix rather than a reword: D6 specifies that token
+as written by exactly one code path, so the executor emitting it would have made
+a rolled-back `set_channel` export "The requested value was observed on the
+device after the failed write".
+
+**Two gate defects, both in the instrument, and the FAIL-shaped one was ours.**
+Round 1 reported limb A NOT EXERCISED because the limb keyed on
+`declared_illumination_properties`, taken from design/72's own §Gate premise that
+"the demo config declares illumination in its safety config". **False**: on the
+demo machine's ordinary config that key is *absent entirely*; block 59b's payload
+had it only because that gate passed a generated `--safety-config`. A session
+that had discriminated perfectly was scored as having nothing to look for, with a
+reason blaming the machine. **Two of this repo's own rules pulled against each
+other and the older one silently won** — the limb inherited 59b's payload
+assumption while the gate correctly inherited design/60's "a gate must not
+require configuration the product does not require". Reading the two transcripts
+by hand found it in a minute; the verdict never would.
+
+The general rule: **score a limb on the mechanism the row is about, not on the
+field name a design happened to mention.** R51 is reading-versus-inferring, and
+that is scoreable on any rig, because the shutter is always readable.
+
+**The control arm earned its cost immediately.** Chosen over an off-rig replay
+(the coordinator's machine had no working API credential) for a gate this short:
+one extra session, real machine, real model. Branch arm — *"let me verify the
+final illumination state rather than assume it"*, then `get_system_state`.
+Control arm on `main` — reported the LED off with **no tool call**, from its own
+earlier writes. True, and inferred. That is R51 and its fix, measured. It is
+**n=1 per arm** and is written up as discrimination, not an effect size.
+
+**An operator finding on the runbook.** A single "stop the server" block sat at
+step 3 while step 1b pointed *forward* to it; step 3 read as the final step, so
+the operator closed the PowerShell window between arms instead. Cost nothing —
+both sessions were captured — but **a step needed between 1 and 1b belongs
+between 1 and 1b.** Same family as design/52c's placeholder and 52a's skipped
+restore limb: an instruction the operator has to reorder is an instruction that
+does not get run as written.
+

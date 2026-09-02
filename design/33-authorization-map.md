@@ -1430,7 +1430,7 @@ That gives a strict severity ladder:
 
 | condition | class |
 | --- | --- |
-| no `set_property` returned — nothing reached the device | `ChannelPlanError` (base), `NO WRITE REACHED THE DEVICE` |
+| no `set_property` returned | `ChannelPlanError` (base), reporting the exception-path read-back — `at_original`, `landed`, `changed_unexpectedly` or `unknown`. **Superseded by design/72 block 72a, 2026-09-02**: `NO WRITE REACHED THE DEVICE, so no channel change was made` is gone, because a write that raises may already have landed. No branch now concludes the plan changed nothing. |
 | writes reached the device, all rollbacks verified | `ChannelPlanPartialApplicationError` |
 | a write that reached the device could not be rolled back | `ChannelPlanSafeStateError`, `SAFE STATE NOT VERIFIED` |
 

@@ -87,6 +87,13 @@ verify it.**
    decides `rollback_failures` vs `unrestored`). Same principle, applied once
    more; it is why gate limb 2 exercises both directions.
 
+   **The `landed` selector this describes no longer exists.** design/72 block
+   72a (merged 2026-09-02) deleted both it and the quiet `unrestored` category:
+   `landed = index < accepted` rested on the premise that a write which raised
+   never reached the device, which is false. Every restore failure that can now
+   occur sits on an entry that did or may have landed, so all of them are loud.
+   The reverse-then-verify-in-one-pass decision itself stands.
+
 The distinction the current code misses is between *the device rejected this
 write* and *this value is not consistent yet*. The first is knowable per write;
 the second is knowable only at the end.
@@ -379,6 +386,12 @@ Files: `microclaw/authorization.py` (`execute_channel_plan`, `_verify_property`)
 - [x] `ChannelPlanSafeStateError`, `ChannelPlanPartialApplicationError` and the
       `accepted == 0` "NO WRITE REACHED THE DEVICE" limb still select on the same
       conditions. The 2026-08-06 M5 finding is a regression test, not a memory.
+      **The third of those is gone as of design/72 block 72a (2026-09-02)** —
+      that limb asserted a plan had changed nothing, which a raised write cannot
+      establish. The M5 regression test survives and still stays quiet, by a
+      different route: the device answers reads with its saved original, which
+      is a positive `at_original`, so no restore is attempted and there is no
+      failed restoration left to classify.
 - [x] `_emit_recorded_channel_effects` emits every `set_property` /
       `wait_for_device` first and the `_verify_property` calls after, mirroring
       the executor. It still emits the literal `_verify_property(` call, because

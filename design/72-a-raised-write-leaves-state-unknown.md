@@ -583,38 +583,48 @@ round.
 
 **Step 9 — merge and clean up.**
 
-- [ ] Merge to `main`, **push `main`**, delete the branch locally *and* on
-      `origin`. Not closed until `git log --oneline origin/main..main` is empty.
-- [ ] Coordination notes recorded in `design/prompts.md`, and the ledger row
-      below closed, so a cold session can resume from the remote alone.
+- [x] Merged to `main` at `036a7b9` and **pushed**;
+      `git log --oneline origin/main..main` empty. Suite re-run on merged `main`:
+      **2804 / 99 / 2**. Branch deleted locally and on `origin`.
+- [x] Coordination notes recorded in `design/prompts.md`.
 
 **Step 10 — post-merge design gate.**
 
-- [ ] `design/70-carried-forward-register.md`: strike **R50** and **R60** (the
-      one defect at three sites) and **R51** (the read bullet), each pointing at
-      block 72a. Set each row's `block` cell.
-- [ ] **R60 is struck in two halves with a reason, not one tick.** Its agent half
-      was already closed by `agent.py:137` before this block existed; 72a closes
-      the code-message half. Say so in the row rather than implying the block did
-      both.
-- [ ] Record in the register that **Limb C was NOT EXERCISED** and that the
-      landed-then-raised path is closed off-rig by tests 1–14 plus the two M5
-      observations (design/38 G7.a, Block 2 G4) — so a later reader does not
-      re-book instrument time for it.
-- [ ] Reconcile this document to what was measured: the outcome vocabulary as
-      shipped, and the deletions of `landed`/`unrestored` as actually made.
+- [x] `design/70-carried-forward-register.md`: **R50**, **R60** and **R51**
+      struck, each with its `block` cell set to 72a and a status paragraph saying
+      what closed it.
+- [x] **R60 struck in two halves with a reason, not one tick** — its agent half
+      was already closed by `agent.py:137` before design/72 was written, and the
+      row says so.
+- [x] Recorded that **Limb C was NOT EXERCISED** and that the landed-then-raised
+      path is closed off-rig by the fourteen tests plus the two M5 observations,
+      in R50's status paragraph — so a later reader does not re-book instrument
+      time for it.
+- [x] This document reconciled: §Gate's false premise about the demo config is
+      struck and corrected in place, and the gate record states the outcome
+      vocabulary and the `landed`/`unrestored` deletions as shipped.
 - [ ] **Two other design docs describe behaviour this block removed**, found by
       grepping for the retired strings rather than from the diff:
       `design/33-authorization-map.md:1433` has a table row mapping "no
       `set_property` returned" to `NO WRITE REACHED THE DEVICE`, and
       `design/53-a-preset-is-verified-as-a-set.md:87` and `:380` describe the
       `rollback_failures` vs `unrestored` selector that no longer exists. Correct
-      both. Leave `design/41-block41c-rig-gate.md:121` alone — a gate runbook is
-      a record of what ran on a rig, not a live description.
-- [ ] Confirm **R57**, **R28**, **R42** and **R79** remain open and unclaimed —
-      §"Scope" excluded them deliberately and a reader must not read this merge
-      as closing them.
-- [ ] Any documentation change merged **before** the next block is assigned.
+      both. **Done**: design/33's row now describes the read-back outcomes and
+      marks the old wording superseded; design/53's two passages are annotated
+      rather than rewritten, since they are the record of a closed block, and both
+      say the `landed` selector and the `accepted == 0` limb are gone while their
+      surviving decisions stand. `design/41-block41c-rig-gate.md:121` left alone —
+      a gate runbook records what ran on a rig, not live behaviour.
+- [x] **R57**, **R28**, **R42** and **R79** confirmed still open and unclaimed;
+      §"Scope" excluded them deliberately and this merge closes none of them.
+- [x] **One new row opened: `R87`** — `get_system_state` omits
+      `declared_illumination_properties` entirely (`tools.py:4050` is
+      `if illumination:`) when the config declares none, and D5's *session-end*
+      sentence names that field without saying what to do when it is missing,
+      unlike its blank-frame sibling. Measured on the demo machine, where the
+      agent generalised correctly on its own — so a wording gap, not an observed
+      failure, and deliberately not folded into a merged block.
+- [x] All documentation merged before any next block is assigned.
 
 ## Scope — what is deliberately not folded in
 
@@ -639,7 +649,7 @@ Baseline before the block: `main` `a0d30d3`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | **round 1, 2026-09-02 — PASSED.** Limb A PASS with the control arm firing (branch read the state; `main` inferred it), limb B PASS, limb C NOT EXERCISED as predicted. Two gate defects, both the coordinator's instrument, fixed and re-scored against the same artifacts; no second session. Selftest **19/19** | — |
+| 72a | `design72/raised-write-state-unknown` (deleted) | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | **round 1, 2026-09-02 — PASSED.** Limb A PASS with the control arm firing (branch read the state; `main` inferred it), limb B PASS, limb C NOT EXERCISED as predicted. Two gate defects, both the coordinator's instrument, fixed and re-scored against the same artifacts; no second session. Selftest **19/19** | `036a7b9` (2026-09-02). Design gate done: R50/R51/R60 struck, R87 opened, design/33 and design/53 reconciled |
 
 ### What the gate cost: two defects, both in the instrument
 

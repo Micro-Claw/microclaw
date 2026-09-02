@@ -85,6 +85,7 @@ Rows added since the triage:
 | row | from |
 |---|---|
 | `R82`–`R86` | `design/71-installable-extensions.md` §"Register rows this leaves behind", 2026-09-02 |
+| `R87` | `design/72` block 72a's demo gate, 2026-09-02 |
 
 
 ## The work queue
@@ -105,10 +106,10 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R31` | [Adaptive+refocus dataset is a dense hypercube with padding frames](#r31) | HIGH | LARGE |  |
 | `R40` | [A stitched mosaic's zero padding corrupts every ImageStats statistic](#r40) | HIGH | SMALL |  |
 | `R42` | [A model-invented rule overrode an explicit operator instruction](#r42) | HIGH | SMALL |  |
-| `R50` | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL |  |
-| `R51` | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL |  |
+| ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
+| ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
-| `R60` | [A failed hardware write was described as definitely not landed](#r60) | HIGH | SMALL |  |
+| ~~`R60`~~ | [A failed hardware write was described as definitely not landed](#r60) | HIGH | SMALL | **72a** |
 | `R79` | [Saved knowledge does not separate measurement from inference](#r79) | HIGH | LARGE |  |
 | `R02` | [Agent offers to split an acquisition the backend already splits](#r02) | MEDIUM | SMALL |  |
 | `R16` | [get_device_property_info errors on a guessed property name without naming the real ones](#r16) | MEDIUM | SMALL |  |
@@ -135,6 +136,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R83` | [Generic package/protocol conformance needs a fixture](#r83) | HIGH | MEDIUM |  |
 | `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL |  |
 | `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM |  |
+| `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
 
 **Demo machine**
 
@@ -508,10 +510,10 @@ before writing copy against it.
 
 **A property write can take effect despite raising an exception, leaving the operator with a dangerously false belief about hardware state.**
 
-- **Status** — OPEN - `microclaw/tools.py:3527` calls `set_property` without exception-time read-back, and the defect remains carried forward at `design/35-usability-and-pfs-checklist.md:10388`.
+- **Status** — **CLOSED by block 72a, merged 2026-09-02.** All three sites read the value back on the exception path only — `set_device_property`, `set_emu_laser_power_percentage`, and the channel executor — and report `landed` / `requested_value_not_observed` / `unknown`, or, in the executor, a fourth refinement `at_original` against its saved originals. The `write_reported_failure_but_value_changed` token the row asked for is emitted by the two tools, and design/72 D6 stops the exported script pairing it with "the session completed nothing here". Nothing is added to any success path (design/53's rule stands: verification is plan-level). Settled off-rig by fourteen tests, thirteen of them watched failing on the pre-fix tree.
 - **Importance** — HIGH - A misleading failure report can leave illumination enabled, cause extra dose, or prompt an unsafe retry.
 - **Where** — LOCAL - A fake core can apply the value and then raise, fully testing exception-time read-back and reporting without hardware.
-- **Block** — NONE - Block 7b records the failed-write-may-have-landed rule for hook ratcheting but does not repair generic `set_device_property`.
+- **Block** — **72a** (design/72). Block 7b's rule for hook ratcheting is now the rule everywhere.
 - **Effort** — SMALL
 
 <details><summary>The original row, verbatim (`design/35` lines 10257–10266)</summary>
@@ -536,10 +538,10 @@ before writing copy against it.
 
 **The agent knows to read declared illumination after a bad frame, but not when ending or handing off a session.**
 
-- **Status** — OPEN - `microclaw/agent.py:137-149` limits the instruction to blank or low-signal frames and contains no session-end or handoff rule, although `get_system_state` exposes the readings at `microclaw/tools.py:4028-4030`.
+- **Status** — **CLOSED by block 72a, merged 2026-09-02.** `agent.py`'s read bullet now carries the session-end and handoff rule, and the certainty bullet says a landed-write report is not a report that the write failed. **Measured on the demo machine, 2026-09-02**, with the pre-fix prompt as a control arm on the same two operator messages: the branch said *"Before I wrap up, let me verify the final illumination state rather than assume it"* and called `get_system_state`; the control reported the LED off with **no tool call**, from its own earlier writes. True, and inferred — which is the row's own complaint. **n=1 per arm**: this establishes that the change discriminates, not how often it fires.
 - **Importance** — HIGH - The agent can falsely disclaim access to hardware state during handoff, potentially leaving the operator unaware that declared illumination remains on.
 - **Where** — LOCAL - This is a prompt-routing defect settleable with prompt inspection and an off-rig agent test.
-- **Block** — NONE - No later written block claims or schedules the missing session-end/handoff instruction.
+- **Block** — **72a** (design/72 D5).
 - **Effort** — SMALL
 
 <details><summary>The original row, verbatim (`design/35` lines 10267–10272)</summary>
@@ -590,10 +592,10 @@ before writing copy against it.
 
 **A hardware-write exception is wrongly treated as proof that the requested state did not land, instead of leaving state unknown pending verification or cleanup.**
 
-- **Status** — PARTLY - Block 52b added stale-state rereading for hook illumination (`microclaw/hook_decisions.py:918`), but the channel executor still claims “NO WRITE REACHED THE DEVICE” after a raising write (`microclaw/authorization.py:2013`).
+- **Status** — **CLOSED by block 72a, merged 2026-09-02, in two halves and only one of them is this block's.** The *agent* half was already closed by `agent.py:137`'s certainty rule before design/72 was written, and is struck with that reason rather than a tick. The *code* half is 72a: `NO WRITE REACHED THE DEVICE, so no channel change was made` is gone, and no branch now concludes that the plan changed nothing. The `landed = index < accepted` selector and the quiet `unrestored` category are **deleted**, not renamed — with `at_original` skipping the redundant restore, every restore failure that can still occur sits on an entry that did or may have landed, so all of them are loud. This does **not** reinstate the M5 2026-08-06 defect: that device answers reads with its saved original, so the doomed second write is never made.
 - **Importance** — HIGH - False certainty about laser or shutter state can expose a sample, mislabel acquired data, and leave hazardous illumination active.
 - **Where** — LOCAL - A fake write that mutates hardware state and then raises can prove the required failure semantics without a rig.
-- **Block** — NONE - Closed Block 52b covered one hook path, but no existing block owns the remaining misleading channel-executor wording and classification.
+- **Block** — **72a** (design/72 D4). Block 52b's one hook path is now the rule at every site.
 - **Effort** — SMALL
 
 <details><summary>The original row, verbatim (`design/35` lines 10388–10395)</summary>
@@ -2192,6 +2194,17 @@ error path and this merge is already carrying unverified change.
 ```
 
 </details>
+
+### R87 — D5's session-end rule names a field that is absent when nothing is declared
+
+**`get_system_state` omits `declared_illumination_properties` entirely when the safety config declares none, and block 72a's session-end prompt sentence names that field without saying what to do when it is missing.**
+
+- **Status** — OPEN, and narrow. `microclaw/tools.py:4050` is `if illumination:`, so the key is **absent**, not empty, on a config with no declarations — measured on the demo machine 2026-09-02, where the ordinary config produced no such key at all. D5's *blank-frame* sentence already handles this ("If that field is absent, there are no declarations to inspect and this adds no prompt or refusal"); D5's new *session-end* sentence does not, and says only "call get_system_state and report declared_illumination_properties".
+- **Importance** — MEDIUM - the gate measured the agent generalising correctly on its own: it read `optical_path` and the shutter and reported the LED at `Closed` and the shutter closed. So this is a wording gap, not an observed failure. But it is the difference between an instruction that works because the model is sensible and one that works because it says what it means, and R51's whole complaint was an agent disclaiming access to state it had.
+- **Where** — LOCAL - prompt wording plus an off-rig agent test; the demo machine's own payload (declaring nothing) and block 59b's (declaring `Dichroic.Label` via a generated `--safety-config`) are both recorded and are the two fixtures needed.
+- **Block** — NONE. Deliberately not folded into 72a, which was merged on a passing gate; this is a follow-on sentence, not a defect in what shipped.
+- **Effort** — SMALL
+- **Provenance** — found while scoring block 72a's gate, not from the design/35 triage. The same measurement corrected design/72 §Gate's false premise that "the demo config declares illumination in its safety config".
 
 ## Blocked on someone else — not schedulable here
 
