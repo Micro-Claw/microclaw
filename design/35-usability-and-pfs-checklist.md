@@ -8962,7 +8962,7 @@ figure is measured. What is wrong is offering it as a remedy. Anyone taking this
 row should check whether the model reads the text as advice because it is
 *phrased* as advice.
 
-### design/69a is coordinated and owns its own checklist — added 2026-09-01 **(pointer only)**
+### design/69a is coordinated and owns its own checklist — added 2026-09-01, **CLOSED 2026-09-02** **(pointer only)**
 
 **`design/69a` is coordinated and owns its own blocks and ledger**, like
 design/48 through design/62 and design/65. This file does not track its rows; it
@@ -8989,6 +8989,25 @@ operator reading the wording under pending / interrupted / timed-out. Everything
 else settles off-rig under node, which is itself part of the block: `serve.html`'s
 inline script has **zero** test coverage today, so the first commit extracts the
 reconciler into a module beside `transcript.js`. Do not book instrument time.
+
+**CLOSED 2026-09-02, `main` `2361ac7`.** All three blocks merged, plus two step-7
+fixes on the same branch. Four demo-machine rounds; the design doc's
+§"Closing state" has the detail. What the rig settled: keepalives on a blocked
+stream (30 frames over 318.6 s, 29 over 322 s, both at the 10 s cadence); a
+mid-confirmation reload recovering the same pending decision and polling it at
+1 Hz; the reloaded page presenting the running turn; and the timeout disclosure
+**and** the completed reply reaching that page with no manual reload. Four things
+are **not** rig-settled and the doc says so rather than implying otherwise: the
+stale-progress tier order (four rounds, four split turns — the turn boundary is
+the model's choice), the 30 s silence detector (no browser control can create an
+open-but-silent loopback transport), the round-4 composer clear, and the
+`--allow-remote` 401 path.
+
+**Two corrections to this row's own premises.** "Networking disabled for ~60 s
+mid-turn" was not runnable — Firefox's throttling does not reach `127.0.0.1`, so
+that limb measured nothing in round 1 and moved off-rig. And **one driven session
+was optimistic by four**: the product cost two rounds, the instrument cost six
+defects, every one of them coordinator-written and reviewed by nobody.
 
 ### design/62 is coordinated and owns its own checklist — added 2026-09-01, **CLOSED 2026-09-01** **(pointer only)**
 
