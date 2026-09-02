@@ -7,6 +7,24 @@ item it left unfinished is carried forward here (see "Carried-forward register"
 at the end). When the two disagree about what is next, this file wins. When
 either disagrees with a *design*, stop and reconcile the design first.
 
+> ## CLOSED TO NEW ITEMS — 2026-09-02
+>
+> **This file is no longer the active checklist, and no new row may be opened
+> in it.** Operator decision, 2026-09-02: *each design notebook is its own
+> coordinator*, which is what `design/48` through `design/69a` already did in
+> practice. `CLAUDE.md` §"The block workflow" carries the rule.
+>
+> **The carried-forward register moved to `design/70-carried-forward-register.md`.**
+> Every row of this file's register was evaluated on 2026-09-02 — one runner per
+> row for 71 of the 80, coordinator code reads for the last 9 — for whether it is
+> still open, how important it is, and where it can be settled. The rows that
+> survived are in `design/70` with that triage attached; the rest are recorded as
+> closed in the disposition table at the head of this file's register section,
+> with the reason. **Read `design/70`, not this file, for what is open.**
+>
+> What this file remains authoritative for: the *history* of blocks 0–15, Tracks
+> 0/A/B/C/D/E/F, their gate rounds and findings, and the run ledger.
+>
 > ## START HERE — this file is 9,000 lines and its opening is history
 >
 > **Do not plan from the next two sections.** "Why the order changed" and "The
@@ -129,6 +147,10 @@ soon as both are ready, and Track A proceeds during their implementation and
 while the kit is in flight.
 
 ## How to use this file
+
+**This file is closed to new items (2026-09-02).** It is history plus a ledger.
+Open rows live in `design/70-carried-forward-register.md`; blocks live in the
+design notebook that owns them.
 
 **The process lives in `CLAUDE.md` §"The block workflow", which is
 authoritative.** Read it before assigning or reviewing anything. It is in
@@ -8868,9 +8890,128 @@ priority, not by number — see Track D's placement between B and C.
 
 # Carried-forward register
 
+## Disposition of every register row — 2026-09-02
+
+**This register is closed and no row may be added to it.** Every row was
+evaluated on 2026-09-02 against `main`: still open, how important, where it can
+be settled, and whether a block already owns it. 71 rows got their own Codex
+runner; the last 9 were the coordinator's own code reads after the Codex usage
+limit was reached.
+
+The rows still open moved to **`design/70-carried-forward-register.md`**, which
+is where they are now worked and which carries the full triage. This table is
+the record of what happened to each row, and the prose below it is kept as the
+evidence a carried row points back to.
+
+**17 rows were already closed and had never been struck.** Several were closed
+*incidentally* by a block that recorded it nowhere this register could see. Do
+not re-open one without checking the named commit.
+
+### Closed at triage — not carried forward
+
+| row | what it was | closed by |
+|---|---|---|
+| `R07` | Block 59c - the prompt loses its hardware names | Block 61c merged as `9b052fa`, removing the paragraph after a positive Ti routing observation; the preserved procedure is in `microclaw/skills/nikon-pfs/SKILL.md:6` (`design/61-skills-and-tools-architecture.md:985`, `:995`). |
+| `R18` | get_focus_lock_state is a false negative on any non-EMU rig | Block 56a merged as `8ed1a90`; `microclaw/tools.py:10203`–`10231` now reads the non-EMU device/state, and `microclaw/tools.py:10255`–`10274` controls it. |
+| `R30` | generate_and_save_hook saves hooks no runner can resolve | Block 45 merged as `c3fc591`; save-time refusal is enforced before writing at `microclaw/tools.py:9679`, matching `describe_saved_hook` at `microclaw/hook_manager.py:609`. |
+| `R33` | No single-frame statistic separated cells from a diffuse gradient | Block 43i implemented budgeted survey refocusing and passed its M5 gate; design/43-nestor-session-findings.md:1732 records it DONE, while microclaw/hook_decisions.py:990 contains the live RequestAutofocus path. |
+| `R34` | export_session_script is all-or-nothing | Block 43h round 4 landed `tool_use_id` selection in commit `a81538e`; `microclaw/tools.py:1824` and `microclaw/tools.py:1944` implement selection and stale-state warnings, while `tests/test_session_script_export.py:652` covers exclusions. |
+| `R35` | run_adaptive_survey counts progress in positions, plan is in frames | Block 43h fixed runner and emitter together; the runner now sets the total from `len(survey_events)` (`microclaw/tools.py:8373`) and the emitter uses `len(events)` (`microclaw/tools.py:1615`). |
+| `R36` | The emitted standalone script fakes microclaw into sys.modules | Block 43h round 4 stripped Microclaw imports; current implementation is at microclaw/tools.py:1042-1073, with closure recorded at design/35-usability-and-pfs-checklist.md:2168. |
+| `R37` | Microclaw cannot write a text file to disk | Block 43h round 4 added `write_text_file` in commit `73c6ae1`; `microclaw/tools.py:1799` resolves paths through the workspace guard and refuses overwrites. |
+| `R41` | An exported hooked acquisition silently drops the hook's measurement | Block 45 added the disclosure at `microclaw/tools.py:583–585`, pinned by `tests/test_session_script_export.py:1269–1282`. |
+| `R44` | Two block-41b commits landed after its gate and are ungated | Block 43h’s M5 gate executed adaptive exports standalone, superseding the broad refusal; current contracts are recorded at `CLAUDE.md:48` and the inlining guard at `CLAUDE.md:108`. |
+| `R55` | microclaw serve produces no output when piped or redirected | Block 5 (`d14c147`) added `flush=True` to both banner branches and shutdown reporting (`microclaw/webserve.py:1368`); the demo gate captured the URL. |
+| `R59` | REPL API-key precedence mismatch | Block 4 round 3 fixed this in `55b277c`; `microclaw/__main__.py:139-149` now loads and installs the key, with regression coverage at `tests/test_authorization.py:1217-1235`. |
+| `R70` | Offline and live validation have non-overlapping coverage | Block 3 (`0cb871f`) added an unconditional `live_check` diagnostic at microclaw/config.py:246-254, verified by tests/test_config_gate.py:278-284. |
+| `R10` | A relative XY move reports neither the entry position nor the requested delta | Block 64d now returns `start_um` and resolved `requested_um`, making the delta derivable (`microclaw/tools.py:3013`; `design/68-xy-arrival-contract.md:68`). |
+| `R11` | move_stage_xy still has the pre-block-56 premature read-back shape | Block 64d (design/68, merged 2026-08-31) routed `move_stage_xy` through `settle_xy_move` (`microclaw/tools.py:3013`); closure is recorded at `CLAUDE.md:558` and `design/35-usability-and-pfs-checklist.md:8907`. |
+| `R73` | MicroFPGA pulse-duration/dose typed actuator | Block 4b merged as `04164fd`; the operator explicitly assigned trigger duration to `bounded-numeric` at design/35-usability-and-pfs-checklist.md:3386, implemented in microclaw/safety.py:115. |
+| `R76` | Probe 0, the PFS null control, was authored and never run | moot - Track B closed on the operator's ruling that PFS works, design/40 superseded design/34, the row itself records that it gates nothing, and the Nikon is gone |
+
+### Dropped at triage for another reason — not carried forward
+
+Open, but with nothing left to act on. Recorded rather than carried.
+
+| row | what it was | why it is not carried |
+|---|---|---|
+| `R04` | design/65 carried row 2 - the two cadence measurements differ by 2.7x between rigs | The route is safely bounded and the unexplained cross-rig variation has no defined closure criterion or behavioural consequence worth retaining as a defect. |
+| `R77` | Rig-profile values PFS needs are uncollected | The actionable behavior was superseded by live discovery, while the remaining characterization is Nikon-only, indefinitely blocked, and not a current defect. |
+
+### Carried forward to `design/70`
+
+| row | what it was | still open because | where | importance |
+|---|---|---|---|---|
+| `R01` | Agent says a nonzero interval makes an acquisition stoppable | `microclaw/tools_schema.py:707-713` warns only that zero-interval bursts may resist Stop, still inviting the false converse; design/69a explicitly leaves the finding open. | LOCAL | HIGH |
+| `R02` | Agent offers to split an acquisition the backend already splits | `microclaw/tools.py:2583` still says “Consider segmenting the acquisition,” and `tests/test_acquisition_budgets.py:201` only verifies rollover disclosure. | LOCAL | MEDIUM |
+| `R05` | Focus-lock ordering rule not followed on the Nikon Ti | `microclaw/agent.py:333` still relies on a prompt instruction, while `tests/test_agent.py:381` only checks that the text exists and `set_focus_lock` has no ordering enforcement (`microclaw/tools.py:10247`). | DEMO | MEDIUM |
+| `R06` | probe_hint emitted for a lock with no usable status property | `_lock_status_properties` still returns every read-only property and `probe_hint` is emitted for any nonempty result (`microclaw/tools.py:10161`, `microclaw/tools.py:10220`); design/59 item 28b remains unchecked (`design/59-orientation-must-name-the-optical-path.md:972`). | Zeiss | MEDIUM |
+| `R08` | Five things owed to a Nikon Ti by design/59 | Block 61c removed the Nikon prompt copy and a later Ti session confirmed `TIPFSStatus` skill routing (`design/61-skills-and-tools-architecture.md:985`), but the routing, manual-prism, turret-label, and label-matching limbs remain unchecked (`design/59-orientation-must-name-the-optical-path.md:1273`). | Nikon | HIGH |
+| `R09` | M5's empty Core shutter | Design/59 item 28 remains unchecked at design/59-orientation-must-name-the-optical-path.md:975; only off-rig coverage exists at tests/test_optical_path_state.py:396. | M5 | LOW |
+| `R13` | Batched analyzer cannot batch a one-dataset-per-position survey | `run_analysis_on_saved_dataset` still accepts one `dataset_path` (`microclaw/tools.py:5177`), while unhooked multiposition acquisition still invokes the protocol separately per position (`microclaw/tools.py:7088`). | DEMO | MEDIUM |
+| `R14` | An exported adaptive survey prints nothing | The survey and acquire-on-hit acquisitions still end without reporting either path at `microclaw/tools.py:1625` and `microclaw/tools.py:1667`, while only the non-survey branch prints one at `microclaw/tools.py:1726`. | DEMO | MEDIUM |
+| `R17` | An aborted turn's error never reaches the transcript | `microclaw/webserve.py:989-994` still emits exceptions only to SSE, while `microclaw/conversation.py:77-112` still reloads every JSONL object without role validation. | LOCAL | MEDIUM |
+| `R19` | An unassigned Core.Focus is swallowed, then thrown raw | `microclaw/tools.py:3956` still reports only `z_stage: "unavailable"`, while `get_z_position` and `move_stage_z` call Core directly at `microclaw/tools.py:3029` and `microclaw/tools.py:3117`; `design/35-usability-and-pfs-checklist.md:8903` confirms the proposed Block 6a fix was dropped unmerged. | LOCAL | HIGH |
+| `R20` | Setup cannot declare a stage-position property; absolute-position hole | `setup_tools.py:281`–`290` emits no property authorization, and `authorization.py:1035`–`1050` plus `safety.py:1097`–`1111` still allow an unlisted stage to escape any travel-bound check. | LOCAL | HIGH |
+| `R21` | Nothing reports the bounds microclaw is enforcing | `get_stage_position` returns only the position (`microclaw/tools.py:3187`), while `get_system_state` reports named-stage positions and only emits a bound when already violated (`microclaw/tools.py:3963`); no later design block closes this. | LOCAL | MEDIUM |
+| `R22` | No typed continuous-focus capability exists | Later work added typed MMCore enable/read paths in `microclaw/tools.py:10203-10231` and `microclaw/tools.py:10255-10274`, but no locked-state polling, bounded engage search, or multi-axis result required by `design/35-usability-and-pfs-checklist.md:5840-5873`. | Nikon | HIGH |
+| `R23` | The unattended Z paths are not lock-aware | Bare, lock-unaware writes remain in `autofocus.py:357,388,422`, `hooks.py:388`, and `tools.py:6830`; design/35 block 7b explicitly closed unbuilt and carried this gap forward. | LOCAL | HIGH |
+| `R24` | Four of five connect sites' actionable refusal never reaches the user | `MicroscopeController.__init__` still constructs the bridge eagerly (`microclaw/controller.py:730`), while four callers remain unguarded, including `microclaw/__main__.py:152` and `microclaw/webserve.py:322`. | LOCAL | MEDIUM |
+| `R25` | An exported script writes its dataset beside the script, silently | `microclaw/tools.py:264` still emits `directory=str(_HERE)`, and `tests/test_session_script_export.py:1507` explicitly requires ignoring the recorded directory; block 52a added path reporting only. | LOCAL | MEDIUM |
+| `R26` | run_tile_acquisition cannot run an artifact-emitting saved hook | `microclaw/tools.py:7154` still omits both arguments and `microclaw/tools.py:7214` forwards neither, while multiposition accepts them at `microclaw/tools.py:6928`. | LOCAL | MEDIUM |
+| `R27` | The agent started live view unprompted on a laser-dose rig | `microclaw/agent.py:88` still permits proactive live view, while `microclaw/tools.py:2749` and `microclaw/tools_schema.py:266` expose no `camera_triggers_lasers` point-of-use context; the row remains open at `design/35-usability-and-pfs-checklist.md:9716`. | DEMO | HIGH |
+| `R28` | laser_slot's pre-flight guarantees less than its schema sells | `microclaw/tools_schema.py:691` still promises protection from a gated-off laser, while `microclaw/tools.py:4576` explicitly leaves device enables and emission paths unverified. | LOCAL | HIGH |
+| `R29` | A stored rig fact was filed under the wrong topic, then not used | Topic validation checks only the outer key (`microclaw/knowledge_manager.py:10`), while `start_live_view` returns no stored trigger fact (`microclaw/tools.py:2749`); no later closure is recorded. | LOCAL | HIGH |
+| `R31` | Adaptive+refocus dataset is a dense hypercube with padding frames | `microclaw/tools.py:4881` deliberately zero-fills missing Cartesian slots, and `microclaw/tools.py:8657` plus `:8702` still build both phase datasets with `channel=None`. | LOCAL | HIGH |
+| `R32` | The emitted standalone script is completely silent | Non-survey adaptive exports print one dataset path (`microclaw/tools.py:1721`), but adaptive surveys return without any outcome print (`microclaw/tools.py:1624-1670`; `design/35-usability-and-pfs-checklist.md:9339`). | DEMO | HIGH |
+| `R38` | Import-stripping check and emitted analysis block can disagree | The mismatch remains at microclaw/tools.py:1169, microclaw/tools.py:1291, microclaw/tools.py:1326 versus microclaw/tools.py:2047; no later closure is recorded. | LOCAL | LOW |
+| `R39` | Emitted scripts hard-code the positions they visited | `_emit_adaptive` still inserts literal `xy_positions` into the emitted event shape at microclaw/tools.py:1553 and microclaw/tools.py:1593; design/35-usability-and-pfs-checklist.md:10030 says it was not folded into block 43h. | LOCAL | MEDIUM |
+| `R40` | A stitched mosaic's zero padding corrupts every ImageStats statistic | `microclaw/dataset_mosaic.py:105-106` still creates a zero-filled canvas and coverage map, while `microclaw/image_analysis.py:331-359` computes every statistic over the entire image; the limitation is explicit at `microclaw/image_analysis.py:153-159`. | LOCAL | HIGH |
+| `R42` | A model-invented rule overrode an explicit operator instruction | The ratchet still says “Step up gradually” at microclaw/safety.py:1255, while the only operator-override guidance is limited to contradictory telemetry at microclaw/agent.py:150; design/35-usability-and-pfs-checklist.md:10130 still calls for the prompt fix. | LOCAL | HIGH |
+| `R43` | connected_components writes no visible segmentation overlay | `ConnectedComponents.analyze_saved_frame` still returns only numeric results (`microclaw/completed_dataset.py:59-71`), and the later design summary says a visual artifact remains owed (`design/43-nestor-session-findings.md:1702-1708`). | LOCAL | MEDIUM |
+| `R45` | Block 13 G3 - transmitted-light SNR refusal unmeasured on any rig | Block 13 G3 remains unchecked at design/35-usability-and-pfs-checklist.md:6051 and explicitly carried at :10152; later Nikon brightfield work did not record this SNR criterion. | Zeiss | LOW |
+| `R46` | Block 13 position-list rollback path unexercised on a rig | The rollback remains implemented at microclaw/tools.py:7050 and unit-covered at tests/test_tools.py:5582, but design/35-usability-and-pfs-checklist.md:6078 explicitly records zero rig executions and no later block closes it. | DEMO | HIGH |
+| `R47` | saturated_fraction reporting precision is ungated | Both reporting paths round to six places (`microclaw/tools.py:5404`, `microclaw/tools.py:6880`), but the register still explicitly records commit `f4e98c6` as ungated (`design/35-usability-and-pfs-checklist.md:10164`). | DEMO | LOW |
+| `R48` | filament_position_filter scores bead fields as filamentous | The migrated hook still promises to reject blobby fields while using the unchanged 0.02 ridge-coverage threshold (`tests/fixtures/hooks/m5_migrated/filament_position_filter.py:13` and `:21`); block 45 explicitly says calibration or description work remains (`design/45-block45-rig-gate.md:161`). | M5 | HIGH |
+| `R49` | There is no way to remove a saved hook | `microclaw/hook_manager.py:333` implements saving and `microclaw/hook_manager.py:657` listing, while the tool surface at `microclaw/tools.py:9633` provides no removal operation. | LOCAL | MEDIUM |
+| `R50` | design/38 F12 - a property write can report failure after succeeding | `microclaw/tools.py:3527` calls `set_property` without exception-time read-back, and the defect remains carried forward at `design/35-usability-and-pfs-checklist.md:10388`. | LOCAL | HIGH |
+| `R51` | design/38 F13 - the agent does not know it can read illumination state | `microclaw/agent.py:137-149` limits the instruction to blank or low-signal frames and contains no session-end or handoff rule, although `get_system_state` exposes the readings at `microclaw/tools.py:4028-4030`. | LOCAL | HIGH |
+| `R52` | design/38 H2 - acquisition frame-cap policy is not inspectable | `microclaw/safety.py:996` enforces `acquisition.max_frames`, while `microclaw/tools.py:3925` exposes system state without acquisition policy; the only register mention remains open at `design/35-usability-and-pfs-checklist.md:10273`. | LOCAL | MEDIUM |
+| `R53` | design/38 F9 - per-source illumination prerequisites | `microclaw/safety.py:153` has no prerequisite field, and `microclaw/tools.py:4612` still reports illumination properties and the emission path as unverified. | M5 | HIGH |
+| `R54` | A config can pass check-config with budgets that do not bind | The only diagnostic still compares values with the packaged example (`microclaw/config.py:238`), and the register explicitly leaves implausible/non-binding limits unresolved (`design/35-usability-and-pfs-checklist.md:10324`). | LOCAL | MEDIUM |
+| `R56` | Block 9b cross-rig inventory gate, four limbs | The register still explicitly leaves all four limbs owed at design/35-usability-and-pfs-checklist.md:10348, and the redaction regex still omits names such as Passphrase, Community String, and Login at microclaw/rig_inventory.py:54. | M5 | MEDIUM |
+| `R57` | A full disk is reported as a hardware or connection fault | Block 60a now surfaces notification-thread failures as structured acquisition errors, but `microclaw/errors.py:202` still gives unclassified errors `_HARDWARE_HINT`, and no acquisition path checks filesystem free space. | LOCAL | HIGH |
+| `R58` | Clean hook save is not enforced in code | `microclaw/tools.py:9694-9700` calls `CONFIRM_FN` only when lint warnings exist, while `microclaw/agent.py:490-491` still claims hook-save confirmation is enforced in code. | LOCAL | MEDIUM |
+| `R60` | A failed hardware write was described as definitely not landed | Block 52b added stale-state rereading for hook illumination (`microclaw/hook_decisions.py:918`), but the channel executor still claims “NO WRITE REACHED THE DEVICE” after a raising write (`microclaw/authorization.py:2013`). | LOCAL | HIGH |
+| `R61` | run_timelapse declares no artifact | `microclaw/tools.py:4818` returns only `dataset_path` on the plain route, while `microclaw/webserve.py:252` allowlists only explicit `artifact.path` declarations. | LOCAL | MEDIUM |
+| `R62` | Historical calibration-artifact authoring gap | no authoring surface exists; `calibration_artifact` is only ever *read* (`microclaw/hooks.py:509`) and no tool or CLI writes one | LOCAL | LOW |
+| `R63` | Context-compaction attribution observation | an observation whose diagnosis was refuted by the passing run; no defect in the code has been identified | LOCAL | LOW |
+| `R64` | Unconfirmed SignalIO (12) and Galvo (16) bridge type ordinals | both ordinals are still asserted rather than measured (`microclaw/authorization.py:641`, `:645`) | Nikon | LOW |
+| `R65` | Mid-acquisition cancellation and abort trigger | the schema now discloses that Stop may not halt a burst (`microclaw/tools_schema.py:701`), but no mechanism exists and pyjavaz's serialised bridge makes a software kill switch impossible - same subject as R01 | LOCAL | MEDIUM |
+| `R66` | Partial-failure and restart/session-ledger rig semantics | a bare one-line heading carried from the previous checklist; it never says which semantics, which failure, or what would close it | LOCAL | MEDIUM |
+| `R67` | UV activation closed-loop test | Block 4b made pulse duration writable as `bounded-numeric` (`design/35-usability-and-pfs-checklist.md:3386`), but the existing UV fixture uses a fixed ramp rather than feedback (`design/32-block7b-rig-gate-prompts.md:663`). | M5 | HIGH |
+| `R68` | Missing NDTiff fixtures | `tests/fixtures/` still carries no NDTiff dataset of that shape | M5 | LOW |
+| `R69` | Shipped context thresholds are unexercised | `microclaw/conversation.py:23`-`:24` ship 120_000/90_000 and the behaviour at those values is asserted by test, never measured in a real session | DEMO | MEDIUM |
+| `R03` | design/65 carried row 1 - a hook choosing genuinely different targets per frame has never run on a rig | `design/65-adaptive-streaming-storm-hooks.md:693-697` says only identical hook proposals ran on M5, and `design/35-usability-and-pfs-checklist.md:9061` records no later closure. | DEMO | LOW |
+| `R12` | An agent asked the operator for positions it could have read itself | The generic prompt already says not to ask for reversible `get_*` bookkeeping (`microclaw/agent.py:218-219`), but the later observed failure remains explicitly unclosed at `design/35-usability-and-pfs-checklist.md:9299-9306`. | DEMO | MEDIUM |
+| `R15` | Finding the capture band does not offer to engage the lock | The Nikon skill describes engagement, but no reachable-rig evidence proves the model follows through; block 59c remains unstarted at design/59-orientation-must-name-the-optical-path.md:1305. | Nikon | HIGH |
+| `R16` | get_device_property_info errors on a guessed property name without naming the real ones | `microclaw/tools.py:3595` still queries the guessed property directly with no catch or diagnostic enrichment; the only later register mention remains the open row at `design/35-usability-and-pfs-checklist.md:9392`. | LOCAL | MEDIUM |
+| `R71` | open_artifact's multi-channel caveat has never been checked on any rig | Block 43a marked this criterion N/A and “still unexercised anywhere” at design/35-usability-and-pfs-checklist.md:6874; the claim remains in microclaw/agent.py:117. | DEMO | LOW |
+| `R72` | The model has never been observed saying what live view costs before starting one | the counterpart of R27; the conditional half was seen to work once on M5 and has never been re-observed, and the unconditional half failed | DEMO | MEDIUM |
+| `R74` | Phase 2 XY typed-actuator ambiguity / proposed axis field | Block 4 closed generation by refusing ambiguous entries (`design/35-usability-and-pfs-checklist.md:2676`), but the schema still lacks an axis (`microclaw/safety.py:119`) and guards XY writes against both axes (`microclaw/safety.py:1103`). | LOCAL | LOW |
+| `R75` | Channel preset colliding with a typed actuator - rig coverage | Off-rig tests cover classification and guarded execution (`tests/test_typed_actuators.py:206`, `microclaw/authorization.py:1856`), while `design/33-authorization-map.md:873` still records no rig coverage. | DEMO | LOW |
+| `R79` | Saved knowledge does not separate measurement from inference | `save_knowledge` still stores the caller’s unrestricted value unchanged (`microclaw/tools.py:10003`), and prompt rendering labels all entries as stored data (`microclaw/knowledge_manager.py:187`–`204`); design/40 D6 remains explicitly unscheduled (`design/35-usability-and-pfs-checklist.md:8906`). | LOCAL | HIGH |
+| `R80` | Detect cross-plane non-response for sub-band Z steps | `sweep_autofocus` only records unverifiable indices and measured positions without comparing consecutive readings or refusing (`microclaw/autofocus.py:352-410`); design/35:8908 still explicitly leaves the mechanism open. | M2 | HIGH |
+| `R81` | run_multiposition_acquisition refuses any non-observation hook | `_emit_multiposition` still raises `CannotEmit` for every non-observation hook at `microclaw/tools.py:581`, and `tests/test_session_script_export.py:3961` pins the autofocus wrapper’s refusal. | LOCAL | MEDIUM |
+
+
+---
+
+## The original register — kept as the evidence behind each row
+
 Everything the previous checklist left open, and where it now lives. Nothing from
-that file is dropped. Items marked **(no block)** are tracked but not scheduled;
-schedule them or record a reason at block 12.
+that file is dropped. Items marked **(no block)** were tracked here and are now dispositioned in
+the table above. **Do not add a row to this section.**
 
 ## Absorbed into a block above
 
