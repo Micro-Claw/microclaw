@@ -953,6 +953,67 @@ class TestSetDeviceProperty:
         mock_ctrl.core.set_property.assert_called_once_with("DCam", "Gain", "0")
         mock_ctrl.refresh_gui.assert_called_once_with()
 
+    def test_failed_property_write_that_landed_reports_the_read_back(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        reads = []
+        def failed_set(device, prop, value):
+            raise RuntimeError("Serial timeout")
+        def read(device, prop):
+            reads.append((device, prop))
+            return "1.0000"
+        mock_ctrl.core.set_property.side_effect = failed_set
+        mock_ctrl.core.get_property.side_effect = read
+        mock_ctrl.core.get_property_type.return_value = "Float"
+        with pytest.raises(RuntimeError) as caught:
+            set_device_property(
+                mock_ctrl, unconstrained_guard, "DCam", "Gain", "1"
+            )
+        message = str(caught.value)
+        assert "write_reported_failure_but_value_changed" in message
+        assert "1.0000" in message and "requested value" in message
+        assert reads == [("DCam", "Gain")]
+        mock_ctrl.core.get_property_type.assert_called_once_with("DCam", "Gain")
+
+    def test_failed_property_write_with_requested_value_not_observed_says_what_it_read(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.set_property.side_effect = RuntimeError("Serial timeout")
+        mock_ctrl.core.get_property.return_value = "0.5"
+        mock_ctrl.core.get_property_type.return_value = "Float"
+        with pytest.raises(RuntimeError) as caught:
+            set_device_property(mock_ctrl, unconstrained_guard, "DCam", "Gain", "1")
+        message = str(caught.value)
+        assert "reads '0.5'" in message
+        assert "requested value is not currently present" in message
+        assert "never landed" not in message and "made no change" not in message
+        mock_ctrl.core.get_property.assert_called_once_with("DCam", "Gain")
+
+    def test_failed_property_write_with_unreadable_device_reports_unknown(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.set_property.side_effect = RuntimeError("Serial timeout")
+        mock_ctrl.core.get_property.side_effect = RuntimeError("link down")
+        with pytest.raises(RuntimeError) as caught:
+            set_device_property(mock_ctrl, unconstrained_guard, "DCam", "Gain", "1")
+        assert "UNKNOWN" in str(caught.value)
+        mock_ctrl.core.get_property.assert_called_once_with("DCam", "Gain")
+        mock_ctrl.core.get_property_type.assert_not_called()
+
+    def test_failed_property_write_with_unresolvable_type_reports_unknown(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        mock_ctrl.core.set_property.side_effect = RuntimeError("Serial timeout")
+        mock_ctrl.core.get_property.return_value = "1"
+        mock_ctrl.core.get_property_type.side_effect = RuntimeError("type link down")
+        with pytest.raises(RuntimeError) as caught:
+            set_device_property(mock_ctrl, unconstrained_guard, "DCam", "Gain", "1")
+        message = str(caught.value)
+        assert "reads '1'" in message and "UNKNOWN" in message
+        assert "write_reported_failure_but_value_changed" not in message
+        mock_ctrl.core.get_property.assert_called_once_with("DCam", "Gain")
+        mock_ctrl.core.get_property_type.assert_called_once_with("DCam", "Gain")
+
     def test_odd_stage_property_refused_even_for_in_bounds_numeric_value(
         self, mock_ctrl, unconstrained_guard
     ):
@@ -6169,6 +6230,49 @@ def test_emu_write_reports_unrepresentable_one_percent(
     assert result["min_nonzero_percent"] == pytest.approx(10 / 3)
     assert result["device"] == "PWM"
     assert result["property"] == "Position0"
+
+
+def test_failed_laser_power_write_that_landed_reports_the_read_back(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    _design30_emu_power(monkeypatch)
+    tools.verify_emu_laser_power_calibration(
+        mock_ctrl, unconstrained_guard, 2,
+        [{"percent": 1, "raw_value": 0}, {"percent": 10, "raw_value": 3}],
+    )
+    monkeypatch.setattr(tools, "get_device_property_info", lambda *args, **kwargs: {
+        "read_only": False, "type": "Integer", "lower_limit": 0, "upper_limit": 100,
+    })
+    mock_ctrl.core.set_property.side_effect = RuntimeError("Serial timeout")
+    mock_ctrl.core.get_property.return_value = "3"
+    mock_ctrl.core.get_property_type.return_value = "Integer"
+    with pytest.raises(RuntimeError) as caught:
+        tools.set_emu_laser_power_percentage(
+            mock_ctrl, unconstrained_guard, 2, 10
+        )
+    assert "write_reported_failure_but_value_changed" in str(caught.value)
+    assert "reads '3'" in str(caught.value)
+    mock_ctrl.core.get_property.assert_called_once_with("PWM", "Position0")
+
+
+def test_failed_laser_success_path_read_is_not_reported_as_a_failed_write(
+    mock_ctrl, unconstrained_guard, monkeypatch
+):
+    _design30_emu_power(monkeypatch)
+    tools.verify_emu_laser_power_calibration(
+        mock_ctrl, unconstrained_guard, 2,
+        [{"percent": 1, "raw_value": 0}, {"percent": 10, "raw_value": 3}],
+    )
+    monkeypatch.setattr(tools, "get_device_property_info", lambda *args, **kwargs: {
+        "read_only": False, "type": "Integer", "lower_limit": 0, "upper_limit": 100,
+    })
+    mock_ctrl.core.get_property.side_effect = RuntimeError("success read failed")
+    with pytest.raises(RuntimeError, match="success read failed") as caught:
+        tools.set_emu_laser_power_percentage(
+            mock_ctrl, unconstrained_guard, 2, 10
+        )
+    assert "write_reported_failure_but_value_changed" not in str(caught.value)
+    mock_ctrl.core.get_property.assert_called_once_with("PWM", "Position0")
 
 
 def test_emu_write_refuses_unverified_calibration(

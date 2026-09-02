@@ -1123,6 +1123,7 @@ def _channel_verification_source() -> str:
     return "\n".join(inspect.getsource(item) for item in (
         authorization.ChannelPlanError,
         authorization._property_type_name,
+        authorization._property_values_equal,
         authorization._verify_property,
     ))
 
@@ -2005,9 +2006,16 @@ def export_session_script(
                 refuse(name, reason)
             else:
                 body_lines.append(f"# SKIPPED: {name} — {one_line(reason)}")
-                body_lines.append(
-                    "# The session completed nothing here, so neither does this script."
-                )
+                if "write_reported_failure_but_value_changed" in str(reason):
+                    body_lines.append(
+                        "# The requested value was observed on the device after the failed "
+                        "write; this script deliberately does not repeat that uncertain "
+                        "call, so replay may begin from a different device state."
+                    )
+                else:
+                    body_lines.append(
+                        "# The session completed nothing here, so neither does this script."
+                    )
                 skipped_failed_calls.append({"tool": name, "reason": one_line(reason)})
             continue
         try:
@@ -3524,7 +3532,20 @@ def set_device_property(
     # Illumination gate (design/14 §3): shutter enables block on a human 'y',
     # power writes are capped and ratcheted. In code, not just the prompt.
     guard.check_illumination(ctrl.core, device, property, value, confirm_fn=CONFIRM_FN)
-    ctrl.core.set_property(device, property, value)
+    try:
+        ctrl.core.set_property(device, property, value)
+    except Exception as exc:
+        from microclaw.authorization import (
+            _clean_exception_message, read_back_after_failed_write,
+        )
+        report = read_back_after_failed_write(ctrl.core, device, property, value)
+        try:
+            ctrl.refresh_gui()
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"{_clean_exception_message(exc)}; {report['sentence']}"
+        ) from exc
     ctrl.refresh_gui()
     return {"status": f"Set {device}.{property} = {value!r}."}
 
@@ -10435,7 +10456,22 @@ def set_emu_laser_power_percentage(
     guard.check_device_property(ctrl.core, entry["device"], entry["property"], raw_value)
     guard.check_illumination(ctrl.core, entry["device"], entry["property"], raw_value,
                              confirm_fn=CONFIRM_FN)
-    ctrl.core.set_property(entry["device"], entry["property"], raw_value)
+    try:
+        ctrl.core.set_property(entry["device"], entry["property"], raw_value)
+    except Exception as exc:
+        from microclaw.authorization import (
+            _clean_exception_message, read_back_after_failed_write,
+        )
+        report = read_back_after_failed_write(
+            ctrl.core, entry["device"], entry["property"], raw_value
+        )
+        try:
+            ctrl.refresh_gui()
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"{_clean_exception_message(exc)}; {report['sentence']}"
+        ) from exc
     written = str(ctrl.core.get_property(entry["device"], entry["property"]))
     written_effective = (float(written) - entry["offset"]) / entry["slope"]
     ctrl.refresh_gui()

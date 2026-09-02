@@ -1777,16 +1777,58 @@ def _cancelled(cancel: Any) -> bool:
     return bool(cancel)
 
 
+def _property_values_equal(property_type: str, actual: str, expected: str) -> bool:
+    if property_type == "Float":
+        try:
+            return math.isclose(float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9)
+        except (TypeError, ValueError):
+            return False
+    return actual == str(expected)
+
+
+def read_back_after_failed_write(
+    core: Any, device: str, prop: str, requested: str
+) -> dict[str, Any]:
+    """Disambiguate a write that raised. Never raises."""
+    try:
+        actual = str(core.get_property(device, prop))
+    except Exception as exc:
+        return {
+            "outcome": "unknown", "value": None, "property_type": None,
+            "sentence": (f"{device}.{prop} could not be read back after the failed "
+                         f"write ({_clean_exception_message(exc)}), so whether the "
+                         f"value landed is UNKNOWN; read it once the link recovers."),
+        }
+    try:
+        property_type = _property_type_name(core, device, prop)
+    except Exception as exc:
+        return {
+            "outcome": "unknown", "value": actual, "property_type": None,
+            "sentence": (f"{device}.{prop} reads {actual!r}, but its property type "
+                         f"could not be resolved ({_clean_exception_message(exc)}), so "
+                         f"whether that is the requested value is UNKNOWN."),
+        }
+    if _property_values_equal(property_type, actual, requested):
+        return {
+            "outcome": "landed", "value": actual, "property_type": property_type,
+            "sentence": (f"write_reported_failure_but_value_changed: {device}.{prop} "
+                         f"reads {actual!r}, the requested value, so the state you "
+                         f"asked for is on the device now. Do not retry."),
+        }
+    return {
+        "outcome": "requested_value_not_observed", "value": actual,
+        "property_type": property_type,
+        "sentence": (f"{device}.{prop} reads {actual!r}, not the requested "
+                     f"{requested!r}. The requested value is not currently present; "
+                     f"this read alone cannot prove whether the write changed the "
+                     f"property before the error."),
+    }
+
+
 def _verify_property(core: Any, device: str, prop: str, expected: str) -> None:
     actual = str(core.get_property(device, prop))
-    if _property_type_name(core, device, prop) == "Float":
-        try:
-            equal = math.isclose(float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9)
-        except (TypeError, ValueError):
-            equal = False
-    else:
-        equal = actual == str(expected)
-    if not equal:
+    property_type = _property_type_name(core, device, prop)
+    if not _property_values_equal(property_type, actual, expected):
         raise ChannelPlanError(
             f"Read-back verification failed for {device}.{prop}: requested {expected!r}, got {actual!r}."
         )
@@ -1908,12 +1950,12 @@ def execute_channel_plan(
     originals = [str(ctrl.core.get_property(device, prop)) for device, prop, _ in effects]
     attempted: list[tuple[str, str, str]] = []
     applied: list[tuple[str, str, str]] = []
-    # How many writes the device accepted without raising. `applied` retains the
+    # How many writes returned without raising. `applied` retains the
     # existing completed-write accounting if a later set/wait raises, and means
     # every write that landed when the separate verify pass finds a mismatch. A
-    # set that *raised* never reached the device; a set that returned did,
-    # whatever the eventual read-back says. Rollback bookkeeping needs that
-    # distinction, not just `applied`.
+    # a set that raised leaves device state unknown until the exception-path
+    # read-back below. A set that returned did reach the device, whatever the
+    # eventual read-back says.
     accepted = 0
     verification_failures: list[tuple[str, str]] = []
     try:
@@ -1938,32 +1980,49 @@ def execute_channel_plan(
     except Exception as exc:
         rolled_back: list[str] = []
         rollback_failures: list[str] = []
-        unrestored: list[str] = []
         restored: list[int] = []
+        already_at_original: list[str] = []
+        failed_write_readback = None
+        failed_write_outcome = None
+        if accepted < len(attempted):
+            index = len(attempted) - 1
+            device, prop, requested = attempted[index]
+            failed_write_readback = read_back_after_failed_write(
+                ctrl.core, device, prop, requested
+            )
+            actual = failed_write_readback["value"]
+            property_type = failed_write_readback["property_type"]
+            if actual is None or property_type is None:
+                failed_write_outcome = "unknown"
+            elif _property_values_equal(property_type, actual, originals[index]):
+                failed_write_outcome = "at_original"
+                already_at_original.append(f"{device}.{prop}")
+            elif _property_values_equal(property_type, actual, requested):
+                failed_write_outcome = "landed"
+            else:
+                failed_write_outcome = "changed_unexpectedly"
         for index in range(len(attempted) - 1, -1, -1):
             device, prop, _ = attempted[index]
-            # Did this write reach the device at all? A set that returned did,
-            # even if its read-back then failed. A set that raised did not, and
-            # restoring it is still worth attempting -- it may have taken effect
-            # in part -- but failing to restore it is NOT evidence that a change
-            # was left behind, and must not be reported as one.
-            landed = index < accepted
+            # A failed write is skipped only when its diagnostic read positively
+            # observed the saved pre-plan value. Every other attempted entry is
+            # restored because it either landed or may have landed.
+            if index == len(attempted) - 1 and failed_write_outcome == "at_original":
+                continue
             try:
                 ctrl.core.set_property(device, prop, originals[index])
                 _wait_for_plan_device(ctrl.core, device)
                 restored.append(index)
             except Exception as rollback_exc:
                 detail = f"{device}.{prop}: {_clean_exception_message(rollback_exc)}"
-                (rollback_failures if landed else unrestored).append(detail)
+                rollback_failures.append(detail)
         for index in restored:
             device, prop, _ = attempted[index]
-            landed = index < accepted
             try:
                 _verify_property(ctrl.core, device, prop, originals[index])
                 rolled_back.append(f"{device}.{prop}")
             except Exception as rollback_exc:
                 detail = f"{device}.{prop}: {_clean_exception_message(rollback_exc)}"
-                (rollback_failures if landed else unrestored).append(detail)
+                rollback_failures.append(detail)
         applied_names = [f"{d}.{p}" for d, p, _ in applied]
         attempted_names = [f"{d}.{p}" for d, p, _ in attempted]
         if verification_failures:
@@ -1981,13 +2040,17 @@ def execute_channel_plan(
                 f"{_clean_exception_message(exc)}; applied={applied_names}; "
                 f"attempted={attempted_names}; rolled_back={rolled_back}"
             )
-        if unrestored:
-            message += (
-                f"; the failing write could not be restored either ({unrestored}) "
-                "-- that restore only rewrites the value the property already held, "
-                "so if the write did not take effect nothing changed, and if it "
-                "partly did, that one property is the only one in doubt"
-            )
+        if failed_write_readback is not None:
+            if failed_write_outcome == "at_original":
+                message += (
+                    f"; at_original: {already_at_original[0]} holds its pre-plan value; "
+                    "no restore write was needed"
+                )
+            else:
+                message += (
+                    f"; {failed_write_outcome}: "
+                    f"{failed_write_readback['sentence']}"
+                )
         # Refresh once after every rollback, before selecting which exception
         # describes the outcome. Production controllers never raise here, but
         # even a broken test double's repaint error must never replace the
@@ -1996,22 +2059,16 @@ def execute_channel_plan(
             ctrl.refresh_gui()
         except Exception:
             pass
-        # A rollback failure on a write that *landed* is the case this class
-        # exists for: a verified change is still on the rig and could not be
-        # undone. Keep it exactly as loud as it was.
+        # A rollback failure after any write that landed or may have landed
+        # means the safe state could not be verified.
         if rollback_failures:
             raise ChannelPlanSafeStateError(
                 message + f"; SAFE STATE NOT VERIFIED; rollback_failures={rollback_failures}"
             ) from exc
-        # No write reached the device, so this is neither a partial application
-        # nor an unverified safe state. M5 gate, 2026-08-06: the first write of a
-        # four-write plan hit a serial timeout, the rollback of that same
-        # never-accepted write timed out identically, and the operator was told
-        # "SAFE STATE NOT VERIFIED" about a plan that changed nothing.
+        # No write returned successfully, so this is not a partial application.
+        # The diagnostic above reports what was observed after the raised write.
         if accepted == 0:
-            raise ChannelPlanError(
-                message + "; NO WRITE REACHED THE DEVICE, so no channel change was made"
-            ) from exc
+            raise ChannelPlanError(message) from exc
         raise ChannelPlanPartialApplicationError(message) from exc
 
     ctrl.refresh_gui()

@@ -55,6 +55,9 @@ class Core:
         self.values = dict(values or {(d, p): "old" for d, p, _ in effects})
         self.types, self.calls = {}, []
         self.fail_on = self.fail_rollback = None
+        self.apply_then_fail_on = None
+        self.fail_reads = set()
+        self.read_counts, self.type_counts = {}, {}
         self.write_count = 0
 
     def get_available_configs(self, group):
@@ -64,14 +67,22 @@ class Core:
     def get_config_data(self, group, preset):
         assert group == "Channel"
         return [{"device": d, "property": p, "value": v} for d, p, v in self.effects]
-    def get_property(self, d, p): return self.values[(d, p)]
-    def get_property_type(self, d, p): return self.types.get((d, p), "String")
+    def get_property(self, d, p):
+        self.read_counts[(d, p)] = self.read_counts.get((d, p), 0) + 1
+        if (d, p) in self.fail_reads:
+            raise RuntimeError("injected read failure")
+        return self.values[(d, p)]
+    def get_property_type(self, d, p):
+        self.type_counts[(d, p)] = self.type_counts.get((d, p), 0) + 1
+        return self.types.get((d, p), "String")
     def set_property(self, d, p, v):
         self.write_count += 1
         self.calls.append(("set", d, p, str(v)))
         if self.fail_on == self.write_count: raise RuntimeError("injected write failure")
         if self.fail_rollback == (d, p, str(v)): raise RuntimeError("injected rollback failure")
         self.values[(d, p)] = str(v)
+        if self.apply_then_fail_on == self.write_count:
+            raise RuntimeError("injected write failure after applying value")
     def wait_for_device(self, d): self.calls.append(("wait", d))
     def get_camera_device(self): return "Camera"
     def get_focus_device(self): return "Z"
@@ -300,24 +311,21 @@ def test_failure_after_each_position_rolls_back_and_stops(failure, expected):
                for i in range(failure, 3))
 
 
-def test_first_write_rejected_twice_does_not_claim_an_unverified_safe_state():
-    """M5 gate round 2, 2026-08-06, hit twice in four channel switches.
+def test_channel_plan_first_write_rejected_but_read_back_is_original_skips_restore():
+    """M5 2026-08-06 stays quiet because the saved value is still readable.
 
         ChannelPlanSafeStateError: Channel plan '640' stopped after 0/4 writes:
         Cannot set property "Laser 4: 1. Enable" to "0" [ ... Serial timeout
         occurred. (17) ]; applied=[]; attempted=['...Laser 4: 1. Enable'];
         rolled_back=[]; SAFE STATE NOT VERIFIED; rollback_failures=[...]
 
-    The first write raised, so nothing reached the device. The rollback then
-    tried to re-write that same property -- the command that had just timed out
-    -- it timed out again, and the executor escalated to its loudest possible
-    error about a plan in which nothing had changed. The rollback iterated
-    `attempted`, which includes the write that raised.
+    This fake overrides only the write: the diagnostic read still answers with
+    the saved original, and that positive observation makes restoration
+    unnecessary. A real dead link that also refuses reads is covered separately.
     """
     effects = [(f"D{i}", "Label", "new") for i in range(4)]
     core, ctrl, guard = categorical_plan(
         effects, {(d, p): "old" for d, p, _ in effects})
-    # The device refuses this property in both directions, as a dead link does.
     def refuse(d, p, v):
         core.calls.append(("set", d, p, str(v)))
         if d == "D0":
@@ -331,12 +339,78 @@ def test_first_write_rejected_twice_does_not_claim_an_unverified_safe_state():
     message = str(caught.value)
     assert "SAFE STATE NOT VERIFIED" not in message
     assert not isinstance(caught.value, ChannelPlanPartialApplicationError)
-    assert "NO WRITE REACHED THE DEVICE" in message
+    assert "at_original: D0.Label holds its pre-plan value" in message
     assert "applied=[]" in message
-    # It still reports the failed restore, just not as a safe-state failure.
-    assert "could not be restored either" in message
     assert "Serial timeout" in message
+    assert [call for call in core.calls if call[:3] == ("set", "D0", "Label")] == [
+        ("set", "D0", "Label", "new")
+    ]
     assert core.values == {(d, p): "old" for d, p, _ in effects}
+
+
+def test_channel_plan_first_write_landed_then_raised_does_not_claim_no_change():
+    core, ctrl, guard = categorical_plan([("A", "Label", "new")])
+    core.apply_then_fail_on = 1
+    with pytest.raises(ChannelPlanError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+    message = str(caught.value)
+    assert "NO WRITE REACHED THE DEVICE" not in message
+    assert "write_reported_failure_but_value_changed" in message
+    assert "reads 'new'" in message
+
+
+def test_channel_plan_landed_write_that_cannot_be_restored_is_a_safe_state_failure():
+    core, ctrl, guard = categorical_plan([("A", "Label", "new")])
+    core.apply_then_fail_on = 1
+    core.fail_rollback = ("A", "Label", "old")
+    with pytest.raises(ChannelPlanSafeStateError, match="SAFE STATE NOT VERIFIED"):
+        execute_channel_plan(ctrl, guard, "P")
+
+
+def test_channel_plan_unknown_write_that_cannot_be_restored_is_a_safe_state_failure():
+    core, ctrl, guard = categorical_plan([("A", "Label", "new")])
+    core.fail_on = 1
+    original_read = core.get_property
+    def fail_diagnostic_read(d, p):
+        if core.read_counts.get((d, p), 0) >= 1:
+            core.read_counts[(d, p)] += 1
+            raise RuntimeError("injected read failure")
+        return original_read(d, p)
+    core.get_property = fail_diagnostic_read
+    core.fail_rollback = ("A", "Label", "old")
+    with pytest.raises(ChannelPlanSafeStateError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+    assert "unknown" in str(caught.value)
+    assert "SAFE STATE NOT VERIFIED" in str(caught.value)
+
+
+def test_channel_plan_unexpected_changed_value_that_cannot_be_restored_is_a_safe_state_failure():
+    core, ctrl, guard = categorical_plan(
+        [("A", "Label", "1")], {("A", "Label"): "0"}
+    )
+    def change_then_raise(d, p, v):
+        core.write_count += 1
+        core.calls.append(("set", d, p, str(v)))
+        if core.write_count == 1:
+            core.values[(d, p)] = "0.5"
+            raise RuntimeError("write failed after unexpected change")
+        raise RuntimeError("restore failed")
+    core.set_property = change_then_raise
+    with pytest.raises(ChannelPlanSafeStateError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+    assert "changed_unexpectedly" in str(caught.value)
+
+
+def test_channel_plan_original_equal_to_requested_is_at_original_and_skips_restore():
+    pair = ("A", "Level")
+    core, ctrl, guard = categorical_plan([(*pair, "1")], {pair: "1"})
+    core.types[pair] = "Float"
+    core.fail_on = 1
+    with pytest.raises(ChannelPlanError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+    assert "at_original" in str(caught.value)
+    assert len([call for call in core.calls if call[0] == "set"]) == 1
+    assert core.type_counts[pair] == 1
 
 
 def test_rollback_failure_after_writes_landed_still_reports_unverified_safe_state():
@@ -411,6 +485,20 @@ def test_cancellation_between_writes_rolls_back():
     with pytest.raises(ChannelPlanPartialApplicationError, match="cancelled between writes"):
         execute_channel_plan(ctrl, guard, "P", cancel=event)
     assert core.values == {("A", "Label"): "old", ("B", "Label"): "old"}
+
+
+def test_cancellation_between_writes_does_not_read_back():
+    effects = [("A", "Label", "new"), ("B", "Label", "new")]
+    core, ctrl, guard = categorical_plan(effects)
+    event, wait = threading.Event(), core.wait_for_device
+    def cancel_after_wait(device):
+        wait(device)
+        event.set()
+    core.wait_for_device = cancel_after_wait
+    with pytest.raises(ChannelPlanPartialApplicationError):
+        execute_channel_plan(ctrl, guard, "P", cancel=event)
+    assert core.read_counts[("A", "Label")] == 2
+    assert core.read_counts[("B", "Label")] == 1
 
 
 def test_drift_is_reported_but_fresh_unsafe_expansion_is_refused():
