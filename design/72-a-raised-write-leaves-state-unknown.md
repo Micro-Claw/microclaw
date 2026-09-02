@@ -499,13 +499,12 @@ compressed because the block is small.
 
 **Step 4 — push branch and runbook together.**
 
-- [ ] `design/72-block72a-gate.md` written **on this branch** and pushed with the
-      code — the operator reads it on the demo machine, where scratch is
-      unreachable.
-- [ ] Implementation pinned inside it with
-      `git merge-base --is-ancestor <commit> HEAD`, never an exact tip hash, so
-      amending the runbook cannot invalidate the pin.
-- [ ] Every environment fact taken from the demo gates that **already ran there**
+- [x] `design/72-block72a-gate.md` written **on this branch** and pushed with the
+      code, plus `design/72-block72a-gate.py` (the scorer) and
+      `design/72-block72a-gate-selftest.py`.
+- [x] Implementation pinned with `git merge-base --is-ancestor d93b228 HEAD`,
+      never a tip hash, and the coordinator ran that line in the worktree.
+- [x] Every environment fact taken from the demo gates that **already ran there**
       (`design/69a-gate.md` step 0, `design/58-block58d`), not invented:
       `D:\Code\microclaw`; `uv run` as the interpreter; **warm uv once
       unredirected** (`uv run python -c "print('uv warm')"`) before any redirected
@@ -516,13 +515,44 @@ compressed because the block is small.
       redirect on a process that never exits leaves the log empty; **the browser
       is Firefox**. Before writing any step, `grep design/*.md` for the command
       about to be invented.
-- [ ] Limb A's operator prompt **replayed against a recorded payload** before the
-      runbook ships. R51 is a one-line prompt change and a mis-worded question
-      scores it wrong — that is what cost design/59 three demo rounds. One
-      sample; do not build a harness for it.
-- [ ] Limb B stated as a literal command whose output is scoreable unedited. No
-      placeholder survives into a shipped command: `<t2>`/`<t3>` is how design/52c
-      shipped a criterion that matched nothing and "passed".
+- [ ] **OUTSTANDING — Limb A's operator prompt replay has not run.**
+      `design/72-limbA-prompt-replay.py` is written and its harness verified as
+      far as the first API call (payload loaded, declared property found, real
+      recorded tool results keyed), but **no Anthropic credential is available on
+      the coordinator's machine**: `ANTHROPIC_API_KEY` is unset and microclaw's
+      stored key returns `401 API key is invalid`. It mirrors microclaw's real
+      call shape deliberately — `resolve_model()` (`claude-opus-4-8`),
+      `MAX_OUTPUT_TOKENS`, the same `TOOLS`, the same cached system block,
+      `messages.stream(...).get_final_message()` — because a replay that calls the
+      API differently measures a different agent. Cost ~$0.05/sample, ~$5 for the
+      24-sample sweep.
+      **What it would settle is the control, and that is the important half**: if
+      the *pre-fix* prompt already reports illumination at sign-off, limb A cannot
+      fail and scores nothing — `CLAUDE.md`'s "a limb that cannot fail is not a
+      criterion". Until it runs, a limb A PASS is not evidence that D5's line
+      caused the behaviour, and the runbook says so in its coordinator notes.
+      **This is the operator's call**: `CLAUDE.md` also says to weigh the replay
+      against the operator's time and to dry-run only when the gate is long,
+      repeated, or unattended — and this gate is one ten-minute session.
+- [x] **Every computed limb is one program, not copy-paste blocks** — `CLAUDE.md`
+      §6: it scores each limb independently so one FAIL cannot hide the others,
+      owns its log, and exits nonzero. No placeholder survives into any command;
+      the newest-history line is block 59b's verbatim.
+- [x] **The scorer was run before it shipped**, which is the rule gate code keeps
+      costing rig trips for. Its selftest is **10/10 with four cases expecting a
+      FAIL and getting one**, so it can fail. Two real defects came out of that:
+      the first fixture reused `tool_use_id` `t0` across messages, so results
+      were attributed to the wrong tool and limb B silently saw no write at all
+      (*a fake that encodes your assumption*, in gate code, which gets no review
+      pass); and **running it against block 59b's real recorded session** showed
+      limb A reporting FAIL on a session that never signed off, because the
+      opening was its last operator turn. A sign-off is now a *second* operator
+      turn, and both cases are pinned in the selftest.
+- [x] Limb A reports **NOT EXERCISED** when the machine's config declares no
+      illumination, and when the operator's own wording named illumination — both
+      are reasons about the machine or the prompt, not about the code. The gate
+      requires **no `--safety-config`**: a gate must not require configuration the
+      product does not require.
 - [ ] **Limb C recorded as NOT EXERCISED by construction**, with the reason —
       MMCore rejects an illegal value before dispatch and applies a legal one, so
       the demo machine cannot produce the landed-then-raised case. A limb that
