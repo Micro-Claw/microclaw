@@ -1953,9 +1953,9 @@ def execute_channel_plan(
     # How many writes returned without raising. `applied` retains the
     # existing completed-write accounting if a later set/wait raises, and means
     # every write that landed when the separate verify pass finds a mismatch. A
-    # a set that raised leaves device state unknown until the exception-path
-    # read-back below. A set that returned did reach the device, whatever the
-    # eventual read-back says.
+    # set that raised leaves device state unknown until the diagnostic read below
+    # establishes it; that observation, not the exception itself, decides whether
+    # the entry needs restoration. A set that returned did reach the device.
     accepted = 0
     verification_failures: list[tuple[str, str]] = []
     try:
@@ -2046,11 +2046,34 @@ def execute_channel_plan(
                     f"; at_original: {already_at_original[0]} holds its pre-plan value; "
                     "no restore write was needed"
                 )
-            else:
+            elif failed_write_outcome == "landed":
+                device, prop, requested = attempted[-1]
                 message += (
-                    f"; {failed_write_outcome}: "
-                    f"{failed_write_readback['sentence']}"
+                    f"; landed: immediately after the failed write, {device}.{prop} "
+                    f"read back {failed_write_readback['value']!r}, matching the "
+                    f"requested {requested!r}"
                 )
+            elif failed_write_outcome == "changed_unexpectedly":
+                device, prop, requested = attempted[-1]
+                message += (
+                    f"; changed_unexpectedly: immediately after the failed write, "
+                    f"{device}.{prop} read back {failed_write_readback['value']!r}, "
+                    f"matching neither the pre-plan {originals[-1]!r} nor the "
+                    f"requested {requested!r}"
+                )
+            else:
+                device, prop, _ = attempted[-1]
+                if failed_write_readback["value"] is None:
+                    message += (
+                        f"; unknown: {device}.{prop} could not be read immediately "
+                        "after the failed write, so its value could not be established"
+                    )
+                else:
+                    message += (
+                        f"; unknown: immediately after the failed write, {device}.{prop} "
+                        f"read back {failed_write_readback['value']!r}, but its property "
+                        "type could not be resolved, so the value could not be compared"
+                    )
         # Refresh once after every rollback, before selecting which exception
         # describes the outcome. Production controllers never raise here, but
         # even a broken test double's repaint error must never replace the

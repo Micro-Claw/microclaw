@@ -355,16 +355,35 @@ def test_channel_plan_first_write_landed_then_raised_does_not_claim_no_change():
         execute_channel_plan(ctrl, guard, "P")
     message = str(caught.value)
     assert "NO WRITE REACHED THE DEVICE" not in message
-    assert "write_reported_failure_but_value_changed" in message
-    assert "reads 'new'" in message
+    assert "landed: immediately after the failed write" in message
+    assert "read back 'new', matching the requested 'new'" in message
+    assert "write_reported_failure_but_value_changed" not in message
+    assert "state you asked for is on the device now" not in message
+    assert "Do not retry" not in message
+
+
+def test_channel_plan_landed_write_then_successful_rollback_makes_no_present_state_claim():
+    core, ctrl, guard = categorical_plan([("A", "Label", "new")])
+    core.apply_then_fail_on = 1
+    with pytest.raises(ChannelPlanError) as caught:
+        execute_channel_plan(ctrl, guard, "P")
+    message = str(caught.value)
+    assert "rolled_back=['A.Label']" in message
+    assert "immediately after the failed write" in message
+    assert "state you asked for is on the device now" not in message
+    assert "Do not retry" not in message
+    assert core.values[("A", "Label")] == "old"
 
 
 def test_channel_plan_landed_write_that_cannot_be_restored_is_a_safe_state_failure():
     core, ctrl, guard = categorical_plan([("A", "Label", "new")])
     core.apply_then_fail_on = 1
     core.fail_rollback = ("A", "Label", "old")
-    with pytest.raises(ChannelPlanSafeStateError, match="SAFE STATE NOT VERIFIED"):
+    with pytest.raises(ChannelPlanSafeStateError, match="SAFE STATE NOT VERIFIED") as caught:
         execute_channel_plan(ctrl, guard, "P")
+    message = str(caught.value)
+    assert "landed: immediately after the failed write" in message
+    assert "rollback_failures=['A.Label" in message
 
 
 def test_channel_plan_unknown_write_that_cannot_be_restored_is_a_safe_state_failure():
@@ -497,6 +516,8 @@ def test_cancellation_between_writes_does_not_read_back():
     core.wait_for_device = cancel_after_wait
     with pytest.raises(ChannelPlanPartialApplicationError):
         execute_channel_plan(ctrl, guard, "P", cancel=event)
+    # A: the originals snapshot plus post-rollback verification. B: its originals
+    # snapshot only. An erroneous diagnostic read would raise A's count to three.
     assert core.read_counts[("A", "Label")] == 2
     assert core.read_counts[("B", "Label")] == 1
 

@@ -1200,7 +1200,8 @@ def test_emitted_float_read_back_accepts_driver_reformatting(tmp_path):
 
 
 @pytest.mark.parametrize("name", [
-    "ChannelPlanError", "_property_type_name", "_verify_property",
+    "ChannelPlanError", "_property_type_name", "_property_values_equal",
+    "_verify_property",
 ])
 def test_inlined_channel_verification_is_byte_identical_to_source(tmp_path, name):
     """The emitted check must *be* the executor's, not a paraphrase of it."""
