@@ -370,6 +370,18 @@ writing a new one.
 
 ## Blocks
 
+Coordinated from 2026-09-02. **design/72 owns its own blocks, its own gate and
+its own ledger**, per `CLAUDE.md` §"The block workflow"; that section governs and
+where this one disagrees with it, that one wins.
+`design/70-carried-forward-register.md` holds rows `R50`, `R51` and `R60` and
+does not track these steps — it gets ticked in step 10.
+
+**One block, one gate, demo machine only.** No M5, no M2, no Nikon. §"Gate" says
+why: the code half is settled by tests 1–14 off-rig, and the demo machine
+*cannot* produce the landed-then-raised case at all. What is left is D5, which is
+agent behaviour, and one short driven session scores it. Do not book instrument
+time for any of this.
+
 ### 72a — read back on the failure path, and two prompt lines
 
 One block. `authorization.py`: `_property_values_equal` +
@@ -384,6 +396,171 @@ Acceptance: the fourteen tests above; tests 1–4, 6–8, and 10–14 watched fa
 on the pre-fix tree; tests 5 and 9 passing before and after as explicit regression
 guards, each shown failing under the mutation named above; the full suite; and a
 diff review confirming no read was added to any success path.
+
+## Coordination checklist — block 72a
+
+The ten steps of `CLAUDE.md` §"The block workflow", instantiated. Nothing is
+compressed because the block is small.
+
+**Step 1 — coordinator owns the list.**
+
+- [x] Start from updated `main`. `origin/main` fetched 2026-09-02;
+      `git log --oneline origin/main..main` empty at `a0d30d3`.
+- [x] Baseline suite run by the coordinator in the primary checkout:
+      **2789 passed / 99 skipped / 2 warnings** (`.venv/bin/python -m pytest -q`,
+      153 s). Node **v25.2.1** present — no JS test skips for its absence,
+      though this block touches no JS.
+- [x] Design verified against the tree before assignment. Every site the tables
+      name is where they say it is: `tools.py:3527` bare `set_property`,
+      `tools.py:10438` set-then-read on the success path only,
+      `authorization.py:1780` `_verify_property`'s inline Float rule,
+      `:1914`/`:1946` the two false comments, `:1957`/`:1966` the two
+      `(rollback_failures if landed else unrestored)` selectors, `:2011` the
+      `accepted == 0` branch, `tools.py:2009` the contradictory second SKIPPED
+      line, `agent.py:137`–`149` the bullet list,
+      `tests/test_channel_plan_executor.py:69` the fake that raises before it
+      assigns, and `:304`/`:320`/`:334`/`:337` the 2026-08-06 M5 test with the
+      docstring and the two assertions D4 retires.
+- [x] Branch `design72/raised-write-state-unknown` created at `a0d30d3`; ledger
+      row opened below. The `49b3c74` in the row's first draft was the commit
+      before this document landed and is corrected to the real start.
+- [ ] This checklist committed on the branch **before** the block is assigned —
+      a worktree sees committed history, not an editor buffer.
+
+**Step 2 — delegate the implementation.**
+
+- [ ] Linked worktree created for the block; the coordinator checkout never
+      holds the implementation.
+- [ ] Worktree **provisioned before the prompt is written**: `uv venv --python
+      3.12`, then `uv pip install --python .venv/bin/python -e
+      ".[serve,test,ilastik]"`. Confirm `import microclaw` resolves to the
+      *worktree's* tree, not the primary checkout's.
+- [ ] Suite run by the coordinator **in the worktree**, and the established
+      command handed over verbatim — `.venv/bin/python -m pytest -q`, which does
+      no resolution — together with the benign `mmpycorex` SyntaxWarning it
+      prints, so the runner does not file it as a finding.
+- [ ] Runner prompt written to the scratchpad (never committed), then the
+      project `codex-runner` skill launched in that worktree. Keep the job
+      directory for the lifetime of the block.
+- [ ] The prompt states the four things this block can get wrong quietly, each
+      of which the design already decided and none of which a green suite would
+      catch: the exception-path helper makes **exactly one** `get_property` call
+      and at most one `get_property_type` call; the `try` at both write sites
+      covers **only** `core.set_property`; `landed`/`unrestored` are **deleted**,
+      not renamed; and `at_original` is tested **before** `landed`.
+- [ ] If the runner is unavailable, or its automatic approval review cannot
+      authorize a required action, **stop and report** — do not implement inline.
+
+**Step 3 — review what comes back.**
+
+- [ ] Diff read, not the summary. Suite re-run by the coordinator rather than
+      the reported count believed.
+- [ ] **Tests 1–4, 6–8 and 10–14 watched failing on the pre-fix tree** for their
+      stated reasons (`git checkout a0d30d3 -- microclaw/`, run, restore). A test
+      written after the code is not evidence until it has been watched fail.
+- [ ] **Tests 5 and 9 proved by mutation**, since their subject is structural and
+      a pre-fix run never reaches the assertion: widen D3's `try` to cover the
+      success-path `get_property` and confirm test 5 fails; drop the
+      `accepted < len(attempted)` condition and confirm test 9 fails. Restore
+      both. A guard that passes on every tree is not yet a criterion.
+- [ ] The applies-then-raises mode added to the fake, and the existing tests'
+      current mode unchanged. *A fake that encodes your assumption is not a test
+      of it* — this is the file that owns the defect.
+- [ ] Diff review confirming **no read was added to any success path**, and that
+      `set_emu_laser_power_percentage`'s existing success-path `get_property`
+      sits outside the new `try`.
+- [ ] `_property_values_equal` is shared, not duplicated: `_verify_property`
+      calls it and still reads its value once.
+- [ ] `D6` present — no exported script pairs "the requested value was observed"
+      with "the session completed nothing here", and `_recorded_outcome`'s
+      `"nothing"` routing is unchanged.
+- [ ] Findings returned through the **same** `codex-runner` session, never "last
+      session". Repeat 2–3 until the code is right; rejecting a green
+      implementation is normal.
+
+**Step 4 — push branch and runbook together.**
+
+- [ ] `design/72-block72a-gate.md` written **on this branch** and pushed with the
+      code — the operator reads it on the demo machine, where scratch is
+      unreachable.
+- [ ] Implementation pinned inside it with
+      `git merge-base --is-ancestor <commit> HEAD`, never an exact tip hash, so
+      amending the runbook cannot invalidate the pin.
+- [ ] Every environment fact taken from the demo gates that **already ran there**
+      (`design/69a-gate.md` step 0, `design/58-block58d`), not invented:
+      `D:\Code\microclaw`; `uv run` as the interpreter; **warm uv once
+      unredirected** (`uv run python -c "print('uv warm')"`) before any redirected
+      command, because a fresh branch leaves uv a rebuild whose stderr kills a
+      redirected command under `$ErrorActionPreference = 'Stop'`; `serve` launched
+      with `Start-Process -NoNewWindow -RedirectStandardOutput`, because
+      PowerShell 5.1 does not capture a native child's stdout and a `> file`
+      redirect on a process that never exits leaves the log empty; **the browser
+      is Firefox**. Before writing any step, `grep design/*.md` for the command
+      about to be invented.
+- [ ] Limb A's operator prompt **replayed against a recorded payload** before the
+      runbook ships. R51 is a one-line prompt change and a mis-worded question
+      scores it wrong — that is what cost design/59 three demo rounds. One
+      sample; do not build a harness for it.
+- [ ] Limb B stated as a literal command whose output is scoreable unedited. No
+      placeholder survives into a shipped command: `<t2>`/`<t3>` is how design/52c
+      shipped a criterion that matched nothing and "passed".
+- [ ] **Limb C recorded as NOT EXERCISED by construction**, with the reason —
+      MMCore rejects an illegal value before dispatch and applies a legal one, so
+      the demo machine cannot produce the landed-then-raised case. A limb that
+      cannot run its mechanism is never a pass, and this one must not be written
+      as though it could.
+- [ ] Branch **pushed** to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No
+      PR.
+
+**Step 5 — the user runs the gate.** Demo machine, one session. Theirs. No rig
+evidence is ever simulated, and Limb C is not self-confirmed.
+
+**Step 6 — score from the artifacts, not the verdict.**
+
+- [ ] Limb A scored on whether `get_system_state` was **called** and
+      `declared_illumination_properties` **reported**, unprompted by name — read
+      it out of the session transcript, not out of the agent's own closing claim.
+      A `get_system_state` that itself failed is a pass only if the agent said
+      final illumination state could not be verified; silence or an inferred
+      state fails.
+- [ ] Limb B scored by counting round trips, not by the absence of complaint: an
+      ordinary successful write must show **no** diagnostic `get_property`.
+- [ ] A green limb is a place to look for defects, not a reason to stop looking.
+      Ask of every FAIL whether the limb scored the block's own intended
+      behaviour as a failure before believing it.
+
+**Step 7 — fix, sized to the finding.** Small ones on the branch by the
+coordinator; larger ones back to the runner in the worktree and validated as in
+step 3. Either way pushed to this branch.
+
+**Step 8 — the user re-tests.** Loop 5–8 until the gate passes.
+
+**Step 9 — merge and clean up.**
+
+- [ ] Merge to `main`, **push `main`**, delete the branch locally *and* on
+      `origin`. Not closed until `git log --oneline origin/main..main` is empty.
+- [ ] Coordination notes recorded in `design/prompts.md`, and the ledger row
+      below closed, so a cold session can resume from the remote alone.
+
+**Step 10 — post-merge design gate.**
+
+- [ ] `design/70-carried-forward-register.md`: strike **R50** and **R60** (the
+      one defect at three sites) and **R51** (the read bullet), each pointing at
+      block 72a. Set each row's `block` cell.
+- [ ] **R60 is struck in two halves with a reason, not one tick.** Its agent half
+      was already closed by `agent.py:137` before this block existed; 72a closes
+      the code-message half. Say so in the row rather than implying the block did
+      both.
+- [ ] Record in the register that **Limb C was NOT EXERCISED** and that the
+      landed-then-raised path is closed off-rig by tests 1–14 plus the two M5
+      observations (design/38 G7.a, Block 2 G4) — so a later reader does not
+      re-book instrument time for it.
+- [ ] Reconcile this document to what was measured: the outcome vocabulary as
+      shipped, and the deletions of `landed`/`unrestored` as actually made.
+- [ ] Confirm **R57**, **R28**, **R42** and **R79** remain open and unclaimed —
+      §"Scope" excluded them deliberately and a reader must not read this merge
+      as closing them.
+- [ ] Any documentation change merged **before** the next block is assigned.
 
 ## Scope — what is deliberately not folded in
 
@@ -400,6 +577,12 @@ diff review confirming no read was added to any success path.
 
 ## Run ledger
 
-| block | branch | start commit | assigned | merged |
-|---|---|---|---|---|
-| 72a | — | `49b3c74` | — | — |
+Baseline before the block: `main` `a0d30d3`, coordinator-run suite
+**2789 passed / 99 skipped / 2 warnings** (2026-09-02,
+`.venv/bin/python -m pytest -q`). Dev environment is `uv` + Python 3.12; a plain
+`uv venv` has no `pip` module, so a worktree is provisioned with `uv pip install
+--python .venv/bin/python`.
+
+| block | branch | start | implementation | gate | merge |
+|---|---|---|---|---|---|
+| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | — | — | — |
