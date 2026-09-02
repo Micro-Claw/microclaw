@@ -397,16 +397,16 @@ startup reconcile already covers with a button.
 
 ## Blocks
 
-Blocks 70a–70c below implement the first-party extension path. The community
+Blocks 71a–71c below implement the first-party extension path. The community
 registry, package format, isolation protocol, and shared CLI/GUI installer need
 a separate design and blocks before accepting external skills. They are not a
-small addition to 70a: making them one would encourage the unsafe interim state
+small addition to 71a: making them one would encourage the unsafe interim state
 where community dependencies are installed into MicroClaw's live environment.
 
 Two rig trips, both the demo machine. Nothing here needs a microscope: no
 motion, no dose, no bridge. M2/M5/Nikon are not involved.
 
-### 70a — the extension model, the endpoints, and the panel
+### 71a — the extension model, the endpoints, and the panel
 
 **Items**
 
@@ -456,7 +456,7 @@ a plain `uv venv` has no pip module. Capture one real `uv pip install --dry-run`
 transcript on the dev machine and paste it into the parse test. *A fake that
 encodes your assumption is not a test of it.*
 
-**Gate — demo machine, a program** (`design/70-block70a-demo-gate.py`, invoked
+**Gate — demo machine, a program** (`design/71-block71a-demo-gate.py`, invoked
 by a `.ps1` that resolves the active slot's interpreter from `active-slot.txt`,
 as 58e's does). Independent limbs, each reported on its own, nonzero exit on any
 failure, its own log file. A limb that could not run its mechanism reports
@@ -474,7 +474,7 @@ during a turn returns 409. Carry a **control that fires**: a deliberately
 impossible extra name must fail the limb if the endpoint accepts it, so the
 refusal limb cannot pass by doing nothing.
 
-### 70b — carry extensions across an update, a rollback, and a reinstall
+### 71b — carry extensions across an update, a rollback, and a reinstall
 
 **Items**
 
@@ -495,7 +495,7 @@ refusal limb cannot pass by doing nothing.
 - Reconcile reports missing-after-rollback from a fixture where the record names
   an extension the running slot cannot import.
 
-**Gate — demo machine, one program with 70c's limb appended.** A real update
+**Gate — demo machine, one program with 71c's limb appended.** A real update
 cycle: install `ilastik` from the panel, stage an update, restart, then assert
 the extension is *still* ready in the new slot and that `microclaw-slot.json`
 names the new commit. Then `install.bat`, and assert the panel reports the
@@ -504,7 +504,7 @@ against the state that makes recovery necessary. Score it from
 `extensions.json`, `update-state.json` and the slot markers, not from the
 banner text.
 
-### 70c — a skill declares its extension
+### 71c — a skill declares its extension
 
 **Items**
 
@@ -522,14 +522,14 @@ No skill in the tree declares `requires` yet, so **write a fixture skill that
 does** — the shape of the input is the whole point, and a branch no fixture
 reaches is a branch that ships unexecuted (58a's `github:` guard).
 
-**Gate**: one limb on 70b's program — `load_skill` on a fixture skill naming an
+**Gate**: one limb on 71b's program — `load_skill` on a fixture skill naming an
 uninstalled extension returns the body *plus* the line, and the same call after
 installing returns the body alone.
 
 ## Open questions for the user
 
 1. **Is `ilastik` the only extension at v1?** The design supports more the day
-   an extra and a line in `EXTENSIONS` land together, but 70a's gate should
+   an extra and a line in `EXTENSIONS` land together, but 71a's gate should
    exercise exactly what ships.
 2. **Should a recorded-but-missing extension after an update be reinstalled
    automatically?** This plan says no — network on startup, without a button.
@@ -549,6 +549,6 @@ installing returns the body alone.
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| 70a | — | — | not started |
-| 70b | — | — | not started |
-| 70c | — | — | not started |
+| 71a | — | — | not started |
+| 71b | — | — | not started |
+| 71c | — | — | not started |

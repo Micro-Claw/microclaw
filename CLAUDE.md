@@ -214,11 +214,27 @@ replacement for it.
 
 ## The block workflow — authoritative
 
-This is how every block of the active implementation checklist runs. The active
-checklist is `design/35-usability-and-pfs-checklist.md`; it names the blocks and
-their gates, but **this section owns the process**. Where a checklist, a design
-doc, or a recalled memory disagrees with the ten steps below, this wins — say so
-and fix the other document.
+This is how every block of every implementation checklist runs, and **this
+section owns the process**. Where a checklist, a design doc, or a recalled memory
+disagrees with the ten steps below, this wins — say so and fix the other
+document.
+
+**Each design notebook is its own coordinator** (operator decision, 2026-09-02).
+`design/NN-*.md` names its own blocks, its own gates and its own run ledger, and
+a block is coordinated from the document that owns it — the shape design/48
+through design/69a already used. There is no single active checklist.
+`design/35-usability-and-pfs-checklist.md` was that until 2026-09-02 and is now
+**closed to new items**: read it for the history of blocks 0–15 and for the
+Track A/B/D record, but do not open a row in it.
+
+**Carried-forward items go to `design/70-carried-forward-register.md`.** That
+file is a register, not a coordinator: it holds the rows nobody owns yet, each
+with its status, importance, where it can be settled (local, demo machine, or a
+named rig), and the block that would close it. When a block finds something it
+will not fix, the row goes there. When a row grows big enough to own blocks, it
+becomes a new design notebook and the register points at it. Work the register
+by importance **and** by ease — a row that settles locally or on the demo machine
+is worth taking before a heavier one that needs instrument time.
 
 When the user says "you are the coordinator" for a checklist, or asks to
 continue one, run these steps. Do not compress them, and do not skip a step
