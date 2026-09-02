@@ -49,11 +49,11 @@ on 2026-08-23 and sat here for ten days looking live. Those rows are **not**
 carried into this file; `design/35`'s register section now opens with a
 disposition table naming each one and what closed it.
 
-**Read the ease column before the importance column.** 35 of the carried rows
+**Read the ease column before the importance column.** 39 of the carried rows
 need no hardware at all and 13 more need only the demo machine — against 9 that
-need a booked rig and 4 blocked on a Nikon Ti that no longer exists. This
-register had been read as a list of rig debts. It is mostly not one, and that is
-the single most useful thing the triage found.
+need a booked rig, 4 blocked on a Nikon Ti that no longer exists, and 1 blocked
+on a third party. This register had been read as a list of rig debts. It is
+mostly not one, and that is the single most useful thing the triage found.
 
 Three cautions, stated so a later reader can weigh this:
 
@@ -69,6 +69,22 @@ Three cautions, stated so a later reader can weigh this:
 - **An `M2`/`M5`/`Zeiss` row is a claim about capability, not a booking.** Check
   the named rig still has the capability the row needs before spending a session
   on it; `design/69b` shows how little of the Zeiss is characterised.
+
+## Row numbering, and rows added since
+
+`R01`–`R81` are the design/35 triage, numbered in that register's own order.
+**Anything from `R82` up was added afterwards**, by a notebook that found
+something it would not fix; each says so in a **Provenance** line and names the
+notebook and section it came from. Add the next row at the end of the numbering,
+in the bucket its `Where` puts it, and give it the same six fields — a row
+without a `Where` cannot be scheduled by ease, which is the one thing this file
+is for.
+
+Rows added since the triage:
+
+| row | from |
+|---|---|
+| `R82`–`R86` | `design/71-installable-extensions.md` §"Register rows this leaves behind", 2026-09-02 |
 
 
 ## The work queue
@@ -115,6 +131,10 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R62` \* | [Historical calibration-artifact authoring gap](#r62) | LOW | SMALL |  |
 | `R63` \* | [Context-compaction attribution observation](#r63) | LOW | SMALL |  |
 | `R74` | [Phase 2 XY typed-actuator ambiguity / proposed axis field](#r74) | LOW | MEDIUM |  |
+| `R82` | [Open the community skill package notebook](#r82) | HIGH | LARGE | → `design/71` §"next notebook brief" |
+| `R83` | [Generic package/protocol conformance needs a fixture](#r83) | HIGH | MEDIUM |  |
+| `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL |  |
+| `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM |  |
 
 **Demo machine**
 
@@ -167,6 +187,12 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R22` | [No typed continuous-focus capability exists](#r22) | HIGH | LARGE | → Block 7a, “Typed continuous focus and the bounded engage search” |
 | `R64` \* | [Unconfirmed SignalIO (12) and Galvo (16) bridge type ordinals](#r64) | LOW | SMALL |  |
 
+
+**Blocked on someone else — not schedulable here**
+
+| | row | importance | effort | block |
+|---|---|---|---|---|
+| `R85` | [SMAPpy's publisher-owned precondition list](#r85) | MEDIUM | — |  |
 
 ---
 
@@ -1220,6 +1246,51 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 </details>
 
 
+
+### R82 — Open the community skill package notebook
+
+**Accepting a community-authored skill package needs its own design notebook; `design/71` settled the decisions it should start from and deliberately left the work out of its blocks.**
+
+- **Status** — OPEN - `design/71` §"Community skill packages — next notebook brief" records the settled ownership, hosting, intake, isolation, observer and export dispositions, and states that blocks 71a–71c must not grow toward them.
+- **Importance** — HIGH - it blocks *any* community skill, which is the ownership problem `design/71` opens on: accepting one into this repository silently makes MicroClaw its maintainer.
+- **Where** — LOCAL - a design notebook, written against `design/71`'s brief and the SMAPpy 0.1.0 feasibility section.
+- **Block** — None yet; this row *is* the request to open the notebook. `design/71` §"What the boundary should be, when it is taken up" is its starting material.
+- **Effort** — LARGE
+- **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
+
+### R83 — Generic package/protocol conformance needs a fixture
+
+**Conformance should be built against a fixture package rather than against SMAPpy, so the generic work does not wait on a third party's release.**
+
+- **Status** — OPEN - no fixture package exists; `design/71`'s feasibility section is written against SMAPpy 0.1.0, whose release is not ours to schedule (see R85).
+- **Importance** — HIGH - without a fixture, every conformance decision is coupled to one external package's timetable, and the first real package becomes the specification.
+- **Where** — LOCAL - a fixture package plus the protocol it has to satisfy.
+- **Block** — NONE - it precedes the notebook R82 asks for, or is its first block.
+- **Effort** — MEDIUM
+- **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
+
+### R84 — Three export behaviours are unpinned ahead of a runner
+
+**Three export decisions for the community-package path are stated as intent but not pinned by a test, and an unpinned export decision is exactly what blocks 43h, 47 and 52a each paid for.**
+
+- **Status** — OPEN - the three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:1989`-`:1994`) into `refuse()` (`:1968`), which plants a `raise RuntimeError` in the exported script.
+- **Importance** — HIGH - `CLAUDE.md` records this failure shape three times over (43h's `generate_and_save_hook`, 47's `set_roi`/`clear_roi`, 52a's `move_named_stage`); each killed its own block's gate script.
+- **Where** — LOCAL - the marker's behaviour is settled by reading the emitter and pinning it with a test, the way `test_every_registered_tool_has_exactly_one_export_decision` pins the marker count.
+- **Block** — NONE - pin these before a runner is handed the notebook, not during it.
+- **Effort** — SMALL
+- **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
+
+### R86 — run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible
+
+**MMStudio MDA runs go around the supervised acquisition path, so any acquisition-lifecycle event added there does not fire for them.**
+
+- **Status** — OPEN - pre-existing, and not introduced by `design/71`; noticed while scoping where a community package's acquisition trigger would observe from.
+- **Importance** — LOW - `run_mda` is a deliberate hand-off to MMStudio's own engine and nothing today depends on observing it. It matters only once something subscribes to acquisition lifecycle events and quietly gets none from this route.
+- **Where** — LOCAL - the divergence is visible in the call path; whether to close it is a design question about what `run_mda` promises.
+- **Block** — NONE
+- **Effort** — MEDIUM
+- **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
+
 ## Demo machine
 
 One driven session or one standalone script run on the Windows demo machine. Cheap, always available, no dose.
@@ -2122,3 +2193,18 @@ error path and this merge is already carrying unverified change.
 
 </details>
 
+## Blocked on someone else — not schedulable here
+
+Not blocked on hardware and not blocked on us. Recorded so the dependency is
+visible; do not put one of these on a checklist.
+
+### R85 — SMAPpy's publisher-owned precondition list
+
+**Six preconditions, signing included, that SMAPpy's own publisher must meet before it could be admitted as the first conformance package — none of them ours to schedule.**
+
+- **Status** — OPEN, and deliberately not ours. `design/71` §"Feasibility against SMAPpy 0.1.0" enumerates them.
+- **Importance** — MEDIUM - it blocks admitting SMAPpy specifically. It does **not** block the generic work, which is why R83 asks for a fixture package instead.
+- **Where** — EXTERNAL - the publisher's release process. Nothing in this repository advances it.
+- **Block** — NONE, and none should be opened. If a checklist ever appears to depend on this row, the dependency is wrong: route it through R83.
+- **Effort** — n/a
+- **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
