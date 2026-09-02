@@ -357,7 +357,9 @@ observations already recorded.
 What the demo session is for is D5, which is agent behaviour and has no unit
 test:
 
-- **Limb A (R51).** Drive an ordinary short session, then ask the agent to hand off or end. Score: did it call `get_system_state` and report `declared_illumination_properties`, without being asked for it by name? The demo config declares illumination in its safety config, so the field is present. If `get_system_state` itself fails, the correct scoreable response is that final illumination state could not be verified; silence or an inferred state fails the limb.
+- **Limb A (R51).** Drive an ordinary short session, then ask the agent to hand off or end. Score: did it call `get_system_state` and **read** the illumination state, rather than assert it, without being asked for it by name? If `get_system_state` itself fails, the correct scoreable response is that final illumination state could not be verified; silence or an inferred state fails the limb.
+
+  **This paragraph originally said "the demo config declares illumination in its safety config, so the field is present". Measured 2026-09-02: that is false.** On the demo machine's *ordinary* config `declared_illumination_properties` is **absent entirely** — block 59b's payload carried it only because that gate passed a generated `--safety-config`. The limb is still perfectly scoreable, because R51 is about **reading versus inferring**, not about one field's name: the shutter is readable on any rig. A limb keyed on the field name instead scored a session that discriminated perfectly as NOT EXERCISED — see the gate record below.
 - **Limb B (no regression).** An ordinary successful `set_device_property` reports exactly as it does today — no read-back, no extra round trip.
 - **Limb C, NOT EXERCISED by construction.** Record that the landed-then-raised path did not run and why. A limb that cannot run its mechanism is never a pass.
 
@@ -369,6 +371,18 @@ gates that already ran** (`design/58-block58d`, `design/69a-gate.md`) rather tha
 writing a new one.
 
 ## Blocks
+
+Coordinated from 2026-09-02. **design/72 owns its own blocks, its own gate and
+its own ledger**, per `CLAUDE.md` §"The block workflow"; that section governs and
+where this one disagrees with it, that one wins.
+`design/70-carried-forward-register.md` holds rows `R50`, `R51` and `R60` and
+does not track these steps — it gets ticked in step 10.
+
+**One block, one gate, demo machine only.** No M5, no M2, no Nikon. §"Gate" says
+why: the code half is settled by tests 1–14 off-rig, and the demo machine
+*cannot* produce the landed-then-raised case at all. What is left is D5, which is
+agent behaviour, and one short driven session scores it. Do not book instrument
+time for any of this.
 
 ### 72a — read back on the failure path, and two prompt lines
 
@@ -385,6 +399,223 @@ on the pre-fix tree; tests 5 and 9 passing before and after as explicit regressi
 guards, each shown failing under the mutation named above; the full suite; and a
 diff review confirming no read was added to any success path.
 
+## Coordination checklist — block 72a
+
+The ten steps of `CLAUDE.md` §"The block workflow", instantiated. Nothing is
+compressed because the block is small.
+
+**Step 1 — coordinator owns the list.**
+
+- [x] Start from updated `main`. `origin/main` fetched 2026-09-02;
+      `git log --oneline origin/main..main` empty at `a0d30d3`.
+- [x] Baseline suite run by the coordinator in the primary checkout:
+      **2789 passed / 99 skipped / 2 warnings** (`.venv/bin/python -m pytest -q`,
+      153 s). Node **v25.2.1** present — no JS test skips for its absence,
+      though this block touches no JS.
+- [x] Design verified against the tree before assignment. Every site the tables
+      name is where they say it is: `tools.py:3527` bare `set_property`,
+      `tools.py:10438` set-then-read on the success path only,
+      `authorization.py:1780` `_verify_property`'s inline Float rule,
+      `:1914`/`:1946` the two false comments, `:1957`/`:1966` the two
+      `(rollback_failures if landed else unrestored)` selectors, `:2011` the
+      `accepted == 0` branch, `tools.py:2009` the contradictory second SKIPPED
+      line, `agent.py:137`–`149` the bullet list,
+      `tests/test_channel_plan_executor.py:69` the fake that raises before it
+      assigns, and `:304`/`:320`/`:334`/`:337` the 2026-08-06 M5 test with the
+      docstring and the two assertions D4 retires.
+- [x] Branch `design72/raised-write-state-unknown` created at `a0d30d3`; ledger
+      row opened below. The `49b3c74` in the row's first draft was the commit
+      before this document landed and is corrected to the real start.
+- [x] This checklist committed on the branch **before** the block is assigned
+      (`8945e5b`) — a worktree sees committed history, not an editor buffer.
+
+**Step 2 — delegate the implementation.**
+
+- [x] Linked worktree `../microclaw-design72a` created; the coordinator
+      checkout never held the implementation.
+- [x] Worktree **provisioned before the prompt was written**: `uv venv --python
+      3.12`, then `uv pip install --python .venv/bin/python -e
+      ".[serve,test,ilastik]"`. `import microclaw` confirmed resolving to
+      `/Users/zachcm/Code/microclaw-design72a/microclaw/__init__.py`.
+- [x] Suite run by the coordinator **in the worktree** — 2789 / 99 / 2–3 — and
+      `.venv/bin/python -m pytest -q` handed over verbatim. The warning count
+      *varies between 2 and 3* across runs (a pre-existing
+      `phase_cross_correlation` `UserWarning` in the featureless-field
+      calibration test); the prompt said so, because a runner that treats a
+      moving baseline count as a finding wastes a turn on it. No `mmpycorex`
+      SyntaxWarning appeared on this machine — do not promise one that the
+      established command does not print.
+- [x] Runner prompt written to the scratchpad (never committed), then the
+      project `codex-runner` skill launched in that worktree; job directory
+      `scratchpad/job-72a` kept for the block.
+- [x] The prompt stated the four things this block can get wrong quietly, each
+      of which the design already decided and none of which a green suite would
+      catch: the exception-path helper makes **exactly one** `get_property` call
+      and at most one `get_property_type` call; the `try` at both write sites
+      covers **only** `core.set_property`; `landed`/`unrestored` are **deleted**,
+      not renamed; and `at_original` is tested **before** `landed`. All four held
+      in the delivered code.
+- [x] **Both runner turns were killed mid-flight by the harness**, not by any
+      failure of theirs. Handled per `CLAUDE.md` and recorded under
+      §"What the killed turns cost" below. No implementation was done inline.
+
+**Step 3 — review what comes back.**
+
+- [x] Diff read, not the summary. Suite re-run by the coordinator: **2804
+      passed / 99 skipped / 2 warnings**, baseline + 15. That count reconciles
+      exactly — 13 genuinely new tests, plus the successful-rollback test review
+      round 1 added, plus one parametrize case on the byte-identity guard; test 8
+      is a *revision* of an existing test, not an addition.
+- [x] **Tests 1–4, 6–8, 10–14 watched failing on the pre-fix tree**
+      (`git checkout a0d30d3 -- microclaw/`, run, restore), each for its stated
+      reason. Tests 1–4 and 11 die on the bare Java text — `assert
+      'write_reported_failure_but_value_changed' in 'Serial timeout'` — which is
+      the defect in one line. Tests 6, 8, 13 and the successful-rollback test die
+      on `NO WRITE REACHED THE DEVICE, so no channel change was made` being
+      present and false. Tests 7, 10 and 12 die as `ChannelPlanError` carrying
+      *"the failing write could not be restored either … so if the write did not
+      take effect nothing changed"* — the quiet misfile, in its own words. Test
+      14 emits `# The session completed nothing here`.
+- [x] **Tests 5 and 9 proved by mutation.** Test 5, with D3's `try` widened over
+      the success-path read: `AssertionError: Expected 'get_property' to be
+      called once. Called 2 times` — the diagnostic firing on a read failure,
+      which is exactly the boundary D3 draws. Test 9, with the
+      `accepted < len(attempted)` guard dropped: `assert 3 == 2`, the third read
+      its own comment predicts. Both restored; suite re-run green afterwards.
+- [x] The applies-then-raises mode added to the fake
+      (`apply_then_fail_on`), every existing test left on its current mode.
+- [x] Diff review confirming **no read was added to any success path**, and that
+      `set_emu_laser_power_percentage`'s success-path `get_property` sits outside
+      the new `try` — test 5 is the standing guard on that boundary.
+- [x] `_property_values_equal` is shared, not duplicated: `_verify_property`
+      calls it and still reads its value once, and resolves the type once.
+- [x] `D6` present, and the exporter's **inlined** copy extended — the emitted
+      `_channel_verification_source` had to gain `_property_values_equal` or every
+      exported channel-verification script would `NameError` on the rig. The
+      structural guard `test_emitted_inline_defines_every_name_it_uses` caught
+      that on its own, which is `CLAUDE.md`'s recurrence guard doing its job.
+      `_recorded_outcome`'s `"nothing"` routing is unchanged.
+- [x] Findings returned through the **same** `codex-runner` session (recovered —
+      see below), never "last session". One review round, six findings, all
+      verified fixed by re-probing rather than by reading the commit message.
+
+**Step 4 — push branch and runbook together.**
+
+- [x] `design/72-block72a-gate.md` written **on this branch** and pushed with the
+      code, plus `design/72-block72a-gate.py` (the scorer) and
+      `design/72-block72a-gate-selftest.py`.
+- [x] Implementation pinned with `git merge-base --is-ancestor d93b228 HEAD`,
+      never a tip hash, and the coordinator ran that line in the worktree.
+- [x] Every environment fact taken from the demo gates that **already ran there**
+      (`design/69a-gate.md` step 0, `design/58-block58d`), not invented:
+      `D:\Code\microclaw`; `uv run` as the interpreter; **warm uv once
+      unredirected** (`uv run python -c "print('uv warm')"`) before any redirected
+      command, because a fresh branch leaves uv a rebuild whose stderr kills a
+      redirected command under `$ErrorActionPreference = 'Stop'`; `serve` launched
+      with `Start-Process -NoNewWindow -RedirectStandardOutput`, because
+      PowerShell 5.1 does not capture a native child's stdout and a `> file`
+      redirect on a process that never exits leaves the log empty; **the browser
+      is Firefox**. Before writing any step, `grep design/*.md` for the command
+      about to be invented.
+- [x] **Limb A carries a control that fires — an A/B pass on the machine**
+      (operator decision, 2026-09-02). Step 1b of the runbook runs the same two
+      operator messages a second time on `main`, whose prompt has none of D5's
+      text, and limb A passes **only** if the branch arm reported the
+      illumination state and the control arm did not. The scorer enforces it: if
+      both arms report, limb A is **NOT EXERCISED**, not a pass — the behaviour is
+      present but D5's line is not shown to have caused it, which is
+      `CLAUDE.md`'s *a limb that cannot fail is not a criterion*. Four
+      control-arm cases are pinned in the selftest, including that one.
+      This replaced the off-rig replay, and was the better trade for a gate this
+      short: one extra session on the real machine with the real model, against
+      an API credential the coordinator's machine does not have. It is **n=1 per
+      arm** and the runbook says so — it establishes discrimination, not an
+      effect size; design/59 measured 5/8 then 15/16 on the *same* wording.
+      `design/72-limbA-prompt-replay.py` stays in the tree unrun, for anyone who
+      later wants the rate: it needs a valid `ANTHROPIC_API_KEY` and ~$5 for 24
+      samples, and it mirrors microclaw's real call shape deliberately
+      (`resolve_model()`, `MAX_OUTPUT_TOKENS`, the same `TOOLS`, the same cached
+      system block) because a replay that calls the API differently measures a
+      different agent.
+- [ ] **Limb C recorded as NOT EXERCISED by construction**, with the reason —
+      MMCore rejects an illegal value before dispatch and applies a legal one, so
+      the demo machine cannot produce the landed-then-raised case. A limb that
+      cannot run its mechanism is never a pass, and this one must not be written
+      as though it could.
+- [ ] Branch **pushed** to `origin` (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). No
+      PR.
+
+**Step 5 — the user runs the gate.** Demo machine, one session. Theirs. No rig
+evidence is ever simulated, and Limb C is not self-confirmed.
+
+- [x] Run 2026-09-02. Evidence returned: `session.jsonl`, `session-prefix.jsonl`,
+      four console logs, `score.log`.
+
+**Step 6 — score from the artifacts, not the verdict.**
+
+- [x] **Limb A PASS, and the control arm fired.** Read out of the transcripts by
+      hand *before* trusting the scorer. Branch arm, message 11: *"Before I wrap
+      up, let me verify the final illumination state rather than assume it"* →
+      **calls `get_system_state`** → reports the shutter closed and the `LED` at
+      `Closed`, read fresh. Control arm on `main`, message 13: reports `LED` off
+      with **no tool call at all**, reciting it from its own earlier writes —
+      *"I turned it on for the single snap and put it back, so nothing I enabled
+      is left illuminating your sample."* True, and **inferred**. That is R51 in
+      the control arm and D5 fixing it in the branch, measured on the machine.
+      **n=1 per arm**: it shows the limb discriminates, not an effect size.
+- [x] Limb B PASS — one successful `set_device_property` (`Camera.Binning` 1→2),
+      reporting `status` alone and unchanged in wording. Its narrowness is stated
+      in the runbook: the diagnostic read is a core call, not a tool, so no
+      transcript can see it either way; that the success path gained no read is
+      settled by test 5 and the diff review.
+- [x] Limb C NOT EXERCISED, as designed and predicted. Not recorded as a pass.
+- [x] **A green limb is a place to look for defects — and the FAIL-shaped one
+      here was the instrument's.** See the two gate defects below.
+
+**Step 7 — fix, sized to the finding.** Both findings were the coordinator's own
+gate code and were fixed on the branch; the product needed no change.
+
+**Step 8 — the user re-tests.** Not needed. Both defects were in the *scorer*,
+not in the session, so the fix was validated by re-scoring the **same
+artifacts** — no second operator session. The hand read of the raw transcripts
+came first and the scorer was corrected to agree with it, not the other way
+round.
+
+**Step 9 — merge and clean up.**
+
+- [ ] Merge to `main`, **push `main`**, delete the branch locally *and* on
+      `origin`. Not closed until `git log --oneline origin/main..main` is empty.
+- [ ] Coordination notes recorded in `design/prompts.md`, and the ledger row
+      below closed, so a cold session can resume from the remote alone.
+
+**Step 10 — post-merge design gate.**
+
+- [ ] `design/70-carried-forward-register.md`: strike **R50** and **R60** (the
+      one defect at three sites) and **R51** (the read bullet), each pointing at
+      block 72a. Set each row's `block` cell.
+- [ ] **R60 is struck in two halves with a reason, not one tick.** Its agent half
+      was already closed by `agent.py:137` before this block existed; 72a closes
+      the code-message half. Say so in the row rather than implying the block did
+      both.
+- [ ] Record in the register that **Limb C was NOT EXERCISED** and that the
+      landed-then-raised path is closed off-rig by tests 1–14 plus the two M5
+      observations (design/38 G7.a, Block 2 G4) — so a later reader does not
+      re-book instrument time for it.
+- [ ] Reconcile this document to what was measured: the outcome vocabulary as
+      shipped, and the deletions of `landed`/`unrestored` as actually made.
+- [ ] **Two other design docs describe behaviour this block removed**, found by
+      grepping for the retired strings rather than from the diff:
+      `design/33-authorization-map.md:1433` has a table row mapping "no
+      `set_property` returned" to `NO WRITE REACHED THE DEVICE`, and
+      `design/53-a-preset-is-verified-as-a-set.md:87` and `:380` describe the
+      `rollback_failures` vs `unrestored` selector that no longer exists. Correct
+      both. Leave `design/41-block41c-rig-gate.md:121` alone — a gate runbook is
+      a record of what ran on a rig, not a live description.
+- [ ] Confirm **R57**, **R28**, **R42** and **R79** remain open and unclaimed —
+      §"Scope" excluded them deliberately and a reader must not read this merge
+      as closing them.
+- [ ] Any documentation change merged **before** the next block is assigned.
+
 ## Scope — what is deliberately not folded in
 
 - **R57** (a full disk reported as a hardware fault). Adjacent theme, different
@@ -400,6 +631,141 @@ diff review confirming no read was added to any success path.
 
 ## Run ledger
 
-| block | branch | start commit | assigned | merged |
-|---|---|---|---|---|
-| 72a | — | `49b3c74` | — | — |
+Baseline before the block: `main` `a0d30d3`, coordinator-run suite
+**2789 passed / 99 skipped / 2 warnings** (2026-09-02,
+`.venv/bin/python -m pytest -q`). Dev environment is `uv` + Python 3.12; a plain
+`uv venv` has no `pip` module, so a worktree is provisioned with `uv pip install
+--python .venv/bin/python`.
+
+| block | branch | start | implementation | gate | merge |
+|---|---|---|---|---|---|
+| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | **round 1, 2026-09-02 — PASSED.** Limb A PASS with the control arm firing (branch read the state; `main` inferred it), limb B PASS, limb C NOT EXERCISED as predicted. Two gate defects, both the coordinator's instrument, fixed and re-scored against the same artifacts; no second session. Selftest **19/19** | — |
+
+### What the gate cost: two defects, both in the instrument
+
+**Round 1 came back with limb A NOT EXERCISED, and that verdict was wrong.**
+The scorer keyed limb A on `declared_illumination_properties` being non-empty,
+straight from this document's own §Gate premise. On the demo machine's ordinary
+config that key is **absent entirely**, so a session that had discriminated
+perfectly was reported as having had nothing to look for — with a reason that
+blamed the machine's configuration. `CLAUDE.md`: *a limb that reports NOT
+EXERCISED as a machine limitation is a place to suspect the product* — here, the
+gate. Reading the two transcripts by hand found the answer in a minute; the
+verdict would never have.
+
+The premise came from block 59b's payload, which carried the field because that
+gate passed a generated `--safety-config`. This gate deliberately passed none —
+*a gate must not require configuration the product does not require* — and so
+met the shape the product actually has. **Two rules pulled against each other
+and the older one silently won**: the limb inherited 59b's payload assumption
+while the gate inherited design/60's config rule.
+
+The fix moved limb A onto the criterion R51 is actually about — **reading versus
+inferring** — with its subjects derived from the payload the session itself
+observed (declared properties when present, the shutter otherwise) rather than
+from a field name. The demo machine's real shapes are now selftest fixtures.
+
+**The second defect was the report, not the verdict.** With that fixed, the
+control arm came back FAIL for the reason *"neither called `get_system_state`
+nor reported illumination state"* — but it had said *"nothing I enabled is left
+illuminating your sample"*. The word list held `"illumination"` and the text said
+`"illuminating"`. Verdict right, report wrong, and a report that understates what
+an arm claimed is how a real finding gets filed as a null. The stem `illuminat`
+fixed it and the control now reads accurately: *reported illumination state
+WITHOUT calling `get_system_state` — an inferred state.*
+
+**What the scorer deliberately cannot see, and why.** On this config microclaw
+does not classify the demo `LED` as illumination — that is *why* the declared
+field is absent — so a bare `"LED: off"` is not something the gate can call an
+illumination claim, and it does not try to. The agent knew from the device's
+`385nm/470nm/...` values; the scorer keys on the shutter and the generic word.
+Recorded so a later reader does not mistake the narrowness for an oversight.
+
+**One process defect, reported by the operator.** The runbook had a single "stop
+the server" block at step 3, and step 1b pointed *forward* to it. The operator
+read step 3 as the final step, did not realise it was needed mid-gate, and closed
+the PowerShell window between arms instead. It cost nothing this time — both
+sessions were captured — but *a step needed between 1 and 1b belongs between 1
+and 1b*, not behind a forward reference. Both stops are now written out where
+they are used. This is the same family as design/52c's placeholder and 52a's
+skipped restore limb: **an instruction the operator has to reorder is an
+instruction that does not get run as written.**
+
+### What the killed turns cost, and the one product defect review found
+
+**Both runner turns were killed mid-flight by the harness.** That makes five
+across the project before this block and seven now, so it is the normal case, not
+an incident.
+
+**Turn 1 died at the end**, with edits in all six files and the full suite run,
+but nothing committed and no `result.md`. Per `CLAUDE.md` it was committed as
+`f6ba985` with a message saying plainly that nothing in it was reviewed and that
+no acceptance evidence existed. It died holding one real full-suite failure.
+
+**A killed turn's session is recoverable, and the wrapper makes it look like it
+is not.** `run-codex.sh` writes `session-id` only *after* a turn exits cleanly,
+so a killed turn leaves the file absent and `revise` refuses on
+`cannot revise without a non-empty session-id`. But the id is the `thread_id` on
+the **first line** of `<stem>.events.jsonl`, and the wrapper's own extraction
+recovers it:
+
+```sh
+sed -nE 's/.*"thread_id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
+  initial.events.jsonl | head -n 1 > session-id
+```
+
+Writing that file by hand is faithful, not a fabrication — it is byte-for-byte
+what the wrapper would have written. The resumed turn demonstrably kept its
+context: it addressed the review findings by number. Use this instead of
+restarting a block from zero. It also answers half of `CLAUDE.md`'s standing
+question about the revise path: `--strict-config` accepted this machine's config
+again, on CLI 0.152.0.
+
+**Turn 2 was killed while running a prescribed mutation, and left it in the
+tree.** The uncommitted diff was D3's `try` widened over the success-path
+`get_property` — test 5's mutation, unreverted. A coordinator who read
+"1 uncommitted file" as unfinished work and merged it would have shipped exactly
+the defect test 5 exists to forbid. **Check what a killed turn's working tree
+still holds before believing it is a partial edit**; here the right move was to
+harvest the evidence while the mutation was applied, then revert it.
+
+**Review round 1's load-bearing finding was found by probing, not by reading the
+diff.** The executor reused the snapshot helper's `sentence` verbatim, and that
+sentence was written for D1/D3's standalone tools, where nothing follows the
+read. In the executor the rollback runs next, so with a rollback that *succeeds*
+the message read:
+
+```
+... rolled_back=['A.Label']; landed: write_reported_failure_but_value_changed:
+A.Label reads 'new', the requested value, so the state you asked for is on the
+device now. Do not retry.          # and the device read 'old'
+```
+
+Two adjacent contradictory claims in one message — the defect D6 removes from the
+exporter, reproduced by this block in the executor. **Its own test codified it**,
+asserting the token and `reads 'new'` were present, so a green suite endorsed
+the contradiction.
+
+The second consequence is why it could not be reworded loosely. D6 specifies
+`write_reported_failure_but_value_changed` as vocabulary "written by exactly one
+code path"; the executor writing it too meant a rolled-back `set_channel`
+failure would export *"The requested value was observed on the device after the
+failed write"* — false, in the artifact the user keeps. The fix took the token
+back out of the executor and made all four clauses past-tense observations
+scoped to the moment of the read, measured after the fix:
+
+```
+landed:                immediately after the failed write, A.Label read back 'new', matching the requested 'new'
+changed_unexpectedly:  immediately after the failed write, A.Label read back '0.5', matching neither the pre-plan '0' nor the requested '1'
+unknown:               A.Label could not be read immediately after the failed write, so its value could not be established
+at_original:           A.Label holds its pre-plan value; no restore write was needed
+```
+
+**A second fake encoded the same premise, in a file §"Why a green suite missed
+this" did not enumerate.** `tests/test_config_groups.py`'s `ConfigCore` also
+raises before it assigns, and its rollback test asserted the redundant restore
+write that D4 now correctly skips. That was the suite's one failure, and the test
+was what was wrong. It is revised the way test 8 is, with the same sentence about
+why the quiet path is earned. The lesson generalises past this block: when a
+design names the fake that encodes a premise, grep for the *other* fakes with the
+same shape before assigning.

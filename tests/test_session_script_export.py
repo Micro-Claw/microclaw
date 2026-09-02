@@ -1200,7 +1200,8 @@ def test_emitted_float_read_back_accepts_driver_reformatting(tmp_path):
 
 
 @pytest.mark.parametrize("name", [
-    "ChannelPlanError", "_property_type_name", "_verify_property",
+    "ChannelPlanError", "_property_type_name", "_property_values_equal",
+    "_verify_property",
 ])
 def test_inlined_channel_verification_is_byte_identical_to_source(tmp_path, name):
     """The emitted check must *be* the executor's, not a paraphrase of it."""
@@ -4320,3 +4321,18 @@ def test_failed_adaptive_call_exports_no_trace_and_explains_why(tmp_path):
     assert "SKIPPED: run_timelapse" in source
     assert "completed nothing here" in source
     assert "Acquisition(" not in source
+
+
+def test_exported_script_does_not_claim_nothing_happened_for_a_landed_write(tmp_path):
+    records = completed_call(
+        "set_device_property",
+        {"device": "Laser", "property": "Enable", "value": "1"},
+        {"error": (
+            "Serial timeout; write_reported_failure_but_value_changed: "
+            "Laser.Enable reads '1', the requested value"
+        )},
+    )
+    _, _, source = export(tmp_path, records)
+    assert "The session completed nothing here" not in source
+    assert "The requested value was observed on the device after the failed write" in source
+    assert "this script deliberately does not repeat that uncertain call" in source

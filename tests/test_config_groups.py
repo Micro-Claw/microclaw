@@ -186,8 +186,15 @@ def test_non_channel_preset_rolls_back_in_reverse_on_write_failure():
     core.fail_on = 2
     with pytest.raises(ChannelPlanPartialApplicationError):
         set_config_preset(ctrl, categorical_guard(*pairs), "Camera", "Fast")
-    rollback_sets = [call for call in core.calls if call[0] == "set"][-2:]
-    assert rollback_sets == [("set", "Cam", "Gain", "1"), ("set", "Cam", "Mode", "old")]
+    sets = [call for call in core.calls if call[0] == "set"]
+    # This fake raises before assigning, so the diagnostic read observes the
+    # saved original; that positive observation makes a Gain restore unnecessary.
+    assert sets == [
+        ("set", "Cam", "Mode", "Fast"),
+        ("set", "Cam", "Gain", "7"),
+        ("set", "Cam", "Mode", "old"),
+    ]
+    assert sets.count(("set", "Cam", "Gain", "1")) == 0
     assert core.values[("Cam", "Mode")] == "old"
     assert core.values[("Cam", "Gain")] == "1"
 
