@@ -1,4 +1,4 @@
-# Installable extensions — optional dependencies from the GUI
+# Installable extensions — optional dependencies a user can actually install
 
 ## Problem
 
@@ -36,21 +36,34 @@ two slots, and reporting all of it in a browser banner (design/58). The question
 is whether an extension install can be a small use of that machinery rather than
 a second one.
 
-## Assessment of the proposal
+## Verdict
 
-Yes, with one correction and one narrowing.
+**The first-party half is viable, and the mechanism was measured working before
+this was written.** The allowlist really is in the built metadata:
+`importlib.metadata.metadata("microclaw")` on this checkout returns
+`Provides-Extra: ['ilastik', 'serve', 'test']` and
+`Requires-Dist: 'h5py>=3.10; extra == "ilastik"'`, so an endpoint that takes an
+extra name and reads its own `Requires-Dist` never sees a package name from the
+network. Three sections below were corrected by measurement rather than review.
+
+**The community-package half is viable, but is not part of this notebook's
+blocks.** It is a separate product boundary and therefore opens as its own
+design notebook rather than growing 71a–71c. The findings and settled decisions
+that notebook starts from are recorded under *Community skill packages* below.
+SMAPpy is its first conformance package. Publisher work is a gate dependency,
+not a reason to defer designing MicroClaw's generic half.
 
 **The correction for first-party extensions.** The plan's stated goal 1 — *"it
 keeps project dependencies out of our pyproject.toml"* — is the wrong target,
 and taking it literally removes the property that makes the feature safe.
 Extras belong **in** `pyproject.toml`; what they stay out of is the *default*
 dependency list, which is where the tax actually is. `pyproject.toml` is what
-gives an extension a
-resolvable version range, a review in the block workflow, and — decisively — a
-place in the built wheel's own metadata. Requirement strings that live in a
-`SKILL.md` instead are strings a contributor can change without touching
-packaging, and there is then no allowlist: the install endpoint would be taking
-package names from a document rather than from the distribution it is running.
+gives an extension a resolvable version range, a review in the block workflow,
+and — decisively — a place in the built wheel's own metadata. Requirement
+strings that live in a `SKILL.md` instead are strings a contributor can change
+without touching packaging, and there is then no allowlist: the install endpoint
+would be taking package names from a document rather than from the distribution
+it is running.
 
 So: **the unit of installation is a pyproject extra, and the allowlist is the
 running distribution's own `Provides-Extra` metadata.** A skill *names* an extra;
@@ -59,11 +72,6 @@ the plan's vetting property holds — it just holds through packaging metadata
 instead of through free text. Goal 2 (a user cannot find the venv) is fully
 served either way, and it is the goal that matters.
 
-That conclusion applies only to code MicroClaw owns and imports in its own
-process. It must not become the admission rule for third-party skills. Community
-skills need a separate package boundary so their author, not MicroClaw, owns
-their releases and dependency policy.
-
 **The narrowing.** Do not reuse the *slot* half of design/58. Staging rebuilds
 the inactive environment and requires a restart; that is right for replacing
 Microclaw and wrong for adding `h5py`, which must be usable in the session that
@@ -71,111 +79,192 @@ asked for it. Reuse the smaller pieces — uv discovery, atomic state next to
 `update-state.json`, the job lock and banner pattern, "prove it by running it" —
 and install into the environment that is running.
 
-## Decision
+The panel needs four states and not the six an external catalog would need: **not
+installed**, **installing** (the job lock is held), **ready** (recorded and
+importable), and **install failed** or **recorded but missing** — both durable,
+both carrying a sentence and a button. There is no *Available* state, because
+the catalog is the running wheel's own metadata and cannot be unreachable.
 
-### Split first-party extensions from community skill packages
+## Measured, on this checkout, 2026-09-02
 
-Keep the extra-based mechanism in this design for first-party integrations such
-as `ilastik`: they extend MicroClaw code, run in MicroClaw's process, and
-therefore must be reviewed and constrained with MicroClaw itself.
+Everything below was run against `.venv` (uv, Python 3.12.14) before the design
+was accepted. Two of the three findings contradict what the earlier draft said.
 
-Add a separate community package mechanism rather than accepting community
-skills into this repository. Its units and ownership are:
+**1. The freeze exclusion rule as written produces a constraint file uv
+refuses.** `uv pip freeze` renders an editable install as a line with no
+distribution name at all:
 
 ```text
-publisher-owned source repository
-        |
-        | CI builds, tests, signs and publishes an immutable release
-        v
-skill package repository / registry
-        |
-        | catalog metadata points to package + exact release + digest
-        v
-MicroClaw stages package and its locked environment, verifies, then activates
+-e file:///Users/zachcm/Code/microclaw
 ```
 
-A skill package contains its `SKILL.md`, assets, a manifest, and a dependency
-lock for every supported platform/Python combination. The manifest includes a
-stable package ID, publisher identity, version, compatible MicroClaw and Python
-ranges, entry points/capabilities, license, source and issue URLs, and the
-release digest. Releases are immutable. The publisher produces new releases,
-updates dependency locks, and marks obsolete releases as yanked. MicroClaw owns
-only the package protocol, installer, trust policy, and catalog UI—not the skill
-or its pins.
+Dropping "`microclaw`" by name and "`@ ` direct URL" lines — the rule the draft
+gave — leaves that line in place, and uv then rejects the **whole file**:
 
-Do not make a pull-request repository of copied skill files the primary
-solution. A lightweight registry repository is reasonable if it contains only
-signed catalog records that point to publisher-owned artifacts. This gives us a
-reviewable discovery and delisting surface without transferring maintenance.
-The artifact store could initially be GitHub Releases or a Python package index;
-we do not need to operate a ClawHub-like service to establish the boundary.
-Publishing from a GitHub repository via CI is preferable to letting the GUI run
-arbitrary npm or pip package names supplied by a catalog entry.
+```text
+error: Couldn't parse requirement in `constraints.txt` at position 0
+  Caused by: Expected one of `@`, `(`, `<`, `=`, `>`, `~`, `!`, `;`, found `P`
+```
 
-Dependencies for community skills do not enter MicroClaw's environment. Each
-installed package gets an environment under the user data directory, keyed by
-package ID and release digest. Installation uses the publisher's lock and
-requires hashes; it never resolves an unbounded dependency set into the running
-server. Package code executes out of process through a small, versioned protocol
-with declared capabilities. A Markdown-only skill needs no environment. This
-isolation lets a publisher choose and pin dependencies without upgrading
-MicroClaw's `numpy`, and permits two skills to pin different versions. A
-community package that requires in-process imports or new privileged MicroClaw
-APIs is not a community skill; it is a first-party extension proposal and
-follows the reviewed extra path above.
+So the install would have failed on every developer checkout — which is exactly
+the unmanaged install this design claims "works identically". Do not parse
+freeze output at all. Build `name==version` pins from
+`importlib.metadata.distributions()`, which exposes the installed distribution
+name and version even when its origin is editable or a direct URL. Canonicalise
+names, exclude MicroClaw itself, and refuse conflicting duplicate versions.
+Nothing is dropped, so every installed distribution the resolver could move is
+constrained. *An enumeration that fails must say so; an empty list is a
+statement, not a silence.*
 
-The first implementation can deliberately support only pure Markdown skills,
-then add isolated executable entry points once the process protocol and
-capability model exist. It must not temporarily install third-party dependencies
-into MicroClaw's venv: that shortcut destroys the ownership and safety boundary
-the package mechanism is meant to create.
+**2. The constraint file bounds versions; it does not forbid change.** The draft
+called it "a structural guard". Half of that is confirmed: with every dist
+pinned at its installed version, a requirement needing more fails outright —
 
-### Treat GUI installation as a durable transaction, not a promise
+```text
+uv pip install --constraint c.txt 'numpy>=2.6'
+  x No solution found when resolving dependencies:
+  '-> Because you require numpy>=2.6 and numpy==2.5.2, we can conclude that
+      your requirements are unsatisfiable.
+```
 
-The catalog uses distinct states and never equates discovery with usability:
+— and that is the hazard the feature must not have. But a constraint that names
+a version *other* than the installed one is an instruction, not a veto. With
+one line edited to `numpy==1.26.0`, uv reported `Would uninstall 1 package /
+Would install 1 package`, downgrading the live environment's numpy. The guard is
+therefore not the `--constraint` flag; it is the constraint file being derived
+from **this** environment inside **this** call. Enumerate installed metadata
+immediately before installing, in the same function, and never cache it, never
+write it beside `extensions.json`, never carry it across a slot activation.
+*A cache computed against the previous install is not evidence about this one*
+applies here literally, and the failure it buys is a downgrade under a live
+acquisition.
 
-- **Available** means the registry has a compatible, non-yanked release. It is
-  an invitation to attempt installation, not a claim that this machine can
-  install it.
-- **Checking** performs local compatibility and disk checks and fetches the
-  signed manifest/lock. The confirmation screen shows publisher, version,
-  permissions, download size, and the registry's last successful verification
-  platform/date.
-- **Installing** downloads and builds into a temporary directory. MicroClaw
-  verifies signatures/digests, locked dependencies, declared files, entry-point
-  startup, and a package self-check before changing active state.
-- **Installed / Ready** is written only after verification and an atomic rename.
-  The receipt records the exact release, digest, lock digest, publisher, granted
-  capabilities, verification result, and install time.
-- **Install failed** is a durable state with the attempted version and a useful
-  reason (network, incompatible platform, resolution, verification, or package
-  self-check). The catalog entry remains visible with Retry, Report to publisher,
-  and View details actions. Failure never creates a partially installed skill.
-- **Needs repair** means a receipt exists but local verification fails at a later
-  startup. Keep the skill visible and disabled, explain why, and offer Repair or
-  Remove. Never silently delete it or present it as never installed.
+**3. Readiness by import is real, but it is a property of the *consumer*, not of
+the extension.** `ilastik_adapter.py` imports `h5py` inside the two methods that
+use it (`:368`, `:421`), and catches `(ImportError, ValueError)` at both — so the
+already-running server really can use a freshly installed `h5py` with no
+restart, and a failed import leaves no negative `sys.modules` entry to defeat
+the retry. That is a fact about this adapter. An extension whose consumer
+imports at module scope would be reported ready by an installer that imports in
+its own frame while the consumer kept failing until a restart. State the rule
+with the feature: **a module that backs an extension imports its dependency
+inside the function that needs it**, and a test asserts that for every extension
+in `EXTENSIONS`.
 
-Activation is transactional: keep the previous verified release active until
-the candidate passes, atomically switch an `active` pointer, and retain one
-previous release for rollback. On a failed update, continue using the previous
-release. On a failed first install, remove only the staging directory. Registry
-unavailability at startup uses a cached, signed last-known-good catalog and does
-not affect already installed packages. A yanked or newly incompatible release
-gets a warning; it is not remotely uninstalled.
+**4. `distributions()` enumerates the *calling process's* `sys.path`, so it is
+CWD-sensitive — and `purelib` alone is not the target environment.** The
+revision above is right that metadata beats freeze text, but it changed the
+vantage point: `uv pip freeze --python <target>` asked uv about the environment
+being installed into, while in-process enumeration reports whatever *this*
+interpreter can see. Measured, same interpreter, three runs:
 
-The catalog should also lower the probability of offering a doomed install.
-Only show releases whose declared OS, architecture, Python, MicroClaw, and
-capabilities match locally. Registry CI should install and self-check each
-release on supported targets and expose the result and age, but this remains
-evidence, not a guarantee—local installation is still the authority. Default
-sorting can favor verified and recently maintained skills, while abandoned
-skills remain visibly third-party and may be delisted from discovery without
-altering existing installations.
+| Where it ran | `len(list(distributions()))` |
+|---|---|
+| repo root | **64** |
+| `/tmp` | 63 |
+| explicit `path=[purelib]` context | 63 |
 
-This preserves the ease of a GUI without pretending package installation is
-infallible. The command-line path and GUI call the same installer/state machine;
-the GUI is not a second package manager. A future CLI is useful for authors,
-automation, and support, but users need not know it exists.
+The extra entry from the repo root is the source tree's `microclaw.egg-info`,
+found because the CWD is on `sys.path`; `microclaw` therefore appears twice in
+every developer checkout. Two consequences, both measured:
+
+- **A stray `*.egg-info`/`*.dist-info` in the CWD becomes a pin.** A planted
+  `foo.egg-info` naming `foo 9.9.9` produced the pin `foo==9.9.9` for a
+  distribution not installed in the target at all. Harmless until something
+  resolves `foo`, and then it fails for a reason that has nothing to do with the
+  environment.
+- **The dangerous version of that is already caught.** A planted
+  `numpy.egg-info` naming `1.26.0` beside the installed `2.5.2` does *not*
+  silently become measurement 2's downgrade instruction — the conflicting-
+  duplicate check fires (`CONFLICT REFUSAL FIRES: numpy 1.26.0 2.5.2`). That
+  refusal is load-bearing, not defensive tidiness.
+
+Restricting discovery to `purelib` removes the CWD entry but also removes valid
+parts of an environment: `platlib` can differ, and an editable install can be
+visible through a `.pth`/source path rather than live beneath either directory.
+That would leave a distribution the target resolver sees unconstrained. Ask the
+**target interpreter** to enumerate its effective path instead: invoke it with
+fixed helper code in isolated mode (`-I`) from an empty temporary CWD. Isolated
+mode removes CWD, `PYTHONPATH` and user-site accidents while normal site startup
+still processes the target environment's `.pth` files. The helper returns only
+name, version and a diagnostic origin obtained with public
+`dist.locate_file("")`; the caller validates and pins them. The invariant is
+structural again: the interpreter that enumerates is the interpreter
+`--python` targets. *An editable install resolving to the wrong tree* is a trap
+this project has already been bitten by once.
+
+Each of those three claims was then measured rather than left asserted, and the
+`purelib` rejection is the one that matters most — it was this document's own
+previous recommendation:
+
+- **`purelib` really does drop a real distribution.** A legacy develop install
+  (a `.pth` in site-packages naming a source tree that holds `bar.egg-info`) is
+  enumerated by the subprocess as `bar 3.3.3` and is **invisible** to a
+  `path=[purelib]` context. It would have been the one distribution left
+  unpinned — measurement 1's failure, reintroduced by the fix for it.
+- **`-I` is the flag doing the work, not the empty CWD.** With `-I` alone, from
+  a directory holding a planted `foo.egg-info`: 63 distributions, no `foo`, and
+  `sys.path[0]` is the stdlib zip rather than `''`. Without `-I`, same
+  directory: 64 and `foo==9.9.9`. `-I` additionally ignores `PYTHONPATH`, which
+  an empty CWD does not — `PYTHONPATH=<dir holding foo.egg-info>` yielded `foo`
+  **twice** without `-I` and nothing with it. Keep the empty CWD if you like,
+  but the comment must not credit the two equally: a later simplification that
+  drops `-I` and keeps the temp directory silently loses `PYTHONPATH`
+  isolation.
+- **Normal site startup does still process `.pth` files under `-I`.** That is
+  what makes the first bullet work — and it is also the next measurement.
+
+**5. A `.pth` file can print to stdout before the payload, so the stream must
+not *be* the payload.** `.pth` files execute `import` lines during `site`
+startup, which `-I` does not disable (only `-S` would, and `-S` would remove
+site-packages discovery altogether). Any third-party `.pth` whose import prints
+a banner lands ahead of the JSON:
+
+```text
+some vendor banner nobody asked for
+[{"name": "bar"}]
+```
+
+```text
+JSON DECODE FAILED: Expecting value: line 1 column 1 (char 0)
+```
+
+Every install would then refuse, on a healthy environment, for a reason naming
+nothing an operator could act on. This is 58e's lesson arriving through a
+different door — there it was our own CLI's `Press Enter to close this
+window...` after its JSON; here it is any `.pth` in the *target* environment,
+and `distutils-precedence.pth` and `__editable__*.pth` are ordinary furniture.
+*Parse the payload out of the stream; never require the stream to be the
+payload.* Have the helper write its JSON to a path passed in argv and ignore
+stdout entirely, or delimit the payload with a sentinel the caller scans for.
+The measurement was not hypothetical: it broke this session's own test harness
+first, when a `$(...)` capture of the interpreter's `purelib` came back with the
+banner glued to the front of the path.
+
+Two smaller measurements. `importlib.metadata.packages_distributions()` is keyed
+by module and valued by distribution, so the inversion the readiness check needs
+must normalise names (`pytest-mock` provides `pytest_mock`); and extracting
+`h5py` from `h5py>=3.10` wants `packaging.requirements.Requirement`, which is
+present on every rig only because `scikit-image` requires it and **microclaw does
+not declare it**. Declare `packaging` in `[project].dependencies` — it is already
+installed everywhere, so it costs nothing — or the installer rests on a
+transitive dependency nobody promised.
+
+## Decision
+
+### First-party extras here; community packages open in a separate notebook
+
+This notebook covers code MicroClaw owns and imports in its own process:
+`ilastik` today, and any later integration that extends MicroClaw itself. Those
+must be reviewed and version-constrained *with* MicroClaw, which is what a
+pyproject extra does.
+
+It does **not** put accepting community skills into blocks 71a–71c. That needs a
+package boundary so the author owns their releases and pins, and it is a
+different product with different failure modes; the work done on it is
+preserved under *Community skill packages* below as the brief for its own
+notebook. Nothing in 71a–71c may grow toward it: no requirement string from a
+document, no per-release environment, no out-of-process runner.
 
 ### An extension is an extra, named by the browser, resolved from our own metadata
 
@@ -191,7 +280,7 @@ browser  --> POST /api/extensions/install {"name": "ilastik"}
                             |
                             v
         uv pip install --python <sys.executable>
-                       --constraint <frozen current environment>
+                       --constraint <fresh installed-metadata pins>
                        h5py>=3.10
                             |
                             v
@@ -214,19 +303,76 @@ would install a requirement on a platform it was excluded from.
 live server whose `numpy` is already imported — mid-session, possibly mid-
 acquisition — is the failure mode this feature must not have.
 
-Freeze first, constrain second:
+Enumerate first, constrain second, **in one call**:
 
 ```python
-frozen = uv("pip", "freeze", "--python", python)        # exclude microclaw
-                                                        # and any "@ " direct URL
+# Fixed helper code runs under the same `python` later passed to uv. `-I` is
+# what excludes caller CWD, PYTHONPATH and user-site metadata (measurement 4);
+# the empty CWD is belt-and-braces and must never be mistaken for the guard.
+# Normal site startup still runs, so .pth-based editables stay visible -- and
+# so does any .pth banner on stdout, which is why the payload is a file and
+# stdout is not parsed (measurement 5).
+records = run_json_file(
+    [python, "-I", "-c", ENUMERATE_DISTRIBUTIONS, payload_path],
+    payload_path, cwd=empty_temp_dir,
+)
+versions, origins = {}, {}
+for record in records:
+    raw_name = record.get("name")
+    version = record.get("version")
+    origin = record.get("origin")
+    if not raw_name or not version:
+        raise ExtensionInstallError(
+            f"an installed distribution has no usable identity: {origin}"
+        )
+    name = canonicalize_name(raw_name)
+    if name == "microclaw":
+        continue
+    if name in versions and versions[name] != version:
+        raise ExtensionInstallError(
+            f"conflicting installed metadata for {name}: {versions[name]} at "
+            f"{origins[name]} and {version} at {origin}; remove the stale one"
+        )
+    versions[name], origins[name] = version, origin
+pins = [f"{name}=={version}" for name, version in sorted(versions.items())]
 install = uv("pip", "install", "--python", python,
              "--constraint", constraints, *requirements)
 ```
 
-With every installed distribution pinned to its exact version, uv **cannot**
-change one: an extension that needs a newer `numpy` fails resolution and reports
-a conflict instead of performing one. This is a structural guard, not a parse of
-uv's output, and it is why v1 does not need `--dry-run` to be safe.
+`ENUMERATE_DISTRIBUTIONS` contains no request or catalog data. It iterates
+`importlib.metadata.distributions()` and JSON-encodes
+`{"name": dist.metadata.get("Name"), "version": dist.version,
+"origin": str(dist.locate_file(""))}` **to the path given as its one argument**.
+The subprocess has a timeout and bounded stdout/stderr tails for diagnostics,
+but the payload is read from that file, never from the stream — measurement 5,
+where a `.pth` banner ahead of the JSON refused a healthy environment. A missing
+or unparseable file, or a nonzero exit, refuses before uv is spawned. Do not use
+private `dist._path`, whose presence and shape are implementation details.
+
+The refusal message names the **origins**, not just the two versions, because a
+conflicting duplicate is stale metadata someone has to delete and "1.26.0 and
+2.5.2" tells an operator nothing about where to look. But `locate_file("")`
+returns the *containing directory*, not the metadata directory, and the
+commonest stale shape puts both entries in one place: two `baz-*.dist-info`
+directories in a single site-packages report the **same** origin for 1.26.0 and
+2.5.2 (measured). So word it as two metadata entries for `baz` found in that
+directory, with both versions — enough to `ls` and delete — and do not promise
+two distinct paths the public API cannot supply.
+
+Measurement 1 above is why freeze text is not the source: origin syntax is not
+installed identity, and dropping an unparseable line would leave exactly the
+distribution that needs constraining unpinned. Measurement 2 is why metadata is
+enumerated here and never persisted: with the pins equal to what is installed,
+a requirement that needs a newer version fails resolution and reports a
+conflict instead of performing one, but a *stale* pin is an instruction to
+downgrade. Measurement 4 is why the target interpreter performs discovery from
+an isolated CWD; the conflict check remains load-bearing for genuinely
+conflicting metadata visible inside that environment. The guard is complete,
+fresh installed metadata for **the target interpreter**, not the flag.
+
+This is also what makes the in-place install *possible* on Windows and not
+merely safe: nothing already imported is replaced, so only new files are written
+into the running interpreter's `site-packages`.
 
 Run `--dry-run` anyway, with the same constraints, only to show the user what
 would be added before they press the button. If its output cannot be parsed,
@@ -242,14 +388,24 @@ not health* applies unchanged: readiness is
 
 1. every distribution named by the extra's requirements is present, and
 2. every top-level module those distributions provide
-   (`importlib.metadata.packages_distributions()`, inverted — derived, not
-   tabulated) imports.
+   (`importlib.metadata.packages_distributions()`, inverted with a canonicalised
+   name — derived, not tabulated) imports.
 
 After a successful install, call `importlib.invalidate_caches()` and run that
 import **in this process**. That is both the proof and the thing the user
 wanted: the session that asked can now use it, with no restart. A readiness
 failure after a successful uv run is reported as such — installed, not usable —
 and names the exception.
+
+The no-restart claim is only true while the *consumer* imports lazily
+(measurement 3). `ready()` importing in the installer's own frame is not
+evidence that the code which needs the extension can now import it: a
+module-scope importer that already failed keeps failing until the process
+restarts, and the panel would say ready. So a test asserts, for every key of
+`EXTENSIONS`, that no module in `microclaw/` imports that extra's top-level
+modules at module scope — and the demo gate proves it the only way that counts,
+by exercising the ilastik adapter through a request to the **already-running
+server** rather than a fresh subprocess.
 
 ### Record extensions outside both slots, in their own file
 
@@ -273,15 +429,27 @@ not.
 
 ### Carry extensions through an update, and notice when they did not survive
 
-`stage_inactive_slot` installs `f"{source}[serve]"`. With extensions recorded it
-installs `f"{source}[serve,ilastik]"` — otherwise every update silently removes
-the extension, which is *"a cache computed against the previous install"* in a
-new costume.
+`stage_inactive_slot` installs `f"{source}[serve]"` (`updates.py:447`). With
+extensions recorded it installs `f"{source}[serve,ilastik]"` — otherwise every
+update silently removes the extension, which is *"a cache computed against the
+previous install"* in a new costume.
 
 **An extension must never be able to break an update.** If the combined spec
 fails, retry with `[serve]` alone; if that succeeds, stage it and record the
 extras failure for the panel. The smoke check stays exactly as it is — it proves
 `microclaw`, `microclaw.webserve` and `uvicorn`, never an extension.
+
+**That retry cannot go through the existing failure branch.** The command loop
+in `stage_inactive_slot` writes `build_error`, `build_failed_commit` and
+`build_error_detail` and raises `UpdateError` on the first nonzero exit, and the
+top of the same function then refuses that SHA until `next_check` passes. A
+fallback bolted on after the loop would poison the interval for a commit that
+builds perfectly well without the extra — *a record that some earlier attempt
+failed is not a record of this one*, and *clearing one of two poison keys is
+clearing neither*. Structure it so the extras attempt is tried and discarded
+**before** any state is written, and let only a `[serve]` failure reach the
+existing branch. The success path already pops all three keys, so a fallback
+that succeeds must run to the end of the function rather than return early.
 
 Three states leave a recorded extension unusable, and all three are ordinary:
 a rollback to the previous slot, an `install.bat` reinstall (which builds
@@ -314,20 +482,28 @@ requires: [ilastik]
 ---
 ```
 
-`_parse_skill` accepts `name`, `description`, and optionally `requires` (a list
-of nonempty strings). It does **not** check the names against installed
-metadata — a malformed contributor edit must not make `SKILL_CATALOG` raise at
-import time and take the whole application down. That check is a test.
+`_parse_skill` currently asserts `set(metadata) != {"name", "description"}`
+(`skills.py:48`), an exact-set equality that rejects any third key. That becomes
+an allowed-key check: `name` and `description` required, `requires` optional (a
+list of nonempty strings), anything else still an error. It does **not** check
+the names against installed metadata — a malformed contributor edit must not
+make `SKILL_CATALOG` raise at import time and take the whole application down,
+and `SKILL_CATALOG` is built at module import (`skills.py:101`). That check is a
+test.
 
-`load_skill` returns the body unchanged, prefixed with one line when a required
-extension is not ready:
+`load_skill_text` — the function; `load_skill` is the tool that wraps it — reads
+the resource and returns the **whole file, frontmatter included**. So the
+informational line is prepended above the opening `---`, not "before the body",
+and nothing downstream re-parses that text. One line when a required extension
+is not ready:
 
 > The `ilastik` extension is not installed; tools using it will refuse until the
 > user installs it from Microclaw's Extensions panel.
 
 Information, not a gate — design/61 settled that a predicate withholding a
 Markdown file protects nothing. The catalog line stays visible either way, so
-the model can still route to the skill and explain what is missing.
+the model can still route to the skill and explain what is missing. `load_skill`
+stays `@emits_nothing`, which is already correct and needs no change.
 
 ### Where the user text comes from
 
@@ -355,9 +531,19 @@ at the panel, and that is the whole agent-side change. If sessions are later
 measured stalling on this, that measurement buys the tool, and it bolts onto
 this shape unchanged.
 
-**No first-party package specs outside `pyproject.toml`.** See the correction
-above. Community package locks belong to the community artifact and are never
-merged into MicroClaw's project metadata.
+**No first-party package specs outside `pyproject.toml`.** See the verdict.
+Requirement strings that reach uv's argv come from built metadata or the feature
+has no allowlist at all.
+
+**No community package mechanism, no catalog intake, no out-of-process worker,
+no acquisition trigger in blocks 71a–71c.** These open in their own notebook,
+for the reasons below. A block here that starts down that road is out of scope
+even if it looks small.
+
+**No new registered tool.** Nothing in 71a–71c adds one, so nothing here needs
+an `@emits` decision: `load_skill` is already `@emits_nothing` and keeps that
+marker, and the two endpoints are HTTP, not tools. The community notebook has
+the separate, explicit export disposition below.
 
 **No new slot, no restart, no second staging path.** An extension is added to
 the running environment; the update system stays the only thing that builds
@@ -376,14 +562,16 @@ one asserts every skill's `requires` names one of its keys.
 **Install into the inactive slot and restart.** Reuses design/58 verbatim and
 has no in-place hazard at all — but it costs a full environment rebuild and a
 restart to add one wheel, and it does nothing on an unmanaged install. Keep it
-in reserve for the constraint-conflict case if that ever turns out to be common;
-it is not the default.
+in reserve for the constraint-conflict case, which is now a *measured* outcome
+rather than a hypothetical one (measurement 2: a requirement above a pin is a
+clean `No solution found`, and the response has to say something useful when it
+happens). It is not the default, and `ilastik`'s only requirement is `h5py`,
+whose numpy floor this environment already clears.
 
 **Requirements in an in-tree `SKILL.md`.** The plan's original shape. Loses the
 allowlist, loses resolution, and puts the strings that reach uv's argv in a
-document. This does not reject dependencies in a signed community package
-manifest/lock installed into an isolated environment; that is a different trust
-and execution boundary.
+document. It also does not survive contact with uv: the strings would have to
+be turned into argv without ever having been resolved against anything.
 
 **Derive the panel text instead of `EXTENSIONS`.** "ilastik — installs h5py" is
 free and needs no table. Rejected on the project's own ease-of-use rule: the
@@ -395,40 +583,297 @@ startup reconcile already covers with a button.
 
 ---
 
+## Community skill packages — next notebook brief
+
+The community half of the original proposal is right about the ownership
+problem and wrong to be five blocks of this notebook. It is recorded here as
+settled decisions, findings and gate dependencies; it should open as its own
+design notebook, with SMAPpy as the first conformance package, rather than wait
+for a second use case.
+
+### Why it is not in this notebook
+
+**It is a different product, not a later block.** 71a–71c are one module, two
+endpoints, one panel and a frontmatter key. The community mechanism is a package
+format, a catalog intake with a trust policy, a cached verified catalog, a per-release
+environment manager with staging/activation/rollback/repair/remove, a process
+supervisor, a versioned job protocol, an acquisition trigger with persisted
+receipts, and a new agent tool. Sharing an "atomic state primitive" with 71a is
+not shared scope. *Don't add layers* and *keep design documents short* both cut
+against carrying it here.
+
+**Its export answer must be explicit, and the marker it needs is not
+`@refuses`.** Every registered tool carries exactly one of `@emits` /
+`@emits_nothing` / `@refuses`, enforced by
+`test_every_registered_tool_has_exactly_one_export_decision`, and *a new
+capability is not finished until it can appear in an exported script.* The
+intent above is right — preserve the acquisition, disclose the analysis — but
+neither of the two obvious markers produces it, and the code says so plainly:
+
+- `@refuses` routes through the `renderer is None` branch
+  (`tools.py:1989-1994`) into `refuse()` (`:1968`), which appends
+  `# NOT EMITTED: …` **and** `raise RuntimeError(…)` on the next line. A session
+  that ran the analysis tool therefore exports a script that halts there and
+  strands every later step — including the `run_timelapse` the same session
+  emitted correctly. That is exactly the shape block 43h
+  (`generate_and_save_hook`), block 47 (`set_roi`/`clear_roi`) and block 52a
+  (`move_named_stage`) each paid a gate for. The stated requirement that export
+  "must never replace an otherwise-emittable `run_timelapse` with a total
+  export failure" is violated by the marker, not by the acquisition emitter.
+- `@emits_nothing` prints `# No hardware-routine effect.` and continues
+  (`:1986-1988`), which is silence about an HDF5 the session really produced —
+  and *silently deleting a step is worse than the raise it replaces*.
+
+So the analysis tool takes **`@emits`**, with a renderer that emits a comment
+block rather than executable code: package ID, release digest, operation,
+reserved output directory, and one line saying the analysis was not reproduced
+and how to rerun it. It emits, so the script continues; it discloses, so nothing
+vanishes; and it needs no change to `refuse()`. A later portable
+package-reference format can turn that comment into code, and v1 does not
+fabricate one.
+
+**The trigger's comment is unrenderable unless the acquisition records it.** The
+export loop iterates recorded `(tool, params)` pairs (`:1973`). A trigger is
+*configuration*, so it never appears in that list, and `_emit_acquisition` has
+nothing to render a disclosure from. The trigger design must therefore make the
+acquisition tool's **recorded result** carry the fired trigger's package,
+release and operation — *an emitter may only render what the record contains*,
+and this is the same debt the shutter, the EMU write and the centring loop each
+had to pay in 63a before they could be emitted at all.
+
+**And an analysis failure must not reach the record in the shape
+`_recorded_outcome` reads.** That function (`:794`) decides how much of a call
+completed from exactly two structural signals: a **top-level `error`** key, and
+per-item `error` entries inside a **top-level list**. A worker crash reported
+either way turns a flawless acquisition into a `refuse()` (partial) or a skipped
+no-op (nothing) at export time. "Analysis failure never aborts or slows frame
+capture" needs its second clause: it is recorded under a nested key, never as a
+top-level `error` and never as an entry in a top-level list. Pin all three of
+these in exporter tests before writing the runner.
+
+**A disk-following external worker is an acquisition observer, not an
+acquisition hook.** The `CLAUDE.md` rule that image analysis lives in hooks
+continues to govern MicroClaw-owned in-process analysis and any result that
+participates in acquisition decisions. SMAPpy is different: third-party code
+must not run inside the privileged hook runtime, and feeding a bounded fitting
+queue from a frame callback can block acquisition when the fitter falls behind.
+The allowed exception is narrow: an out-of-process, read-only observer follows
+the growing collision-resolved dataset on disk, writes only its reserved output
+directory, and has no channel to change, slow, abort or gate acquisition. If its
+telemetry is later used for feedback, that feedback returns through a new typed
+MicroClaw capability and the normal authorization/envelope/write-budget rules;
+the package itself never gains hardware authority.
+
+**Its real-package gate depends on a third party; its generic design does not.**
+The publisher-owned changes listed below are preconditions for admitting
+SMAPpy. MicroClaw can specify and test the package format, intake validation,
+isolated installer, process protocol and lifecycle against a fixture package in
+parallel. The SMAPpy conformance limb remains NOT EXERCISED until the publisher
+supplies a conforming release; MicroClaw does not patch around it.
+
+**The ownership win depends on intake, not hand-merging every release.** The
+publisher owns and hosts the artifact, skill code, pins, wheel matrix and
+release testing. MicroClaw owns admission policy and the catalog. The publisher
+submits a signed, digest-pinned record to an intake channel; automated checks
+verify publisher identity, schema, immutable artifact digest, supported wheel
+matrix, hashed lock, protocol conformance and self-check. A passing record may
+be promoted automatically under policy or held for lightweight approval. The
+publisher never writes directly to the trusted production catalog. This means
+we review the policy and exceptional releases, not maintain SMAPpy or manually
+copy every ordinary release.
+
+**One scoping fact found while checking it.** `run_mda` drives MMStudio's own
+MDA and never touches `_acquire_with_hooks`, so an `on_dataset_created` trigger
+would silently do nothing for MDA runs. Any trigger design must say so in the
+panel rather than leave an operator watching for output that cannot arrive.
+
+### What the boundary should be, when it is taken up
+
+Recorded so the next notebook starts from decisions rather than a blank page,
+and deliberately compressed. The ownership, hosting, intake, isolation,
+observer and export dispositions below are settled; manifest schemas, protocol
+fields, service implementation and block boundaries remain for that notebook.
+
+The unit is an immutable publisher release carrying `SKILL.md`, assets, a
+manifest (package ID, publisher, version, compatible MicroClaw/Python ranges,
+entry points, license, source and issue URLs, digest) and a dependency lock per
+platform. MicroClaw owns the protocol, installer, trust policy and catalog UI;
+the publisher owns the skill and its pins.
+
+Dependencies never enter MicroClaw's environment: one environment per release
+under the user data directory, keyed by ID and digest, installed from the
+publisher's lock with hashes required. Code runs out of process behind a
+versioned protocol and receives data only — never a controller, guard, hook
+object, token or server URL. A Markdown-only skill needs no environment. A
+package wanting in-process imports or privileged APIs is a first-party
+extension proposal and takes the extra path above.
+
+MicroClaw does **not** operate an artifact repository. Transport starts as a
+publisher-owned GitHub Release containing the skill artifact; its lock may
+point at exact hashed PyPI wheels. The publisher pushes a signed submission to
+MicroClaw's catalog intake, and the promoted catalog record pins the release
+artifact's exact digest. A repository of copied skill files is explicitly not
+the recommendation: it changes the queue without moving the ownership. An
+unsigned floating URL or a bare package/version is never a release identity.
+
+```text
+SMAPpy CI -- publish --> publisher GitHub Release / PyPI wheels
+    |
+    +-- submit signed digest-pinned record --> MicroClaw catalog intake
+                                                   |
+                                      validate + conformance gate
+                                                   |
+                                                   v
+                                        trusted GUI catalog
+                                                   |
+                                      isolated exact installation
+```
+
+The intake record contains metadata and immutable references, never arbitrary
+shell text, dependency ranges to resolve freely, or permission to call hardware.
+Promotion and later delisting affect discovery; they do not remotely delete an
+installed release. The publisher may submit a yank/superseding release through
+the same authenticated channel, while MicroClaw retains final catalog policy.
+
+Installation is a durable transaction, and *Available* means only that the
+trusted catalog has a compatible non-yanked release — never that this machine can
+install it. Keep the previous verified release live until a candidate passes,
+switch an `active` pointer atomically, retain one release for rollback; a
+failure never leaves a partial skill, and a later verification failure keeps
+the skill visible and disabled rather than silently absent.
+
+Installing grants no right to run. A trigger is configured per workflow or rig
+profile, pins release/operation/parameters/capabilities in a receipt, and can
+be disabled without uninstalling. Analysis failure must never abort or slow
+frame capture, the worker has no backpressure channel into acquisition, and
+every acquisition exit — including design/60's unterminated one — sends a
+terminal state and keeps any valid partial artifact.
+
+### Feasibility against SMAPpy 0.1.0
+
+Reviewed 2026-09-02 against
+[SMAPpy commit 9238192](https://github.com/ries-lab/SMAPpy/commit/92381926515a8304b988679e13f4f8b3fae98740)
+and the published
+[`smappy-smlm` 0.1.0 release](https://pypi.org/project/smappy-smlm/0.1.0/).
+The integration is feasible, but **the proposed MicroClaw patch is not the
+integration boundary we will accept**:
+
+| Proposed shape | Finding | Required disposition |
+|---|---|---|
+| Copy `integration/microclaw/skills/smappy/SKILL.md` into MicroClaw | This makes MicroClaw publish and test the author's operating instructions. The copied text can drift from the package version that implements it. | SMAPpy's release artifact carries the skill and manifest; MicroClaw only loads the installed, verified copy. |
+| Copy `test_smappy_skill.py` into MicroClaw | Assertions over SMAPpy's prose and API names make our suite a compatibility bridge. | Those tests remain in SMAPpy. MicroClaw tests only the package protocol with a fake package and runs one black-box conformance gate against a real SMAPpy release. |
+| Add `analysis = ["smappy-smlm>=0.1"]` to MicroClaw's `pyproject.toml` | This makes SMAPpy look first-party, resolves it into MicroClaw's live environment, and makes us choose its version range. | Install the exact publisher release and locked dependencies in the skill's environment. No `analysis` extra lands here. |
+| Import `smappy` from skill prose | `load_skill` supplies instructions, not a Python execution capability; the agent has no safe arbitrary-Python tool. | The package declares a protocol entry point. MicroClaw invokes only that entry point with a typed job. |
+| Start fitting automatically while acquisition writes | Technically sound: SMAPpy can follow a growing NDTiff index and the real collision-resolved dataset path exists after `Acquisition(...)` and before `acq.acquire(events)`. It is not accomplished by installing or loading the skill. | Add an explicit, persisted acquisition trigger and start the worker at the dataset-created boundary. |
+| Feed frames through an `analyze_frame` hook and `QueueSource` | A bounded queue can block the acquisition thread when fitting falls behind, while an out-of-process queue needs a new image transport. It also couples the package to MicroClaw's privileged hook runtime. | v1 follows the growing NDTiff on disk. Queue/frame streaming is deferred until it has measured need and a non-blocking transport. |
+| Open `live_view`/matplotlib | It needs a GUI main thread and can hang the server process. | v1 is headless and writes HDF5 plus optional PNG. A viewer, if offered later, is a separately supervised process and capability. |
+
+The package itself is plausible for the rigs we care about: 0.1.0 publishes
+CPython 3.12 Windows x86-64 wheels (as well as CPython 3.9–3.13 wheels for the
+other listed desktop targets), declares Python >=3.9, and its runtime floors do
+not conflict with MicroClaw's current numpy/scipy/tifffile floors. That is
+evidence for this release, not a promise MicroClaw carries forward. The
+trusted-catalog compatibility record and publisher CI must establish it again for
+every release. The 0.1.0 files and the GitHub commit are not signed; therefore
+they are useful development inputs but do not yet satisfy a policy that requires
+publisher signatures.
+
+SMAPpy must make these publisher-owned changes before admission:
+
+1. Publish one immutable skill artifact containing `SKILL.md`, the manifest,
+   the exact `smappy-smlm` release and dependency lock (with artifact hashes),
+   and the protocol runner. The Python wheel may be referenced rather than
+   nested, but every selected file is exact and hashed. A range such as
+   `smappy-smlm>=0.1` is not a lock.
+2. Expose `microclaw.analysis.v1`, initially with operations `self_check` and
+   `localize_ndtiff`. It accepts a JSON job on stdin (or at a job-file path) and
+   emits newline-delimited status plus one terminal JSON result on stdout.
+   MicroClaw does not import `smappy`.
+3. Keep the copied-prose/API tests in SMAPpy CI and add a conformance test that
+   installs the release from its lock, runs `self_check`, localizes a growing
+   NDTiff fixture, and proves partial output remains readable after cancellation.
+4. Publish supported OS/architecture/Python tuples and CI results. Missing a
+   compatible wheel is `Available, incompatible on this machine`, not a request
+   for MicroClaw to learn how to compile SMAPpy.
+5. Put support and issue URLs in the manifest. The Extensions panel labels the
+   publisher and sends `Report to publisher` there; MicroClaw bugs cover the
+   installer/protocol, not localization correctness.
+6. **Establish a publisher signing identity and sign the intake submission.**
+   The intake above verifies publisher identity and accepts only a signed,
+   digest-pinned record, so this is a hard precondition — and it was missing
+   from this list while the paragraph two sections up already required it. The
+   note that 0.1.0's files and its GitHub commit are unsigned is not a
+   background remark: it is this item, unscheduled. An unlisted precondition is
+   one nobody does.
+
+MicroClaw owns the other half: generic install/verify/activate/remove/rollback,
+the process supervisor, the typed job/result protocol, acquisition lifecycle
+events, artifact presentation, and conformance tests that work without SMAPpy.
+This is enough integration to make the package usable without becoming its
+bridge maintainer.
+
+
+### Register rows this leaves behind
+
+For `design/70-carried-forward-register.md` (not edited from here):
+
+| Row | Where it settles | Importance |
+|---|---|---|
+| Open the community skill package notebook from the settled intake, isolation, export and observer decisions above | local | high, blocks any community skill |
+| Build generic package/protocol conformance with a fixture while SMAPpy prepares its release | local | high |
+| Pin the three export behaviours before the runner: `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, analysis failure kept out of `_recorded_outcome`'s two shapes | local | high, an unpinned one repeats 43h/47/52a |
+| The SMAPpy publisher-owned precondition list above (six items, signing included) is not ours to schedule | external | medium, blocks SMAPpy admission but not generic work |
+| `run_mda` bypasses `_acquire_with_hooks`, so any acquisition-lifecycle event is invisible to MMStudio MDA runs | local | low, pre-existing |
+
+---
+
 ## Blocks
 
-Blocks 71a–71c below implement the first-party extension path. The community
-registry, package format, isolation protocol, and shared CLI/GUI installer need
-a separate design and blocks before accepting external skills. They are not a
-small addition to 71a: making them one would encourage the unsafe interim state
-where community dependencies are installed into MicroClaw's live environment.
-
-Two rig trips, both the demo machine. Nothing here needs a microscope: no
-motion, no dose, no bridge. M2/M5/Nikon are not involved.
+Blocks 71a–71c are the whole notebook: the first-party extra mechanism, its
+survival across an update, and a skill that names one. They need two
+demo-machine trips and nothing else. There is no 71d or 71e — see *Community
+skill packages* above for the separate notebook brief.
 
 ### 71a — the extension model, the endpoints, and the panel
 
 **Items**
 
-1. `microclaw/extensions.py`: `EXTENSIONS`; `available()` (name, description,
+1. `microclaw/extensions.py`: `EXTENSIONS`; `ExtensionInstallError`;
+   `available()` (name, description,
    requirement strings, packages, requiring skills, ready, recorded);
    `requirements_for(name)` reading `Requires-Dist` and refusing non-`extra`
    markers; `ready(name)` by dist-presence **and** import; `record`/`forget`
    against `user_data_dir()/extensions.json`.
 2. `updates.locate_uv()` beside `locate_git()`, used by `stage_cached_candidate`
    too. Lift `write_state`'s atomic replace into `_write_json_atomic`.
-3. `install(name)`: freeze → constrain → install → `invalidate_caches()` →
-   import → record. Every failure returns a sentence naming the cause, and a
-   failure whose cause could be an index override **names the variable**
-   (`UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL`, `PIP_INDEX_URL`)
-   rather than quoting a URL — 58e's lesson.
+3. `install(name)`: enumerate installed distribution metadata → canonical
+   `name==version` pins → constrain → install → `invalidate_caches()` → import
+   → record. The enumeration occurs in this call and is never persisted
+   (measurement 2); malformed identities and conflicting duplicate versions
+   refuse rather than leave a distribution unpinned (measurement 1); the
+   selected interpreter enumerates its effective installed paths under `-I`
+   from an empty temporary CWD, and that same interpreter is passed to uv (v1
+   selects `sys.executable`), so `purelib`, `platlib` and `.pth`-based editable
+   installs are covered without caller-CWD metadata (measurement 4). Every
+   failure returns a sentence
+   naming the cause; a resolution conflict says which requirement fought which
+   pin, and a failure whose cause could be an index override **names the
+   variable** (`UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL`,
+   `PIP_INDEX_URL`) rather than quoting a URL — 58e's lesson.
+   Requirement-string parsing uses `packaging.requirements.Requirement`, which
+   means `packaging` joins `[project].dependencies` — it is already installed on
+   every rig via `scikit-image`, but as a transitive dependency nobody
+   promised.
 4. `GET /api/extensions`, `POST /api/extensions/install`. One job lock, shaped
    like `update_job`. Refuse (409) while a turn holds `session.lock`, while an
    acquisition ledger is in flight, while a confirmation is pending, or while
    update staging runs. Rate-limit the install route with `_RateLimiter`.
-5. Panel in `serve.html` with a pure `Transcript.extensionsView(state)` beside
-   `updateBannerView`, so the rendering is testable without a browser.
-6. `ilastik_adapter.py`'s two messages point at the panel.
+5. Panel markup in `serve.html`, which only *calls* the view
+   (`serve.html:242`); the pure `Transcript.extensionsView(state)` goes in
+   `transcript.js` beside `updateBannerView` (`transcript.js:282`) and is
+   exported alongside it, so the rendering is testable without a browser. Four
+   states, not six: not installed / installing / ready / failed-or-missing.
+6. `ilastik_adapter.py`'s two messages (`:371`, `:424`) point at the panel.
 
 **Tests** — the ones that must be watched failing on the pre-change tree are
 marked ✦; the rest are regression or structure tests (mutate, don't watch).
@@ -437,8 +882,48 @@ marked ✦; the rest are regression or structure tests (mutate, don't watch).
   **no uv subprocess is spawned** — assert on the spawn, not just the status.
 - ✦ The argv passed to uv contains only strings drawn from `Requires-Dist`;
   a request body carrying `"ilastik; rm -rf /"` or `"h5py"` never reaches it.
-- ✦ `--constraint` is present and the file pins every currently-installed
-  distribution except `microclaw` and any direct-URL line.
+- ✦ `--constraint` is present, and the file contains **only** canonical
+  `name==version` lines from installed metadata. Fixtures include editable and
+  direct-URL distributions exposed through target-site `.pth` files, plus a
+  distribution in a distinct `platlib`; all produce pins. Conflicting duplicate
+  versions and a distribution without a usable name/version refuse before uv is
+  spawned. The conflict message carries the public diagnostic origins, and the
+  fixture is the *same-directory* pair — two `baz-*.dist-info` in one
+  site-packages, whose origins are identical (measured), so the assertion is on
+  the two versions plus the directory, never on two distinct paths.
+- ✦ The selected target interpreter is both the enumerator and uv's `--python`;
+  a fake second interpreter with a distribution absent from the server process
+  still pins that distribution.
+- ✦ The pins are identical whatever the caller process CWD is — run the builder
+  from a directory holding a planted `foo.egg-info`, and assert `foo` is absent.
+  (Measurement 4: a bare in-process `distributions()` pins it, at 64 entries
+  instead of 63.) Assert on **`-I`**, which is the condition that does the work:
+  dropping it reintroduces `foo` and also loses `PYTHONPATH` isolation, while
+  dropping the empty CWD alone changes nothing measurable. Do not write a
+  fixture claiming both conditions are individually load-bearing — one of them
+  cannot fail, and *a limb that cannot fail is not a criterion*.
+- ✦ A `.pth` in the target environment that prints to stdout does not break the
+  install. Plant one whose import writes a banner, and assert the pins are
+  complete and correct. (Measurement 5: with stdout as the payload this refuses
+  a healthy environment with `Expecting value: line 1 column 1`.) Write the
+  fixture as a real `.pth` in a real throwaway environment — a fake subprocess
+  returning clean JSON is the assumption, not a test of it.
+- The helper writes its payload to the argv path and the caller never parses
+  stdout; a run whose stdout is pure noise and whose file is valid still
+  installs, and a run with valid stdout and a missing file refuses.
+- The helper output uses `locate_file("")` and no private distribution fields;
+  a distribution double without `_path` still produces a useful origin.
+- ✦ The constraint file is built inside `install()` from live metadata, not read
+  from disk — mutate a recorded copy and assert the install still pins the
+  installed version. (Measurement 2: a stale pin is an instruction to downgrade,
+  not a veto.)
+- ✦ A requirement above its pin surfaces as a conflict with both versions named,
+  and **nothing is installed or uninstalled** — assert on the uv argv and on the
+  environment being unchanged, not on the message.
+- ✦ No module under `microclaw/` imports an `EXTENSIONS` extra's top-level
+  module at module scope. (Measurement 3: the no-restart claim is a property of
+  the consumer, and `ready()` importing in its own frame cannot see the
+  difference.)
 - ✦ Readiness is false when the distribution is present but its module raises on
   import (fake a module that raises `ValueError`, which is h5py's real numpy-
   mismatch failure, not `ImportError`).
@@ -450,10 +935,12 @@ marked ✦; the rest are regression or structure tests (mutate, don't watch).
   missing / install-failed, from fixtures.
 
 **The fake trap.** The uv fake must be written from uv's actual behaviour, not
-from our caller: `uv pip freeze` output shape, a resolution *conflict* exit
-(nonzero, message on stderr), and the fact that `uv pip` is a uv subcommand and
-a plain `uv venv` has no pip module. Capture one real `uv pip install --dry-run`
-transcript on the dev machine and paste it into the parse test. *A fake that
+from our caller: a resolution *conflict* exits nonzero with the explanation on
+stderr, `uv pip` is a uv subcommand, and a plain `uv venv` has no pip module.
+Capture one real `uv pip install --dry-run` transcript on the dev machine and
+paste it into the parse test. Keep measurement 1's real editable-freeze
+transcript as the regression evidence for why freeze text is not used, while
+the metadata fixture represents that same installed distribution. *A fake that
 encodes your assumption is not a test of it.*
 
 **Gate — demo machine, a program** (`design/71-block71a-demo-gate.py`, invoked
@@ -470,9 +957,16 @@ fresh subprocess — the no-restart claim is the whole point); `extensions.json`
 records it; a second install of the same extension is a no-op that reports
 "already installed"; the refusal limb — a POST with a name not in the allowlist
 returns 400 **and** the log shows no uv invocation; the in-flight limb — POST
-during a turn returns 409. Carry a **control that fires**: a deliberately
-impossible extra name must fail the limb if the endpoint accepts it, so the
-refusal limb cannot pass by doing nothing.
+during a turn returns 409; and the constraint file the install actually wrote is
+captured and asserted to be all-`==` on a machine where the slot install is
+*not* editable, so the limb is not merely re-testing the dev checkout. Carry a
+**control that fires**: a deliberately impossible extra name must fail the limb
+if the endpoint accepts it, so the refusal limb cannot pass by doing nothing.
+
+The gate runs on the **demo machine's managed install**, where `sys.executable`
+is `env-<active>/Scripts/python.exe` and microclaw is installed non-editably —
+a different freeze shape from the dev checkout, which is the point of running it
+there.
 
 ### 71b — carry extensions across an update, a rollback, and a reinstall
 
@@ -480,6 +974,12 @@ refusal limb cannot pass by doing nothing.
 
 1. `stage_inactive_slot` builds `f"{source}[serve,<recorded extras>]"`, falls
    back to `[serve]` on failure, records `extras_error`, and stages either way.
+   The extras attempt must be tried and discarded **before** the existing
+   failure branch writes anything: that branch sets `build_error`,
+   `build_failed_commit` and `build_error_detail` and raises on the first
+   nonzero exit (`updates.py:450-461`), and the head of the same function then
+   refuses that SHA until `next_check`. An extras failure must not poison a
+   commit that builds fine without the extra.
 2. Startup reconcile: recorded-but-not-ready is surfaced in the panel with a
    Reinstall button. Local check only; no network, no automatic install.
 3. `update_status()` gains nothing — the extras error belongs to the extensions
@@ -491,6 +991,9 @@ refusal limb cannot pass by doing nothing.
 - ✦ A failing extras install still publishes `pending-slot.txt` and still passes
   the smoke check; `extras_error` is recorded. (Watch this fail by making the
   fake uv fail only on the extras spec.)
+- ✦ After an extras-only failure, `build_failed_commit` is **absent** and a
+  second staging call for the same SHA is not refused — the poison-key
+  regression, asserted on the state file rather than on the return value.
 - The smoke check is unchanged — it must not import an extension.
 - Reconcile reports missing-after-rollback from a fixture where the record names
   an extension the running slot cannot import.
@@ -508,11 +1011,16 @@ banner text.
 
 **Items**
 
-1. `_parse_skill` accepts an optional `requires` list; `SkillMetadata` carries
-   it. Malformed shape raises as the other frontmatter errors do; unknown extra
-   names do **not** raise at import.
-2. `load_skill` prefixes the one informational line when a required extension is
-   not ready.
+1. `_parse_skill`'s exact-set check `set(metadata) != {"name", "description"}`
+   (`skills.py:48`) becomes an allowed-key check with `requires` optional;
+   `SkillMetadata` carries it. Malformed shape raises as the other frontmatter
+   errors do; unknown extra names do **not** raise at import, because
+   `SKILL_CATALOG` is built at module import (`skills.py:101`) and a bad
+   contributor edit must not take the application down.
+2. `load_skill_text` prefixes the one informational line when a required
+   extension is not ready. It returns the **whole file including frontmatter**,
+   so the line lands above the opening `---`; the tool `load_skill` passes it
+   through unchanged and keeps `@emits_nothing`.
 3. `test_skills.py`: every `requires` name is a key of `EXTENSIONS`, and every
    `EXTENSIONS` key is a `Provides-Extra` of the built distribution — the second
    asserted against the built wheel, alongside
@@ -523,27 +1031,20 @@ does** — the shape of the input is the whole point, and a branch no fixture
 reaches is a branch that ships unexecuted (58a's `github:` guard).
 
 **Gate**: one limb on 71b's program — `load_skill` on a fixture skill naming an
-uninstalled extension returns the body *plus* the line, and the same call after
-installing returns the body alone.
+uninstalled extension returns the file *plus* the line, and the same call after
+installing returns the file alone. Score it by diffing the two responses, not by
+grepping for the sentence: a limb that only greps passes if the line is added
+unconditionally.
 
 ## Open questions for the user
 
-1. **Is `ilastik` the only extension at v1?** The design supports more the day
-   an extra and a line in `EXTENSIONS` land together, but 71a's gate should
-   exercise exactly what ships.
+1. **Is `ilastik` the only first-party extension at v1?** The design supports
+   more the day an extra and a line in `EXTENSIONS` land together, but 71a's
+   gate should exercise exactly what ships.
 2. **Should a recorded-but-missing extension after an update be reinstalled
    automatically?** This plan says no — network on startup, without a button.
    Say so if you want it automatic; it is a two-line change and a different
    gate limb.
-3. **What is the initial community artifact transport?** The recommendation is
-   publisher-owned GitHub Releases plus a small reviewed registry of signed
-   pointers, then move artifacts behind a dedicated service only if scale or
-   availability requires it. A copied-skills repository is explicitly not the
-   recommendation.
-4. **What may a community skill execute in v1?** The safest useful first cut is
-   Markdown/assets only. Executable packages should wait for the out-of-process
-   protocol, capability grants, signing policy, and revocation story rather than
-   inherit the current process's filesystem and hardware authority.
 
 ## Run ledger
 
