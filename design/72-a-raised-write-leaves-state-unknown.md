@@ -424,59 +424,78 @@ compressed because the block is small.
 - [x] Branch `design72/raised-write-state-unknown` created at `a0d30d3`; ledger
       row opened below. The `49b3c74` in the row's first draft was the commit
       before this document landed and is corrected to the real start.
-- [ ] This checklist committed on the branch **before** the block is assigned —
-      a worktree sees committed history, not an editor buffer.
+- [x] This checklist committed on the branch **before** the block is assigned
+      (`8945e5b`) — a worktree sees committed history, not an editor buffer.
 
 **Step 2 — delegate the implementation.**
 
-- [ ] Linked worktree created for the block; the coordinator checkout never
-      holds the implementation.
-- [ ] Worktree **provisioned before the prompt is written**: `uv venv --python
+- [x] Linked worktree `../microclaw-design72a` created; the coordinator
+      checkout never held the implementation.
+- [x] Worktree **provisioned before the prompt was written**: `uv venv --python
       3.12`, then `uv pip install --python .venv/bin/python -e
-      ".[serve,test,ilastik]"`. Confirm `import microclaw` resolves to the
-      *worktree's* tree, not the primary checkout's.
-- [ ] Suite run by the coordinator **in the worktree**, and the established
-      command handed over verbatim — `.venv/bin/python -m pytest -q`, which does
-      no resolution — together with the benign `mmpycorex` SyntaxWarning it
-      prints, so the runner does not file it as a finding.
-- [ ] Runner prompt written to the scratchpad (never committed), then the
-      project `codex-runner` skill launched in that worktree. Keep the job
-      directory for the lifetime of the block.
-- [ ] The prompt states the four things this block can get wrong quietly, each
+      ".[serve,test,ilastik]"`. `import microclaw` confirmed resolving to
+      `/Users/zachcm/Code/microclaw-design72a/microclaw/__init__.py`.
+- [x] Suite run by the coordinator **in the worktree** — 2789 / 99 / 2–3 — and
+      `.venv/bin/python -m pytest -q` handed over verbatim. The warning count
+      *varies between 2 and 3* across runs (a pre-existing
+      `phase_cross_correlation` `UserWarning` in the featureless-field
+      calibration test); the prompt said so, because a runner that treats a
+      moving baseline count as a finding wastes a turn on it. No `mmpycorex`
+      SyntaxWarning appeared on this machine — do not promise one that the
+      established command does not print.
+- [x] Runner prompt written to the scratchpad (never committed), then the
+      project `codex-runner` skill launched in that worktree; job directory
+      `scratchpad/job-72a` kept for the block.
+- [x] The prompt stated the four things this block can get wrong quietly, each
       of which the design already decided and none of which a green suite would
       catch: the exception-path helper makes **exactly one** `get_property` call
       and at most one `get_property_type` call; the `try` at both write sites
       covers **only** `core.set_property`; `landed`/`unrestored` are **deleted**,
-      not renamed; and `at_original` is tested **before** `landed`.
-- [ ] If the runner is unavailable, or its automatic approval review cannot
-      authorize a required action, **stop and report** — do not implement inline.
+      not renamed; and `at_original` is tested **before** `landed`. All four held
+      in the delivered code.
+- [x] **Both runner turns were killed mid-flight by the harness**, not by any
+      failure of theirs. Handled per `CLAUDE.md` and recorded under
+      §"What the killed turns cost" below. No implementation was done inline.
 
 **Step 3 — review what comes back.**
 
-- [ ] Diff read, not the summary. Suite re-run by the coordinator rather than
-      the reported count believed.
-- [ ] **Tests 1–4, 6–8 and 10–14 watched failing on the pre-fix tree** for their
-      stated reasons (`git checkout a0d30d3 -- microclaw/`, run, restore). A test
-      written after the code is not evidence until it has been watched fail.
-- [ ] **Tests 5 and 9 proved by mutation**, since their subject is structural and
-      a pre-fix run never reaches the assertion: widen D3's `try` to cover the
-      success-path `get_property` and confirm test 5 fails; drop the
-      `accepted < len(attempted)` condition and confirm test 9 fails. Restore
-      both. A guard that passes on every tree is not yet a criterion.
-- [ ] The applies-then-raises mode added to the fake, and the existing tests'
-      current mode unchanged. *A fake that encodes your assumption is not a test
-      of it* — this is the file that owns the defect.
-- [ ] Diff review confirming **no read was added to any success path**, and that
-      `set_emu_laser_power_percentage`'s existing success-path `get_property`
-      sits outside the new `try`.
-- [ ] `_property_values_equal` is shared, not duplicated: `_verify_property`
-      calls it and still reads its value once.
-- [ ] `D6` present — no exported script pairs "the requested value was observed"
-      with "the session completed nothing here", and `_recorded_outcome`'s
-      `"nothing"` routing is unchanged.
-- [ ] Findings returned through the **same** `codex-runner` session, never "last
-      session". Repeat 2–3 until the code is right; rejecting a green
-      implementation is normal.
+- [x] Diff read, not the summary. Suite re-run by the coordinator: **2804
+      passed / 99 skipped / 2 warnings**, baseline + 15. That count reconciles
+      exactly — 13 genuinely new tests, plus the successful-rollback test review
+      round 1 added, plus one parametrize case on the byte-identity guard; test 8
+      is a *revision* of an existing test, not an addition.
+- [x] **Tests 1–4, 6–8, 10–14 watched failing on the pre-fix tree**
+      (`git checkout a0d30d3 -- microclaw/`, run, restore), each for its stated
+      reason. Tests 1–4 and 11 die on the bare Java text — `assert
+      'write_reported_failure_but_value_changed' in 'Serial timeout'` — which is
+      the defect in one line. Tests 6, 8, 13 and the successful-rollback test die
+      on `NO WRITE REACHED THE DEVICE, so no channel change was made` being
+      present and false. Tests 7, 10 and 12 die as `ChannelPlanError` carrying
+      *"the failing write could not be restored either … so if the write did not
+      take effect nothing changed"* — the quiet misfile, in its own words. Test
+      14 emits `# The session completed nothing here`.
+- [x] **Tests 5 and 9 proved by mutation.** Test 5, with D3's `try` widened over
+      the success-path read: `AssertionError: Expected 'get_property' to be
+      called once. Called 2 times` — the diagnostic firing on a read failure,
+      which is exactly the boundary D3 draws. Test 9, with the
+      `accepted < len(attempted)` guard dropped: `assert 3 == 2`, the third read
+      its own comment predicts. Both restored; suite re-run green afterwards.
+- [x] The applies-then-raises mode added to the fake
+      (`apply_then_fail_on`), every existing test left on its current mode.
+- [x] Diff review confirming **no read was added to any success path**, and that
+      `set_emu_laser_power_percentage`'s success-path `get_property` sits outside
+      the new `try` — test 5 is the standing guard on that boundary.
+- [x] `_property_values_equal` is shared, not duplicated: `_verify_property`
+      calls it and still reads its value once, and resolves the type once.
+- [x] `D6` present, and the exporter's **inlined** copy extended — the emitted
+      `_channel_verification_source` had to gain `_property_values_equal` or every
+      exported channel-verification script would `NameError` on the rig. The
+      structural guard `test_emitted_inline_defines_every_name_it_uses` caught
+      that on its own, which is `CLAUDE.md`'s recurrence guard doing its job.
+      `_recorded_outcome`'s `"nothing"` routing is unchanged.
+- [x] Findings returned through the **same** `codex-runner` session (recovered —
+      see below), never "last session". One review round, six findings, all
+      verified fixed by re-probing rather than by reading the commit message.
 
 **Step 4 — push branch and runbook together.**
 
@@ -557,6 +576,14 @@ step 3. Either way pushed to this branch.
       re-book instrument time for it.
 - [ ] Reconcile this document to what was measured: the outcome vocabulary as
       shipped, and the deletions of `landed`/`unrestored` as actually made.
+- [ ] **Two other design docs describe behaviour this block removed**, found by
+      grepping for the retired strings rather than from the diff:
+      `design/33-authorization-map.md:1433` has a table row mapping "no
+      `set_property` returned" to `NO WRITE REACHED THE DEVICE`, and
+      `design/53-a-preset-is-verified-as-a-set.md:87` and `:380` describe the
+      `rollback_failures` vs `unrestored` selector that no longer exists. Correct
+      both. Leave `design/41-block41c-rig-gate.md:121` alone — a gate runbook is
+      a record of what ran on a rig, not a live description.
 - [ ] Confirm **R57**, **R28**, **R42** and **R79** remain open and unclaimed —
       §"Scope" excluded them deliberately and a reader must not read this merge
       as closing them.
@@ -585,4 +612,83 @@ Baseline before the block: `main` `a0d30d3`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | — | — | — |
+| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | — | — |
+
+### What the killed turns cost, and the one product defect review found
+
+**Both runner turns were killed mid-flight by the harness.** That makes five
+across the project before this block and seven now, so it is the normal case, not
+an incident.
+
+**Turn 1 died at the end**, with edits in all six files and the full suite run,
+but nothing committed and no `result.md`. Per `CLAUDE.md` it was committed as
+`f6ba985` with a message saying plainly that nothing in it was reviewed and that
+no acceptance evidence existed. It died holding one real full-suite failure.
+
+**A killed turn's session is recoverable, and the wrapper makes it look like it
+is not.** `run-codex.sh` writes `session-id` only *after* a turn exits cleanly,
+so a killed turn leaves the file absent and `revise` refuses on
+`cannot revise without a non-empty session-id`. But the id is the `thread_id` on
+the **first line** of `<stem>.events.jsonl`, and the wrapper's own extraction
+recovers it:
+
+```sh
+sed -nE 's/.*"thread_id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
+  initial.events.jsonl | head -n 1 > session-id
+```
+
+Writing that file by hand is faithful, not a fabrication — it is byte-for-byte
+what the wrapper would have written. The resumed turn demonstrably kept its
+context: it addressed the review findings by number. Use this instead of
+restarting a block from zero. It also answers half of `CLAUDE.md`'s standing
+question about the revise path: `--strict-config` accepted this machine's config
+again, on CLI 0.152.0.
+
+**Turn 2 was killed while running a prescribed mutation, and left it in the
+tree.** The uncommitted diff was D3's `try` widened over the success-path
+`get_property` — test 5's mutation, unreverted. A coordinator who read
+"1 uncommitted file" as unfinished work and merged it would have shipped exactly
+the defect test 5 exists to forbid. **Check what a killed turn's working tree
+still holds before believing it is a partial edit**; here the right move was to
+harvest the evidence while the mutation was applied, then revert it.
+
+**Review round 1's load-bearing finding was found by probing, not by reading the
+diff.** The executor reused the snapshot helper's `sentence` verbatim, and that
+sentence was written for D1/D3's standalone tools, where nothing follows the
+read. In the executor the rollback runs next, so with a rollback that *succeeds*
+the message read:
+
+```
+... rolled_back=['A.Label']; landed: write_reported_failure_but_value_changed:
+A.Label reads 'new', the requested value, so the state you asked for is on the
+device now. Do not retry.          # and the device read 'old'
+```
+
+Two adjacent contradictory claims in one message — the defect D6 removes from the
+exporter, reproduced by this block in the executor. **Its own test codified it**,
+asserting the token and `reads 'new'` were present, so a green suite endorsed
+the contradiction.
+
+The second consequence is why it could not be reworded loosely. D6 specifies
+`write_reported_failure_but_value_changed` as vocabulary "written by exactly one
+code path"; the executor writing it too meant a rolled-back `set_channel`
+failure would export *"The requested value was observed on the device after the
+failed write"* — false, in the artifact the user keeps. The fix took the token
+back out of the executor and made all four clauses past-tense observations
+scoped to the moment of the read, measured after the fix:
+
+```
+landed:                immediately after the failed write, A.Label read back 'new', matching the requested 'new'
+changed_unexpectedly:  immediately after the failed write, A.Label read back '0.5', matching neither the pre-plan '0' nor the requested '1'
+unknown:               A.Label could not be read immediately after the failed write, so its value could not be established
+at_original:           A.Label holds its pre-plan value; no restore write was needed
+```
+
+**A second fake encoded the same premise, in a file §"Why a green suite missed
+this" did not enumerate.** `tests/test_config_groups.py`'s `ConfigCore` also
+raises before it assigns, and its rollback test asserted the redundant restore
+write that D4 now correctly skips. That was the suite's one failure, and the test
+was what was wrong. It is revised the way test 8 is, with the same sentence about
+why the quiet path is earned. The lesson generalises past this block: when a
+design names the fake that encodes a premise, grep for the *other* fakes with the
+same shape before assigning.
