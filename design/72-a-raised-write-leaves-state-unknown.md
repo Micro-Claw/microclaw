@@ -624,7 +624,7 @@ Baseline before the block: `main` `a0d30d3`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | — | — |
+| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | runbook `design/72-block72a-gate.md` pinned at `d93b228`, pushed; scorer selftest **15/15**, coordinator-run on this tree. **Awaiting the operator** — one ~10 min session plus the step-1b control arm on `main` | — |
 
 ### What the killed turns cost, and the one product defect review found
 
