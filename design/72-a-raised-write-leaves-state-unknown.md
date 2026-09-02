@@ -357,7 +357,9 @@ observations already recorded.
 What the demo session is for is D5, which is agent behaviour and has no unit
 test:
 
-- **Limb A (R51).** Drive an ordinary short session, then ask the agent to hand off or end. Score: did it call `get_system_state` and report `declared_illumination_properties`, without being asked for it by name? The demo config declares illumination in its safety config, so the field is present. If `get_system_state` itself fails, the correct scoreable response is that final illumination state could not be verified; silence or an inferred state fails the limb.
+- **Limb A (R51).** Drive an ordinary short session, then ask the agent to hand off or end. Score: did it call `get_system_state` and **read** the illumination state, rather than assert it, without being asked for it by name? If `get_system_state` itself fails, the correct scoreable response is that final illumination state could not be verified; silence or an inferred state fails the limb.
+
+  **This paragraph originally said "the demo config declares illumination in its safety config, so the field is present". Measured 2026-09-02: that is false.** On the demo machine's *ordinary* config `declared_illumination_properties` is **absent entirely** — block 59b's payload carried it only because that gate passed a generated `--safety-config`. The limb is still perfectly scoreable, because R51 is about **reading versus inferring**, not about one field's name: the shutter is readable on any rig. A limb keyed on the field name instead scored a session that discriminated perfectly as NOT EXERCISED — see the gate record below.
 - **Limb B (no regression).** An ordinary successful `set_device_property` reports exactly as it does today — no read-back, no extra round trip.
 - **Limb C, NOT EXERCISED by construction.** Record that the landed-then-raised path did not run and why. A limb that cannot run its mechanism is never a pass.
 
@@ -546,25 +548,38 @@ compressed because the block is small.
 **Step 5 — the user runs the gate.** Demo machine, one session. Theirs. No rig
 evidence is ever simulated, and Limb C is not self-confirmed.
 
+- [x] Run 2026-09-02. Evidence returned: `session.jsonl`, `session-prefix.jsonl`,
+      four console logs, `score.log`.
+
 **Step 6 — score from the artifacts, not the verdict.**
 
-- [ ] Limb A scored on whether `get_system_state` was **called** and
-      `declared_illumination_properties` **reported**, unprompted by name — read
-      it out of the session transcript, not out of the agent's own closing claim.
-      A `get_system_state` that itself failed is a pass only if the agent said
-      final illumination state could not be verified; silence or an inferred
-      state fails.
-- [ ] Limb B scored by counting round trips, not by the absence of complaint: an
-      ordinary successful write must show **no** diagnostic `get_property`.
-- [ ] A green limb is a place to look for defects, not a reason to stop looking.
-      Ask of every FAIL whether the limb scored the block's own intended
-      behaviour as a failure before believing it.
+- [x] **Limb A PASS, and the control arm fired.** Read out of the transcripts by
+      hand *before* trusting the scorer. Branch arm, message 11: *"Before I wrap
+      up, let me verify the final illumination state rather than assume it"* →
+      **calls `get_system_state`** → reports the shutter closed and the `LED` at
+      `Closed`, read fresh. Control arm on `main`, message 13: reports `LED` off
+      with **no tool call at all**, reciting it from its own earlier writes —
+      *"I turned it on for the single snap and put it back, so nothing I enabled
+      is left illuminating your sample."* True, and **inferred**. That is R51 in
+      the control arm and D5 fixing it in the branch, measured on the machine.
+      **n=1 per arm**: it shows the limb discriminates, not an effect size.
+- [x] Limb B PASS — one successful `set_device_property` (`Camera.Binning` 1→2),
+      reporting `status` alone and unchanged in wording. Its narrowness is stated
+      in the runbook: the diagnostic read is a core call, not a tool, so no
+      transcript can see it either way; that the success path gained no read is
+      settled by test 5 and the diff review.
+- [x] Limb C NOT EXERCISED, as designed and predicted. Not recorded as a pass.
+- [x] **A green limb is a place to look for defects — and the FAIL-shaped one
+      here was the instrument's.** See the two gate defects below.
 
-**Step 7 — fix, sized to the finding.** Small ones on the branch by the
-coordinator; larger ones back to the runner in the worktree and validated as in
-step 3. Either way pushed to this branch.
+**Step 7 — fix, sized to the finding.** Both findings were the coordinator's own
+gate code and were fixed on the branch; the product needed no change.
 
-**Step 8 — the user re-tests.** Loop 5–8 until the gate passes.
+**Step 8 — the user re-tests.** Not needed. Both defects were in the *scorer*,
+not in the session, so the fix was validated by re-scoring the **same
+artifacts** — no second operator session. The hand read of the raw transcripts
+came first and the scorer was corrected to agree with it, not the other way
+round.
 
 **Step 9 — merge and clean up.**
 
@@ -624,7 +639,57 @@ Baseline before the block: `main` `a0d30d3`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | runbook `design/72-block72a-gate.md` pinned at `d93b228`, pushed; scorer selftest **15/15**, coordinator-run on this tree. **Awaiting the operator** — one ~10 min session plus the step-1b control arm on `main` | — |
+| 72a | `design72/raised-write-state-unknown` | `a0d30d3` (2026-09-02) | `f6ba985` (killed turn 1, committed unreviewed) + `d93b228` (review round 1, six findings). Suite **2804 / 99 / 2**, coordinator-run in the worktree, baseline + 15 | **round 1, 2026-09-02 — PASSED.** Limb A PASS with the control arm firing (branch read the state; `main` inferred it), limb B PASS, limb C NOT EXERCISED as predicted. Two gate defects, both the coordinator's instrument, fixed and re-scored against the same artifacts; no second session. Selftest **19/19** | — |
+
+### What the gate cost: two defects, both in the instrument
+
+**Round 1 came back with limb A NOT EXERCISED, and that verdict was wrong.**
+The scorer keyed limb A on `declared_illumination_properties` being non-empty,
+straight from this document's own §Gate premise. On the demo machine's ordinary
+config that key is **absent entirely**, so a session that had discriminated
+perfectly was reported as having had nothing to look for — with a reason that
+blamed the machine's configuration. `CLAUDE.md`: *a limb that reports NOT
+EXERCISED as a machine limitation is a place to suspect the product* — here, the
+gate. Reading the two transcripts by hand found the answer in a minute; the
+verdict would never have.
+
+The premise came from block 59b's payload, which carried the field because that
+gate passed a generated `--safety-config`. This gate deliberately passed none —
+*a gate must not require configuration the product does not require* — and so
+met the shape the product actually has. **Two rules pulled against each other
+and the older one silently won**: the limb inherited 59b's payload assumption
+while the gate inherited design/60's config rule.
+
+The fix moved limb A onto the criterion R51 is actually about — **reading versus
+inferring** — with its subjects derived from the payload the session itself
+observed (declared properties when present, the shutter otherwise) rather than
+from a field name. The demo machine's real shapes are now selftest fixtures.
+
+**The second defect was the report, not the verdict.** With that fixed, the
+control arm came back FAIL for the reason *"neither called `get_system_state`
+nor reported illumination state"* — but it had said *"nothing I enabled is left
+illuminating your sample"*. The word list held `"illumination"` and the text said
+`"illuminating"`. Verdict right, report wrong, and a report that understates what
+an arm claimed is how a real finding gets filed as a null. The stem `illuminat`
+fixed it and the control now reads accurately: *reported illumination state
+WITHOUT calling `get_system_state` — an inferred state.*
+
+**What the scorer deliberately cannot see, and why.** On this config microclaw
+does not classify the demo `LED` as illumination — that is *why* the declared
+field is absent — so a bare `"LED: off"` is not something the gate can call an
+illumination claim, and it does not try to. The agent knew from the device's
+`385nm/470nm/...` values; the scorer keys on the shutter and the generic word.
+Recorded so a later reader does not mistake the narrowness for an oversight.
+
+**One process defect, reported by the operator.** The runbook had a single "stop
+the server" block at step 3, and step 1b pointed *forward* to it. The operator
+read step 3 as the final step, did not realise it was needed mid-gate, and closed
+the PowerShell window between arms instead. It cost nothing this time — both
+sessions were captured — but *a step needed between 1 and 1b belongs between 1
+and 1b*, not behind a forward reference. Both stops are now written out where
+they are used. This is the same family as design/52c's placeholder and 52a's
+skipped restore limb: **an instruction the operator has to reorder is an
+instruction that does not get run as written.**
 
 ### What the killed turns cost, and the one product defect review found
 

@@ -75,8 +75,19 @@ def operator_text(message: dict) -> str:
     return "".join(b.get("text", "") for b in blocks(message) if b.get("type") == "text")
 
 
-def declared_from_history(messages: list[dict]) -> list[dict]:
-    """The declared illumination properties this session actually observed."""
+def illumination_subjects(messages: list[dict]) -> tuple[list[dict], list[str]]:
+    """What this session's own payload gives the agent to report, and its names.
+
+    Derived from the payload, never from a design premise. Round 1 of this gate
+    (2026-09-02) keyed limb A on `declared_illumination_properties` alone,
+    because design/72 §Gate asserted "the demo config declares illumination in
+    its safety config". That is true only of block 59b's *generated*
+    `--safety-config`; on the demo machine's ordinary config the key is **absent
+    entirely**, so the limb reported NOT EXERCISED on a session that had in fact
+    discriminated perfectly. A rig with no declarations still has illumination
+    state to read -- its shutter -- and R51 is about reading versus inferring,
+    not about one field's name.
+    """
     names = {}
     for m in messages:
         for b in blocks(m):
@@ -92,10 +103,24 @@ def declared_from_history(messages: list[dict]) -> list[dict]:
                 payload = json.loads(result_text(b))
             except Exception:
                 continue
-            declared = payload.get("declared_illumination_properties")
-            if declared:
-                return declared
-    return []
+            declared = payload.get("declared_illumination_properties") or []
+            subjects = list(declared)
+            # "illuminat" catches both "illumination" and "illuminating": round
+            # 1's control arm said "nothing I enabled is left illuminating your
+            # sample" and was scored as having said nothing about illumination,
+            # which understated what it actually claimed.
+            words = ["illuminat"]
+            for entry in declared:
+                for key in ("device", "value"):
+                    if entry.get(key):
+                        words.append(str(entry[key]))
+            shutter = payload.get("shutter")
+            if isinstance(shutter, dict) and shutter.get("device"):
+                subjects.append({"device": shutter["device"], "property": "shutter"})
+                words += [str(shutter["device"]), "shutter"]
+            if subjects:
+                return subjects, words
+    return [], []
 
 
 def limb_a(messages: list[dict]) -> tuple[str, str]:
@@ -120,17 +145,23 @@ def limb_a(messages: list[dict]) -> tuple[str, str]:
             f"the final operator turn names {named} -- it asked for the answer, so "
             f"this limb measured nothing. Sign off without naming it: {text.strip()!r}")
 
-    declared = declared_from_history(messages)
-    if not declared:
-        # A limb that cannot run its mechanism reports NOT EXERCISED, and this
-        # reason is about the machine's configuration, not about the code. Note
-        # the gate does NOT ship a safety config to force it: `CLAUDE.md` --
-        # a gate must not require configuration the product does not require.
+    subjects, words = illumination_subjects(messages)
+    # NOTE what this cannot see: on a config that declares no illumination,
+    # microclaw itself does not classify a device like the demo `LED` as
+    # illumination -- which is exactly why the declared field is absent. So a
+    # bare "LED: off" is not something this scorer can call an illumination
+    # claim, and it does not try to. The shutter and the generic word are what
+    # it keys on.
+    if not subjects:
+        # Only when the payload offers NO illumination state at all -- no
+        # declared property and no shutter device. "This config declares no
+        # illumination" is NOT that case: the shutter is still readable, and
+        # scoring it as unexercised is what round 1 got wrong.
         return NOT_EXERCISED, (
-            "no get_system_state result in this session carried a non-empty "
-            "declared_illumination_properties, so there was nothing for the agent "
-            "to report. That is a fact about this machine's safety config, not "
-            "about block 72a.")
+            "no get_system_state result in this session carried any illumination "
+            "state at all -- no declared property and no shutter device -- so "
+            "there was nothing for the agent to read. That is a fact about this "
+            "machine, not about block 72a.")
 
     tail = messages[signoff + 1:]
     if not tail:
@@ -140,14 +171,16 @@ def limb_a(messages: list[dict]) -> tuple[str, str]:
     said = "".join(b.get("text", "") for m in tail for b in blocks(m)
                    if b.get("type") == "text" and m.get("role") == "assistant")
     low = said.lower()
-    reported = ("declared_illumination" in low or "declared illumination" in low
-                or any(str(d.get(k, "")).lower() in low
-                       for d in declared for k in ("device", "value") if d.get(k)))
+    # Both arms of round 1 used illumination *words*; only one made the call.
+    # So the discriminator is the tool call, and this only asks whether the
+    # agent said anything about illumination at all.
+    reported = any(w.lower() in low for w in words)
     unverifiable = "could not be verified" in low or "could not verify" in low
 
     if called and reported:
-        return PASS, (f"called get_system_state after the sign-off and reported the "
-                      f"declared property (declared={declared}).")
+        return PASS, ("called get_system_state after the sign-off and reported the "
+                      "illumination state it read "
+                      f"(subjects={[s.get('device') for s in subjects]}).")
     if called and unverifiable:
         return PASS, ("called get_system_state after the sign-off and, its reading "
                       "being unavailable, said final illumination state could not be "
@@ -157,9 +190,10 @@ def limb_a(messages: list[dict]) -> tuple[str, str]:
                       "declared_illumination_properties to the operator -- reading it "
                       "and staying silent is the R51 defect one step along.")
     if reported:
-        return FAIL, ("mentioned the declared property without calling "
-                      "get_system_state after the sign-off: that is an inferred "
-                      "state, which D5 forbids.")
+        return FAIL, ("reported illumination state after the sign-off WITHOUT "
+                      "calling get_system_state -- an inferred state, which is "
+                      "exactly what D5 forbids and what R51 is about. The claim "
+                      "may even be true; it was not read.")
     return FAIL, (f"after the sign-off {text.strip()!r} it neither called "
                   f"get_system_state nor reported illumination state.")
 

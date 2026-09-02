@@ -97,7 +97,18 @@ adds. `CLAUDE.md`: *a limb that cannot fail is not a criterion, so carry a
 control that fires.* The scorer enforces it — if both arms report, limb A comes
 back NOT EXERCISED, not a pass.
 
-Stop the server (the block in step 3), then:
+**Stop the server first** — the control arm needs its own:
+
+```powershell
+Stop-Process -Id $Server.Id -Force -ErrorAction SilentlyContinue
+Get-Process -Name microclaw -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+`$Server.Id` is `uv`'s process and `uv run` runs microclaw as its child, so
+killing the parent alone leaves the child holding the log open. If you have lost
+`$Server` (a new PowerShell window, say), the second line is enough on its own.
+
+Then:
 
 ```powershell
 git checkout main
@@ -158,18 +169,19 @@ Its three limbs:
   observations (design/38 G7.a, Block 2 G4). **Never record it as a pass**, and
   do not try to force it — there is no dose or instrument time to spend here.
 
-## 3. Stop the server
-
-Run this after step 1, before checking out `main`, and again at the end.
+## 3. Stop the control server
 
 ```powershell
-Stop-Process -Id $Server.Id -Force
+Stop-Process -Id $Server.Id -Force -ErrorAction SilentlyContinue
 Get-Process -Name microclaw -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 
-`$Server.Id` is `uv`'s process and `uv run` runs microclaw as its child, so
-killing the parent alone leaves the child holding the log open — that is why
-block 69a's round 3 could not zip its evidence folder.
+Both stops are written out where they are needed — this one at the end, and the
+one inside step 1b. Round 1 of this gate had a single "stop the server" block
+here at step 3 and step 1b pointed *forward* to it; the operator reasonably read
+step 3 as the final step, did not realise it was needed mid-gate, and closed the
+PowerShell window between arms instead. A step needed between 1 and 1b belongs
+between 1 and 1b.
 
 ## What to return
 
