@@ -113,33 +113,23 @@ failure. Note the line is written by the page that *ran* the turn: a page that
 adopted a turn after a reload runs none of its own and writes none, so look
 after a turn you submitted on the current page.
 
-## 0b. Seed limb 8's marker — mandatory, and skipped twice already
+## 0b. Check the capture is live
 
-Rounds 2 and 3 both skipped this and limb 8 was void both times. Do it before
-anything else, and run the check below before you spend five minutes on
-anything.
+**There is no marker to seed any more.** Rounds 2, 3 and 4 each skipped that
+step and limb 8 was void every time, so the limb now seeds itself from the
+session's own confirmation summaries — every confirmation prints one through
+`Session._audit_confirmation`, and that summary *is* the payload that must not
+reach an event line. A gate step skipped three times is a gate step that should
+not exist.
 
-Submit exactly:
-
-> Save a knowledge entry under rig/gate_marker whose value is exactly
-> PAYLOAD_69A_GATE_SECRET.
-
-Verify the confirmation banner's summary contains `PAYLOAD_69A_GATE_SECRET`,
-then **decline** it. That supplies limb 8's real secret-bearing event without
-changing the machine's knowledge. The marker will also appear in the intentional
-`[microclaw] Confirmation audit:` line, which is by design; what limb 8 checks is
-that it reaches no `[microclaw turn ...]` event-log line.
-
-Now open a second PowerShell in the checkout and run this capture check
-unedited:
+Open a second PowerShell in the checkout and run this capture check unedited:
 
 ```powershell
 $ServerLog = "block69a-evidence\server-console.log"
 if (-not (Test-Path $ServerLog)) { throw "Server console log does not exist" }
 if ((Get-Item $ServerLog).Length -eq 0) { throw "Server console log is still empty" }
 if (-not (Select-String -Path $ServerLog -Pattern '^\[microclaw turn [0-9a-f]+\] seq \d+ ' -Quiet)) { throw "No block 69a event line has reached the server log" }
-if (-not (Select-String -Path $ServerLog -Pattern 'PAYLOAD_69A_GATE_SECRET' -Quiet)) { throw "The marker submit above was skipped - limb 8 cannot be scored" }
-"CAPTURE OK - server log is live and the marker reached it"
+"CAPTURE OK - the server log is live"
 ```
 
 Stop here if it throws. This check must succeed while the server is still alive.
@@ -290,19 +280,28 @@ in the report, because it means something in the tree outlived `taskkill /T`.
 Then run this command unedited from the checkout:
 
 ```powershell
-uv run python design/69a-gate.py --server-log block69a-evidence\server-console.log --browser-log block69a-evidence\browser-console.log --forbidden PAYLOAD_69A_GATE_SECRET --log block69a-evidence\computed-score.log
+uv run python design/69a-gate.py --server-log block69a-evidence\server-console.log --browser-log block69a-evidence\browser-console.log --log block69a-evidence\computed-score.log
 if ($LASTEXITCODE -ne 0) { throw "Block 69a computed gate failed" }
 ```
 
 The script reports limbs 6–8 independently and exits nonzero for either `FAIL`
 or `NOT EXERCISED`. Limb 6 checks each server turn's sequence arithmetic and
-summary count. Limb 7 requires both logs and compares the browser's last applied
-sequence with the matching server turn; it needs a `turn settled` line and does
-**not** require a `stream silence` line, which this machine cannot produce.
-Limb 8 rejects per-delta event lines and the recognizable payload marker, and
-reports NOT EXERCISED — never PASS — if the marker never entered the session at
-all. The scorer owns `computed-score.log`; a shell transcript is not its
-evidence.
+summary count.
+
+Limb 7 requires both logs and compares the browser's last applied sequence with
+the matching server turn. It needs a `turn settled` line and does **not** require
+a `stream silence` line, which this machine cannot produce. A settle *short* of
+the server's final seq is reported, not failed — that is exactly what a page
+navigated away from mid-turn writes on its way out, and round 4 produced one
+(3 of 15, with the HAR showing the stream cut at the reload). What must hold is
+that at least one turn was delivered end to end, and that no settle claims a seq
+the server never emitted.
+
+Limb 8 rejects per-delta event lines and any payload text in an event line,
+seeding itself from this session's own confirmation summaries. It reports NOT
+EXERCISED — never PASS — if the session raised no confirmation at all.
+
+The scorer owns `computed-score.log`; a shell transcript is not its evidence.
 
 Return `server-console.log`, `browser-console.log`, `network.har`,
 `computed-score.log`, both confirmation IDs, and a verdict for each of the eight

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -148,13 +149,39 @@ def main():
         code, report = run(root, "fail-l6", broken6, good_browser, marker)
         check("L6 can fail", code != 0 and report.startswith("FAIL: L6"))
 
-        broken7 = root / "broken7.log"
-        broken7.write_text(good_browser.read_text(encoding="utf-8"), encoding="utf-8")
-        lines = broken7.read_text(encoding="utf-8").splitlines()
+        # A settle short of the server's final seq is what a mid-turn reload
+        # produces, so it is reported rather than failed -- but then every settle
+        # being short means nothing was ever delivered end to end, and that must
+        # not read as a pass.
+        short7 = root / "short7.log"
+        lines = good_browser.read_text(encoding="utf-8").splitlines()
         lines[-1] = lines[-1].rsplit(" ", 1)[0] + f" {final - 1}"
+        short7.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        code, report = run(root, "short-l7", good_server, short7, marker)
+        check("L7 is NOT EXERCISED when no turn was delivered end to end",
+              code != 0 and status_of(report, "L7") == "NOT EXERCISED",
+              report.strip().replace("\n", " | "))
+
+        # ... while a settle the server cannot account for is still a failure.
+        broken7 = root / "broken7.log"
+        lines = good_browser.read_text(encoding="utf-8").splitlines()
+        lines[-1] = lines[-1].rsplit(" ", 1)[0] + f" {final + 1}"
         broken7.write_text("\n".join(lines) + "\n", encoding="utf-8")
         code, report = run(root, "fail-l7", good_server, broken7, marker)
         check("L7 can fail", code != 0 and "FAIL: L7" in report)
+
+        # A real reload leaves both shapes in one log: the abandoned page's short
+        # settle and a later turn delivered whole. That must pass, and say so.
+        mixed7 = root / "mixed7.log"
+        mixed7.write_text(
+            f"Microclaw turn settled; turn: {summary.group(1)} last applied seq: {final - 2}\n"
+            + good_browser.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        code, report = run(root, "mixed-l7", good_server, mixed7, marker)
+        check("a short settle beside a complete one passes and is reported",
+              code == 0 and "settled short" in report,
+              report.strip().replace("\n", " | "))
 
         # A silence line is no longer required, but one that IS captured must
         # still be scored against its server turn -- otherwise dropping the
@@ -188,13 +215,45 @@ def main():
         check("L8 can fail on a per-delta event line",
               code != 0 and "FAIL: L8" in report)
 
-        # Round 2's operator skipped the marker-seeding submit, so the marker
-        # occurred nowhere in the session and L8 "passed" on an assertion that
-        # could not fail. Scoring a real artifact against a marker it never
-        # carried must report NOT EXERCISED.
+        # Rounds 2, 3 and 4 all skipped the marker-seeding submit. L8 now seeds
+        # itself from the session's own confirmation summaries, so an unseeded
+        # marker no longer voids it -- but the report must say the marker was
+        # absent rather than quietly implying it was checked.
         code, report = run(root, "unseeded-l8", good_server, good_browser,
                            "MARKER_THIS_SESSION_NEVER_CARRIED")
-        check("an unseeded marker makes L8 NOT EXERCISED, never PASS",
+        check("an unseeded marker still scores, from the session's own summaries",
+              code == 0 and "the --forbidden marker was not seeded" in report,
+              report.strip().replace("\n", " | "))
+
+        # The derived tokens must actually be checked, not merely counted: leak a
+        # slice of the session's own confirmation summary into an event line,
+        # with no --forbidden supplied at all.
+        audit = next(line for line in text.splitlines() if "Confirmation audit:" in line)
+        derived = json.loads(audit.split("Confirmation audit:", 1)[1])["summary"][:60]
+        derived8 = root / "derived8.log"
+        derived8.write_text(
+            text + f"[microclaw turn {summary.group(1)}] diagnostic {derived}\n",
+            encoding="utf-8",
+        )
+        log = root / "derived-l8-score.log"
+        code = gate.main(["--log", str(log), "--server-log", str(derived8),
+                          "--browser-log", str(good_browser)])
+        report = log.read_text(encoding="utf-8")
+        check("a leaked slice of the session's own summary fails L8, with no marker",
+              code != 0 and "FAIL: L8" in report,
+              report.strip().replace("\n", " | "))
+
+        # And a session that raised no confirmation at all has nothing to leak,
+        # which is NOT EXERCISED rather than a pass.
+        auditless = root / "auditless.log"
+        auditless.write_text(
+            "\n".join(line for line in text.splitlines()
+                      if "Confirmation audit:" not in line) + "\n",
+            encoding="utf-8",
+        )
+        code, report = run(root, "auditless-l8", auditless, good_browser,
+                           "MARKER_THIS_SESSION_NEVER_CARRIED")
+        check("a session with no confirmation makes L8 NOT EXERCISED",
               code != 0 and status_of(report, "L8") == "NOT EXERCISED",
               report.strip().replace("\n", " | "))
 

@@ -8920,6 +8920,48 @@ schedule them or record a reason at block 12.
 This is an inventory, not permission to close with unresolved blank work. Block
 12 assigns every row one of the explicit dispositions above.
 
+### The agent tells operators a nonzero interval makes an acquisition stoppable — added 2026-09-02 **(no block)**
+
+Raised by the operator during design/69a's round-4 demo gate, and out of scope
+for that block, which is about delivery rather than about what the agent says.
+
+Across the 69a gate sessions the agent repeatedly proposed a nonzero
+`interval_s` on the grounds that it would let the acquisition be stopped
+part-way. **The operator states this is false**, and the architecture agrees:
+Microclaw cannot stop anything mid-tool — `execute_tool` blocks in Java, and Stop
+is cooperative, checked *between* rounds and before each tool, which
+`serve.html`'s own Stop copy says outright, citing design/16 §5–§6. Whatever
+stopping is possible belongs to Micro-Manager, and it is equally possible at a
+0 s interval. The advice is therefore not a rough version of the truth; it
+offers a control that does not exist, on the one axis where an operator most
+needs to know what can actually be interrupted.
+
+A fix must separate two claims that are not the same: what a nonzero interval
+genuinely buys — software runs between exposures, so a per-frame hook action
+becomes possible at all, which is the engine contract in `CLAUDE.md` about
+hardware-sequenced bursts — and what it does not buy, which is any additional
+ability of *Microclaw's* to halt a run. Whoever takes this should find where the
+belief comes from (tool descriptions, disclosure text, or the model's own prior)
+before writing copy against it.
+
+### The agent offers to split an acquisition that the backend already splits — added 2026-09-02 **(no block)**
+
+Same session, same operator, also out of scope for design/69a.
+
+The 100k-frame disclosure offers to segment the run into 7,937-frame chunks to
+keep each NDTiff file whole, and in round 4 the agent acted on its own offer and
+requested a 7,937-frame acquisition. **NDTiff already rolls to a second file by
+itself**; design/60 established that the rollover is routine and that the
+disclosure exists to *disclose* it, not to invite a workaround. Offering the
+split presents ordinary storage behaviour as a problem the operator must decide
+about — the shape `CLAUDE.md` warns against under confirmations, one step
+earlier: information dressed as a decision.
+
+The disclosure's segmentation arithmetic is not itself wrong and its overhead
+figure is measured. What is wrong is offering it as a remedy. Anyone taking this
+row should check whether the model reads the text as advice because it is
+*phrased* as advice.
+
 ### design/69a is coordinated and owns its own checklist — added 2026-09-01 **(pointer only)**
 
 **`design/69a` is coordinated and owns its own blocks and ledger**, like

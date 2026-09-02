@@ -565,7 +565,15 @@
       if (failures === 3) toast("Confirmation status is temporarily unavailable; retrying.");
     },
     needsPairing: () => toast("This browser session needs re-pairing."),
-    adoptRunningTurn: () => setBusy(true),
+    adoptRunningTurn: () => {
+      // Firefox restores the textarea across a reload — including the value this
+      // page had already cleared at submit — so an adopted page comes back
+      // holding a prompt that already ran and hands it back, live, when the turn
+      // settles. Only on adoption: a reload with no turn in flight leaves
+      // whatever the operator had typed alone.
+      msg.value = "";
+      setBusy(true);
+    },
     noteStreamSilence: () => {
       if (streamSilenceDetected) return;
       streamSilenceDetected = true;

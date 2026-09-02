@@ -425,7 +425,7 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False):
           const classes = new Set(
             id === 'pending' || id === 'stop' ? ['hidden'] : []);
           elements.set(id, {{
-            disabled: false, textContent: '', dataset: {{}},
+            disabled: false, textContent: '', value: '', dataset: {{}},
             classList: {{
               toggle(name, force) {{ force ? classes.add(name) : classes.delete(name); }},
               add(name) {{ classes.add(name); }}, remove(name) {{ classes.delete(name); }},
@@ -468,6 +468,9 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False):
       window.history = {{replaceState() {{}}}};
       global.location = {{hash: '', pathname: '/', search: ''}};
       global.document = {{visibilityState: 'visible'}};
+      // Firefox restores the textarea across a reload, so an adopted page starts
+      // holding the prompt that already ran. Seed that here, not an empty box.
+      msg.value = 'stale restored prompt';
       {snippets}
       async function drain() {{
         await new Promise(setImmediate); await new Promise(setImmediate);
@@ -482,6 +485,7 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False):
         stopHidden: element('stop').classList.contains('hidden'),
         sendDisabled: send.disabled, msgDisabled: msg.disabled,
         pendingText: element('pending-text').textContent,
+        msgValue: msg.value,
         refreshes,
       }};
       await tick();
@@ -541,6 +545,7 @@ def test_serve_boot_adopts_running_turn_survives_failure_and_releases_at_end():
             "pendingHidden": False, "stopHidden": False,
             "sendDisabled": True, "msgDisabled": True,
             "pendingText": "Waiting for your confirmation. 42s remaining.",
+            "msgValue": "",
             "refreshes": 1,
         },
         "afterFailure": {
@@ -559,12 +564,13 @@ def test_serve_boot_adopts_running_turn_survives_failure_and_releases_at_end():
     }, "idle": {
         "pendingHidden": True, "stopHidden": True,
         "sendDisabled": False, "msgDisabled": False,
-        "pendingText": "", "refreshes": 1,
+        "pendingText": "", "msgValue": "stale restored prompt", "refreshes": 1,
     }, "pairing": {
         "afterBoot": {
             "pendingHidden": False, "stopHidden": False,
             "sendDisabled": True, "msgDisabled": True,
             "pendingText": "Waiting for your confirmation. 42s remaining.",
+            "msgValue": "",
             "refreshes": 1,
         },
         "afterFailure": {

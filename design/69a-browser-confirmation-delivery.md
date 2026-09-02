@@ -1047,7 +1047,7 @@ entire off-rig case rests on tests that skip silently without it.
 | --- | --- | --- | --- | --- | --- |
 | 69a-1 | `design69a/recovery-poll` (deleted) | `b3e23c0` (2026-09-01) | `42c3c8b` (harness) + `6a44fdc` (poll; amended after review round 1, four findings). Suite **2776 / 99 / 2**, coordinator-run in the worktree, baseline + 20; node **v25.2.1** present, no JS test skipped | scored with 69a-3 | `fe32d6d` |
 | 69a-2 | `design69a/keepalive-and-abort` (deleted) | `60ae1b3` (2026-09-01) | `26cc47b` + `142b90f` (`main` merged mid-block, see below) + `c2cfdab` (review round 1, one product finding and two coordinator corrections). Suite **2782 / 99 / 2**, coordinator-run, baseline + 6; node **v25.2.1** | scored with 69a-3 | `2bcb136` |
-| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review 1) + `691700f` (review 2, the gate's defect) + coordinator runbook/test corrections through `2716497`. Suite **2788 / 99 / 2**, coordinator-run; selftest **11/11**, coordinator-run on both trees | **round 1** — 3 PASS, 1 product defect (`691700f`). **round 2** — reload poll confirmed from the HAR; product defect (reloaded page never entered the busy presentation) fixed at `3a6318d`; three gate defects. **round 3** — every product claim measured: 30 keepalive pings, reload recovery, adopted presentation, and the timeout disclosure *and* settle refresh landing on a page that did not start the turn. Limbs 4, 7, 8 still owed to instrument failures; **round 4 is short**. Selftest **13/13** | not yet |
+| 69a-3 | `design69a/event-sequencing` | `8d65084` (2026-09-01) | `0adbcd2` + `4f4443f` + `0a2090e` (review 1) + `691700f` (review 2, the gate's defect) + coordinator runbook/test corrections through `2716497`. Suite **2788 / 99 / 2**, coordinator-run; selftest **11/11**, coordinator-run on both trees | **round 1** — 3 PASS, 1 product defect (`691700f`). **round 2** — reload poll confirmed from the HAR; product defect (reloaded page never entered the busy presentation) fixed at `3a6318d`; three gate defects. **round 3** — every product claim measured: 30 keepalive pings, reload recovery, adopted presentation, and the timeout disclosure *and* settle refresh landing on a page that did not start the turn. **round 4** — computed gate **PASSED**; its one FAIL was the scorer treating a mid-turn reload as a delivery failure. Limb 4 closed off-rig after four split turns. Selftest **17/17** | see below |
 
 ### What block 69a-1 cost, and what it proved
 
@@ -1522,52 +1522,128 @@ operator was in the other PowerShell window — and the design asks for it
 explicitly. The countdown froze for that minute and resumed on return. Nothing
 to change; worth knowing that a hidden tab does not tick.
 
-### Where a fresh session picks this up
+### Demo gate round 4, 2026-09-02 — the gate passes
 
-**Everything below is on `origin`. Nothing needed to continue lives in a
-scratchpad.** The Codex job directory for 69a-3 is session-scoped and gone; the
-runner's session cannot be revised from a new session, and does not need to be —
-its work is committed.
+Evidence: `~/Documents/Documents - Beyonce/Projects/Micro-Claw/block69a-evidence-round4`
+— an 8-turn `server-console.log`, a 1.9 MB HAR, two confirmation audits, the
+history JSONL, **the console capture at last**, and `computed-score.log`. The
+`Warnings` chip was the answer: with it lit the `turn settled` lines were there
+all along.
 
-**State:** 69a-1 and 69a-2 are merged. 69a-3 is implemented and pushed on
-`design69a/event-sequencing`, **not merged**, because it owns the gate for all
-three blocks and the gate has not yet passed. Round 2's product defect was fixed
-on that same branch under `CLAUDE.md` step 7 rather than as a fourth block — one
-branch, one gate, one merge — and round 3 established the fix and the rest of the
-design's purpose on the rig.
+**The computed gate reported one FAIL, and the FAIL was mine.** L7 said
+`turn 995951c2: settled at 3, server finished at 15`. The HAR settles it: that
+turn's stream started 07:22:53 and was **cut at 07:24:18.207, the operator's
+reload**, at `max_seq 3` — precisely the number the browser reported. A page
+navigated away from mid-turn runs `runTurn`'s `finally` on its way out and logs
+whatever it had applied. **Reloading mid-turn is the workflow this entire design
+exists to support, and its own gate was scoring one as a delivery failure.**
 
-**What round 4 must show, and it is short.** Every product claim this design
-makes is now measured. What is owed is three limbs the *instrument* failed to
-collect: **4, 7 and 8**. Nothing needs a reload, and only limb 4 needs a wait.
+L7 now reports a short settle instead of failing it, and keeps a control that can
+still fail: at least one turn must be delivered end to end, no settle may claim a
+seq the server never emitted. On round 4's artifacts that reads
+`1 turn(s) delivered end to end (f9228a68@10/10); 1 settled short, consistent
+with a mid-turn reload (995951c2@3/15)`.
 
-1. Step `0b`, the marker submit and its check — instant, and it settles limb 8.
-2. Step 1's prompt, then the `LIMB 4 ARMED / SPLIT TURN` pre-check before
-   committing five minutes. If it says `SPLIT TURN`, decline and resubmit; do not
-   spend the wait.
-3. Save the console by the keyboard route in step 0 — filter, Ctrl+A, Ctrl+C —
-   not the context menu, which this Firefox does not offer. That settles limb 7.
-4. Stop the server with `taskkill /PID $Server.Id /T /F`, and say whether the
-   folder zips without closing the window.
+**L8 was skipped for the third time, so the step was deleted instead.** The
+marker submit had now been missed in rounds 2, 3 and 4. A gate step skipped three
+times is a gate step that should not exist: the limb seeds itself from the
+session's own confirmation summaries, which `Session._audit_confirmation` prints
+deliberately and which *are* the payload that must not reach an event line. On
+round 4 that is non-vacuous evidence rather than a marker's absence —
+**100 `text_delta` events across 8 turns produced no event line**, and neither of
+the two payload tokens drawn from the session's own confirmations reached one.
 
-Limbs 1, 2a, 3, 5a–5d and 6 are established and need not be re-run. **If limb 4
-splits twice more, close it as settled off-rig** by
-`test_pending_text_priority_includes_authoritative_resolution_disclosure`, which
-already drives the resolver's tier order directly, and record that the rig
-observation was never obtainable because the turn boundary is the model's choice
-— rather than booking a fifth session for one ordering.
+| limb | verdict | evidence |
+| --- | --- | --- |
+| 2a `: ping` | **PASS** again | 29 frames across the 322 s confirmation on turn `f5077dcc` |
+| 4 timeout outranks stale progress | **CLOSED off-rig** — see below | fourth consecutive split turn |
+| 6 sequence arithmetic | **PASS** | 8 turns |
+| 7 browser last-applied sequence | **PASS** | one turn end to end, one short settle explained by the HAR |
+| 8 payload-free logging | **PASS** | 100 text_deltas, 0 event lines; 2 payload tokens, 0 leaks |
 
-**When the gate passes:** merge the branch to `main`, push, delete it locally and
-on `origin`, fill this row's merge and design-reconciliation cells, and run the
-post-merge design gate. `design/35`'s pointer section for design/69a needs its
-closing state written at the same time.
+Limbs 1, 2b, 3, 5a–5d were established in round 3 and were not re-run.
 
-**Verification already done by the coordinator, so it need not be repeated:**
-suite **2789 / 99 / 2** at the reload-adoption fix, coordinator-run; the boot
-test watched failing on `a4a16b8` for its stated reason; selftest **13/13** on
-both trees, every control firing; `tests/test_recovery_js.py` 20/20 with node
-**v25.2.1**, so limb 2b's off-rig settlement is real; the corrected scorer re-run
-against round 2's artifacts; and the limb-4 pre-check run against rounds 2's and
-3's real logs, where it discriminates.
+**Limb 4 is closed off-rig, and the honest statement is that no rig session ever
+produced the state it needed.** Four rounds, four split turns — the pre-check
+added after round 3 reports `SPLIT TURN` for every one of the four
+`confirm_request` turns across rounds 2–4. The turn boundary is the model's
+choice and no wording held it. The tier order it would have observed is settled
+by `test_pending_text_priority_includes_authoritative_resolution_disclosure`,
+which extracts the **real resolver source out of `serve.html`** and drives it:
+its first case is exactly this limb's claim — `frames 700 / 700` competing with
+`Confirmation timed out and was declined`, disclosure wins — and it also asserts
+that `pending-text` has exactly one writer. That is a genuine settlement, not a
+shrug, but it is off-rig and this row says so rather than implying a rig
+observation exists.
+
+**One product change came out of round 4, at the operator's request.** Firefox
+restores the textarea across a reload — including the value the page had already
+cleared at submit — so an adopted page came back holding a prompt that had
+already run, and handed it back live when the turn settled. Round 3 recorded this
+as benign; the operator reaffirmed it should not happen, which is theirs to
+decide. `adoptRunningTurn` now clears the composer, **only on adoption**: a
+reload with no turn in flight leaves whatever the operator had typed alone. The
+boot test asserts both halves and was watched failing on the pre-fix tree, where
+the adopted page reports `msgValue: "stale restored prompt"`.
+
+**Two findings the operator raised that are not this block's**, both now rows in
+`design/35`'s carried-forward register: the agent tells operators that a nonzero
+`interval_s` makes an acquisition stoppable, which is false — Microclaw cannot
+stop anything mid-tool and whatever stopping exists is Micro-Manager's, equally
+available at a 0 s interval; and the 100k disclosure *offers* to segment a run
+that NDTiff already rolls by itself, which dresses ordinary storage behaviour as
+a decision the operator must make.
+
+**The instrument cost this gate four rounds and the product cost it two.** Two
+product defects (the reload poll, then the reload presentation) against six gate
+defects: a limb that could not fail, a limb that could not run, a prompt that
+could not hold its own control, an operator step skipped three times, a browser
+UI path guessed three times, and finally a limb that scored the block's own
+central workflow as a failure. Every one of them was written by the coordinator
+and reviewed by nobody, which is `CLAUDE.md`'s standing point about gate code,
+now with a number attached.
+
+### Closing state
+
+**The gate passed in round 4** and the branch merged to `main`. All three blocks
+— 69a-1, 69a-2, 69a-3 — plus two step-7 fixes on the same branch (the reload
+poll and the reload presentation) are on `main`; `design69a/event-sequencing` is
+deleted locally and on `origin`.
+
+**What is settled on the rig**, all of it scored from artifacts:
+
+- keepalives arrive on a blocked stream — 30 frames over 318.6 s in round 3, 29
+  over 322 s in round 4, both at the 10 s cadence `KEEPALIVE_S` sets;
+- a reload mid-confirmation recovers the same pending decision and keeps polling
+  it at 1 Hz;
+- the reloaded page presents the running turn — countdown visible, composer
+  disabled;
+- the timeout disclosure **and** the completed reply reach that page without a
+  manual reload (round 3's 23:29:28.902 → 23:29:29.095 → 23:29:38.362 trace);
+- event numbering is internally consistent over 8 turns, the browser reports how
+  far it got, and no payload reaches an event line.
+
+**What is not settled on the rig, stated plainly:**
+
+- **Limb 4**, the timeout disclosure outranking a stale progress count. Four
+  rounds, four split turns; the tier order is settled by an off-rig test that
+  drives `serve.html`'s own resolver source, and no rig session ever produced the
+  competing state.
+- **Limb 2b**, the 30 s silence detector, settled off-rig by design — no browser
+  control on this loopback deployment can create an open-but-silent transport.
+- **The composer clear** from round 4 shipped with off-rig coverage only: a test
+  that executes `serve.html`'s real boot path, watched failing before the fix.
+  It is a one-line clear on the adoption path; the next reload an operator does
+  will show it.
+- **The `--allow-remote` 401 path**, where a released adoption leaves a
+  confirmation banner above a live composer with only a toast about re-pairing.
+  Unreachable on loopback, so no demo gate can see it; it belongs to whichever
+  design next touches pairing.
+
+**Two findings this gate surfaced that belong to other work** are rows in
+`design/35`'s carried-forward register, added 2026-09-02: the agent's false claim
+that a nonzero `interval_s` makes an acquisition stoppable, and its offer to
+segment an acquisition that NDTiff already rolls by itself.
 
 ### Coordination log
 
@@ -1600,3 +1676,11 @@ against round 2's artifacts; and the limb-4 pre-check run against rounds 2's and
   path and shortening it would gate a path the product does not have; and it
   requires **both** the server console log and the browser devtools console, or
   limb 7 reports NOT EXERCISED, which is the entire reason sequencing ships.
+
+- **2026-09-02, gate passed in round 4 and design/69a closed.** Four demo-machine
+  rounds: two product defects and six gate defects. The instrument cost more
+  rounds than the product did, and every gate defect was written by the
+  coordinator and reviewed by nobody. Two of them are new shapes worth carrying:
+  a limb that scored the block's own central workflow — a mid-turn reload — as a
+  failure, and an operator setup step that was skipped three times before being
+  deleted in favour of seeding the check from the session itself.
