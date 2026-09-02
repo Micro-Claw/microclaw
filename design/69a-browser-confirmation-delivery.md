@@ -1468,14 +1468,30 @@ artifacts rather than judgement.**
   the operator commits five minutes. Run against rounds 2 and 3's real logs it
   reports `SPLIT TURN` for each step-1 turn and `LIMB 4 ARMED` for each step-2
   turn, so it discriminates instead of matching nothing.
-- **Limb 7's console export was a browser-menu guess, twice.** Round 3 went
-  hunting and returned the **Network** panel's context menu, which offers HAR
-  items and no console export at all. The runbook now leads with a keyboard
-  route that needs no menu — filter on `last applied seq`, Ctrl+A, Ctrl+C — and
-  says the menu item exists only when right-clicking directly on a message
-  inside the Console panel. `CLAUDE.md` already says name the browser; the
-  missing half is that naming it is not the same as checking the menu path
-  exists in it.
+- **Limb 7's console capture was a browser-UI guess three times over** — the
+  export menu item, then the keyboard route that replaced it. Round 3 came back
+  with the **Network** panel's context menu, which offers HAR items and no
+  console export at all; the operator then reported that `Ctrl+A` does not
+  select console output and that filtering on `last applied seq` matches
+  nothing. The leading explanation for the last of those is the Console's
+  **`Warnings` filter chip**: the line is a `console.warn`, and it is hidden
+  whenever that chip is off. `CLAUDE.md` already says to name the browser; the
+  missing half is that naming it is not the same as establishing that the UI
+  path exists in it, and a runbook cannot keep paying rig rounds to find out.
+
+  **Asking what the limb actually needed shrank it to almost nothing.** The HAR
+  already carries every `data:` frame of every `POST /api/prompt` with its
+  `seq`, and `lastAppliedSeq` is by construction the last `seq` pulled from that
+  stream — so round 3's HAR alone establishes 33 of 33 and 24 of 24 numbered
+  events received with no gaps, both ending on `done`. (The reloaded turn shows
+  14 of 30 ending at `confirm_request`, the reload aborting the stream, with the
+  remaining 16 delivered by the poll and `refresh()` — the recovery, visible in
+  the artifact.) The console line's residual claim is narrow but is the point of
+  the block: that the page's own apply loop got there **and can say so during a
+  future incident**. So the runbook now asks for a drag-selected line or simply
+  a **screenshot of the Console panel**, scored by hand, and says that a missing
+  line with `Warnings` lit is a finding about the diagnostic rather than an
+  operator failure.
 - **Limb 8's marker was skipped twice.** It was a paragraph of prose buried
   after the DevTools setup. It is now its own numbered step, `0b`, with its
   check immediately after it.

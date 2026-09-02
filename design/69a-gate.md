@@ -76,24 +76,42 @@ different things and a screenshot substitutes for neither:
   `block69a-evidence\network.har`. This is the same capture block 58d's gate
   uses, and it is what shows whether the 1 Hz recovery poll was actually
   running.
-- **Console** tab → tick **Persist Logs**, then clear it. This is where limb 7's
-  evidence lives: block 69a-3 writes `... last applied seq: N` through
-  `console.warn`, and **a HAR does not contain console messages**.
+- **Console** tab → tick **Persist Logs**, then clear it, and **make sure the
+  `Warnings` filter chip is lit**. Limb 7's line is written with `console.warn`,
+  so it is hidden whenever that chip is off — which is the leading explanation
+  for rounds 2 and 3 finding nothing to export.
 
-**How to save the console at the end — do not use the context menu.** Round 3
-went looking for it and came back with the *Network* panel's menu, which offers
-HAR items and no console export at all, so limb 7 was NOT EXERCISED for a second
-round. Use the keyboard instead, in the **Console** panel:
+**Limb 7 wants exactly one line per completed turn**, and nothing else from
+DevTools:
 
-1. type `last applied seq` into the Console's **Filter output** box;
-2. click once on one of the remaining lines;
-3. press **Ctrl+A**, then **Ctrl+C**;
-4. paste into Notepad and save as `block69a-evidence\browser-console.log`.
+```
+Microclaw turn settled; turn: <32 hex chars> last applied seq: <N>
+```
 
-Those filtered lines are the only console content the scorer reads, so a partial
-copy of them is a complete artifact. If you do want the menu, it exists only
-when you right-click **directly on a log message** inside the Console panel —
-**Export Visible Messages To → File** — and never in the Network panel.
+**Everything else limb 7 could want is already in the HAR** — its
+`POST /api/prompt` bodies carry every `data:` frame with its `seq`, so "the
+browser received all N events the server numbered" is computable without the
+console. Round 3's HAR proves it: 33 of 33 and 24 of 24 numbered events, no
+gaps, both ending on `done`. What the console line adds is that the page's own
+apply loop got there **and can say so during a future incident**, which is the
+entire reason sequencing shipped. That is the claim, and it is why this is worth
+ten seconds and not a fourth attempt at an export menu.
+
+Two ways to capture it, in order of preference:
+
+1. Drag-select the line with the mouse, `Ctrl+C`, paste into Notepad, save as
+   `block69a-evidence\browser-console.log`. Plain text selection, no menu and no
+   `Ctrl+A` — round 3 established that `Ctrl+A` does not select console output
+   and that the context menu route does not exist on this machine.
+2. **Or just screenshot the Console panel.** Two lines of legible text is a
+   complete artifact for this limb; the coordinator reads the numbers and scores
+   them against the server log by hand. Do not spend time hunting for an export.
+
+**If no such line is present with `Warnings` lit, after a turn has completed,
+stop and report that.** It is a finding about the diagnostic, not an operator
+failure. Note the line is written by the page that *ran* the turn: a page that
+adopted a turn after a reload runs none of its own and writes none, so look
+after a turn you submitted on the current page.
 
 ## 0b. Seed limb 8's marker — mandatory, and skipped twice already
 
@@ -243,14 +261,15 @@ that watches an outcome arrive on a page that did not start the turn.
 
 ## 3. Save and compute
 
-Save the DevTools console by the keyboard route in step 0. Rounds 2 and 3 both
-returned no console export and limb 7 was NOT EXERCISED both times, so check the
-file before scoring:
+Capture the console's `turn settled` line by either route in step 0. If you
+saved it as a file, check it before scoring; if you screenshotted it instead,
+skip this check, drop `--browser-log` from the command below, and send the
+screenshot — the coordinator scores limb 7 from it by hand and says so.
 
 ```powershell
 $BrowserLog = "block69a-evidence\browser-console.log"
-if (-not (Test-Path $BrowserLog)) { throw "No console export - limb 7 cannot be scored" }
-if (-not (Select-String -Path $BrowserLog -Pattern 'last applied seq' -Quiet)) { throw "Console export has no 'last applied seq' line" }
+if (-not (Test-Path $BrowserLog)) { throw "No console capture - limb 7 cannot be scored" }
+if (-not (Select-String -Path $BrowserLog -Pattern 'last applied seq' -Quiet)) { throw "Console capture has no 'last applied seq' line" }
 "CONSOLE OK"
 ```
 
