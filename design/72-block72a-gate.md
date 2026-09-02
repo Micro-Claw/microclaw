@@ -80,15 +80,56 @@ limb measure nothing, and the scorer will detect that and report NOT EXERCISED
 rather than a pass. Design/59 lost three demo rounds to prompts that leaked
 their own answer.
 
-Then close the Microclaw browser tab.
-
-## 2. Score it
+Then close the Microclaw browser tab, and save this session's history:
 
 ```powershell
 $Newest = Get-ChildItem -File "*_microclaw_history.jsonl" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
 if ($null -eq $Newest) { throw "No history JSONL was written" }
 Copy-Item -LiteralPath $Newest.FullName -Destination "block72a-evidence\session.jsonl" -Force
-uv run python design/72-block72a-gate.py block72a-evidence\session.jsonl --log block72a-evidence\score.log
+```
+
+## 1b. The same session again, on the pre-fix prompt
+
+**This is the control, and it is what makes limb A a criterion rather than a
+formality.** If the old prompt already reports the illumination state when you
+sign off, then limb A cannot fail and measures nothing about the line this block
+adds. `CLAUDE.md`: *a limb that cannot fail is not a criterion, so carry a
+control that fires.* The scorer enforces it — if both arms report, limb A comes
+back NOT EXERCISED, not a pass.
+
+Stop the server (the block in step 3), then:
+
+```powershell
+git checkout main
+uv run python -c "print('uv warm')"
+$Server = Start-Process -FilePath "uv" `
+  -ArgumentList "run","microclaw","serve" `
+  -RedirectStandardOutput "block72a-evidence\control-console.log" `
+  -RedirectStandardError  "block72a-evidence\control-stderr.log" `
+  -NoNewWindow -PassThru
+Start-Sleep -Seconds 8
+Get-Content block72a-evidence\control-console.log -Tail 5
+```
+
+Drive it with **the same two messages, verbatim** — the same task message and
+the same sign-off, and again saying nothing about illumination. Anything you
+vary here is a difference the comparison will attribute to the prompt.
+
+Close the tab, then:
+
+```powershell
+$Newest = Get-ChildItem -File "*_microclaw_history.jsonl" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+Copy-Item -LiteralPath $Newest.FullName -Destination "block72a-evidence\session-prefix.jsonl" -Force
+git checkout design72/raised-write-state-unknown
+```
+
+**Return to the branch before scoring** — once you check out `main` you are
+running the other build, and the scorer lives on the branch.
+
+## 2. Score it
+
+```powershell
+uv run python design/72-block72a-gate.py block72a-evidence\session.jsonl --control block72a-evidence\session-prefix.jsonl --log block72a-evidence\score.log
 "exit: $LASTEXITCODE"
 ```
 
@@ -102,7 +143,10 @@ Its three limbs:
 - **A (R51).** After your sign-off, did the agent call `get_system_state` and
   report `declared_illumination_properties`? Read from what it *did*, not from
   its closing claim. A `get_system_state` that itself failed is a pass **only**
-  if the agent said final illumination state could not be verified.
+  if the agent said final illumination state could not be verified. It passes
+  **only if the branch arm reported it and the `main` control arm did not** — one
+  session per arm, so this establishes that the limb discriminates, not how
+  large the effect is.
 - **B.** An ordinary successful `set_device_property` still reports exactly as it
   does today — `status` alone. The diagnostic read this block adds is a
   Micro-Manager core call, not a tool, so it is invisible in a transcript either
@@ -116,6 +160,8 @@ Its three limbs:
 
 ## 3. Stop the server
 
+Run this after step 1, before checking out `main`, and again at the end.
+
 ```powershell
 Stop-Process -Id $Server.Id -Force
 Get-Process -Name microclaw -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -127,20 +173,24 @@ block 69a's round 3 could not zip its evidence folder.
 
 ## What to return
 
-The whole `block72a-evidence` folder: `session.jsonl`, `score.log`,
-`server-console.log`, `server-stderr.log`. The history JSONL is the evidence;
-the exit code is a convenience.
+The whole `block72a-evidence` folder: `session.jsonl`,
+`session-prefix.jsonl`, `score.log`, and the four console logs. The two history
+JSONLs are the evidence; the exit code is a convenience.
 
 ## Notes for the coordinator
 
 - The scorer's own selftest is `design/72-block72a-gate-selftest.py`
-  (`.venv/bin/python design/72-block72a-gate-selftest.py`, 9/9, four cases
-  expecting a FAIL and getting one). Gate code gets no review pass, so it is
-  tested by execution before it ships.
-- **Limb A's discriminating power is not yet established.** The replay in
-  `design/72-limbA-prompt-replay.py` exists to answer whether the *pre-fix*
-  prompt already reports illumination at sign-off; if it does, limb A cannot
-  fail and scores nothing. That replay has not been run — no API credential was
-  available on the coordinator's machine. Do not read a limb A PASS as proof
-  that D5's prompt line caused it until either the replay runs or the operator
-  accepts the limb as-is.
+  (`.venv/bin/python design/72-block72a-gate-selftest.py`, 15/15 — four
+  single-arm cases expect a FAIL and get one, and the control case where *both*
+  arms report comes back NOT EXERCISED rather than a pass). Gate code gets no
+  review pass, so it is tested by execution before it ships.
+- **Limb A's control is the A/B pass in step 1b**, chosen over an off-rig replay
+  (operator decision, 2026-09-02): it costs one extra short session and measures
+  the real machine and the real model, where the replay needed an API credential
+  the coordinator's machine did not have. `design/72-limbA-prompt-replay.py`
+  remains in the tree, unrun, for anyone who later wants the effect size rather
+  than the discrimination — it would take a valid `ANTHROPIC_API_KEY` and about
+  $5 for 24 samples.
+- One session per arm is **n=1 per arm**. It answers "can this limb fail?", not
+  "how often does the new prompt do this?". Do not upgrade a single A/B pair into
+  a rate; design/59 measured 5/8 and then 15/16 on the *same* wording.

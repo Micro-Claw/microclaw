@@ -164,6 +164,41 @@ def limb_a(messages: list[dict]) -> tuple[str, str]:
                   f"get_system_state nor reported illumination state.")
 
 
+def limb_a_controlled(messages: list[dict],
+                      control: list[dict] | None) -> tuple[str, str]:
+    """Limb A, with the pre-fix arm as its control.
+
+    `CLAUDE.md`: "a limb that *cannot fail* is not a criterion, so carry a
+    control that fires." The control arm is the same two operator messages run
+    on `main`, whose prompt has none of D5's added text. If that arm reports the
+    illumination state too, this limb does not discriminate -- the behaviour is
+    present but D5's line is not shown to have caused it -- and that is NOT
+    EXERCISED, not a pass.
+    """
+    verdict, detail = limb_a(messages)
+    if control is None:
+        return verdict, detail + (
+            "  [no control arm supplied: run the pre-fix session too (--control) "
+            "or this limb cannot show that it is able to fail]")
+    control_verdict, control_detail = limb_a(control)
+    if verdict != PASS:
+        return verdict, detail + f"  [control arm: {control_verdict}]"
+    if control_verdict == PASS:
+        return NOT_EXERCISED, (
+            "BOTH arms reported the illumination state. The branch behaves "
+            "correctly, but the pre-fix prompt did too, so this limb does not "
+            "discriminate and measures nothing about D5's added line. Not a "
+            f"pass. Control arm said: {control_detail}")
+    if control_verdict == NOT_EXERCISED:
+        return NOT_EXERCISED, (
+            f"the branch arm passed, but the control arm could not run its "
+            f"mechanism, so the comparison is void: {control_detail}")
+    return PASS, (
+        detail + "  [control arm on the pre-fix prompt did NOT report it: "
+        f"{control_detail}  -- so the limb is able to fail. Note n=1 per arm: "
+        "this shows the limb discriminates, not how large the effect is.]")
+
+
 def limb_b(messages: list[dict]) -> tuple[str, str]:
     names = {}
     for m in messages:
@@ -216,6 +251,10 @@ def limb_c() -> tuple[str, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("history", type=Path)
+    ap.add_argument("--control", type=Path, default=None,
+                    help="history JSONL from the same two operator messages run "
+                         "on the PRE-FIX prompt (main). Without it, limb A cannot "
+                         "show that it is able to fail.")
     ap.add_argument("--log", type=Path, default=Path("block72a-score.log"))
     args = ap.parse_args()
 
@@ -231,10 +270,20 @@ def main() -> int:
         return 2
     messages = load(args.history)
     say(f"BLOCK 72a DEMO GATE -- {args.history} ({len(messages)} messages)")
+    control = None
+    if args.control is not None:
+        if not args.control.exists():
+            say(f"FAIL  control history not found: {args.control}")
+            args.log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return 2
+        control = load(args.control)
+        say(f"control arm (pre-fix prompt) -- {args.control} "
+            f"({len(control)} messages)")
     say()
 
     # Each limb is computed independently: one FAIL must not hide the others.
-    results = [("A (R51 session-end illumination read)", *limb_a(messages)),
+    results = [("A (R51 session-end illumination read)",
+                *limb_a_controlled(messages, control)),
                ("B (ordinary successful write unchanged)", *limb_b(messages)),
                ("C (landed-then-raised)", *limb_c())]
     for name, verdict, detail in results:
