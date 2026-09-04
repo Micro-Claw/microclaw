@@ -6343,7 +6343,7 @@ def run_autofocus(
             "If the in-focus placeholder is sent unedited, the zero-exposure "
             "property sweep matches nothing and its refusal reports every "
             "value the device actually returned, which reveals the right "
-                "spelling. "
+            "spelling. "
             if len(probe_candidates) == 1 else
             "First replace the property placeholder with the appropriate key "
             "from Current readings; the values shown there are what distinguish "
@@ -6363,7 +6363,7 @@ def run_autofocus(
                 "says the coverslip is not in the band at this Z — it is not a "
                 "statement that the lock is unavailable. The image metric "
                 "remains available: re-call with image_metric_reason set to a "
-                "non-empty reason—for example, the operator asked for an "
+                "non-empty reason — for example, the operator asked for an "
                 "image-based focus, or a property probe reported no band at this XY."
             ),
             "focus_lock": lock,

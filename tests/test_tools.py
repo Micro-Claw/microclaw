@@ -3914,6 +3914,13 @@ class TestFocusLock:
             lambda ctrl: (self.PROPS if props is None else props, {}),
         )
 
+    @staticmethod
+    def _probe_argument(error):
+        rendered = error.split("probe=", 1)[1]
+        probe, end = json.JSONDecoder().raw_decode(rendered)
+        assert rendered[end:].startswith(".")
+        return probe
+
     def test_reports_engaged_with_qpd(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import get_focus_lock_state
         self._emu(monkeypatch)
@@ -4118,10 +4125,11 @@ class TestFocusLock:
         mock_ctrl.core.set_position.assert_not_called()
         assert "hardware focus lock" in result["error"]
         assert '"Status": "Out of focus search range"' in result["error"]
-        assert (
-            'probe={"device": "TIPFSStatus", "property": "Status", '
-            '"in_focus_values": ["<your best guess>"]}.'
-        ) in result["error"]
+        probe = self._probe_argument(result["error"])
+        assert probe["device"] == "TIPFSStatus"
+        assert probe["property"] == "Status"
+        assert isinstance(probe["in_focus_values"], list)
+        assert probe["in_focus_values"]
         assert "sent unedited" in result["error"]
         assert "zero-exposure" in result["error"]
         assert "reports every value the device actually returned" in result["error"]
@@ -4185,6 +4193,47 @@ class TestFocusLock:
 
         assert '"property": "PFS in Range"' in result["error"]
         assert '"property": "Status"' not in result["error"]
+
+    def test_ti2_multi_property_message_if_identity_is_ever_allowlisted(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """Render the recorded Ti2 payload only under a hypothetical allowlist.
+
+        The Ti2 adapter identity remains an unrecorded gap; this does not claim
+        that the rig is classified. It exercises what the refusal would say if
+        that identity were established and added later.
+        """
+        from microclaw import tools
+
+        hypothetical_identity = ("RecordedLater", "RecordedLaterPFS")
+        monkeypatch.setattr(
+            tools,
+            "PROBEABLE_HARDWARE_FOCUS_LOCK_ADAPTERS",
+            frozenset({hypothetical_identity}),
+        )
+        monkeypatch.setattr("microclaw.tools.get_focus_lock_state", lambda *_args: {
+            "engaged": False,
+            "property": "continuous focus device PFS",
+            "device": "PFS",
+            "adapter_library": hypothetical_identity[0],
+            "adapter_name": hypothetical_identity[1],
+            "status_properties": {
+                "PFS Status": "0000001100001010",
+                "PFS in Range": "In Range",
+            },
+        })
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+        )
+
+        probe = self._probe_argument(result["error"])
+        assert probe["device"] == "PFS"
+        assert probe["property"] == "<choose a property from Current readings>"
+        assert isinstance(probe["in_focus_values"], list)
+        assert probe["in_focus_values"]
+        assert "First replace the property placeholder" in result["error"]
 
     def test_unreadable_adapter_identity_does_not_cause_refusal(
         self, mock_ctrl, unconstrained_guard, monkeypatch
