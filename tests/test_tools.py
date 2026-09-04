@@ -4008,31 +4008,36 @@ class TestFocusLock:
                    for name in names if name not in readonly)
 
     @pytest.mark.parametrize(
-        "device,emu_props,names,values,readonly,expected_device",
+        "device,emu_props,names,values,readonly,expected_device,skill_named",
         [
             # Ti: design/34-nikon-pfs-tizdrive-findings.md:48-49.
             ("TIPFSStatus", {}, StrVector(["Status"]),
-             {"Status": "Out of focus search range"}, {"Status"}, "TIPFSStatus"),
+             {"Status": "Out of focus search range"}, {"Status"}, "TIPFSStatus", True),
             # Ti2-E / Andor Dragonfly: design/56-the-focus-metric-need-not-be-an-image.md:785-797.
             ("PFS", {}, StrVector(["PFS Status", "PFS in Range"]),
              {"PFS Status": "0000001100001010", "PFS in Range": "In Range"},
-             {"PFS Status", "PFS in Range"}, "PFS"),
+             {"PFS Status", "PFS in Range"}, "PFS", True),
+            # Demo machine, design/61-block61a-system-state.json.
+            ("Autofocus", {}, StrVector(["Description", "HubID", "Name"]),
+             {"Description": "Demo auto-focus adapter", "HubID": "",
+              "Name": "DAutoFocus"},
+             {"Description", "HubID", "Name"}, "Autofocus", False),
             # ASI CRISP: design/06. The property deliberately contains "PFS";
             # this limb rejects identifying a lock by substring-scanning properties.
             ("", {"Z stage focus locking": {
                 "device": "CRISP", "property": "PFS CRISP State",
                 "mm_property_string": "CRISP-PFS CRISP State", "on": "In Focus", "off": "Idle",
-            }}, StrVector([]), {}, set(), "CRISP"),
+            }}, StrVector([]), {}, set(), "CRISP", False),
             # An ordinary rig with no configured autofocus device remains a silent no-op.
-            ("", {}, StrVector([]), {}, set(), None),
+            ("", {}, StrVector([]), {}, set(), None, False),
         ],
-        ids=["tipfsstatus", "pfs", "crisp", "no-device"],
+        ids=["tipfsstatus", "pfs", "autofocus", "crisp", "no-device"],
     )
     def test_focus_lock_discriminator_from_rig_payload(
         self, mock_ctrl, unconstrained_guard, monkeypatch,
-        device, emu_props, names, values, readonly, expected_device,
+        device, emu_props, names, values, readonly, expected_device, skill_named,
     ):
-        """The identity routing depends on, replayed from four rig payloads.
+        """The identity routing depends on, replayed from measured rig payloads.
 
         This is a discriminator fixture, not a routing test. A model chooses
         whether to load `nikon-pfs`; nothing here observes that choice, and a
@@ -4075,9 +4080,7 @@ class TestFocusLock:
         else:
             assert result["device"] == expected_device
 
-        if device:
-            expected_skill = "nikon-pfs" if "pfs" in device.lower() else None
-            assert (expected_skill in result["probe_hint"]) is bool(expected_skill)
+        assert ("nikon-pfs" in result.get("probe_hint", "")) is skill_named
 
     def test_unengaged_hardware_lock_refuses_image_sweep_from_rig_payload(
         self, mock_ctrl, unconstrained_guard, monkeypatch
@@ -4115,8 +4118,11 @@ class TestFocusLock:
         mock_ctrl.core.set_position.assert_not_called()
         assert "hardware focus lock" in result["error"]
         assert '"Status": "Out of focus search range"' in result["error"]
-        assert "REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID" in result["error"]
-        assert "fails loudly" in result["error"]
+        assert '"property": "Status"' in result["error"]
+        assert '"in_focus_values": ["<your best guess>"]' in result["error"]
+        assert "sent unedited" in result["error"]
+        assert "zero-exposure" in result["error"]
+        assert "reports every value the device actually returned" in result["error"]
         assert "at this Z" in result["error"]
         assert result["focus_lock"]["adapter_library"] == "NikonTI"
         assert result["focus_lock"]["adapter_name"] == "TIPFSStatus"
@@ -4150,6 +4156,30 @@ class TestFocusLock:
         )
 
         assert result["converged"] is True, result
+
+    def test_refusal_derives_the_only_nonmetadata_probe_property(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # Property selection must come from the readings, not from the current
+        # allowlist entry's Ti-specific "Status" spelling.
+        monkeypatch.setattr("microclaw.tools.get_focus_lock_state", lambda *_args: {
+            "engaged": False,
+            "property": "continuous focus device FutureLock",
+            "device": "FutureLock",
+            "adapter_library": "NikonTI",
+            "adapter_name": "TIPFSStatus",
+            "status_properties": {
+                "Name": "FutureLock", "PFS in Range": "Out of Range",
+            },
+        })
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+        )
+
+        assert '"property": "PFS in Range"' in result["error"]
+        assert '"property": "Status"' not in result["error"]
 
     def test_unreadable_adapter_identity_does_not_cause_refusal(
         self, mock_ctrl, unconstrained_guard, monkeypatch
@@ -4228,18 +4258,6 @@ class TestFocusLock:
         assert result["caller_assertion"] == {
             "focus_lock_probe_failure": "property probe found no band at this XY"
         }
-
-    def test_unedited_probe_placeholder_fails_loudly(
-        self, mock_ctrl, unconstrained_guard
-    ):
-        result = run_autofocus(
-            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
-            method="sweep", probe={
-                "device": "TIPFSStatus", "property": "Status",
-                "in_focus_values": ["REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID"],
-            },
-        )
-        assert result["error"].startswith("Replace REPLACE_ME")
 
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import set_focus_lock

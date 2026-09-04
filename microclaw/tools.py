@@ -142,6 +142,18 @@ ADAPTIVE_TIMELAPSE_ALLOWANCE_EVIDENCE = (
     "n=1 from M2, 2026-08-31; 99 gaps at 50 ms exposure: "
     "min 0.219 s, mean 0.2495 s, max 0.344 s"
 )
+# Established by a Nikon Ti's own `nikon-lausanne-rig/inventory.json` output:
+# library NikonTI, adapter TIPFSStatus, device type AutoFocusDevice. That
+# inventory's camera was AndorIxon; R88 came from a different Nikon Ti whose
+# NikonTI-shaped device list included TIPFSStatus and HamamatsuHam_DCAM, so
+# applying the measured adapter identity to R88 is an inference. A miss is
+# deliberately conservative: any identity absent from this set is unclassified
+# and retains the old sweep behaviour. The identity now recorded in each
+# non-EMU payload will confirm or refute that inference on R88's rig without an
+# extra instrument call.
+PROBEABLE_HARDWARE_FOCUS_LOCK_ADAPTERS = frozenset({
+    ("NikonTI", "TIPFSStatus"),
+})
 _ACQUISITION_POLL_S = 1.0
 _ACQUISITION_EVENT_CONTEXT = threading.local()
 
@@ -6248,13 +6260,6 @@ def run_autofocus(
                                    not values or
                                    any(not isinstance(v, str) for v in values)):
             return {"error": "Malformed probe: in_focus_values must be a non-empty array of strings."}
-        if values and "REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID" in values:
-            return {
-                "error": (
-                    "Replace REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID with "
-                    "your best guess for an in-focus value before probing."
-                )
-            }
         if "stop_when_found" in probe and not isinstance(probe["stop_when_found"], bool):
             return {"error": "Malformed probe: stop_when_found must be a boolean."}
         dwell_ms = probe.get("dwell_ms")
@@ -6319,13 +6324,31 @@ def run_autofocus(
         }
     probeable_hardware_lock = (
         lock.get("adapter_library"), lock.get("adapter_name")
-    ) == ("NikonTI", "TIPFSStatus")
+    ) in PROBEABLE_HARDWARE_FOCUS_LOCK_ADAPTERS
     if (probe is None and probeable_hardware_lock
             and lock.get("status_properties")
             and focus_lock_probe_failure is None):
         device = lock["device"]
-        readings = json.dumps(lock["status_properties"], ensure_ascii=False)
-        placeholder = "REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID"
+        status_properties = lock["status_properties"]
+        readings = json.dumps(status_properties, ensure_ascii=False)
+        probe_candidates = [
+            name for name in status_properties
+            if name not in {"Name", "Description", "HubID"}
+        ]
+        probe_property = (
+            probe_candidates[0] if len(probe_candidates) == 1
+            else "<choose a property from Current readings>"
+        )
+        discovery_guidance = (
+            "If the in-focus placeholder is sent unedited, the zero-exposure "
+            "property sweep matches nothing and its refusal reports every "
+            "value the device actually returned, which reveals the right "
+            "spelling. "
+            if len(probe_candidates) == 1 else
+            "First replace the property placeholder with the appropriate key "
+            "from Current readings; the values shown there are what distinguish "
+            "a useful state property from metadata or a bitfield. "
+        )
         return {
             "error": (
                 f"This rig has a hardware focus lock, {device!r}, and it is not "
@@ -6333,11 +6356,10 @@ def run_autofocus(
                 "coverslip is often not the sample plane. Probe the lock first "
                 f"— property reads spend no exposures. Current readings: {readings}. "
                 "Re-call with method=\"sweep\" and probe="
-                f"{{\"device\": {json.dumps(device)}, \"property\": \"Status\", "
-                f"\"in_focus_values\": [\"{placeholder}\"]}} after replacing "
-                "the placeholder with your best guess; an unedited re-send "
-                "fails loudly. If no plane matches, the refusal lists every "
-                "value the sweep actually saw. 'Out of focus search range' "
+                f"{{\"device\": {json.dumps(device)}, "
+                f"\"property\": {json.dumps(probe_property)}, "
+                "\"in_focus_values\": [\"<your best guess>\"]}}. "
+                + discovery_guidance + "'Out of focus search range' "
                 "says the coverslip is not in the band at this Z — it is not a "
                 "statement that the lock is unavailable. Supply "
                 "focus_lock_probe_failure with a non-empty account only after "
