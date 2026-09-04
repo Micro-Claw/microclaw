@@ -258,15 +258,17 @@ def test_acquisition_writer_coalesces_progress_without_dropping_lifecycle(tmp_pa
 
     audit = SlowFsyncAudit(tmp_path / "acq.jsonl")
     writer = AcquisitionDiagnosticWriter(audit, capacity=8)
-    writer.submit({"type": "progress", "frame": 0})
-    assert entered.wait(1)
-    for frame in range(1, 30):
-        writer.submit({"type": "progress", "frame": frame})
     lifecycle = [f"lifecycle-{index}" for index in range(6)]
-    for kind in lifecycle:
-        writer.submit({"type": kind}, lifecycle=True)
-    release.set()
-    writer.close()
+    try:
+        writer.submit({"type": "progress", "frame": 0})
+        assert entered.wait(1)
+        for frame in range(1, 30):
+            writer.submit({"type": "progress", "frame": frame})
+        for kind in lifecycle:
+            writer.submit({"type": kind}, lifecycle=True)
+    finally:
+        release.set()
+        writer.close()
 
     kinds = [record["type"] for record in audit.records]
     assert set(lifecycle).issubset(kinds)
@@ -298,17 +300,19 @@ def test_acquisition_writer_acknowledges_fsync_and_bounds_blocked_writer(
     monkeypatch.setattr(conversation, "DIAGNOSTIC_FLUSH_GRACE_S", 0.03)
     blocked = AcquisitionDiagnosticWriter(BlockedFsyncAudit(tmp_path / "blocked.jsonl"))
     fallbacks = []
-    started = time.monotonic()
-    assert not blocked.submit(
-        {"type": "timeout"}, lifecycle=True, acknowledge=True,
-        fallback=fallbacks.append,
-    )
-    elapsed = time.monotonic() - started
-    assert entered.is_set()
-    assert elapsed < 0.15
-    assert fallbacks == [{"type": "timeout"}]
-    release.set()
-    blocked.close()
+    try:
+        started = time.monotonic()
+        assert not blocked.submit(
+            {"type": "timeout"}, lifecycle=True, acknowledge=True,
+            fallback=fallbacks.append,
+        )
+        elapsed = time.monotonic() - started
+        assert entered.is_set()
+        assert elapsed < 0.15
+        assert fallbacks == [{"type": "timeout"}]
+    finally:
+        release.set()
+        blocked.close()
 
 
 def test_lifecycle_enqueue_and_close_are_bounded_when_audit_hangs(
@@ -347,3 +351,41 @@ def test_lifecycle_enqueue_and_close_are_bounded_when_audit_hangs(
         "lifecycle-0", "lifecycle-1", "lifecycle-2",
     }
     release.set()
+
+
+@pytest.mark.parametrize("race", ["empty_after_full", "full_after_displace"])
+def test_lifecycle_queue_races_never_escape_submit(monkeypatch, race):
+    from microclaw import conversation
+    from microclaw.conversation import (
+        AcquisitionDiagnosticWriter, AuditLog, _DiagnosticItem,
+    )
+
+    writer = AcquisitionDiagnosticWriter(AuditLog(None, enabled=False))
+    writer.close()
+    writer._closed = False
+    displaced = _DiagnosticItem(
+        {"type": "displaced"}, lifecycle=True, fallback=lambda record: None,
+    )
+
+    class RacingQueue:
+        def put_nowait(self, item):
+            raise conversation.queue.Full
+
+        def get_nowait(self):
+            if race == "empty_after_full":
+                raise conversation.queue.Empty
+            return displaced
+
+        def task_done(self):
+            pass
+
+        def put(self, item, timeout):
+            raise conversation.queue.Full
+
+    writer._queue = RacingQueue()
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_ENQUEUE_GRACE_S", 0.001)
+    fallbacks = []
+    assert writer.submit(
+        {"type": "new"}, lifecycle=True, fallback=fallbacks.append,
+    ) is False
+    assert fallbacks == [{"type": "new"}]

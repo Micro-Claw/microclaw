@@ -698,14 +698,16 @@ def test_saved_frame_callback_never_calls_or_waits_for_audit_log(monkeypatch, tm
         )
         done.set()
 
-    caller = threading.Thread(target=drive, name="tool-caller")
+    caller = threading.Thread(target=drive, name="tool-caller", daemon=True)
     caller.start()
-    assert entered.wait(1)
-    assert done.wait(0.5), "saved-frame callbacks waited for the blocked fsync"
-    assert append_threads == ["microclaw-acquisition-diagnostics"]
-    release.set()
-    caller.join()
-    writer.close()
+    try:
+        assert entered.wait(1)
+        assert done.wait(0.5), "saved-frame callbacks waited for the blocked fsync"
+        assert append_threads == ["microclaw-acquisition-diagnostics"]
+    finally:
+        release.set()
+        caller.join(1)
+        writer.close()
 
 
 def test_complete_acquisition_records_ordered_lifecycle_and_correlation(monkeypatch, tmp_path):

@@ -215,7 +215,7 @@ class AcquisitionDiagnosticWriter:
         if capacity < 1:
             raise ValueError("diagnostic queue capacity must be positive")
         self.audit = audit
-        self._queue: queue.Queue[_DiagnosticItem | None] = queue.Queue(capacity)
+        self._queue: queue.Queue[_DiagnosticItem] = queue.Queue(capacity)
         self._progress_lock = threading.Lock()
         self._coalesced_progress: _DiagnosticItem | None = None
         self._closed = False
@@ -234,32 +234,42 @@ class AcquisitionDiagnosticWriter:
         """Queue a record; optionally wait a bounded time for its fsync."""
         ack = threading.Event() if acknowledge else None
         item = _DiagnosticItem(record, lifecycle, ack, fallback=fallback)
-        if self._closed:
-            self._fallback_once(item)
-            return False
-        if lifecycle:
-            if not self._enqueue_lifecycle(item):
+        try:
+            if self._closed:
                 self._fallback_once(item)
                 return False
-        else:
-            try:
-                self._queue.put_nowait(item)
-            except queue.Full:
-                with self._progress_lock:
-                    self._coalesced_progress = item
-        if ack is None:
-            return True
-        if ack.wait(DIAGNOSTIC_FLUSH_GRACE_S) and item.persisted:
-            return True
-        self._fallback_once(item)
-        return False
+            if lifecycle:
+                if not self._enqueue_lifecycle(item):
+                    self._fallback_once(item)
+                    return False
+            else:
+                try:
+                    self._queue.put_nowait(item)
+                except queue.Full:
+                    with self._progress_lock:
+                        self._coalesced_progress = item
+            if ack is None:
+                return True
+            if ack.wait(DIAGNOSTIC_FLUSH_GRACE_S) and item.persisted:
+                return True
+            self._fallback_once(item)
+            return False
+        except Exception:
+            # This boundary is called from pycro-manager's storage-monitor
+            # thread. Diagnostics must never damage that thread, including if a
+            # queue implementation or a caller-supplied fallback misbehaves.
+            self._fallback_once(item)
+            return False
 
     def _fallback_once(self, item: _DiagnosticItem) -> None:
         with self._state_lock:
             if item.fallback is None or item.fallback_emitted:
                 return
             item.fallback_emitted = True
-        item.fallback(item.record)
+        try:
+            item.fallback(item.record)
+        except Exception:
+            pass
 
     def _enqueue_lifecycle(self, item: _DiagnosticItem) -> bool:
         deadline = time.monotonic() + DIAGNOSTIC_ENQUEUE_GRACE_S
@@ -270,10 +280,20 @@ class AcquisitionDiagnosticWriter:
             except queue.Full:
                 # Remove ordinary progress first. Lifecycle count is bounded by
                 # the acquisition state machine, independently of frame count.
-                displaced = self._queue.get_nowait()
+                try:
+                    displaced = self._queue.get_nowait()
+                except queue.Empty:
+                    continue
                 self._queue.task_done()
                 if displaced.lifecycle:
-                    self._queue.put_nowait(displaced)
+                    try:
+                        self._queue.put_nowait(displaced)
+                    except queue.Full:
+                        # A concurrent producer won the slot. Preserve the
+                        # displaced lifecycle record through its fallback and
+                        # keep trying the new record until its own deadline.
+                        self._fallback_once(displaced)
+                        continue
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
@@ -288,6 +308,8 @@ class AcquisitionDiagnosticWriter:
         return False
 
     def _run(self) -> None:
+        # A timed get lets close() set _stop without needing a sentinel that
+        # itself might block behind a full queue and recreate the shutdown hang.
         while not self._stop.is_set() or not self._queue.empty():
             try:
                 item = self._queue.get(timeout=0.05)

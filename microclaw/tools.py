@@ -2434,7 +2434,7 @@ def _emit_acquisition_diagnostic(
             sink(event)
         except Exception:
             pass
-    elif publish and sink is None:
+    elif publish and sink is None and not (lifecycle and not persisted):
         _diagnostic_fallback(event)
     return persisted
 
