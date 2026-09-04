@@ -9002,3 +9002,79 @@ between 1 and 1b.** Same family as design/52c's placeholder and 52a's skipped
 restore limb: an instruction the operator has to reorder is an instruction that
 does not get run as written.
 
+
+## design/74 block 74a — the lock is offered before the image sweep (merged 2026-09-04)
+
+**The operator corrected the design mid-block, and that was the most valuable
+event in it.** D3 specified an opt-out named `focus_lock_probe_failure`, on the
+stated premise that *"the only real case left"* for an image sweep on a lock rig
+is a probe that found no band. It is not: a microscopist who wants the image
+metric because it is the right instrument has no failed probe to describe. So the
+shipped build was not "the PFS offered first", it was **blocked unless you assert
+something untrue** — and the argument would have written that untruth into the
+session record, which is R79's exact complaint. Renamed to `image_metric_reason`,
+meaning *why the image metric is right for this call*, admitting both answers.
+**Ask what a caller who is not the failure case would have to say.** If the
+answer is "something false", the parameter is a block wearing an opt-out's name.
+
+**Three review rounds, and the runner's own tests found none of the findings.**
+Round 1's five included a placeholder sentinel added to the *global* probe
+validator, when the natural no-match path already returns
+`observed [...]` naming every value the device reported — louder *and* more
+useful than the sentinel, and the design said so one sentence later. Round 3's
+was the sharp one: round 1 had shipped `]}}` in a plain (non-f) string, so the
+refusal's `probe=` argument was **malformed JSON**, and round 2 fixed it
+**without reporting it**. It survived a full coordinator review because every
+assertion on that message was a substring match. *Assert the argument by
+parsing it, not by matching its text* — and **report your own fixes**: an
+unreported fix and an unreported break look identical from the review seat.
+
+**Also found: a branch that could not execute.** The refusal's multi-candidate
+arm needs a lock with ≥2 non-metadata read-only properties; the Ti's set is
+exactly `{Status}` and the Ti is the only allowlisted identity, so that arm would
+first have run the day someone added a second. Now covered from the Dragonfly's
+recorded properties under a declared hypothetical.
+
+**The gate cost one round and returned three gate defects, zero product
+defects — all the coordinator's.** Same shape as design/69a (2 product vs 6
+gate). Limb C never reached its mechanism *twice over*: it centred a 4 µm window
+on the current Z, and the demo stage sat at Z=0 with bounds starting at 0.0, so
+`guard.check_z(-2.0)` raised before `run_autofocus` read the lock at all; and
+underneath that, this machine's `DAutoFocus` reported continuous focus
+**engaged**, so the *pre-existing* engaged-lock refusal would have returned four
+lines above the branch under test. `design/61-block61a-system-state.json`
+recorded `engaged: false` and the gate assumed that was invariant. Limb D called
+`export_session_script(ctrl, guard)` on a guessed signature and, worse, needed a
+driven session's records while the gate drives none — deleted, not fixed.
+
+**The selftest missed all three because its own fake encoded the assumption**:
+`FakeCore.get_position()` returned 100.0, and its single limb-C case *stubbed
+`run_autofocus` entirely*, so the real tool was never driven. The rule the
+coordinator applied to the runner's code and not to its own. Round 2's fixes went
+into the fake first — case 5 is the machine's Z floor, case 6 its engaged lock,
+case 7 a lock that will not disengage.
+
+**Score a green gate from the artifacts anyway.** Round 2 came back 4/4 PASS and
+the interesting evidence was in the numbers, not the verdicts:
+
+- **The lock restore was confirmed by a different process.** Limb C disengages
+  and re-engages; its own claim proves nothing. The *control arm*, run after
+  `git checkout main`, read `engaged: true` — an independent measurement.
+- **The two arms disagreed about convergence, and it was not the block.** Branch
+  converged at Z=1.0; `main` refused as an edge peak at Z=0.0. Same window, same
+  step, same identical sweep code. The curves explain it: `[2008, 2016, …]` vs
+  `[2016, 2009, …]` — the first two planes are within ~0.4% of each other, so
+  which one wins is camera noise, and when Z=0 wins the design/28 F1 edge-peak
+  guard correctly fires. A naive scorer reads that pair as a regression.
+- **`arrival_unverifiable_count` was 5/5 on both arms and is correct.** design/66
+  sets `unverifiable = |target − start| ≤ max(2.0, 0.1 × displacement)`, and the
+  sweep steps 1 µm. Every image-autofocus sweep at the default step saturates
+  this field; recorded as a register row rather than treated as a rig fault.
+
+**No Nikon gate exists and none was invented.** The positive case is settled
+off-rig from that rig's own recorded payload and its own `rig_inventory` adapter
+identity; M5 takes the EMU branch and cannot reach the code; M2 has no autofocus
+device. What the demo machine was asked for was only what a fake cannot settle —
+that `get_device_library`/`get_device_name` answer over real pyjavaz as Python
+`str` rather than Java shadows, and that a software autofocus adapter is not
+classified. Both confirmed.
