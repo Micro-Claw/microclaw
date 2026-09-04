@@ -1,0 +1,108 @@
+{
+ "x_um": 446.9,
+ "y_um": -5832.8,
+ "z_um": -89.35,
+ "named_stages": {
+  "TIPFSOffset": 166.775,
+  "TITIRF": 7900.0,
+  "KDC101_27274173": "unavailable"
+ },
+ "exposure_ms": 11.213220588235293,
+ "live_view": false,
+ "shutter": {
+  "device": "Shutter-1",
+  "open": false,
+  "auto": true,
+  "open_during_exposure": "unknown (autoshutter opens the shutter for each exposure)"
+ },
+ "lasers": "unknown \u2014 this rig has no EMU laser map, which is the only per-SLOT laser source microclaw has. This is not evidence that the rig has no lasers: a non-EMU rig drives its lasers as ordinary device properties. Read declared_illumination_properties and list_devices before saying anything about what illumination exists here.",
+ "camera": {
+  "label": "HamamatsuHam_DCAM",
+  "adapter": "HamamatsuHam_DCAM"
+ },
+ "optical_path": {
+  "discrete_positions": [
+   {
+    "device": "TICondenserCassette",
+    "adapter": "TICondenserCassette",
+    "adapter_description": "Condenser Cassette",
+    "allowed": [
+     "1-A",
+     "2-Ph1",
+     "3-Ph2",
+     "4-Ph3",
+     "5-PhL"
+    ],
+    "label": "1-A",
+    "role": []
+   },
+   {
+    "device": "TIFilterBlock1",
+    "adapter": "TIFilterBlock1",
+    "adapter_description": "Filter Block Cassette 1",
+    "allowed": [
+     "1-ANALY",
+     "2------",
+     "3------",
+     "4------",
+     "5------",
+     "6------"
+    ],
+    "label": "3------",
+    "role": []
+   },
+   {
+    "device": "TILightPath",
+    "adapter": "TILightPath",
+    "adapter_description": "Light Path Drive",
+    "allowed": [
+     "1-Eye100",
+     "2-Left100",
+     "3-Right100",
+     "4-Left80"
+    ],
+    "label": "2-Left100",
+    "role": [
+     "light-path candidate (position labels name ports)",
+     "light-path candidate (adapter self-description)"
+    ]
+   },
+   {
+    "device": "TINosePiece",
+    "adapter": "TINosePiece",
+    "adapter_description": "Objective Turret",
+    "allowed": [
+     "1-Plan Fluor 4x NA 0.13 Dry",
+     "2-Plan Fluor 10x NA 0.30 Dry",
+     "3-S Plan Fluor 20x NA 0.45 Dry",
+     "4-Apo TIRF 60x NA 1.49 Oil",
+     "5-Plan Apo 60x NA 1.40 Oil",
+     "6-Unknown"
+    ],
+    "label": "4-Apo TIRF 60x NA 1.49 Oil",
+    "role": []
+   }
+  ],
+  "hint": "A discrete-position device whose labels name ports routes light to the camera or the eyepiece. Micro-Manager sees only the motorized part of the path; a manual prism or slider can send light elsewhere with every value above unchanged. If the camera is not getting the signal you expect, call load_skill(name=\"optical-paths\") before interpreting these; when imaging is working there is nothing here to look up.",
+  "shutter_exclusion": {
+   "device": "Shutter-1",
+   "reason": "Core shutter is reported separately"
+  }
+ },
+ "objective": {
+  "pixel_size_config": null,
+  "pixel_size_um": 0.0,
+  "available_configs": [],
+  "reason": "No pixel-size configuration is active: Micro-Manager does not know which objective is in the path, so neither does microclaw. Available calibrations list dependencies only; no dependency by itself proves which device is an objective turret. Ask the operator which objective is seated; do not report one."
+ },
+ "focus": {
+  "engaged": false,
+  "property": "continuous focus device TIPFSStatus",
+  "device": "TIPFSStatus",
+  "status_properties": {
+   "Name": "TIPFSStatus",
+   "Status": "Out of focus search range"
+  },
+  "probe_hint": "To find this lock's capture range at zero exposures, call run_autofocus with probe device 'TIPFSStatus', one of the properties above, and the values that mean in-range. Read the values shown to pick the property; a bitfield or a number is not the one you want."
+ }
+}

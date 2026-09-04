@@ -9078,3 +9078,47 @@ device. What the demo machine was asked for was only what a fake cannot settle �
 that `get_device_library`/`get_device_name` answer over real pyjavaz as Python
 `str` rather than Java shadows, and that a software autofocus adapter is not
 classified. Both confirmed.
+
+## design/74 block 74b — arm B, and a measurement that measured nothing (parked 2026-09-04)
+
+**Arm A was dropped before it ran, and that was right.** Its job was a pre-74a
+baseline for "image sweep before probe" — a decision already behind us once the
+containment shipped. design/74 framed it as arm B's control, and that framing
+does not survive the merged code: there is no offer on `main` to recover from,
+so the two arms do not measure the same thing. **A control has to be a control
+of the thing you are now measuring, not of the thing you were measuring when you
+wrote the plan.**
+
+**Arm B ran at n=12 and reported NOT EXERCISED.** `offer_fired` was 0 in 12 of
+12 — no sample made a non-probe `run_autofocus` call, so the mechanism never
+fired and `0/12 ROUTED_AROUND` is a null, not a result. The cause was the
+harness: 25 unfixtured tool calls left 8 of 12 samples orienting into dead ends
+without ever reaching a focus action.
+
+**The one-sample validation earned its $0.51 and then was under-used.** It
+caught the disqualifying defect immediately — `snap_and_analyze` was unfixtured,
+and the model reasoned out loud that it therefore *could not drive an
+image-based sweep*, which is the behaviour under test. The fix added the two
+tools that sample happened to reach and did not go looking for the rest, so the
+same defect class sank the full run. **A validation sample tells you the class of
+defect, not the list of them.**
+
+**The design limit is the real finding, and more money does not touch it.** The
+offer only fires if a model first reaches for an image sweep, and none did.
+Measuring "recover or route around" therefore depends on the mistake occurring,
+which is rare in replay: even with perfect fixtures, n=12 buys one or two
+firings. An experiment whose event of interest is produced by the failure it is
+trying to prevent is the wrong instrument for a replay.
+
+**Two coordinator errors worth naming.** A key present in the keyring was
+reported as a working credential — it 401'd on first use, and *a marker's
+existence is not health* applies to credentials as much as to slot files. And
+"11 of 12 loaded `nikon-pfs`" was stated from a trail that records only the tool
+**name**, not which skill: a number the artifact does not support, which is the
+same failure the coordinator had returned to the runner earlier that day.
+
+**Where the measurement actually comes from.** The Nikon user's own session
+yields the identical binary from a real sample — did `run_autofocus` carry a
+`probe`, or `image_metric_reason`? That session is going to happen anyway.
+Operator's call, and the right one: *"no need to run again, stop here and take
+the free evidence."* Total replay spend $4.59 against a $6 authorisation.

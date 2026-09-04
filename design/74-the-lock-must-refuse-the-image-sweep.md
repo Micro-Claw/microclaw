@@ -448,6 +448,59 @@ context per call, ~6 turns per sample, so ~$1.15 per sample uncached and ~$0.50
 with prompt caching on the tools+system prefix — 3 arms x 12 samples is about
 **$20**.
 
+## Arm B, run 1 — NOT EXERCISED (2026-09-04)
+
+**n=12, and `offer_fired` was 0 in 12 of 12.** Not one sample made a non-probe
+`run_autofocus` call, so D1's offer never fired. The `0/12 ROUTED_AROUND` is
+therefore a null produced by never reaching the mechanism, not evidence that
+models decline to route around the offer. Reported as **NOT EXERCISED**, which
+is never a pass.
+
+| verdict | n=12 |
+|---|---|
+| `PROBED_UNPROMPTED` — first focus action already carried a probe | 4 |
+| `NO_FOCUS_ACTION` — never reached a focus action in 14 turns | 8 |
+| `RECOVERED` — offer fired, model then probed | 0 |
+| `ROUTED_AROUND` — used `image_metric_reason` | 0 |
+| `TRUNCATED` | 0 |
+
+Zero image exposures and zero Z motion across all twelve; every sample ended at
+the entry Z of −89.35 µm.
+
+**The cause is the harness, not the models.** 25 unfixtured tool calls across 12
+samples — `get_knowledge` 7, `list_config_groups` 5, `get_device_property_info`
+5, `get_full_device_state` 5, and one each of `get_pixel_size`,
+`get_stage_position`, `get_exposure` — each returning "temporarily unavailable".
+The samples spent their turns orienting into dead ends. The one-sample
+validation had already caught this exact class of defect (`list_devices` and
+`snap_and_analyze` were missing, and a model reasoned explicitly that it
+therefore *could not drive an image-based sweep* — the behaviour under test);
+the fix added those two and did not go looking for the rest.
+
+**What the run weakly shows, with its confounds stated.** 11 of 12 samples
+called `load_skill` — **but the scorer records only the tool name, not which
+skill**, so no claim about `nikon-pfs` is available from this artifact. That is
+a second instrument gap. 4 of 12 probed unprompted and 0 of 12 reached for an
+image sweep, which is *suggestive* that R88's opening is not the default
+behaviour, but the 8 dead-end trajectories make it unsafe to quote as a rate.
+
+**The deeper problem is the experiment design, and more samples do not fix it.**
+The offer only fires if a model first reaches for an image sweep, and it mostly
+does not. Measuring "does it recover or route around" therefore depends on the
+mistake occurring, which is rare in this replay: at n=12 with clean fixtures the
+expected number of offer-firings is one or two. That is not a design that can
+answer the question at this budget.
+
+**Measured spend: $3.78 for the run, $4.59 including both validation samples**
+(Opus 4.8 at $5/$25 per Mtok, cache reads at $0.50). The harness now carries a
+`--max-spend` ceiling and writes each row as it completes, because a run that
+reports its cost afterwards is not a run bounded by it, and a killed run should
+not lose everything.
+
+**Where the question actually gets answered for free:** the Nikon user's own
+session produces the identical binary — a probe call, or `image_metric_reason` —
+from a real sample rather than a replay. Ask for the history JSONL.
+
 ## Run ledger
 
 Baseline before the block: `main` `4a4faba`, coordinator-run suite
@@ -457,4 +510,4 @@ Baseline before the block: `main` `4a4faba`, coordinator-run suite
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 74a | `design74/lock-refuses-image-sweep` | `4a4faba` (2026-09-04), worktree `../microclaw-74a` | `1423cac` (1 Codex start + 3 revision turns). Coordinator reproduced the watch-it-fail independently on `51da1a7` (`assert 1 == 0` on `snap_image.call_count`) and found the discriminator mutation caught by **three** tests, not the one reported. Round 1: 5 findings — the placeholder sentinel was over-implemented (the natural no-match refusal already lists every observed value, which is louder *and* more useful), the probe property was hardcoded `"Status"`, the allowlist had no provenance, the emitted comment was unpinned against the 52b newline scar, and the D4 assertion re-derived its own rule. Round 2: **operator correction** — D3's premise was wrong, `focus_lock_probe_failure` became `image_metric_reason`. Round 3: round 1 had shipped `]}}` in a plain string, so the refusal's probe argument did not parse; round 2 fixed it **without reporting it**, and no test used the argument. Now extracted with `raw_decode` and parsed, and the previously unreachable multi-candidate branch is covered from the Dragonfly's recorded properties under a declared hypothetical. Coordinator fix `a096766` for the provenance comment. Coordinator suite 2817/99/3 (main was 2804/99/2). | Demo machine, two rounds. **Round 1: three gate defects, zero product defects, all the coordinator's.** Limb C never reached its mechanism twice over — a 4 µm window centred on a stage at Z=0 with bounds from 0.0 raised `guard.check_z(-2.0)` before the lock was read, and this machine's `DAutoFocus` reported continuous focus **engaged**, so the pre-existing refusal masked the branch under test. Limb D called `export_session_script` on a guessed signature and needed a driven session's records while the gate drives none — deleted. Both reproduced in the selftest before the fix. **Round 2 at `fa44416`: 4/4 PASS.** `get_device_library`/`get_device_name` answer over real pyjavaz as Python `str` → `DemoCamera`/`DAutoFocus`; the payload carries the identity; the sweep ran **unrefused** over [0.0, 4.0] µm, 5 exposures, converged, 0.0 → 1.0 — 74a's branch executed on live hardware and correctly did not fire. Arms discriminate: B and E FAIL on `main`. Scored beyond the verdicts — the lock restore is confirmed by the *control arm's* independent read (`engaged: true`), and the arms' convergence disagreement is camera noise on two statistically indistinguishable planes plus design/28 F1's edge-peak guard, not a block difference. | `c8405ce` merged 2026-09-04; branch deleted locally and on `origin`. |
-| 74b | | | | | |
+| 74b | `design74/arm-b-live-model-measurement` | `361913c` (2026-09-04) | **Arm A dropped** (coordinator, operator agreed): its job was a pre-74a baseline for "image sweep before probe", a decision now behind us, and design/74's framing of it as arm B's control does not survive the merged code — there is no offer on `main` to recover from. Arm B's measurable is restated: 74a's offer fires before any exposure or Z motion *by construction*, so the only way a model can still spend them is `image_metric_reason`, and the whole arm reduces to one binary — take the probe, or route around the offer. Harness `design/74-block74b-arm-b-spike.py` built on R88's own frozen payload (`design/74-block74b-r88-system-state.json`, extracted from that session's first tool result) and its two verbatim opening messages, driving the **real** `run_autofocus` against a bridge-shaped fake of that rig. Verified off-line: the unqualified call returns the offer at **0 exposures and 0 Z moves**, and a diligent probe converges at **2374.0 µm for 0 exposures** — so an opt-out can never be excused by an unusable probe. | Run 1, 2026-09-04, n=12: **NOT EXERCISED** — `offer_fired` 0/12, so the mechanism never fired and the `0/12 ROUTED_AROUND` is a null, not a result. Cause was the harness (25 unfixtured tool calls; 8/12 never reached a focus action). Two instrument gaps recorded. **Not re-run**: the offer only fires if a model first reaches for an image sweep, which none did, so the event of interest is too rare for this design at any sane budget — a limit of the experiment, not of the budget. Measured spend $3.78 for the run, $4.59 with validation, against a $6 authorisation. See §"Arm B, run 1". | `main`, 2026-09-04, merged as an **unrun instrument** in the shape of `design/61-skill-routing-spike.py`. **The block is parked, not closed**: R88's question is deferred to the Nikon user's own session, which produces the identical binary — a `probe` argument or `image_metric_reason` — from a real sample rather than a replay. Reopen if a problem comes back from the Nikon (operator, 2026-09-04). |
