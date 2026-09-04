@@ -168,11 +168,16 @@ def _join_acquisition_waiter(waiter: threading.Thread, timeout_s: float) -> None
     waiter.join(timeout_s)
 
 
-def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool]:
+def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool, str]:
     if plan is None:
-        return FALLBACK_RUNTIME_CEILING_S, True
+        return FALLBACK_RUNTIME_CEILING_S, True, "fallback"
     estimate = plan.estimated_duration_s
-    return max(estimate * 1.5, estimate + 300.0), False
+    scaled = estimate * 1.5
+    slack = estimate + 300.0
+    return (
+        max(scaled, slack), False,
+        "plan_times_1_5" if scaled >= slack else "plan_plus_300_s",
+    )
 
 
 def _adaptive_timelapse_runtime_plan(
@@ -203,10 +208,11 @@ def _adaptive_timelapse_runtime_plan(
     )
 
 
-def _stall_quiet_s(largest_observed_gap_s: float) -> float:
-    return max(
-        STALL_QUIET_FLOOR_S,
-        STALL_GAP_MULTIPLIER * largest_observed_gap_s,
+def _stall_quiet_s(largest_observed_gap_s: float) -> tuple[float, str]:
+    observed_gap = STALL_GAP_MULTIPLIER * largest_observed_gap_s
+    return (
+        max(STALL_QUIET_FLOOR_S, observed_gap),
+        "quiet_floor" if STALL_QUIET_FLOOR_S >= observed_gap else "observed_gap",
     )
 
 #: Every run argument a hook -- or, under 55b, a plan-only coordinator -- must
@@ -2420,12 +2426,15 @@ def _emit_acquisition_diagnostic(
     if writer is not None:
         persisted = writer.submit(
             timestamped, lifecycle=lifecycle, acknowledge=acknowledge,
-            fallback=_diagnostic_fallback if acknowledge else None,
+            fallback=_diagnostic_fallback if lifecycle or acknowledge else None,
         )
     sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
     if publish and sink is not None and not (acknowledge and not persisted):
-        sink(event)
-    elif publish and writer is None:
+        try:
+            sink(event)
+        except Exception:
+            pass
+    elif publish and sink is None:
         _diagnostic_fallback(event)
     return persisted
 
@@ -4276,7 +4285,6 @@ def _acquire_with_hooks(
     report_cadence = cadence_summary is not None
     cadence_summary = cadence_summary if cadence_summary is not None else _new_gap_summary()
     frame_lock = threading.Lock()
-    event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
     diagnostic_context = {
         name: getattr(_ACQUISITION_EVENT_CONTEXT, name, None)
         for name in ("sink", "diagnostic_writer", "session_id", "tool_call_id")
@@ -4335,7 +4343,10 @@ def _acquire_with_hooks(
                 })
                 if plan is not None and count == plan.frames:
                     _emit_acquisition_diagnostic({
-                        "type": "acquisition_final_frame_accounted",
+                        # plan.frames is a terminal promise for fixed plans and
+                        # only a cap for adaptive plans; the name states exactly
+                        # the observation available at this shared boundary.
+                        "type": "acquisition_planned_final_frame_accounted",
                         "dataset_path": dataset_path,
                         "frames_accounted": count,
                         "frames_planned": plan.frames,
@@ -4371,14 +4382,6 @@ def _acquire_with_hooks(
     runtime_input = (
         plan if runtime_plan is _RUNTIME_FROM_ACCOUNTING_PLAN else runtime_plan
     )
-    runtime_bound, fallback = _runtime_ceiling_s(runtime_input)
-    runtime_term = (
-        "fallback" if fallback else
-        "plan_times_1_5" if runtime_input.estimated_duration_s >= 600.0 else
-        "plan_plus_300_s"
-    )
-    runtime_deadline = started + runtime_bound
-
     def finish_owned_cleanup() -> list[str]:
         nonlocal cleanup_done
         if cleanup_done:
@@ -4392,6 +4395,8 @@ def _acquire_with_hooks(
         return failures
 
     try:
+        runtime_bound, fallback, runtime_term = _runtime_ceiling_s(runtime_input)
+        runtime_deadline = started + runtime_bound
         acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
         # Resolve collision suffixes before dispatching the first event: a
         # first-frame hook failure must still report the data already owned
@@ -4425,8 +4430,6 @@ def _acquire_with_hooks(
         acq.acquire(events)
 
         outcome: dict[str, Any] = {}
-        event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
-
         def finish() -> None:
             with _acquisition_diagnostic_context(diagnostic_context):
                 try:
@@ -4485,11 +4488,7 @@ def _acquire_with_hooks(
             _join_acquisition_waiter(waiter, _ACQUISITION_POLL_S)
             now = _acquisition_monotonic()
             with frame_lock:
-                quiet_window = _stall_quiet_s(frame_state["largest_gap"])
-                quiet_term = (
-                    "quiet_floor" if quiet_window == STALL_QUIET_FLOOR_S
-                    else "observed_gap"
-                )
+                quiet_window, quiet_term = _stall_quiet_s(frame_state["largest_gap"])
                 quiet = now - frame_state["last_saved"] >= quiet_window
                 frames_accounted = frame_state["count"]
             error_expired = error_deadline is not None and now >= error_deadline

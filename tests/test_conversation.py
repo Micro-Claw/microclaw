@@ -309,3 +309,41 @@ def test_acquisition_writer_acknowledges_fsync_and_bounds_blocked_writer(
     assert fallbacks == [{"type": "timeout"}]
     release.set()
     blocked.close()
+
+
+def test_lifecycle_enqueue_and_close_are_bounded_when_audit_hangs(
+    tmp_path, monkeypatch,
+):
+    from microclaw import conversation
+    from microclaw.conversation import AcquisitionDiagnosticWriter, AuditLog
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class HungAudit(AuditLog):
+        def append(self, message):
+            entered.set()
+            release.wait()
+            return super().append(message)
+
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_ENQUEUE_GRACE_S", 0.02)
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_CLOSE_GRACE_S", 0.03)
+    fallbacks = []
+    writer = AcquisitionDiagnosticWriter(HungAudit(tmp_path / "hung.jsonl"), capacity=1)
+    assert writer.submit({"type": "lifecycle-0"}, lifecycle=True, fallback=fallbacks.append)
+    assert entered.wait(1)
+    assert writer.submit({"type": "lifecycle-1"}, lifecycle=True, fallback=fallbacks.append)
+    started = time.monotonic()
+    assert not writer.submit(
+        {"type": "lifecycle-2"}, lifecycle=True, fallback=fallbacks.append,
+    )
+    assert time.monotonic() - started < 0.1
+    assert fallbacks == [{"type": "lifecycle-2"}]
+
+    started = time.monotonic()
+    writer.close()
+    assert time.monotonic() - started < 0.1
+    assert {record["type"] for record in fallbacks} == {
+        "lifecycle-0", "lifecycle-1", "lifecycle-2",
+    }
+    release.set()
