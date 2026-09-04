@@ -1131,6 +1131,17 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "required": ["device", "property"],
                 },
+                "focus_lock_probe_failure": {
+                    "type": "string",
+                    "description": (
+                        "Auditable caller assertion that a prior hardware-lock "
+                        "property probe reported no capture band at this location. "
+                        "Supply a non-empty account only after that probe has "
+                        "actually failed; it opts out of the hardware-lock-first "
+                        "refusal and is recorded as a caller assertion, not an "
+                        "instrument measurement."
+                    ),
+                },
             },
             # No top-level oneOf/allOf/anyOf. The Messages API rejects the whole
             # request -- "input_schema does not support oneOf, allOf, or anyOf at

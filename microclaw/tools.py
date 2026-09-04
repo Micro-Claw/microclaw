@@ -452,6 +452,18 @@ def _emit_autofocus(params: RecordedParams) -> str:
     settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
     region = params.get("region", signature.parameters["region"].default)
     probe = params.get("probe", signature.parameters["probe"].default)
+    focus_lock_probe_failure = params.get(
+        "focus_lock_probe_failure",
+        signature.parameters["focus_lock_probe_failure"].default,
+    )
+    # This caller assertion suppresses a Microclaw pre-sweep refusal. A
+    # standalone pycro-manager script has no such refusal to suppress, so its
+    # only faithful representation is an explicitly labelled audit comment.
+    assertion_line = (
+        "# CALLER ASSERTION (not an instrument measurement): "
+        f"focus_lock_probe_failure={focus_lock_probe_failure!r}"
+        if focus_lock_probe_failure is not None else None
+    )
     z_min = params.get("z_min_um")
     z_max = params.get("z_max_um")
     # The band the recorded sweep actually verified its probe moves against.
@@ -493,7 +505,8 @@ def _emit_autofocus(params: RecordedParams) -> str:
             f", z_min_um={z_min!r}, z_max_um={z_max!r}, dwell_ms={dwell_ms!r}"
             if z_min is not None or dwell_ms is not None else ""
         )
-        return "\n".join([
+        return "\n".join(filter(None, [
+            assertion_line,
             policy_line,
             "_autofocus_entry_z = float(core.get_position())",
             lo_line,
@@ -516,10 +529,11 @@ def _emit_autofocus(params: RecordedParams) -> str:
             "print('AUTOFOCUS OUTCOME')",
             "print(f'moved: {autofocus_result.moved}; measured final Z: '",
             "      f'{autofocus_result.final_z_um}')",
-        ])
+        ]))
     extra_args = (f", z_min_um={z_min!r}, z_max_um={z_max!r}"
                   if z_min is not None else "")
-    return "\n".join([
+    return "\n".join(filter(None, [
+        assertion_line,
         policy_line,
         "_autofocus_entry_z = float(core.get_position())",
         lo_line,
@@ -536,7 +550,7 @@ def _emit_autofocus(params: RecordedParams) -> str:
         "print('AUTOFOCUS OUTCOME')",
         "print(f'moved: {autofocus_result.moved}; measured final Z: '",
         "      f'{autofocus_result.final_z_um}')",
-    ])
+    ]))
 
 
 def _emit_go_to_position(params: RecordedParams) -> str:
@@ -6181,6 +6195,7 @@ def run_autofocus(
     probe: dict | str | None = None,
     z_min_um: float | None = None,
     z_max_um: float | None = None,
+    focus_lock_probe_failure: str | None = None,
 ) -> list | dict:
     """Sweep Z to find the sharpest focal plane.
 
@@ -6210,6 +6225,17 @@ def run_autofocus(
     if explicit_window and z_min_um >= z_max_um:
         return {"error": "z_min_um must be less than z_max_um."}
     probe = _parse_quoted_json(probe, dict)
+    if focus_lock_probe_failure is not None:
+        if (not isinstance(focus_lock_probe_failure, str)
+                or not focus_lock_probe_failure.strip()):
+            return {
+                "error": (
+                    "focus_lock_probe_failure must be a non-empty caller "
+                    "assertion describing how the earlier property probe "
+                    "reported no capture band."
+                )
+            }
+        focus_lock_probe_failure = focus_lock_probe_failure.strip()
     if probe is not None:
         if not isinstance(probe, dict):
             return {"error": f"Malformed probe {probe!r}: expected an object."}
@@ -6222,6 +6248,13 @@ def run_autofocus(
                                    not values or
                                    any(not isinstance(v, str) for v in values)):
             return {"error": "Malformed probe: in_focus_values must be a non-empty array of strings."}
+        if values and "REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID" in values:
+            return {
+                "error": (
+                    "Replace REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID with "
+                    "your best guess for an in-focus value before probing."
+                )
+            }
         if "stop_when_found" in probe and not isinstance(probe["stop_when_found"], bool):
             return {"error": "Malformed probe: stop_when_found must be a boolean."}
         dwell_ms = probe.get("dwell_ms")
@@ -6284,6 +6317,34 @@ def run_autofocus(
             ),
             "focus_lock": lock,
         }
+    probeable_hardware_lock = (
+        lock.get("adapter_library"), lock.get("adapter_name")
+    ) == ("NikonTI", "TIPFSStatus")
+    if (probe is None and probeable_hardware_lock
+            and lock.get("status_properties")
+            and focus_lock_probe_failure is None):
+        device = lock["device"]
+        readings = json.dumps(lock["status_properties"], ensure_ascii=False)
+        placeholder = "REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID"
+        return {
+            "error": (
+                f"This rig has a hardware focus lock, {device!r}, and it is not "
+                "engaged. An image metric maximises sharpness, which on a "
+                "coverslip is often not the sample plane. Probe the lock first "
+                f"— property reads spend no exposures. Current readings: {readings}. "
+                "Re-call with method=\"sweep\" and probe="
+                f"{{\"device\": {json.dumps(device)}, \"property\": \"Status\", "
+                f"\"in_focus_values\": [\"{placeholder}\"]}} after replacing "
+                "the placeholder with your best guess; an unedited re-send "
+                "fails loudly. If no plane matches, the refusal lists every "
+                "value the sweep actually saw. 'Out of focus search range' "
+                "says the coverslip is not in the band at this Z — it is not a "
+                "statement that the lock is unavailable. Supply "
+                "focus_lock_probe_failure with a non-empty account only after "
+                "a property probe has actually reported no band."
+            ),
+            "focus_lock": lock,
+        }
 
     with _pause_live(ctrl, restore=False) as live_state:
         try:
@@ -6338,6 +6399,10 @@ def run_autofocus(
             else None
         ),
     }
+    if focus_lock_probe_failure is not None:
+        payload["caller_assertion"] = {
+            "focus_lock_probe_failure": focus_lock_probe_failure,
+        }
     if explicit_window:
         payload["z_min_um"] = z_min_um
         payload["z_max_um"] = z_max_um
@@ -10233,13 +10298,29 @@ def get_focus_lock_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict
             engaged = None
         if device:
             status = _lock_status_properties(ctrl, device)
+            adapter_identity = {}
+            try:
+                library = ctrl.core.get_device_library(device)
+                adapter_name = ctrl.core.get_device_name(device)
+                if isinstance(library, str) and isinstance(adapter_name, str):
+                    adapter_identity = {
+                        "adapter_library": library,
+                        "adapter_name": adapter_name,
+                    }
+            except Exception:
+                # An unreadable identity is unclassified. A bridge failure must
+                # never be the reason an otherwise valid image sweep is refused.
+                pass
             return {
                 "engaged": engaged,
                 "property": f"continuous focus device {device}",
                 "device": device,
                 "status_properties": status,
+                **adapter_identity,
                 **({"probe_hint": (
                     f"To find this lock's capture range at zero exposures, call "
+                    + ("load_skill(name=\"nikon-pfs\"), then "
+                       if "pfs" in device.lower() else "") +
                     f"run_autofocus with probe device '{device}', one of the "
                     f"properties above, and the values that mean in-range. Read "
                     f"the values shown to pick the property; a bitfield or a "

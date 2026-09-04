@@ -27,6 +27,7 @@ from microclaw.tools import (
     get_device_property,
     get_device_property_info,
     get_exposure,
+    get_focus_lock_state,
     get_full_device_state,
     get_pixel_size,
     get_position_list,
@@ -4073,6 +4074,172 @@ class TestFocusLock:
                 assert not re.search(rf"\b{word}", rendered), word
         else:
             assert result["device"] == expected_device
+
+        if device:
+            expected_skill = "nikon-pfs" if "pfs" in device.lower() else None
+            assert (expected_skill in result["probe_hint"]) is bool(expected_skill)
+
+    def test_unengaged_hardware_lock_refuses_image_sweep_from_rig_payload(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """R88's Nikon Ti payload refuses before a snap or Z dispatch."""
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "TIPFSStatus"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_library.return_value = "NikonTI"
+        mock_ctrl.core.get_device_name.return_value = "TIPFSStatus"
+        mock_ctrl.core.get_device_property_names.return_value = StrVector(
+            ["Name", "Status"]
+        )
+        readings = {
+            "Name": "TIPFSStatus",
+            "Status": "Out of focus search range",
+        }
+        mock_ctrl.core.is_property_read_only.return_value = True
+        mock_ctrl.core.get_property.side_effect = lambda _device, prop: readings[prop]
+
+        def spend_exposures_and_move(ctrl, *_args, **_kwargs):
+            ctrl.core.snap_image()
+            ctrl.core.set_position(45.0)
+            return _FAKE_AF_RESULT
+
+        monkeypatch.setattr(
+            "microclaw.tools.single_sweep_autofocus", spend_exposures_and_move
+        )
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+        )
+
+        assert mock_ctrl.core.snap_image.call_count == 0
+        mock_ctrl.core.set_position.assert_not_called()
+        assert "hardware focus lock" in result["error"]
+        assert '"Status": "Out of focus search range"' in result["error"]
+        assert "REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID" in result["error"]
+        assert "fails loudly" in result["error"]
+        assert "at this Z" in result["error"]
+        assert result["focus_lock"]["adapter_library"] == "NikonTI"
+        assert result["focus_lock"]["adapter_name"] == "TIPFSStatus"
+
+    def test_demo_software_autofocus_with_properties_is_not_refused(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """Recorded demo payload: non-empty properties are not a class test."""
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "Autofocus"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_library.return_value = "DemoCamera"
+        mock_ctrl.core.get_device_name.return_value = "DAutoFocus"
+        mock_ctrl.core.get_device_property_names.return_value = StrVector(
+            ["Description", "HubID", "Name"]
+        )
+        values = {
+            "Description": "Demo auto-focus adapter", "HubID": "",
+            "Name": "DAutoFocus",
+        }
+        mock_ctrl.core.is_property_read_only.return_value = True
+        mock_ctrl.core.get_property.side_effect = lambda _device, prop: values[prop]
+        _patch_autofocus(monkeypatch)
+
+        state = get_focus_lock_state(mock_ctrl, unconstrained_guard)
+        assert "nikon-pfs" not in state["probe_hint"]
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+        )
+
+        assert result["converged"] is True, result
+
+    def test_unreadable_adapter_identity_does_not_cause_refusal(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "TIPFSStatus"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_library.return_value = "NikonTI"
+        mock_ctrl.core.get_device_name.side_effect = RuntimeError("bridge failure")
+        mock_ctrl.core.get_device_property_names.return_value = StrVector(["Status"])
+        mock_ctrl.core.is_property_read_only.return_value = True
+        mock_ctrl.core.get_property.return_value = "Out of focus search range"
+        _patch_autofocus(monkeypatch)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+        )
+
+        assert result["converged"] is True, result
+
+    def test_ti2_label_with_unrecorded_adapter_identity_is_not_refused(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        # Recorded gap: the Ti2 label is known, but its adapter library/name are
+        # not. This is not a decision that the Ti2 lacks a hardware focus lock.
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "PFS"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_library.return_value = "UnrecordedLibrary"
+        mock_ctrl.core.get_device_name.return_value = "UnrecordedAdapter"
+        mock_ctrl.core.get_device_property_names.return_value = StrVector(
+            ["PFS in Range"]
+        )
+        mock_ctrl.core.is_property_read_only.return_value = True
+        mock_ctrl.core.get_property.return_value = "Out of Range"
+        _patch_autofocus(monkeypatch)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+        )
+
+        assert result["converged"] is True, result
+
+    @pytest.mark.parametrize("assertion", ["", "   "])
+    def test_empty_focus_lock_probe_failure_is_not_an_opt_out(
+        self, mock_ctrl, unconstrained_guard, assertion
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            focus_lock_probe_failure=assertion,
+        )
+        assert "must be a non-empty caller assertion" in result["error"]
+
+    def test_nonempty_focus_lock_probe_failure_is_recorded_caller_assertion(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "TIPFSStatus"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_library.return_value = "NikonTI"
+        mock_ctrl.core.get_device_name.return_value = "TIPFSStatus"
+        mock_ctrl.core.get_device_property_names.return_value = StrVector(["Status"])
+        mock_ctrl.core.is_property_read_only.return_value = True
+        mock_ctrl.core.get_property.return_value = "Out of focus search range"
+        _patch_autofocus(monkeypatch)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+            focus_lock_probe_failure=" property probe found no band at this XY ",
+        )
+
+        assert result["converged"] is True, result
+        assert result["caller_assertion"] == {
+            "focus_lock_probe_failure": "property probe found no band at this XY"
+        }
+
+    def test_unedited_probe_placeholder_fails_loudly(
+        self, mock_ctrl, unconstrained_guard
+    ):
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", probe={
+                "device": "TIPFSStatus", "property": "Status",
+                "in_focus_values": ["REPLACE_ME__UNEDITED_PLACEHOLDER_IS_INVALID"],
+            },
+        )
+        assert result["error"].startswith("Replace REPLACE_ME")
 
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):
         from microclaw.tools import set_focus_lock

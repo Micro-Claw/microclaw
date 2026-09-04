@@ -123,6 +123,17 @@ def test_run_autofocus_description_says_sweep_is_headless():
     assert "viewer does not show the sweep as it happens" in description
 
 
+def test_focus_lock_probe_failure_has_its_own_audit_rule():
+    parameter = _SCHEMA_BY_NAME["run_autofocus"]["input_schema"]["properties"][
+        "focus_lock_probe_failure"
+    ]
+    assert parameter["type"] == "string"
+    assert "non-empty" in parameter["description"]
+    assert "only after" in parameter["description"]
+    assert "caller assertion" in parameter["description"]
+    assert "not an instrument measurement" in parameter["description"]
+
+
 def test_mosaic_and_multiposition_descriptions_agree_on_dataset_shape():
     mosaic = _SCHEMA_BY_NAME["build_stage_coordinate_mosaic"]["description"]
     multipos = _SCHEMA_BY_NAME["run_multiposition_acquisition"]["description"]
