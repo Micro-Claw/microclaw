@@ -86,6 +86,7 @@ Rows added since the triage:
 |---|---|
 | `R82`–`R86` | `design/71-installable-extensions.md` §"Register rows this leaves behind", 2026-09-02 |
 | `R87` | `design/72` block 72a's demo gate, 2026-09-02 |
+| `R88` | a Nikon Ti session scored on 2026-09-04, no notebook |
 
 
 ## The work queue
@@ -137,6 +138,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL |  |
 | `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM |  |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
+| `R88` | [The probe_hint payload reached a live model and did not route it](#r88) | HIGH | MEDIUM | → `design/74` |
 
 **Demo machine**
 
@@ -2205,6 +2207,54 @@ error path and this merge is already carrying unverified change.
 - **Block** — NONE. Deliberately not folded into 72a, which was merged on a passing gate; this is a follow-on sentence, not a defect in what shipped.
 - **Effort** — SMALL
 - **Provenance** — found while scoring block 72a's gate, not from the design/35 triage. The same measurement corrected design/72 §Gate's false premise that "the demo config declares illumination in its safety config".
+
+### R88 — The probe_hint payload reached a live model and did not route it
+
+**A cold Nikon Ti session was handed `get_system_state.focus` carrying the lock device, its status property with its current value, and the `probe_hint` naming `run_autofocus` — and still opened with an image-based sweep, dismissed the PFS in prose, and only probed after the operator named it 31 turns later.**
+
+- **Status** — OPEN, and it is the **third** failure of the same behaviour. `design/56` §"Owed rig evidence" item 3 says the `status_properties`/`probe_hint` payload exists *because two prompt edits failed*, and that "no live model has seen this payload". One now has. `microclaw/tools.py:4043` embeds `get_focus_lock_state`'s exact return under `state["focus"]`, so the hint arrived on the session's **first tool call**, byte-identical to what `get_focus_lock_state` returned 20 calls later. The prompt rule at `microclaw/agent.py:340-349` ("BEFORE proposing an image-based sweep… propose run_autofocus with a property probe FIRST… Do not wait to be asked") was not followed; `microclaw/agent.py:338`'s ordering rule was also not followed. Nothing in code enforces either.
+- **Importance** — HIGH - it spent ~20 tool calls and 10 exposures reaching a flat-metric refusal that it then read as a statement about the sample ("This spot on the sample has no cells") while Z was ~2250 µm from the capture band. On a 60× oil lens with an empty field the image metric *cannot* work and the lock is the only route, so this is the case the intervention was built for.
+- **Where** — LOCAL for the measurement, RIG:Nikon to confirm. The deciding observation is whether a live model routes to the probe from a cold `get_system_state`, and this session's own payload is now a recorded fixture that can be replayed off-rig (`CLAUDE.md` §step 6, "dry-run gate prompts"). Note the register's Nikon bucket says the operator has no reachable Ti; **this session is a Nikon Ti dated 2026-09-03**, so that premise needs re-checking with the operator before four rows stay parked.
+- **Block** — `design/74-the-lock-must-refuse-the-image-sweep.md`, which was opened for this row and owns it. It is **not** R15 (engage after finding the band): R15 got a *positive* observation in this same session — once the skill was loaded the model engaged the lock the moment the band was found and ran both of the skill's mandatory post-engage checks (image check, then a +10/+10 µm XY jog with a re-read of the lock, which came back `engaged: true`). The defect is entirely upstream of R15, in what routes an unprompted session into that procedure at all.
+- **Effort** — MEDIUM
+- **Provenance** — scored from `~/Documents/Documents - Beyonce/Projects/Micro-Claw/nikon-no-pfs-again/20260903_192740_786081_microclaw_history.jsonl`, sha256 `66525642068059f2a0ac7d46cb508edd6f04b578672d4877a35bd9ff10fa9c0b` (156 records). Not from the design/35 triage.
+
+<details><summary>The three turns, and two secondary defects found while scoring</summary>
+
+**Record 2** — `get_system_state`, first call of the session, returns
+`focus: {"engaged": false, "device": "TIPFSStatus", "status_properties": {"Name": "TIPFSStatus", "Status": "Out of focus search range"}, "probe_hint": "To find this lock's capture range at zero exposures, call run_autofocus with probe device 'TIPFSStatus'…"}`.
+
+**Record 3** — the model files it as scene-setting, one bullet between the
+condenser and the light path: *"PFS focus lock is out of range (disengaged)."*
+
+**Record 13** — the dismissal, immediately before the first image sweep:
+*"I'll disengage worry about PFS (it's already out of range / disengaged) and
+sweep around the current Z."* It read `Out of focus search range` as a verdict
+about the hardware's availability rather than a report about where Z was. Z was
+in fact ~2250 µm below the band, so that reading was the expected one.
+
+`get_focus_lock_state` was finally called at record 21 — after two `StageMoveError`
+sweeps — and used only to rule the PFS *out* as the cause of a stalled stage.
+`load_skill("nikon-pfs")` came at record 33, and only because the operator wrote
+*"check our PFS notes"*. The skill-routing sentences in `microclaw/tools_schema.py:994`,
+`:2118` and `:2135` are all conditioned on "when **get_focus_lock_state** reports a
+PFS", and that call had not happened — the payload which made it redundant does
+not satisfy the condition as written.
+
+**Two secondary defects, model reporting rather than code.** Both are about a
+model summarising several tool results as one, which matters for gate scoring.
+
+1. Record 81 claims *"I swept the entire climb (0 → 2210 µm, zero exposures)"*.
+   It did not. The climb was five **disjoint** 100 µm probe windows —
+   213–313, 713–813, 1213–1313, 1711–1811, 2111–2211 — with blind 400 µm
+   `move_stage_z` jumps between them: ~23% of the travel was read.
+2. Record 85's post-hoc explanation, *"my coarse 3 µm steps had stepped right
+   over a narrow capture band"*, is also wrong. Z ≈ 2340 was never inside any
+   coarse window; the last one ended at 2210.7 and the next call jumped straight
+   to 2400. The band was missed by the gaps, not by the step size. A property
+   sweep spends no exposures, so one call could have spanned the whole travel.
+
+</details>
 
 ## Blocked on someone else — not schedulable here
 
