@@ -64,7 +64,11 @@ it.
 
 ## Decision
 
-### D1 — the tool refuses, at zero exposures
+### D1 — the tool offers the lock first, at zero exposures
+
+(Titled "the tool refuses" in the original draft. It refuses *this call*; the
+caller reaches the image sweep on the next one — see D3 as corrected. Nothing
+here makes image-based autofocus unavailable on a lock rig.)
 
 Extend the branch that is already there, but do not use non-empty
 `status_properties` as the hardware-lock discriminator. The recorded demo
@@ -153,16 +157,36 @@ to do on the user's behalf").
 
 ### D3 — one explicit, auditable opt-out
 
-`focus_lock_probe_failure: str | None = None`. The post-lock fine-tune case
-needs no opt-out
-— an *engaged* lock is already refused one branch above, and the skill's
-"use an image metric to confirm signal" step is a snap, not a sweep. The only
-real case left is the one this very session ended up suspecting: the lock cannot
-see the coverslip here — no oil, a bubble, off-specimen — which the caller learns
-by running the probe and getting no band. The argument is therefore not a bare
-boolean that a model can flip reflexively: it must contain a non-empty account of
-the failed probe, for example *"property probe found no band at this XY"*. The
-refusal tells the caller to supply it only after that result.
+**Corrected 2026-09-04, operator, before 74a merged.** The paragraph below
+originally specified `focus_lock_probe_failure: str | None = None` on the
+premise that *"the only real case left"* for an image sweep on a lock rig is a
+probe that found no band. **That premise is wrong**, and it made the shipped
+build a block rather than an offer: a caller who simply wants the image metric
+has no failed probe to describe, so the only way past the refusal was to assert
+something untrue. The operator's words: *"I don't want to completely block the
+user from being able to run an image-based autofocus on a Nikon… Sometimes it's
+helpful to use the image-based approach. Most of the time, the PFS approach is
+better. **The PFS approach must be offered first**, before the image-based
+autofocus."*
+
+So the refusal stays — enforcement in the tool is wanted — but the opt-out
+states **why the image metric is the right instrument here**, not a claim about
+the rig. `image_metric_reason: str | None = None`, non-empty, admitting the two
+legitimate answers:
+
+- the operator asked for an image-based focus, and
+- a property probe reported no band at this XY.
+
+One argument, one extra round trip, zero exposures spent reaching it. That is
+"offered first" rather than "blocked". The dissent recorded below — that a bare
+`bool` would do — is *partly* upheld: its objection was to a parameter needing
+two paragraphs before it can be called, and a reason string keeps the audit
+trail D3's second obligation asks for while fitting on one line. What the
+correction actually overturns is the *justification* for the string, not the
+string.
+
+The engaged-lock branch above is untouched and still fires first, so this
+refusal is unreachable while the lock is engaged.
 
 The tool is stateless and cannot prove that an earlier call occurred, so this is
 an auditable assertion rather than cryptographic enforcement. The live-model gate
@@ -260,6 +284,28 @@ not say which one produced it. Revisit after 74b has a number.
   probeable hardware lock. An unknown device is left unchanged. Expanding the
   classifier to additional adapters is separate evidence-driven work; neither a
   device-name substring nor `status_properties` alone closes it.
+- **Image-metric autofocus on `TIPFSOffset`.** Explicitly out of scope
+  (operator, 2026-09-04): *"we don't want to adjust any of the behaviour
+  surrounding the TIPFSOffset in this block."* Recorded here because it was
+  found while scoring this one and it is the *other half* of the Nikon focus
+  workflow. `run_autofocus` sweeps only the core focus device — there is no
+  named-stage axis — and its engaged-lock branch refuses outright, so the
+  post-engage fine-tune has no tool and is done by hand. Measured in three
+  sessions, always with the PFS engaged, one model round trip and one snap per
+  plane:
+
+  | session | route | planes |
+  |---|---|---|
+  | `pfs_fix` 2026-08-05 | raw `set_device_property TIPFSOffset.Position` | 163.325 → 169.325, 2 µm steps |
+  | `pfs-nikon` 2026-08-22 | `move_named_stage` | 17 moves, 5 µm steps, `snap_and_analyze` between every one |
+  | `nikon-no-pfs-again` 2026-09-03 (R88) | `move_named_stage` | 140 → 120 → 130 → 150 → 140 |
+
+  The last two **backtrack and re-visit** — 165.4 appears three times in the
+  2026-08-22 run, and the R88 run ends at the value it started from. That is
+  hunting, not a sweep, and it is design/56's own finding one axis over: *"a
+  hand-driven loop hides that behind its own latency … collapsing that loop into
+  one tool call took it away."* Goes to `design/70` as a register row.
+
 - **R15**, engaging after the band is found. It is a *different* row and this
   session gave it a **positive** observation: once `nikon-pfs` was loaded, the
   model engaged the lock the moment the band appeared and ran both of the skill's

@@ -87,6 +87,7 @@ Rows added since the triage:
 | `R82`–`R86` | `design/71-installable-extensions.md` §"Register rows this leaves behind", 2026-09-02 |
 | `R87` | `design/72` block 72a's demo gate, 2026-09-02 |
 | `R88` | a Nikon Ti session scored on 2026-09-04, no notebook |
+| `R89` | found while scoring `design/74` block 74a, 2026-09-04 |
 
 
 ## The work queue
@@ -139,6 +140,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM |  |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
 | `R88` | [The probe_hint payload reached a live model and did not route it](#r88) | HIGH | MEDIUM | → `design/74` |
+| `R89` | [The PFS offset fine-tune is a hand-driven loop with no tool](#r89) | MEDIUM | MEDIUM |  |
 
 **Demo machine**
 
@@ -2255,6 +2257,18 @@ model summarising several tool results as one, which matters for gate scoring.
    sweep spends no exposures, so one call could have spanned the whole travel.
 
 </details>
+
+### R89 — The PFS offset fine-tune is a hand-driven loop with no tool
+
+**`run_autofocus` sweeps only the core focus device, so the post-engage image-metric fine-tune on `TIPFSOffset` — the second half of every Nikon focus session — is done by hand, one model round trip and one snap per plane.**
+
+- **Status** — OPEN. `run_autofocus` has no named-stage axis (`microclaw/autofocus.py` drives `core.set_position`/`core.get_position` throughout), and its engaged-lock branch refuses outright — correctly, for core Z, since a sweep would fight the servo. Sweeping the *offset* with the lock engaged is the opposite: it is what the lock is for. So the workflow has no tool and the model improvises.
+- **Importance** — MEDIUM. It costs an exposure and a round trip per plane, and it is worse than a sweep: measured across three sessions the trajectory **backtracks and re-visits**. `pfs-nikon` 2026-08-22 went 145.4 → 140.4 → 135.4 → 150.4 → 155.4 → 160.4 → 165.4 → 170.4 → 165.4 → 155.4 → 160.4 → 165.4, hitting 165.4 three times, `snap_and_analyze` between every move; `nikon-no-pfs-again` 2026-09-03 went 140 → 120 → 130 → 150 → 140 and ended where it began; `pfs_fix` 2026-08-05 stepped 163.325 → 169.325 by raw property write. A one-call sweep would bring the metric curve, the contrast check and the edge-peak guard that `run_autofocus` already has, and design/56 measured what collapsing a hand-driven loop into one call recovers.
+- **Where** — LOCAL to build, RIG:Nikon to confirm. The three histories are recorded and are enough to specify it; no rig is needed to write it.
+- **Block** — NONE yet. Deliberately excluded from `design/74` by the operator, 2026-09-04: *"we don't want to adjust any of the behaviour surrounding the TIPFSOffset in this block."* 74a is about routing to the PFS, not about what happens after it engages.
+- **Effort** — MEDIUM. A named-stage axis for `run_autofocus`, which must **not** inherit the engaged-lock refusal when the swept axis is the offset stage, plus the emitter, the schema and the bounds check that `move_named_stage` already applies.
+- **Provenance** — found while scoring `design/74` block 74a, not from the design/35 triage. It is **not** R88: R88 is about reaching the lock at all; this is about the fine-tune that follows once it is engaged.
+
 
 ## Blocked on someone else — not schedulable here
 
