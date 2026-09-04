@@ -358,15 +358,52 @@ one more arm; do not attribute arm C's result to D1 or arms A/B's to D4.
   unmeasured. Initial-call ordering is not part of that verdict; it is arm C's,
   and arm C failing is a verdict on D4, not on D1.
 
+### Coordinator decisions, 2026-09-04
+
+**There is no Nikon gate, and there will not be one.** The operator cannot test
+on the Ti before this reaches `main`; the Nikon user pulls afterwards and can
+only run live on a real sample. So everything 74a ships must be decidable from
+recorded artifacts, and the Nikon run is a formality, not evidence we are
+waiting on.
+
+Three consequences, all measured rather than assumed:
+
+- **`core.get_device_library` / `get_device_name` are already proven on a real
+  Nikon Ti over the bridge.** `microclaw/rig_inventory.py:393-394` calls both,
+  and `nikon-lausanne-rig/inventory.json` is that rig's own output: the lock is
+  library `NikonTI`, adapter name `TIPFSStatus`, device type `AutoFocusDevice`.
+  The demo machine's is `DemoCamera` / `DAutoFocus` (`Device,Autofocus,DemoCamera,
+  DAutoFocus` in `9a-gate-demo/MMConfig_demo_aux_z.cfg`). D1's discriminator is
+  therefore the **adapter identity allowlist** the Decision section names as the
+  fallback — built on two calls whose return values on both machines are on
+  disk, not on a capability nobody can verify.
+- **The Ti2-E / Dragonfly is a recorded gap, and stays one.** Its lock's device
+  *label* is `PFS` (design/56, and the 2026-08-23 session), but its adapter
+  library and name appear nowhere in the archive. It is left unclassified — no
+  refusal, behaviour unchanged — and becomes a register row asking for those two
+  reads next time that rig is reachable. A guessed `NikonTi2` entry is not
+  admissible in a refusal path.
+- **No M5 gate is possible for D1.** M5 takes the EMU branch of
+  `get_focus_lock_state`, which never returns `status_properties`, so D1's
+  condition is unreachable there; M2 has no autofocus device configured at all.
+  The demo machine is the only rig that can exercise this, and only as the
+  negative control.
+
+**74b is held until 74a merges** (operator decision). Arm A runs against a
+worktree pinned at the pre-74a commit, so nothing is lost by deciding its
+budget later. Priced for that decision, against Opus 4.8 at **$5 / $25 per
+Mtok** (checked against the model table, not recalled): ~31k tokens of static
+context per call, ~6 turns per sample, so ~$1.15 per sample uncached and ~$0.50
+with prompt caching on the tools+system prefix — 3 arms x 12 samples is about
+**$20**.
+
 ## Run ledger
 
-Baseline before the block: `main` `a6eafcf`, coordinator-run suite
-**2804 passed / 99 skipped / 2 warnings** in 179.5 s (2026-09-04,
-`.venv/bin/python -m pytest -q`). Dev environment is `uv` +
-Python 3.12; a plain `uv venv` has no `pip` module, so a worktree is provisioned
-with `uv pip install --python .venv/bin/python -e ".[serve,test,ilastik]"`.
+Baseline before the block: `main` `4a4faba`, coordinator-run suite
+**2804 passed / 99 skipped / 2 warnings** in 156.5 s (2026-09-04,
+`.venv/bin/python -m pytest -q`).
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 74a | | | | | |
+| 74a | `design74/lock-refuses-image-sweep` | `4a4faba` (2026-09-04), worktree `../microclaw-74a` | | | |
 | 74b | | | | | |
