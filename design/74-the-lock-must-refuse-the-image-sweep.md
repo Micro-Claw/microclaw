@@ -448,6 +448,59 @@ context per call, ~6 turns per sample, so ~$1.15 per sample uncached and ~$0.50
 with prompt caching on the tools+system prefix — 3 arms x 12 samples is about
 **$20**.
 
+## Arm B, run 1 — NOT EXERCISED (2026-09-04)
+
+**n=12, and `offer_fired` was 0 in 12 of 12.** Not one sample made a non-probe
+`run_autofocus` call, so D1's offer never fired. The `0/12 ROUTED_AROUND` is
+therefore a null produced by never reaching the mechanism, not evidence that
+models decline to route around the offer. Reported as **NOT EXERCISED**, which
+is never a pass.
+
+| verdict | n=12 |
+|---|---|
+| `PROBED_UNPROMPTED` — first focus action already carried a probe | 4 |
+| `NO_FOCUS_ACTION` — never reached a focus action in 14 turns | 8 |
+| `RECOVERED` — offer fired, model then probed | 0 |
+| `ROUTED_AROUND` — used `image_metric_reason` | 0 |
+| `TRUNCATED` | 0 |
+
+Zero image exposures and zero Z motion across all twelve; every sample ended at
+the entry Z of −89.35 µm.
+
+**The cause is the harness, not the models.** 25 unfixtured tool calls across 12
+samples — `get_knowledge` 7, `list_config_groups` 5, `get_device_property_info`
+5, `get_full_device_state` 5, and one each of `get_pixel_size`,
+`get_stage_position`, `get_exposure` — each returning "temporarily unavailable".
+The samples spent their turns orienting into dead ends. The one-sample
+validation had already caught this exact class of defect (`list_devices` and
+`snap_and_analyze` were missing, and a model reasoned explicitly that it
+therefore *could not drive an image-based sweep* — the behaviour under test);
+the fix added those two and did not go looking for the rest.
+
+**What the run weakly shows, with its confounds stated.** 11 of 12 samples
+called `load_skill` — **but the scorer records only the tool name, not which
+skill**, so no claim about `nikon-pfs` is available from this artifact. That is
+a second instrument gap. 4 of 12 probed unprompted and 0 of 12 reached for an
+image sweep, which is *suggestive* that R88's opening is not the default
+behaviour, but the 8 dead-end trajectories make it unsafe to quote as a rate.
+
+**The deeper problem is the experiment design, and more samples do not fix it.**
+The offer only fires if a model first reaches for an image sweep, and it mostly
+does not. Measuring "does it recover or route around" therefore depends on the
+mistake occurring, which is rare in this replay: at n=12 with clean fixtures the
+expected number of offer-firings is one or two. That is not a design that can
+answer the question at this budget.
+
+**Measured spend: $3.78 for the run, $4.59 including both validation samples**
+(Opus 4.8 at $5/$25 per Mtok, cache reads at $0.50). The harness now carries a
+`--max-spend` ceiling and writes each row as it completes, because a run that
+reports its cost afterwards is not a run bounded by it, and a killed run should
+not lose everything.
+
+**Where the question actually gets answered for free:** the Nikon user's own
+session produces the identical binary — a probe call, or `image_metric_reason` —
+from a real sample rather than a replay. Ask for the history JSONL.
+
 ## Run ledger
 
 Baseline before the block: `main` `4a4faba`, coordinator-run suite
