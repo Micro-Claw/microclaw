@@ -88,11 +88,14 @@ def main():
     guard = SafetyGuard(load_safety_config_or_exit(args.safety_config).constraints)
     confirmations = []
 
-    def confirm(summary_text, kind="action", subject=None):
+    def confirm(summary_text, kind="action", subject=None, **extra):
         # No console here, so record and approve -- and print it, because an
         # auto-approval nobody can read afterwards is design/60 F5 again.
+        # **extra: the acquisition threshold path passes grant_metadata=
+        # (tools.py:2707), and a stub without it turns a confirmed call into a
+        # TypeError. Found by the gate selftest, not on the rig.
         confirmations.append({"kind": kind, "subject": subject,
-                              "summary": summary_text})
+                              "summary": summary_text, "extra": sorted(extra)})
         print(f"[m2] auto-approved {kind}/{subject}: {summary_text}")
         return True
 

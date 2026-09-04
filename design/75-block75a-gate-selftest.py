@@ -15,7 +15,7 @@ Run it on **both trees**. On this branch every case must hold; on `main` cases
 what proves the gate discriminates rather than passing whatever it is pointed
 at.
 
-Seven cases, and **four of them are deliberately failures** — a gate whose fake
+Eight cases, and **four of them are deliberately failures** — a gate whose fake
 only ever feeds it the happy path has not been tested, it has been rehearsed.
 design/60 block 60b's gate failed the single limb its rig trip existed for
 because its fake wrote the filename the glob expected.
@@ -34,11 +34,19 @@ Three things this selftest does on purpose:
   `exposure_ms` that the tool does not take; that would have come back as an
   error from every snap on M2 and read as a product failure.
 
-What it found before shipping, all in the gate rather than the product: limb B
-failing for limb A's cause, limb D discarding the child's stdout so a failure
-had no cause, a `finally` clobbering that stdout with a second `communicate()`,
-and a 4,000-frame long call that crossed the rig's confirmation threshold and
-returned instead of running.
+What it found before shipping, all five in the gate rather than the product:
+
+1. limb B failing for limb A's cause (order vs completeness);
+2. limb D discarding the child's stdout, so a failure had no cause;
+3. a `finally` clobbering that stdout with a second `communicate()`;
+4. a long call sized by frame count rather than per-frame time, which crossed
+   the rig's confirmation threshold;
+5. and, underneath 4, the real one: **the confirm stubs did not accept
+   `grant_metadata=`**, which `tools.py:2707` passes on the acquisition
+   threshold path -- so any call above a rig's `confirm_above_frames` came back
+   as `TypeError: got an unexpected keyword argument 'grant_metadata'`. Case 8
+   holds that fix. The product's own hint had said it plainly: *"This is an
+   argument error, not a hardware fault."*
 """
 from __future__ import annotations
 
@@ -542,6 +550,15 @@ def main():
         expect={"E": "FAIL", "0": "NOT EXERCISED", "A": "NOT EXERCISED",
                 "B": "NOT EXERCISED", "C": "NOT EXERCISED",
                 "D": "NOT EXERCISED", "F": "NOT EXERCISED"})
+
+    print("8. an acquisition that crosses confirm_above_frames - limb D must PASS")
+    print("   (holds the fix for the fourth gate defect this selftest found:")
+    print("    the confirm stub did not accept grant_metadata=, so every")
+    print("    threshold-crossing call became a TypeError)")
+    ok &= run_case(
+        "threshold-confirm", out=base / "threshold", per_frame_s=0.01,
+        kill_frames=600, seed="joined",
+        expect={"D": "PASS", "E": "PASS"})
 
     print("7. the M2 latency arm runs at all - against the same fakes")
     ok &= run_m2_arm(base / "m2")

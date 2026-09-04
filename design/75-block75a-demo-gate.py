@@ -183,7 +183,10 @@ if _prelude:
     print(f"CHILD_PRELUDE {_prelude}", flush=True)
     exec(compile(Path(_prelude).read_text(encoding="utf-8"), _prelude, "exec"))
 
-tools.CONFIRM_FN = lambda summary, kind="action", subject=None: True
+# **extra, because the acquisition threshold path passes grant_metadata= and a
+# narrower stub makes every confirmed call a TypeError.
+tools.CONFIRM_FN = (
+    lambda summary, kind="action", subject=None, **extra: True)
 ctrl = MicroscopeController(port=int(port))
 guard = SafetyGuard(load_safety_config_or_exit(safety or None).constraints)
 writer = AcquisitionDiagnosticWriter(AuditLog(Path(acq_path)))
@@ -305,13 +308,22 @@ def main():
         resolved = guard.resolve_in_workspace(str(root))
         confirmations = []
 
-        def gate_confirm(summary, kind="action", subject=None):
+        def gate_confirm(summary, kind="action", subject=None, **extra):
             # A program-shaped gate has no console to answer a confirmation on
             # (_require_confirmation calls input()), so auto-approve -- but
             # record every question, because an auto-approval nobody can read
             # afterwards is design/60 F5's session grant again.
+            #
+            # **extra is load-bearing, not defensive. The acquisition threshold
+            # path passes `grant_metadata=` (tools.py:2707), and a stub without
+            # it turns any confirmed call into
+            # "TypeError: got an unexpected keyword argument 'grant_metadata'"
+            # -- which this gate's own selftest produced the moment a call
+            # crossed the fixture's confirm_above_frames. The keywords in the
+            # product today are kind, subject and grant_metadata; **extra means
+            # a fourth cannot break the gate.
             confirmations.append({"kind": kind, "subject": subject,
-                                  "summary": summary})
+                                  "summary": summary, "extra": sorted(extra)})
             print(f"[gate] auto-approved {kind}/{subject}: {summary}")
             return True
 
