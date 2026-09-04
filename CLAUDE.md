@@ -182,6 +182,20 @@ replacement for it.
   And regardless: **a change that can stop a run and wait for a human needs the
   user's agreement before it ships, not after.** That is theirs, never the
   implementer's.
+
+- **An opt-out must be sayable truthfully by every legitimate caller.** Before
+  shipping an argument that lets someone past a refusal, ask what a caller who is
+  *not* the failure case would have to write in it. design/74's D3 specified
+  `focus_lock_probe_failure` — a non-empty account of a property probe that found
+  no band — on the stated premise that this was "the only real case left". It was
+  not: a microscopist who wants an image metric because it is the right
+  instrument has no failed probe to describe, so the only way past was to assert
+  something untrue, which the tool would then have written into the session
+  record as a caller assertion. That is a **block wearing an opt-out's name**.
+  The fix was to make the argument state *why the alternative is right for this
+  call* rather than *what went wrong with the preferred one*. Operator
+  correction, 2026-09-04, caught before merge and only because it was described
+  to them in a sentence.
 - **Fold into what exists.** Before writing a new function, look for the one
   that already does this or nearly does this, and extend it. Two functions that
   do almost the same thing is a defect, not a convenience.
