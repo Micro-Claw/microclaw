@@ -1063,16 +1063,71 @@ compressed.
 
 **Step 4 — push the branch, code and runbook together.**
 
-- [ ] Demo-machine runbook committed on the branch, pinned with
-      `git merge-base --is-ancestor <commit> HEAD`, shipped as a **program**
-      that scores each limb independently and exits nonzero.
-- [ ] The M2 arm's command sheet committed on the branch — one script, its own
-      log, literal `uv run python` lines run by the coordinator first.
-- [ ] Gate program run against a **bridge-shaped** fake
-      (`design/55-gate-probe-selftest.py`, Core collections exposing
-      `size()`/`get(i)` and not iterable) on both trees, so its failure
-      discriminates.
-- [ ] Pushed to `origin` with `GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`. No PR.
+- [x] `design/75-block75a-gate.md` committed on the branch, pinned with
+      `git merge-base --is-ancestor 671d8fe HEAD`. Two parts on two machines:
+      part 1 the demo machine (~5 min), part 2 M2 (~3 min, 40 exposures).
+      Environment facts taken from the last gate that ran on each machine
+      rather than invented — design/74's demo runbook for `D:\Code\microclaw`,
+      the unredirected uv warm-up and the control-arm copy; design/68's M2
+      runbook for the M2 path, the PowerShell pin and `$LASTEXITCODE`. Every
+      argument checked against both scripts' `--help`.
+- [x] `design/75-block75a-demo-gate.py` — seven limbs, each scored
+      independently, its own log, nonzero on any FAIL **or** NOT EXERCISED. It
+      deliberately carries only what a fake cannot answer: **the order real
+      pycro-manager fires `image_saved_fn` in relative to `__exit__`
+      returning** (every test in the suite drives a fake and has never observed
+      it, and the incident turns on that thread), how promptly a lifecycle
+      record becomes readable on disk, and the one-frame cost. Limb D is the one
+      that matters — it ends a child process *mid-acquisition* once that call's
+      submission record is on disk, so what survives is a call with a beginning
+      and no end, which is the incident's own evidence shape. **No browser
+      session**: 75b's gate needs one anyway for D2 and can carry the
+      `agent.py` handoff then.
+- [x] `design/75-block75a-m2-latency.py` — the only part needing a booked rig.
+      Reproduces the failing call exactly (1 frame, `interval_s=0`, 50 ms,
+      `laser_slot=3`, a snap before each) and reports end-to-end and
+      finalization latency. **It sets no constant**; step 10 records the
+      measured maximum and 75b chooses from it, so the measurement and the
+      choice are not the same pass. Its dose is stated in exposures before it is
+      asked for, and the runbook says plainly that a hang is a result rather
+      than a spoiled run.
+- [x] Gate run against a **bridge-shaped** fake on **both trees**
+      (`design/75-block75a-gate-selftest.py`): Core collections expose
+      `size()`/`get(i)` and raise on `__iter__`; records are written by the
+      **real** `AuditLog` through the real writer, never hand-assembled; limbs C
+      and D spawn **real** child processes so the gate's own poll-then-end
+      sequencing executes. Eight cases, four of them deliberate failures. All
+      eight hold on the branch; on `main` cases 1–5, 7 and 8 fail at limb E and
+      case 6 — which *expects* that shape — is the only one that passes.
+- [x] **The selftest found five defects, all in the gate, none in the
+      product**, which is the whole argument for running it: limb B failing for
+      limb A's cause (a cascade in reverse); limb D discarding the child's
+      stdout so a failure had no cause; a `finally` clobbering that stdout with
+      a second `communicate()`; a long call sized by frame count that crossed
+      the rig's confirmation threshold; and underneath that, the one that would
+      have cost a round — **the confirm stubs did not accept `grant_metadata=`**
+      (`tools.py:2707` passes it on the acquisition threshold path), so any call
+      above a machine's `confirm_above_frames` came back as
+      `TypeError: got an unexpected keyword argument 'grant_metadata'`. The
+      product's own hint had said it plainly: *"This is an argument error, not a
+      hardware fault."* Case 8 now drives a call across the threshold so the
+      stub is actually invoked.
+- [x] Also caught before shipping: the M2 arm called `snap_and_analyze` with an
+      invented `exposure_ms`, which that tool does not take — it would have
+      failed every snap on M2 and read as a product defect. The exposure now
+      goes through `set_exposure`, whose signature was checked rather than
+      guessed.
+- [x] Pushed to `origin` with `GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`. No PR.
+
+**One coordinator error worth recording.** All three gate files were deleted
+mid-session by a `rm design/75-block75a-*.py` whose `cd` had landed in the
+worktree rather than the primary checkout, so it removed the originals instead
+of the copies — and they were untracked, so git could not help. They were
+rewritten from context and the selftest re-run: all eight cases behaved
+identically, which is what made the reconstruction checkable rather than
+hopeful. The cheap lesson: commit gate code as soon as it runs, and never `rm` a
+glob in a directory whose identity depends on a `cd` earlier in the same
+command.
 
 **Step 5 — the user runs the gates.** Demo machine, then the M2 arm.
 
@@ -1107,5 +1162,5 @@ Baseline before the notebook: `main` `444d694`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | demo machine (D4 mechanism) + a short M2 arm (latency) | |
+| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Written and pushed, not yet run.** `design/75-block75a-gate.md`: part 1 demo machine (7 limbs, ~5 min, with a control arm on `main`), part 2 M2 (~3 min, 40 exposures, the latency that sizes 75b). Selftest `design/75-block75a-gate-selftest.py` — 8 cases, 4 deliberate failures — passes on the branch and fails at limb E on `main`. It found **5 defects in the gate and 0 in the product**, the load-bearing one being confirm stubs that did not accept `grant_metadata=`, which would have broken every threshold-crossing call on the rig. | |
 | 75b | | | held until 75a merges and the M2 arm is scored | demo machine (limbs 1, 4) | |
