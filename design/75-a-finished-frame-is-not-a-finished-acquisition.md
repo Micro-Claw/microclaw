@@ -1,6 +1,7 @@
 # A finished frame is not a finished acquisition
 
-Status: **proposed**, nothing implemented. Written 2026-09-04 from
+Status: **coordinated from 2026-09-04** — two blocks, 75a assigned, 75b held.
+See §Blocks and §Run ledger. Written 2026-09-04 from
 `m2-tirf-stage-freeze/20260904_115958_681706_microclaw_history.jsonl` and
 `m2-tirf-stage-freeze/CoreLog20260904T103846_pid6032.txt` supplied by the
 operator. Reviewed against the code and against pycro-manager 1.0.2's source
@@ -756,3 +757,283 @@ are indistinguishable at that point. Three things changed:
     and polling. Camera state now has an explicit 2 s grace, and tests assert the
     full runtime/quiet + poll + camera + diagnostic delivery ceiling rather than
     claiming the result appears exactly at policy expiry.
+
+## Blocks
+
+Coordinated from 2026-09-04. **design/75 owns its own blocks, its own gates and
+its own ledger**, per `CLAUDE.md` §"The block workflow" — that section governs,
+and where this one disagrees with it, that one wins.
+`design/70-carried-forward-register.md` gets `R91` and the `run_mda` note in
+step 10; it does not track these steps.
+
+**Two blocks, and D4 ships first.** The order is not "fix first, instrument
+later", and the reason is in the gate rather than in the code: **D4 is the
+instrument gate limb 2 measures with, and limb 3 sets D1's two constants from
+that measurement.** Submission-to-result latency with the finalization segment
+broken out is not readable from anything on `main` today — a plain
+`run_timelapse` result carries no duration, `AuditLog` records carry no
+timestamp, and `acquisition_progress` carries frame counts only. Without D4 the
+operator would be timing a browser spinner with a stopwatch, and limb 3 would
+choose `runtime_slack_s` from that. D4 also needs no constant decided and no
+owed evidence answered, so it can be assigned immediately while the three facts
+in §"Evidence still owed" are collected in parallel — and it is the block that
+guarantees the *next* occurrence leaves a record behind, which is the specific
+thing this incident's absence cost.
+
+The cost of the order is that M2 keeps the 15-minute hang for one more block.
+That is accepted: the operator's workaround is known, cheap and already used
+once (close MicroClaw, restart), and shipping a bound whose two constants were
+picked off a stopwatch is how §"Why both terms" says this block fails.
+
+### 75a — persistent, correlated acquisition diagnostics (D4)
+
+D4 only. No bound changes, no policy object, no `phase`, no change to any
+acquisition's behaviour or to any tool result — a diff review must confirm that,
+because a block that quietly moves the bound would spend 75b's gate on its own
+change.
+
+- A sibling JSONL beside the history file, written by **`AuditLog`**
+  (`microclaw/conversation.py:138`) exactly as `_confirmations.jsonl` already is
+  — `__main__.py:190-193` and `webserve.py:365-366` are the two existing
+  spellings and **both** must be wired, because the incident was a `serve`
+  session. Do not write a second appender; `AuditLog.append` already locks,
+  flushes and `fsync`s per record, which is precisely why the callback must not
+  call it.
+- A bounded, thread-safe queue drained by one writer thread. `image_saved_fn`'s
+  operation is a non-blocking enqueue. Sampled progress coalesces when the queue
+  is full; construction, submission, exception, timeout and teardown-completion
+  records are never dropped.
+- Lifecycle records per acquisition: construction, event submission, first frame
+  accounted, sampled progress (at the existing at-most-once-per-second cadence,
+  reusing `progress_state`, not a second clock), final frame accounted,
+  `mark_finished`, teardown completion. Plus dataset path, planned/accounted
+  frames, estimated bytes, the active bound and the plan term that produced it,
+  `acq._exception` when present, and camera state at timeout.
+- **The correlation id is plumbing, not a field.** `execute_tool`
+  (`tools.py:10895`) does not receive the tool-use id; `agent.py:826` has
+  `block.id` in hand at the call site. One keyword through `execute_tool` into
+  the existing `_ACQUISITION_EVENT_CONTEXT` thread-local — do not add a second
+  context object.
+- The bounded acknowledgement mechanism and `DIAGNOSTIC_FLUSH_GRACE_S = 2.0`
+  land here, with both outcomes tested by driving the writer directly. Its one
+  consumer — `diagnostic_persisted` on the timeout result — is D2 and lands in
+  75b. Stating the seam so neither block ships half an ack.
+
+`microclaw/tools.py` (`_emit_acquisition_diagnostic:2394`,
+`_acquire_with_hooks:4154`, `account_saved_frame:4231`, `execute_tool:10895`),
+`microclaw/conversation.py`, `microclaw/__main__.py`, `microclaw/webserve.py`,
+`microclaw/agent.py`. Tests in `tests/test_bounded_acquisition_wait.py`
+(the supervisor's own module, which already owns `BlockingAcquisition` and
+`SimulatedClock`) and `tests/test_conversation.py`.
+
+Acceptance: the queue/coalescing/protected-record tests, both ack outcomes, the
+correlation id present on a record for a driven tool call under **both** entry
+points, a burst test proving the callback does not block on the writer, the full
+suite, and a diff review confirming no bound, result field or acquisition
+behaviour changed.
+
+### 75b — the supervised-runtime bound (D1, D1a, D2, D3)
+
+`AcquisitionSupervisionPolicy`, the five call sites, `_stall_quiet_s` /
+`_runtime_ceiling_s` taking the policy, the `finalizing` phase as a report,
+D2's `short_fixed_runtime` result, D3's `phase` in `acquisition_progress` and
+its render in `serve.html` (`acquisition_progress` at `:511`), the camera probe
+moved behind `controller._bridge_call` with `CAMERA_STATE_PROBE_GRACE_S = 2.0`,
+and `diagnostic_persisted` on the timeout result.
+
+The five internal callers are verified as exactly the five the design names:
+`run_zstack` (`tools.py:4580`), `run_timelapse` (`:4858`),
+`_acquire_positions_with_hook` (`:8071`), `_acquire_survey_with_detector`
+(`:8534`) and `run_adaptive_survey`'s acquire-on-hit phase (`:8819`). The
+composite-child case is real, not hypothetical — `tools.py:7011` calls
+`run_timelapse(..., _reservation=reservation, **params)` — and takes `DEFAULT`
+with the reason stated in the selection code.
+
+`microclaw/tools.py`, `microclaw/serve.html`, tests in
+`tests/test_bounded_acquisition_wait.py` and `tests/test_recovery_js.py` /
+`tests/test_transcript_js.py` for the render.
+
+Acceptance: the twelve deterministic tests in §Verification, each watched
+failing on the pre-fix tree for its stated reason; the two policy constants
+carrying M2 numbers from 75a's gate and written into this document; the full
+suite; and a diff review confirming no path added here can raise a
+confirmation.
+
+### Not a block
+
+- **D5** is `R91` in `design/70` — "does live-mode ownership churn precede a
+  lost pycro-manager terminal notification", with the four arms, unique dataset
+  names, D4 timestamps and a preserved thread dump. Coordinator work in step 10,
+  not an implementation block.
+- **`run_mda` reaches none of D1–D4.** `R86` already says so; step 10 amends
+  that row to name this notebook rather than leaving it to be rediscovered.
+
+### Coordinator decisions, 2026-09-04
+
+**The gate is not all M2, and design/75 says so from a wrong premise.** §M2 gate
+asks for each step to be written "from the gate that already ran on M2
+(`design/60`, `design/68`)". `design/68` did run on M2 (`design/68-block68-m2-runbook.md`).
+**`design/60` did not** — both of its gates are demo-machine
+(`design/60-block60a-demo-gate.md`, `-block60b-`), and that is the useful fact:
+design/60 bounded exactly this wait and gated the bound on the demo machine,
+because an injected blocking teardown is machine-independent. So:
+
+- **Limbs 1 and 4 — the mandatory D2 limb and the openable timed-out dataset —
+  run on the demo machine.** A controlled build whose teardown waiter blocks
+  after `mark_finished` needs no Andor, no TIRF and no dose, and D2 must not be
+  hostage to a booked session.
+- **Limb 5 runs on the demo machine** for the same reason: closing MicroClaw and
+  reading the file back is not a rig capability.
+- **Limbs 2 and 3 — the healthy one-frame end-to-end latency distribution, and
+  the two constants derived from it — need M2**, at the session's own arm (50 ms,
+  `laser_slot=3`, unique names, a `snap_and_analyze` immediately before each).
+  DemoCamera against a local disk is not a bound on an iXon writing to
+  `F:\DataSSD`, and the observed 1-in-14 rate belongs to that arm. A demo-machine
+  run of the same limb is worth having as a reference arm, but it cannot set the
+  constants.
+
+That splits into **two demo sessions and one short M2 arm**, not three booked
+rigs. 75a's M2 arm is a handful of minutes of one-frame runs whose artifact is
+D4's own file, so it can be folded into whatever M2 session is next rather than
+booked for itself.
+
+**M2 environment facts, taken from the gate that ran there rather than invented**
+(`design/68-block68-m2-runbook.md`): PowerShell, `uv run python <script> > log 2>&1`,
+`C:\Users\<you>\Code\microclaw`, the branch pinned with
+`git merge-base --is-ancestor <commit> HEAD` and `$LASTEXITCODE` printed as
+words. The **browser is not yet established for M2** — 69a's runbook cost a
+round trip on Chrome menu paths for a machine that opens Firefox — so limb 1's
+browser-side observation is a demo-machine limb and its browser is asked for
+before that runbook ships.
+
+**`--save-history` governs the diagnostics file.** It defaults to `True`
+(`__main__.py:450`) and already gates the confirmations audit, so D4 follows it
+rather than introducing a second switch. The consequence is stated rather than
+hidden: an operator running `--no-save-history` gets no D4 record, which is the
+one configuration where this incident would again arrive as two artifacts. If
+that is the wrong call, it is a one-line change and the operator's to make.
+
+**The three facts in §"Evidence still owed" gate 75b, not 75a.** They confirm
+D1's predicate and, per item 13, the spinner duration decides `runtime_slack_s`
+before it is fixed. Requested from the operator on 2026-09-04, in parallel with
+75a's assignment.
+
+## Coordination checklist — block 75a
+
+The ten steps of `CLAUDE.md` §"The block workflow", instantiated. Nothing is
+compressed.
+
+**Step 1 — coordinator owns the list.**
+
+- [x] Start from updated `main`: `git log --oneline origin/main..main` empty at
+      `444d694`.
+- [x] Baseline suite run by the coordinator in the primary checkout:
+      **2817 passed / 99 skipped / 2 warnings** (`.venv/bin/python -m pytest -q`,
+      150.5 s, 2026-09-04). The warning count varies between 2 and 3 across runs
+      (a pre-existing `phase_cross_correlation` `UserWarning`); design/74 closed
+      at 2817/99/3.
+- [x] Design verified against the tree before assignment. Every site this
+      document names is where it says it is: `_emit_acquisition_diagnostic`
+      `tools.py:2394` (sink, else stderr), `_camera_sequence_running` `:2404`
+      (bare synchronous `is_sequence_running`), `_unterminated_result` `:2439`
+      with its three-branch camera text, `AcquisitionUnterminated` `:2366`,
+      `_acquire_with_hooks` `:4154`, `frame_state["last_saved"] = started`
+      `:4222`, `account_saved_frame` `:4231` with the one-second
+      `progress_state` cadence, the expiry conjunction `:4400-4407`,
+      `STALL_QUIET_FLOOR_S = 15 * 60` `:129`, `STALL_GAP_MULTIPLIER = 5.0`
+      `:131`, `_ACQUISITION_POLL_S = 1.0` `:157`, `_runtime_ceiling_s` `:170`,
+      `_stall_quiet_s` `:205`, `controller._bridge_call` `:583` with
+      `_OPEN_BRIDGE_TIMEOUT_S = 30.0` `:576`, `execute_tool` `:10895` with no
+      tool-use id parameter, `agent.py:826` holding `block.id`,
+      `serve.html:511` rendering `acquisition_progress` as frames only, and
+      `AuditLog.append` `conversation.py:153` flushing and `fsync`ing per
+      record. **The five callers are exactly five** and are the five named.
+      The composite child at `tools.py:7011` is real.
+- [ ] Branch `design75/persistent-acquisition-diagnostics` created at `444d694`;
+      ledger row opened below.
+- [ ] This checklist committed on the branch **before** the block is assigned.
+
+**Step 2 — delegate the implementation.**
+
+- [ ] Linked worktree created; the coordinator checkout never holds the
+      implementation.
+- [ ] Worktree provisioned **before** the prompt is written: `uv venv --python
+      3.12`, then `uv pip install --python .venv/bin/python -e
+      ".[serve,test,ilastik]"`; `import microclaw` confirmed resolving to the
+      worktree's tree.
+- [ ] Suite run by the coordinator **in the worktree**, and
+      `.venv/bin/python -m pytest -q` handed over verbatim together with the
+      benign warnings it prints and the fact that the count varies 2–3.
+- [ ] Runner prompt written to the scratchpad (never committed), then the
+      project `codex-runner` skill launched in that worktree; job directory kept
+      for the block.
+- [ ] The prompt names the things a green suite would not catch: the callback
+      must not touch `AuditLog` (it flushes and `fsync`s per record — that is
+      the defect being avoided, not an optimisation); both entry points wire the
+      writer, because the incident was a `serve` session and a `__main__`-only
+      wiring would pass every test; `progress_state`'s existing one-second
+      cadence is reused rather than duplicated; and the ack's consumer is 75b,
+      so `diagnostic_persisted` must not appear in any result here.
+
+**Step 3 — review what comes back.**
+
+- [ ] Diff read, not the summary. Suite re-run by the coordinator; the delta
+      against 2817 reconciled test by test.
+- [ ] New tests watched failing on the pre-fix tree for their stated reason
+      (`git checkout 444d694 -- microclaw/`, run, restore) — except any whose
+      subject is order or structure, which are mutated instead.
+- [ ] **The writer's own fake audited.** A fake queue that never fills cannot
+      test coalescing, and a fake `AuditLog` that does not flush cannot show why
+      the callback must not call it. Write the fake from
+      `conversation.py:153-165`, not from the caller.
+- [ ] Findings returned through the same `codex-runner` session; 2–3 repeated
+      until the code is right.
+
+**Step 4 — push the branch, code and runbook together.**
+
+- [ ] Demo-machine runbook committed on the branch, pinned with
+      `git merge-base --is-ancestor <commit> HEAD`, shipped as a **program**
+      that scores each limb independently and exits nonzero.
+- [ ] The M2 arm's command sheet committed on the branch — one script, its own
+      log, literal `uv run python` lines run by the coordinator first.
+- [ ] Gate program run against a **bridge-shaped** fake
+      (`design/55-gate-probe-selftest.py`, Core collections exposing
+      `size()`/`get(i)` and not iterable) on both trees, so its failure
+      discriminates.
+- [ ] Pushed to `origin` with `GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`. No PR.
+
+**Step 5 — the user runs the gates.** Demo machine, then the M2 arm.
+
+**Step 6 — score from the artifacts, not the verdict.**
+
+- [ ] The D4 file itself read: correlation ids matched against the history
+      JSONL's `tool_use` ids, lifecycle timestamps checked for monotonicity, and
+      a number derived that the report does not state — submission-to-result and
+      the `mark_finished`-to-teardown segment, per acquisition.
+- [ ] `NOT EXERCISED` reported as such and never as a pass.
+
+**Steps 7–8 — fix, sized to the finding; the user re-tests.** Loop 5–8.
+
+**Step 9 — merge and clean up.** Merge, push `main`,
+`git log --oneline origin/main..main` empty, branch deleted locally and on
+`origin`, coordination notes in `design/prompts.md`, ledger row closed.
+
+**Step 10 — post-merge design gate.** Record the measured p50/p95/max in this
+document so 75b's constants have a source, then open 75b.
+
+## Coordination checklist — block 75b
+
+Opened after 75a merges and its M2 latency arm is scored. Not written yet on
+purpose: its constants come out of 75a's gate, and its runbook is written from
+the demo gate that will by then have run.
+
+## Run ledger
+
+Baseline before the notebook: `main` `444d694`, coordinator-run suite
+**2817 passed / 99 skipped / 2 warnings** in 150.5 s (2026-09-04,
+`.venv/bin/python -m pytest -q`).
+
+| block | branch | start | implementation | gate | merge |
+|---|---|---|---|---|---|
+| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04) | assigned | demo machine (D4 mechanism) + a short M2 arm (latency) | |
+| 75b | | | held until 75a merges and the M2 arm is scored | demo machine (limbs 1, 4) | |
