@@ -1,5 +1,13 @@
 # Block 74a demo gate — the lock is offered, the image sweep is not blocked
 
+**Round 2.** Round 1 returned **three gate defects and zero product defects**,
+all of them mine. Limbs A, B and E did their job and are unchanged: the two new
+Core calls answered over the real bridge as Python `str`, the payload carried
+the identity, and the arms discriminated. Limb C never reached its mechanism —
+twice over — and limb D could never have run at all and is deleted. Both fixes
+are now reproduced off-rig in the selftest, including this machine's own Z floor
+and its engaged autofocus. Details are in the gate program's docstrings.
+
 Run this on the **Windows demo machine**, from
 `design74/lock-refuses-image-sweep`. No M5, no M2, no Nikon.
 
@@ -49,7 +57,7 @@ cd D:\Code\microclaw
 git fetch origin
 git checkout design74/lock-refuses-image-sweep
 git pull
-git merge-base --is-ancestor a096766 HEAD
+git merge-base --is-ancestor 0e0d2ca HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" }
 else { "STOP - wrong tree, do not run the gate" }
 ```
@@ -76,7 +84,7 @@ cascade — writes its own log, and exits nonzero on any FAIL **or** any NOT
 EXERCISED. Report whatever it prints, including a FAIL: the coordinator scores
 from the artifacts, not from the exit code.
 
-Its five limbs:
+Its four limbs:
 
 - **A — the two new Core calls answer over the real bridge.**
   `get_device_library` / `get_device_name` on the autofocus device must return
@@ -86,14 +94,17 @@ Its five limbs:
   classified — silently.
 - **B — the payload carries the identity it read**, and its `probe_hint` does
   **not** name `nikon-pfs` on a device whose label contains no "PFS".
-- **C — the negative control, live.** `run_autofocus` with no probe must run
-  unrefused on this machine. If it comes back refused, the discriminator has
-  misread a software autofocus adapter as a hardware lock, which is the failure
-  this whole design was written to avoid.
-- **D — an exported script still parses**, with no `NOT EMITTED`. It reads the
-  `run_autofocus` call limb C just made, so C must run first; a fresh session
-  emits a 13-line stub.
-- **E — the control that fires.** Limbs A, C and D pass on `main` too: an
+- **C — the negative control, live.** `run_autofocus` must run unrefused on
+  this machine. If it comes back refused, the discriminator has misread a
+  software autofocus adapter as a hardware lock, which is the failure this whole
+  design was written to avoid. Two things it now does for itself, because round
+  1 could not reach the mechanism without them: it derives the sweep window from
+  **this rig's configured `stage.z_min`/`z_max`** rather than centring a fixed
+  span on the current Z, and if the autofocus reports continuous focus
+  **engaged** it disengages for the limb and **restores the entry state**
+  afterwards — otherwise the pre-existing engaged-lock refusal returns four
+  lines above the branch under test.
+- **E — the control that fires.** Limbs A and C pass on `main` too: an
   unchanged tool that refuses nothing also lets an image sweep run. E is what
   makes the run a criterion rather than a formality — it asserts the *running
   build* carries the discriminator, the parameter and the schema entry.
@@ -114,7 +125,7 @@ git checkout design74/lock-refuses-image-sweep
 The copy is because the gate program does not exist on `main`; `uv run` still
 resolves `microclaw` from the checked-out tree, which is the build under test.
 
-**Expected on `main`: limb E FAIL and limb B FAIL, limbs A, C, D PASS.** Any
+**Expected on `main`: limb E FAIL and limb B FAIL, limbs A and C PASS.** Any
 other shape means the gate is not measuring what it claims — report it rather
 than working around it.
 
@@ -123,8 +134,8 @@ running the other build.
 
 ## 4. What to send back
 
-The whole `block74a-evidence` directory. It is small: five JSON artifacts, the
-exported script, and both score files.
+The whole `block74a-evidence` directory. It is small: four JSON artifacts and
+both score files.
 
 If a limb reports **NOT EXERCISED**, that is never a pass and I need to know
 which and why — the most likely cause is that Micro-Manager had no autofocus

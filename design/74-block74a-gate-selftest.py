@@ -107,6 +107,28 @@ class FakeCtrl:
         self.core = core
 
 
+class FakeStage:
+    def __init__(self, z_min, z_max):
+        self.z_min, self.z_max = z_min, z_max
+
+
+class FakeGuard:
+    """The shape limb C reads for the configured Z window, plus a check_z that
+    raises the way microclaw.safety.SafetyGuard does."""
+
+    def __init__(self, z_min, z_max):
+        self._c = types.SimpleNamespace(stage=FakeStage(z_min, z_max))
+
+    def check_z(self, z):
+        s = self._c.stage
+        if s.z_min is not None and z < s.z_min:
+            raise AssertionError(
+                f"Z={z:.1f} um is below the minimum allowed ({s.z_min:.1f} um)."
+            )
+        if s.z_max is not None and z > s.z_max:
+            raise AssertionError(f"Z={z:.1f} um is above the maximum allowed.")
+
+
 def check(label: str, got: str, want: str, detail: str = "") -> bool:
     ok = got == want
     print(f"  {'ok  ' if ok else 'FAIL'}  {label}: {got}"
@@ -140,26 +162,84 @@ def main() -> int:
     status, detail = gate.limb_adapter_identity(ctrl, None, out)
     ok &= check("limb A", status, gate.NOT_EXERCISED, detail)
 
-    print("case 5 — limb C must FAIL if this machine were ever classified")
-    # The point of limb C is the negative control. Prove it can fail: patch the
-    # tool's own refusal path so run_autofocus returns the hardware-lock
-    # refusal, exactly as it would if the discriminator misread this adapter.
+    print("case 5 — THE RIG'S OWN FAILURE, reproduced off-rig")
+    # Round 1 died here: the demo stage sat at Z=0 with configured bounds
+    # starting at 0.0, so a window centred on the current Z asked the guard for
+    # -2.0 and SafetyViolation was raised before run_autofocus ever read the
+    # lock. CLAUDE.md: when a defect comes back from a rig, fix the fake before
+    # the code. This case is that fake.
     import microclaw.tools as tools
-    real = tools.run_autofocus
-    tools.run_autofocus = lambda *a, **k: {
-        "error": "This rig has a hardware focus lock, 'Autofocus', and it is "
-                 "not engaged. Probe the lock first.",
-    }
-    try:
-        ctrl = FakeCtrl(FakeCore())
-        status, detail = gate.limb_image_sweep_runs(ctrl, None, out)
-        ok &= check("limb C", status, gate.FAIL, detail)
-        ok &= check("  and it names the cause",
-                    "classified" in detail, True, detail)
-    finally:
-        tools.run_autofocus = real
+    real = (tools.get_focus_lock_state, tools.run_autofocus, tools.set_focus_lock)
+    checked_windows = []
 
-    print("case 6 — limb E is the control: does this tree carry the block?")
+    def fake_run_autofocus(_ctrl, guard, *, z_min_um, z_max_um, **_kw):
+        checked_windows.append((z_min_um, z_max_um))
+        guard.check_z(z_min_um)          # the call that raised on the rig
+        guard.check_z(z_max_um)
+        return {"converged": True, "moved": False}
+
+    try:
+        tools.run_autofocus = fake_run_autofocus
+        tools.get_focus_lock_state = lambda *_a: {"engaged": False,
+                                                  "device": "Autofocus"}
+        tools.set_focus_lock = lambda *_a, **_k: {"status": "ok"}
+        ctrl = FakeCtrl(FakeCore())
+        ctrl.core.z = 0.0                       # exactly what the rig reported
+        status, detail = gate.limb_image_sweep_runs(ctrl, FakeGuard(0.0, 500.0), out)
+        ok &= check("limb C at the Z floor", status, gate.PASS, detail)
+        ok &= check(f"  window {checked_windows[-1]} stays inside [0.0, 500.0]",
+                    checked_windows[-1][0] >= 0.0, True)
+
+        print("case 6 — the lock is engaged, as it was on the demo machine")
+        # `engaged: true` is what B_focus_lock_state.json actually recorded. The
+        # pre-existing engaged refusal returns above 74a's branch, so the limb
+        # must disengage and restore or it measures nothing.
+        writes = []
+        engaged = {"v": True}
+        tools.get_focus_lock_state = lambda *_a: {"engaged": engaged["v"],
+                                                  "device": "Autofocus"}
+
+        def fake_set_lock(_ctrl, _guard, enabled):
+            writes.append(enabled)
+            engaged["v"] = enabled
+            return {"status": "ok"}
+
+        tools.set_focus_lock = fake_set_lock
+        ctrl = FakeCtrl(FakeCore())
+        status, detail = gate.limb_image_sweep_runs(ctrl, FakeGuard(0.0, 500.0), out)
+        ok &= check("limb C", status, gate.PASS, detail)
+        ok &= check("  it disengaged then restored", writes, [False, True])
+        ok &= check("  and it says so", "disengaged for this limb" in detail, True)
+
+        print("case 7 — a lock that will not disengage measures nothing")
+        tools.get_focus_lock_state = lambda *_a: {"engaged": True,
+                                                  "device": "Autofocus"}
+        tools.set_focus_lock = lambda *_a, **_k: {"status": "ok"}
+        status, detail = gate.limb_image_sweep_runs(
+            FakeCtrl(FakeCore()), FakeGuard(0.0, 500.0), out)
+        ok &= check("limb C", status, gate.NOT_EXERCISED, detail)
+
+        print("case 8 — limb C must FAIL if this machine were ever classified")
+        tools.get_focus_lock_state = lambda *_a: {"engaged": False,
+                                                  "device": "Autofocus"}
+        tools.run_autofocus = lambda *a, **k: {
+            "error": "This rig has a hardware focus lock, 'Autofocus', and it "
+                     "is not engaged. Probe the lock first.",
+        }
+        status, detail = gate.limb_image_sweep_runs(
+            FakeCtrl(FakeCore()), FakeGuard(0.0, 500.0), out)
+        ok &= check("limb C", status, gate.FAIL, detail)
+        ok &= check("  and it names the cause", "CLASSIFIED" in detail, True, detail)
+
+        print("case 9 — no configured Z bounds is NOT EXERCISED, never a pass")
+        tools.run_autofocus = fake_run_autofocus
+        status, detail = gate.limb_image_sweep_runs(
+            FakeCtrl(FakeCore()), FakeGuard(None, None), out)
+        ok &= check("limb C", status, gate.NOT_EXERCISED, detail)
+    finally:
+        tools.get_focus_lock_state, tools.run_autofocus, tools.set_focus_lock = real
+
+    print("case 10 — limb E is the control: does this tree carry the block?")
     status, detail = gate.limb_running_build(None, None, out)
     print(f"  limb E on THIS tree: {status} — {detail[:200]}")
     print("  (must be PASS on design74/lock-refuses-image-sweep, FAIL on main;"

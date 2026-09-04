@@ -24,8 +24,14 @@ cannot establish:
     rig. A `MagicMock` cannot catch that class of defect;
   * that this machine's software autofocus adapter is **not** classified, so an
     ordinary image sweep still runs. That is the negative control, and it is the
-    thing the operator would notice first if the discriminator were wrong;
-  * that a session carrying `run_autofocus` still exports a script that parses.
+    thing the operator would notice first if the discriminator were wrong.
+
+Limb D was deleted after round 1. It called `export_session_script(ctrl, guard)`
+on a guessed signature — the real one needs `output_path` and `records` — and
+the deeper problem was that its mechanism needs a *driven session's* records and
+this gate drives no session, so it could never have done its job here. The
+emitted `image_metric_reason` comment is settled off-rig instead, by a test that
+compiles the exported source with an embedded newline in the assertion.
 
 Limb E is the control that fires. Run this same program on `main` and the
 new-field limbs must FAIL there — a gate that cannot fail on the pre-change tree
@@ -146,57 +152,83 @@ def limb_focus_lock_payload(ctrl, guard, out: Path):
 @limb("C_image_sweep_still_runs",
       "run_autofocus with no probe on a software autofocus adapter")
 def limb_image_sweep_runs(ctrl, guard, out: Path):
-    from microclaw.tools import run_autofocus
+    """The negative control, executed on live hardware.
+
+    Round 1 of this gate never reached the mechanism, twice over, and both
+    causes were the gate's fault and not the product's:
+
+      * it hardcoded `z_range_um=4.0` centred on the current Z. The demo stage
+        sat at Z=0, so `guard.check_z(-2.0)` raised before `run_autofocus` had
+        even read the focus lock. The window is now derived from this rig's own
+        configured bounds.
+      * `is_continuous_focus_enabled()` came back **True** on this machine's
+        `DAutoFocus`, so the PRE-EXISTING engaged-lock refusal would have
+        returned four lines above 74a's branch and this limb would have failed
+        for a reason with nothing to do with the block.
+        `design/61-block61a-system-state.json` recorded `engaged: false` and the
+        gate assumed that was invariant. It is not, so the limb now disengages
+        deliberately, says so, and restores the entry state afterwards.
+    """
+    from microclaw.tools import get_focus_lock_state, run_autofocus, set_focus_lock
+
+    stage = getattr(getattr(guard, "_c", None), "stage", None)
+    z_min, z_max = getattr(stage, "z_min", None), getattr(stage, "z_max", None)
+    if z_min is None or z_max is None:
+        return (NOT_EXERCISED,
+                "this rig declares no stage.z_min/z_max, so no sweep window can "
+                "be derived and run_autofocus refuses before reading the lock. "
+                "Nothing about block 74a was measured.")
     entry_z = float(ctrl.core.get_position())
-    result = run_autofocus(ctrl, guard, z_range_um=4.0, z_step_um=1.0,
-                           method="sweep", return_thumbnail=False)
-    (out / "C_run_autofocus.json").write_text(
-        json.dumps(result, indent=1, default=str), encoding="utf-8")
+    span = min(4.0, float(z_max) - float(z_min))
+    if span <= 0:
+        return NOT_EXERCISED, f"empty configured Z window [{z_min}, {z_max}]"
+    lo = min(max(entry_z - span / 2, float(z_min)), float(z_max) - span)
+    hi = lo + span
+
+    entry_lock = get_focus_lock_state(ctrl, guard)
+    was_engaged = bool(entry_lock.get("engaged"))
+    note = ""
+    if was_engaged:
+        # Deliberate, reported, and restored below. Without this the limb cannot
+        # reach 74a's branch at all: the engaged refusal returns first.
+        set_focus_lock(ctrl, guard, enabled=False)
+        if get_focus_lock_state(ctrl, guard).get("engaged"):
+            return (NOT_EXERCISED,
+                    "the lock reported engaged and would not disengage, so the "
+                    "pre-existing engaged-lock refusal masks 74a's branch and "
+                    "this limb measured nothing about the discriminator.")
+        note = "lock was engaged on entry, disengaged for this limb; "
+
+    try:
+        result = run_autofocus(ctrl, guard, z_min_um=lo, z_max_um=hi,
+                               z_step_um=1.0, method="sweep",
+                               return_thumbnail=False)
+    finally:
+        if was_engaged:
+            set_focus_lock(ctrl, guard, enabled=True)
+
     final_z = float(ctrl.core.get_position())
+    (out / "C_run_autofocus.json").write_text(json.dumps({
+        "entry_z_um": entry_z, "window": [lo, hi], "final_z_um": final_z,
+        "configured_bounds": [float(z_min), float(z_max)],
+        "lock_engaged_on_entry": was_engaged,
+        "result": result,
+    }, indent=1, default=str), encoding="utf-8")
+
     if isinstance(result, dict) and "error" in result:
         error = str(result["error"])
         if "hardware focus lock" in error:
             return (FAIL,
-                    "this machine's software autofocus adapter was classified "
+                    "this machine's software autofocus adapter was CLASSIFIED "
                     "as a probeable hardware lock and the image sweep was "
                     f"refused. entry_z={entry_z} final_z={final_z}. "
                     f"error={error[:400]}")
-        return (FAIL, f"the sweep failed for another reason, so this limb did "
-                      f"not measure the refusal: {error[:400]}")
+        return (FAIL, f"{note}the sweep failed for another reason, so this limb "
+                      f"did not measure the refusal: {error[:400]}")
     converged = result.get("converged") if isinstance(result, dict) else None
-    return (PASS, f"sweep ran unrefused: converged={converged!r} "
-                  f"entry_z={entry_z} final_z={final_z}")
-
-
-# --------------------------------------------------------------------------
-# Limb D -- an exported script still parses with the new argument in the tool.
-# --------------------------------------------------------------------------
-
-@limb("D_session_export_compiles",
-      "export_session_script over this run's own recorded run_autofocus call")
-def limb_export_compiles(ctrl, guard, out: Path):
-    from microclaw.tools import export_session_script
-    result = export_session_script(ctrl, guard)
-    if not isinstance(result, dict) or "path" not in result:
-        return (NOT_EXERCISED,
-                f"no script was written, so nothing was parsed: "
-                f"{json.dumps(result, default=str)[:400]}")
-    source = Path(result["path"]).read_text(encoding="utf-8")
-    (out / "D_exported_script.py").write_text(source, encoding="utf-8")
-    if "run_autofocus" not in source:
-        return (NOT_EXERCISED,
-                "the export carries no run_autofocus step -- limb C must run "
-                "in the same process, before this one, or there is nothing "
-                "here to check. A fresh session emits a 13-line stub.")
-    try:
-        ast.parse(source)
-    except SyntaxError as error:
-        return FAIL, f"the emitted script does not parse: {error}"
-    if "NOT EMITTED" in source:
-        line = next(l for l in source.splitlines() if "NOT EMITTED" in l)
-        return FAIL, f"an undecorated tool reached the export: {line.strip()}"
-    return (PASS, f"{len(source.splitlines())} lines, parses, no NOT EMITTED; "
-                  f"path={result['path']}")
+    return (PASS, f"{note}sweep ran UNREFUSED over [{lo}, {hi}] um: "
+                  f"converged={converged!r} entry_z={entry_z} final_z={final_z}"
+                  + ("; lock re-engaged" if was_engaged else ""))
 
 
 # --------------------------------------------------------------------------
