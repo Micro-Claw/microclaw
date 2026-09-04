@@ -64,7 +64,11 @@ it.
 
 ## Decision
 
-### D1 — the tool refuses, at zero exposures
+### D1 — the tool offers the lock first, at zero exposures
+
+(Titled "the tool refuses" in the original draft. It refuses *this call*; the
+caller reaches the image sweep on the next one — see D3 as corrected. Nothing
+here makes image-based autofocus unavailable on a lock rig.)
 
 Extend the branch that is already there, but do not use non-empty
 `status_properties` as the hardware-lock discriminator. The recorded demo
@@ -153,16 +157,36 @@ to do on the user's behalf").
 
 ### D3 — one explicit, auditable opt-out
 
-`focus_lock_probe_failure: str | None = None`. The post-lock fine-tune case
-needs no opt-out
-— an *engaged* lock is already refused one branch above, and the skill's
-"use an image metric to confirm signal" step is a snap, not a sweep. The only
-real case left is the one this very session ended up suspecting: the lock cannot
-see the coverslip here — no oil, a bubble, off-specimen — which the caller learns
-by running the probe and getting no band. The argument is therefore not a bare
-boolean that a model can flip reflexively: it must contain a non-empty account of
-the failed probe, for example *"property probe found no band at this XY"*. The
-refusal tells the caller to supply it only after that result.
+**Corrected 2026-09-04, operator, before 74a merged.** The paragraph below
+originally specified `focus_lock_probe_failure: str | None = None` on the
+premise that *"the only real case left"* for an image sweep on a lock rig is a
+probe that found no band. **That premise is wrong**, and it made the shipped
+build a block rather than an offer: a caller who simply wants the image metric
+has no failed probe to describe, so the only way past the refusal was to assert
+something untrue. The operator's words: *"I don't want to completely block the
+user from being able to run an image-based autofocus on a Nikon… Sometimes it's
+helpful to use the image-based approach. Most of the time, the PFS approach is
+better. **The PFS approach must be offered first**, before the image-based
+autofocus."*
+
+So the refusal stays — enforcement in the tool is wanted — but the opt-out
+states **why the image metric is the right instrument here**, not a claim about
+the rig. `image_metric_reason: str | None = None`, non-empty, admitting the two
+legitimate answers:
+
+- the operator asked for an image-based focus, and
+- a property probe reported no band at this XY.
+
+One argument, one extra round trip, zero exposures spent reaching it. That is
+"offered first" rather than "blocked". The dissent recorded below — that a bare
+`bool` would do — is *partly* upheld: its objection was to a parameter needing
+two paragraphs before it can be called, and a reason string keeps the audit
+trail D3's second obligation asks for while fitting on one line. What the
+correction actually overturns is the *justification* for the string, not the
+string.
+
+The engaged-lock branch above is untouched and still fires first, so this
+refusal is unreachable while the lock is engaged.
 
 The tool is stateless and cannot prove that an earlier call occurred, so this is
 an auditable assertion rather than cryptographic enforcement. The live-model gate
@@ -260,6 +284,28 @@ not say which one produced it. Revisit after 74b has a number.
   probeable hardware lock. An unknown device is left unchanged. Expanding the
   classifier to additional adapters is separate evidence-driven work; neither a
   device-name substring nor `status_properties` alone closes it.
+- **Image-metric autofocus on `TIPFSOffset`.** Explicitly out of scope
+  (operator, 2026-09-04): *"we don't want to adjust any of the behaviour
+  surrounding the TIPFSOffset in this block."* Recorded here because it was
+  found while scoring this one and it is the *other half* of the Nikon focus
+  workflow. `run_autofocus` sweeps only the core focus device — there is no
+  named-stage axis — and its engaged-lock branch refuses outright, so the
+  post-engage fine-tune has no tool and is done by hand. Measured in three
+  sessions, always with the PFS engaged, one model round trip and one snap per
+  plane:
+
+  | session | route | planes |
+  |---|---|---|
+  | `pfs_fix` 2026-08-05 | raw `set_device_property TIPFSOffset.Position` | 163.325 → 169.325, 2 µm steps |
+  | `pfs-nikon` 2026-08-22 | `move_named_stage` | 17 moves, 5 µm steps, `snap_and_analyze` between every one |
+  | `nikon-no-pfs-again` 2026-09-03 (R88) | `move_named_stage` | 140 → 120 → 130 → 150 → 140 |
+
+  The last two **backtrack and re-visit** — 165.4 appears three times in the
+  2026-08-22 run, and the R88 run ends at the value it started from. That is
+  hunting, not a sweep, and it is design/56's own finding one axis over: *"a
+  hand-driven loop hides that behind its own latency … collapsing that loop into
+  one tool call took it away."* Goes to `design/70` as a register row.
+
 - **R15**, engaging after the band is found. It is a *different* row and this
   session gave it a **positive** observation: once `nikon-pfs` was loaded, the
   model engaged the lock the moment the band appeared and ran both of the skill's
@@ -358,15 +404,57 @@ one more arm; do not attribute arm C's result to D1 or arms A/B's to D4.
   unmeasured. Initial-call ordering is not part of that verdict; it is arm C's,
   and arm C failing is a verdict on D4, not on D1.
 
+### Coordinator decisions, 2026-09-04
+
+**There is no Nikon gate, and there will not be one.** The operator cannot test
+on the Ti before this reaches `main`; the Nikon user pulls afterwards and can
+only run live on a real sample. So everything 74a ships must be decidable from
+recorded artifacts, and the Nikon run is a formality, not evidence we are
+waiting on.
+
+Three consequences, all measured rather than assumed:
+
+- **`core.get_device_library` / `get_device_name` are already proven on a real
+  Nikon Ti over the bridge.** `microclaw/rig_inventory.py:393-394` calls both,
+  and `nikon-lausanne-rig/inventory.json` is that rig's own output: the lock is
+  library `NikonTI`, adapter name `TIPFSStatus`, device type `AutoFocusDevice`.
+  The demo machine's is `DemoCamera` / `DAutoFocus` (`Device,Autofocus,DemoCamera,
+  DAutoFocus` in `9a-gate-demo/MMConfig_demo_aux_z.cfg`). D1's discriminator is
+  therefore the **adapter identity allowlist** the Decision section names as the
+  fallback — built on two calls whose return values on both machines are on
+  disk, not on a capability nobody can verify.
+  **The rig identity is measured, not inferred** (operator, 2026-09-04). The
+  `rig_inventory` output records an `AndorIxon` camera and R88's session a
+  `HamamatsuHam_DCAM`; that is the same Nikon Ti with the camera swapped, and
+  nothing else about the rig changed. An earlier draft of this row treated them
+  as two machines and called the identity an inference. It is not.
+- **The Ti2-E / Dragonfly is a recorded gap, and stays one.** Its lock's device
+  *label* is `PFS` (design/56, and the 2026-08-23 session), but its adapter
+  library and name appear nowhere in the archive. It is left unclassified — no
+  refusal, behaviour unchanged — and becomes a register row asking for those two
+  reads next time that rig is reachable. A guessed `NikonTi2` entry is not
+  admissible in a refusal path.
+- **No M5 gate is possible for D1.** M5 takes the EMU branch of
+  `get_focus_lock_state`, which never returns `status_properties`, so D1's
+  condition is unreachable there; M2 has no autofocus device configured at all.
+  The demo machine is the only rig that can exercise this, and only as the
+  negative control.
+
+**74b is held until 74a merges** (operator decision). Arm A runs against a
+worktree pinned at the pre-74a commit, so nothing is lost by deciding its
+budget later. Priced for that decision, against Opus 4.8 at **$5 / $25 per
+Mtok** (checked against the model table, not recalled): ~31k tokens of static
+context per call, ~6 turns per sample, so ~$1.15 per sample uncached and ~$0.50
+with prompt caching on the tools+system prefix — 3 arms x 12 samples is about
+**$20**.
+
 ## Run ledger
 
-Baseline before the block: `main` `a6eafcf`, coordinator-run suite
-**2804 passed / 99 skipped / 2 warnings** in 179.5 s (2026-09-04,
-`.venv/bin/python -m pytest -q`). Dev environment is `uv` +
-Python 3.12; a plain `uv venv` has no `pip` module, so a worktree is provisioned
-with `uv pip install --python .venv/bin/python -e ".[serve,test,ilastik]"`.
+Baseline before the block: `main` `4a4faba`, coordinator-run suite
+**2804 passed / 99 skipped / 2 warnings** in 156.5 s (2026-09-04,
+`.venv/bin/python -m pytest -q`).
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 74a | | | | | |
+| 74a | `design74/lock-refuses-image-sweep` | `4a4faba` (2026-09-04), worktree `../microclaw-74a` | `1423cac` (1 Codex start + 3 revision turns). Coordinator reproduced the watch-it-fail independently on `51da1a7` (`assert 1 == 0` on `snap_image.call_count`) and found the discriminator mutation caught by **three** tests, not the one reported. Round 1: 5 findings — the placeholder sentinel was over-implemented (the natural no-match refusal already lists every observed value, which is louder *and* more useful), the probe property was hardcoded `"Status"`, the allowlist had no provenance, the emitted comment was unpinned against the 52b newline scar, and the D4 assertion re-derived its own rule. Round 2: **operator correction** — D3's premise was wrong, `focus_lock_probe_failure` became `image_metric_reason`. Round 3: round 1 had shipped `]}}` in a plain string, so the refusal's probe argument did not parse; round 2 fixed it **without reporting it**, and no test used the argument. Now extracted with `raw_decode` and parsed, and the previously unreachable multi-candidate branch is covered from the Dragonfly's recorded properties under a declared hypothetical. Coordinator fix `a096766` for the provenance comment. Coordinator suite 2817/99/3 (main was 2804/99/2). | Demo machine, two rounds. **Round 1: three gate defects, zero product defects, all the coordinator's.** Limb C never reached its mechanism twice over — a 4 µm window centred on a stage at Z=0 with bounds from 0.0 raised `guard.check_z(-2.0)` before the lock was read, and this machine's `DAutoFocus` reported continuous focus **engaged**, so the pre-existing refusal masked the branch under test. Limb D called `export_session_script` on a guessed signature and needed a driven session's records while the gate drives none — deleted. Both reproduced in the selftest before the fix. **Round 2 at `fa44416`: 4/4 PASS.** `get_device_library`/`get_device_name` answer over real pyjavaz as Python `str` → `DemoCamera`/`DAutoFocus`; the payload carries the identity; the sweep ran **unrefused** over [0.0, 4.0] µm, 5 exposures, converged, 0.0 → 1.0 — 74a's branch executed on live hardware and correctly did not fire. Arms discriminate: B and E FAIL on `main`. Scored beyond the verdicts — the lock restore is confirmed by the *control arm's* independent read (`engaged: true`), and the arms' convergence disagreement is camera noise on two statistically indistinguishable planes plus design/28 F1's edge-peak guard, not a block difference. | `main` at MERGE_SHA (2026-09-04); branch deleted locally and on `origin`. |
 | 74b | | | | | |

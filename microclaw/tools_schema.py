@@ -1131,6 +1131,18 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "required": ["device", "property"],
                 },
+                "image_metric_reason": {
+                    "type": "string",
+                    "description": (
+                        "Auditable caller assertion saying why the image metric "
+                        "is the right instrument for this autofocus call. Supply "
+                        "a non-empty reason to proceed after the hardware lock is "
+                        "offered first — for example, the operator asked for an "
+                        "image-based focus, or a property probe reported no band "
+                        "at this XY. Recorded as a caller assertion, not an "
+                        "instrument measurement."
+                    ),
+                },
             },
             # No top-level oneOf/allOf/anyOf. The Messages API rejects the whole
             # request -- "input_schema does not support oneOf, allOf, or anyOf at

@@ -186,6 +186,26 @@ def test_autofocus_emitter_passes_recorded_inputs_without_rederiving(tmp_path):
     assert inspect.getsource(tools._run_autofocus_passes) in source
 
 
+def test_autofocus_emitter_labels_image_metric_reason_as_caller_assertion(tmp_path):
+    assertion = "property probe found no band\nat this XY"
+    _, _, source = export(tmp_path, [call("run_autofocus", {
+        "z_range_um": 20,
+        "z_step_um": 0.5,
+        "image_metric_reason": assertion,
+    })])
+    emitted_call = source.split("# RECORDED TOOL: run_autofocus", 1)[1]
+    assert (
+        "# CALLER ASSERTION (not an instrument measurement): "
+        "image_metric_reason='property probe found no band\\nat this XY'"
+    ) in emitted_call
+    compile(source, "exported_autofocus.py", "exec")
+    # The assertion only suppresses Microclaw's refusal; standalone execution
+    # has no corresponding runtime switch to fabricate.
+    assert "image_metric_reason=" not in emitted_call.split(
+        "autofocus_result = _run_autofocus_passes(", 1
+    )[1]
+
+
 def test_emitted_autofocus_actually_crops_the_metric_frames(tmp_path, monkeypatch):
     _, _, source = export(tmp_path, [call("run_autofocus", {
         "z_range_um": 2, "z_step_um": 1, "method": "sweep", "settle_ms": 0,
