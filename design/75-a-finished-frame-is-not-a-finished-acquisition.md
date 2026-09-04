@@ -949,45 +949,117 @@ compressed.
       `AuditLog.append` `conversation.py:153` flushing and `fsync`ing per
       record. **The five callers are exactly five** and are the five named.
       The composite child at `tools.py:7011` is real.
-- [ ] Branch `design75/persistent-acquisition-diagnostics` created at `444d694`;
+- [x] Branch `design75/persistent-acquisition-diagnostics` created at `444d694`;
       ledger row opened below.
-- [ ] This checklist committed on the branch **before** the block is assigned.
+- [x] This checklist committed on the branch **before** the block is assigned
+      (`bebc515`) — a worktree sees committed history, not an editor buffer.
 
 **Step 2 — delegate the implementation.**
 
-- [ ] Linked worktree created; the coordinator checkout never holds the
-      implementation.
-- [ ] Worktree provisioned **before** the prompt is written: `uv venv --python
+- [x] Linked worktree `../microclaw-design75a` created on the branch; the
+      coordinator checkout returned to `main` first, because git refuses two
+      worktrees on one branch. The coordinator checkout never holds the
+      implementation. **Consequence, recorded because it is a process finding:**
+      while the runner is live the coordinator cannot check out the branch to
+      tick this checklist, so ticks are staged in the scratchpad and applied
+      between turns.
+- [x] Worktree provisioned **before** the prompt is written: `uv venv --python
       3.12`, then `uv pip install --python .venv/bin/python -e
-      ".[serve,test,ilastik]"`; `import microclaw` confirmed resolving to the
-      worktree's tree.
-- [ ] Suite run by the coordinator **in the worktree**, and
-      `.venv/bin/python -m pytest -q` handed over verbatim together with the
-      benign warnings it prints and the fact that the count varies 2–3.
-- [ ] Runner prompt written to the scratchpad (never committed), then the
-      project `codex-runner` skill launched in that worktree; job directory kept
-      for the block.
-- [ ] The prompt names the things a green suite would not catch: the callback
+      ".[serve,test,ilastik]"`. `import microclaw` confirmed resolving to
+      `/Users/zachcm/Code/microclaw-design75a/microclaw/__init__.py`, not the
+      primary checkout's.
+- [x] Suite run by the coordinator **in the worktree**: **2817 passed / 99
+      skipped**, 173.7 s, and `.venv/bin/python -m pytest -q` handed over
+      verbatim. The warning count needed establishing rather than assuming:
+      the worktree's **first** run printed **4**, two of them first-compile
+      artifacts of the fresh venv (`mmpycorex/install.py:109` `SyntaxWarning`,
+      `starlette/testclient.py:53` `DeprecationWarning`). Confirmed by re-run
+      that neither recurs once the bytecode cache exists, so steady state is
+      the primary checkout's 2–3. Both extras are named in the prompt —
+      design/72's note recorded that the `mmpycorex` warning does *not* appear
+      on this machine, and in a **fresh worktree venv** it does.
+- [x] Runner prompt written to the scratchpad (never committed), then the
+      project `codex-runner` skill launched in that worktree; job directory
+      `scratchpad/job-75a` kept for the block.
+- [x] The prompt names the things a green suite would not catch: the callback
       must not touch `AuditLog` (it flushes and `fsync`s per record — that is
       the defect being avoided, not an optimisation); both entry points wire the
       writer, because the incident was a `serve` session and a `__main__`-only
       wiring would pass every test; `progress_state`'s existing one-second
       cadence is reused rather than duplicated; and the ack's consumer is 75b,
-      so `diagnostic_persisted` must not appear in any result here.
+      so `diagnostic_persisted` must not appear in any result here. It also
+      enumerates the eight things this block must **not** implement, because
+      every one of them is a line in D1–D3 sitting in the same function.
 
-**Step 3 — review what comes back.**
+**Step 3 — review what comes back.** Two rounds, 14 findings, all addressed.
 
-- [ ] Diff read, not the summary. Suite re-run by the coordinator; the delta
-      against 2817 reconciled test by test.
-- [ ] New tests watched failing on the pre-fix tree for their stated reason
-      (`git checkout 444d694 -- microclaw/`, run, restore) — except any whose
-      subject is order or structure, which are mutated instead.
-- [ ] **The writer's own fake audited.** A fake queue that never fills cannot
-      test coalescing, and a fake `AuditLog` that does not flush cannot show why
-      the callback must not call it. Write the fake from
-      `conversation.py:153-165`, not from the caller.
-- [ ] Findings returned through the same `codex-runner` session; 2–3 repeated
-      until the code is right.
+- [x] Diff read, not the summary, on every round. Suite re-run by the
+      coordinator each time: **2825** after round 1, **2828** after round 2,
+      **2830** after the round-2 fixes — reconciling exactly against 2817
+      (8 tests, then +3, then +2 for the parametrized race test).
+- [x] **Round 1 — nine findings, two of them reproduced defects.** The headline
+      was the block failing its own purpose: `AcquisitionDiagnosticWriter`
+      reintroduced the unbounded wait D4 exists to bound, in two places.
+      `_enqueue_lifecycle`'s `queue.put(item)` had no timeout — reproduced at
+      capacity 8, the tenth lifecycle submit never returned against a hung
+      `AuditLog`, and at the default 64 that is nine acquisitions into a session
+      on a wedged `F:\DataSSD`, with the timeout record's caller being the
+      **foreground tool thread**. And `close()` blocked forever on
+      `queue.join()` while being called from `run_session`'s `finally`,
+      `serve()`'s `finally` and the new FastAPI `lifespan` — design/60's
+      incident ended with the operator killing Micro-Manager; that one would
+      have ended with them killing MicroClaw. Second reproduced defect: with a
+      writer installed and no sink, `_emit_acquisition_diagnostic` satisfied
+      neither branch and printed **nothing**, so every CLI session silently lost
+      the stderr diagnostics it used to get — a removed operator-visible channel
+      inside the block about diagnostics being invisible. The other seven:
+      `runtime_term`/`quiet_term` recomputed the formulas `_runtime_ceiling_s`
+      and `_stall_quiet_s` own (correct today, and **75b changes both
+      functions**); the browser's wiring was unasserted because the web test
+      called `writer.submit` directly, leaving the incident's own entry point
+      uncovered; all eight pre-fix failures were `ImportError`, which proves the
+      symbol was new and not that the test catches the defect; `result.md` was
+      committed into the repository; `acquisition_final_frame_accounted` fired on
+      `plan.frames`, a cap on the adaptive route; two dead `event_sink`
+      assignments; and one inconsistent sink swallow.
+- [x] **Round 2 — five findings, both of the real ones found by verifying round
+      1 rather than reading it.** `submit()` could raise `queue.Empty` or
+      `queue.Full` into its caller, through an unguarded `get_nowait()` in the
+      displacement — reachable whenever the writer thread drains the last item
+      between our `Full` and our `get`, which it does by design.
+      `account_saved_frame` submits two lifecycle records **on pycro-manager's
+      storage-monitor thread**, the thread whose failure design/75 hypothesises
+      as the incident's upstream cause: a diagnostic that can raise there is
+      capable of causing the failure it exists to record. And
+      `test_saved_frame_callback_never_calls_or_waits_for_audit_log` **hung the
+      whole suite** when it failed — `release.set()` after the assertions, a
+      non-daemon worker — which is how it was found: verifying the round-1
+      mutation produced no output and had to be killed at 120 s.
+- [x] Every piece of evidence verified by the coordinator rather than accepted.
+      Both race arms fail on the pre-fix tree for their stated reasons
+      (`queue.Empty`, `queue.Full`); deleting the browser wiring at
+      `webserve.py:1009` fails the web test's `True` arm (the `False` arm
+      correctly still passes — no file is expected either way, so only one arm
+      discriminates); a synchronous `audit.append` from the frame callback is
+      caught with *"saved-frame callbacks waited for the blocked fsync"* in
+      0.70 s, where the same mutation before round 2's fix produced no output at
+      all; and making lifecycle records stop displacing progress loses all six
+      of them, which the coalescing test catches.
+- [x] **The writer's own fake audited and found good.** `SlowFsyncAudit`
+      subclasses the **real** `AuditLog` and calls `super().append`, so it
+      carries the `flush` + `fsync` that is the whole reason the callback must
+      not call it, and `append_threads == ["microclaw-acquisition-diagnostics"]`
+      asserts the mechanism rather than a wall-clock guess. Written from
+      `conversation.py:153-165`, as asked.
+- [x] Findings returned through the same `codex-runner` session both times.
+      **The round-2 turn was killed by the harness for memory pressure** during
+      its own final suite run, with its edits landed — preserved, reviewed and
+      verified by the coordinator, and committed as `671d8fe` with a message
+      saying plainly where it came from.
+- [x] The three constraints the prompt named as silently-breakable all held:
+      no bound, constant or expiry conjunction moved; the ack has no
+      tool-result consumer (the 75a/75b seam is intact); and no path added here
+      can raise a confirmation.
 
 **Step 4 — push the branch, code and runbook together.**
 
@@ -1035,5 +1107,5 @@ Baseline before the notebook: `main` `444d694`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04) | assigned | demo machine (D4 mechanism) + a short M2 arm (latency) | |
+| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | demo machine (D4 mechanism) + a short M2 arm (latency) | |
 | 75b | | | held until 75a merges and the M2 arm is scored | demo machine (limbs 1, 4) | |
