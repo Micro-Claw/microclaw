@@ -1131,14 +1131,15 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "required": ["device", "property"],
                 },
-                "focus_lock_probe_failure": {
+                "image_metric_reason": {
                     "type": "string",
                     "description": (
-                        "Auditable caller assertion that a prior hardware-lock "
-                        "property probe reported no capture band at this location. "
-                        "Supply a non-empty account only after that probe has "
-                        "actually failed; it opts out of the hardware-lock-first "
-                        "refusal and is recorded as a caller assertion, not an "
+                        "Auditable caller assertion saying why the image metric "
+                        "is the right instrument for this autofocus call. Supply "
+                        "a non-empty reason to proceed after the hardware lock is "
+                        "offered first—for example, the operator asked for an "
+                        "image-based focus, or a property probe reported no band "
+                        "at this XY. Recorded as a caller assertion, not an "
                         "instrument measurement."
                     ),
                 },

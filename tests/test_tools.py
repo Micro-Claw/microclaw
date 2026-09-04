@@ -4118,12 +4118,17 @@ class TestFocusLock:
         mock_ctrl.core.set_position.assert_not_called()
         assert "hardware focus lock" in result["error"]
         assert '"Status": "Out of focus search range"' in result["error"]
-        assert '"property": "Status"' in result["error"]
-        assert '"in_focus_values": ["<your best guess>"]' in result["error"]
+        assert (
+            'probe={"device": "TIPFSStatus", "property": "Status", '
+            '"in_focus_values": ["<your best guess>"]}.'
+        ) in result["error"]
         assert "sent unedited" in result["error"]
         assert "zero-exposure" in result["error"]
         assert "reports every value the device actually returned" in result["error"]
         assert "at this Z" in result["error"]
+        assert "image_metric_reason" in result["error"]
+        assert "operator asked for an image-based focus" in result["error"]
+        assert "property probe reported no band at this XY" in result["error"]
         assert result["focus_lock"]["adapter_library"] == "NikonTI"
         assert result["focus_lock"]["adapter_name"] == "TIPFSStatus"
 
@@ -4226,16 +4231,16 @@ class TestFocusLock:
         assert result["converged"] is True, result
 
     @pytest.mark.parametrize("assertion", ["", "   "])
-    def test_empty_focus_lock_probe_failure_is_not_an_opt_out(
+    def test_empty_image_metric_reason_is_not_an_opt_out(
         self, mock_ctrl, unconstrained_guard, assertion
     ):
         result = run_autofocus(
             mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
-            focus_lock_probe_failure=assertion,
+            image_metric_reason=assertion,
         )
-        assert "must be a non-empty caller assertion" in result["error"]
+        assert "image_metric_reason must be a non-empty caller assertion" in result["error"]
 
-    def test_nonempty_focus_lock_probe_failure_is_recorded_caller_assertion(
+    def test_failed_probe_image_metric_reason_is_recorded_caller_assertion(
         self, mock_ctrl, unconstrained_guard, monkeypatch
     ):
         self._emu(monkeypatch, props={})
@@ -4251,12 +4256,37 @@ class TestFocusLock:
         result = run_autofocus(
             mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
             method="sweep", return_thumbnail=False,
-            focus_lock_probe_failure=" property probe found no band at this XY ",
+            image_metric_reason=" property probe found no band at this XY ",
         )
 
         assert result["converged"] is True, result
         assert result["caller_assertion"] == {
-            "focus_lock_probe_failure": "property probe found no band at this XY"
+            "image_metric_reason": "property probe found no band at this XY"
+        }
+
+    def test_operator_requested_image_metric_reason_runs_and_is_recorded(
+        self, mock_ctrl, unconstrained_guard, monkeypatch
+    ):
+        """An operator request is legitimate without any failed property probe."""
+        self._emu(monkeypatch, props={})
+        mock_ctrl.core.get_auto_focus_device.return_value = "TIPFSStatus"
+        mock_ctrl.core.is_continuous_focus_enabled.return_value = False
+        mock_ctrl.core.get_device_library.return_value = "NikonTI"
+        mock_ctrl.core.get_device_name.return_value = "TIPFSStatus"
+        mock_ctrl.core.get_device_property_names.return_value = StrVector(["Status"])
+        mock_ctrl.core.is_property_read_only.return_value = True
+        mock_ctrl.core.get_property.return_value = "Out of focus search range"
+        _patch_autofocus(monkeypatch)
+
+        result = run_autofocus(
+            mock_ctrl, unconstrained_guard, z_range_um=2.0, z_step_um=1.0,
+            method="sweep", return_thumbnail=False,
+            image_metric_reason="operator asked for an image-based focus",
+        )
+
+        assert result["converged"] is True, result
+        assert result["caller_assertion"] == {
+            "image_metric_reason": "operator asked for an image-based focus"
         }
 
     def test_set_focus_lock_writes_on_value(self, mock_ctrl, unconstrained_guard, monkeypatch):

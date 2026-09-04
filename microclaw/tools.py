@@ -464,17 +464,17 @@ def _emit_autofocus(params: RecordedParams) -> str:
     settle = params.get("settle_ms", signature.parameters["settle_ms"].default)
     region = params.get("region", signature.parameters["region"].default)
     probe = params.get("probe", signature.parameters["probe"].default)
-    focus_lock_probe_failure = params.get(
-        "focus_lock_probe_failure",
-        signature.parameters["focus_lock_probe_failure"].default,
+    image_metric_reason = params.get(
+        "image_metric_reason",
+        signature.parameters["image_metric_reason"].default,
     )
     # This caller assertion suppresses a Microclaw pre-sweep refusal. A
     # standalone pycro-manager script has no such refusal to suppress, so its
     # only faithful representation is an explicitly labelled audit comment.
     assertion_line = (
         "# CALLER ASSERTION (not an instrument measurement): "
-        f"focus_lock_probe_failure={focus_lock_probe_failure!r}"
-        if focus_lock_probe_failure is not None else None
+        f"image_metric_reason={image_metric_reason!r}"
+        if image_metric_reason is not None else None
     )
     z_min = params.get("z_min_um")
     z_max = params.get("z_max_um")
@@ -6207,7 +6207,7 @@ def run_autofocus(
     probe: dict | str | None = None,
     z_min_um: float | None = None,
     z_max_um: float | None = None,
-    focus_lock_probe_failure: str | None = None,
+    image_metric_reason: str | None = None,
 ) -> list | dict:
     """Sweep Z to find the sharpest focal plane.
 
@@ -6237,17 +6237,17 @@ def run_autofocus(
     if explicit_window and z_min_um >= z_max_um:
         return {"error": "z_min_um must be less than z_max_um."}
     probe = _parse_quoted_json(probe, dict)
-    if focus_lock_probe_failure is not None:
-        if (not isinstance(focus_lock_probe_failure, str)
-                or not focus_lock_probe_failure.strip()):
+    if image_metric_reason is not None:
+        if (not isinstance(image_metric_reason, str)
+                or not image_metric_reason.strip()):
             return {
                 "error": (
-                    "focus_lock_probe_failure must be a non-empty caller "
-                    "assertion describing how the earlier property probe "
-                    "reported no capture band."
+                    "image_metric_reason must be a non-empty caller assertion "
+                    "saying why an image metric is the right instrument for "
+                    "this autofocus call."
                 )
             }
-        focus_lock_probe_failure = focus_lock_probe_failure.strip()
+        image_metric_reason = image_metric_reason.strip()
     if probe is not None:
         if not isinstance(probe, dict):
             return {"error": f"Malformed probe {probe!r}: expected an object."}
@@ -6327,7 +6327,7 @@ def run_autofocus(
     ) in PROBEABLE_HARDWARE_FOCUS_LOCK_ADAPTERS
     if (probe is None and probeable_hardware_lock
             and lock.get("status_properties")
-            and focus_lock_probe_failure is None):
+            and image_metric_reason is None):
         device = lock["device"]
         status_properties = lock["status_properties"]
         readings = json.dumps(status_properties, ensure_ascii=False)
@@ -6343,7 +6343,7 @@ def run_autofocus(
             "If the in-focus placeholder is sent unedited, the zero-exposure "
             "property sweep matches nothing and its refusal reports every "
             "value the device actually returned, which reveals the right "
-            "spelling. "
+                "spelling. "
             if len(probe_candidates) == 1 else
             "First replace the property placeholder with the appropriate key "
             "from Current readings; the values shown there are what distinguish "
@@ -6358,12 +6358,13 @@ def run_autofocus(
                 "Re-call with method=\"sweep\" and probe="
                 f"{{\"device\": {json.dumps(device)}, "
                 f"\"property\": {json.dumps(probe_property)}, "
-                "\"in_focus_values\": [\"<your best guess>\"]}}. "
+                "\"in_focus_values\": [\"<your best guess>\"]}. "
                 + discovery_guidance + "'Out of focus search range' "
                 "says the coverslip is not in the band at this Z — it is not a "
-                "statement that the lock is unavailable. Supply "
-                "focus_lock_probe_failure with a non-empty account only after "
-                "a property probe has actually reported no band."
+                "statement that the lock is unavailable. The image metric "
+                "remains available: re-call with image_metric_reason set to a "
+                "non-empty reason—for example, the operator asked for an "
+                "image-based focus, or a property probe reported no band at this XY."
             ),
             "focus_lock": lock,
         }
@@ -6421,9 +6422,9 @@ def run_autofocus(
             else None
         ),
     }
-    if focus_lock_probe_failure is not None:
+    if image_metric_reason is not None:
         payload["caller_assertion"] = {
-            "focus_lock_probe_failure": focus_lock_probe_failure,
+            "image_metric_reason": image_metric_reason,
         }
     if explicit_window:
         payload["z_min_um"] = z_min_um

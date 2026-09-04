@@ -123,13 +123,14 @@ def test_run_autofocus_description_says_sweep_is_headless():
     assert "viewer does not show the sweep as it happens" in description
 
 
-def test_focus_lock_probe_failure_has_its_own_audit_rule():
+def test_image_metric_reason_has_its_own_audit_rule():
     parameter = _SCHEMA_BY_NAME["run_autofocus"]["input_schema"]["properties"][
-        "focus_lock_probe_failure"
+        "image_metric_reason"
     ]
     assert parameter["type"] == "string"
     assert "non-empty" in parameter["description"]
-    assert "only after" in parameter["description"]
+    assert "operator asked" in parameter["description"]
+    assert "probe reported no band" in parameter["description"]
     assert "caller assertion" in parameter["description"]
     assert "not an instrument measurement" in parameter["description"]
 
