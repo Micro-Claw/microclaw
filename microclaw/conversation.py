@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import queue
 from typing import Any, Iterable
 
 
@@ -179,6 +180,130 @@ class AuditLog:
             "next_cursor": str(end) if end < len(self.records) else None,
             "total": len(self.records),
         }
+
+
+DIAGNOSTIC_FLUSH_GRACE_S = 2.0
+
+
+@dataclass
+class _DiagnosticItem:
+    record: dict
+    lifecycle: bool
+    acknowledged: threading.Event | None = None
+    persisted: bool = False
+
+
+class AcquisitionDiagnosticWriter:
+    """Single-threaded, bounded persistence for acquisition diagnostics.
+
+    Progress is the only droppable class.  At most one coalesced progress item
+    waits outside the bounded queue, and a lifecycle enqueue evicts queued
+    progress before waiting for capacity.  An acquisition has fewer lifecycle
+    transitions than the queue's protected capacity, so lifecycle records
+    cannot be displaced by an arbitrarily large frame stream.
+    """
+
+    def __init__(self, audit: AuditLog, *, capacity: int = 64) -> None:
+        if capacity < 8:
+            raise ValueError("diagnostic queue capacity must protect one acquisition lifecycle")
+        self.audit = audit
+        self._queue: queue.Queue[_DiagnosticItem | None] = queue.Queue(capacity)
+        self._progress_lock = threading.Lock()
+        self._coalesced_progress: _DiagnosticItem | None = None
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run, name="microclaw-acquisition-diagnostics", daemon=True,
+        )
+        self._thread.start()
+
+    def submit(
+        self, record: dict, *, lifecycle: bool = False, acknowledge: bool = False,
+        fallback: Any = None,
+    ) -> bool:
+        """Queue a record; optionally wait a bounded time for its fsync."""
+        ack = threading.Event() if acknowledge else None
+        item = _DiagnosticItem(record, lifecycle, ack)
+        if self._closed:
+            if fallback is not None:
+                fallback(record)
+            return False
+        if lifecycle:
+            self._enqueue_lifecycle(item)
+        else:
+            try:
+                self._queue.put_nowait(item)
+            except queue.Full:
+                with self._progress_lock:
+                    self._coalesced_progress = item
+        if ack is None:
+            return True
+        if ack.wait(DIAGNOSTIC_FLUSH_GRACE_S) and item.persisted:
+            return True
+        if fallback is not None:
+            fallback(record)
+        return False
+
+    def _enqueue_lifecycle(self, item: _DiagnosticItem) -> None:
+        while True:
+            try:
+                self._queue.put_nowait(item)
+                return
+            except queue.Full:
+                # Remove ordinary progress first. Lifecycle count is bounded by
+                # the acquisition state machine, independently of frame count.
+                displaced = self._queue.get_nowait()
+                self._queue.task_done()
+                if displaced is None:
+                    self._queue.put_nowait(None)
+                    continue
+                if displaced.lifecycle:
+                    self._queue.put_nowait(displaced)
+                    # The writer normally frees this immediately. This bounded
+                    # wait is reachable only if a caller supplied an undersized
+                    # capacity contrary to the constructor invariant.
+                    self._queue.put(item)
+                    return
+                with self._progress_lock:
+                    if self._coalesced_progress is None:
+                        self._coalesced_progress = displaced
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                self._queue.task_done()
+                return
+            try:
+                self.audit.append(item.record)
+                item.persisted = True
+            except Exception:
+                item.persisted = False
+            finally:
+                if item.acknowledged is not None:
+                    item.acknowledged.set()
+                self._queue.task_done()
+            with self._progress_lock:
+                progress = self._coalesced_progress
+                self._coalesced_progress = None
+            if progress is not None:
+                try:
+                    self._queue.put_nowait(progress)
+                except queue.Full:
+                    with self._progress_lock:
+                        self._coalesced_progress = progress
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        with self._progress_lock:
+            progress = self._coalesced_progress
+            self._coalesced_progress = None
+        if progress is not None:
+            self._queue.put(progress)
+        self._queue.join()
+        self._queue.put(None)
+        self._thread.join()
 
 
 def prune_transcripts(directory: str | os.PathLike[str], retention_days: int | None,

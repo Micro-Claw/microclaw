@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+import time
 
 import pytest
 
@@ -238,3 +240,72 @@ def test_checkpoint_marks_its_contents_as_belonging_to_earlier_turns():
     # The specific failure observed live: answering a current-turn question out
     # of the checkpoint instead of out of the visible messages.
     assert "current turn from this block" in contract
+
+
+def test_acquisition_writer_coalesces_progress_without_dropping_lifecycle(tmp_path):
+    from microclaw.conversation import AcquisitionDiagnosticWriter, AuditLog
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowFsyncAudit(AuditLog):
+        def append(self, message):
+            # AuditLog's real append performs write + flush + fsync. Blocking
+            # immediately before it models that entire synchronous operation.
+            entered.set()
+            release.wait()
+            return super().append(message)
+
+    audit = SlowFsyncAudit(tmp_path / "acq.jsonl")
+    writer = AcquisitionDiagnosticWriter(audit, capacity=8)
+    writer.submit({"type": "progress", "frame": 0})
+    assert entered.wait(1)
+    for frame in range(1, 30):
+        writer.submit({"type": "progress", "frame": frame})
+    lifecycle = [f"lifecycle-{index}" for index in range(6)]
+    for kind in lifecycle:
+        writer.submit({"type": kind}, lifecycle=True)
+    release.set()
+    writer.close()
+
+    kinds = [record["type"] for record in audit.records]
+    assert set(lifecycle).issubset(kinds)
+    assert len([record for record in audit.records if record["type"] == "progress"]) < 30
+    assert any(record.get("frame") == 29 for record in audit.records)
+
+
+def test_acquisition_writer_acknowledges_fsync_and_bounds_blocked_writer(
+    tmp_path, monkeypatch,
+):
+    from microclaw import conversation
+    from microclaw.conversation import AcquisitionDiagnosticWriter, AuditLog
+
+    path = tmp_path / "acq.jsonl"
+    writer = AcquisitionDiagnosticWriter(AuditLog(path))
+    assert writer.submit({"type": "timeout"}, lifecycle=True, acknowledge=True)
+    assert json.loads(path.read_text(encoding="utf-8").strip())["type"] == "timeout"
+    writer.close()
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockedFsyncAudit(AuditLog):
+        def append(self, message):
+            entered.set()
+            release.wait()
+            return super().append(message)
+
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_FLUSH_GRACE_S", 0.03)
+    blocked = AcquisitionDiagnosticWriter(BlockedFsyncAudit(tmp_path / "blocked.jsonl"))
+    fallbacks = []
+    started = time.monotonic()
+    assert not blocked.submit(
+        {"type": "timeout"}, lifecycle=True, acknowledge=True,
+        fallback=fallbacks.append,
+    )
+    elapsed = time.monotonic() - started
+    assert entered.is_set()
+    assert elapsed < 0.15
+    assert fallbacks == [{"type": "timeout"}]
+    release.set()
+    blocked.close()

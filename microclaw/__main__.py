@@ -22,6 +22,7 @@ from microclaw.config import (
     validation_result_json,
 )
 from microclaw.conversation import (
+    AcquisitionDiagnosticWriter,
     AuditLog,
     ConversationStore,
     atomic_write_text,
@@ -189,15 +190,25 @@ def run_session(args):
     store = ConversationStore(AuditLog(history_fn_name, enabled=args.save_history))
     confirmation_fn_name = history_fn_name.replace("_history.jsonl", "_confirmations.jsonl")
     confirmation_audit = AuditLog(confirmation_fn_name, enabled=args.save_history)
+    acquisition_fn_name = history_fn_name.replace("_history.jsonl", "_acquisitions.jsonl")
+    acquisition_writer = AcquisitionDiagnosticWriter(
+        AuditLog(acquisition_fn_name, enabled=args.save_history, secrets=(key,))
+    )
     from microclaw import tools
     tools.CONFIRM_AUDIT_FN = confirmation_audit.append
     # AuditLog writes as messages are produced. Every exit path — 'exit',
     # Ctrl-C, or a crash inside run_agent — reports declared illumination state
     # without changing it (design/38 F9 reverses design/14 §3).
     try:
-        _repl(args, ctrl, guard, history, store)
+        _repl(
+            args, ctrl, guard, history, store, acquisition_writer,
+            # The unique history stem is the session correlation id, so the
+            # diagnostic and transcript can be joined without another UUID.
+            Path(history_fn_name).stem,
+        )
     finally:
         tools.CONFIRM_AUDIT_FN = None
+        acquisition_writer.close()
         report_declared_illumination_on_exit(guard, ctrl.core)
 
 
@@ -235,7 +246,8 @@ def report_declared_illumination_on_exit(guard, core, *, flush=False):
             )
 
 
-def _repl(args, ctrl, guard, history, store):
+def _repl(args, ctrl, guard, history, store, diagnostic_writer=None,
+          acquisition_session_id=None):
     global run_agent
     if run_agent is None:
         # Kept lazy so restricted commands such as first-launch setup never
@@ -291,6 +303,8 @@ def _repl(args, ctrl, guard, history, store):
             reply, new_history = run_agent(
                 user_input, ctrl, guard, history, model=args.model,
                 context_provider=store.model_messages, on_message=store.append,
+                acquisition_diagnostic_writer=diagnostic_writer,
+                acquisition_session_id=acquisition_session_id,
             )
             print(f"\nMicroclaw: {reply}\n")
 
@@ -305,6 +319,8 @@ def _repl(args, ctrl, guard, history, store):
             reply, new_history = run_agent(
                 user_input, ctrl, guard, history, model=args.model,
                 context_provider=store.model_messages, on_message=store.append,
+                acquisition_diagnostic_writer=diagnostic_writer,
+                acquisition_session_id=acquisition_session_id,
             )
             print(f"\nMicroclaw: {reply}\n")
 

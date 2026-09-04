@@ -9,6 +9,7 @@ import pytest
 
 from microclaw import tools
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan
+from microclaw.conversation import AuditLog
 
 
 class BlockingAcquisition:
@@ -638,3 +639,195 @@ def test_hookless_timelapse_emitter_remains_a_bare_acquisition_context():
     })
     assert "with Acquisition(" in source
     assert "Thread" not in source and "await_completion" not in source
+
+
+def test_saved_frame_callback_never_calls_or_waits_for_audit_log(monkeypatch, tmp_path):
+    from microclaw.conversation import AcquisitionDiagnosticWriter
+    monkeypatch.setattr("microclaw.authorization.authorize_path", lambda *_: None)
+    entered = threading.Event()
+    release = threading.Event()
+    append_threads = []
+
+    class SlowFsyncAudit(AuditLog):
+        def append(self, message):
+            append_threads.append(threading.current_thread().name)
+            entered.set()
+            release.wait()
+            return super().append(message)
+
+    class BurstAcquisition:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self._dataset_disk_location = "/data/burst"
+            self._exception = None
+
+        def acquire(self, events):
+            for _ in events:
+                self.kwargs["image_saved_fn"]({}, object())
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(tools, "Acquisition", BurstAcquisition)
+    writer = AcquisitionDiagnosticWriter(SlowFsyncAudit(tmp_path / "acq.jsonl"))
+    done = threading.Event()
+
+    def drive():
+        tools.execute_tool(
+            "run", {}, _ctrl(False), _guard(),
+            {"run": _entry(lambda ctrl, guard: _call_acquire(
+                ctrl, guard, "/data", "burst", [{}] * 100,
+                plan=AcquisitionPlan(100, 1, 1, 100),
+            ))},
+            acquisition_diagnostic_writer=writer,
+            acquisition_session_id="session",
+            tool_call_id="tool-1",
+        )
+        done.set()
+
+    caller = threading.Thread(target=drive, name="tool-caller")
+    caller.start()
+    assert entered.wait(1)
+    assert done.wait(0.5), "saved-frame callbacks waited for the blocked fsync"
+    assert append_threads == ["microclaw-acquisition-diagnostics"]
+    release.set()
+    caller.join()
+    writer.close()
+
+
+def test_complete_acquisition_records_ordered_lifecycle_and_correlation(monkeypatch, tmp_path):
+    from microclaw.conversation import AcquisitionDiagnosticWriter
+    monkeypatch.setattr("microclaw.authorization.authorize_path", lambda *_: None)
+    class CompleteAcquisition:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self._dataset_disk_location = "/data/complete"
+            self._exception = None
+
+        def acquire(self, events):
+            for _ in events:
+                self.kwargs["image_saved_fn"]({}, object())
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(tools, "Acquisition", CompleteAcquisition)
+    audit = AuditLog(tmp_path / "acq.jsonl")
+    writer = AcquisitionDiagnosticWriter(audit)
+
+    @_entry
+    def run(ctrl, guard):
+        return _call_acquire(
+            ctrl, guard, "/data", "complete", [{}, {}],
+            plan=AcquisitionPlan(2, 5, 0.01, 2048),
+        )
+
+    tools.execute_tool(
+        "run", {}, _ctrl(False), _guard(), {"run": run},
+        acquisition_diagnostic_writer=writer,
+        acquisition_session_id="20260904_microclaw_history",
+        tool_call_id="toolu_abc",
+    )
+    writer.close()
+    lifecycle = [record for record in audit.records if record["type"] != "acquisition_progress"]
+    assert [record["type"] for record in lifecycle] == [
+        "acquisition_construction", "acquisition_event_submission",
+        "acquisition_first_frame_accounted", "acquisition_final_frame_accounted",
+        "acquisition_mark_finished", "acquisition_teardown_completion",
+    ]
+    assert all(record["session_id"] == "20260904_microclaw_history" for record in lifecycle)
+    assert all(record["tool_call_id"] == "toolu_abc" for record in lifecycle)
+    assert [record["timestamp"] for record in lifecycle] == sorted(
+        record["timestamp"] for record in lifecycle
+    )
+    construction = lifecycle[0]
+    assert construction["estimated_bytes"] == 2048
+    assert construction["active_bound_term"] == "plan_plus_300_s"
+
+
+def test_timeout_diagnostic_records_bound_term_and_camera_state(monkeypatch, tmp_path):
+    from microclaw.conversation import AcquisitionDiagnosticWriter
+    monkeypatch.setattr(tools, "Acquisition", BlockingAcquisition)
+    _install_clock(monkeypatch, SimulatedClock(step=1000))
+    audit = AuditLog(tmp_path / "acq.jsonl")
+    writer = AcquisitionDiagnosticWriter(audit)
+    plan = AcquisitionPlan(1, 1, 1, 123)
+    with pytest.raises(tools.AcquisitionUnterminated):
+        with tools._acquisition_diagnostic_context({
+            "diagnostic_writer": writer, "session_id": "s", "tool_call_id": "t",
+        }):
+            _call_acquire(_ctrl(True), _guard(), "/data", "timeout", [], plan=plan)
+    writer.close()
+    timeout = next(record for record in audit.records if record["type"] == "acquisition_timeout")
+    assert timeout["active_bound"] == "runtime_ceiling"
+    assert timeout["active_bound_term"] == "plan_plus_300_s"
+    assert timeout["quiet_bound_term"] == "quiet_floor"
+    assert timeout["camera_sequence_running"] is True
+    BlockingAcquisition.release.set()
+
+
+@pytest.mark.parametrize("save", [True, False])
+def test_cli_acquisition_file_is_history_sibling_and_honors_save_flag(
+    monkeypatch, tmp_path, save,
+):
+    from microclaw import __main__ as cli, credentials, updates
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_safety_config_or_exit", lambda _: SimpleNamespace(
+        constraints=MagicMock()
+    ))
+    monkeypatch.setattr(cli, "SafetyGuard", lambda _: _guard())
+    ctrl = _ctrl(False)
+    ctrl.is_connected.return_value = True
+    monkeypatch.setattr(cli, "MicroscopeController", lambda **_: ctrl)
+    monkeypatch.setattr(cli, "validate_live_rig", lambda *_a, **_k: None)
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("key", "env"))
+    monkeypatch.setattr("microclaw.agent.set_api_key", lambda *_: None)
+    monkeypatch.setattr(updates, "start_due_check", lambda *_: None)
+    monkeypatch.setattr(updates, "terminal_update_notice", lambda: (None, None))
+    inputs = iter(["go", "exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+
+    def fake_agent(_message, _ctrl, _guard, history, **kwargs):
+        kwargs["acquisition_diagnostic_writer"].submit({
+            "type": "probe", "session_id": kwargs["acquisition_session_id"],
+            "tool_call_id": "tool-cli",
+        }, lifecycle=True)
+        return "ok", history
+
+    monkeypatch.setattr(cli, "run_agent", fake_agent)
+    cli.run_session(SimpleNamespace(
+        safety_config=None, port=1, save_history=save,
+        history_retention_days=None, profile=False, model=None,
+        no_update_check=True,
+    ))
+    files = list(tmp_path.glob("*_microclaw_acquisitions.jsonl"))
+    assert bool(files) is save
+    if save:
+        record = json.loads(files[0].read_text(encoding="utf-8").strip())
+        assert record["tool_call_id"] == "tool-cli"
+        assert record["session_id"] == files[0].name.replace(
+            "_acquisitions.jsonl", "_history"
+        )
+
+
+def test_web_session_acquisition_file_is_history_sibling(monkeypatch, tmp_path):
+    from microclaw import credentials
+    from microclaw.webserve import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
+    session = object.__new__(Session)
+    Session._initialize(session, SimpleNamespace(
+        model=None, save_history=True, history_retention_days=None,
+        host="127.0.0.1",
+    ))
+    session.acquisition_diagnostic_writer.submit({
+        "type": "probe", "session_id": session.acquisition_session_id,
+        "tool_call_id": "tool-web",
+    }, lifecycle=True)
+    session.acquisition_diagnostic_writer.close()
+    path = next(tmp_path.glob("*_microclaw_acquisitions.jsonl"))
+    record = json.loads(path.read_text(encoding="utf-8").strip())
+    assert record["tool_call_id"] == "tool-web"
+    assert path.name.replace("_acquisitions.jsonl", "_history.jsonl") == session.history_fn
