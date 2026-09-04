@@ -142,15 +142,15 @@ ADAPTIVE_TIMELAPSE_ALLOWANCE_EVIDENCE = (
     "n=1 from M2, 2026-08-31; 99 gaps at 50 ms exposure: "
     "min 0.219 s, mean 0.2495 s, max 0.344 s"
 )
-# Established by a Nikon Ti's own `nikon-lausanne-rig/inventory.json` output:
-# library NikonTI, adapter TIPFSStatus, device type AutoFocusDevice. That
-# inventory's camera was AndorIxon; R88 came from a different Nikon Ti whose
-# NikonTI-shaped device list included TIPFSStatus and HamamatsuHam_DCAM, so
-# applying the measured adapter identity to R88 is an inference. A miss is
-# deliberately conservative: any identity absent from this set is unclassified
-# and retains the old sweep behaviour. The identity now recorded in each
-# non-EMU payload will confirm or refute that inference on R88's rig without an
-# extra instrument call.
+# Established by this rig's own `nikon-lausanne-rig/inventory.json` output:
+# library NikonTI, adapter TIPFSStatus, device type AutoFocusDevice. The
+# inventory records an AndorIxon camera and R88's session a HamamatsuHam_DCAM,
+# but the operator confirmed on 2026-09-04 that this is the same Nikon Ti with
+# the camera swapped, so the identity is measured on the rig R88 came from, not
+# inferred across machines. A miss is deliberately conservative: any identity
+# absent from this set is unclassified and retains the old sweep behaviour.
+# Each non-EMU payload now records the identity it read, so a rig that does not
+# match says so in its own session rather than failing silently.
 PROBEABLE_HARDWARE_FOCUS_LOCK_ADAPTERS = frozenset({
     ("NikonTI", "TIPFSStatus"),
 })

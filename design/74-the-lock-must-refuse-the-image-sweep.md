@@ -423,6 +423,11 @@ Three consequences, all measured rather than assumed:
   therefore the **adapter identity allowlist** the Decision section names as the
   fallback — built on two calls whose return values on both machines are on
   disk, not on a capability nobody can verify.
+  **The rig identity is measured, not inferred** (operator, 2026-09-04). The
+  `rig_inventory` output records an `AndorIxon` camera and R88's session a
+  `HamamatsuHam_DCAM`; that is the same Nikon Ti with the camera swapped, and
+  nothing else about the rig changed. An earlier draft of this row treated them
+  as two machines and called the identity an inference. It is not.
 - **The Ti2-E / Dragonfly is a recorded gap, and stays one.** Its lock's device
   *label* is `PFS` (design/56, and the 2026-08-23 session), but its adapter
   library and name appear nowhere in the archive. It is left unclassified — no
