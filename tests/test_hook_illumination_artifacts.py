@@ -1032,7 +1032,7 @@ def test_artifact_directory_tracks_the_acquisitions_renamed_dataset(
     )
     monkeypatch.setattr(tools, "Acquisition", RenamedAcquisition)
 
-    path = tools._acquire_with_hooks(_guard(), str(tmp_path), "run", [], hook=adapter, ctrl=MagicMock())
+    path = tools._acquire_with_hooks(_guard(), str(tmp_path), "run", [], hook=adapter, ctrl=MagicMock(), policy=tools.DEFAULT)
 
     assert path == str(tmp_path / "run_1")
     assert (tmp_path / "run_1" / "artifacts" / "result.bin").read_bytes() == b"x"
@@ -1066,7 +1066,7 @@ def test_successive_renamed_runs_do_not_cross_collide(monkeypatch, tmp_path):
             target_dir=tmp_path / "run" / "artifacts",
             max_artifact_bytes=10, max_count=1, max_total_bytes=10,
         )
-        tools._acquire_with_hooks(_guard(), str(tmp_path), "run", [], hook=adapter, ctrl=MagicMock())
+        tools._acquire_with_hooks(_guard(), str(tmp_path), "run", [], hook=adapter, ctrl=MagicMock(), policy=tools.DEFAULT)
         assert adapter._log[-1]["decision"] == "accepted"
 
     assert (tmp_path / "run_1" / "artifacts" / "same.bin").exists()
@@ -1113,7 +1113,8 @@ def test_artifact_bind_uses_dataset_path_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "Acquisition", AcquisitionWithoutLocation)
 
     assert tools._acquire_with_hooks(
-        _guard(), str(tmp_path), "run", [], hook=adapter, ctrl=MagicMock()
+        _guard(), str(tmp_path), "run", [], hook=adapter, ctrl=MagicMock(),
+        policy=tools.DEFAULT,
     ) == str(tmp_path / "run")
     assert adapter._artifact_context["target_dir"] == tmp_path / "run" / "artifacts"
 

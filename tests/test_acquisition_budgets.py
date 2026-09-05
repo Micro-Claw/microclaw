@@ -452,6 +452,7 @@ def test_reservation_uses_saved_callback_without_installing_pixel_hook(
         _guard(), str(tmp_path), "dataset",
         supplied_events,
         reservation=reservation, ctrl=MagicMock(),
+        policy=tools.DEFAULT,
     )
     assert "image_process_fn" not in received_kwargs
     assert reservation.completed_frames == 2
@@ -488,6 +489,7 @@ def test_list_acquisition_passes_the_list_directly_to_acquire(monkeypatch, tmp_p
     tools._acquire_with_hooks(
         _guard(), str(tmp_path), "dataset", supplied_events,
         reservation=reservation, ctrl=MagicMock(),
+        policy=tools.DEFAULT,
     )
     assert isinstance(received["events"], list)
     assert received["events"] is supplied_events

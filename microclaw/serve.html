@@ -513,6 +513,8 @@
         const planned = ev.frames_planned == null
           ? "?" : Number(ev.frames_planned).toLocaleString();
         pendingProgress = `frames ${accounted} / ${planned}`;
+        if (ev.phase === "finalizing") pendingProgress += " · finalizing dataset";
+        else if (ev.phase === "acquiring") pendingProgress += " · acquiring";
         renderPendingText();
         break;
       }
