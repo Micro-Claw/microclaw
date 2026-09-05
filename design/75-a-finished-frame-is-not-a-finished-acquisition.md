@@ -175,10 +175,36 @@ same sequence succeeded 13 times earlier in this session. Treat it as a
 reproduction variable, not as the root cause and not as a basis for a
 speculative camera workaround.
 
-## Evidence still owed, before any code
+## Evidence still owed — **CLOSED 2026-09-05, unanswerable and no longer needed**
 
-Three cheap facts, none of them a rig booking, that between them decide whether
-D1 is even the right predicate:
+The operator does not have these facts; the incident is too far back. That is
+not a loss, because **block 75a's measurements answered the questions these were
+proxies for, and answered them better.** Struck rather than left standing, so a
+later reader does not think this notebook is still waiting on something.
+
+- **(1) is superseded by measurement.** Its job was to size `runtime_slack_s` —
+  item 13 worried that ~300 s "may be past the patience this incident
+  demonstrated". The M2 arm measured the healthy maximum directly at **446 ms**,
+  and the chosen bound is ~10 s. Knowing whether the operator waited five
+  minutes or fifteen cannot change whether 10 s is inside their patience. The
+  question only mattered while the constant was a guess.
+- **(2) is answered structurally, and D1 never depended on it.** It was to
+  discriminate "the notification path delivered the image and lost only the
+  terminal signal" from "it delivered neither". 75a measured that the frame is
+  accounted **inside `acq.__exit__`**, on the very thread `await_completion`
+  joins — so on the leading hypothesis `frames_accounted` is 0, which is exactly
+  the case D1 is already written to survive. The answer would have been
+  interesting; the design was built not to need it. And the **next** occurrence
+  answers it automatically, which is what D4 shipped for.
+- **(3) was the weakest of the three by the document's own finding 6**: one
+  index entry proves *Java* wrote the frame, not that MicroClaw accounted it.
+
+**What replaces them**: D4's file. The next time this happens there will be a
+record with the correlation id, the lifecycle timestamps, the active bound and
+the camera state — and block 75a's limb D demonstrated on hardware that a call
+ended mid-flight leaves exactly that: a beginning and no end.
+
+The original three, kept for the record:
 
 1. **How long was the spinner up, and when exactly was MicroClaw closed?** This
    locates the observed wait relative to the ~300 s runtime precondition and
@@ -1352,10 +1378,9 @@ constants" above. **Assert the ceiling formula, not the constants.**
    window.** They differ by 2.8x on M2. The bound expires against the window;
    the operator waits for the call.
 
-**Still owed, and not blocking:** the three facts in §"Evidence still owed".
-The spinner duration would confirm the 10 s bound is inside the operator's
-patience; the `frames 1 / 1` observation would discriminate the two triggers.
-Neither changes D1's shape, which is written to hold either way.
+**Nothing is owed.** §"Evidence still owed" is closed: the operator cannot
+recover those facts, and 75a's measurements superseded the two that mattered.
+75b has no outstanding input.
 
 ## Coordination checklist — block 75b
 
