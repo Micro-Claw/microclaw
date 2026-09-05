@@ -477,10 +477,16 @@ def main():
         # 75a measured the tool call at 2.8x the supervised window on M2, so
         # the operator's wait is wider than the bound by the work outside it.
         # Report that overhead rather than asserting a number for it.
+        #
+        # **Named for what it is.** Round 2 reported this as
+        # `outside_supervised_window_s`, which it is not: it also contains the
+        # poll granularity, the camera probe and the diagnostic flush, all of
+        # which are deliberately inside the delivery ceiling. A reader comparing
+        # it to 75a's M2 figure would have compared two different quantities.
         overhead = wall_s - bound_s
         state["limb_b"] = {"wall_s": round(wall_s, 3), "bound_s": bound_s,
                            "ceiling_s": round(ceiling, 3),
-                           "outside_supervised_window_s": round(overhead, 3),
+                           "after_bound_expired_s": round(overhead, 3),
                            "phases": [e.get("phase") for e in events
                                       if e.get("type") == "acquisition_progress"],
                            "result": result}
@@ -492,8 +498,9 @@ def main():
             "accounted, so the browser could not say so: "
             f"{state['limb_b']['phases']}")
         return (f"unterminated in {wall_s:.2f}s against a {ceiling:.2f}s ceiling; "
-                f"1 frame accounted, phase finalizing, "
-                f"{overhead:.2f}s outside the supervised window")
+                f"1 frame accounted, phase finalizing, {overhead:.2f}s between "
+                f"the bound expiring and the tool returning (poll + camera probe "
+                f"+ diagnostic flush + the work outside the supervised window)")
 
     @limb("C - a blocked teardown with no frame accounted "
           "(MANDATORY - the incident's own shape)",

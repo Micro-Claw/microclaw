@@ -93,6 +93,7 @@ Rows added since the triage:
 | `R90` | found while scoring `design/74` block 74a's demo gate, 2026-09-04 |
 | `R91`–`R93` | found while scoring the Nikon Ti's own `design/74` sessions, 2026-09-05 |
 | `R94`–`R95` | `design/75` block 75a's gates, 2026-09-05 |
+| `R96`–`R97` | `design/75` block 75b's demo gate, 2026-09-05 |
 
 
 ## The work queue
@@ -152,6 +153,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R93` | [Should a sweep refuse a post-engage value while the lock is disengaged?](#r93) | MEDIUM | SMALL |  |
 | `R94` | [D4 records acquisitions, so a snap in the Core log still cannot be attributed](#r94) | MEDIUM | SMALL |  |
 | `R95` | [Does live-mode ownership churn precede a lost terminal notification?](#r95) | MEDIUM | LARGE |  |
+| `R96` | [An unterminated acquisition with every frame accounted is summarised to the user as a success](#r96) | MEDIUM | SMALL |  |
+| `R97` | [The runtime deadline includes Acquisition() construction, and nothing records how much](#r97) | LOW | SMALL |  |
 
 **Demo machine**
 
@@ -2359,6 +2362,32 @@ model summarising several tool results as one, which matters for gate scoring.
 - **Block** — NONE. `design/75` D5 removed it from block 75a deliberately: four arms of 100 for a medium-confidence variable is more instrument time than a bound needs.
 - **Effort** — LARGE
 - **Provenance** — carried from `design/75` §D5, which asked for it as a register row rather than a block; the id is `R95` and not D5's suggested `R91` because `R91`–`R93` were taken by `design/74`'s Nikon confirmation in the meantime.
+
+### R96 — An unterminated acquisition with every frame accounted is summarised to the user as a success
+
+**The typed result keeps design/75 D2's distinction between "frames were saved" and "storage finalized cleanly". The model's summary of it does not.**
+
+- **Status** — OPEN, and **not a defect in the result**. Measured in block 75b's part-2 demo session, 2026-09-05, from the history JSONL: three real hangs, each returning `acquisition: "unterminated"`, `phase: "finalizing"`, `frames_accounted: 1`, `error: "The acquisition did not terminate within its supervised runtime bound."` — exactly what D2 specifies, and never `Timelapse complete.` Every one of the three turns then opened with **"Done. One 50 ms frame acquired and saved."** and demoted the failure to a closing note. The word *unterminated* never reached the operator, who was watching for a failure and reported *"it looked like it worked this time"*.
+- **The reading is defensible, which is why this is a row and not a bug.** The frame really was written, and on the first turn the model *verified* it by reading the dataset back with `run_analysis_on_saved_dataset` before saying so. With `frames_accounted == frames_planned` the data genuinely is on disk; what is unfinished is teardown, which the model did mention every time.
+- **What is untested is the case that matters.** **The zero-frame shape has never been put in front of a model.** Block 75b's gate limb C produces it deterministically (`frames_accounted: 0`, `phase: "acquiring_or_notifying"`), but no conversational turn has ever received one — and that is precisely the shape where "saved" would be false. The 2026-09-04 incident is that shape.
+- **Importance** — MEDIUM. Nothing about the bound, the refusal or the record depends on it; what depends on it is whether an operator learns that a run needs looking at. `CLAUDE.md`'s *rules go in parameter descriptions* suggests the fix is wording — in `_unterminated_result`'s `error`/`data`/`hardware` text — rather than new machinery.
+- **Where** — LOCAL for the wording; **demo machine** to confirm, and cheaply: `design/75-block75b-blocking-serve.py` reproduces a hang on demand, and suppressing `image_saved_fn` in it would put the zero-frame shape in front of a model for the first time.
+- **Block** — NONE. Deliberately not folded into 75b, which must not grow.
+- **Effort** — SMALL
+- **Provenance** — found while scoring block 75b's round-2 demo gate from the part-2 history, 2026-09-05. The gate itself passed 8/8; no limb reads what the model says.
+
+
+### R97 — The runtime deadline includes Acquisition() construction, and nothing records how much
+
+**`runtime_deadline = started + bound` is measured from `_acquire_with_hooks` entry, so the constructor spends part of the budget before the dataset exists — and D4's construction record carries no elapsed time, so it cannot be measured from an artifact.**
+
+- **Status** — OPEN, **not a defect**, and currently harmless. Measured in block 75b's round-2 gate, 2026-09-05: `blocked-lost` timed out **5.03 s after its construction record** while part 2's three hangs timed out at **6.03 s** after theirs — same 5.05 s bound, same machine, four minutes apart. The whole difference is how long `Acquisition()` took before the record was written. Nothing can pin it down further, because the record does not carry the elapsed time since `started`.
+- **Importance** — LOW, and stated so the next reader does not rediscover it. It is the mechanism by which the short 5 s bound could misfire: a rig whose acquisition construction is slow spends the budget before the first frame. On the two machines measured it is well inside the margin — healthy supervised windows are 0.12–0.27 s against 5.05 s — and block 75b's gate limb A is the check that would catch it, by failing when a healthy call is slower than its own bound.
+- **Where** — LOCAL. One field on the existing `acquisition_construction` record (seconds since `started`) makes it measurable from any artifact; the record already carries `active_bound_s`.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — derived while scoring block 75b's round-2 gate, 2026-09-05, by reconciling two timeout timings that should have agreed and did not.
+
 
 
 ## Blocked on someone else — not schedulable here

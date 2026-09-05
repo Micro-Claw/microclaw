@@ -540,11 +540,12 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — eight contracts we got wrong
+## The pycro-manager acquisition engine — nine contracts we got wrong
 
 The first three were found on a rig by block 52a, the fourth by block 56, the
 fifth by design/56, the sixth by design/55, the seventh by an operator's M2
-dSTORM run, and the eighth by block 75a's gate — each after a full green suite.
+dSTORM run, the eighth by block 75a's gate, and the ninth by block 75b's — each
+after a full green suite.
 The first five were missed because a test fake encoded our assumption instead of
 the hardware's behaviour; the sixth because every test that could have caught it
 supplied the one argument whose absence was the defect. Check code against these
@@ -656,6 +657,22 @@ input, ask which fixtures produce that shape, and write one that does.
   50 ms frame is 0.05 s against a measured 0.45 s worst case, so a runtime
   ceiling derived from it is not a bound on anything the run actually spends
   its time doing.
+
+- **`Acquisition` is a dispatching constructor, so you cannot subclass it.**
+  `pycromanager.Acquisition` is `acq_constructor.Acquisition`, whose `__new__`
+  ignores `cls` and returns a `JavaBackendAcquisition` or, under pymmcore, a
+  `PythonBackendAcquisition`. `class X(Acquisition)` therefore compiles, answers
+  every reasonable question about itself — `inspect.getsource(X.__exit__)`
+  included — and **is never instantiated**: every call returns the backend
+  object, with your `__init__` and `__exit__` unused and no error anywhere.
+  Block 75b's first demo gate injected a teardown hang that way and lost both of
+  its blocked limbs; the artifacts, not the verdict, gave it away — the arm whose
+  `image_saved_fn` was supposed to be dropped had **accounted a frame**. To
+  intercept an acquisition, build the real object and patch the **returned
+  type's** method, where the lookup actually lands. And the fake that hides this
+  is the obvious one: an ordinary subclassable stand-in. A fake of `Acquisition`
+  must dispatch the way the real one does, or it is testing your assumption
+  rather than the engine.
 
 - **`acquire()` only submits.** It returns an `AcquisitionFuture`; completion is
   awaited in `Acquisition.__exit__` (`mark_finished()` then `await_completion()`).

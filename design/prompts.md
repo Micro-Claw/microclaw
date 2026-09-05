@@ -9264,3 +9264,77 @@ One residue was found and deliberately **not** sent back: the refusal formats ra
 `measured_z_positions` while the payload rounds to 3, but `settle_stage_move`
 already rounds to 4, so the worst possible disagreement is 0.4 nm. Recorded
 rather than fixed.
+
+## design/75 block 75b — the supervised-runtime bound
+
+**The runner turn died on a Codex usage limit with its edits landed and
+self-committed.** No `result.md` reached the job directory — the wrapper never
+wrote one — but the branch had two commits on it, including one that had
+committed `result.md` *into the repository*. So the artifacts to review were
+whatever git held, and everything was verified rather than believed. This is the
+sixth killed turn; it is the second whose edits survived, and the second time
+`result.md` was committed (75a's round 1 was the first). If a runner prompt says
+"do not commit anything under a scratch directory", say **also do not commit your
+report** — the two are not the same instruction to a runner that writes its
+report into the worktree.
+
+**The runner reported five failures and was right to stop.** Four were its
+sandbox — three loopback `socket.bind` denials and a `pip wheel` needing the
+network — and all four pass outside it. It fixed the fifth. Same lesson design/76
+recorded one block earlier and still not fixed: **the baseline must be measured
+in the sandbox, or the prompt must enumerate what cannot pass there.** Two blocks
+have now paid for it.
+
+**Five mutations chosen before reading the runner's own table**, all
+reproducing. The one worth keeping: gating expiry on `frames_accounted > 0`
+fails the zero-frame case at `assert 11.0 <= (10.05 + 0.1)` — the incident's own
+shape, and D1's central claim. A runner's mutation table is a claim about
+evidence, not evidence.
+
+**Four coordinator corrections, made on the branch because Codex was out of
+usage for four hours.** Two are worth repeating. A runtime timeout reported
+**no bound value anywhere**: D2's neutral wording deliberately names no number,
+and the error string it replaced had carried `within {bound_s:g} s`, so
+replacing prose with a neutral sentence silently deleted a fact. When you
+neutralise wording, check what the old wording was the only carrier of. And
+`design/60-block60a-demo-gate.py` had been **dead since block 75a** — it
+unpacked a 2-tuple that 75a made a 3-tuple — because nothing in the suite
+imports a gate script and gate code gets no review pass. **A committed gate is
+code with no CI.** Grep `design/*.py` for any helper whose signature you change.
+
+**The gate's own defect cost a full demo round, and it is the fake again.**
+`pycromanager.Acquisition` is a *dispatching constructor*: `__new__` ignores
+`cls` and returns a backend object. `class X(Acquisition)` compiles, answers
+`inspect.getsource(X.__exit__)`, and is never instantiated. Round 1's injected
+teardown hang therefore never ran, and two limbs reported **FAIL** — which read
+as a product defect and was not one. The selftest missed it because its fake
+`Acquisition` was an ordinary subclassable class. *A fake that encodes your
+assumption is not a test of it*, in the gate's own selftest, in the block whose
+review notes had just quoted that rule about the product. Three durable fixes
+came out of it: intercept by patching the **returned type**, never by
+subclassing; make a fake of a third-party constructor **dispatch the way the
+real one does**; and give the gate a way to know its own mechanism did not run,
+so it reports NOT EXERCISED instead of FAIL. That last one is `58a`'s rule
+applied to the gate's *own* instrument rather than to the machine's limits.
+
+**A gate's operator prompts are the half nobody tests, again.** Round 1's part 2
+asked *"does a structured failure then arrive?"* and the operator answered
+*"I have no idea what a structured failure is"* — which is the correct answer to
+jargon. Rewritten to name the words to look for, to say plainly that **a run
+which simply succeeds is itself a finding**, and to have the operator confirm
+the launcher's own `hang installed on ...` line before believing anything after
+it. Two rounds, and **both rounds' failures were the gate's; the product has not
+failed once.**
+
+**The most valuable evidence came from an 8/8 round.** Round 2 passed every
+limb, and scoring it from the artifacts still produced two register rows and one
+wrong label. The two numbers that had to be derived rather than read: the
+**supervised window** was stable across both rounds (max 0.199 s then 0.271 s)
+while the **tool call** varied 2.1x (0.437 s then 0.937 s), so the headroom on
+the term the deadline actually measures is 18.6x, not 5.4x — and round 2's
+0.271 s agreed with 75a's independent 0.274 s to 3 ms. And the finding no limb
+could reach came from part 2's *history*: the model summarises a
+`frames_accounted == frames_planned` timeout as **"Done. One 50 ms frame
+acquired and saved."** The result keeps D2's distinction; the summary collapses
+it. **No limb reads what the model says** — if a block's deliverable is what an
+operator is told, the conversation history is the artifact, not the score file.
