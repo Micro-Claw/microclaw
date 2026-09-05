@@ -132,10 +132,22 @@ LIVE_FROM_TREE = ("load_skill", "list_hooks", "describe_hook")
 DEV_REF = re.compile(r"\bdesign/\d+", re.I)
 OFFLINE_NAMES = ("analyze_completed_dataset", "analyze_saved_frame",
                  "run_analysis_on_saved_dataset")
+# Naming the verb is cheap; defining it is the deliverable.
+OFFLINE_VERBS = ("analyze_completed_dataset", "analyze_saved_frame")
+OFFLINE_VERB_DEFS = tuple(f"def {v}" for v in OFFLINE_VERBS)
+# Extended after reading the first control transcripts: the pre-fix model
+# reproduced the incident's substance -- "the offline adapter path for generated
+# hooks isn't shipped yet" -- without ever quoting a design number. `dev_ref` is
+# therefore a *secondary* criterion here, not the measurement. Fitting a scorer
+# to observed control output is a real hazard, so this list was frozen before
+# the tree under test was ever run, and every addition is quoted from a control
+# sample rather than imagined.
 UNAVAILABLE_PHRASES = (
     "not yet implemented", "not implemented", "is a proposal",
     "no wired offline", "cannot run a custom", "can't run a custom",
     "no offline execution", "does not support custom offline",
+    "isn't shipped", "is not shipped", "not shipped yet",
+    "isn't wired", "is not wired", "not wired yet",
 )
 
 
@@ -172,6 +184,33 @@ def recorded_results(messages: list[dict]) -> dict[str, str]:
             if name and name not in table:
                 table[name] = str(text)
     return table
+
+
+def find_result(messages: list[dict], name: str, *, contains: str) -> str | None:
+    """The recorded result of the call to `name` whose input mentions `contains`.
+
+    `recorded_results` keeps the first result per tool name, which is fine for a
+    tool called once and a trap for one called many times on different inputs.
+    Arm B's pruned fixture hit that trap live: the session's first
+    `run_analysis_on_saved_dataset` was a near-blank TIRF check, so a fixture
+    claiming the six kinesin movies were saved handed the model a payload from a
+    different dataset. It noticed, and spent its decision turn on the
+    contradiction instead of the decision.
+    """
+    uses = {}
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (block.get("type") == "tool_use" and block.get("name") == name
+                    and contains in json.dumps(block.get("input", {}))):
+                uses[block["id"]] = True
+            elif block.get("type") == "tool_result" and block.get("tool_use_id") in uses:
+                raw = block.get("content")
+                return raw if isinstance(raw, str) else (
+                    raw[0].get("text", "") if raw else "")
+    return None
 
 
 def first_user_message(messages: list[dict]) -> str:
@@ -263,8 +302,33 @@ def live_answers(tree: Path, offline: str, hooks_dir: Path) -> dict[str, str]:
 # --------------------------------------------------------------------------
 
 def score(said: str, calls: list[str]) -> dict:
-    """Every field here is a substring or a tool name. No prose judgement."""
+    """Every field here is a substring or a tool name. No prose judgement.
+
+    The scored field is `named_verb`: did the model name `analyze_completed_dataset`
+    or `analyze_saved_frame` as its plan. Three things settled that choice, and
+    all three came from measurement rather than design.
+
+    * A phrase list for "unavailable" is unbounded. Eight control samples made
+      that claim in five different wordings -- "isn't shipped yet", "the
+      sanctioned offline-movie path doesn't exist" -- and chasing them fits the
+      scorer to whatever the control happened to say. `unavail` therefore
+      survives as reported context and is never counted.
+    * `authored` -- a `def` in the emitted code, or a `generate_and_save_hook`
+      call -- is the stronger signal and this fixture cannot reach it. The
+      system prompt requires the model to show the code and wait for explicit
+      confirmation before saving a hook, so the replay ends at the question by
+      construction. Scoring the consequence of required behaviour as failure
+      made both trees read 0, and it is still reported when present.
+    * `run_analysis_on_saved_dataset` alone does not discriminate: measured at
+      1/8 on the control and 5/6 on the tree under test, because a model that
+      believes the path is unavailable still names the tool while declining to
+      use it. Only the verb separates them -- **0/8 against 6/6**.
+    """
     return {
+        "named_verb": sorted({n for n in OFFLINE_VERBS if n in said}),
+        "authored": sorted({n for n in OFFLINE_VERB_DEFS if n in said})
+                    + (["generate_and_save_hook"]
+                       if "generate_and_save_hook" in calls else []),
         "dev_ref": sorted(set(DEV_REF.findall(said))),
         "offline": sorted({n for n in OFFLINE_NAMES if n in said}),
         "attach": "hook_strategy" in said,
@@ -273,19 +337,25 @@ def score(said: str, calls: list[str]) -> dict:
     }
 
 
-def verdict(s: dict) -> str:
-    """One label per sample, from the scored fields alone."""
+def verdict(s: dict, *, finished: bool = True) -> str:
+    """One label per sample, from the scored fields alone.
+
+    A sample that ran out of turns while still calling tools never reached its
+    decision, so it reports NO_DECISION. Scoring it NEITHER would count a limb
+    that could not run its mechanism as a measurement -- the first control run
+    of this gate did exactly that, four times, and read as a real null.
+    """
+    if not finished:
+        return "NO_DECISION"
     if s["dev_ref"]:
         return "DEV_REFERENCE"
-    if s["unavail"] and not s["offline"]:
-        return "DECLARED_UNAVAILABLE"
-    if s["offline"] and s["attach"]:
+    if s["named_verb"] and s["attach"]:
         return "BOTH_ACCOUNTED"
-    if s["offline"]:
-        return "OFFLINE_ONLY"
+    if s["named_verb"]:
+        return "PLANS_ADAPTER"
     if s["attach"]:
         return "ATTACH_ONLY"
-    return "NEITHER"
+    return "NO_ADAPTER"
 
 
 # --------------------------------------------------------------------------
@@ -315,13 +385,13 @@ def arm_b_messages(session: list[dict], live: dict[str, str],
         prefix = _verbatim_prefix_through_skill_call(session)
         return [*prefix, skill_result]
 
-    table = recorded_results(session)
-    stats = table.get("run_analysis_on_saved_dataset")
+    stats = find_result(session, "run_analysis_on_saved_dataset",
+                        contains="mt_kin")
     if stats is None:
         raise SystemExit(
-            "This session never recorded run_analysis_on_saved_dataset, which is "
-            "the fact arm B's fixture rests on. Use --full-history or another "
-            "session."
+            "This session recorded no run_analysis_on_saved_dataset call over a "
+            "kinesin dataset, which is the fact arm B's pruned fixture rests on. "
+            "Use --full-history, which asserts nothing of its own."
         )
     return [
         {"role": "user", "content": first_user_message(session)},
@@ -380,6 +450,7 @@ def run_sample(client, model, system, tools_schema, messages, table, live,
                *, max_turns: int, replies: list[str]) -> dict:
     """Drive one sample and return its scored transcript."""
     said, calls, unrecorded, pending = [], [], Counter(), list(replies)
+    finished = False
     for _ in range(max_turns):
         response = client.send(model=model, system=system, messages=messages,
                                tools=tools_schema)
@@ -389,6 +460,7 @@ def run_sample(client, model, system, tools_schema, messages, table, live,
         messages = [*messages, {"role": "assistant", "content": response["content"]}]
         if not uses:
             if not pending:
+                finished = True
                 break
             messages.append({"role": "user", "content": pending.pop(0)})
             continue
@@ -408,7 +480,8 @@ def run_sample(client, model, system, tools_schema, messages, table, live,
         messages.append({"role": "user", "content": results})
     text = "\n".join(said)
     scored = score(text, calls)
-    return {"verdict": verdict(scored), **scored, "calls": calls,
+    return {"verdict": verdict(scored, finished=finished), **scored,
+            "finished": finished, "calls": calls,
             "unrecorded": dict(unrecorded), "said": text}
 
 
@@ -435,6 +508,11 @@ def _cache_conversation_prefix(messages: list[dict]) -> list[dict]:
     return [*messages[:-1], {**last, "content": content}]
 
 
+# $ per million tokens for claude-opus-4-8, microclaw's DEFAULT_MODEL: input,
+# output, cache write (1.25x input) and cache read (0.1x input).
+PRICES = {"in": 5.00, "out": 25.00, "write": 6.25, "read": 0.50}
+
+
 class LiveClient:
     """Mirrors microclaw's own call shape: same tools, same cached system block."""
 
@@ -442,6 +520,20 @@ class LiveClient:
         import anthropic  # noqa: PLC0415
         self._client = anthropic.Anthropic()
         self._max_tokens = max_tokens
+        self.usage = Counter()
+
+    def spent(self) -> float:
+        """Dollars this client has actually spent, from reported usage.
+
+        Reported, not estimated: a gate with a budget has to be scored on what
+        the API says it billed, the same way every other limb in this repository
+        is scored from artifacts rather than from the plan.
+        """
+        u = self.usage
+        return (u["input_tokens"] * PRICES["in"]
+                + u["output_tokens"] * PRICES["out"]
+                + u["cache_creation_input_tokens"] * PRICES["write"]
+                + u["cache_read_input_tokens"] * PRICES["read"]) / 1e6
 
     def send(self, *, model, system, messages, tools):
         # microclaw caches system AND tools; the tool schema is ~24k tokens and
@@ -456,7 +548,29 @@ class LiveClient:
             messages=_cache_conversation_prefix(messages), tools=cached_tools,
         ) as stream:
             response = stream.get_final_message()
-        return {"content": [b.model_dump() for b in response.content]}
+        for field in ("input_tokens", "output_tokens",
+                      "cache_creation_input_tokens", "cache_read_input_tokens"):
+            self.usage[field] += getattr(response.usage, field, None) or 0
+        return {"content": [_echoable(b.model_dump()) for b in response.content]}
+
+
+# The SDK's model_dump() carries fields the API refuses on the way back in --
+# a text block comes back with `parsed_output`, and echoing it 400s the NEXT
+# request with `Extra inputs are not permitted`. Whitelist per block type rather
+# than dropping Nones, so a field that is legitimately null still survives.
+_ECHOABLE = {
+    "text": ("type", "text", "citations"),
+    "thinking": ("type", "thinking", "signature"),
+    "redacted_thinking": ("type", "data"),
+    "tool_use": ("type", "id", "name", "input"),
+}
+
+
+def _echoable(block: dict) -> dict:
+    keep = _ECHOABLE.get(block.get("type"))
+    if keep is None:
+        return block
+    return {k: block[k] for k in keep if k in block and block[k] is not None}
 
 
 class ScriptedClient:
@@ -483,7 +597,10 @@ def main(argv=None) -> int:
     ap.add_argument("--offline", choices=("available", "empty", "missing-dep"),
                     default="available")
     ap.add_argument("--full-history", action="store_true")
-    ap.add_argument("--max-turns", type=int, default=6)
+    ap.add_argument("--max-turns", type=int, default=14)
+    ap.add_argument("--transcript", type=Path,
+                    help="Write every sample's text and tool calls here. A "
+                         "verdict that cannot be read back is not evidence.")
     ap.add_argument("--model")
     ap.add_argument("--dry-run", action="store_true",
                     help="Score a scripted transcript; makes no API call.")
@@ -519,9 +636,17 @@ def main(argv=None) -> int:
                                 max_turns=args.max_turns, replies=replies)
             tally[result["verdict"]] += 1
             print(f"  {n + 1:>2}. {result['verdict']:<20} "
-                  f"dev_ref={result['dev_ref']} offline={result['offline']} "
-                  f"attach={result['attach']} unrecorded={result['unrecorded']}")
+                  f"verb={bool(result['named_verb'])} authored={result['authored']} "
+                  f"dev_ref={result['dev_ref']} "
+                  f"attach={result['attach']} calls={len(result['calls'])} "
+                  f"unrecorded={result['unrecorded']}")
+            if args.transcript:
+                with args.transcript.open("a", encoding="utf-8") as fh:
+                    fh.write(f"\n\n===== arm {arm} | {args.tree} | sample "
+                             f"{n + 1} | {result['verdict']} | calls="
+                             f"{result['calls']} =====\n{result['said']}\n")
         print(f"  -- {dict(tally)} over {args.samples} samples")
+        print(f"  -- ${client.spent():.2f} spent so far, {dict(client.usage)}")
     return 0
 
 

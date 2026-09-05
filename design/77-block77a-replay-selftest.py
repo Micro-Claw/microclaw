@@ -62,10 +62,23 @@ def fake_session() -> list[dict]:
             {"type": "tool_result", "tool_use_id": "u1",
              "content": '{"x_um": -570.5, "exposure_ms": 100}'}]},
         {"role": "user", "content": "5 seconds continuous, 100 ms."},
+        # Two calls to one tool on different datasets, because that is the real
+        # recording's shape and the shape that broke arm B's fixture live: the
+        # first is an unrelated near-blank check, the second is the kinesin one
+        # the fixture actually rests on.
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "u2a",
+             "name": "run_analysis_on_saved_dataset",
+             "input": {"dataset_path": "D:/tirf_006um_1",
+                       "adapter": "frame_statistics"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "u2a",
+             "content": '{"status": "completed", "observations": [{"snr": 2.47}]}'}]},
         {"role": "assistant", "content": [
             {"type": "tool_use", "id": "u2",
              "name": "run_analysis_on_saved_dataset",
-             "input": {"adapter": "frame_statistics"}}]},
+             "input": {"dataset_path": "D:/kinesin_640/mt_kin_1_r5c10",
+                       "adapter": "frame_statistics"}}]},
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "u2",
              "content": '{"status": "completed", "observations": [{"snr": 3.01}]}'}]},
@@ -104,6 +117,21 @@ def main() -> int:
           pruned[-1]["content"][0]["content"] == "FIXED SKILL TEXT")
     check("pruned arm B carries the successful offline run the fixture rests on",
           any("completed" in str(m.get("content")) for m in pruned))
+    # The live gate handed the model a payload from the wrong dataset, which it
+    # noticed and argued with instead of deciding. Name-keyed lookup is not
+    # enough when one tool is called on several inputs.
+    # The payload is a JSON *string* inside the message, so its quotes are
+    # escaped once more by this dump -- match on the values, not on the quoting.
+    dumped = json.dumps(pruned)
+    check("pruned arm B takes the KINESIN result, not the first one recorded",
+          "3.01" in dumped and "2.47" not in dumped)
+    no_kinesin = [m for m in session if "mt_kin" not in json.dumps(m.get("content"))]
+    try:
+        replay.arm_b_messages(no_kinesin, live, full_history=False)
+        check("a session with no kinesin analysis refuses the pruned fixture", False)
+    except SystemExit as exc:
+        check("a session with no kinesin analysis refuses the pruned fixture",
+              True, str(exc)[:52])
 
     full = replay.arm_b_messages(session, live, full_history=True)
     check("full arm B stops at the session's own load_skill call, found by "
@@ -137,8 +165,31 @@ def main() -> int:
           ["x_um"] == -570.5)
     check("an unrecorded tool is counted, not silently answered",
           result["unrecorded"] == {"get_focus_lock_state": 1}, str(result["unrecorded"]))
-    check("both deliverables in one turn score BOTH_ACCOUNTED",
+    check("a plan naming both the attached observer and the offline verb scores "
+          "BOTH_ACCOUNTED -- D4's 'account separately for the overlay'",
           result["verdict"] == "BOTH_ACCOUNTED", result["verdict"])
+    # Measured on 14 live samples: the control named this tool once in eight
+    # while declining to use it, so it cannot be the criterion.
+    check("naming run_analysis_on_saved_dataset alone is NOT a plan",
+          replay.verdict(replay.score(
+              "run_analysis_on_saved_dataset is where that would go", []))
+          == "NO_ADAPTER")
+    check("a generate_and_save_hook call is reported as authoring",
+          replay.score("", ["generate_and_save_hook"])["authored"]
+          == ["generate_and_save_hook"])
+
+    # The gate's first live control run scored four cut-off samples as NEITHER,
+    # which read as a real null. A sample that never stopped calling tools has
+    # not answered anything.
+    looping = replay.ScriptedClient([
+        [{"type": "tool_use", "id": "x", "name": "get_system_state", "input": {}}]
+        for _ in range(3)])
+    cut = replay.run_sample(looping, "m", "sys", [],
+                            [{"role": "user", "content": "go"}], table, live,
+                            max_turns=2, replies=[])
+    check("a sample cut off mid-tool-loop is NO_DECISION, not NEITHER",
+          cut["verdict"] == "NO_DECISION" and cut["finished"] is False,
+          cut["verdict"])
 
     # A model that stops early must receive the operator's next real message.
     client = replay.ScriptedClient([
@@ -154,10 +205,11 @@ def main() -> int:
     # --- the scorer ----------------------------------------------------
     cases = {
         "DEV_REFERENCE": "the orchestrator is a design/26 proposal",
-        "DECLARED_UNAVAILABLE": "custom offline analysis is not yet implemented here",
-        "OFFLINE_ONLY": "I will write an analyze_completed_dataset adapter",
+        "PLANS_ADAPTER": "I will write an analyze_completed_dataset adapter",
         "ATTACH_ONLY": "I will pass hook_strategy to the timelapse",
-        "NEITHER": "I will acquire the movies and look at them",
+        # Naming the verb is not authoring it -- eight control samples named
+        # run_analysis_on_saved_dataset while delivering a standalone script.
+        "NO_ADAPTER": "run_analysis_on_saved_dataset would be the place for this",
     }
     for expected, said in cases.items():
         got = replay.verdict(replay.score(said, []))
