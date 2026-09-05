@@ -1,6 +1,6 @@
 # A finished frame is not a finished acquisition
 
-Status: **coordinated from 2026-09-04** — 75a (D4) merged 2026-09-05, 75b (the bound) ready to assign with its constants measured.
+Status: **coordinated from 2026-09-04** — 75a (D4) merged 2026-09-05; 75b (the bound) opened 2026-09-05 on `design75/supervised-runtime-bound`, its two constants measured on M2 and its gate demo-machine only.
 See §Blocks and §Run ledger. Written 2026-09-04 from
 `m2-tirf-stage-freeze/20260904_115958_681706_microclaw_history.jsonl` and
 `m2-tirf-stage-freeze/CoreLog20260904T103846_pid6032.txt` supplied by the
@@ -1427,9 +1427,130 @@ recover those facts, and 75a's measurements superseded the two that mattered.
 
 ## Coordination checklist — block 75b
 
-Opened after 75a merges and its M2 latency arm is scored. Not written yet on
-purpose: its constants come out of 75a's gate, and its runbook is written from
-the demo gate that will by then have run.
+The ten steps of `CLAUDE.md` §"The block workflow", instantiated. Nothing is
+compressed. Opened 2026-09-05, after 75a merged and both its gate parts were
+scored.
+
+**Step 1 — coordinator owns the list.**
+
+- [x] Start from updated `main`: `git log --oneline origin/main..main` empty at
+      `8a64902`. That is seven commits past 75a's merge (`34ab5f3`) because
+      `design/76` merged in between; **the baseline is not 75a's**.
+- [x] Baseline suite run by the coordinator in the primary checkout:
+      **2837 passed / 99 skipped / 2 warnings** (`.venv/bin/python -m pytest -q`,
+      157.8 s, 2026-09-05). 75a closed at 2830/99/3; `design/76` added seven.
+      The warning count varies between 2 and 3 (a pre-existing
+      `phase_cross_correlation` `UserWarning`).
+- [x] Design verified against the tree before assignment. Every site named for
+      75b is where it says it is, and **three of them moved when 75a landed**, so
+      the design's own line numbers are stale and the block must be assigned
+      against these:
+      `AcquisitionUnterminated` `tools.py:2375`, `_emit_acquisition_diagnostic`
+      `:2415` (writer, then sink, then stderr fallback — 75a's three-way),
+      `_acquisition_diagnostic_context` `:2445`, `_camera_sequence_running`
+      `:2466` (still a bare synchronous `is_sequence_running`),
+      `_unterminated_result` `:2501` with its three-branch camera text,
+      `STALL_QUIET_FLOOR_S = 15 * 60.0` `:131`, `STALL_GAP_MULTIPLIER` `:133`,
+      `FALLBACK_RUNTIME_CEILING_S` `:136`, `_ACQUISITION_POLL_S` `:159`,
+      `_runtime_ceiling_s` `:172`, `_stall_quiet_s` `:212`,
+      `_acquire_with_hooks` `:4216`, `frame_state["last_saved"] = started`
+      `:4284`, `account_saved_frame` `:4291` with the one-second
+      `progress_state` cadence and the forced first/planned-final emits, the
+      expiry conjunction `:4489-4496`, the timeout diagnostic and raise
+      `:4499-4535`, `_bridge_call` `controller.py:583` with
+      `_OPEN_BRIDGE_TIMEOUT_S = 30.0` `:576`, `DIAGNOSTIC_FLUSH_GRACE_S = 2.0`
+      `conversation.py:186`, `AcquisitionDiagnosticWriter.submit` `:230` with
+      its `acknowledge=` parameter, `execute_tool`'s refusal and
+      `_unterminated_result` dispatch `tools.py:11058-11096`, and
+      `serve.html:511` rendering `acquisition_progress` as frames only.
+- [x] **The five callers are exactly five and are the five named**, at their
+      post-75a lines: `run_zstack` `:4694`, `run_timelapse`'s fixed branch
+      `:4972`, `_acquire_positions_with_hook` `:8188`,
+      `_acquire_survey_with_detector` `:8651`, `run_adaptive_survey`'s
+      acquire-on-hit phase `:8936`. The composite child is real at `:7128`
+      (`run_timelapse(..., _reservation=reservation, **params)`).
+- [x] **A sixth call to `_runtime_ceiling_s` exists and is not a supervisor
+      call**: `tools.py:4950` computes the adaptive timelapse result's
+      `runtime_bound_plan.runtime_ceiling_s` disclosure. It needs the policy
+      too once the signature changes, and it takes `DEFAULT` — the design's
+      "exactly five callers" counts `_acquire_with_hooks` call sites, not
+      `_runtime_ceiling_s` call sites, and missing this one is a `TypeError` at
+      import-adjacent runtime rather than a silent wrong bound.
+- [x] **75a changed both functions the design's D1 stub rewrites.**
+      `_runtime_ceiling_s` returns `(bound, fallback, term)` and `_stall_quiet_s`
+      returns `(window, term)`; the design's stubs predate that and show
+      single-value returns. The term names are read by the timeout diagnostic
+      and must survive, so the stubs are illustrative for the *policy argument*
+      only. Written into the runner prompt explicitly, because a runner
+      implementing the stub literally would delete 75a's diagnostics.
+- [x] Branch `design75/supervised-runtime-bound` created at `8a64902`; ledger
+      row opened below.
+- [x] This checklist committed on the branch **before** the block is assigned —
+      a worktree sees committed history, not an editor buffer.
+
+**Step 2 — delegate the implementation.**
+
+- [ ] Linked worktree `../microclaw-design75b` on the branch; the coordinator
+      checkout returns to `main` first (git refuses two worktrees on one
+      branch). Ticks are staged in the scratchpad and applied between turns,
+      as in 75a.
+- [ ] Worktree provisioned **before** the prompt is written: `uv venv --python
+      3.12`, then `uv pip install --python .venv/bin/python -e
+      ".[serve,test,ilastik]"`; `import microclaw` confirmed resolving to the
+      worktree's tree; the suite run **in the worktree** by the coordinator and
+      the exact command handed over, together with the benign warnings it
+      prints. 75a recorded that a **fresh worktree venv** prints two extra
+      first-compile warnings (`mmpycorex/install.py:109` `SyntaxWarning`,
+      `starlette/testclient.py:53` `DeprecationWarning`) that do not recur once
+      the bytecode cache exists — expect them again and name them.
+- [ ] Runner prompt written to the scratchpad (never committed), then the
+      project `codex-runner` skill launched in that worktree; job directory
+      kept for the block.
+
+**Step 3 — review what comes back.** Diff, not summary; suite re-run by the
+coordinator; findings returned through the same session.
+
+**Step 4 — push the branch, code and runbook together.** The gate is a
+**demo-machine** gate; see §"Block 75b's gate" below for why, and for the
+environment facts already established.
+
+**Steps 5-8 — the user runs the gates; score from artifacts; fix; re-test.**
+
+**Steps 9-10 — merge, push, delete the branch, record notes in
+`design/prompts.md`, close the ledger row, run the post-merge design gate.**
+
+### Block 75b's gate
+
+**All of it runs on the demo machine.** design/75's coordinator decisions of
+2026-09-04 already split the five limbs; 75a's M2 arm then discharged limbs 2
+and 3 — the healthy end-to-end latency distribution and the two constants
+derived from it are measured and written into §"D1's two constants". What
+remains is limbs 1, 4 and 5, and all three were assigned to the demo machine
+because an injected blocking teardown needs no camera, no dose and no booked
+session, exactly as design/60 gated the same class of bound.
+
+**No rig time is owed by this block.** Say that plainly rather than leaving M2
+looking implicated: the only thing 75b would want from a rig is a second
+healthy-latency distribution, and 75a already took one.
+
+Established environment facts, so the runbook does not re-ask them:
+
+- Demo machine: `D:\Code\microclaw`, PowerShell, `uv run python`, an
+  unredirected `uv run python -c "print('uv warm')"` first, MM on port 4827,
+  datasets local.
+- **The browser is Firefox** (`design/69a-gate.md:70`). Limb 1's observation is
+  browser-side, so this matters; 75a's own notes record that the coordinator
+  asked the operator for this twice before checking the repo, which is
+  `CLAUDE.md`'s grep-before-inventing rule ignored.
+- The gate ships as a **program**, not copy-paste blocks: each limb scored
+  independently, NOT EXERCISED is never a pass, it owns its own log, it exits
+  nonzero. It is run against the bridge-shaped fake
+  (`design/75-block75a-gate-selftest.py`'s successor) on **both** trees before
+  it is pushed, so its failure discriminates.
+- 75a's gate already carries the pieces this one needs — a controlled build
+  whose child process is driven to a chosen point, real `AuditLog` records, and
+  confirm stubs that accept `grant_metadata=`. Extend that gate rather than
+  writing a second one.
 
 ## Run ledger
 
@@ -1440,4 +1561,4 @@ Baseline before the notebook: `main` `444d694`, coordinator-run suite
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Both parts run 2026-09-05; PASS.** Demo machine: the gate reported 3 FAIL, the artifacts say **6 PASS / 1 NOT EXERCISED / 0 FAIL** — all three failures were the coordinator's assertions, re-scored from the operator's own files and fixed in `4cb2d24`. M2: n=20, no torn lines, no failures, exit 0. **The finding is the engine's, not the product's**: real pycro-manager accounts the frame *inside* `acq.__exit__`, in one identical ordering across **43 acquisitions on two rigs**, so 96.7% (demo) and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call design/60 measured at 95 minutes. Limb D produced the incident's own evidence shape on demand: a call with a beginning and no end. Constants chosen at 5.0 s / 5.0 s, 11.2x the measured M2 maximum. Selftest now 9 cases; its old failure arm was the real hardware behaviour and now expects PASS. | `34ab5f3` merged 2026-09-05; branch deleted locally and on `origin`, worktree removed. Pre-merge suite 2830/99/3. |
-| 75b | | | **ready to assign**: constants measured (5.0 s / 5.0 s, 11.2x the M2 maximum), and 75a's gate settled three design questions for it | demo machine (limbs 1, 4) | |
+| 75b | `design75/supervised-runtime-bound` | `8a64902` (2026-09-05) — seven commits past 75a's merge because `design/76` landed in between, so the baseline is **2837 passed / 99 skipped / 2 warnings**, not 75a's 2830. Checklist committed on the branch before assignment; worktree `../microclaw-design75b` | **assigned**: constants measured (5.0 s / 5.0 s, 11.2x the M2 maximum); 75a's gate settled three design questions for it, and 75a's own landing moved every line number the design names | **demo machine only** — 75a's M2 arm discharged limbs 2 and 3, so limbs 1, 4 and 5 remain and none needs a rig | |
