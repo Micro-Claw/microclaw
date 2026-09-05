@@ -320,6 +320,67 @@ instructions; update the agent's planning guidance and acquisition tool wording.
 Replay the initial request through the model before any acquisition. This block
 must establish advance hook planning even on a rig without offline support.
 
+### 77a checklist — what the implementer owns
+
+The audit surface is enumerated in §Code findings and was re-verified at
+`32a95f1`: ten `design/NN` in `hook-authoring/SKILL.md`, and four of the seven
+pre-coded hook class docstrings (`focus_feedback` design/36, `position_filter`
+design/27, `snr_observer` design/26, `mm_plugin_analyzer` design/09) reaching the
+model as `class_docstring`. `tools_schema.py` has none.
+
+1. **Reconcile the skill with the implemented offline contract.** Both stale
+   passages (SKILL.md lines 66–68 and the capability-table row at 521–523) say
+   the orchestrator and `DatasetView` are unimplemented. They are implemented:
+   `microclaw/completed_dataset.py` (`OFFLINE_VERBS`, `DatasetView`,
+   `ArtifactDirectory.emit`, `run_analysis_on_saved_dataset`'s limits). Replace
+   them with the contract as the code actually defines it, and state the D1 rule
+   inside the skill: a skill explains how to compose tools and directs capability
+   checks to the installed schema and the tool's own refusal; it does not
+   maintain a competing declaration of what exists.
+2. **Remove development references from every string the model can be shown**,
+   substituting the substance — never a bare deletion, never an unexplained
+   internal class name. Sweep the surface programmatically rather than fixing the
+   enumerated list only: every `microclaw/skills/*/SKILL.md` shipped by
+   `load_skill`, every `TOOLS` description, and every pre-coded hook class
+   docstring returned by `list_hooks`/`describe_hook`. `design/NN` in an ordinary
+   code comment stays.
+3. **Guard it with a test that enumerates that surface from the code**, not from
+   a literal file list, so a skill or hook added later is covered. A second test
+   pins the skill's offline section to `completed_dataset.py` itself — assert it
+   names what `OFFLINE_VERBS` and the module's default artifact limits actually
+   are — so the two cannot drift apart again. Watch both fail on the pre-fix tree.
+4. **Agent planning guidance** (`agent.py`'s `SYSTEM_PROMPT`), from D1, D3 and D4:
+   map each requested deliverable to an executable path while planning, before the
+   acquisition that feeds it, and offer to write and attach the observation hooks
+   then rather than after an offline attempt fails; check the installed tool
+   contract and its actual refusal before calling anything unavailable, and say
+   "not verified" when discovery is inconclusive — "no adapter written yet" is not
+   "custom offline execution unavailable", and a missing tracker dependency blocks
+   that tracker, not the path; never cite a design number, register row or
+   milestone in a microscope session; and keep exposure, requested interval and
+   observed cadence distinct, stating order and frames per field before the run.
+5. **Acquisition tool wording** (`tools_schema.py`,
+   `run_multiposition_acquisition`). Today the description promises a
+   per-position protocol and does not say that passing `hook_strategy` routes
+   through a combined event list whose engine default is time-outer, so every
+   position is visited at each time point. Make the wording true of the code as it
+   stands, including the interim guidance in D2 — separate hooked `run_timelapse`
+   calls per position when the deliverable is continuous per-field motion.
+   **77b replaces this wording when the default changes**; that churn is expected
+   and is not a reason for 77a to document a behaviour that does not exist yet.
+
+Out of scope for 77a: `acquisition_order`, event construction, emitters, the
+timing origin. Those are 77b, and the open question above gates them.
+
+**The gate is a model replay and the coordinator owns it** (block-workflow step 5).
+It calls a live model and spends real money, so it is priced and agreed before it
+runs. It replays the opening of `20260905_165524_640862_microclaw_history.jsonl`
+against recorded tool results and scores three things mechanically: no development
+reference in what the model says, analysis proposed before the acquisition that
+feeds it, and the overlay accounted for separately from the live verdict. It runs
+the available-offline fixture, an unavailable one and an empty manifest, and the
+"you moved through all six fields at each time point" challenge from line 155.
+
 **77b — explicit, consistent acquisition order.** Settle the open question
 above, then extend `run_multiposition_acquisition`, `run_tile_acquisition`'s
 forwarding, event construction and applicable emitter sites — including the
@@ -387,12 +448,16 @@ cannot support it; do not mark that output delivered by this design.
 
 ## Run ledger
 
-Baseline before the notebook: `main` `c2f19dd`. **The coordinator suite has not
-been run for this notebook yet** — measure it and record the count here before
-assigning 77a, rather than carrying design/76's 2830/99/2 forward.
+Baseline before the notebook: `main` `c2f19dd`, coordinator-run suite
+**2862 passed / 99 skipped / 2 warnings** in 163.6 s (2026-09-05,
+`.venv/bin/python -m pytest -q`). The two warnings are the one benign
+`phase_cross_correlation` `UserWarning` from
+`test_featureless_field_returns_error_not_garbage` doing its job; they are not
+findings. The notebook fast-forwarded onto `main` as `32a95f1`, which is
+design-only and changes no count.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 77a | — | not started | | | |
+| 77a | `design77/truthful-guidance` | `32a95f1` (2026-09-05), worktree `../microclaw-77a` | | | |
 | 77b | — | not started; blocked on the open question above | | | |
 | 77c | — | not started; follows 77b | | | |
