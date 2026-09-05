@@ -2560,7 +2560,7 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
         hardware = ("The camera sequence was measured idle when Microclaw stopped "
                     "waiting, but background teardown was still running. Acquisition "
                     "tools are refused until teardown and its owned restoration finish.")
-        next_steps = ["The dataset may be unterminated while teardown finishes.",
+        next_steps = ["The dataset may be read while teardown finishes.",
                       "Do not start another acquisition until teardown_running is false."]
     else:
         hardware = ("Microclaw could not read whether the camera sequence was running. "
@@ -2586,7 +2586,12 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
         "dataset_path": exc.dataset_path, "frames_planned": exc.frames_planned,
         "frames_accounted": exc.frames_accounted,
         "camera_sequence_running": camera, "teardown_running": exc.teardown_running,
-        "expired_bound": exc.expired_bound, "ceiling_fallback": exc.fallback_ceiling,
+        # The neutral runtime wording deliberately names no number, so without
+        # this field a short_fixed_runtime timeout would report that a bound
+        # expired and never say what it was. Only the error-grace prose carries
+        # it, and a scorer greps a field rather than a sentence.
+        "expired_bound": exc.expired_bound, "bound_s": exc.bound_s,
+        "ceiling_fallback": exc.fallback_ceiling,
         "hardware": hardware, "next": next_steps,
     }
     completed = [

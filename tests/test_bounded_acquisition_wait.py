@@ -128,6 +128,7 @@ def test_fatal_engine_error_returns_complete_unterminated_result_and_waiter_owns
         "camera_sequence_running": True,
         "teardown_running": True,
         "expired_bound": "error_grace",
+        "bound_s": 0.02,
         "ceiling_fallback": False,
         "hardware": result["hardware"],
         "next": result["next"],
@@ -929,6 +930,12 @@ def test_short_fixed_timeout_survives_missing_notification(monkeypatch, saved):
     assert result["frames_accounted"] == int(saved)
     assert result["frames_planned"] == 1
     assert result["expired_bound"] == "short_fixed_runtime"
+    # The neutral runtime wording names no number, so the bound has to be a
+    # field or the operator never learns what expired.
+    assert result["bound_s"] == pytest.approx(
+        max(plan.estimated_duration_s * 1.5,
+            plan.estimated_duration_s + policy.runtime_slack_s)
+    )
     assert result["phase"] == ("finalizing" if saved else "acquiring_or_notifying")
     assert result["error"] == "The acquisition did not terminate within its supervised runtime bound."
     assert f"{int(saved)} of 1 planned frames accounted" in result["data"]

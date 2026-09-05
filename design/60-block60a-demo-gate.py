@@ -214,16 +214,21 @@ def main():
     @limb("the tree under test carries block 60a",
           "the gate is scoring a build without the bounded wait")
     def build_identity():
+        # Rewritten 2026-09-05: this limb had been dead since block 75a, which
+        # made _runtime_ceiling_s return a third `term` element, and block 75b
+        # then moved the quiet floor onto AcquisitionSupervisionPolicy. Neither
+        # block noticed, because a committed gate script gets no review pass and
+        # nothing in the suite imports one. Score it against the current names.
         missing = [n for n in ("AcquisitionUnterminated", "_runtime_ceiling_s",
-                               "_stall_quiet_s", "STALL_QUIET_FLOOR_S",
+                               "_stall_quiet_s", "DEFAULT", "SHORT_FIXED",
                                "ERROR_TEARDOWN_GRACE_S", "_completed_position_record")
                    if not hasattr(tools, n)]
         assert not missing, f"missing from {ROOT}: {missing}"
-        ceiling, fallback = tools._runtime_ceiling_s(None)
+        ceiling, fallback, term = tools._runtime_ceiling_s(None, tools.DEFAULT)
         assert fallback and ceiling == tools.FALLBACK_RUNTIME_CEILING_S
         return (f"tools from {ROOT}; grace {tools.ERROR_TEARDOWN_GRACE_S:g}s, "
-                f"quiet floor {tools.STALL_QUIET_FLOOR_S:g}s, "
-                f"fallback ceiling {ceiling:g}s")
+                f"quiet floor {tools.DEFAULT.quiet_floor_s:g}s, "
+                f"fallback ceiling {ceiling:g}s ({term})")
 
     @limb("an ordinary burst completes through the threaded teardown",
           "the waiter never joins, or the tool reports unterminated on a healthy run")
@@ -303,7 +308,7 @@ def main():
             num_time_points=args.frames, time_interval_s=0,
         )
         plan = tools.plan_events(ctrl, events, args.exposure_ms)
-        ceiling, fallback = tools._runtime_ceiling_s(plan)
+        ceiling, fallback, _term = tools._runtime_ceiling_s(plan, tools.DEFAULT)
         assert not fallback
         run["ceiling_s"] = ceiling
         assert run["wall_s"] < ceiling, f"{run['wall_s']:.1f}s reached the {ceiling:.1f}s ceiling"
