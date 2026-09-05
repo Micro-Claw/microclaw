@@ -51,8 +51,10 @@ payload["value_spans"] = [
 ]
 ```
 
-Measured Z, never requested — the two differ on every plane of the fixture, and
-requested Z is what the model already mis-derived. On a matched sweep too, not
+Measured Z, never requested — they differ on **455 of the fixture's 491
+planes**, and requested Z is what the model already mis-derived. (An earlier
+draft of this line said "every plane". The implementer checked it against the
+artifact and it is 455; corrected 2026-09-05.) On a matched sweep too, not
 only a refusal: a caller that stopped early still wants to know how far into the
 band it stopped.
 
