@@ -597,7 +597,13 @@ def main(argv=None) -> int:
     ap.add_argument("--offline", choices=("available", "empty", "missing-dep"),
                     default="available")
     ap.add_argument("--full-history", action="store_true")
-    ap.add_argument("--max-turns", type=int, default=14)
+    # Arm B needs headroom: the model reads list_hooks/describe_hook before it
+    # decides. Arm A needs a ceiling instead -- the real session reached its
+    # plan in three tool rounds, and left to run for fourteen the model orients
+    # forever and never produces the turn being scored. A sample that hits the
+    # cap says NO_DECISION rather than pretending to a null.
+    ap.add_argument("--max-turns", type=int, default=None,
+                    help="Default: 6 for arm A, 14 for arm B.")
     ap.add_argument("--transcript", type=Path,
                     help="Write every sample's text and tool calls here. A "
                          "verdict that cannot be read back is not evidence.")
@@ -626,14 +632,22 @@ def main(argv=None) -> int:
         messages = (arm_a_messages(session) if arm == "a"
                     else arm_b_messages(session, live,
                                         full_history=args.full_history))
-        replies = operator_replies(session) if arm == "a" else []
+        # Arm A scores the PLAN -- the turn the real session reached at line 8,
+        # where the model stops and asks. Feeding the operator's later replies
+        # turns it into a long session replay that measures something else and
+        # costs several times as much; the first live run spent minutes a sample
+        # doing exactly that, against a docstring that says it stops. Replies
+        # stay available through operator_replies() for a future arm that wants
+        # them, deliberately unused here.
+        replies: list[str] = []
         tally = Counter()
         print(f"\n=== arm {arm.upper()} | tree {args.tree} | offline "
               f"{args.offline} | model {model} ===")
         for n in range(args.samples):
             result = run_sample(client, model, SYSTEM_PROMPT, TOOLS,
                                 messages, table, live,
-                                max_turns=args.max_turns, replies=replies)
+                                max_turns=args.max_turns or (6 if arm == "a" else 14),
+                                replies=replies)
             tally[result["verdict"]] += 1
             print(f"  {n + 1:>2}. {result['verdict']:<20} "
                   f"verb={bool(result['named_verb'])} authored={result['authored']} "
