@@ -1129,15 +1129,86 @@ hopeful. The cheap lesson: commit gate code as soon as it runs, and never `rm` a
 glob in a directory whose identity depends on a `cd` earlier in the same
 command.
 
-**Step 5 — the user runs the gates.** Demo machine, then the M2 arm.
+**Step 5 — the user runs the gates.** Demo machine run 2026-09-05; the M2 arm
+is still owed.
 
-**Step 6 — score from the artifacts, not the verdict.**
+**Step 6 — score from the artifacts, not the verdict.** Demo machine, run 1.
 
-- [ ] The D4 file itself read: correlation ids matched against the history
-      JSONL's `tool_use` ids, lifecycle timestamps checked for monotonicity, and
-      a number derived that the report does not state — submission-to-result and
-      the `mark_finished`-to-teardown segment, per acquisition.
-- [ ] `NOT EXERCISED` reported as such and never as a pass.
+**The gate reported 3 FAIL. Scored from the artifacts it is 6 PASS, 1 NOT
+EXERCISED, 0 FAIL — and it produced the single most useful measurement in this
+notebook.**
+
+- [x] **The finding: real pycro-manager accounts the frame *inside*
+      `acq.__exit__`.** In **23 of 23** complete acquisitions the order is
+      `construction → event_submission → mark_finished →
+      first_frame_accounted → planned_final_frame_accounted →
+      teardown_completion`. Every fake in the suite fires `image_saved_fn`
+      during `acquire()`, and limb A asserted that. This is the observable
+      consequence of §"The trigger this fix must survive: the callback shares
+      the failed path", which argued it from pycro-manager's source — it is now
+      **measured**. It confirms D1's central decision: the bound must not be
+      gated on the callback, because the callback arrives on the very path
+      whose failure the bound exists to survive.
+- [x] **The segment breakdown, derived rather than reported** (23 acquisitions,
+      demo camera, 50 ms, one frame):
+
+      | segment | p50 | max | share |
+      |---|---|---|---|
+      | construction → mark_finished | 1.0 ms | 1.0 ms | 0.6% |
+      | **mark_finished → first frame accounted** | **158.8 ms** | **270.4 ms** | **96.7%** |
+      | first frame → planned final frame | 1.0 ms | 2.0 ms | 0.6% |
+      | planned final frame → teardown completion | 3.0 ms | 11.4 ms | 1.8% |
+      | **total end-to-end** | **164.1 ms** | **274.0 ms** | 100% |
+
+      Two consequences for 75b. **`runtime_slack_s` has to cover teardown, not
+      exposure** — 96.7% of a one-frame acquisition is the wait for the frame to
+      be accounted, and `plan.estimated_duration_s` (exposure plus
+      `min_start_time`) models none of it, which is exactly why §"Why both
+      terms" wanted a measured end-to-end number instead. And **D1a's
+      `finalizing` phase lasts about 3 ms on a healthy one-frame run**, so it
+      will rarely be seen; that is fine, because its job is the hang, where it
+      discriminates "frames landed, stuck finalizing" from "nothing landed".
+      These are the *demo machine's* numbers and they do not set the constants —
+      M2 does.
+- [x] **Limb D produced the incident's evidence shape on demand.** The
+      interrupted call left `disclosure, construction, event_submission,
+      mark_finished` and **no** teardown completion, while the completed call
+      before it kept all six records and no line was torn. A call with a
+      beginning and no end is precisely what MicroClaw had no record of on
+      2026-09-04, and D4 now writes one.
+- [x] **Limb C: the tail survived a normal exit**, all six records on disk.
+- [x] **Limb B: n=20, end-to-end p50 176 ms / p95 237 ms / max 274 ms.**
+      Reference arm only.
+- [x] **The control arm on `main` produced exactly the predicted shape** — limb
+      E FAIL naming the missing `AcquisitionDiagnosticWriter`, every other limb
+      stood down. The gate discriminates on the machine, not only in its
+      selftest.
+- [x] **Limb F NOT EXERCISED, and not owed**: the demo machine has run no D4
+      session, which the runbook predicted. Its mechanism is covered by unit
+      tests and by limb A asserting the correlation id on every record.
+- [x] **Three gate defects, all the coordinator's, and no product defect.**
+      Limb A asserted a sequence written from our fakes; limbs C and D compared
+      sequences when their claim is survival, so both failed for limb A's cause
+      while their own claims held — the reverse cascade already found and fixed
+      in limb B during the selftest and not carried across. All three fixed in
+      `4cb2d24`: limb A now asserts the invariants that must hold on any rig and
+      *reports* the ordering, and C and D compare sets. The selftest's arm 2,
+      which called the real behaviour a failure, now expects PASS, and a new arm
+      9 — no callback at all, the incident's own zero-frame shape — takes over
+      as the arm that breaks an invariant that can really break. Nine cases,
+      all passing.
+- [x] **Re-scored, not re-run.** The corrected criteria were applied to the
+      operator's own files: limbs A, C and D all PASS. This is not ticking a
+      limb whose only observation was a failure — the observation is a complete,
+      unambiguous record set, and what was wrong was the assertion over it.
+- [x] **One thing not exercised, said rather than assumed**: the 400-frame call
+      reported `gated: false`, so this machine's `confirm_above_frames` was not
+      crossed and the `grant_metadata` fix in the confirm stubs was **not**
+      exercised on hardware. It stays covered by selftest case 8 alone.
+
+**Step 6, part 2 — the M2 arm.** Still owed. It is the only part that sets a
+constant, and the demo numbers above are what its numbers will be compared
+against.
 
 **Steps 7–8 — fix, sized to the finding; the user re-tests.** Loop 5–8.
 
