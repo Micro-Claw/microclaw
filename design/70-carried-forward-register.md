@@ -147,7 +147,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | ~~`R88`~~ | ~~[The probe_hint payload reached a live model and did not route it](#r88)~~ | — | — | **CLOSED 2026-09-05 by the Nikon's own sessions** |
 | `R89` | [The PFS offset fine-tune is a hand-driven loop with no tool](#r89) | MEDIUM | MEDIUM |  |
 | `R90` | [arrival_unverifiable is saturated for every image-autofocus sweep](#r90) | LOW | SMALL |  |
-| `R91` | [A property sweep discards the Z positions of every value it did not match](#r91) | HIGH | SMALL |  |
+| `R91` | [A property sweep discards the Z positions of every value it did not match](#r91) | HIGH | SMALL | → `design/76` |
 | `R92` | [A property sweep is one linear pass, so a blind band search costs range/step planes](#r92) | MEDIUM | MEDIUM |  |
 | `R93` | [Should a sweep refuse a post-engage value while the lock is disengaged?](#r93) | MEDIUM | SMALL |  |
 | `R94` | [D4 records acquisitions, so a snap in the Core log still cannot be attributed](#r94) | MEDIUM | SMALL |  |
@@ -2307,7 +2307,7 @@ model summarising several tool results as one, which matters for gate scoring.
 - **Status** — OPEN. `sweep_autofocus` (`microclaw/autofocus.py:339-380`) accumulates `metric_values` and `measured_z_positions` and hands both back; the no-match refusal in `run_autofocus` names the set of observed values in prose. Nothing summarises value → Z interval.
 - **Importance** — HIGH, and **measured, not argued**. Nikon session 20260904_174559, sweep 2: 491 planes, `[2110, 2600]` at 1 µm, asked for `["Locked in focus"]`, reported `converged: false`. Its readings were `Out of focus search range` 2110.0–2385.0, then **`Within range of focus search` 2385.975–2399.0 — a 13 µm band, located exactly** — then out of range to 2599. The model read the arrays as *"roughly indices 249–262 ... around 2360–2375 µm"*, moved to 2367 (out of range), swept `[2355, 2385]` at 0.5 µm for 61 more planes that **missed the band's lower edge by one plane**, and spent a further 287 planes re-finding it. **348 planes, ~35 s of settle sleep alone, and three model round trips, after the answer was already in the payload.**
 - **Where** — LOCAL. The fix is a summary over reads the sweep already holds: no extra dose, no extra motion, no behaviour change, no rig. The Nikon JSONL is the fixture.
-- **Block** — NONE. Note `microclaw/tools.py` is contended while `design/75` is in flight.
+- **Block** — **`design/76-a-sweep-must-say-where-it-saw-what.md`**, opened 2026-09-05, which owns this row. Block 76a.
 - **Effort** — SMALL. Group `zip(measured_z_positions, readings)` into contiguous runs and report `{value: [[z_lo, z_hi], ...]}` on every property sweep, matched or not. The prose refusal keeps its observed-values list; this gives it coordinates.
 - **Provenance** — found while scoring the Nikon Ti's own `design/74` sessions, 2026-09-05.
 
