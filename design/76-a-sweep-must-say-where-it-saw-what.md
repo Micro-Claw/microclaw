@@ -56,6 +56,13 @@ requested Z is what the model already mis-derived. On a matched sweep too, not
 only a refusal: a caller that stopped early still wants to know how far into the
 band it stopped.
 
+**`readings`, `in_range`, `z_positions` and `measured_z_positions` all stay.**
+The spans are the readable answer; the arrays are what a *scorer* reads
+afterwards — this whole notebook was written from them. Four 491-element lists
+is a lot of payload for three spans' worth of information, and trimming them is
+a fair question, but it is not this block's: the raw record is how a rig session
+gets scored off-rig, which is the process this repository runs on.
+
 ### D2 — the no-match refusal names the coordinates
 
 The `length == 0` branch of `_band_admit` (`microclaw/autofocus.py:137`) is the
