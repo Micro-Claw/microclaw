@@ -1160,6 +1160,15 @@ notebook.**
       | planned final frame → teardown completion | 3.0 ms | 11.4 ms | 1.8% |
       | **total end-to-end** | **164.1 ms** | **274.0 ms** | 100% |
 
+      **That 96.7% segment is `await_completion()`.** Checked, not inferred:
+      the `acquisition_mark_finished` record is emitted immediately before
+      `acq.__exit__`, whose first statement is `self.mark_finished()` and whose
+      second is `self.await_completion()`, so the record is accurate to the
+      thread-dispatch cost — measured at 1.0 ms — and everything after it is
+      that one blocking call. It is the same call design/60 measured at **95
+      minutes** on M2 and the call block 60a's bound was written for. On a
+      healthy one-frame run it costs 159 ms. On 2026-09-04 it did not return.
+
       Two consequences for 75b. **`runtime_slack_s` has to cover teardown, not
       exposure** — 96.7% of a one-frame acquisition is the wait for the frame to
       be accounted, and `plan.estimated_duration_s` (exposure plus
