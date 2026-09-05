@@ -75,6 +75,7 @@ from microclaw.autofocus import (
     PROPERTY_PROBE_MIN_DWELL_S,
     AutofocusResult,
     FocusProbe,
+    _value_spans,
     coarse_then_fine_plane_count,
     coarse_then_fine_autofocus,
     curve_contrast,
@@ -1029,7 +1030,8 @@ def _analysis_source(
             f"{autofocus.PROPERTY_PROBE_BAND_DWELL_S!r}\n",
         ])
         for fn in (
-            autofocus.longest_true_run, autofocus._strings, autofocus._band_admit,
+            autofocus.longest_true_run, autofocus._strings,
+            autofocus._value_spans, autofocus._band_admit,
             autofocus._stable_read, autofocus.image_probe,
             autofocus.property_probe,
             autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
@@ -6294,6 +6296,9 @@ def _sweep_payload(sweep, min_contrast: float | None = None,
         payload["readings"] = list(sweep.metric_values)
         payload["in_range"] = [value in probe.in_focus_values
                                for value in sweep.metric_values]
+        payload["value_spans"] = _value_spans(
+            sweep.metric_values, payload["measured_z_positions"], probe.in_focus_values
+        )
         payload["unsettled_planes"] = list(sweep.unsettled_indices)
         payload["stopped_early"] = sweep.stopped_early
         payload["planes_read"] = len(sweep.metric_values)

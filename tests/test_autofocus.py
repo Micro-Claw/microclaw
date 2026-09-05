@@ -72,23 +72,24 @@ def test_image_probe_refactor_characterizes_whole_autofocus_result(monkeypatch):
 ])
 def test_band_admit_refuses_each_invalid_band(readings, expected):
     reason = autofocus._band_admit(
-        readings, {"in"}, 1.0, 0.0, len(readings) - 1.0
+        readings, list(range(len(readings))), {"in"}, 1.0, 0.0, len(readings) - 1.0
     )
     assert expected in reason
 
 
-def test_band_admit_no_plane_lists_distinct_observed_values():
+def test_band_admit_no_plane_reports_each_value_extent_and_run_count():
     reason = autofocus._band_admit(
         ["Out of focus search range", "Within range of focus search"],
-        {"Within focus search range"}, 5.0, 0.0, 5.0,
+        [0.0, 5.0], {"Within focus search range"}, 5.0, 0.0, 5.0,
     )
     assert "observed" in reason
-    assert "Out of focus search range" in reason
-    assert "Within range of focus search" in reason
+    assert "'Out of focus search range' at [0.0, 0.0] um (1 run)" in reason
+    assert "'Within range of focus search' at [5.0, 5.0] um (1 run)" in reason
+    assert reason.count(" at [") == 2
 
 
 def test_band_admit_calls_identical_out_of_range_reading_constant():
-    reason = autofocus._band_admit(["blind"] * 5, {"in"}, 1.0, 0.0, 4.0)
+    reason = autofocus._band_admit(["blind"] * 5, list(range(5)), {"in"}, 1.0, 0.0, 4.0)
     assert "constant reading 'blind'" in reason
     assert "No plane" not in reason
     # A window that simply misses the band ALSO reads constant, and on this rig
@@ -136,7 +137,7 @@ def test_split_band_offers_the_lagging_sensor_cause_not_only_two_surfaces():
     separates them.
     """
     reason = autofocus._band_admit(
-        ["in", "in", "in", "out", "in", "in", "in"], {"in"}, 1.0, 0.0, 6.0
+        ["in", "in", "in", "out", "in", "in", "in"], list(range(7)), {"in"}, 1.0, 0.0, 6.0
     )
     assert "not contiguous" in reason
     assert "two reflecting surfaces" in reason
@@ -303,7 +304,7 @@ def test_band_touching_either_window_edge_is_not_bracketed():
                      ["out", "in", "in", "in"],
                      ["in", "in", "in", "in"]):
         reason = autofocus._band_admit(
-            readings, {"in"}, 1.0, 0.0, len(readings) - 1.0
+            readings, list(range(len(readings))), {"in"}, 1.0, 0.0, len(readings) - 1.0
         )
         assert "not bracketed" in reason
 
