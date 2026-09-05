@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+import time
 
 import pytest
 
@@ -238,3 +240,152 @@ def test_checkpoint_marks_its_contents_as_belonging_to_earlier_turns():
     # The specific failure observed live: answering a current-turn question out
     # of the checkpoint instead of out of the visible messages.
     assert "current turn from this block" in contract
+
+
+def test_acquisition_writer_coalesces_progress_without_dropping_lifecycle(tmp_path):
+    from microclaw.conversation import AcquisitionDiagnosticWriter, AuditLog
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowFsyncAudit(AuditLog):
+        def append(self, message):
+            # AuditLog's real append performs write + flush + fsync. Blocking
+            # immediately before it models that entire synchronous operation.
+            entered.set()
+            release.wait()
+            return super().append(message)
+
+    audit = SlowFsyncAudit(tmp_path / "acq.jsonl")
+    writer = AcquisitionDiagnosticWriter(audit, capacity=8)
+    lifecycle = [f"lifecycle-{index}" for index in range(6)]
+    try:
+        writer.submit({"type": "progress", "frame": 0})
+        assert entered.wait(1)
+        for frame in range(1, 30):
+            writer.submit({"type": "progress", "frame": frame})
+        for kind in lifecycle:
+            writer.submit({"type": kind}, lifecycle=True)
+    finally:
+        release.set()
+        writer.close()
+
+    kinds = [record["type"] for record in audit.records]
+    assert set(lifecycle).issubset(kinds)
+    assert len([record for record in audit.records if record["type"] == "progress"]) < 30
+    assert any(record.get("frame") == 29 for record in audit.records)
+
+
+def test_acquisition_writer_acknowledges_fsync_and_bounds_blocked_writer(
+    tmp_path, monkeypatch,
+):
+    from microclaw import conversation
+    from microclaw.conversation import AcquisitionDiagnosticWriter, AuditLog
+
+    path = tmp_path / "acq.jsonl"
+    writer = AcquisitionDiagnosticWriter(AuditLog(path))
+    assert writer.submit({"type": "timeout"}, lifecycle=True, acknowledge=True)
+    assert json.loads(path.read_text(encoding="utf-8").strip())["type"] == "timeout"
+    writer.close()
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockedFsyncAudit(AuditLog):
+        def append(self, message):
+            entered.set()
+            release.wait()
+            return super().append(message)
+
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_FLUSH_GRACE_S", 0.03)
+    blocked = AcquisitionDiagnosticWriter(BlockedFsyncAudit(tmp_path / "blocked.jsonl"))
+    fallbacks = []
+    try:
+        started = time.monotonic()
+        assert not blocked.submit(
+            {"type": "timeout"}, lifecycle=True, acknowledge=True,
+            fallback=fallbacks.append,
+        )
+        elapsed = time.monotonic() - started
+        assert entered.is_set()
+        assert elapsed < 0.15
+        assert fallbacks == [{"type": "timeout"}]
+    finally:
+        release.set()
+        blocked.close()
+
+
+def test_lifecycle_enqueue_and_close_are_bounded_when_audit_hangs(
+    tmp_path, monkeypatch,
+):
+    from microclaw import conversation
+    from microclaw.conversation import AcquisitionDiagnosticWriter, AuditLog
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class HungAudit(AuditLog):
+        def append(self, message):
+            entered.set()
+            release.wait()
+            return super().append(message)
+
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_ENQUEUE_GRACE_S", 0.02)
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_CLOSE_GRACE_S", 0.03)
+    fallbacks = []
+    writer = AcquisitionDiagnosticWriter(HungAudit(tmp_path / "hung.jsonl"), capacity=1)
+    assert writer.submit({"type": "lifecycle-0"}, lifecycle=True, fallback=fallbacks.append)
+    assert entered.wait(1)
+    assert writer.submit({"type": "lifecycle-1"}, lifecycle=True, fallback=fallbacks.append)
+    started = time.monotonic()
+    assert not writer.submit(
+        {"type": "lifecycle-2"}, lifecycle=True, fallback=fallbacks.append,
+    )
+    assert time.monotonic() - started < 0.1
+    assert fallbacks == [{"type": "lifecycle-2"}]
+
+    started = time.monotonic()
+    writer.close()
+    assert time.monotonic() - started < 0.1
+    assert {record["type"] for record in fallbacks} == {
+        "lifecycle-0", "lifecycle-1", "lifecycle-2",
+    }
+    release.set()
+
+
+@pytest.mark.parametrize("race", ["empty_after_full", "full_after_displace"])
+def test_lifecycle_queue_races_never_escape_submit(monkeypatch, race):
+    from microclaw import conversation
+    from microclaw.conversation import (
+        AcquisitionDiagnosticWriter, AuditLog, _DiagnosticItem,
+    )
+
+    writer = AcquisitionDiagnosticWriter(AuditLog(None, enabled=False))
+    writer.close()
+    writer._closed = False
+    displaced = _DiagnosticItem(
+        {"type": "displaced"}, lifecycle=True, fallback=lambda record: None,
+    )
+
+    class RacingQueue:
+        def put_nowait(self, item):
+            raise conversation.queue.Full
+
+        def get_nowait(self):
+            if race == "empty_after_full":
+                raise conversation.queue.Empty
+            return displaced
+
+        def task_done(self):
+            pass
+
+        def put(self, item, timeout):
+            raise conversation.queue.Full
+
+    writer._queue = RacingQueue()
+    monkeypatch.setattr(conversation, "DIAGNOSTIC_ENQUEUE_GRACE_S", 0.001)
+    fallbacks = []
+    assert writer.submit(
+        {"type": "new"}, lifecycle=True, fallback=fallbacks.append,
+    ) is False
+    assert fallbacks == [{"type": "new"}]

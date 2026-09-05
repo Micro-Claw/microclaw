@@ -711,6 +711,8 @@ def run_agent_iter(
     tool_registry=TOOL_REGISTRY,
     setup_mode: bool = False,
     acquisition_event_sink: Callable[[dict], None] | None = None,
+    acquisition_diagnostic_writer=None,
+    acquisition_session_id: str | None = None,
 ) -> Iterator[dict]:
     """Run one user turn, yielding an event per thing that happens.
 
@@ -828,6 +830,9 @@ def run_agent_iter(
                     setup_mode=setup_mode,
                     cancel=cancel, records=messages,
                     acquisition_event_sink=acquisition_event_sink,
+                    acquisition_diagnostic_writer=acquisition_diagnostic_writer,
+                    acquisition_session_id=acquisition_session_id,
+                    tool_call_id=block.id,
                 )
                 if confirmation_records is not None:
                     issued = confirmation_records[confirmation_start:]
@@ -890,6 +895,8 @@ def run_agent(
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     context_provider: Callable[[list[dict]], list[dict]] | None = None,
     on_message: Callable[[dict], None] | None = None,
+    acquisition_diagnostic_writer=None,
+    acquisition_session_id: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Run one user turn through the agent loop.
 
@@ -907,6 +914,8 @@ def run_agent(
         user_message, ctrl, guard, messages, model, max_iterations,
         tool_schemas=TOOLS_CACHED, tool_registry=TOOL_REGISTRY,
         context_provider=context_provider, on_message=on_message,
+        acquisition_diagnostic_writer=acquisition_diagnostic_writer,
+        acquisition_session_id=acquisition_session_id,
     ):
         if event["type"] == "done":
             reply = event["reply"]

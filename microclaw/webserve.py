@@ -35,6 +35,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
 
@@ -51,7 +52,9 @@ from starlette.concurrency import run_in_threadpool
 
 from microclaw import config, credentials, shortcut, tools, updates
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
-from microclaw.conversation import AuditLog, ConversationStore, prune_transcripts
+from microclaw.conversation import (
+    AcquisitionDiagnosticWriter, AuditLog, ConversationStore, prune_transcripts,
+)
 from microclaw.agent import (
     DEFAULT_MODEL,
     known_models,
@@ -300,6 +303,9 @@ def _add_audit_secret(session, secret: str | None) -> None:
     confirmation_audit = getattr(session, "confirmation_audit", None)
     if confirmation_audit is not None:
         confirmation_audit.add_secret(secret)
+    diagnostic_writer = getattr(session, "acquisition_diagnostic_writer", None)
+    if diagnostic_writer is not None:
+        diagnostic_writer.audit.add_secret(secret)
 
 
 def _sse(event: dict) -> str:
@@ -364,6 +370,12 @@ class Session:
         self.audit_records: list[dict] = []
         confirmation_path = self.history_fn.replace("_history.jsonl", "_confirmations.jsonl")
         self.confirmation_audit = AuditLog(confirmation_path, enabled=self.save)
+        acquisition_path = self.history_fn.replace("_history.jsonl", "_acquisitions.jsonl")
+        self.acquisition_diagnostic_writer = AcquisitionDiagnosticWriter(
+            AuditLog(acquisition_path, enabled=self.save)
+        )
+        # The timestamped history stem already uniquely identifies this session.
+        self.acquisition_session_id = Path(self.history_fn).stem
         self.current_identity = "loopback"
 
         # env > keyring > file; a key found in a store is pushed into the
@@ -577,7 +589,17 @@ def build_session(args, config_result: ConfigValidationResult | None = None):
 
 def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
-    app = FastAPI(title="Microclaw")
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            writer = getattr(session, "acquisition_diagnostic_writer", None)
+            if writer is not None:
+                writer.close()
+
+    app = FastAPI(title="Microclaw", lifespan=lifespan)
+
     update_job_lock = threading.Lock()
     update_job = {"running": False}
     update_checks = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
@@ -984,6 +1006,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                                 if hasattr(session, "store") else None),
                     confirmation_records=session.audit_records,
                     acquisition_event_sink=acquisition_event_sink,
+                    acquisition_diagnostic_writer=getattr(
+                        session, "acquisition_diagnostic_writer", None
+                    ),
+                    acquisition_session_id=getattr(session, "acquisition_session_id", None),
                 ):
                     emit(event)
             except Exception as e:  # noqa: BLE001 — the stream is the only channel
@@ -1389,6 +1415,9 @@ def serve(args):
     try:
         server.run()
     finally:
+        writer = getattr(session, "acquisition_diagnostic_writer", None)
+        if writer is not None:
+            writer.close()
         from microclaw.__main__ import report_declared_illumination_on_exit
         report_declared_illumination_on_exit(
             session.guard, session.ctrl.core, flush=True

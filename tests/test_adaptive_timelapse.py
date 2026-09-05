@@ -359,7 +359,9 @@ def test_13_cap_accounting_and_measured_runtime_allowance_are_separate(
     assert runtime_plan.estimated_duration_s == pytest.approx(18.685)
     assert runtime_plan.software_allowance_s_per_frame == 0.5
     assert "n=1 from M2" in runtime_plan.software_allowance_evidence
-    assert real_ceiling(runtime_plan) == (pytest.approx(318.685), False)
+    assert real_ceiling(runtime_plan) == (
+        pytest.approx(318.685), False, "plan_plus_300_s",
+    )
     assert captured_plans[0].software_allowance_s_per_frame == 0
     assert captured_plans[0].software_allowance_evidence is None
     assert result["runtime_bound_plan"]["estimated_duration_s"] == pytest.approx(18.685)
@@ -381,7 +383,7 @@ def test_adaptive_runtime_allowance_reproduces_m2_100k_frame_sanity_check():
     assert accounting.estimated_duration_s == 5_000
     assert accounting.software_allowance_s_per_frame == 0
     assert runtime.estimated_duration_s == 55_000
-    assert tools._runtime_ceiling_s(runtime) == (82_500, False)
+    assert tools._runtime_ceiling_s(runtime) == (82_500, False, "plan_times_1_5")
 
 
 def test_decision_contract_preflight_uses_pinned_source_scan(tmp_path, monkeypatch):

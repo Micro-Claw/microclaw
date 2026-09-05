@@ -117,6 +117,7 @@ from microclaw.paths import TEXT_SUFFIXES, open_in_editor
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.acquisition import AcquisitionLedger, AcquisitionPlan, Reservation, plan_events
 from microclaw.calibration import resolve_calibration
+from microclaw.conversation import AcquisitionDiagnosticWriter
 from microclaw.dataset_mosaic import MosaicFrameShape, MosaicGeometry, assemble_stage_coordinate_mosaic
 
 logger = logging.getLogger(__name__)
@@ -167,11 +168,16 @@ def _join_acquisition_waiter(waiter: threading.Thread, timeout_s: float) -> None
     waiter.join(timeout_s)
 
 
-def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool]:
+def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool, str]:
     if plan is None:
-        return FALLBACK_RUNTIME_CEILING_S, True
+        return FALLBACK_RUNTIME_CEILING_S, True, "fallback"
     estimate = plan.estimated_duration_s
-    return max(estimate * 1.5, estimate + 300.0), False
+    scaled = estimate * 1.5
+    slack = estimate + 300.0
+    return (
+        max(scaled, slack), False,
+        "plan_times_1_5" if scaled >= slack else "plan_plus_300_s",
+    )
 
 
 def _adaptive_timelapse_runtime_plan(
@@ -202,10 +208,11 @@ def _adaptive_timelapse_runtime_plan(
     )
 
 
-def _stall_quiet_s(largest_observed_gap_s: float) -> float:
-    return max(
-        STALL_QUIET_FLOOR_S,
-        STALL_GAP_MULTIPLIER * largest_observed_gap_s,
+def _stall_quiet_s(largest_observed_gap_s: float) -> tuple[float, str]:
+    observed_gap = STALL_GAP_MULTIPLIER * largest_observed_gap_s
+    return (
+        max(STALL_QUIET_FLOOR_S, observed_gap),
+        "quiet_floor" if STALL_QUIET_FLOOR_S >= observed_gap else "observed_gap",
     )
 
 #: Every run argument a hook -- or, under 55b, a plan-only coordinator -- must
@@ -2391,14 +2398,67 @@ class AcquisitionUnterminated(RuntimeError):
         self.cadence = cadence
 
 
-def _emit_acquisition_diagnostic(event: dict[str, Any]) -> None:
+def _diagnostic_fallback(event: dict[str, Any]) -> None:
     sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
     if sink is not None:
-        sink(event)
-        return
+        try:
+            sink(event)
+        except Exception:
+            pass
     stamp = datetime.now(timezone.utc).isoformat()
     print(f"[microclaw acquisition {stamp}] {json.dumps(event, default=str)}",
           file=sys.stderr)
+
+
+def _emit_acquisition_diagnostic(
+    event: dict[str, Any], *, lifecycle: bool = False, acknowledge: bool = False,
+    publish: bool = True,
+) -> bool:
+    timestamped = {"timestamp": datetime.now(timezone.utc).isoformat(), **event}
+    session_id = getattr(_ACQUISITION_EVENT_CONTEXT, "session_id", None)
+    tool_call_id = getattr(_ACQUISITION_EVENT_CONTEXT, "tool_call_id", None)
+    if session_id is not None:
+        timestamped["session_id"] = session_id
+    if tool_call_id is not None:
+        timestamped["tool_call_id"] = tool_call_id
+    writer = getattr(_ACQUISITION_EVENT_CONTEXT, "diagnostic_writer", None)
+    persisted = True
+    if writer is not None:
+        persisted = writer.submit(
+            timestamped, lifecycle=lifecycle, acknowledge=acknowledge,
+            fallback=_diagnostic_fallback if lifecycle or acknowledge else None,
+        )
+    sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+    if publish and sink is not None and not (acknowledge and not persisted):
+        try:
+            sink(event)
+        except Exception:
+            pass
+    elif publish and sink is None and not (lifecycle and not persisted):
+        _diagnostic_fallback(event)
+    return persisted
+
+
+@contextmanager
+def _acquisition_diagnostic_context(values: dict[str, Any]):
+    names = ("sink", "diagnostic_writer", "session_id", "tool_call_id")
+    missing = object()
+    previous = {name: getattr(_ACQUISITION_EVENT_CONTEXT, name, missing) for name in names}
+    try:
+        for name in names:
+            value = values.get(name)
+            if value is not None:
+                setattr(_ACQUISITION_EVENT_CONTEXT, name, value)
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is missing:
+                try:
+                    delattr(_ACQUISITION_EVENT_CONTEXT, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(_ACQUISITION_EVENT_CONTEXT, name, value)
 
 
 def _camera_sequence_running(ctrl: Any) -> bool | None:
@@ -4225,7 +4285,10 @@ def _acquire_with_hooks(
     report_cadence = cadence_summary is not None
     cadence_summary = cadence_summary if cadence_summary is not None else _new_gap_summary()
     frame_lock = threading.Lock()
-    event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
+    diagnostic_context = {
+        name: getattr(_ACQUISITION_EVENT_CONTEXT, name, None)
+        for name in ("sink", "diagnostic_writer", "session_id", "tool_call_id")
+    }
     progress_state = {"last_emitted": None}
 
     def account_saved_frame(axes, dataset):
@@ -4263,19 +4326,31 @@ def _acquire_with_hooks(
                     overrun_frames=reservation.overrun_frames,
                 )
         if emit_progress:
-            previous_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
-            if event_sink is not None:
-                _ACQUISITION_EVENT_CONTEXT.sink = event_sink
-            try:
+            with _acquisition_diagnostic_context(diagnostic_context):
+                if count == 1:
+                    _emit_acquisition_diagnostic({
+                        "type": "acquisition_first_frame_accounted",
+                        "dataset_path": dataset_path,
+                        "frames_accounted": count,
+                        "frames_planned": plan.frames if plan is not None else None,
+                    }, lifecycle=True, publish=False)
                 _emit_acquisition_diagnostic({
                     "type": "acquisition_progress",
+                    "dataset_path": dataset_path,
                     "frames_accounted": count,
                     "frames_planned": plan.frames if plan is not None else None,
                     "inter_frame_gap_summary": measured_cadence,
                 })
-            finally:
-                if event_sink is not None:
-                    _ACQUISITION_EVENT_CONTEXT.sink = previous_sink
+                if plan is not None and count == plan.frames:
+                    _emit_acquisition_diagnostic({
+                        # plan.frames is a terminal promise for fixed plans and
+                        # only a cap for adaptive plans; the name states exactly
+                        # the observation available at this shared boundary.
+                        "type": "acquisition_planned_final_frame_accounted",
+                        "dataset_path": dataset_path,
+                        "frames_accounted": count,
+                        "frames_planned": plan.frames,
+                    }, lifecycle=True, publish=False)
 
     hook_fn_kwargs["image_saved_fn"] = account_saved_frame
 
@@ -4304,6 +4379,9 @@ def _acquire_with_hooks(
     cleanup_done = False
     waiter_must_close_reservation = False
 
+    runtime_input = (
+        plan if runtime_plan is _RUNTIME_FROM_ACCOUNTING_PLAN else runtime_plan
+    )
     def finish_owned_cleanup() -> list[str]:
         nonlocal cleanup_done
         if cleanup_done:
@@ -4317,6 +4395,8 @@ def _acquire_with_hooks(
         return failures
 
     try:
+        runtime_bound, fallback, runtime_term = _runtime_ceiling_s(runtime_input)
+        runtime_deadline = started + runtime_bound
         acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
         # Resolve collision suffixes before dispatching the first event: a
         # first-frame hook failure must still report the data already owned
@@ -4328,52 +4408,67 @@ def _acquire_with_hooks(
         # the UNSUFFIXED path — which is precisely the wrong guess design/38
         # F7 is about, so re-verify this on any pycro-manager upgrade.
         dataset_path = _acq_dataset_path(acq, save_dir, name)
+        _emit_acquisition_diagnostic({
+            "type": "acquisition_construction",
+            "dataset_path": dataset_path,
+            "frames_planned": plan.frames if plan is not None else None,
+            "frames_accounted": 0,
+            "estimated_bytes": plan.estimated_bytes if plan is not None else None,
+            "active_bound_s": runtime_bound,
+            "active_bound_term": runtime_term,
+            "ceiling_fallback": fallback,
+        }, lifecycle=True, publish=False)
         if hook is not None and hasattr(hook, "bind_artifact_directory"):
             hook.bind_artifact_directory(Path(dataset_path) / "artifacts")
         if callable(events):
             events = events(acq)
+        _emit_acquisition_diagnostic({
+            "type": "acquisition_event_submission",
+            "dataset_path": dataset_path,
+            "frames_planned": plan.frames if plan is not None else None,
+        }, lifecycle=True, publish=False)
         acq.acquire(events)
 
         outcome: dict[str, Any] = {}
-        event_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
-
         def finish() -> None:
-            previous = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
-            _ACQUISITION_EVENT_CONTEXT.sink = event_sink
-            try:
+            with _acquisition_diagnostic_context(diagnostic_context):
                 try:
-                    acq.__exit__(None, None, None)
-                except BaseException as exc:
-                    outcome["exc"] = exc
-                failures = finish_owned_cleanup()
-                if failures:
-                    prior = outcome.get("exc")
-                    detail = "; ".join(failures)
-                    outcome["exc"] = RuntimeError(
-                        f"{prior}; {detail}" if prior is not None else detail
-                    )
-                flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
-                if isinstance(flag, dict) and outcome.get("exc") is not None:
-                    late = outcome["exc"]
+                    try:
+                        _emit_acquisition_diagnostic({
+                            "type": "acquisition_mark_finished",
+                            "dataset_path": dataset_path,
+                        }, lifecycle=True, publish=False)
+                        acq.__exit__(None, None, None)
+                    except BaseException as exc:
+                        outcome["exc"] = exc
+                    failures = finish_owned_cleanup()
+                    if failures:
+                        prior = outcome.get("exc")
+                        detail = "; ".join(failures)
+                        outcome["exc"] = RuntimeError(
+                            f"{prior}; {detail}" if prior is not None else detail
+                        )
+                    flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                    if isinstance(flag, dict) and outcome.get("exc") is not None:
+                        late = outcome["exc"]
+                        _emit_acquisition_diagnostic({
+                            "type": "acquisition_diagnostic",
+                            "message": f"Late teardown/cleanup failure: {type(late).__name__}: {late}",
+                            "dataset_path": dataset_path,
+                        })
+                finally:
+                    flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                    if isinstance(flag, dict):
+                        flag["teardown_running"] = False
                     _emit_acquisition_diagnostic({
-                        "type": "acquisition_diagnostic",
-                        "message": f"Late teardown/cleanup failure: {type(late).__name__}: {late}",
+                        "type": "acquisition_teardown_completion",
                         "dataset_path": dataset_path,
-                    })
-            finally:
-                flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
-                if isinstance(flag, dict):
-                    flag["teardown_running"] = False
-                _ACQUISITION_EVENT_CONTEXT.sink = previous
+                        "frames_accounted": frame_state["count"],
+                    }, lifecycle=True, publish=False)
 
         waiter = threading.Thread(target=finish, name="microclaw-acq-teardown", daemon=True)
         waiter_started = True
         waiter.start()
-        runtime_input = (
-            plan if runtime_plan is _RUNTIME_FROM_ACCOUNTING_PLAN else runtime_plan
-        )
-        runtime_bound, fallback = _runtime_ceiling_s(runtime_input)
-        runtime_deadline = started + runtime_bound
         error_deadline = None
         engine_exc = None
         while waiter.is_alive():
@@ -4388,11 +4483,12 @@ def _acquire_with_hooks(
                     "type": "acquisition_diagnostic",
                     "message": f"{type(observed).__name__}: {observed}",
                     "dataset_path": dataset_path,
-                })
+                    "engine_exception": f"{type(observed).__name__}: {observed}",
+                }, lifecycle=True)
             _join_acquisition_waiter(waiter, _ACQUISITION_POLL_S)
             now = _acquisition_monotonic()
             with frame_lock:
-                quiet_window = _stall_quiet_s(frame_state["largest_gap"])
+                quiet_window, quiet_term = _stall_quiet_s(frame_state["largest_gap"])
                 quiet = now - frame_state["last_saved"] >= quiet_window
                 frames_accounted = frame_state["count"]
             error_expired = error_deadline is not None and now >= error_deadline
@@ -4405,6 +4501,22 @@ def _acquire_with_hooks(
                 expired_bound = "error_grace" if error_expired else "runtime_ceiling"
                 bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
                 camera = _camera_sequence_running(ctrl)
+                _emit_acquisition_diagnostic({
+                    "type": "acquisition_timeout",
+                    "dataset_path": dataset_path,
+                    "frames_planned": (plan.frames if plan is not None else
+                                       reservation.plan.frames if reservation is not None else None),
+                    "frames_accounted": frames_accounted,
+                    "estimated_bytes": plan.estimated_bytes if plan is not None else None,
+                    "active_bound": expired_bound,
+                    "active_bound_s": bound_s,
+                    "active_bound_term": ("error_grace" if error_expired else runtime_term),
+                    "quiet_bound_s": quiet_window,
+                    "quiet_bound_term": quiet_term,
+                    "camera_sequence_running": camera,
+                    "engine_exception": (f"{type(engine_exc).__name__}: {engine_exc}"
+                                         if engine_exc is not None else None),
+                }, lifecycle=True, publish=False)
                 setattr(ctrl, "_microclaw_unterminated_acquisition", {
                     "waiter": waiter, "teardown_running": True,
                     "camera_sequence_running": camera, "dataset_path": dataset_path,
@@ -10903,6 +11015,9 @@ def execute_tool(
     cancel=None,
     records=None,
     acquisition_event_sink=None,
+    acquisition_diagnostic_writer: AcquisitionDiagnosticWriter | None = None,
+    acquisition_session_id: str | None = None,
+    tool_call_id: str | None = None,
 ) -> str | list:
     """Execute a tool and return content for the tool_result block.
 
@@ -10920,9 +11035,20 @@ def execute_tool(
         # A registry whose advertised key has no callable is malformed. Keep
         # this model-visible and non-throwing like every other dispatch error.
         return json.dumps({"error": f"Tool '{name}' has no implementation."})
-    previous_sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
-    if acquisition_event_sink is not None:
-        _ACQUISITION_EVENT_CONTEXT.sink = acquisition_event_sink
+    context = {
+        "sink": acquisition_event_sink,
+        "diagnostic_writer": acquisition_diagnostic_writer,
+        "session_id": acquisition_session_id,
+        "tool_call_id": tool_call_id,
+    }
+    names = tuple(context)
+    missing = object()
+    previous_context = {
+        key: getattr(_ACQUISITION_EVENT_CONTEXT, key, missing) for key in names
+    }
+    for key, value in context.items():
+        if value is not None:
+            setattr(_ACQUISITION_EVENT_CONTEXT, key, value)
     try:
         if getattr(fn, "_microclaw_acquisition_entry_point", False):
             pending = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
@@ -10975,7 +11101,14 @@ def execute_tool(
             "hint": _hint_for_tool_error(fn, e),
         })
     finally:
-        _ACQUISITION_EVENT_CONTEXT.sink = previous_sink
+        for key, value in previous_context.items():
+            if value is missing:
+                try:
+                    delattr(_ACQUISITION_EVENT_CONTEXT, key)
+                except AttributeError:
+                    pass
+            else:
+                setattr(_ACQUISITION_EVENT_CONTEXT, key, value)
 
 
 _NESTED_PROTOCOL_PARAM_KEYS = {

@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import queue
+import time
 from typing import Any, Iterable
 
 
@@ -179,6 +181,195 @@ class AuditLog:
             "next_cursor": str(end) if end < len(self.records) else None,
             "total": len(self.records),
         }
+
+
+DIAGNOSTIC_FLUSH_GRACE_S = 2.0
+# A diagnostic must not appreciably extend a foreground acquisition path when
+# its bounded queue is saturated by a stuck writer.
+DIAGNOSTIC_ENQUEUE_GRACE_S = 0.1
+# Normal shutdown gets the same bounded opportunity as an on-disk ack, then
+# leaves the daemon writer behind so a wedged filesystem cannot prevent exit.
+DIAGNOSTIC_CLOSE_GRACE_S = 2.0
+
+
+@dataclass
+class _DiagnosticItem:
+    record: dict
+    lifecycle: bool
+    acknowledged: threading.Event | None = None
+    persisted: bool = False
+    fallback: Any = None
+    fallback_emitted: bool = False
+
+
+class AcquisitionDiagnosticWriter:
+    """Single-threaded, bounded persistence for acquisition diagnostics.
+
+    Progress is the only droppable class. At most one coalesced progress item
+    waits outside the bounded queue, and lifecycle records displace progress.
+    Saturation by lifecycle records falls back after a short deadline rather
+    than recreating the unbounded wait these diagnostics exist to explain.
+    """
+
+    def __init__(self, audit: AuditLog, *, capacity: int = 64) -> None:
+        if capacity < 1:
+            raise ValueError("diagnostic queue capacity must be positive")
+        self.audit = audit
+        self._queue: queue.Queue[_DiagnosticItem] = queue.Queue(capacity)
+        self._progress_lock = threading.Lock()
+        self._coalesced_progress: _DiagnosticItem | None = None
+        self._closed = False
+        self._stop = threading.Event()
+        self._state_lock = threading.Lock()
+        self._active_item: _DiagnosticItem | None = None
+        self._thread = threading.Thread(
+            target=self._run, name="microclaw-acquisition-diagnostics", daemon=True,
+        )
+        self._thread.start()
+
+    def submit(
+        self, record: dict, *, lifecycle: bool = False, acknowledge: bool = False,
+        fallback: Any = None,
+    ) -> bool:
+        """Queue a record; optionally wait a bounded time for its fsync."""
+        ack = threading.Event() if acknowledge else None
+        item = _DiagnosticItem(record, lifecycle, ack, fallback=fallback)
+        try:
+            if self._closed:
+                self._fallback_once(item)
+                return False
+            if lifecycle:
+                if not self._enqueue_lifecycle(item):
+                    self._fallback_once(item)
+                    return False
+            else:
+                try:
+                    self._queue.put_nowait(item)
+                except queue.Full:
+                    with self._progress_lock:
+                        self._coalesced_progress = item
+            if ack is None:
+                return True
+            if ack.wait(DIAGNOSTIC_FLUSH_GRACE_S) and item.persisted:
+                return True
+            self._fallback_once(item)
+            return False
+        except Exception:
+            # This boundary is called from pycro-manager's storage-monitor
+            # thread. Diagnostics must never damage that thread, including if a
+            # queue implementation or a caller-supplied fallback misbehaves.
+            self._fallback_once(item)
+            return False
+
+    def _fallback_once(self, item: _DiagnosticItem) -> None:
+        with self._state_lock:
+            if item.fallback is None or item.fallback_emitted:
+                return
+            item.fallback_emitted = True
+        try:
+            item.fallback(item.record)
+        except Exception:
+            pass
+
+    def _enqueue_lifecycle(self, item: _DiagnosticItem) -> bool:
+        deadline = time.monotonic() + DIAGNOSTIC_ENQUEUE_GRACE_S
+        while time.monotonic() < deadline:
+            try:
+                self._queue.put_nowait(item)
+                return True
+            except queue.Full:
+                # Remove ordinary progress first. Lifecycle count is bounded by
+                # the acquisition state machine, independently of frame count.
+                try:
+                    displaced = self._queue.get_nowait()
+                except queue.Empty:
+                    continue
+                self._queue.task_done()
+                if displaced.lifecycle:
+                    try:
+                        self._queue.put_nowait(displaced)
+                    except queue.Full:
+                        # A concurrent producer won the slot. Preserve the
+                        # displaced lifecycle record through its fallback and
+                        # keep trying the new record until its own deadline.
+                        self._fallback_once(displaced)
+                        continue
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        self._queue.put(item, timeout=remaining)
+                        return True
+                    except queue.Full:
+                        break
+                with self._progress_lock:
+                    if self._coalesced_progress is None:
+                        self._coalesced_progress = displaced
+        return False
+
+    def _run(self) -> None:
+        # A timed get lets close() set _stop without needing a sentinel that
+        # itself might block behind a full queue and recreate the shutdown hang.
+        while not self._stop.is_set() or not self._queue.empty():
+            try:
+                item = self._queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            with self._state_lock:
+                self._active_item = item
+            try:
+                self.audit.append(item.record)
+                item.persisted = True
+            except Exception:
+                item.persisted = False
+                if item.acknowledged is None:
+                    self._fallback_once(item)
+            finally:
+                if item.acknowledged is not None:
+                    item.acknowledged.set()
+                self._queue.task_done()
+                with self._state_lock:
+                    self._active_item = None
+            with self._progress_lock:
+                progress = self._coalesced_progress
+                self._coalesced_progress = None
+            if progress is not None:
+                try:
+                    self._queue.put_nowait(progress)
+                except queue.Full:
+                    with self._progress_lock:
+                        self._coalesced_progress = progress
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        deadline = time.monotonic() + DIAGNOSTIC_CLOSE_GRACE_S
+        with self._progress_lock:
+            progress = self._coalesced_progress
+            self._coalesced_progress = None
+        if progress is not None:
+            try:
+                self._queue.put(
+                    progress, timeout=max(0.0, deadline - time.monotonic())
+                )
+            except queue.Full:
+                pass
+        self._stop.set()
+        self._thread.join(max(0.0, deadline - time.monotonic()))
+        if self._thread.is_alive():
+            with self._state_lock:
+                active = self._active_item
+            if active is not None and active.lifecycle:
+                self._fallback_once(active)
+            while True:
+                try:
+                    pending = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if pending.lifecycle:
+                    self._fallback_once(pending)
+                self._queue.task_done()
 
 
 def prune_transcripts(directory: str | os.PathLike[str], retention_days: int | None,
