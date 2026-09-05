@@ -1490,29 +1490,214 @@ scored.
 
 **Step 2 — delegate the implementation.**
 
-- [ ] Linked worktree `../microclaw-design75b` on the branch; the coordinator
-      checkout returns to `main` first (git refuses two worktrees on one
-      branch). Ticks are staged in the scratchpad and applied between turns,
-      as in 75a.
-- [ ] Worktree provisioned **before** the prompt is written: `uv venv --python
+- [x] Linked worktree `../microclaw-design75b` on the branch; the coordinator
+      checkout returned to `main` first (git refuses two worktrees on one
+      branch). Ticks staged in the scratchpad and applied between turns, as in
+      75a.
+- [x] Worktree provisioned **before** the prompt was written: `uv venv --python
       3.12`, then `uv pip install --python .venv/bin/python -e
-      ".[serve,test,ilastik]"`; `import microclaw` confirmed resolving to the
-      worktree's tree; the suite run **in the worktree** by the coordinator and
-      the exact command handed over, together with the benign warnings it
-      prints. 75a recorded that a **fresh worktree venv** prints two extra
-      first-compile warnings (`mmpycorex/install.py:109` `SyntaxWarning`,
-      `starlette/testclient.py:53` `DeprecationWarning`) that do not recur once
-      the bytecode cache exists — expect them again and name them.
-- [ ] Runner prompt written to the scratchpad (never committed), then the
+      ".[serve,test,ilastik]"`. `import microclaw` confirmed resolving to
+      `/Users/zachcm/Code/microclaw-design75b/microclaw/__init__.py`. Suite run
+      by the coordinator **in the worktree**: **2837 passed / 99 skipped**,
+      175.3 s, and `.venv/bin/python -m pytest -q` handed over verbatim.
+- [x] **75a's warning note was half right, and checking it changed the prompt.**
+      It recorded two extra warnings in a fresh worktree venv as first-compile
+      artifacts that "do not recur". Only one of them is:
+      `mmpycorex/install.py:109` is a `SyntaxWarning`, raised by the compiler
+      and cached in the `.pyc`, so it appears once. The
+      `starlette/testclient.py:53` `DeprecationWarning` recurs on **every** run,
+      because this worktree's fresh resolution took `anyio 4.15.1` where the
+      primary checkout has `4.14.2`, and 4.15 deprecated
+      `anyio.abc.BlockingPortal`. Measured, not assumed: a re-run of
+      `tests/test_webserve.py` plus the one calibration test printed **3**.
+      So the worktree's steady state is **2837/99/3**, not the primary
+      checkout's 2. Handed over as "4 the first time, 3 from then on", with each
+      warning named — an inaccurate benign-warning list is what makes a runner
+      report a non-finding or, worse, fix it.
+- [x] Runner prompt written to the scratchpad (never committed), then the
       project `codex-runner` skill launched in that worktree; job directory
-      kept for the block.
+      `scratchpad/job-75b` kept for the block.
+- [x] The prompt names the things a green suite would not catch: that 75a
+      changed **both** functions D1's stub rewrites, so implementing the stub
+      literally deletes the term reporting the gate reads; the sixth
+      `_runtime_ceiling_s` caller at `:4950` that is not a supervisor call; that
+      `bound_name` is a **coordinator addition** to the design's stub, because
+      deriving `expired_bound` from `policy is SHORT_FIXED` would be the
+      incidental-proxy inference D1 exists to forbid; that `finalizing` is keyed
+      off `policy.terminal_frames` and never `plan.frames`; that the camera
+      probe's bound goes **inside** `_camera_sequence_running` so
+      `execute_tool`'s refusal path is bounded by the same change rather than a
+      second spelling; that the pending flag and exception are built **before**
+      the probe; and that the ack mechanism is 75a's and is only *consumed*
+      here. It enumerates eight things the block must not do, every one of them
+      a line in the same functions.
+- [x] Two design claims verified against the tree before they went into the
+      prompt rather than after. `hook is None` really does subsume every
+      capability at the selection point, because `_configure_hook_capabilities`
+      raises for an envelope with no hook (`tools.py:7802`) — so the
+      `SHORT_FIXED` condition list needs no separate capability clause. And
+      `move_controller` is already in scope at `tools.py:102`, so the bounded
+      probe adds no import.
 
-**Step 3 — review what comes back.** Diff, not summary; suite re-run by the
-coordinator; findings returned through the same session.
+**Step 3 — review what comes back.** One runner turn, four coordinator
+corrections, all made on the branch.
 
-**Step 4 — push the branch, code and runbook together.** The gate is a
-**demo-machine** gate; see §"Block 75b's gate" below for why, and for the
-environment facts already established.
+- [x] **The turn ended on a Codex usage limit, with its work landed and
+      self-committed.** `turn.failed` in `initial.events.jsonl` reads
+      *"You've hit your usage limit ... try again at 6:32 PM"*, and the job
+      directory has a `session-id` and `status 1` but no `result.md` — the
+      wrapper never wrote one, because the turn died before its final message.
+      The implementation and a `result.md` were nonetheless committed inside the
+      repository (`5d1ff98`, `ef8d873`). Per `CLAUDE.md`, a turn that dies at the
+      end with its edits landed is preserved and verified by the coordinator
+      rather than believed; everything below was checked independently.
+- [x] **Suite re-run by the coordinator, not accepted from the report:
+      2862 passed / 99 skipped / 3 warnings**, zero failures, against the
+      2837/99 baseline. 2837 + 25 new cases = 2862, reconciling exactly.
+      **The runner's own run reported 5 failures and it was right to stop at
+      them**: four are its sandbox (three loopback `socket.bind` denials and
+      `test_built_wheel_contains_the_source_tree_skill_catalog`, whose isolated
+      `pip wheel` needs the network the runner correctly refused to reach for),
+      and all four pass outside it. It fixed the fifth itself. A runner reporting
+      an environment limit instead of working around it is the behaviour this
+      workflow wants.
+- [x] **Five mutations run by the coordinator, chosen before reading the
+      runner's mutation table**, each reverted immediately:
+      gating `runtime_expired` on `frames_accounted > 0` fails the zero-frame
+      case at `assert 11.0 <= (10.05 + 0.1)` — *the incident's own shape, and
+      D1's central requirement*; keying the phase off `plan.frames` instead of
+      `policy.terminal_frames` fails both parametrized cases; dropping
+      `_reservation is None` from the `SHORT_FIXED` predicate fails the
+      `composite` case with the two policies printed side by side; moving the
+      camera probe ahead of the pending flag fails on
+      `isinstance(False, AcquisitionUnterminated)`; and deleting the phase
+      render from `serve.html` fails the two Node cases. None was an
+      `ImportError` and none hung.
+- [x] **The gate-facing evidence is in the mutation output too.** The probe
+      mutation's captured stderr carries a real timeout record —
+      `"active_bound_s": 5.001, "active_bound_term": "plan_plus_5_s",
+      "quiet_bound_s": 5.0, "phase": "acquiring_or_notifying",
+      "camera_sequence_running": null` — which is D2 and D4 agreeing on one
+      line, produced by the code rather than asserted about it.
+- [x] **The fake was audited before the tests that use it.** `SimulatedClock`
+      fires `image_saved_fn` from inside the supervisor's `join`, so a frame is
+      accounted while the waiter is alive and the poll loop is running. That is
+      the relationship 75a measured on two rigs — the callback arrives on the
+      thread `await_completion` joins — so this fake does not encode the
+      assumption 75a disproved. The `BlockingAcquisition.release` is set in a
+      `finally` before the assertions in every new test, so a failing test fails
+      rather than hanging the suite, which is 75a's round-2 lesson applied.
+- [x] **Four coordinator corrections, made on the branch rather than sent back**,
+      because Codex was out of usage for four hours and every one is a few lines
+      (step 7, *small corrections: do them yourself*):
+
+      1. **`result.md` was committed into the repository.** Removed; the copy
+         lives in the job directory. This is the second time — 75a's round 1
+         found the same thing.
+      2. **A runtime timeout reported no bound value anywhere.** The neutral D2
+         wording deliberately names no number, and the old error string had
+         carried `within {bound_s:g} s`; only the error-grace branch kept its
+         prose, so a `short_fixed_runtime` result said a bound expired and never
+         said what it was. `bound_s` is now a field — greppable, and it does not
+         fight the design's wording. Pinned to the policy in the short-fixed
+         test and watched failing: removing the field again fails three cases.
+      3. **The camera-idle branch lost design/60's actionable statement.**
+         *"The dataset may be read while teardown finishes."* had been rewritten
+         to *"may be unterminated"* — which the new `data` sentence already says
+         for every branch, so the edit was both redundant and lossy. Restored;
+         nothing asserted the new wording.
+      4. **`design/60-block60a-demo-gate.py` had been dead since block 75a.**
+         It unpacks `_runtime_ceiling_s(None)` as a 2-tuple — 75a made it a
+         3-tuple — and reads `tools.STALL_QUIET_FLOOR_S`, which 75b moved onto
+         the policy. So a committed gate script rotted a block ago and neither
+         block noticed, because nothing in the suite imports one and *gate code
+         gets no review pass*. Repaired against the current names and **executed**
+         rather than parsed: it prints `grace 90s, quiet floor 900s, fallback
+         ceiling 86400s (fallback)`.
+- [x] The three constraints the prompt named as silently-breakable all held.
+      No confirmation is reachable from any added path (a `CONFIRM_FN` stubbed
+      to raise is asserted uncalled across both timeout shapes); `run_mda`,
+      the emitters, live-mode handling, `ERROR_TEARDOWN_GRACE_S`,
+      `STALL_GAP_MULTIPLIER`, `_adaptive_timelapse_runtime_plan` and 75a's
+      writer internals are untouched; and the six collateral test files carry
+      policy plumbing only, with no assertion weakened.
+- [x] **One runner judgement adopted rather than corrected.** It found that
+      `_emit_acquisition_diagnostic` returned `persisted=True` when no writer is
+      installed, which cannot truthfully mean *persisted* once `acknowledge=`
+      has a consumer. Its `elif acknowledge:` branch reports `False` and sends
+      the existing fallback. That is a real defect in 75a's seam, found by the
+      block that first consumed it.
+
+**Step 4 — push the branch, code and runbook together.**
+
+- [x] `design/75-block75b-gate.md` committed on the branch, pinned with
+      `git merge-base --is-ancestor 76cc353 HEAD`. Demo machine only, about
+      fifteen minutes, no rig time and no dose. Environment facts taken from the
+      gates that already ran there rather than invented — design/74's demo
+      runbook for `D:\Code\microclaw`, the unredirected uv warm-up and the
+      control-arm copy; `design/69a-gate.md:70` for **Firefox**, which 75a's
+      notes record the coordinator having asked the operator for twice before
+      checking the repo.
+- [x] `design/75-block75b-demo-gate.py` — eight limbs, each scored
+      independently, its own log, nonzero on any FAIL **or** NOT EXERCISED. It
+      carries only what a fake cannot answer: whether a **real** one-frame
+      acquisition selects `SHORT_FIXED` and finishes inside a bound measured on
+      a different machine (limb A is the limb that can say the constants are
+      wrong for this one), and what a real hang produces in both shapes — frame
+      accounted (limb B) and nothing accounted (limb C, the mandatory one and
+      the incident's own shape).
+- [x] **The injection is read off the dependency, not off the design.**
+      `Acquisition.__exit__` in pycro-manager 1.0.2 is exactly `mark_finished()`
+      then `await_completion()` — confirmed in-process with `inspect.getsource`
+      — so the gate's subclass reproduces those two statements with a hold
+      between them, and **limb 0 fails loudly** if a pycro-manager upgrade
+      changes that. Nothing else about the acquisition is faked: the frame is
+      really written.
+- [x] `design/75-block75b-blocking-serve.py` — the part-2 launcher, so the
+      browser step is one literal command rather than an instruction to patch
+      something. Executed, not just parsed: `--help` drives the injection, the
+      argv handoff and the real `serve` dispatch.
+- [x] Gate run against a **bridge-shaped** fake
+      (`design/75-block75b-gate-selftest.py`): Core collections expose
+      `size()`/`get(i)` and raise on `__iter__`; records are written by the
+      **real** `AuditLog` through the real writer; the fake acquisition lives in
+      a real module file rather than an exec'd string, because 75b's gate
+      *subclasses* `tools.Acquisition` and reads `inspect.getsource` on its
+      `__exit__`, and 75a's factory-function fake supports neither. Its
+      `__exit__` fires `image_saved_fn` from `await_completion` — the order 75a
+      **measured** across 43 acquisitions, not the order the suite's fakes use.
+      Six cases, four of them deliberate failures; **one command covers both
+      trees**, because case 6 builds `main` with `git archive` and asserts the
+      whole gate stands down at limb E there rather than asking an operator to
+      run it twice and compare.
+- [x] **Each expected failure is checked against its cause, not its status.**
+      75a's gate had limb B failing for limb A's reason, and a selftest that
+      counted FAILs would have called that correct; every failure arm here names
+      a substring its detail must contain, and three gate asserts were rewritten
+      to produce text worth matching.
+- [x] **The selftest found five defects, all in the gate, none in the product** —
+      which is the whole argument for running it, and four of the five would
+      have reached the operator:
+      the gate bound `MicroscopeController` with `from ... import` **before** the
+      prelude ran, so the selftest's fake microscope was installed on a module
+      nobody read again and every case died trying to reach a real bridge;
+      `load_safety_config_or_exit` calls `sys.exit()` on a machine with no
+      config, killing every case before `finish()` could write a score (the
+      *gate* still takes no `--safety-config`, per 60b — the selftest supplies
+      one);
+      `score_blocked` read the newest timeout record in the file rather than
+      *this call's*, so limb C could quietly score limb B's evidence;
+      the control arm renamed the policy class and left `DEFAULT` referencing
+      it, so the gate died on a `NameError` instead of standing down — a broken
+      control arm, not a control arm;
+      and the one that mattered — **both hang arms held before
+      `await_completion`**, so no frame could ever be accounted before the bound
+      and limb B's own premise was unreachable. It failed on the branch as
+      shipped. The two arms now hang in different places on purpose, which is
+      also the more honest model: `after_frames=False` is stuck inside the call
+      design/60 measured at 95 minutes, `after_frames=True` is D1a's finalizing
+      shape.
+- [ ] Pushed to `origin` with `GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`. No PR.
 
 **Steps 5-8 — the user runs the gates; score from artifacts; fix; re-test.**
 
@@ -1561,4 +1746,4 @@ Baseline before the notebook: `main` `444d694`, coordinator-run suite
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Both parts run 2026-09-05; PASS.** Demo machine: the gate reported 3 FAIL, the artifacts say **6 PASS / 1 NOT EXERCISED / 0 FAIL** — all three failures were the coordinator's assertions, re-scored from the operator's own files and fixed in `4cb2d24`. M2: n=20, no torn lines, no failures, exit 0. **The finding is the engine's, not the product's**: real pycro-manager accounts the frame *inside* `acq.__exit__`, in one identical ordering across **43 acquisitions on two rigs**, so 96.7% (demo) and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call design/60 measured at 95 minutes. Limb D produced the incident's own evidence shape on demand: a call with a beginning and no end. Constants chosen at 5.0 s / 5.0 s, 11.2x the measured M2 maximum. Selftest now 9 cases; its old failure arm was the real hardware behaviour and now expects PASS. | `34ab5f3` merged 2026-09-05; branch deleted locally and on `origin`, worktree removed. Pre-merge suite 2830/99/3. |
-| 75b | `design75/supervised-runtime-bound` | `8a64902` (2026-09-05) — seven commits past 75a's merge because `design/76` landed in between, so the baseline is **2837 passed / 99 skipped / 2 warnings**, not 75a's 2830. Checklist committed on the branch before assignment; worktree `../microclaw-design75b` | **assigned**: constants measured (5.0 s / 5.0 s, 11.2x the M2 maximum); 75a's gate settled three design questions for it, and 75a's own landing moved every line number the design names | **demo machine only** — 75a's M2 arm discharged limbs 2 and 3, so limbs 1, 4 and 5 remain and none needs a rig | |
+| 75b | `design75/supervised-runtime-bound` | `8a64902` (2026-09-05) — seven commits past 75a's merge because `design/76` landed in between, so the baseline is **2837 passed / 99 skipped / 2 warnings**, not 75a's 2830. Checklist `75aa4e6`; worktree `../microclaw-design75b` | `5d1ff98` (1 Codex start turn, **killed by a usage limit after its edits had landed and been self-committed** — no `result.md` reached the job directory, and everything below was verified rather than believed). Coordinator suite **2862 / 99 / 3** against 2837/99, reconciling exactly at 2837 + 25. The runner's own run reported 5 failures and was right to: four are its sandbox (three loopback `socket.bind` denials and a `pip wheel` needing the network it correctly refused), all four pass outside it. **Five mutations run by the coordinator, chosen before reading the runner's table**, all reproducing — the decisive one being that gating expiry on `frames_accounted > 0` fails the zero-frame case, which is the incident's own shape. Four coordinator corrections in `76cc353`: `result.md` committed into the repo (second time); a runtime timeout reporting **no bound value anywhere**, since D2's neutral wording names no number and the string it replaced had carried one; design/60's *"the dataset may be read"* step lost to a redundant rewrite; and `design/60-block60a-demo-gate.py` **dead since 75a** and never noticed. | **demo machine only, ~15 min, no rig time and no dose** — 75a's M2 arm discharged limbs 2 and 3 by measuring the constants. 8-limb program + a human browser step; selftest 6 cases, one command covering both trees, **five gate defects found before shipping**, four of which would have reached the operator. | |
