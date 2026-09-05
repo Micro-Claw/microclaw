@@ -124,8 +124,13 @@ history, scored the way `R88` was — which costs nothing and waits on nobody.
 
 ## Run ledger
 
-Baseline before the block: `main` `fea3a89`.
+Baseline before the block: `main` `fea3a89`, coordinator-run suite
+**2830 passed / 99 skipped / 2 warnings** in 151.1 s (2026-09-05,
+`.venv/bin/python -m pytest -q`). The two warnings are one benign
+`phase_cross_correlation` `UserWarning` from
+`test_featureless_field_returns_error_not_garbage`, which is the test doing its
+job; they are not findings.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 76a | `design76/sweep-value-spans` | | | | |
+| 76a | `design76/sweep-value-spans` | `fea3a89` (2026-09-05), worktree `../microclaw-76a` | | **No rig gate** — see §Blocks. | |
