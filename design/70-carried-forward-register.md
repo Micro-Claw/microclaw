@@ -13,7 +13,9 @@ is now its own coordinator (`CLAUDE.md` §"The block workflow").
 
 - **Work by importance and by ease.** A row settled locally or on the demo
   machine costs an afternoon; a row needing M2 or M5 costs a booked session and
-  a scoring pass; a row needing a Nikon Ti cannot be worked at all right now.
+  a scoring pass; a row needing a **driven** Nikon Ti procedure cannot be worked
+  at all right now — but one that only needs *what a model did on a real sample*
+  can be, by scoring a history the Nikon user sends (see the Nikon bucket).
   The two orderings are both in the table below, so a session can take the
   cheapest high-value row rather than the highest-value row it cannot run.
 - **A row that names a block is not a register row.** If the disposition column
@@ -89,7 +91,7 @@ Rows added since the triage:
 | `R88` | a Nikon Ti session scored on 2026-09-04, no notebook |
 | `R89` | found while scoring `design/74` block 74a, 2026-09-04 |
 | `R90` | found while scoring `design/74` block 74a's demo gate, 2026-09-04 |
-| `R91`–`R93` | `design/74`'s Nikon confirmation, 2026-09-05 — **on the unmerged `design74/nikon-confirmation` branch**, which is why 75a's rows start at `R94` |
+| `R91`–`R93` | found while scoring the Nikon Ti's own `design/74` sessions, 2026-09-05 |
 | `R94`–`R95` | `design/75` block 75a's gates, 2026-09-05 |
 
 
@@ -142,9 +144,12 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL |  |
 | `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM |  |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
-| `R88` | [The probe_hint payload reached a live model and did not route it](#r88) | HIGH | MEDIUM | → `design/74` |
+| ~~`R88`~~ | ~~[The probe_hint payload reached a live model and did not route it](#r88)~~ | — | — | **CLOSED 2026-09-05 by the Nikon's own sessions** |
 | `R89` | [The PFS offset fine-tune is a hand-driven loop with no tool](#r89) | MEDIUM | MEDIUM |  |
 | `R90` | [arrival_unverifiable is saturated for every image-autofocus sweep](#r90) | LOW | SMALL |  |
+| `R91` | [A property sweep discards the Z positions of every value it did not match](#r91) | HIGH | SMALL |  |
+| `R92` | [A property sweep is one linear pass, so a blind band search costs range/step planes](#r92) | MEDIUM | MEDIUM |  |
+| `R93` | [Should a sweep refuse a post-engage value while the lock is disengaged?](#r93) | MEDIUM | SMALL |  |
 | `R94` | [D4 records acquisitions, so a snap in the Core log still cannot be attributed](#r94) | MEDIUM | SMALL |  |
 | `R95` | [Does live-mode ownership churn precede a lost terminal notification?](#r95) | MEDIUM | LARGE |  |
 
@@ -2069,6 +2074,8 @@ operator has no Nikon at present.
 
 **Do not schedule these.** The operator has no Nikon Ti/Ti2. They are recorded so a future trip collects them together, not so anyone tries to substitute a rig.
 
+**Amended 2026-09-05: "no reachable machine" is too strong, and it cost this register a row.** A Nikon Ti *user* runs real sessions and sends their history JSONL — three arrived on 2026-09-04 and closed `R88`, which had been parked here on exactly this premise. What the operator cannot do is **drive a gate**: choose the window, break the transport, run a limb, retry a wording. So split these rows by what they need. A row whose evidence is *"what did a model do on a real sample"* is **workable now, for free**, by asking for the history and scoring it (`microclaw view-history`, or `load_history`) — that is how `R88` closed and how `R15` has been accumulating positive observations. A row needing a driven procedure stays blocked. Before leaving a row in this bucket, ask which of the two it is.
+
 
 ### R08 — Five things owed to a Nikon Ti by design/59
 
@@ -2220,7 +2227,8 @@ error path and this merge is already carrying unverified change.
 
 **A cold Nikon Ti session was handed `get_system_state.focus` carrying the lock device, its status property with its current value, and the `probe_hint` naming `run_autofocus` — and still opened with an image-based sweep, dismissed the PFS in prose, and only probed after the operator named it 31 turns later.**
 
-- **Status** — **CONTAINMENT SHIPPED 2026-09-04, MEASUREMENT OWED.** Block 74a (merged `c8405ce`) put the enforcement in code: `run_autofocus` now offers the lock before an image sweep, at zero exposures and zero Z motion, on a rig whose adapter identity is a recognised hardware surface lock — and the `probe_hint` names `load_skill("nikon-pfs")` for a PFS-labelled device, so the schema sentences' unmet antecedent (*"when get_focus_lock_state reports a PFS"*) no longer gates the routing. **This does not close the row.** The whole point of this notebook is that three interventions shipped without a measurement; 74a is the fourth, and **block 74b is the measurement that decides it**. Do not tick this until 74b has a number. Note also that the containment offers rather than blocks: the operator's correction of 2026-09-04 established that image-based autofocus on a Nikon must stay available, so a caller proceeds with `image_metric_reason`. What follows is the original OPEN text, kept because it is the evidence.
+- **Status** — **CLOSED 2026-09-05, by the Nikon Ti's own sessions.** Three real sessions on 2026-09-04 (`design-74-nikon-result/`, 17:20 / 17:26 / 17:45), scored from the history JSONL: **12 of 12 `run_autofocus` calls carried a property probe, zero image sweeps, `image_metric_reason` used zero times, `load_skill("nikon-pfs")` in 3 of 3, and `exposures_spent: 0` on every sweep.** That is the binary this row was deferred to, answered from a real sample instead of a replay. Two things it does **not** say. Session 1 ran a **pre-74a** build — its payloads carry neither `adapter_library` nor the `load_skill` sentence, while sessions 2 and 3 carry both — and it probed first as well, so these sessions are positive-informative only (`design/61` R1's shape) and do not show that 74a caused the routing. And **D1's offer has still never fired on a rig**: it fires only after a model reaches for an image sweep, and across arm B's n=12 and these three sessions none did. The behaviour has not recurred; the containment remains unexercised, and reading that null as a pass would repeat the mistake this notebook opens by naming. What the sessions cost is carried as `R91`–`R93`. Original status below, kept as evidence.
+- **Superseded status** — **CONTAINMENT SHIPPED 2026-09-04, MEASUREMENT OWED.** Block 74a (merged `c8405ce`) put the enforcement in code: `run_autofocus` now offers the lock before an image sweep, at zero exposures and zero Z motion, on a rig whose adapter identity is a recognised hardware surface lock — and the `probe_hint` names `load_skill("nikon-pfs")` for a PFS-labelled device, so the schema sentences' unmet antecedent (*"when get_focus_lock_state reports a PFS"*) no longer gates the routing. **This does not close the row.** The whole point of this notebook is that three interventions shipped without a measurement; 74a is the fourth, and **block 74b is the measurement that decides it**. Do not tick this until 74b has a number. Note also that the containment offers rather than blocks: the operator's correction of 2026-09-04 established that image-based autofocus on a Nikon must stay available, so a caller proceeds with `image_metric_reason`. What follows is the original OPEN text, kept because it is the evidence.
 - **The measurement, and where it now comes from.** Block 74b's arm B replayed this session's own payload to a live model, n=12, on 2026-09-04. It measured **nothing**: `offer_fired` was 0 in 12 of 12, because no sample reached for an image sweep in the first place, and a harness starved of fixtures left 8 of 12 without any focus action. It was not re-run, and more samples would not help — the offer only fires after the mistake, and the mistake is rare in replay. **The question is deferred to the Nikon user's own session**, which yields the identical binary from a real sample: did `run_autofocus` carry a `probe`, or did it carry `image_metric_reason`? Ask for the history JSONL and score it with `load_history`. Reopen this row if a problem comes back from that rig.
 - **Original status** — OPEN, and it is the **third** failure of the same behaviour. `design/56` §"Owed rig evidence" item 3 says the `status_properties`/`probe_hint` payload exists *because two prompt edits failed*, and that "no live model has seen this payload". One now has. `microclaw/tools.py:4043` embeds `get_focus_lock_state`'s exact return under `state["focus"]`, so the hint arrived on the session's **first tool call**, byte-identical to what `get_focus_lock_state` returned 20 calls later. The prompt rule at `microclaw/agent.py:340-349` ("BEFORE proposing an image-based sweep… propose run_autofocus with a property probe FIRST… Do not wait to be asked") was not followed; `microclaw/agent.py:338`'s ordering rule was also not followed. Nothing in code enforces either.
 - **Importance** — HIGH - it spent ~20 tool calls and 10 exposures reaching a flat-metric refusal that it then read as a statement about the sample ("This spot on the sample has no cells") while Z was ~2250 µm from the capture band. On a 60× oil lens with an empty field the image metric *cannot* work and the lock is the only route, so this is the case the intervention was built for.
@@ -2275,6 +2283,7 @@ model summarising several tool results as one, which matters for gate scoring.
 - **Where** — LOCAL to build, RIG:Nikon to confirm. The three histories are recorded and are enough to specify it; no rig is needed to write it.
 - **Block** — NONE yet. Deliberately excluded from `design/74` by the operator, 2026-09-04: *"we don't want to adjust any of the behaviour surrounding the TIPFSOffset in this block."* 74a is about routing to the PFS, not about what happens after it engages.
 - **Effort** — MEDIUM. A named-stage axis for `run_autofocus`, which must **not** inherit the engaged-lock refusal when the swept axis is the offset stage, plus the emitter, the schema and the bounds check that `move_named_stage` already applies.
+- **A fourth instance, and the strongest, 2026-09-04.** The Nikon session at 17:26 engaged the PFS, read back `Locked in focus`, snapped — and got a featureless field: `focus_metric` 944, mean intensity 100.6, `signal_coverage` 0.006. One `move_named_stage` of `TIPFSOffset` 150.4 → 160.0 took the same field to `focus_metric` **246,800** with visible cells. So on that session the offset move was not a refinement of the sample plane; it was **what made the sample visible at all**, after the lock had reported a good lock. A tool that stops at `Locked in focus` has not finished the job.
 - **Provenance** — found while scoring `design/74` block 74a, not from the design/35 triage. It is **not** R88: R88 is about reaching the lock at all; this is about the fine-tune that follows once it is engaged.
 
 
@@ -2289,6 +2298,42 @@ model summarising several tool results as one, which matters for gate scoring.
 - **Effort** — SMALL
 - **Provenance** — found while scoring block 74a's round-2 demo gate, from the artifact rather than the verdict. Both arms agreed, so it is pre-existing and not 74a's.
 
+
+
+### R91 — A property sweep discards the Z positions of every value it did not match
+
+**A `stop_when_found` property sweep that matches nothing reports *which* values it saw but not *where*, so a caller that has just paid for the whole window has to re-derive the band from two parallel arrays — and got it wrong by 20 µm on the one recorded attempt.**
+
+- **Status** — OPEN. `sweep_autofocus` (`microclaw/autofocus.py:339-380`) accumulates `metric_values` and `measured_z_positions` and hands both back; the no-match refusal in `run_autofocus` names the set of observed values in prose. Nothing summarises value → Z interval.
+- **Importance** — HIGH, and **measured, not argued**. Nikon session 20260904_174559, sweep 2: 491 planes, `[2110, 2600]` at 1 µm, asked for `["Locked in focus"]`, reported `converged: false`. Its readings were `Out of focus search range` 2110.0–2385.0, then **`Within range of focus search` 2385.975–2399.0 — a 13 µm band, located exactly** — then out of range to 2599. The model read the arrays as *"roughly indices 249–262 ... around 2360–2375 µm"*, moved to 2367 (out of range), swept `[2355, 2385]` at 0.5 µm for 61 more planes that **missed the band's lower edge by one plane**, and spent a further 287 planes re-finding it. **348 planes, ~35 s of settle sleep alone, and three model round trips, after the answer was already in the payload.**
+- **Where** — LOCAL. The fix is a summary over reads the sweep already holds: no extra dose, no extra motion, no behaviour change, no rig. The Nikon JSONL is the fixture.
+- **Block** — NONE. Note `microclaw/tools.py` is contended while `design/75` is in flight.
+- **Effort** — SMALL. Group `zip(measured_z_positions, readings)` into contiguous runs and report `{value: [[z_lo, z_hi], ...]}` on every property sweep, matched or not. The prose refusal keeps its observed-values list; this gives it coordinates.
+- **Provenance** — found while scoring the Nikon Ti's own `design/74` sessions, 2026-09-05.
+
+
+### R92 — A property sweep is one linear pass, so a blind band search costs range/step planes
+
+**`sweep_autofocus` walks `linspace(start, end, n)` from one end. There is no coarse-to-fine for a property probe, so finding a narrow capture band inside a wide unknown window costs the full plane count — and each plane has a floor of ~9 serialized bridge round trips and 0.10 s of settle sleep.**
+
+- **Status** — OPEN. The `coarse`/`fine` two-stage structure in the result belongs to the image-metric refine; a property probe runs the coarse pass only.
+- **Importance** — MEDIUM. Measured across the two post-74a Nikon sessions: **1,119 planes, 757 of them (68%) in sweeps that matched nothing.** Per plane, `sweep_autofocus` spends `read_stage_start_position` (1 bridge call) + `set_position` (1) + `settle_stage_move` (3 poll iterations × `device_busy` + `get_position` = 6, plus 2 × `STAGE_MOVE_POLL_S` = 0.10 s of sleep) + `probe.read()` (1) = 9 round trips and ≥0.10 s. Over 1,119 planes that is ~10,000 round trips and **≥112 s of sleep before any stage motion**, none of it overlapping — pyjavaz holds one lock across every round trip. `property_dwell_ms` was 0 on all eight sweeps, which is design/56 §9d's correct default here, so dwell is not the cost. Two cheap sub-items sit inside this row: `read_stage_start_position` re-reads per plane what the previous plane's `settle_stage_move` already measured (~11% of the per-plane bridge cost), and the sweep's start could be the entry position rather than a bridge read.
+- **Where** — LOCAL to implement, **RIG:Nikon to validate**. A coarse step wider than the band skips it. The two bands recorded on this machine on this day were 13 µm and ≥69 µm wide; that is one machine, one day, and is **not** a property — do not size a coarse step from it.
+- **Block** — NONE.
+- **Effort** — MEDIUM, and partly avoidable: session 3 had the working point session 2 wrote to the knowledge base and found the band in **3 planes**, while session 2, starting blind, spent 205 planes searching 1700–2180 on the wrong side of a sample at 2393. The knowledge base already does this job where it is populated, so weigh a search-strategy change against simply recording the working point.
+- **Provenance** — found while scoring the Nikon Ti's own `design/74` sessions, 2026-09-05.
+
+
+### R93 — Should a sweep refuse a post-engage value while the lock is disengaged?
+
+**A property sweep asked for `"Locked in focus"` with the PFS off ran its full 491-plane window to report that it never saw it. The servo only reaches that state after `set_focus_lock`, so the sweep could not have succeeded — and `run_autofocus` already holds `engaged` when it starts.**
+
+- **Status** — OPEN **as a question, not as a defect**. `run_autofocus` calls `get_focus_lock_state` before every sweep and has `engaged` in hand. But which of a device's values are post-engage is device knowledge, and `design/74` D1's own rule is that a refusal path may not key on a name — D4 may key on a device label because a miss costs a wasted `load_skill`, while D1 may not because a miss refuses legitimate work. A refusal here is a D1-class decision and needs a D1-class discriminator, which nothing in this repo currently has.
+- **Importance** — MEDIUM. One measured instance, cost 491 planes; the session recovered on its own from the refusal's observed-values list, which is D2 working. Note that `R91` alone would have made that recovery cheap and correct, which may be the whole fix.
+- **Where** — LOCAL to decide. RIG:Nikon to confirm any classifier.
+- **Block** — NONE. Do not open one before `R91`; if the summary makes the recovery a single round trip, this row closes as *not worth a refusal*.
+- **Effort** — SMALL to decide, larger to ship a discriminator.
+- **Provenance** — found while scoring the Nikon Ti's own `design/74` sessions, 2026-09-05.
 
 ### R94 — D4 records acquisitions, so a snap in the Core log still cannot be attributed
 
