@@ -17,6 +17,7 @@ import threading
 import time
 import weakref
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
@@ -128,7 +129,39 @@ logger = logging.getLogger(__name__)
 ERROR_TEARDOWN_GRACE_S = 90.0
 # After its final frame a healthy run is both quiet and camera-idle. Fifteen
 # minutes covers legitimate large-dataset teardown; two minutes does not.
-STALL_QUIET_FLOOR_S = 15 * 60.0
+DEFAULT_QUIET_FLOOR_S = 15 * 60.0
+DEFAULT_RUNTIME_SLACK_S = 300.0
+# M2, n=20 on 2026-09-05: maximum healthy one-frame supervised window
+# 446 ms. Both 5 s terms provide 11.2x headroom, measured without contention.
+SHORT_FIXED_QUIET_FLOOR_S = 5.0
+SHORT_FIXED_RUNTIME_SLACK_S = 5.0
+CAMERA_STATE_PROBE_GRACE_S = 2.0
+
+
+@dataclass(frozen=True)
+class AcquisitionSupervisionPolicy:
+    quiet_floor_s: float
+    runtime_slack_s: float
+    reason: str
+    # The failure name is explicit; policy identity is not an execution contract.
+    bound_name: str
+    terminal_frames: int | None = None
+
+
+SHORT_FIXED = AcquisitionSupervisionPolicy(
+    quiet_floor_s=SHORT_FIXED_QUIET_FLOOR_S,
+    runtime_slack_s=SHORT_FIXED_RUNTIME_SLACK_S,
+    reason="single fixed event; no inter-frame work",
+    bound_name="short_fixed_runtime",
+    terminal_frames=1,
+)
+DEFAULT = AcquisitionSupervisionPolicy(
+    quiet_floor_s=DEFAULT_QUIET_FLOOR_S,
+    runtime_slack_s=DEFAULT_RUNTIME_SLACK_S,
+    reason="acquisition cadence or topology may contain unmeasured work",
+    bound_name="runtime_ceiling",
+)
+
 # A focus search or slow tile establishes its own cadence as frames arrive.
 STALL_GAP_MULTIPLIER = 5.0
 # Only callers with no computable plan use this last-resort bound. A day is
@@ -169,15 +202,17 @@ def _join_acquisition_waiter(waiter: threading.Thread, timeout_s: float) -> None
     waiter.join(timeout_s)
 
 
-def _runtime_ceiling_s(plan: AcquisitionPlan | None) -> tuple[float, bool, str]:
+def _runtime_ceiling_s(
+    plan: AcquisitionPlan | None, policy: AcquisitionSupervisionPolicy,
+) -> tuple[float, bool, str]:
     if plan is None:
         return FALLBACK_RUNTIME_CEILING_S, True, "fallback"
     estimate = plan.estimated_duration_s
     scaled = estimate * 1.5
-    slack = estimate + 300.0
+    slack = estimate + policy.runtime_slack_s
     return (
         max(scaled, slack), False,
-        "plan_times_1_5" if scaled >= slack else "plan_plus_300_s",
+        "plan_times_1_5" if scaled >= slack else f"plan_plus_{policy.runtime_slack_s:g}_s",
     )
 
 
@@ -209,11 +244,13 @@ def _adaptive_timelapse_runtime_plan(
     )
 
 
-def _stall_quiet_s(largest_observed_gap_s: float) -> tuple[float, str]:
+def _stall_quiet_s(
+    largest_observed_gap_s: float, policy: AcquisitionSupervisionPolicy,
+) -> tuple[float, str]:
     observed_gap = STALL_GAP_MULTIPLIER * largest_observed_gap_s
     return (
-        max(STALL_QUIET_FLOOR_S, observed_gap),
-        "quiet_floor" if STALL_QUIET_FLOOR_S >= observed_gap else "observed_gap",
+        max(policy.quiet_floor_s, observed_gap),
+        "quiet_floor" if policy.quiet_floor_s >= observed_gap else "observed_gap",
     )
 
 #: Every run argument a hook -- or, under 55b, a plan-only coordinator -- must
@@ -2380,7 +2417,9 @@ class AcquisitionUnterminated(RuntimeError):
                  camera_sequence_running: bool | None, teardown_running: bool,
                  expired_bound: str, bound_s: float, fallback_ceiling: bool,
                  positions_completed: list[dict[str, Any]] | None = None,
-                 cadence: dict[str, Any] | None = None) -> None:
+                 cadence: dict[str, Any] | None = None,
+                 phase: str = "acquiring_or_notifying",
+                 diagnostic_persisted: bool = False) -> None:
         super().__init__("pycro-manager teardown did not complete")
         self.dataset_path = dataset_path
         self.frames_planned = frames_planned
@@ -2398,6 +2437,8 @@ class AcquisitionUnterminated(RuntimeError):
         # because guessing a dataset path is design/38 F7's original defect.
         self.positions_completed = positions_completed
         self.cadence = cadence
+        self.phase = phase
+        self.diagnostic_persisted = diagnostic_persisted
 
 
 def _diagnostic_fallback(event: dict[str, Any]) -> None:
@@ -2430,6 +2471,10 @@ def _emit_acquisition_diagnostic(
             timestamped, lifecycle=lifecycle, acknowledge=acknowledge,
             fallback=_diagnostic_fallback if lifecycle or acknowledge else None,
         )
+    elif acknowledge:
+        # Without a writer there is no disk acknowledgement to claim.
+        persisted = False
+        _diagnostic_fallback(timestamped)
     sink = getattr(_ACQUISITION_EVENT_CONTEXT, "sink", None)
     if publish and sink is not None and not (acknowledge and not persisted):
         try:
@@ -2465,7 +2510,11 @@ def _acquisition_diagnostic_context(values: dict[str, Any]):
 
 def _camera_sequence_running(ctrl: Any) -> bool | None:
     try:
-        return bool(ctrl.core.is_sequence_running())
+        return move_controller._bridge_call(
+            "camera sequence-state probe",
+            lambda: bool(ctrl.core.is_sequence_running()),
+            timeout=CAMERA_STATE_PROBE_GRACE_S,
+        )
     except Exception:
         return None
 
@@ -2521,15 +2570,28 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
                       "and idle and teardown_running is false."]
     engine = (f"{type(exc.engine_exception).__name__}: {exc.engine_exception}"
               if exc.engine_exception is not None else None)
+    error = "The acquisition did not terminate within its supervised runtime bound."
+    if exc.expired_bound == "error_grace":
+        error = (("The acquisition engine reported a fatal error and " if engine else "")
+                 + f"pycro-manager teardown did not complete within {exc.bound_s:g} s. "
+                 "Microclaw stopped waiting.")
+    planned = exc.frames_planned if exc.frames_planned is not None else "unknown"
     result = {
-        "error": (("The acquisition engine reported a fatal error and " if engine else "")
-                  + f"pycro-manager teardown did not complete within {exc.bound_s:g} s. "
-                  "Microclaw stopped waiting."),
+        "error": error,
+        "phase": exc.phase,
+        "diagnostic_persisted": exc.diagnostic_persisted,
+        "data": (f"{exc.frames_accounted} of {planned} planned frames accounted. "
+                 f"Dataset {exc.dataset_path} may be unterminated."),
         "acquisition": "unterminated", "engine_exception": engine,
         "dataset_path": exc.dataset_path, "frames_planned": exc.frames_planned,
         "frames_accounted": exc.frames_accounted,
         "camera_sequence_running": camera, "teardown_running": exc.teardown_running,
-        "expired_bound": exc.expired_bound, "ceiling_fallback": exc.fallback_ceiling,
+        # The neutral runtime wording deliberately names no number, so without
+        # this field a short_fixed_runtime timeout would report that a bound
+        # expired and never say what it was. Only the error-grace prose carries
+        # it, and a scorer greps a field rather than a sentence.
+        "expired_bound": exc.expired_bound, "bound_s": exc.bound_s,
+        "ceiling_fallback": exc.fallback_ceiling,
         "hardware": hardware, "next": next_steps,
     }
     completed = [
@@ -4223,6 +4285,7 @@ def _acquire_with_hooks(
     close_reservation: bool = True,
     *,
     ctrl: MicroscopeController,
+    policy: AcquisitionSupervisionPolicy,
     plan: AcquisitionPlan | None = None,
     runtime_plan: AcquisitionPlan | None | object = _RUNTIME_FROM_ACCOUNTING_PLAN,
     cadence_summary: dict[str, Any] | None = None,
@@ -4233,7 +4296,8 @@ def _acquire_with_hooks(
     measure camera state and attach the session refusal. `plan` supplies the
     accounting and progress disclosure. `runtime_plan` independently supplies
     the duration-derived ceiling; a missing runtime plan uses the finite named
-    fallback and is disclosed in the result.
+    fallback and is disclosed in the result. The required `policy` states the
+    caller's measured supervision terms and optional terminal-frame promise.
 
     A hook is any object exposing
     post_hardware_hook_fn and/or image_process_fn; both are optional and are
@@ -4291,7 +4355,7 @@ def _acquire_with_hooks(
         name: getattr(_ACQUISITION_EVENT_CONTEXT, name, None)
         for name in ("sink", "diagnostic_writer", "session_id", "tool_call_id")
     }
-    progress_state = {"last_emitted": None}
+    progress_state = {"last_emitted": None, "phase": "acquiring"}
 
     def account_saved_frame(axes, dataset):
         with frame_lock:
@@ -4306,12 +4370,17 @@ def _acquire_with_hooks(
             frame_state["last_saved"] = saved_at
             frame_state["previous_saved"] = saved_at
             count = frame_state["count"]
+            phase = ("finalizing" if policy.terminal_frames is not None
+                     and count >= policy.terminal_frames else "acquiring")
+            phase_changed = phase != progress_state["phase"]
+            progress_state["phase"] = phase
             last_emitted = progress_state["last_emitted"]
             # A one-second cadence stays readable in the CLI/browser and caps a
             # 1.2 kHz camera at roughly one event per second. Always publish the
-            # first and planned-final frames so short runs remain observable.
+            # first and planned-final frames and phase transitions: healthy
+            # one-frame finalization was measured at only about 3 ms (75a).
             emit_progress = (
-                last_emitted is None or saved_at - last_emitted >= 1.0
+                phase_changed or last_emitted is None or saved_at - last_emitted >= 1.0
                 or (plan is not None and count == plan.frames)
             )
             if emit_progress:
@@ -4338,6 +4407,9 @@ def _acquire_with_hooks(
                     }, lifecycle=True, publish=False)
                 _emit_acquisition_diagnostic({
                     "type": "acquisition_progress",
+                    "phase": phase,
+                    "active_bound_s": runtime_bound,
+                    "active_bound_term": runtime_term,
                     "dataset_path": dataset_path,
                     "frames_accounted": count,
                     "frames_planned": plan.frames if plan is not None else None,
@@ -4397,7 +4469,7 @@ def _acquire_with_hooks(
         return failures
 
     try:
-        runtime_bound, fallback, runtime_term = _runtime_ceiling_s(runtime_input)
+        runtime_bound, fallback, runtime_term = _runtime_ceiling_s(runtime_input, policy)
         runtime_deadline = started + runtime_bound
         acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
         # Resolve collision suffixes before dispatching the first event: a
@@ -4490,7 +4562,9 @@ def _acquire_with_hooks(
             _join_acquisition_waiter(waiter, _ACQUISITION_POLL_S)
             now = _acquisition_monotonic()
             with frame_lock:
-                quiet_window, quiet_term = _stall_quiet_s(frame_state["largest_gap"])
+                quiet_window, quiet_term = _stall_quiet_s(
+                    frame_state["largest_gap"], policy,
+                )
                 quiet = now - frame_state["last_saved"] >= quiet_window
                 frames_accounted = frame_state["count"]
             error_expired = error_deadline is not None and now >= error_deadline
@@ -4500,11 +4574,33 @@ def _acquire_with_hooks(
                 # positions. Expiry ends that composite immediately, so the
                 # still-live waiter inherits final closure after its callbacks.
                 waiter_must_close_reservation = True
-                expired_bound = "error_grace" if error_expired else "runtime_ceiling"
+                expired_bound = "error_grace" if error_expired else policy.bound_name
                 bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
+                pending = {
+                    "waiter": waiter, "teardown_running": True,
+                    "camera_sequence_running": None, "dataset_path": dataset_path,
+                }
+                setattr(ctrl, "_microclaw_unterminated_acquisition", pending)
+                failure = AcquisitionUnterminated(
+                    dataset_path=dataset_path,
+                    frames_planned=(plan.frames if plan is not None else
+                                    reservation.plan.frames if reservation is not None else None),
+                    frames_accounted=frames_accounted, engine_exception=engine_exc,
+                    camera_sequence_running=None, teardown_running=True,
+                    expired_bound=expired_bound, bound_s=bound_s,
+                    fallback_ceiling=fallback,
+                    phase=("finalizing" if policy.terminal_frames is not None
+                           and frames_accounted >= policy.terminal_frames
+                           else "acquiring_or_notifying"),
+                    cadence=(_gap_summary_payload(cadence_summary)
+                             if report_cadence else None),
+                )
                 camera = _camera_sequence_running(ctrl)
-                _emit_acquisition_diagnostic({
+                pending["camera_sequence_running"] = camera
+                failure.camera_sequence_running = camera
+                failure.diagnostic_persisted = _emit_acquisition_diagnostic({
                     "type": "acquisition_timeout",
+                    "phase": failure.phase,
                     "dataset_path": dataset_path,
                     "frames_planned": (plan.frames if plan is not None else
                                        reservation.plan.frames if reservation is not None else None),
@@ -4518,22 +4614,8 @@ def _acquire_with_hooks(
                     "camera_sequence_running": camera,
                     "engine_exception": (f"{type(engine_exc).__name__}: {engine_exc}"
                                          if engine_exc is not None else None),
-                }, lifecycle=True, publish=False)
-                setattr(ctrl, "_microclaw_unterminated_acquisition", {
-                    "waiter": waiter, "teardown_running": True,
-                    "camera_sequence_running": camera, "dataset_path": dataset_path,
-                })
-                raise AcquisitionUnterminated(
-                    dataset_path=dataset_path,
-                    frames_planned=(plan.frames if plan is not None else
-                                    reservation.plan.frames if reservation is not None else None),
-                    frames_accounted=frames_accounted, engine_exception=engine_exc,
-                    camera_sequence_running=camera, teardown_running=True,
-                    expired_bound=expired_bound, bound_s=bound_s,
-                    fallback_ceiling=fallback,
-                    cadence=(_gap_summary_payload(cadence_summary)
-                             if report_cadence else None),
-                )
+                }, lifecycle=True, acknowledge=True, publish=False)
+                raise failure
         if "exc" in outcome:
             raise outcome["exc"]
     except AcquisitionUnterminated:
@@ -4693,6 +4775,7 @@ def run_zstack(
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
+            policy=DEFAULT,
             close_reservation=_reservation is None,
             ctrl=ctrl, plan=plan, runtime_plan=plan,
         )
@@ -4947,7 +5030,7 @@ def run_timelapse(
                 "software_allowance_evidence": (
                     runtime_bound_plan.software_allowance_evidence
                 ),
-                "runtime_ceiling_s": _runtime_ceiling_s(runtime_bound_plan)[0],
+                "runtime_ceiling_s": _runtime_ceiling_s(runtime_bound_plan, DEFAULT)[0],
                 "fallback_ceiling": False,
             },
         )
@@ -4968,9 +5051,15 @@ def run_timelapse(
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
     cadence = _new_gap_summary()
+    # Composite children have no inter-frame work inside this window, but their
+    # reservation and restoration are shared. The measured latency is for a
+    # standalone run, so a child with _reservation still uses DEFAULT.
+    policy = (SHORT_FIXED if isinstance(events, list) and len(events) == 1
+              and hook is None and _reservation is None else DEFAULT)
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
+            policy=policy,
             close_reservation=_reservation is None,
             ctrl=ctrl, plan=plan, runtime_plan=plan, cadence_summary=cadence,
         )
@@ -8187,6 +8276,7 @@ def _acquire_positions_with_hook(
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
+            policy=DEFAULT,
             ctrl=ctrl, plan=plan, runtime_plan=plan,
         )
     except _HookedAcquisitionFailure as exc:
@@ -8650,6 +8740,7 @@ def _acquire_survey_with_detector(
             )
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
+            policy=DEFAULT,
             ctrl=ctrl, plan=survey_plan,
             runtime_plan=(runtime_plan if accounting_plan is not None else survey_plan),
             cadence_summary=cadence,
@@ -8935,6 +9026,7 @@ def run_adaptive_survey(
                     acquire_events.extend(events_for_hit)
                 acquire_path = _acquire_with_hooks(
                     guard, save_dir, f"{name}_acquire", acquire_events,
+                    policy=DEFAULT,
                     reservation=acquire_reservation,
                     ctrl=ctrl, plan=acquire_plan, runtime_plan=acquire_plan,
                 )

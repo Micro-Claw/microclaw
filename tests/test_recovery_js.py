@@ -693,3 +693,26 @@ def test_unrelated_abort_restores_prompt_and_is_not_false_success():
     assert result["msg"] == "do not duplicate"
     assert result["toasts"] == ["Request failed: lost"]
     assert result["refreshes"] == 1
+
+
+@pytest.mark.parametrize("phase, suffix", [("finalizing", " · finalizing dataset"),
+                                           ("acquiring", " · acquiring"),
+                                           (None, "")])
+def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suffix):
+    source = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
+    start = source.index('case "acquisition_progress": {')
+    end = source.index('// Confirmations are banner state', start)
+    case = source[start:end]
+    event = {"type": "acquisition_progress", "frames_accounted": 1, "frames_planned": 1}
+    if phase is not None:
+        event["phase"] = phase
+    script = f"""
+      const ev = {json.dumps(event)};
+      let pendingProgress = '', renders = 0;
+      function renderPendingText() {{ renders++; }}
+      switch (ev.type) {{ {case} }}
+      process.stdout.write(JSON.stringify({{text: pendingProgress, renders}}));
+    """
+    result = subprocess.run(["node", "-e", script], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, check=True, timeout=5)
+    assert json.loads(result.stdout) == {"text": "frames 1 / 1" + suffix, "renders": 1}

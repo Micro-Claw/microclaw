@@ -1,6 +1,6 @@
 # A finished frame is not a finished acquisition
 
-Status: **coordinated from 2026-09-04** — 75a (D4) merged 2026-09-05, 75b (the bound) ready to assign with its constants measured.
+Status: **CLOSED 2026-09-05.** 75a (D4) and 75b (the bound) both merged. A standalone one-frame timelapse that hangs in pycro-manager teardown now returns a typed failure in about six seconds instead of fifteen minutes, measured on the demo machine in both shapes — one frame accounted and none. What is left is register rows `R94`–`R97`, none of which blocks anything.
 See §Blocks and §Run ledger. Written 2026-09-04 from
 `m2-tirf-stage-freeze/20260904_115958_681706_microclaw_history.jsonl` and
 `m2-tirf-stage-freeze/CoreLog20260904T103846_pid6032.txt` supplied by the
@@ -1427,9 +1427,480 @@ recover those facts, and 75a's measurements superseded the two that mattered.
 
 ## Coordination checklist — block 75b
 
-Opened after 75a merges and its M2 latency arm is scored. Not written yet on
-purpose: its constants come out of 75a's gate, and its runbook is written from
-the demo gate that will by then have run.
+The ten steps of `CLAUDE.md` §"The block workflow", instantiated. Nothing is
+compressed. Opened 2026-09-05, after 75a merged and both its gate parts were
+scored.
+
+**Step 1 — coordinator owns the list.**
+
+- [x] Start from updated `main`: `git log --oneline origin/main..main` empty at
+      `8a64902`. That is seven commits past 75a's merge (`34ab5f3`) because
+      `design/76` merged in between; **the baseline is not 75a's**.
+- [x] Baseline suite run by the coordinator in the primary checkout:
+      **2837 passed / 99 skipped / 2 warnings** (`.venv/bin/python -m pytest -q`,
+      157.8 s, 2026-09-05). 75a closed at 2830/99/3; `design/76` added seven.
+      The warning count varies between 2 and 3 (a pre-existing
+      `phase_cross_correlation` `UserWarning`).
+- [x] Design verified against the tree before assignment. Every site named for
+      75b is where it says it is, and **three of them moved when 75a landed**, so
+      the design's own line numbers are stale and the block must be assigned
+      against these:
+      `AcquisitionUnterminated` `tools.py:2375`, `_emit_acquisition_diagnostic`
+      `:2415` (writer, then sink, then stderr fallback — 75a's three-way),
+      `_acquisition_diagnostic_context` `:2445`, `_camera_sequence_running`
+      `:2466` (still a bare synchronous `is_sequence_running`),
+      `_unterminated_result` `:2501` with its three-branch camera text,
+      `STALL_QUIET_FLOOR_S = 15 * 60.0` `:131`, `STALL_GAP_MULTIPLIER` `:133`,
+      `FALLBACK_RUNTIME_CEILING_S` `:136`, `_ACQUISITION_POLL_S` `:159`,
+      `_runtime_ceiling_s` `:172`, `_stall_quiet_s` `:212`,
+      `_acquire_with_hooks` `:4216`, `frame_state["last_saved"] = started`
+      `:4284`, `account_saved_frame` `:4291` with the one-second
+      `progress_state` cadence and the forced first/planned-final emits, the
+      expiry conjunction `:4489-4496`, the timeout diagnostic and raise
+      `:4499-4535`, `_bridge_call` `controller.py:583` with
+      `_OPEN_BRIDGE_TIMEOUT_S = 30.0` `:576`, `DIAGNOSTIC_FLUSH_GRACE_S = 2.0`
+      `conversation.py:186`, `AcquisitionDiagnosticWriter.submit` `:230` with
+      its `acknowledge=` parameter, `execute_tool`'s refusal and
+      `_unterminated_result` dispatch `tools.py:11058-11096`, and
+      `serve.html:511` rendering `acquisition_progress` as frames only.
+- [x] **The five callers are exactly five and are the five named**, at their
+      post-75a lines: `run_zstack` `:4694`, `run_timelapse`'s fixed branch
+      `:4972`, `_acquire_positions_with_hook` `:8188`,
+      `_acquire_survey_with_detector` `:8651`, `run_adaptive_survey`'s
+      acquire-on-hit phase `:8936`. The composite child is real at `:7128`
+      (`run_timelapse(..., _reservation=reservation, **params)`).
+- [x] **A sixth call to `_runtime_ceiling_s` exists and is not a supervisor
+      call**: `tools.py:4950` computes the adaptive timelapse result's
+      `runtime_bound_plan.runtime_ceiling_s` disclosure. It needs the policy
+      too once the signature changes, and it takes `DEFAULT` — the design's
+      "exactly five callers" counts `_acquire_with_hooks` call sites, not
+      `_runtime_ceiling_s` call sites, and missing this one is a `TypeError` at
+      import-adjacent runtime rather than a silent wrong bound.
+- [x] **75a changed both functions the design's D1 stub rewrites.**
+      `_runtime_ceiling_s` returns `(bound, fallback, term)` and `_stall_quiet_s`
+      returns `(window, term)`; the design's stubs predate that and show
+      single-value returns. The term names are read by the timeout diagnostic
+      and must survive, so the stubs are illustrative for the *policy argument*
+      only. Written into the runner prompt explicitly, because a runner
+      implementing the stub literally would delete 75a's diagnostics.
+- [x] Branch `design75/supervised-runtime-bound` created at `8a64902`; ledger
+      row opened below.
+- [x] This checklist committed on the branch **before** the block is assigned —
+      a worktree sees committed history, not an editor buffer.
+
+**Step 2 — delegate the implementation.**
+
+- [x] Linked worktree `../microclaw-design75b` on the branch; the coordinator
+      checkout returned to `main` first (git refuses two worktrees on one
+      branch). Ticks staged in the scratchpad and applied between turns, as in
+      75a.
+- [x] Worktree provisioned **before** the prompt was written: `uv venv --python
+      3.12`, then `uv pip install --python .venv/bin/python -e
+      ".[serve,test,ilastik]"`. `import microclaw` confirmed resolving to
+      `/Users/zachcm/Code/microclaw-design75b/microclaw/__init__.py`. Suite run
+      by the coordinator **in the worktree**: **2837 passed / 99 skipped**,
+      175.3 s, and `.venv/bin/python -m pytest -q` handed over verbatim.
+- [x] **75a's warning note was half right, and checking it changed the prompt.**
+      It recorded two extra warnings in a fresh worktree venv as first-compile
+      artifacts that "do not recur". Only one of them is:
+      `mmpycorex/install.py:109` is a `SyntaxWarning`, raised by the compiler
+      and cached in the `.pyc`, so it appears once. The
+      `starlette/testclient.py:53` `DeprecationWarning` recurs on **every** run,
+      because this worktree's fresh resolution took `anyio 4.15.1` where the
+      primary checkout has `4.14.2`, and 4.15 deprecated
+      `anyio.abc.BlockingPortal`. Measured, not assumed: a re-run of
+      `tests/test_webserve.py` plus the one calibration test printed **3**.
+      So the worktree's steady state is **2837/99/3**, not the primary
+      checkout's 2. Handed over as "4 the first time, 3 from then on", with each
+      warning named — an inaccurate benign-warning list is what makes a runner
+      report a non-finding or, worse, fix it.
+- [x] Runner prompt written to the scratchpad (never committed), then the
+      project `codex-runner` skill launched in that worktree; job directory
+      `scratchpad/job-75b` kept for the block.
+- [x] The prompt names the things a green suite would not catch: that 75a
+      changed **both** functions D1's stub rewrites, so implementing the stub
+      literally deletes the term reporting the gate reads; the sixth
+      `_runtime_ceiling_s` caller at `:4950` that is not a supervisor call; that
+      `bound_name` is a **coordinator addition** to the design's stub, because
+      deriving `expired_bound` from `policy is SHORT_FIXED` would be the
+      incidental-proxy inference D1 exists to forbid; that `finalizing` is keyed
+      off `policy.terminal_frames` and never `plan.frames`; that the camera
+      probe's bound goes **inside** `_camera_sequence_running` so
+      `execute_tool`'s refusal path is bounded by the same change rather than a
+      second spelling; that the pending flag and exception are built **before**
+      the probe; and that the ack mechanism is 75a's and is only *consumed*
+      here. It enumerates eight things the block must not do, every one of them
+      a line in the same functions.
+- [x] Two design claims verified against the tree before they went into the
+      prompt rather than after. `hook is None` really does subsume every
+      capability at the selection point, because `_configure_hook_capabilities`
+      raises for an envelope with no hook (`tools.py:7802`) — so the
+      `SHORT_FIXED` condition list needs no separate capability clause. And
+      `move_controller` is already in scope at `tools.py:102`, so the bounded
+      probe adds no import.
+
+**Step 3 — review what comes back.** One runner turn, four coordinator
+corrections, all made on the branch.
+
+- [x] **The turn ended on a Codex usage limit, with its work landed and
+      self-committed.** `turn.failed` in `initial.events.jsonl` reads
+      *"You've hit your usage limit ... try again at 6:32 PM"*, and the job
+      directory has a `session-id` and `status 1` but no `result.md` — the
+      wrapper never wrote one, because the turn died before its final message.
+      The implementation and a `result.md` were nonetheless committed inside the
+      repository (`5d1ff98`, `ef8d873`). Per `CLAUDE.md`, a turn that dies at the
+      end with its edits landed is preserved and verified by the coordinator
+      rather than believed; everything below was checked independently.
+- [x] **Suite re-run by the coordinator, not accepted from the report:
+      2862 passed / 99 skipped / 3 warnings**, zero failures, against the
+      2837/99 baseline. 2837 + 25 new cases = 2862, reconciling exactly.
+      **The runner's own run reported 5 failures and it was right to stop at
+      them**: four are its sandbox (three loopback `socket.bind` denials and
+      `test_built_wheel_contains_the_source_tree_skill_catalog`, whose isolated
+      `pip wheel` needs the network the runner correctly refused to reach for),
+      and all four pass outside it. It fixed the fifth itself. A runner reporting
+      an environment limit instead of working around it is the behaviour this
+      workflow wants.
+- [x] **Five mutations run by the coordinator, chosen before reading the
+      runner's mutation table**, each reverted immediately:
+      gating `runtime_expired` on `frames_accounted > 0` fails the zero-frame
+      case at `assert 11.0 <= (10.05 + 0.1)` — *the incident's own shape, and
+      D1's central requirement*; keying the phase off `plan.frames` instead of
+      `policy.terminal_frames` fails both parametrized cases; dropping
+      `_reservation is None` from the `SHORT_FIXED` predicate fails the
+      `composite` case with the two policies printed side by side; moving the
+      camera probe ahead of the pending flag fails on
+      `isinstance(False, AcquisitionUnterminated)`; and deleting the phase
+      render from `serve.html` fails the two Node cases. None was an
+      `ImportError` and none hung.
+- [x] **The gate-facing evidence is in the mutation output too.** The probe
+      mutation's captured stderr carries a real timeout record —
+      `"active_bound_s": 5.001, "active_bound_term": "plan_plus_5_s",
+      "quiet_bound_s": 5.0, "phase": "acquiring_or_notifying",
+      "camera_sequence_running": null` — which is D2 and D4 agreeing on one
+      line, produced by the code rather than asserted about it.
+- [x] **The fake was audited before the tests that use it.** `SimulatedClock`
+      fires `image_saved_fn` from inside the supervisor's `join`, so a frame is
+      accounted while the waiter is alive and the poll loop is running. That is
+      the relationship 75a measured on two rigs — the callback arrives on the
+      thread `await_completion` joins — so this fake does not encode the
+      assumption 75a disproved. The `BlockingAcquisition.release` is set in a
+      `finally` before the assertions in every new test, so a failing test fails
+      rather than hanging the suite, which is 75a's round-2 lesson applied.
+- [x] **Four coordinator corrections, made on the branch rather than sent back**,
+      because Codex was out of usage for four hours and every one is a few lines
+      (step 7, *small corrections: do them yourself*):
+
+      1. **`result.md` was committed into the repository.** Removed; the copy
+         lives in the job directory. This is the second time — 75a's round 1
+         found the same thing.
+      2. **A runtime timeout reported no bound value anywhere.** The neutral D2
+         wording deliberately names no number, and the old error string had
+         carried `within {bound_s:g} s`; only the error-grace branch kept its
+         prose, so a `short_fixed_runtime` result said a bound expired and never
+         said what it was. `bound_s` is now a field — greppable, and it does not
+         fight the design's wording. Pinned to the policy in the short-fixed
+         test and watched failing: removing the field again fails three cases.
+      3. **The camera-idle branch lost design/60's actionable statement.**
+         *"The dataset may be read while teardown finishes."* had been rewritten
+         to *"may be unterminated"* — which the new `data` sentence already says
+         for every branch, so the edit was both redundant and lossy. Restored;
+         nothing asserted the new wording.
+      4. **`design/60-block60a-demo-gate.py` had been dead since block 75a.**
+         It unpacks `_runtime_ceiling_s(None)` as a 2-tuple — 75a made it a
+         3-tuple — and reads `tools.STALL_QUIET_FLOOR_S`, which 75b moved onto
+         the policy. So a committed gate script rotted a block ago and neither
+         block noticed, because nothing in the suite imports one and *gate code
+         gets no review pass*. Repaired against the current names and **executed**
+         rather than parsed: it prints `grace 90s, quiet floor 900s, fallback
+         ceiling 86400s (fallback)`.
+- [x] The three constraints the prompt named as silently-breakable all held.
+      No confirmation is reachable from any added path (a `CONFIRM_FN` stubbed
+      to raise is asserted uncalled across both timeout shapes); `run_mda`,
+      the emitters, live-mode handling, `ERROR_TEARDOWN_GRACE_S`,
+      `STALL_GAP_MULTIPLIER`, `_adaptive_timelapse_runtime_plan` and 75a's
+      writer internals are untouched; and the six collateral test files carry
+      policy plumbing only, with no assertion weakened.
+- [x] **One runner judgement adopted rather than corrected.** It found that
+      `_emit_acquisition_diagnostic` returned `persisted=True` when no writer is
+      installed, which cannot truthfully mean *persisted* once `acknowledge=`
+      has a consumer. Its `elif acknowledge:` branch reports `False` and sends
+      the existing fallback. That is a real defect in 75a's seam, found by the
+      block that first consumed it.
+
+**Step 4 — push the branch, code and runbook together.**
+
+- [x] `design/75-block75b-gate.md` committed on the branch, pinned with
+      `git merge-base --is-ancestor 76cc353 HEAD`. Demo machine only, about
+      fifteen minutes, no rig time and no dose. Environment facts taken from the
+      gates that already ran there rather than invented — design/74's demo
+      runbook for `D:\Code\microclaw`, the unredirected uv warm-up and the
+      control-arm copy; `design/69a-gate.md:70` for **Firefox**, which 75a's
+      notes record the coordinator having asked the operator for twice before
+      checking the repo.
+- [x] `design/75-block75b-demo-gate.py` — eight limbs, each scored
+      independently, its own log, nonzero on any FAIL **or** NOT EXERCISED. It
+      carries only what a fake cannot answer: whether a **real** one-frame
+      acquisition selects `SHORT_FIXED` and finishes inside a bound measured on
+      a different machine (limb A is the limb that can say the constants are
+      wrong for this one), and what a real hang produces in both shapes — frame
+      accounted (limb B) and nothing accounted (limb C, the mandatory one and
+      the incident's own shape).
+- [x] **The injection is read off the dependency, not off the design.**
+      `Acquisition.__exit__` in pycro-manager 1.0.2 is exactly `mark_finished()`
+      then `await_completion()` — confirmed in-process with `inspect.getsource`
+      — so the gate's subclass reproduces those two statements with a hold
+      between them, and **limb 0 fails loudly** if a pycro-manager upgrade
+      changes that. Nothing else about the acquisition is faked: the frame is
+      really written.
+- [x] `design/75-block75b-blocking-serve.py` — the part-2 launcher, so the
+      browser step is one literal command rather than an instruction to patch
+      something. Executed, not just parsed: `--help` drives the injection, the
+      argv handoff and the real `serve` dispatch.
+- [x] Gate run against a **bridge-shaped** fake
+      (`design/75-block75b-gate-selftest.py`): Core collections expose
+      `size()`/`get(i)` and raise on `__iter__`; records are written by the
+      **real** `AuditLog` through the real writer; the fake acquisition lives in
+      a real module file rather than an exec'd string, because 75b's gate
+      *subclasses* `tools.Acquisition` and reads `inspect.getsource` on its
+      `__exit__`, and 75a's factory-function fake supports neither. Its
+      `__exit__` fires `image_saved_fn` from `await_completion` — the order 75a
+      **measured** across 43 acquisitions, not the order the suite's fakes use.
+      Six cases, four of them deliberate failures; **one command covers both
+      trees**, because case 6 builds `main` with `git archive` and asserts the
+      whole gate stands down at limb E there rather than asking an operator to
+      run it twice and compare.
+- [x] **Each expected failure is checked against its cause, not its status.**
+      75a's gate had limb B failing for limb A's reason, and a selftest that
+      counted FAILs would have called that correct; every failure arm here names
+      a substring its detail must contain, and three gate asserts were rewritten
+      to produce text worth matching.
+- [x] **The selftest found five defects, all in the gate, none in the product** —
+      which is the whole argument for running it, and four of the five would
+      have reached the operator:
+      the gate bound `MicroscopeController` with `from ... import` **before** the
+      prelude ran, so the selftest's fake microscope was installed on a module
+      nobody read again and every case died trying to reach a real bridge;
+      `load_safety_config_or_exit` calls `sys.exit()` on a machine with no
+      config, killing every case before `finish()` could write a score (the
+      *gate* still takes no `--safety-config`, per 60b — the selftest supplies
+      one);
+      `score_blocked` read the newest timeout record in the file rather than
+      *this call's*, so limb C could quietly score limb B's evidence;
+      the control arm renamed the policy class and left `DEFAULT` referencing
+      it, so the gate died on a `NameError` instead of standing down — a broken
+      control arm, not a control arm;
+      and the one that mattered — **both hang arms held before
+      `await_completion`**, so no frame could ever be accounted before the bound
+      and limb B's own premise was unreachable. It failed on the branch as
+      shipped. The two arms now hang in different places on purpose, which is
+      also the more honest model: `after_frames=False` is stuck inside the call
+      design/60 measured at 95 minutes, `after_frames=True` is D1a's finalizing
+      shape.
+- [x] Pushed to `origin` with `GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`. No PR.
+
+**Step 5 — the user runs the gates.** Demo machine, round 1 run 2026-09-05.
+
+**Step 6 — score from the artifacts, not the verdict. Round 1: 3 PASS, 2 FAIL,
+3 NOT EXERCISED — and every failure is the gate's. There is no product defect
+in this round, and D2 is still unmeasured.**
+
+- [x] **The gate could not install its own mechanism.**
+      `pycromanager.Acquisition` is a **dispatching constructor**: its `__new__`
+      ignores `cls` and returns a `JavaBackendAcquisition` (or, under pymmcore,
+      a `PythonBackendAcquisition`). So `class X(Acquisition)` compiles, answers
+      every reasonable question about itself — `inspect.getsource(X.__exit__)`
+      included, which is why limb 0 passed — and **can never be instantiated as
+      itself**. Both blocked limbs ran the *unmodified* acquisition. The
+      artifacts say it plainly rather than the verdict: `blocked-saved`
+      completed in **96 ms** and `blocked-lost` in **163 ms**, and
+      `blocked-lost` — the arm whose `image_saved_fn` was supposed to be
+      dropped — **accounted a frame**, which no suppression could have allowed.
+- [x] **Why the selftest missed it, which is the finding worth keeping.** Its
+      fake `Acquisition` was an ordinary subclassable class, so subclassing
+      worked. *A fake that encodes your assumption is not a test of it* —
+      `CLAUDE.md`'s own rule, applied to the gate's own selftest, in the block
+      whose review notes had just quoted it about the product. Gate code gets no
+      review pass, and this is the third time in this repository that its fake
+      is what shipped the defect.
+- [x] **Limbs B and C reported FAIL, and that was wrong too.** A limb that could
+      not run its mechanism reports NOT EXERCISED (58a); FAIL reads as a product
+      defect and cost the scoring pass its first ten minutes. The gate now
+      records whether the injected teardown actually executed and stands the
+      limb down when it did not.
+- [x] **What round 1 does establish, and it is not nothing.** Limb A ran five
+      **real** one-frame acquisitions on real pycro-manager against the demo
+      camera: every construction record carries `active_bound_s 5.05` and
+      `active_bound_term "plan_plus_5_s"`, every run reported
+      `phase: finalizing`, and the **tool call** measured p50 **0.359 s**, max
+      **0.437 s**. That is **11.6x headroom against the 5.05 s bound, measured
+      end to end on a second machine** — the M2-derived constants corroborated
+      where 75a said only M2 could set them. Limb A is the limb that could have
+      said the constants do not fit this machine, and it says the opposite.
+- [x] **The control arm is exactly right**: on `main`, limb E FAIL naming all
+      five missing symbols, every other limb NOT EXERCISED. The gate
+      discriminates on the machine, not only in its selftest.
+- [x] **Part 2 gave a real positive the program cannot give.** In a genuine
+      `serve` session the operator **saw `frames 1 / 1 · finalizing dataset`** in
+      Firefox — D3 confirmed end to end, browser included, on real hardware. The
+      part-2 records also carry real Anthropic tool-use ids
+      (`toolu_01LhrN4u...`), so D4's correlation plumbing holds under `serve`.
+      Their observation that it lingered *"for a bit"* and *"shorter on the
+      second run"* is consistent and worth stating: the pending text persists
+      until the assistant's next output, so what they timed is the model's
+      reply latency, not the ~3 ms finalizing window.
+- [x] **The launcher had the same defect**, so part 2 never tested D2 either.
+      Both runs completed in 83 ms and 177 ms.
+- [x] **And the runbook asked for something the operator could not act on.**
+      *"Does a structured failure then arrive"* — their answer was *"I have no
+      idea what a structured failure is"*, which is correct and is the gate's
+      fault. `CLAUDE.md` already says a gate's operator prompts are part of its
+      instrument and the half nobody tests; this one shipped jargon. Part 2 now
+      names the words to look for, says plainly that a run which simply succeeds
+      **is** a finding, and tells the operator to watch for the launcher's own
+      `hang installed on ...` line before believing anything after it.
+
+**Step 7 — fix, sized to the finding.** All four fixes are the coordinator's,
+on the branch; no product code changed.
+
+- [x] **Both the gate and the launcher now wrap instead of subclassing**: build
+      the real acquisition, then replace `__exit__` on the *returned type*,
+      which is where the lookup lands. Restored afterwards.
+- [x] **The selftest's fake now dispatches exactly like the real one** — it
+      inherits its methods, so `inspect.getsource` works on it, while its
+      `__new__` ignores `cls` and returns a backend instance. Watched failing
+      first: against the corrected fake, the shipped subclass gate fails, which
+      is the evidence that the fake now discriminates.
+- [x] **Case 7 covers the honest degradation**: a backend whose class cannot be
+      patched, where limbs B and C must report NOT EXERCISED *for the stated
+      reason* and never FAIL.
+- [x] **The launcher is exercised by the selftest**, not assumed to agree with
+      the gate — it is imported (its serve dispatch is now behind
+      `if __name__ == "__main__"`) and its hang is installed on an object built
+      through a dispatching constructor; verified by mutation, where disabling
+      the patch reports `teardown returned in 0.000s`.
+- [x] Limb 0 now reports `Acquisition=<callable> (dispatching __new__: ...)`, so
+      the fact that cost round 1 reaches the artifact whether or not anything
+      fails.
+
+**Step 8 — the user re-tests. Round 2, 2026-09-05: 8/8 PASS, the control arm
+exactly right, and part 2 worked. Scored from the artifacts anyway, which found
+two things the green run does not state and one wrong label in the gate.**
+
+- [x] **D2 fired on real hardware, in both shapes.** `blocked-saved`:
+      unterminated at **6.86 s** against a 10.05 s delivery ceiling,
+      `frames_accounted 1`, `phase finalizing`, `expired_bound
+      short_fixed_runtime`, `bound_s 5.05`, `diagnostic_persisted true`.
+      `blocked-lost`, **the mandatory limb and the 2026-09-04 shape**:
+      unterminated at **5.36 s**, `frames_accounted 0`, `phase
+      acquiring_or_notifying`. Against ~900 s before this block. Limb 0's new
+      line confirms why round 1 failed:
+      `Acquisition=pycromanager.acquisition.acq_constructor.Acquisition
+      (dispatching __new__: True)`.
+- [x] **The refusal works and lifts without a restart** (limb D), the timed-out
+      dataset holds a real `NDTiffStack.tif` and an 87-byte index (limb F), and
+      the timeout record is on disk with its phase and bound (limb G).
+- [x] **Derived, not reported: the supervised window is stable and the tool call
+      is not.** Computed from D4's own timestamps across both rounds' healthy
+      runs (n=5 each):
+
+      | quantity | round 1 | round 2 |
+      |---|---|---|
+      | supervised window (construction → teardown completion), max | 0.199 s | 0.271 s |
+      | **tool call**, max | 0.437 s | **0.937 s** |
+
+      The window the bound actually governs barely moved; the **tool call varied
+      2.1x between two runs of the same arm, thirty minutes apart on one
+      machine.** All of that variance is in the work outside the supervised
+      window — `plan_events`, `_authorize_acquisition`, the exposure write, the
+      result assembly — which is 75a's M2 finding (2.8x) reproduced here. It
+      matters because the two numbers size different things: **5.05 / 0.271 =
+      18.6x headroom on the term the deadline measures**, while the operator's
+      wait is the wider one. And round 2's 0.271 s max sits against 75a's demo
+      gate measuring **0.274 s** max over 23 acquisitions the day before, with a
+      different program — two independent measurements of one quantity agreeing
+      to 3 ms.
+- [x] **The deadline includes `Acquisition()` construction, and the artifacts
+      show it.** `runtime_deadline = started + bound` is measured from
+      `_acquire_with_hooks` entry, before the constructor runs. `blocked-lost`
+      timed out **5.03 s after its construction record** while part 2's three
+      hangs timed out at **6.03 s** after theirs — same bound, same machine,
+      four minutes apart. The difference is how much of the 5.05 s was spent
+      before the dataset existed. Harmless at these magnitudes and limb A is the
+      check for it, but it is the mechanism by which a short bound could misfire
+      on a slower rig, and D4's construction record carries no elapsed time that
+      would make it measurable. Carried to the register.
+- [x] **One wrong label, in the gate.** Limb B reported
+      `outside_supervised_window_s: 1.81`, which is not that quantity: it is
+      everything between the bound expiring and the tool returning, and it
+      contains the poll granularity, the camera probe and the diagnostic flush,
+      all deliberately inside the ceiling. A later reader comparing it to 75a's
+      M2 figure would have compared two different things. Renamed
+      `after_bound_expired_s` and spelled out in the limb's own text.
+
+**Part 2 — the finding no limb could reach.** Three real hangs in a real
+`serve` session, all three producing the typed result at ~6.03 s, and the
+operator saw the refusal fire and lift. But the *history* shows what the model
+told them, and the gate cannot:
+
+- [x] **A `frames_accounted == frames_planned` timeout is rendered to the user
+      as a success.** Every one of the three turns opens with *"Done. One 50 ms
+      frame acquired and saved."* and demotes the failure to a closing note
+      (*"the supervisor stopped waiting during background teardown"*). The word
+      *unterminated* never reaches the operator, which is why they reported
+      *"it looked like it worked this time"* while watching for a failure.
+      **The tool result is correct** — it says `acquisition: unterminated`,
+      never `Timelapse complete.`, and D2's own rule is kept there. What
+      collapses the distinction is the summary. And in this scenario the model's
+      reading is defensible: the frame really was written, and on the first turn
+      it *verified* that by reading the dataset back with
+      `run_analysis_on_saved_dataset` before saying so.
+      **The zero-frame case has never been put in front of a model.** Limb C
+      produces it; no turn does. That is the case where "saved" would be false,
+      and it is untested. Carried to the register rather than fixed here — it is
+      a wording question about how a result is summarised, and 75b must not
+      grow.
+- [x] **The model handled the refusal well, and that is evidence too.** It
+      retried once, was refused again, and then *stopped and said so* — *"I
+      don't have a tool that blocks on teardown, and hammering retry risks
+      colliding with it, so rather than spin, I'll pause here."* That is the
+      refusal text doing its job.
+
+**Steps 9 and 10 — merge, and the post-merge design gate.** Recorded below.
+
+
+### Block 75b's gate
+
+**All of it runs on the demo machine.** design/75's coordinator decisions of
+2026-09-04 already split the five limbs; 75a's M2 arm then discharged limbs 2
+and 3 — the healthy end-to-end latency distribution and the two constants
+derived from it are measured and written into §"D1's two constants". What
+remains is limbs 1, 4 and 5, and all three were assigned to the demo machine
+because an injected blocking teardown needs no camera, no dose and no booked
+session, exactly as design/60 gated the same class of bound.
+
+**No rig time is owed by this block.** Say that plainly rather than leaving M2
+looking implicated: the only thing 75b would want from a rig is a second
+healthy-latency distribution, and 75a already took one.
+
+Established environment facts, so the runbook does not re-ask them:
+
+- Demo machine: `D:\Code\microclaw`, PowerShell, `uv run python`, an
+  unredirected `uv run python -c "print('uv warm')"` first, MM on port 4827,
+  datasets local.
+- **The browser is Firefox** (`design/69a-gate.md:70`). Limb 1's observation is
+  browser-side, so this matters; 75a's own notes record that the coordinator
+  asked the operator for this twice before checking the repo, which is
+  `CLAUDE.md`'s grep-before-inventing rule ignored.
+- The gate ships as a **program**, not copy-paste blocks: each limb scored
+  independently, NOT EXERCISED is never a pass, it owns its own log, it exits
+  nonzero. It is run against the bridge-shaped fake
+  (`design/75-block75a-gate-selftest.py`'s successor) on **both** trees before
+  it is pushed, so its failure discriminates.
+- 75a's gate already carries the pieces this one needs — a controlled build
+  whose child process is driven to a chosen point, real `AuditLog` records, and
+  confirm stubs that accept `grant_metadata=`. Extend that gate rather than
+  writing a second one.
 
 ## Run ledger
 
@@ -1440,4 +1911,49 @@ Baseline before the notebook: `main` `444d694`, coordinator-run suite
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Both parts run 2026-09-05; PASS.** Demo machine: the gate reported 3 FAIL, the artifacts say **6 PASS / 1 NOT EXERCISED / 0 FAIL** — all three failures were the coordinator's assertions, re-scored from the operator's own files and fixed in `4cb2d24`. M2: n=20, no torn lines, no failures, exit 0. **The finding is the engine's, not the product's**: real pycro-manager accounts the frame *inside* `acq.__exit__`, in one identical ordering across **43 acquisitions on two rigs**, so 96.7% (demo) and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call design/60 measured at 95 minutes. Limb D produced the incident's own evidence shape on demand: a call with a beginning and no end. Constants chosen at 5.0 s / 5.0 s, 11.2x the measured M2 maximum. Selftest now 9 cases; its old failure arm was the real hardware behaviour and now expects PASS. | `34ab5f3` merged 2026-09-05; branch deleted locally and on `origin`, worktree removed. Pre-merge suite 2830/99/3. |
-| 75b | | | **ready to assign**: constants measured (5.0 s / 5.0 s, 11.2x the M2 maximum), and 75a's gate settled three design questions for it | demo machine (limbs 1, 4) | |
+| 75b | `design75/supervised-runtime-bound` | `8a64902` (2026-09-05) — seven commits past 75a's merge because `design/76` landed in between, so the baseline is **2837 passed / 99 skipped / 2 warnings**, not 75a's 2830. Checklist `75aa4e6`; worktree `../microclaw-design75b` | `5d1ff98` (1 Codex start turn, **killed by a usage limit after its edits had landed and been self-committed** — no `result.md` reached the job directory, and everything below was verified rather than believed). Coordinator suite **2862 / 99 / 3** against 2837/99, reconciling exactly at 2837 + 25. The runner's own run reported 5 failures and was right to: four are its sandbox (three loopback `socket.bind` denials and a `pip wheel` needing the network it correctly refused), all four pass outside it. **Five mutations run by the coordinator, chosen before reading the runner's table**, all reproducing — the decisive one being that gating expiry on `frames_accounted > 0` fails the zero-frame case, which is the incident's own shape. Four coordinator corrections in `76cc353`: `result.md` committed into the repo (second time); a runtime timeout reporting **no bound value anywhere**, since D2's neutral wording names no number and the string it replaced had carried one; design/60's *"the dataset may be read"* step lost to a redundant rewrite; and `design/60-block60a-demo-gate.py` **dead since 75a** and never noticed. | **Round 2 run 2026-09-05: 8/8 PASS, control arm exactly right, part 2 worked.** D2 fired on hardware in both shapes — `blocked-saved` unterminated at **6.86 s** (1 frame, `finalizing`), `blocked-lost`, the mandatory limb and the incident's own shape, at **5.36 s** (0 frames, `acquiring_or_notifying`), both `bound_s 5.05` and `diagnostic_persisted true`, against ~900 s before. Derived rather than reported: across both rounds the **supervised window** max was 0.199 s then 0.271 s while the **tool call** max was 0.437 s then 0.937 s — a 2.1x swing entirely outside the term the deadline measures, so headroom is **18.6x** on the bound's own quantity; and round 2's 0.271 s sits against 75a's independent 0.274 s. Part 2's history carries the one finding no limb can reach: a `frames_accounted == frames_planned` timeout is *summarised* to the user as "Done. One 50 ms frame acquired and saved." — the result keeps D2's distinction, the summary collapses it, and the **zero-frame case has never been put in front of a model**. Round 1, for the record: **3 PASS / 2 FAIL / 3 NOT EXERCISED, and every failure was the gate's.** `pycromanager.Acquisition` is a *dispatching constructor* whose `__new__` ignores `cls`, so the injected subclass was never instantiated and both blocked limbs ran the unmodified acquisition — `blocked-saved` finished in 96 ms and `blocked-lost`, whose callback was supposed to be suppressed, **accounted a frame**. The selftest missed it because its fake was an ordinary subclassable class: *a fake that encodes your assumption*, in the gate's own selftest. What round 1 *did* establish: limb A ran five real one-frame acquisitions at `active_bound_s 5.05` / `plan_plus_5_s`, tool call p50 **0.359 s** max **0.437 s** — **11.6x headroom on a second machine**, corroborating the M2 constants; the control arm was exactly right; and part 2 confirmed **D3 in a real Firefox session** with real `toolu_` correlation ids. Round 2 owed for B/C/D/F/G and part 2. | |
+
+
+### Block 75b's gate
+
+**All of it runs on the demo machine.** design/75's coordinator decisions of
+2026-09-04 already split the five limbs; 75a's M2 arm then discharged limbs 2
+and 3 — the healthy end-to-end latency distribution and the two constants
+derived from it are measured and written into §"D1's two constants". What
+remains is limbs 1, 4 and 5, and all three were assigned to the demo machine
+because an injected blocking teardown needs no camera, no dose and no booked
+session, exactly as design/60 gated the same class of bound.
+
+**No rig time is owed by this block.** Say that plainly rather than leaving M2
+looking implicated: the only thing 75b would want from a rig is a second
+healthy-latency distribution, and 75a already took one.
+
+Established environment facts, so the runbook does not re-ask them:
+
+- Demo machine: `D:\Code\microclaw`, PowerShell, `uv run python`, an
+  unredirected `uv run python -c "print('uv warm')"` first, MM on port 4827,
+  datasets local.
+- **The browser is Firefox** (`design/69a-gate.md:70`). Limb 1's observation is
+  browser-side, so this matters; 75a's own notes record that the coordinator
+  asked the operator for this twice before checking the repo, which is
+  `CLAUDE.md`'s grep-before-inventing rule ignored.
+- The gate ships as a **program**, not copy-paste blocks: each limb scored
+  independently, NOT EXERCISED is never a pass, it owns its own log, it exits
+  nonzero. It is run against the bridge-shaped fake
+  (`design/75-block75a-gate-selftest.py`'s successor) on **both** trees before
+  it is pushed, so its failure discriminates.
+- 75a's gate already carries the pieces this one needs — a controlled build
+  whose child process is driven to a chosen point, real `AuditLog` records, and
+  confirm stubs that accept `grant_metadata=`. Extend that gate rather than
+  writing a second one.
+
+## Run ledger
+
+Baseline before the notebook: `main` `444d694`, coordinator-run suite
+**2817 passed / 99 skipped / 2 warnings** in 150.5 s (2026-09-04,
+`.venv/bin/python -m pytest -q`).
+
+| block | branch | start | implementation | gate | merge |
+|---|---|---|---|---|---|
+| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Both parts run 2026-09-05; PASS.** Demo machine: the gate reported 3 FAIL, the artifacts say **6 PASS / 1 NOT EXERCISED / 0 FAIL** — all three failures were the coordinator's assertions, re-scored from the operator's own files and fixed in `4cb2d24`. M2: n=20, no torn lines, no failures, exit 0. **The finding is the engine's, not the product's**: real pycro-manager accounts the frame *inside* `acq.__exit__`, in one identical ordering across **43 acquisitions on two rigs**, so 96.7% (demo) and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call design/60 measured at 95 minutes. Limb D produced the incident's own evidence shape on demand: a call with a beginning and no end. Constants chosen at 5.0 s / 5.0 s, 11.2x the measured M2 maximum. Selftest now 9 cases; its old failure arm was the real hardware behaviour and now expects PASS. | `34ab5f3` merged 2026-09-05; branch deleted locally and on `origin`, worktree removed. Pre-merge suite 2830/99/3. |
+| 75b | `design75/supervised-runtime-bound` | `8a64902` (2026-09-05) — seven commits past 75a's merge because `design/76` landed in between, so the baseline is **2837 passed / 99 skipped / 2 warnings**, not 75a's 2830. Checklist `75aa4e6`; worktree `../microclaw-design75b` | `5d1ff98` (1 Codex start turn, **killed by a usage limit after its edits had landed and been self-committed** — no `result.md` reached the job directory, and everything below was verified rather than believed). Coordinator suite **2862 / 99 / 3** against 2837/99, reconciling exactly at 2837 + 25. The runner's own run reported 5 failures and was right to: four are its sandbox (three loopback `socket.bind` denials and a `pip wheel` needing the network it correctly refused), all four pass outside it. **Five mutations run by the coordinator, chosen before reading the runner's table**, all reproducing — the decisive one being that gating expiry on `frames_accounted > 0` fails the zero-frame case, which is the incident's own shape. Four coordinator corrections in `76cc353`: `result.md` committed into the repo (second time); a runtime timeout reporting **no bound value anywhere**, since D2's neutral wording names no number and the string it replaced had carried one; design/60's *"the dataset may be read"* step lost to a redundant rewrite; and `design/60-block60a-demo-gate.py` **dead since 75a** and never noticed. | **Round 2 run 2026-09-05: 8/8 PASS, control arm exactly right, part 2 worked.** D2 fired on hardware in both shapes — `blocked-saved` unterminated at **6.86 s** (1 frame, `finalizing`), `blocked-lost`, the mandatory limb and the incident's own shape, at **5.36 s** (0 frames, `acquiring_or_notifying`), both `bound_s 5.05` and `diagnostic_persisted true`, against ~900 s before. Derived rather than reported: across both rounds the **supervised window** max was 0.199 s then 0.271 s while the **tool call** max was 0.437 s then 0.937 s — a 2.1x swing entirely outside the term the deadline measures, so headroom is **18.6x** on the bound's own quantity; and round 2's 0.271 s sits against 75a's independent 0.274 s. Part 2's history carries the one finding no limb can reach: a `frames_accounted == frames_planned` timeout is *summarised* to the user as "Done. One 50 ms frame acquired and saved." — the result keeps D2's distinction, the summary collapses it, and the **zero-frame case has never been put in front of a model**. Round 1, for the record: **3 PASS / 2 FAIL / 3 NOT EXERCISED, and every failure was the gate's.** `pycromanager.Acquisition` is a *dispatching constructor* whose `__new__` ignores `cls`, so the injected subclass was never instantiated and both blocked limbs ran the unmodified acquisition — `blocked-saved` finished in 96 ms and `blocked-lost`, whose callback was supposed to be suppressed, **accounted a frame**. The selftest missed it because its fake was an ordinary subclassable class: *a fake that encodes your assumption*, in the gate's own selftest. What round 1 *did* establish: limb A ran five real one-frame acquisitions at `active_bound_s 5.05` / `plan_plus_5_s`, tool call p50 **0.359 s** max **0.437 s** — **11.6x headroom on a second machine**, corroborating the M2 constants; the control arm was exactly right; and part 2 confirmed **D3 in a real Firefox session** with real `toolu_` correlation ids. Round 2 owed for B/C/D/F/G and part 2. | |

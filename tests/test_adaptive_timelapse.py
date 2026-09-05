@@ -330,7 +330,7 @@ def test_13_cap_accounting_and_measured_runtime_allowance_are_separate(
     monkeypatch.setattr(tools, "Acquisition", Acquisition)
     monkeypatch.setattr(
         tools, "_runtime_ceiling_s",
-        lambda plan: runtime_inputs.append(plan) or real_ceiling(plan),
+        lambda plan, policy: runtime_inputs.append(plan) or real_ceiling(plan, policy),
     )
     prior = getattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", None)
     tools._ACQUISITION_EVENT_CONTEXT.sink = progress_events.append
@@ -359,7 +359,7 @@ def test_13_cap_accounting_and_measured_runtime_allowance_are_separate(
     assert runtime_plan.estimated_duration_s == pytest.approx(18.685)
     assert runtime_plan.software_allowance_s_per_frame == 0.5
     assert "n=1 from M2" in runtime_plan.software_allowance_evidence
-    assert real_ceiling(runtime_plan) == (
+    assert real_ceiling(runtime_plan, tools.DEFAULT) == (
         pytest.approx(318.685), False, "plan_plus_300_s",
     )
     assert captured_plans[0].software_allowance_s_per_frame == 0
@@ -383,7 +383,7 @@ def test_adaptive_runtime_allowance_reproduces_m2_100k_frame_sanity_check():
     assert accounting.estimated_duration_s == 5_000
     assert accounting.software_allowance_s_per_frame == 0
     assert runtime.estimated_duration_s == 55_000
-    assert tools._runtime_ceiling_s(runtime) == (82_500, False, "plan_times_1_5")
+    assert tools._runtime_ceiling_s(runtime, policy=tools.DEFAULT) == (82_500, False, "plan_times_1_5")
 
 
 def test_decision_contract_preflight_uses_pinned_source_scan(tmp_path, monkeypatch):
@@ -621,6 +621,7 @@ def test_measured_gap_distribution_is_bounded_in_progress_and_caller_state(monke
             SimpleNamespace(resolve_in_workspace=lambda p: p), "/data", "cadence",
             events, hook, ctrl=SimpleNamespace(core=SimpleNamespace()), plan=plan,
             runtime_plan=plan, cadence_summary=cadence,
+            policy=tools.DEFAULT,
         )
     finally:
         tools._ACQUISITION_EVENT_CONTEXT.sink = prior

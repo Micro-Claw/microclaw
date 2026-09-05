@@ -433,7 +433,7 @@ class TestAcquireWithHooksFactory:
             seen["acq"] = acq
             return marker
 
-        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", factory, ctrl=mock_ctrl)
+        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", factory, ctrl=mock_ctrl, policy=tools.DEFAULT)
         assert seen["acq"] is _FakeAcquisition.last
         assert _FakeAcquisition.last.acquired is marker
 
@@ -444,7 +444,7 @@ class TestAcquireWithHooksFactory:
         monkeypatch.setattr(tools, "Acquisition", _FakeAcquisition)
 
         events = _survey(3)
-        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", events, ctrl=mock_ctrl)
+        tools._acquire_with_hooks(unconstrained_guard, str(tmp_path), "n", events, ctrl=mock_ctrl, policy=tools.DEFAULT)
         assert _FakeAcquisition.last.acquired is events
 
 
