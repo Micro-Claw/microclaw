@@ -1697,7 +1697,11 @@ corrections, all made on the branch.
       also the more honest model: `after_frames=False` is stuck inside the call
       design/60 measured at 95 minutes, `after_frames=True` is D1a's finalizing
       shape.
-- [ ] Pushed to `origin` with `GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`. No PR.
+- [x] Pushed to `origin` with `GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`. No PR.
+
+**Step 5 — the user runs the gates.** Demo machine, `design/75-block75b-gate.md`
+on the branch. Two parts: an eight-limb program plus a control arm, and one
+five-minute browser step that is the only thing a program cannot judge.
 
 **Steps 5-8 — the user runs the gates; score from artifacts; fix; re-test.**
 
