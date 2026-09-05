@@ -9214,3 +9214,53 @@ flight.**
 block's branch to tick its own checklist while the implementation worktree holds
 it, because git refuses two worktrees on one branch. Ticks were staged in the
 scratchpad and applied between runner turns.
+
+## design/76 block 76a — a sweep must say where it saw what (2026-09-05)
+
+One block, one Codex start, one revision turn. No rig gate: nothing touches
+dose, motion or hardware, and the fixture is a real Nikon sweep already on disk.
+
+**The finding was in the fix, not in the original code.** Round 1 correctly put
+coordinates into `_band_admit`'s no-match refusal — and in doing so changed its
+bound from *distinct values* (`sorted(set(readings))`) to *runs*. Measured on the
+runner's own tree: 491 alternating readings produced a **14,001-character
+refusal listing 491 runs**, where the old string was `observed ['A', 'B']`. The
+whole point of the block is a readable refusal, and intermittency — which
+`_band_admit` carries a dedicated branch for, and which design/56 measured on a
+PFS — is exactly where it had become unreadable. **A fix that improves the
+common case can regress the case the code already knows is hard; check the
+branch next to the one you changed.** Re-bounded to 331 characters with the
+load-bearing interval intact.
+
+**Two of the four review findings were the coordinator's own prompt.**
+
+- The baseline was measured in the correct worktree but **outside the Codex
+  sandbox**, which cannot bind a localhost socket or run `pip wheel`. Four of
+  the runner's five reported failures were therefore unmeetable, and the
+  instruction "stop if a pre-existing test fails" made it stop. It was right to.
+  This is *a literal command must be established, never guessed* one layer down:
+  the **environment** is part of the command. Either run the baseline through the
+  sandbox, or enumerate up front which tests cannot pass in it.
+- *"Prefer adding no new module-level helper"* was meant as "you probably do not
+  need one" and was read as a prohibition, so the run-grouping was hand-rolled
+  twice — lookahead in `_band_admit`, lookback in `_sweep_payload`. **Name the
+  hazard and its guard, not the ban.** The hazard was the exporter's inline
+  tuple; its test (`test_emitted_inline_defines_every_name_it_uses`) is exactly
+  what makes adding a helper safe, and saying so would have got one helper the
+  first time.
+
+**The runner corrected the design and was right.** D1 asserted that measured and
+requested Z differ on every plane of the fixture; it is **455 of 491**, checked
+against the artifact rather than taken from the document. Corrected in the
+notebook with the correction attributed.
+
+**Scoring beyond the report.** The report reconciled its own arithmetic (2830
+baseline − 4 sandbox + 7 new = 2833) and it held: the coordinator's run outside
+the sandbox gave **2837 passed / 99 skipped / 0 failed**. The watch-it-fail was
+reproduced independently on the pre-fix tree rather than accepted — `KeyError:
+'value_spans'`, and the refusal assertion failing against the real old
+`observed ['Out of fo…` string through the real `single_sweep_autofocus` caller.
+One residue was found and deliberately **not** sent back: the refusal formats raw
+`measured_z_positions` while the payload rounds to 3, but `settle_stage_move`
+already rounds to 4, so the worst possible disagreement is 0.4 nm. Recorded
+rather than fixed.
