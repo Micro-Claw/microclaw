@@ -214,41 +214,42 @@ def main():
                 + tools.CAMERA_STATE_PROBE_GRACE_S + DIAGNOSTIC_FLUSH_GRACE_S)
 
     REAL_ACQUISITION = tools.Acquisition
-    hang = {"release": threading.Event(), "suppress": False, "after_frames": False}
+    hang = {"release": threading.Event(), "suppress": False,
+            "after_frames": False, "active": False, "entered": None}
+    patched_exits: dict = {}
 
-    class BlockingTeardownAcquisition(REAL_ACQUISITION):
-        """A real acquisition whose teardown does not return.
+    # **The hang is installed by wrapping, never by subclassing.** Block 75b's
+    # first demo run lost both blocked limbs to a subclass that was never used:
+    # `pycromanager.Acquisition` is a *dispatching constructor* whose `__new__`
+    # ignores `cls` and returns a `JavaBackendAcquisition` (or, under pymmcore,
+    # a `PythonBackendAcquisition`). `class X(Acquisition)` compiles, answers
+    # every reasonable question about itself -- `inspect.getsource(X.__exit__)`
+    # included -- and can never be instantiated as itself. So the gate builds
+    # the real object and patches the *returned type's* `__exit__`, which is
+    # where the lookup actually lands.
+    #
+    # `Acquisition.__exit__` in pycro-manager 1.0.2 is exactly `mark_finished()`
+    # then `await_completion()`, read off `acquisition_superclass.py`. The
+    # replacement reproduces those two statements with a hold between them, so
+    # the acquisition is real and the frame is really written; only teardown
+    # stops returning.
+    #
+    # The two arms hold in different places on purpose, and the supervisor
+    # cannot tell them apart any other way:
+    #   after_frames=False -- stuck inside the call design/60 measured at 95
+    #                         minutes, nothing accounted (the incident's shape);
+    #   after_frames=True  -- the frames land, the supervisor reports
+    #                         `finalizing`, and teardown still never returns.
+    def _install_hang(acq) -> None:
+        cls = type(acq)
+        if cls in patched_exits:
+            return
+        original = cls.__exit__
 
-        `Acquisition.__exit__` in pycro-manager 1.0.2 is exactly `mark_finished()`
-        then `await_completion()`. Verified in this process by
-        `inspect.getsource` before anything is injected, so a pycro-manager
-        upgrade that changes it fails limb 0 loudly instead of producing a gate
-        that measures something else.
-
-        **The two arms hang in different places, and that is the point.** The
-        selftest's first run had both hanging before `await_completion`, so the
-        frame could never be accounted before the bound and limb B's own premise
-        was unreachable -- it failed on the branch as shipped.
-
-        * `after_frames=False` is the incident's shape: stuck inside the call
-          design/60 measured at 95 minutes, with nothing accounted.
-        * `after_frames=True` is D1a's shape: the frames land, the supervisor
-          reports `finalizing`, and teardown still never returns.
-
-        The supervisor cannot tell where the hang sits -- it sees frames
-        accounted and a waiter still alive -- so these two are the only
-        distinguishable cases, and the gate runs both.
-        """
-
-        def __init__(self, **kwargs):
-            if hang["suppress"]:
-                # What a lost image-saved notification looks like from
-                # MicroClaw's side: the frame is written by Java, and nothing
-                # ever tells the supervisor.
-                kwargs.pop("image_saved_fn", None)
-            super().__init__(**kwargs)
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
+        def blocking_exit(self, exc_type, exc_val, exc_tb):
+            if not hang["active"]:
+                return original(self, exc_type, exc_val, exc_tb)
+            hang["entered"] = time.monotonic()
             self.mark_finished()
             if hang["after_frames"]:
                 self.await_completion()
@@ -256,6 +257,38 @@ def main():
             else:
                 hang["release"].wait(args.hold_s)
                 self.await_completion()
+            return None
+
+        cls.__exit__ = blocking_exit
+        patched_exits[cls] = original
+
+    class InjectionUnavailable(Exception):
+        """The hang could not be installed on this machine's Acquisition."""
+
+    def blocking_acquisition(**kwargs):
+        if hang["suppress"]:
+            # What a lost image-saved notification looks like from MicroClaw's
+            # side: the frame is written by Java, and nothing ever tells the
+            # supervisor.
+            kwargs.pop("image_saved_fn", None)
+        acq = REAL_ACQUISITION(**kwargs)
+        try:
+            _install_hang(acq)
+        except Exception as exc:                # noqa: BLE001 - reported below
+            raise InjectionUnavailable(
+                f"could not replace __exit__ on {type(acq).__name__}: "
+                f"{type(exc).__name__}: {exc}") from exc
+        return acq
+
+    def _restore_acquisition():
+        tools.Acquisition = REAL_ACQUISITION
+        hang["active"] = False
+        for cls, original in list(patched_exits.items()):
+            try:
+                cls.__exit__ = original
+            except Exception:                   # noqa: BLE001 - best effort
+                pass
+            patched_exits.pop(cls, None)
 
     state = {}
 
@@ -296,9 +329,22 @@ def main():
         state.update(ctrl=ctrl, guard=guard, camera=camera, save_root=resolved,
                      confirmations=confirmations,
                      workspace=str(workspace) if workspace else None)
+        # Report how this pycro-manager builds an Acquisition. The gate's first
+        # demo run was lost to a dispatching __new__ that no limb mentioned, so
+        # the fact now reaches the artifact whether or not anything fails.
+        dispatches = isinstance(REAL_ACQUISITION, type) and "__new__" in vars(REAL_ACQUISITION)
+        state["acquisition_construction"] = {
+            "callable": f"{getattr(REAL_ACQUISITION, '__module__', '?')}."
+                        f"{getattr(REAL_ACQUISITION, '__name__', REAL_ACQUISITION)}",
+            "is_class": isinstance(REAL_ACQUISITION, type),
+            "defines_own_new": bool(dispatches),
+        }
         return (f"camera={camera} save_root={resolved} "
                 f"workspace={'configured' if workspace else 'none'}; "
-                f"__exit__ is mark_finished + await_completion")
+                f"__exit__ is mark_finished + await_completion; "
+                f"Acquisition={state['acquisition_construction']['callable']} "
+                f"(dispatching __new__: {bool(dispatches)}) - the gate wraps the "
+                f"constructed object rather than subclassing it")
 
     stamp = time.strftime("%Y%m%d_%H%M%S")
     history = args.out / f"{stamp}_block75b_microclaw_history.jsonl"
@@ -370,13 +416,24 @@ def main():
         hang["release"].clear()
         hang["suppress"] = suppress
         hang["after_frames"] = after_frames
-        tools.Acquisition = BlockingTeardownAcquisition
+        hang["entered"] = None
+        hang["active"] = True
+        tools.Acquisition = blocking_acquisition
         events = []
         try:
             with tools._acquisition_diagnostic_context({"sink": events.append}):
                 result, wall_s = drive(call_id, name)
         finally:
             tools.Acquisition = REAL_ACQUISITION
+            hang["active"] = False
+        if hang["entered"] is None:
+            # The mechanism never ran, so nothing here is evidence about the
+            # product. NOT EXERCISED, never FAIL (58a) -- and never a pass.
+            raise NotExercised(
+                "the injected teardown hang never executed, so this limb "
+                "measured nothing about the bound. Its own __exit__ was not "
+                "the one that ran; check limb 0's report of this "
+                "pycro-manager's Acquisition construction.")
         return result, wall_s, events
 
     def score_blocked(result, wall_s, suppress, call_id):
@@ -543,6 +600,7 @@ def main():
                 f"diagnostic_persisted={persisted}")
 
     hang["release"].set()
+    _restore_acquisition()
     try:
         writer.close()
     except Exception:

@@ -47,6 +47,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import textwrap
 from pathlib import Path
 
@@ -131,14 +132,22 @@ _ROOT = Path(tempfile.mkdtemp(prefix="block75b-selftest-"))
 _COUNT = {"n": 0}
 
 
-class FakeAcquisition:
-    """A fake that fires image_saved_fn where the real engine fires it.
+class _FakeBackendAcquisition:
+    """The object a real dispatch actually returns.
+
+    Block 75b's first demo run failed here: `pycromanager.Acquisition` is a
+    **dispatching constructor** -- `Acquisition.__new__` ignores `cls` and
+    returns a `JavaBackendAcquisition` or a `PythonBackendAcquisition`. A class
+    that subclasses it can therefore never be instantiated as itself, so the
+    gate's injected teardown hang was silently never used and two limbs failed
+    saying nothing about the product. The first version of this fake was an
+    ordinary subclassable class, which is exactly *a fake that encodes your
+    assumption is not a test of it* -- in the gate's own selftest.
 
     Block 75a measured, in 43 of 43 acquisitions on two rigs and two cameras,
     that pycro-manager accounts the frame *inside* `acq.__exit__` -- so this
-    fake fires it from `await_completion`, and `__exit__` is spelled exactly as
-    pycro-manager 1.0.2 spells it: mark_finished, then await_completion. The
-    gate's injection replaces this method, so the two must agree.
+    fires `image_saved_fn` from `await_completion`, and `__exit__` is spelled
+    exactly as pycro-manager 1.0.2 spells it.
     """
 
     def __init__(self, **kwargs):
@@ -171,6 +180,42 @@ class FakeAcquisition:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.mark_finished()
         self.await_completion()
+
+
+class _SealedMeta(type):
+    """A backend whose class attributes cannot be replaced.
+
+    Case 7's arm: an injection the gate cannot install. The gate must report
+    NOT EXERCISED, never FAIL -- a limb that could not run its mechanism says
+    so, and a FAIL here would read as a product defect (58a).
+    """
+
+    def __setattr__(cls, name, value):
+        raise TypeError(f"{cls.__name__} is sealed; cannot set {name!r}")
+
+
+class _SealedBackendAcquisition(_FakeBackendAcquisition, metaclass=_SealedMeta):
+    pass
+
+
+class FakeAcquisition(_FakeBackendAcquisition):
+    """Dispatching constructor, shaped like pycromanager.Acquisition.
+
+    It *inherits* the real methods -- so `inspect.getsource(__exit__)` works on
+    it, exactly as it does on `pycromanager.Acquisition` -- while its `__new__`
+    returns a backend instance and ignores `cls`. That combination is the whole
+    trap: the class looks subclassable and answers every reasonable question
+    about itself, and a subclass of it can still never be instantiated.
+    """
+
+    sealed = False
+
+    def __new__(cls, **kwargs):
+        backend = (_SealedBackendAcquisition if FakeAcquisition.sealed
+                   else _FakeBackendAcquisition)
+        # Not an instance of cls, so Python does not re-run __init__ -- the
+        # same reason a real dispatch returns a fully built backend object.
+        return backend(**kwargs)
 '''
 
 # Each mutation is a one-property change to the product, applied to a copy of
@@ -199,6 +244,7 @@ MUTATIONS = {
 
 
 def make_tree(source: Path, mutation: str | None, workspace: Path) -> Path:
+    workspace.mkdir(parents=True, exist_ok=True)
     target = workspace / ("tree" if mutation is None else f"tree-{mutation}")
     shutil.copytree(source / "microclaw", target / "microclaw")
     if mutation is not None:
@@ -272,12 +318,48 @@ def check(name, statuses, details, proc, expect_pass, expect_fail=(),
     return not problems
 
 
+def check_launcher(fake_dir: Path) -> bool:
+    """Install the part-2 launcher's hang on a dispatching fake and call it."""
+    import importlib.util
+    sys.path.insert(0, str(fake_dir))
+    try:
+        import block75b_fakes
+        from microclaw import tools as real_tools
+        spec = importlib.util.spec_from_file_location(
+            "block75b_launcher", HERE / "75-block75b-blocking-serve.py")
+        launcher = importlib.util.module_from_spec(spec)
+        real_tools.Acquisition = block75b_fakes.FakeAcquisition
+        launcher._REAL = block75b_fakes.FakeAcquisition
+        spec.loader.exec_module(launcher)
+        launcher.HOLD_S = 0.2
+        launcher._REAL = block75b_fakes.FakeAcquisition
+        launcher.install()
+        acq = real_tools.Acquisition(directory=None, name="launcher-probe")
+        started = time.monotonic()
+        acq.acquire([{}])
+        acq.__exit__(None, None, None)
+        held = time.monotonic() - started
+    except Exception as exc:                    # noqa: BLE001 - reported
+        print(f"[BROKEN] launcher: {type(exc).__name__}: {exc}")
+        return False
+    finally:
+        sys.path.remove(str(fake_dir))
+    if held < launcher.HOLD_S:
+        print(f"[BROKEN] launcher: teardown returned in {held:.3f}s, so the "
+              f"hang was not installed (this is the demo-run defect)")
+        return False
+    print(f"[OK] launcher: teardown withheld {held:.3f}s on "
+          f"{type(acq).__name__} built through a dispatching constructor")
+    return True
+
+
 def main():
     workspace = Path(tempfile.mkdtemp(prefix="block75b-selftest-"))
     fake_dir = workspace / "fakes"
     fake_dir.mkdir()
     (fake_dir / "block75b_fakes.py").write_text(FAKE_MODULE, encoding="utf-8")
     prelude = workspace / "prelude.py"
+    sealed_prelude = workspace / "prelude-sealed.py"
     prelude.write_text(textwrap.dedent('''
         # Executed by the gate through BLOCK75B_PRELUDE, after it has imported
         # the product and captured tools.Acquisition. Everything below the
@@ -291,6 +373,12 @@ def main():
         _controller.MicroscopeController = block75b_fakes.FakeCtrl
         MicroscopeController = block75b_fakes.FakeCtrl
     '''), encoding="utf-8")
+    # Case 7's arm: a backend whose class attributes cannot be replaced, so the
+    # gate cannot install its hang at all.
+    sealed_prelude.write_text(
+        prelude.read_text(encoding="utf-8")
+        + "\nblock75b_fakes.FakeAcquisition.sealed = True\n",
+        encoding="utf-8")
 
     healthy = TREE
     print(f"Tree under test: {healthy}")
@@ -345,6 +433,39 @@ def main():
         proc, statuses, details, _payload = run_gate(control, out, fake_dir, prelude)
         ok &= check("6 - `main`, which has no supervision policy (the control arm)",
                     statuses, details, proc, (), {}, True)
+
+    # Case 7: the injection cannot be installed. Both blocked limbs must report
+    # NOT EXERCISED -- a limb that could not run its mechanism says so, and a
+    # FAIL there would read as a product defect (58a). This is the arm the demo
+    # machine actually hit, in the form the gate could not detect at the time.
+    tree = make_tree(healthy, None, workspace / "sealed")
+    out = workspace / "out-sealed"
+    proc, statuses, details, _payload = run_gate(tree, out, fake_dir, sealed_prelude)
+    problems = []
+    for limb in ("E", "0", "A"):
+        if statuses.get(limb) != "PASS":
+            problems.append(f"limb {limb} is {statuses.get(limb)!r}, expected PASS")
+    for limb in ("B", "C"):
+        if statuses.get(limb) != "NOT EXERCISED":
+            problems.append(
+                f"limb {limb} is {statuses.get(limb)!r}, expected NOT EXERCISED "
+                f"({details.get(limb, '')[:120]!r})")
+        elif "never executed" not in details.get(limb, ""):
+            problems.append(f"limb {limb} stood down for the wrong reason: "
+                            f"{details.get(limb, '')!r}")
+    verdict = "OK" if not problems else "BROKEN"
+    print(f"[{verdict}] 7 - the hang cannot be installed (NOT EXERCISED, never "
+          f"FAIL): {statuses}")
+    for problem in problems:
+        print(f"        {problem}")
+    if problems:
+        print(textwrap.indent(proc.stdout[-3000:], "        | "))
+    ok &= not problems
+
+    # The part-2 launcher shares the gate's injection and is the other half
+    # that silently did nothing on the demo machine. Exercise it here rather
+    # than trusting that two copies of one idea agree.
+    ok &= check_launcher(fake_dir)
 
     print()
     if ok:
