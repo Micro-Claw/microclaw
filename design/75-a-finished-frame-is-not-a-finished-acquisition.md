@@ -1866,7 +1866,32 @@ told them, and the gate cannot:
       colliding with it, so rather than spin, I'll pause here."* That is the
       refusal text doing its job.
 
-**Steps 9 and 10 — merge, and the post-merge design gate.** Recorded below.
+**Step 9 — merge and clean up.** Merged `ac5159b`, `main` pushed,
+`git log --oneline origin/main..main` empty, branch deleted locally and on
+`origin`, worktree removed. Pre-merge suite **2862 passed / 99 skipped /
+3 warnings** against a 2837/99 baseline; nothing under `microclaw/` or `tests/`
+changed after that run. Coordination notes in `design/prompts.md`.
+
+**Step 10 — post-merge design gate.**
+
+- [x] `CLAUDE.md` §"The pycro-manager acquisition engine" is now **nine**
+      contracts. The new one is that `pycromanager.Acquisition` is a dispatching
+      constructor and cannot be subclassed — it cost round 1 both of its blocked
+      limbs, and it carries the fake's half of the lesson too, because the
+      stand-in that hides it is the obvious one.
+- [x] `design/70` gains **`R96`** — an unterminated result with every frame
+      accounted is *summarised* to the user as a success, and the zero-frame
+      shape has never been put in front of a model — and **`R97`**, the runtime
+      deadline including `Acquisition()` construction with nothing recording how
+      much. Ids checked against the register rather than guessed: `origin/main`
+      stopped at `R95`.
+- [x] **`R86` amended**: `run_mda` bypasses `_acquire_with_hooks`, so none of
+      D1–D4 reaches it. design/75 §"Not a block" asked for this to be said in
+      the close-out rather than rediscovered later.
+- [x] The measured numbers are in §"Step 8" above; D1's two constants stay at
+      5.0 s / 5.0 s and are now corroborated on a second machine — 18.6x
+      headroom on the supervised window, the term the deadline actually
+      measures.
 
 
 ### Block 75b's gate
