@@ -168,6 +168,8 @@ def test_precoded_hook_reports_injected_parameters(
         "stripped": [], "injected": ["ctrl", "guard"]
     }
     assert result["resolve_refusal"]["would_refuse"] is False
+    # Every described hook reports a route, so "no route" never means "live".
+    assert result["route"].startswith("hook_strategy")
 
 
 def test_hash_mismatch_is_described(

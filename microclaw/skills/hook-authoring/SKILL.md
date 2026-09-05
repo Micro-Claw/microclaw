@@ -69,6 +69,9 @@ hash-pinned adapter from the saved manifest. Implement
 work, or `analyze_saved_frame(image, metadata, context)` for per-frame work.
 Save either offline shape with `generate_and_save_hook(runner_contract="fixed")`
 after source review and confirmation; `adaptive` requires a live `analyze_frame`.
+Saving it does not make it attachable to an acquisition: `list_hooks` reports it
+as resolvable, and its `route` says `run_analysis_on_saved_dataset`. Passing an
+offline adapter as `hook_strategy` is refused by name.
 
 The return contract is different from live `analyze_frame`: **do not return
 `HookResult` from either offline verb**. `analyze_saved_frame` returns one

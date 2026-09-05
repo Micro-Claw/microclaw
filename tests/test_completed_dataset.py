@@ -673,7 +673,15 @@ def test_offline_adapter_saved_and_run_through_tools(tmp_path, monkeypatch, verb
     assert described["callback"] == verb
     assert described["provenance"]["matches_manifest"] is True
     assert not described["resolve_refusal"]["would_refuse"]
-    assert tools.list_hooks(None, guard)["saved"]["offline"]["resolvable"] is True
+    # `resolvable` is true and the hook is still not attachable, so the route has
+    # to say which runner takes it -- and the adaptive-survey note, which is
+    # about hardware actions during an acquisition, must not be offered at all.
+    assert described["route"].startswith("run_analysis_on_saved_dataset")
+    assert "cannot be passed as hook_strategy" in described["route"]
+    assert "adaptive_hardware_actions" not in described
+    listed = tools.list_hooks(None, guard)["saved"]["offline"]
+    assert listed["resolvable"] is True
+    assert listed["route"] == described["route"]
     analyzed = tools.run_analysis_on_saved_dataset(
         None, guard, str(dataset), "offline", {"time": 0, "position": "p0"},
         "frames", {}, str(tmp_path / "analysis"),
@@ -690,7 +698,10 @@ def test_offline_adapter_saved_and_run_through_tools(tmp_path, monkeypatch, verb
         "This runner requires analyze_frame; the hook does not define it."
     ]
     assert "adaptive" not in json.loads(manifest.read_text(encoding="utf-8"))
-    with pytest.raises(AttributeError, match="No class with analyze_frame or image_process_fn"):
+    # The acquisition route refuses it by name, as a ValueError -- which is what
+    # every run_* tool converts into a returned error. A bare AttributeError here
+    # would reach the operator as an unexplained traceback.
+    with pytest.raises(ValueError, match="run_analysis_on_saved_dataset"):
         hook_manager.load_hook_class("offline")
 
 

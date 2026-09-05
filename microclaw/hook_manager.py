@@ -384,6 +384,22 @@ def select_hook_class(module, verbs):
     return None
 
 
+def hook_route(callback: str) -> str:
+    """Where this callback actually runs, in the words a caller needs.
+
+    `resolvable` answers "would the runner refuse the source"; it does not say
+    which runner. A saved offline adapter is perfectly resolvable and is still
+    not attachable to an acquisition, so the description has to say so rather
+    than leave a reader to infer it from the verb name.
+    """
+    from microclaw.completed_dataset import OFFLINE_VERBS
+
+    if callback in OFFLINE_VERBS:
+        return ("run_analysis_on_saved_dataset, over a dataset that has already "
+                "been acquired. This adapter cannot be passed as hook_strategy.")
+    return "hook_strategy on an acquisition tool (run_timelapse, run_zstack, ...)."
+
+
 def load_hook_class(name: str, *, require_acquisition_decision: bool = False):
     """Dynamically import a saved hook and return its class.
 
@@ -418,6 +434,15 @@ def load_hook_class(name: str, *, require_acquisition_decision: bool = False):
         # Derived from source before import, never by probing untrusted behavior.
         cls.can_emit_artifacts = can_emit_artifacts
         return cls
+    from microclaw.completed_dataset import OFFLINE_VERBS
+
+    offline = select_hook_class(mod, OFFLINE_VERBS)
+    if offline is not None:
+        raise ValueError(
+            f"Saved hook '{name}' is an offline adapter, not an acquisition hook. "
+            f"Run it with run_analysis_on_saved_dataset over a dataset you have "
+            "already acquired; it cannot be attached with hook_strategy."
+        )
     raise AttributeError(
         f"No class with analyze_frame or image_process_fn found in hook '{name}'."
     )
@@ -658,6 +683,7 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
         "class_docstring": ast.get_docstring(cls, clean=True),
         "constructor_parameters": parameters,
         "callback": callback,
+        "route": hook_route(callback),
         "can_emit_artifacts": can_emit_artifacts,
         "resolve_refusal": {
             "would_refuse": bool(refusal_reasons),
