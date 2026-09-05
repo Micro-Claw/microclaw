@@ -1,6 +1,6 @@
 # A finished frame is not a finished acquisition
 
-Status: **coordinated from 2026-09-04** — two blocks, 75a assigned, 75b held.
+Status: **coordinated from 2026-09-04** — 75a (D4) merged 2026-09-05, 75b (the bound) ready to assign with its constants measured.
 See §Blocks and §Run ledger. Written 2026-09-04 from
 `m2-tirf-stage-freeze/20260904_115958_681706_microclaw_history.jsonl` and
 `m2-tirf-stage-freeze/CoreLog20260904T103846_pid6032.txt` supplied by the
@@ -1303,14 +1303,59 @@ than folded into 75b, which must not grow.
 `R91`–`R93`; the ids get checked against the register at step 10 rather than
 guessed now.
 
-**Steps 7–8 — fix, sized to the finding; the user re-tests.** Loop 5–8.
+**Steps 7–8 — fix, sized to the finding; the user re-tests.** Not needed. The
+demo gate's three FAILs were the coordinator's assertions and were re-scored
+from the operator's own artifacts; the M2 arm was clean on its first run. No
+second trip to either machine.
 
-**Step 9 — merge and clean up.** Merge, push `main`,
+**Step 9 — merge and clean up.** Merged `34ab5f3`, `main` pushed,
 `git log --oneline origin/main..main` empty, branch deleted locally and on
-`origin`, coordination notes in `design/prompts.md`, ledger row closed.
+`origin`, worktree removed. Coordination notes in `design/prompts.md`.
+Pre-merge suite **2830 passed / 99 skipped / 3 warnings**; nothing under
+`microclaw/` or `tests/` changed after the last full run.
 
-**Step 10 — post-merge design gate.** Record the measured p50/p95/max in this
-document so 75b's constants have a source, then open 75b.
+**Step 10 — post-merge design gate.**
+
+- [x] `CLAUDE.md` §"The pycro-manager acquisition engine" is now **eight**
+      contracts. The new one is the saved-frame callback arriving inside
+      `__exit__`, measured across 43 acquisitions on two rigs, with both of its
+      consequences: a bound must never be gated on the callback, and
+      `plan.estimated_duration_s` models none of what a one-frame acquisition
+      actually spends.
+- [x] `design/70` gains **`R94`** — D4 records acquisitions, so a snap in the
+      Core log still cannot be attributed, which is D4's own motivating sentence
+      unmet — and **`R95`**, D5's live-view reproduction matrix. **Not `R91`:**
+      `R91`–`R93` are taken by the unmerged `design74/nikon-confirmation`
+      branch, which `main` does not show. Checked rather than assumed.
+- [x] The measured numbers are in §"Step 6, part 2" above, and D1's two
+      constants are chosen from them there.
+
+## Block 75b — the supervised-runtime bound (D1, D1a, D2, D3)
+
+Ready to assign. Everything it was waiting on is now measured.
+
+**Its constants are settled** — `SHORT_FIXED_QUIET_FLOOR_S = 5.0` and
+`SHORT_FIXED_RUNTIME_SLACK_S = 5.0`, 11.2x the measured M2 maximum, giving a
+bound of about 10 s worst case including the poll, the camera probe and the
+diagnostic flush. The derivation and its two cautions are in §"D1's two
+constants" above. **Assert the ceiling formula, not the constants.**
+
+**Three things 75a settled that change how 75b should be written:**
+
+1. **D1's refusal to gate on the callback is confirmed on hardware**, not just
+   argued from pycro-manager's source. Keep it, and keep D1a's phase as a report.
+2. **D1a's `finalizing` phase lasts about 3 ms on a healthy one-frame run**
+   (planned-final frame to teardown completion: 3.0 ms demo, 3.2 ms M2). That is
+   not a problem — its job is the hang — but D3 should not promise the browser
+   will show it during a normal acquisition.
+3. **D2's delivery ceiling is about the *tool call*, not the supervised
+   window.** They differ by 2.8x on M2. The bound expires against the window;
+   the operator waits for the call.
+
+**Still owed, and not blocking:** the three facts in §"Evidence still owed".
+The spinner duration would confirm the 10 s bound is inside the operator's
+patience; the `frames 1 / 1` observation would discriminate the two triggers.
+Neither changes D1's shape, which is written to hold either way.
 
 ## Coordination checklist — block 75b
 
@@ -1326,5 +1371,5 @@ Baseline before the notebook: `main` `444d694`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Both parts run 2026-09-05; PASS.** Demo machine: the gate reported 3 FAIL, the artifacts say **6 PASS / 1 NOT EXERCISED / 0 FAIL** — all three failures were the coordinator's assertions, re-scored from the operator's own files and fixed in `4cb2d24`. M2: n=20, no torn lines, no failures, exit 0. **The finding is the engine's, not the product's**: real pycro-manager accounts the frame *inside* `acq.__exit__`, in one identical ordering across **43 acquisitions on two rigs**, so 96.7% (demo) and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call design/60 measured at 95 minutes. Limb D produced the incident's own evidence shape on demand: a call with a beginning and no end. Constants chosen at 5.0 s / 5.0 s, 11.2x the measured M2 maximum. Selftest now 9 cases; its old failure arm was the real hardware behaviour and now expects PASS. | |
-| 75b | | | held until 75a merges and the M2 arm is scored | demo machine (limbs 1, 4) | |
+| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Both parts run 2026-09-05; PASS.** Demo machine: the gate reported 3 FAIL, the artifacts say **6 PASS / 1 NOT EXERCISED / 0 FAIL** — all three failures were the coordinator's assertions, re-scored from the operator's own files and fixed in `4cb2d24`. M2: n=20, no torn lines, no failures, exit 0. **The finding is the engine's, not the product's**: real pycro-manager accounts the frame *inside* `acq.__exit__`, in one identical ordering across **43 acquisitions on two rigs**, so 96.7% (demo) and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call design/60 measured at 95 minutes. Limb D produced the incident's own evidence shape on demand: a call with a beginning and no end. Constants chosen at 5.0 s / 5.0 s, 11.2x the measured M2 maximum. Selftest now 9 cases; its old failure arm was the real hardware behaviour and now expects PASS. | `34ab5f3` merged 2026-09-05; branch deleted locally and on `origin`, worktree removed. Pre-merge suite 2830/99/3. |
+| 75b | | | **ready to assign**: constants measured (5.0 s / 5.0 s, 11.2x the M2 maximum), and 75a's gate settled three design questions for it | demo machine (limbs 1, 4) | |

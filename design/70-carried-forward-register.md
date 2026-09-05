@@ -89,6 +89,8 @@ Rows added since the triage:
 | `R88` | a Nikon Ti session scored on 2026-09-04, no notebook |
 | `R89` | found while scoring `design/74` block 74a, 2026-09-04 |
 | `R90` | found while scoring `design/74` block 74a's demo gate, 2026-09-04 |
+| `R91`–`R93` | `design/74`'s Nikon confirmation, 2026-09-05 — **on the unmerged `design74/nikon-confirmation` branch**, which is why 75a's rows start at `R94` |
+| `R94`–`R95` | `design/75` block 75a's gates, 2026-09-05 |
 
 
 ## The work queue
@@ -143,6 +145,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R88` | [The probe_hint payload reached a live model and did not route it](#r88) | HIGH | MEDIUM | → `design/74` |
 | `R89` | [The PFS offset fine-tune is a hand-driven loop with no tool](#r89) | MEDIUM | MEDIUM |  |
 | `R90` | [arrival_unverifiable is saturated for every image-autofocus sweep](#r90) | LOW | SMALL |  |
+| `R94` | [D4 records acquisitions, so a snap in the Core log still cannot be attributed](#r94) | MEDIUM | SMALL |  |
+| `R95` | [Does live-mode ownership churn precede a lost terminal notification?](#r95) | MEDIUM | LARGE |  |
 
 **Demo machine**
 
@@ -2284,6 +2288,30 @@ model summarising several tool results as one, which matters for gate scoring.
 - **Block** — NONE.
 - **Effort** — SMALL
 - **Provenance** — found while scoring block 74a's round-2 demo gate, from the artifact rather than the verdict. Both arms agreed, so it is pre-existing and not 74a's.
+
+
+### R94 — D4 records acquisitions, so a snap in the Core log still cannot be attributed
+
+**Block 75a's correlation id reaches every acquisition and nothing else, so the forensic question that motivated it — which MicroClaw call does this snap in Micro-Manager's Core log belong to? — is still open.**
+
+- **Status** — OPEN, and **not a defect**: `design/75` D4 says "Record per acquisition" and that is exactly what shipped. But D4's own motivation sentence says the id exists "so a snap in the Core log can be matched to a call — the gap that made finding 5 unresolvable", and it does not do that. Measured on M2, 2026-09-05: block 75a's arm made 20 `snap_and_analyze` calls and one `set_exposure`, and the acquisitions file contains **zero** records for any of them, because neither tool reaches `_acquire_with_hooks`. `design/75` finding 5 — no snap in the 2026-09-04 Core log could be assigned to a tool call — would still be unresolvable today.
+- **Importance** — MEDIUM. It does not affect any acquisition or any bound. It matters the next time an incident has to be reconstructed from a Core log, which is the situation that produced `design/75` in the first place.
+- **Where** — LOCAL. `execute_tool` already receives the tool-use id (`tools.py`), so emitting a lifecycle record for camera-touching tools is plumbing, not new machinery. The design question is which tools qualify and whether D4's "per acquisition" contract should widen — that is a decision, not a discovery.
+- **Block** — NONE. Deliberately **not** folded into 75b, which must not grow.
+- **Effort** — SMALL
+- **Provenance** — found while scoring `design/75` block 75a's M2 arm from the artifact, 2026-09-05: the file's record count did not match the number of tool calls the arm had made.
+
+
+### R95 — Does live-mode ownership churn precede a lost terminal notification?
+
+**`design/75` D5's reproduction matrix, kept out of block 75a on purpose: four arms of 100 one-frame acquisitions to discriminate whether live-mode ownership churn is what precedes a lost pycro-manager terminal notification.**
+
+- **Status** — OPEN. `design/75` §"Medium confidence: live-view ownership may be the upstream trigger" records the observation — the Core log shows effectively unbounded Andor live sequences stopped around snaps and restarted, then a pycro-manager acquisition takes camera ownership — and rates it a reproduction variable, not a cause. Block 75a's M2 arm ran 20 acquisitions in that exact shape (a `snap_and_analyze` before each) and **20 of 20 returned**; at the observed 1-in-14 rate P(zero failures in 20) = 0.23, so that is not evidence either way.
+- **Importance** — MEDIUM. Nothing depends on the answer: `design/75` explicitly forbids changing live-mode handling unless this matrix discriminates an arm, and the bound in 75b is written to hold whichever way it goes. It matters only if the hang keeps recurring.
+- **Where** — **M2**, and it is the expensive one: four arms of 100 one-frame acquisitions with unique dataset names, D4 timestamps, and a thread dump of `microclaw-acq-teardown` plus pycro-manager's notification and storage threads preserved before any restart.
+- **Block** — NONE. `design/75` D5 removed it from block 75a deliberately: four arms of 100 for a medium-confidence variable is more instrument time than a bound needs.
+- **Effort** — LARGE
+- **Provenance** — carried from `design/75` §D5, which asked for it as a register row rather than a block; the id is `R95` and not D5's suggested `R91` because `R91`–`R93` were taken by `design/74`'s Nikon confirmation in the meantime.
 
 
 ## Blocked on someone else — not schedulable here
