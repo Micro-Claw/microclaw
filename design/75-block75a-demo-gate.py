@@ -55,9 +55,24 @@ sys.path.insert(0, str(ROOT))
 
 RESULTS = []
 
-# The record kinds one complete acquisition writes, in the order
-# _acquire_with_hooks emits them. Read off the product, not off the design: a
-# gate that hard-coded the design's names would pass a build that renamed one.
+# The record kinds one complete acquisition writes. Read off the product, not
+# off the design: a gate that hard-coded the design's names would pass a build
+# that renamed one.
+#
+# **This is a set, not a sequence, and the demo machine is why.** The first run
+# of this gate asserted the order our fakes produce -- accounting before
+# mark_finished -- and real pycro-manager does the opposite in 23 of 23
+# acquisitions:
+#
+#   construction -> event_submission -> mark_finished
+#     -> first_frame_accounted -> planned_final_frame_accounted
+#     -> teardown_completion
+#
+# The frame is accounted *inside* `acq.__exit__`, which is the observable
+# consequence of design/75's "the callback shares the failed path". Limb A owns
+# the ordering and asserts only the invariants that must hold on any rig; every
+# other limb compares sets, so one rig's ordering cannot fail a limb about
+# survival.
 COMPLETE_LIFECYCLE = (
     "acquisition_construction",
     "acquisition_event_submission",
@@ -382,13 +397,30 @@ def main():
             raise AssertionError(
                 f"expected one correlated call, got {sorted(calls)}")
         kinds = lifecycle_kinds(calls["gate-limb-a"])
-        if tuple(kinds) != COMPLETE_LIFECYCLE:
+        # Assert what must be true on any rig; *report* what the engine chose.
+        # The first version of this limb asserted the order our fakes produce
+        # and the demo machine refuted it, which is the finding -- but a fixed
+        # sequence would now simply encode one rig's answer in place of another
+        # rig's. These four invariants are what a reader of the record needs,
+        # and each of them can actually fail.
+        missing = set(COMPLETE_LIFECYCLE) - set(kinds)
+        if missing:
+            raise AssertionError(f"records missing: {sorted(missing)}; got {kinds}")
+        if kinds[0] != "acquisition_construction":
+            raise AssertionError(f"the record does not open with construction: {kinds}")
+        if kinds[1] != "acquisition_event_submission":
+            raise AssertionError(f"submission does not follow construction: {kinds}")
+        if kinds[-1] != "acquisition_teardown_completion":
+            raise AssertionError(f"the record does not end with teardown: {kinds}")
+        accounting = [i for i, k in enumerate(kinds) if "accounted" in k]
+        if max(accounting) > kinds.index("acquisition_teardown_completion"):
             raise AssertionError(
-                f"lifecycle out of order or incomplete: {kinds} "
-                f"(expected {list(COMPLETE_LIFECYCLE)})")
+                f"a frame was accounted after teardown completed: {kinds}")
         times = [iso_to_s(r["timestamp"]) for r in calls["gate-limb-a"]]
         if times != sorted(times):
             raise AssertionError(f"timestamps not monotonic: {times}")
+        marked = kinds.index("acquisition_mark_finished")
+        accounted_inside_teardown = min(accounting) > marked
         construction = next(r for r in records
                             if r["type"] == "acquisition_construction")
         for field in ("dataset_path", "frames_planned", "estimated_bytes",
@@ -405,7 +437,11 @@ def main():
         if drift > max(1.0, wall_s):
             raise AssertionError(
                 f"file span {span:.3f}s disagrees with the call's {wall_s:.3f}s")
-        return (f"6/6 records in order; bound={construction['active_bound_s']:g}s "
+        state["limb_a"]["observed_order"] = kinds
+        state["limb_a"]["accounted_inside_teardown"] = accounted_inside_teardown
+        return (f"6/6 records, invariants hold; frames accounted "
+                f"{'INSIDE teardown' if accounted_inside_teardown else 'before mark_finished'}; "
+                f"order={kinds}; bound={construction['active_bound_s']:g}s "
                 f"term={construction['active_bound_term']}; "
                 f"file span {span:.3f}s vs call {wall_s:.3f}s")
 
@@ -497,10 +533,15 @@ def main():
         if torn:
             raise AssertionError(f"unparseable line(s): {torn}")
         calls = by_call(records)
-        kinds = tuple(lifecycle_kinds(calls.get("child-complete", [])))
-        if kinds != COMPLETE_LIFECYCLE:
+        # A set: this limb's claim is that nothing was *lost*, and the engine's
+        # ordering is limb A's business. The demo machine failed this limb for
+        # limb A's cause while its own claim held perfectly.
+        kinds = lifecycle_kinds(calls.get("child-complete", []))
+        lost = set(COMPLETE_LIFECYCLE) - set(kinds)
+        if lost:
             raise AssertionError(
-                f"the tail did not survive a normal exit: {list(kinds)}")
+                f"the tail did not survive a normal exit; missing {sorted(lost)} "
+                f"from {kinds}")
         return "the child's full lifecycle, teardown completion included, is on disk"
 
     @limb("D - an abrupt end still leaves a record",
@@ -569,10 +610,12 @@ def main():
                 f"the abrupt end tore a line, which would cost the whole file "
                 f"a reader: {torn}")
         calls = by_call(records)
-        before = tuple(lifecycle_kinds(calls.get("child-before-kill", [])))
-        if before != COMPLETE_LIFECYCLE:
+        before = lifecycle_kinds(calls.get("child-before-kill", []))
+        lost = set(COMPLETE_LIFECYCLE) - set(before)
+        if lost:
             raise AssertionError(
-                f"the completed call did not survive the end: {list(before)}")
+                f"the completed call did not survive the end; missing "
+                f"{sorted(lost)} from {before}")
         killed = lifecycle_kinds(calls.get("child-killed", []))
         if "acquisition_construction" not in killed or \
                 "acquisition_event_submission" not in killed:

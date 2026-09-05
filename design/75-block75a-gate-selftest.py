@@ -15,7 +15,7 @@ Run it on **both trees**. On this branch every case must hold; on `main` cases
 what proves the gate discriminates rather than passing whatever it is pointed
 at.
 
-Eight cases, and **four of them are deliberately failures** — a gate whose fake
+Nine cases, and **four of them are deliberately failures** — a gate whose fake
 only ever feeds it the happy path has not been tested, it has been rehearsed.
 design/60 block 60b's gate failed the single limb its rig trip existed for
 because its fake wrote the filename the glob expected.
@@ -131,6 +131,7 @@ class FakeAcquisition:
     """
 
     saved_after_exit = False
+    drop_frames = False
     per_frame_s = 0.0
 
     def __init__(self, **kwargs):
@@ -141,6 +142,10 @@ class FakeAcquisition:
 
     def acquire(self, events):
         listed = list(events)
+        if type(self).drop_frames:
+            # The incident's own shape: the notification path delivers nothing,
+            # so frames_accounted stays 0 and no accounting record is written.
+            return
         if type(self).saved_after_exit:
             self._pending = len(listed)
             return
@@ -160,7 +165,8 @@ class FakeAcquisition:
 '''
 
 
-def install_fakes(*, saved_after_exit=False, per_frame_s=0.0, dataset_root=None):
+def install_fakes(*, saved_after_exit=False, drop_frames=False, per_frame_s=0.0,
+                  dataset_root=None):
     """Patch the microscope out from under the real product, in this process."""
     import time as _time
     namespace = {"time": _time}
@@ -170,6 +176,7 @@ def install_fakes(*, saved_after_exit=False, per_frame_s=0.0, dataset_root=None)
 
     acq_class = namespace["FakeAcquisition"]
     acq_class.saved_after_exit = saved_after_exit
+    acq_class.drop_frames = drop_frames
     acq_class.per_frame_s = per_frame_s
     counter = {"n": 0}
     root = Path(dataset_root or tempfile.mkdtemp())
@@ -212,6 +219,7 @@ from microclaw import tools as _tools
 
 _acq = FakeAcquisition
 _acq.saved_after_exit = False
+_acq.drop_frames = {drop_frames!r}
 _acq.per_frame_s = {per_frame_s!r}
 _root = Path(tempfile.mkdtemp())
 _count = {{"n": 0}}
@@ -265,9 +273,10 @@ AuditLog.append = _tearing_append
 '''
 
 
-def child_prelude(path: Path, *, per_frame_s, extra=""):
+def child_prelude(path: Path, *, per_frame_s, extra="", drop_frames=False):
     text = CHILD_PRELUDE.format(core=FAKE_CORE_SOURCE, acq=FAKE_ACQ_SOURCE,
-                                per_frame_s=per_frame_s, extra=extra)
+                                per_frame_s=per_frame_s, extra=extra,
+                                drop_frames=drop_frames)
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -314,16 +323,17 @@ def _invoke(out, *, latency_runs, kill_frames):
         sys.argv = argv
 
 
-def run_case(name, *, expect, out, saved_after_exit=False, per_frame_s=0.0,
-             kill_frames=400, latency_runs=3, extra="", seed=None, no_d4=False):
+def run_case(name, *, expect, out, saved_after_exit=False, drop_frames=False,
+             per_frame_s=0.0, kill_frames=400, latency_runs=3, extra="",
+             seed=None, no_d4=False):
     """Run the gate once and check each limb's status against `expect`."""
     out.mkdir(parents=True, exist_ok=True)
     gate.RESULTS.clear()
-    install_fakes(saved_after_exit=saved_after_exit, per_frame_s=per_frame_s,
-                  dataset_root=out / "datasets")
+    install_fakes(saved_after_exit=saved_after_exit, drop_frames=drop_frames,
+                  per_frame_s=per_frame_s, dataset_root=out / "datasets")
 
     prelude = child_prelude(out / "prelude.py", per_frame_s=per_frame_s,
-                            extra=extra)
+                            extra=extra, drop_frames=drop_frames)
     os.environ["BLOCK75A_CHILD_PRELUDE"] = str(prelude)
 
     from microclaw import tools
@@ -518,12 +528,23 @@ def main():
         expect={"0": "PASS", "A": "PASS", "B": "PASS", "C": "PASS",
                 "D": "PASS", "E": "PASS", "F": "PASS"})
 
-    print("2. a saved-frame callback arriving AFTER teardown - limb A must FAIL")
-    print("   (the one question this gate exists to answer on hardware)")
+    print("2. a saved-frame callback arriving AFTER teardown - limb A must PASS")
+    print("   (this WAS the failure arm. The demo machine settled it on")
+    print("    2026-09-05: real pycro-manager accounts the frame inside")
+    print("    __exit__ in 23 of 23 acquisitions, so this is the normal case")
+    print("    and a gate that fails it is asserting our fakes, not the engine)")
     ok &= run_case(
         "saved-after-exit", out=base / "after-exit", saved_after_exit=True,
         per_frame_s=0.05, kill_frames=400, seed="joined",
-        expect={"A": "FAIL", "B": "PASS", "E": "PASS"})
+        expect={"A": "PASS", "B": "PASS", "C": "PASS", "D": "PASS", "E": "PASS"})
+
+    print("9. no saved-frame callback at all - limb A must FAIL")
+    print("   (the incident's own zero-frame shape, and the replacement for")
+    print("    what arm 2 used to test: an invariant that can really break)")
+    ok &= run_case(
+        "no-frames", out=base / "noframes", drop_frames=True,
+        per_frame_s=0.0, kill_frames=400, seed="joined",
+        expect={"A": "FAIL", "C": "FAIL", "E": "PASS"})
 
     print("3. a torn line from an interrupted write - limb D must FAIL")
     ok &= run_case(
