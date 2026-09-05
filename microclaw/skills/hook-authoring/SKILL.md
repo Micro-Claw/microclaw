@@ -67,6 +67,28 @@ For completed data, use `run_analysis_on_saved_dataset` with a reviewed,
 hash-pinned adapter from the saved manifest. Implement
 `analyze_completed_dataset(dataset_view, selection, context)` for whole-selection
 work, or `analyze_saved_frame(image, metadata, context)` for per-frame work.
+Save either offline shape with `generate_and_save_hook(runner_contract="fixed")`
+after source review and confirmation; `adaptive` requires a live `analyze_frame`.
+
+The return contract is different from live `analyze_frame`: **do not return
+`HookResult` from either offline verb**. `analyze_saved_frame` returns one
+measurement dictionary or `None` per call. `analyze_completed_dataset` returns
+an iterable of dictionaries/`None` entries, or `None` (not a single dictionary).
+A bare measurement dictionary has no `result` key; the runner wraps it as the
+result with status `unverified`. Even a key called `status` in that bare mapping
+is just a measurement. A normalized envelope has a `result` key and may also
+contain `status`, `analyzer`, `analyzer_version`, `parameters`, and
+`artifact_sha256`; any other envelope key is an error. Its omitted status defaults
+to `unverified`.
+
+Alternatively, call `context.emit_observation(result, status="unverified", ...)`
+with the same optional provenance fields, and return `None` to avoid reporting
+the same observation twice. Saved adapters may claim only `unverified` or
+`provisional`, through either channel. `observed` is reserved for reviewed
+package adapters: a saved adapter claiming it raises `ValueError`, and the
+runner records a failed analysis and the reason in its manifest. Invalid return
+types and unknown envelope keys likewise fail the analysis.
+
 The runner opens the `ndstorage.Dataset`; the whole-selection adapter receives a
 read-only `DatasetView` restricted to the requested axis selection, with
 `coordinates`, `read_image`, `read_metadata`, and bounded `as_array` access.
@@ -107,7 +129,7 @@ and lint warnings, and save it only after explicit confirmation. Package setup
 belongs in the hook's documented local environment, not in a package-specific
 microclaw analysis tool.
 
-For that first observation-only version, normalize the verified part of the raw
+For a live observation-only version, normalize the verified part of the raw
 output to JSON values in `HookResult.measurements`. Record the analyzer name
 and installed version, parameters affecting the result, and the sha256 of any
 model/project/config artifact. Use `status="unverified"` when axes, units, score

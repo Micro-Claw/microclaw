@@ -638,3 +638,72 @@ class ContractProbe:
     missing.extend(f'"{key}": {value}' for key, value in limits_seen[0].items()
                    if f'"{key}": {value}' not in text)
     assert not missing, f"Skill omits offline runner contract: {missing}"
+
+
+@pytest.mark.parametrize("verb", completed_dataset.OFFLINE_VERBS)
+def test_offline_adapter_saved_and_run_through_tools(tmp_path, monkeypatch, verb):
+    from microclaw import hook_manager, tools
+
+    hooks = tmp_path / "hooks"
+    manifest = hooks / "manifest.json"
+    monkeypatch.setattr(hook_manager, "HOOKS_DIR", hooks)
+    monkeypatch.setattr(hook_manager, "MANIFEST", manifest)
+    monkeypatch.setattr(completed_dataset, "MANIFEST", manifest)
+    monkeypatch.setattr(completed_dataset, "Dataset", lambda path: FakeDataset())
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    (dataset / "NDTiff.index").write_bytes(b"saved pixels")
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+    whole = verb == completed_dataset.OFFLINE_VERBS[0]
+    args = "dataset_view, selection" if whole else "image, metadata"
+    result = "[{'count': 1}]" if whole else "{'count': 1}"
+    code = f'''class OfflineAdapter:
+ def {verb}(self, {args}, context):
+  context.artifacts.emit("result.bin", b"verified")
+  context.emit_observation({{"via_context": True}}, status="provisional")
+  return {result}
+'''
+    assert not manifest.exists()
+    saved = tools.generate_and_save_hook(
+        None, guard, "offline", code, "Offline measurement", runner_contract="fixed",
+    )
+    assert "error" not in saved, saved
+    assert manifest.exists()
+    described = tools.describe_hook(None, guard, "offline")
+    assert described["callback"] == verb
+    assert described["provenance"]["matches_manifest"] is True
+    assert not described["resolve_refusal"]["would_refuse"]
+    assert tools.list_hooks(None, guard)["saved"]["offline"]["resolvable"] is True
+    analyzed = tools.run_analysis_on_saved_dataset(
+        None, guard, str(dataset), "offline", {"time": 0, "position": "p0"},
+        "frames", {}, str(tmp_path / "analysis"),
+    )
+    assert analyzed["status"] == "completed", analyzed["failure"]
+    assert [item["result"] for item in analyzed["observations"]] == [
+        {"via_context": True}, {"count": 1},
+    ]
+    assert Path(analyzed["artifacts"][0]["path"]).read_bytes() == b"verified"
+    adaptive = tools.generate_and_save_hook(
+        None, guard, "adaptive", code, "Wrong route", runner_contract="adaptive",
+    )
+    assert adaptive["contract_errors"] == [
+        "This runner requires analyze_frame; the hook does not define it."
+    ]
+    assert "adaptive" not in json.loads(manifest.read_text(encoding="utf-8"))
+    with pytest.raises(AttributeError, match="No class with analyze_frame or image_process_fn"):
+        hook_manager.load_hook_class("offline")
+
+
+@pytest.mark.parametrize("verb", completed_dataset.OFFLINE_VERBS)
+def test_offline_save_rejects_missing_context(tmp_path, monkeypatch, verb):
+    from microclaw import hook_manager, tools
+
+    monkeypatch.setattr(hook_manager, "HOOKS_DIR", tmp_path / "hooks")
+    monkeypatch.setattr(hook_manager, "MANIFEST", tmp_path / "manifest.json")
+    result = tools.generate_and_save_hook(
+        None, None, "short", f"class Short:\n def {verb}(self, first, second): pass\n",
+        "Missing offline context",
+    )
+    assert any(f"Short.{verb} must accept" in error
+               for error in result["contract_errors"]), result
+    assert not hook_manager.MANIFEST.exists()

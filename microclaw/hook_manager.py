@@ -112,6 +112,9 @@ def _hook_contract_analysis(
     This deliberately does not import or execute the source: without an actual
     OS sandbox, doing so would turn validation into arbitrary code execution.
     """
+    from microclaw.completed_dataset import OFFLINE_VERBS
+
+    verbs = ("analyze_frame", "image_process_fn", *OFFLINE_VERBS)
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -120,12 +123,13 @@ def _hook_contract_analysis(
     hooks = [
         node for node in classes
         if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-               and item.name in {"analyze_frame", "image_process_fn"} for item in node.body)
+               and item.name in verbs for item in node.body)
     ]
     if not hooks:
         return [
             "No top-level class defines analyze_frame(self, image, metadata) or "
-            "image_process_fn(self, image, metadata, event_queue)."
+            "image_process_fn(self, image, metadata, event_queue), or an offline "
+            f"adapter callback ({', '.join(OFFLINE_VERBS)})."
         ], False
     errors: list[str] = []
     if require_acquisition_decision:
@@ -144,16 +148,19 @@ def _hook_contract_analysis(
                 "will return a routing decision."
             )
     for cls in hooks:
-        fn = next(item for item in cls.body if getattr(item, "name", None) in
-                  {"analyze_frame", "image_process_fn"})
-        positional = len(fn.args.posonlyargs) + len(fn.args.args)
-        required = 3 if fn.name == "analyze_frame" else 4
-        if positional < required and fn.args.vararg is None:
-            errors.append(
-                f"{cls.name}.{fn.name} must accept " +
-                ("self, image, and metadata." if fn.name == "analyze_frame" else
-                 "self, image, metadata, and event_queue.")
-            )
+        for fn in (item for item in cls.body
+                   if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and item.name in verbs):
+            positional = len(fn.args.posonlyargs) + len(fn.args.args)
+            required = 3 if fn.name == "analyze_frame" else 4
+            if positional < required and fn.args.vararg is None:
+                arguments = (
+                    "self, image, and metadata" if fn.name == "analyze_frame" else
+                    "self, image, metadata, and event_queue" if fn.name == "image_process_fn" else
+                    "self, dataset_view, selection, and context" if fn.name == OFFLINE_VERBS[0] else
+                    "self, image, metadata, and context"
+                )
+                errors.append(f"{cls.name}.{fn.name} must accept {arguments}.")
     from microclaw import hook_decisions
 
     retired_identifiers: set[str] = set()
@@ -293,6 +300,8 @@ def validate_hook_contract(
     candidate: str | object, required_callback: str | None = None
 ) -> list[str]:
     """Validate the callback contract used by both save preflight and runners."""
+    from microclaw.completed_dataset import OFFLINE_VERBS
+
     if isinstance(candidate, str):
         errors = _hook_contract_analysis(candidate)[0]
         if errors or required_callback is None:
@@ -304,7 +313,7 @@ def validate_hook_contract(
         )
         selected = next(node for node in classes if any(
             isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and item.name in {"analyze_frame", "image_process_fn"}
+            and item.name in ("analyze_frame", "image_process_fn", *OFFLINE_VERBS)
             for item in node.body
         ))
         callbacks = {
@@ -473,21 +482,24 @@ _SOURCE_REFUSAL_NOTE = (
     "insufficient_for are properties of the source, not of its pin, so "
     "re-saving the same source reproduces them. The source has to change "
     "first: a saved hook must not inherit HookBase, must not take log_path, "
-    "and provides analyze_frame(image, metadata) returning a HookResult."
+    "and must implement the callback and return contract for its live or offline runner."
 )
 
 
 def saved_hook_source_refusal(code: str) -> dict[str, Any]:
     """Return the resolve-time hard refusals that are properties of source."""
+    from microclaw.completed_dataset import OFFLINE_VERBS
+
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return {"reasons": []}
-    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    classes = sorted((node for node in tree.body if isinstance(node, ast.ClassDef)),
+                     key=lambda node: node.name)
     cls = next((
         node for node in classes
         if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-               and item.name in {"analyze_frame", "image_process_fn"}
+               and item.name in ("analyze_frame", "image_process_fn", *OFFLINE_VERBS)
                for item in node.body)
     ), None)
     if cls is None:
@@ -522,6 +534,8 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
     it would hide the change an operator needs to inspect. Integrity state and
     both hashes are therefore returned prominently instead of gating the read.
     """
+    from microclaw.completed_dataset import OFFLINE_VERBS
+
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else {}
     if name not in manifest:
         return {"error": f"No saved hook named '{name}'."}
@@ -568,28 +582,29 @@ def describe_saved_hook(name: str) -> dict[str, Any]:
             "provenance": provenance,
         }
 
-    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    classes = sorted((node for node in tree.body if isinstance(node, ast.ClassDef)),
+                     key=lambda node: node.name)
     cls = next((
         node for node in classes
         if any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-               and item.name in {"analyze_frame", "image_process_fn"}
+               and item.name in ("analyze_frame", "image_process_fn", *OFFLINE_VERBS)
                for item in node.body)
     ), None)
     if cls is None:
         return {
             "error": (
-                f"No top-level class defines analyze_frame or image_process_fn "
-                f"in saved hook '{name}'."
+                f"No top-level class defines a live callback or an offline callback "
+                f"({', '.join(OFFLINE_VERBS)}) in saved hook '{name}'."
             ),
             "name": name,
             "kind": "saved",
             "provenance": provenance,
         }
 
-    callback = (
-        "analyze_frame"
-        if any(getattr(node, "name", None) == "analyze_frame" for node in cls.body)
-        else "image_process_fn"
+    callback = next(
+        verb for verb in ("analyze_frame", "image_process_fn", *OFFLINE_VERBS)
+        if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and node.name == verb for node in cls.body)
     )
     parameters = _ast_constructor_parameters(cls)
     parameter_names = {item["name"] for item in parameters}

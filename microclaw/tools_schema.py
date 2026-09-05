@@ -2190,7 +2190,12 @@ TOOLS: list[dict[str, Any]] = [
                 "runner_contract": {
                     "type": "string",
                     "enum": ["fixed", "adaptive"],
-                    "description": "Runner that will execute the hook; adaptive requires analyze_frame.",
+                    "description": (
+                        "Static callback contract: fixed accepts live callbacks or saved offline "
+                        "adapters for run_analysis_on_saved_dataset; adaptive additionally "
+                        "requires analyze_frame. Saving an offline adapter does not make it "
+                        "a live acquisition hook."
+                    ),
                     "default": "fixed",
                 },
             },
