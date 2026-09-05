@@ -9122,3 +9122,95 @@ yields the identical binary from a real sample — did `run_autofocus` carry a
 `probe`, or `image_metric_reason`? That session is going to happen anyway.
 Operator's call, and the right one: *"no need to run again, stop here and take
 the free evidence."* Total replay spend $4.59 against a $6 authorisation.
+
+## design/75 block 75a — persistent, correlated acquisition diagnostics (merged 2026-09-05, `34ab5f3`)
+
+**D4 first, and the reason was in the gate rather than the code.** design/75
+splits into a bound (75b) and a record (75a), and the record shipped first
+because **D4 is the instrument the bound's constants are measured with**.
+Submission-to-result latency with the finalization segment broken out is not
+readable from anything on `main`: a plain `run_timelapse` result carries no
+duration, `AuditLog` records carry no timestamp, and `acquisition_progress`
+carries frame counts only. Without D4 the operator would have been timing a
+browser spinner with a stopwatch and `runtime_slack_s` would have come off that.
+The cost was one more block of exposure to the 15-minute hang, which is
+recoverable by restarting; the alternative was an unmeasured constant, which is
+not.
+
+**Two review rounds, 14 findings, and the two that mattered were the block
+failing its own purpose.** `AcquisitionDiagnosticWriter` reintroduced the
+unbounded wait D4 exists to bound, twice — `_enqueue_lifecycle`'s `queue.put`
+had no timeout, and `close()` blocked forever on `queue.join()` while being
+called from `run_session`'s `finally`, `serve()`'s `finally` and a new FastAPI
+`lifespan`. design/60's incident ended with the operator killing Micro-Manager;
+that one would have ended with them killing MicroClaw. Both were **reproduced**
+against an `AuditLog` whose `append` blocks, which is what a wedged
+`F:\DataSSD` is. Round 2's two real findings then came out of *verifying round
+1* rather than reading it: `submit()` could raise `queue.Empty` into
+pycro-manager's storage-monitor thread — the very thread the incident is about
+— and a failing callback test hung the whole suite instead of failing it, which
+is how it was found, because verifying the runner's own mutation produced no
+output and had to be killed at 120 s.
+
+**A runner's evidence is a claim until you run it.** All four of round 1's
+mutations and both of round 2's race arms were re-verified by the coordinator
+rather than accepted. One of the coordinator's own reproductions was wrong: the
+round-1 probe reported `close()` still unbounded when it had in fact been fixed,
+because the probe waited exactly the length of the grace it was measuring. **A
+probe sized at the boundary of the thing it measures cannot tell "bounded at 2
+s" from "never".**
+
+**The gate's selftest found five defects and the product none**, which is the
+whole argument for `CLAUDE.md`'s "run the gate against a bridge-shaped fake".
+Four were mechanical; the fifth would have cost a rig round — the confirm stubs
+did not accept `grant_metadata=`, which `tools.py:2707` passes on the
+acquisition threshold path, so any call above a machine's `confirm_above_frames`
+came back `TypeError: got an unexpected keyword argument 'grant_metadata'`. The
+product's own hint had already named it: *"This is an argument error, not a
+hardware fault."* Separately, the M2 arm called `snap_and_analyze` with an
+invented `exposure_ms` that the tool does not take — caught by checking the
+signature, not by guessing.
+
+**The demo gate reported 3 FAIL and the artifacts said 6 PASS.** All three were
+the coordinator's assertions. Limb A asserted the callback ordering our *fakes*
+produce; limbs C and D compared sequences when their claim was survival, so both
+failed for limb A's cause while their own claims held perfectly — the reverse
+cascade already found and fixed in limb B during the selftest and **not carried
+across to its siblings**. Fixing one instance of a defect is not fixing the
+defect. The limbs were re-scored from the operator's own files rather than
+re-run: the observation was a complete, unambiguous record set, and what was
+wrong was the assertion over it.
+
+**What the gates measured is worth more than what they scored.** Real
+pycro-manager accounts the frame **inside** `acq.__exit__`, in one identical
+ordering across **43 acquisitions on two rigs and two cameras**, so 96.7% (demo)
+and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call
+design/60 measured at 95 minutes. Every fake in the suite had it backwards. That
+is now `CLAUDE.md`'s eighth engine contract, and it confirms on hardware the
+premise D1 was built on: a bound must never be gated on the saved-frame
+callback, because the callback arrives on the path whose failure the bound
+exists to survive.
+
+**Two independent measurements of one quantity, and only M2 disagreed.** The
+file's supervised window is p50 278 ms / max 446 ms; the tool call is p50 774 ms
+/ max 969 ms. The 2.8x gap is work outside the supervised window. On the demo
+machine they agreed, so a single-rig gate would have shipped the wrong basis for
+the constants — the bound is measured from `_acquire_with_hooks` entry, so 446
+ms sizes `runtime_slack_s`, while 969 ms is what the operator waits.
+
+**Three coordinator errors worth naming.** A background full-suite run was
+started and then the tree was mutated underneath it, producing a meaningless
+77-failure result that had to be discarded and re-run. All three gate files were
+deleted by a `rm design/75-block75a-*.py` whose `cd` had landed in the worktree
+rather than the primary checkout — they were untracked, so git could not help;
+they were rewritten from context and the selftest re-run, which is what made the
+reconstruction checkable rather than hopeful. **Commit gate code as soon as it
+runs.** And the register rows were nearly numbered `R91`–`R92` from a reading of
+`main` alone, when `R91`–`R93` were already taken by an unmerged design/74
+branch: **`main` is not the register's authority while another branch is in
+flight.**
+
+**One process wrinkle with no clean fix.** The coordinator cannot check out the
+block's branch to tick its own checklist while the implementation worktree holds
+it, because git refuses two worktrees on one branch. Ticks were staged in the
+scratchpad and applied between runner turns.

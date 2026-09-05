@@ -540,11 +540,11 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — seven contracts we got wrong
+## The pycro-manager acquisition engine — eight contracts we got wrong
 
 The first three were found on a rig by block 52a, the fourth by block 56, the
-fifth by design/56, the sixth by design/55, and the seventh by an operator's M2
-dSTORM run — each after a full green suite.
+fifth by design/56, the sixth by design/55, the seventh by an operator's M2
+dSTORM run, and the eighth by block 75a's gate — each after a full green suite.
 The first five were missed because a test fake encoded our assumption instead of
 the hardware's behaviour; the sixth because every test that could have caught it
 supplied the one argument whose absence was the defect. Check code against these
@@ -636,6 +636,26 @@ input, ask which fixtures produce that shape, and write one that does.
   `HOOK_CAPABILITY_ARGS` in `tools.py`; **add a new capability there first**, or
   the parameterized refusal matrix generates no case for it and it is silently
   unguarded.
+
+- **The saved-frame callback arrives inside `__exit__`, not during
+  `acquire()`.** Every fake in this suite fires `image_saved_fn` while
+  `acquire()` runs. Real pycro-manager does the opposite, in **one identical
+  ordering across 43 acquisitions on two rigs and two cameras** (block 75a's
+  gate, 2026-09-05, the demo machine's DemoCamera and M2's Andor):
+  `construction → event submission → mark_finished → first frame accounted →
+  planned-final frame accounted → teardown completion`. So **a one-frame
+  acquisition is almost entirely `await_completion()`** — 96.7% of it on the
+  demo machine (158.8 ms of 164.1 ms) and 99.1% on M2 (275.3 ms of 277.8 ms),
+  the same call design/60 measured at **95 minutes** and the call block 60a's
+  bound was written for. Two consequences. Frame accounting happens on the
+  thread `await_completion` joins, so **a bound or a phase must never be gated
+  on the saved-frame callback**: if the notification path is what failed,
+  `frames_accounted` is 0 and any predicate over it never fires — which is the
+  defect design/75's first draft shipped. And an estimate built from exposure
+  and `min_start_time` models none of this: `plan.estimated_duration_s` for one
+  50 ms frame is 0.05 s against a measured 0.45 s worst case, so a runtime
+  ceiling derived from it is not a bound on anything the run actually spends
+  its time doing.
 
 - **`acquire()` only submits.** It returns an `AcquisitionFuture`; completion is
   awaited in `Acquisition.__exit__` (`mark_finished()` then `await_completion()`).
