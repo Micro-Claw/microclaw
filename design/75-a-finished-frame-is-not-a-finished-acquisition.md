@@ -1215,9 +1215,93 @@ notebook.**
       crossed and the `grant_metadata` fix in the confirm stubs was **not**
       exercised on hardware. It stays covered by selftest case 8 alone.
 
-**Step 6, part 2 — the M2 arm.** Still owed. It is the only part that sets a
-constant, and the demo numbers above are what its numbers will be compared
-against.
+**Step 6, part 2 — the M2 arm.** Run 2026-09-05, Andor, `F:\DataSSD`, 50 ms,
+`laser_slot=3`, a `snap_and_analyze` before each. **n=20, no torn lines, no
+failures, no incomplete records, no confirmation raised.** The arm's own exit
+was 0.
+
+- [x] **The callback ordering replicates on a second rig and a different
+      camera.** One distinct ordering in 20 of 20 on M2, identical to 23 of 23
+      on the demo machine — **43 acquisitions, two rigs, one order**. That
+      promotes it from "the demo machine did this" to an engine contract, and
+      it belongs in `CLAUDE.md` §"The pycro-manager acquisition engine".
+- [x] **99.1% of a one-frame acquisition on M2 is `await_completion()`:**
+
+      | segment | p50 | max | share |
+      |---|---|---|---|
+      | construction → mark_finished | 0.0 ms | 1.8 ms | 0.0% |
+      | **mark_finished → first frame accounted** | **275.3 ms** | **429.8 ms** | **99.1%** |
+      | first → planned-final frame | 0.0 ms | 0.0 ms | 0.0% |
+      | planned-final → teardown completion | 3.2 ms | 15.6 ms | 1.2% |
+      | **supervised window, total** | **277.8 ms** | **446.1 ms** | 100% |
+
+      M2 is about 1.7x the demo machine's 158.8 ms, which is what an iXon
+      writing to `F:\DataSSD` against a DemoCamera writing locally should look
+      like.
+- [x] **The two independent measurements disagree by 2.8x, and that is the
+      number the report does not state.** The file's supervised window is
+      p50 278 ms / max 446 ms; the *tool call* is p50 774 ms / max 969 ms. The
+      ~0.5 s difference is work outside the supervised window — `plan_events`,
+      `_authorize_acquisition`, the exposure and laser-slot writes before
+      `_acquire_with_hooks`, and the result assembly and
+      `declared_illumination_state` after it. On the demo machine the two
+      agreed, so only M2 exposed it. **Both matter, for different terms**:
+      `runtime_deadline = started + runtime_bound` is measured from
+      `_acquire_with_hooks` entry, so the **446 ms** window sizes
+      `runtime_slack_s`; the operator's wait is the **969 ms** call, so D2's
+      delivery ceiling has to be stated against that.
+- [x] **The failure did not reproduce, and that is not evidence.** 20 of 20
+      returned. At the observed 1-in-14 rate, P(zero failures in 20) =
+      (13/14)^20 = **0.23**, so a clean run of this size is unsurprising and
+      says nothing about whether the rate is real. n=20, one rig, one day.
+
+### D1's two constants, chosen from the measurement (limb 3)
+
+design/75 asks for at least 10x headroom over the maximum healthy one-frame
+end-to-end latency. The bound governs the supervised window, so the basis is
+**446 ms**:
+
+```python
+SHORT_FIXED_QUIET_FLOOR_S = 5.0     # 11.2x the measured M2 maximum
+SHORT_FIXED_RUNTIME_SLACK_S = 5.0   # 11.2x, and it is the term that expires
+```
+
+Both terms do work at these values, which is what §"Why both terms" asked for
+and what the provisional 30 s did not deliver. For a one-frame 50 ms event
+`est ≈ 0.05 s`, so `max(est × 1.5, est + 5.0) ≈ 5.05 s`, and the quiet term
+clears at `last_saved + 5.0`:
+
+| shape | expiry | + poll, camera probe, diagnostic flush |
+|---|---|---|
+| zero frames accounted (the incident's likely shape) | ~5.05 s | **≤ 10.1 s** |
+| frame accounted at 0.28 s, then teardown hangs | ~5.28 s | **≤ 10.3 s** |
+
+Against ~900 s today and the provisional 30/30's 30–65 s. The point is not the
+tenfold reduction, it is that **10 s is inside an operator's patience and 900 s
+is not** — which is why 2026-09-04 produced no server-side record at all.
+
+Two cautions carried forward with the numbers. **This is n=20 on one rig on one
+day**, taken without contention, and the failing session's own 13 successful
+runs were never timed. And **75b's tests should assert the ceiling formula, not
+the constants**, so a later measurement can move them without rewriting the
+suite.
+
+### One shortfall against D4's own motivation
+
+D4 says the correlation id exists "so a snap in the Core log can be matched to a
+call — the gap that made finding 5 unresolvable". **It does not do that.**
+`snap_and_analyze` and `set_exposure` never reach `_acquire_with_hooks`, so the
+M2 file contains **zero** records for the 20 snaps and the one exposure write
+that this arm made; only the 20 acquisitions are recorded. That is exactly what
+D4 as written specifies ("Record per acquisition") and it is not a defect in
+what was built — but finding 5's question is still open, and this notebook
+should not leave it looking closed. Owed to `design/70` as a register row rather
+than folded into 75b, which must not grow.
+
+**Register ids are deliberately not assigned here.** `origin/main` stops at
+`R90`, but design/74's close-out is recorded elsewhere as having claimed
+`R91`–`R93`; the ids get checked against the register at step 10 rather than
+guessed now.
 
 **Steps 7–8 — fix, sized to the finding; the user re-tests.** Loop 5–8.
 
@@ -1242,5 +1326,5 @@ Baseline before the notebook: `main` `444d694`, coordinator-run suite
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Written and pushed, not yet run.** `design/75-block75a-gate.md`: part 1 demo machine (7 limbs, ~5 min, with a control arm on `main`), part 2 M2 (~3 min, 40 exposures, the latency that sizes 75b). Selftest `design/75-block75a-gate-selftest.py` — 8 cases, 4 deliberate failures — passes on the branch and fails at limb E on `main`. It found **5 defects in the gate and 0 in the product**, the load-bearing one being confirm stubs that did not accept `grant_metadata=`, which would have broken every threshold-crossing call on the rig. | |
+| 75a | `design75/persistent-acquisition-diagnostics` | `444d694` (2026-09-04), checklist `bebc515`, worktree `../microclaw-design75a` | `671d8fe` (1 Codex start + 2 revision turns; the second was killed mid-flight for memory pressure with its edits landed, and the coordinator committed them after review). Round 1: 9 findings, 2 reproduced — the writer reintroduced the unbounded wait D4 exists to bound, in the lifecycle enqueue and in `close()`, and a writer with no sink silently removed the CLI's stderr diagnostics. Round 2: 5 findings, both real ones found by verifying round 1 — `submit()` could raise `queue.Empty` into pycro-manager's storage-monitor thread, and a failing callback test hung the suite instead of failing it. Coordinator suite 2830/99/3 against a 2817 baseline, reconciling exactly; all four mutations and both race arms verified independently. | **Both parts run 2026-09-05; PASS.** Demo machine: the gate reported 3 FAIL, the artifacts say **6 PASS / 1 NOT EXERCISED / 0 FAIL** — all three failures were the coordinator's assertions, re-scored from the operator's own files and fixed in `4cb2d24`. M2: n=20, no torn lines, no failures, exit 0. **The finding is the engine's, not the product's**: real pycro-manager accounts the frame *inside* `acq.__exit__`, in one identical ordering across **43 acquisitions on two rigs**, so 96.7% (demo) and 99.1% (M2) of a one-frame acquisition is `await_completion()` — the call design/60 measured at 95 minutes. Limb D produced the incident's own evidence shape on demand: a call with a beginning and no end. Constants chosen at 5.0 s / 5.0 s, 11.2x the measured M2 maximum. Selftest now 9 cases; its old failure arm was the real hardware behaviour and now expects PASS. | |
 | 75b | | | held until 75a merges and the M2 arm is scored | demo machine (limbs 1, 4) | |
