@@ -1304,7 +1304,7 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **MMStudio MDA runs go around the supervised acquisition path, so any acquisition-lifecycle event added there does not fire for them.**
 
-- **Status** — OPEN - pre-existing, and not introduced by `design/71`; noticed while scoping where a community package's acquisition trigger would observe from.
+- **Status** — OPEN - pre-existing, and not introduced by `design/71`; noticed while scoping where a community package's acquisition trigger would observe from. **Widened 2026-09-05 by `design/75`, which asked for this to be said in its close-out rather than rediscovered later**: neither block of that notebook reaches `run_mda` either. It gets no D4 diagnostic record (no correlation id, no lifecycle timestamps, no file that survives a restart) and no D1/D2 supervised-runtime bound (no `AcquisitionSupervisionPolicy`, no typed `AcquisitionUnterminated`, no session refusal). So an MMStudio MDA that hangs in teardown still hangs the way 2026-09-04 did, and leaves the same nothing behind.
 - **Importance** — LOW - `run_mda` is a deliberate hand-off to MMStudio's own engine and nothing today depends on observing it. It matters only once something subscribes to acquisition lifecycle events and quietly gets none from this route.
 - **Where** — LOCAL - the divergence is visible in the call path; whether to close it is a design question about what `run_mda` promises.
 - **Block** — NONE
