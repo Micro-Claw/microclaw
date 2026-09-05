@@ -369,6 +369,26 @@ model as `class_docstring`. `tools_schema.py` has none.
    **77b replaces this wording when the default changes**; that churn is expected
    and is not a reason for 77a to document a behaviour that does not exist yet.
 
+6. **Make the advertised path reachable** (added mid-block, operator decision
+   2026-09-05, after review round 1). The reconciled skill sends an author to
+   `run_analysis_on_saved_dataset` "with a reviewed, hash-pinned adapter from the
+   saved manifest", and `generate_and_save_hook` — the **only** caller of
+   `save_hook` — refused that class shape outright:
+   `"No top-level class defines analyze_frame(self, image, metadata) or
+   image_process_fn(self, image, metadata, event_queue)."` The runner accepted the
+   offline verbs; the saver did not, so no adapter could reach the manifest at
+   all and round 1 would have turned the stale text's false negative into a false
+   positive. The suite missed it because `tests/test_completed_dataset.py`'s
+   `offline_home` fixture **writes the manifest entry by hand** — a fixture that
+   cannot reach the code is not coverage of it. The static contract check now
+   knows `OFFLINE_VERBS`, arity-checked per verb, and the end-to-end test saves
+   through the real tool and runs what it saved.
+
+   And a saved offline adapter has to say **which runner takes it**: `resolvable`
+   answers "would the source be refused", not "by whom", and the prompt's own
+   ladder says to name a resolvable hook and use it. `describe_hook` and
+   `list_hooks` carry a `route`; attaching one to an acquisition refuses by name.
+
 Out of scope for 77a: `acquisition_order`, event construction, emitters, the
 timing origin. Those are 77b, and the open question above gates them.
 
@@ -458,6 +478,6 @@ design-only and changes no count.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 77a | `design77/truthful-guidance` | `32a95f1` (2026-09-05), worktree `../microclaw-77a` | | | |
+| 77a | `design77/truthful-guidance` | `32a95f1` (2026-09-05), worktree `../microclaw-77a` | `7f813ab` + `14dbdc5` + `6e7c571` (1 Codex start, 1 revision, 1 coordinator commit). **Round 1 shipped a skill that advertised an unreachable path** — see checklist item 6; the coordinator found it by trying the save through the tool rather than reading the diff, which no amount of diff review would have shown. Four smaller round-1 findings: the reconciled offline section stated the verbs and the artifact budget but **not the return contract**, and this skill teaches `HookResult` everywhere, so a reader would have hit `TypeError: Offline analysis results must be dictionaries or None`; the prompt's 4b ladder still taught `analyze_frame` as the only saved-hook shape, which is the incident's second half; the new leak guard covered skills/schema/prompt/hook-docstrings but **not strings the tools return**, which is exactly the site the notebook's own enumeration missed (`calibration_note`, `tools.py:5818`); and the "never cite development documents" rule was filed under saved-hook resolvability rather than in the Reporting section where this prompt keeps its speech rules. **The revision turn hit its provider usage limit after committing and before reporting**, so `14dbdc5` arrived with no handoff: the coordinator reviewed the diff, re-ran the suite, and reproduced every watch-it-fail independently rather than accepting it. Round 2 then left `list_hooks` calling an offline adapter `resolvable` with no route and refusing it at attach time with a bare `AttributeError`; `6e7c571` is the coordinator's fix. Coordinator suite **2868 passed / 99 skipped**, against a 2862 baseline — 2862 + 6 new, nothing else moved. Watch-it-fail reproduced independently at each round: both round-1 guards on `f6eb4d0`; all four offline save/run tests on `7f813ab` with the real preflight refusal quoted; the AST half of the leak guard isolated by restoring `f6eb4d0`'s `tools.py` alone, where it reports the `calibration_note` leak **and only that**; and `KeyError: 'route'` plus the old `AttributeError` for the coordinator commit. | | |
 | 77b | — | not started; blocked on the open question above | | | |
 | 77c | — | not started; follows 77b | | | |
