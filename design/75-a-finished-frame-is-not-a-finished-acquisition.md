@@ -1358,7 +1358,50 @@ Pre-merge suite **2830 passed / 99 skipped / 3 warnings**; nothing under
 
 ## Block 75b — the supervised-runtime bound (D1, D1a, D2, D3)
 
-Ready to assign. Everything it was waiting on is now measured.
+Ready to assign, and **nothing is outstanding** — no owed evidence, no
+unanswered environment question, no decision parked. A cold session can start
+at `CLAUDE.md` §"The block workflow" step 1 and read only this section plus
+§"Design" above.
+
+### Where 75a's evidence lives
+
+The raw artifacts are in the operator's archive, not in this repository
+(`project-rig-evidence-archive`: the folder is `Micro-Claw`, with a hyphen, so
+a `*microclaw*` glob misses it):
+
+```
+~/Documents/Documents - Beyonce/Projects/Micro-Claw/block75a-evidence-demo/
+    gate.txt, score.json, control-score.json,
+    *_limb{A,B,C,D}_microclaw_acquisitions.jsonl, data/
+~/Documents/Documents - Beyonce/Projects/Micro-Claw/block75a-m2/
+    m2-latency.json, m2-latency.txt,
+    20260905_125616_m2_microclaw_acquisitions.jsonl
+```
+
+Every number quoted in §"Step 6" was derived from those two folders and can be
+re-derived from them. The gate and the arm that produced them are
+`design/75-block75a-demo-gate.py` and `design/75-block75a-m2-latency.py`, and
+`design/75-block75a-gate-selftest.py` runs both against a bridge-shaped fake.
+
+### The environment facts 75b's gate will need
+
+Established, so they are not re-asked:
+
+- **The demo machine's browser is Firefox** — `design/69a-gate.md:70`, "the
+  desktop shortcut's default on this machine". 75b's mandatory limb is a
+  demo-machine limb, so this is the browser its runbook must name. **The
+  coordinator asked the operator for this twice before checking**, which is
+  `CLAUDE.md`'s own rule — grep `design/*.md` before inventing a step — ignored.
+- Demo machine: `D:\Code\microclaw`, PowerShell, `uv run python`, an
+  unredirected `uv run python -c "print('uv warm')"` first, MM on port 4827.
+- M2: `C:\Users\<you>\Code\microclaw`, same shell and warm-up, datasets on
+  `F:\DataSSD`. **M2's browser is still unrecorded** and is not needed for the
+  gate layout below.
+- 75a's own gate layout is the precedent for splitting this: the injected
+  blocking-teardown limb needs no rig, because design/60 gated the same class of
+  bound on the demo machine.
+
+### What it is
 
 **Its constants are settled** — `SHORT_FIXED_QUIET_FLOOR_S = 5.0` and
 `SHORT_FIXED_RUNTIME_SLACK_S = 5.0`, 11.2x the measured M2 maximum, giving a
