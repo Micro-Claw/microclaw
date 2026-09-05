@@ -247,3 +247,26 @@ def test_built_wheel_contains_the_source_tree_skill_catalog(tmp_path):
         capture_output=True, text=True,
     )
     assert set(json.loads(completed.stdout)) == tree_names
+
+
+def test_model_visible_guidance_has_no_development_references():
+    import re
+
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.tools_schema import TOOLS
+
+    surface = {"SYSTEM_PROMPT": agent.SYSTEM_PROMPT}
+    assert skills.SKILL_CATALOG
+    for item in skills.SKILL_CATALOG:
+        surface[f"skill:{item.name}"] = tools.load_skill(None, None, item.name)["documentation"]
+    # Include parameter descriptions as well as each tool's main description.
+    assert TOOLS
+    surface["TOOLS"] = json.dumps(TOOLS)
+    assert PRECODED_HOOK_REGISTRY
+    for name in PRECODED_HOOK_REGISTRY:
+        surface[f"hook:{name}"] = tools.describe_hook(None, None, name)["class_docstring"] or ""
+    leaks = {
+        name: re.findall(r"[^\n]*\bdesign/\d+[^\n]*", text)
+        for name, text in surface.items() if re.search(r"\bdesign/\d+", text)
+    }
+    assert not leaks, f"Model-visible development references: {leaks}"

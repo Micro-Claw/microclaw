@@ -610,3 +610,31 @@ def test_shared_writer_closed_vocabulary():
     from microclaw.hooks import write_analysis_observation
     with pytest.raises(ValueError, match="Unknown analysis observation status"):
         write_analysis_observation([], analyzer="a", analyzer_version="1", result={}, status="final")
+
+
+def test_hook_skill_offline_contract_matches_runner(offline_home, monkeypatch):
+    from microclaw.skills import load_skill_text
+
+    # Observe the defaults the imported runner actually passes to its writer;
+    # they are local to that function, not exported constants.
+    limits_seen = []
+    writer = completed_dataset.write_hook_artifact
+
+    def record_limits(target, filename, payload, *, state, **limits):
+        limits_seen.append(limits)
+        return writer(target, filename, payload, state=state, **limits)
+
+    monkeypatch.setattr(completed_dataset, "write_hook_artifact", record_limits)
+    save, *_ = offline_home
+    save("contract_probe", '''
+class ContractProbe:
+ def analyze_completed_dataset(self, dataset_view, selection, context):
+  context.artifacts.emit("probe.bin", b"probe")
+''')
+    assert run(offline_home, "contract_probe")["status"] == "completed"
+    assert len(limits_seen) == 1
+    text = load_skill_text("hook-authoring")
+    missing = [verb for verb in completed_dataset.OFFLINE_VERBS if verb not in text]
+    missing.extend(f'"{key}": {value}' for key, value in limits_seen[0].items()
+                   if f'"{key}": {value}' not in text)
+    assert not missing, f"Skill omits offline runner contract: {missing}"

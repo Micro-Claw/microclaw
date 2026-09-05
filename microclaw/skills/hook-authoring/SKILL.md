@@ -59,13 +59,37 @@ from a package name. To branch acquisition on a group of images, use microclaw's
 `run_adaptive_survey` candidates-queue runner (below), NOT pycro-manager's native
 `AcquisitionFuture.await_image_saved(...)` pattern: microclaw deliberately does not
 hand hooks the `Acquisition` object, and detection stays inside the hash-pinned,
-logged `analyze_frame` rather than a runner-thread wait loop (design/24). For
-per-image work after persistence use `image_saved_fn`. For completed data, the offline
-orchestrator opens the `ndstorage.Dataset` (from `acq.get_dataset()` or a direct
-`ndstorage` import; do not rely on a version-dependent `pycromanager` re-export) and
-gives the adapter a read-only, selection-limited `DatasetView`. That offline
-orchestrator and `DatasetView` are a design/26 proposal, not yet implemented; do not
-claim a generated adapter can run offline until they ship.
+logged `analyze_frame` rather than a runner-thread wait loop, so branching stays
+inside reviewed analysis. For per-image work after persistence, inspect the
+installed callback contract before choosing `image_saved_fn`.
+
+For completed data, use `run_analysis_on_saved_dataset` with a reviewed,
+hash-pinned adapter from the saved manifest. Implement
+`analyze_completed_dataset(dataset_view, selection, context)` for whole-selection
+work, or `analyze_saved_frame(image, metadata, context)` for per-frame work.
+The runner opens the `ndstorage.Dataset`; the whole-selection adapter receives a
+read-only `DatasetView` restricted to the requested axis selection, with
+`coordinates`, `read_image`, `read_metadata`, and bounded `as_array` access.
+The context provides observations, cancellation and `context.artifacts`, an
+`ArtifactDirectory` with `emit(filename, payload)`. It exposes no output path or
+live hardware capabilities. With an array payload and a `.tif`/`.tiff` filename,
+`emit` writes through `tifffile`, including multi-page TIFF movies; bytes are
+written as supplied. Choose all intended time points, preserve frame order, and
+verify the written movie before calling a retrospective annotation delivered.
+Caller-settable `artifact_limits` default to:
+
+```json
+{"max_artifact_bytes": 67108864, "max_count": 64, "max_total_bytes": 268435456}
+```
+
+That is 64 artifacts, at most 64 MiB each and 256 MiB total, measured on the
+encoded artifacts. Filenames must be bare names and must not collide.
+
+This skill explains how to compose tools; it does not maintain a competing
+capability declaration. Check the installed tool schema and the tool's own
+refusal for availability and restrictions. Inconclusive discovery means “not
+verified”, not “unimplemented”. An unwritten adapter is different from an
+unavailable execution path; a missing dependency blocks the adapter that needs it.
 Stateful streaming remains available when those boundaries do not fit.
 `analyze_frame` itself does not receive a batch. The trusted adapter's
 pre-hardware callback is not exposed to saved source.
@@ -245,7 +269,7 @@ refused; the corresponding `hook_action` records are authoritative.
 
 DiscardFrame returns None from the parent image processor after recording the
 observation. The position is still moved to and still exposed: discard saves storage,
-not dose. It does not skip acquisition or reduce dose (design/27).
+not dose: filtering happens after exposure, so it cannot reduce dose.
 
 ``RequestAutofocus`` is honored only by ``run_adaptive_survey`` for a saved or
 generated hook when the caller supplies ``autofocus_budget``. The budget counts
@@ -302,8 +326,8 @@ Called after every image arrives from the camera, before it is saved.
   - Returning None discards the image and NOTHING else: it keeps the frame out
     of the dataset. No event is dropped — every remaining event for that
     position still moves the stage, opens the shutter, and exposes the sample;
-    only the pixels are thrown away afterward (design/27). This is a dataset
-    filter, never a way to stop a position from being exposed.
+    only the pixels are thrown away afterward; submitted events still execute.
+    This is a dataset filter, never a way to stop a position from being exposed.
   - NEVER call event_queue.put(...) — see the event_queue section below. Every
     microclaw runner silently discards anything a hook puts there: it adds no
     event, and event_queue.put(None) does NOT end the acquisition early.
@@ -371,13 +395,13 @@ callback may put follow-up events directly on that queue. It does not receive or
 an `AcquisitionFuture`. The separate future API is returned by `acq.acquire()` and lets
 the acquisition owner await saved images. Microclaw uses neither mechanism here;
 adaptive branching goes through the `run_adaptive_survey` candidates-queue runner, so
-a hook is never handed an `Acquisition` or its future (design/24).
+a hook is never handed an `Acquisition` or its future; the runner owns dispatch.
 
 Microclaw's current acquisition runner does not yet wire this constructor argument.
 Do not claim a generated hook can implement it until that native `image_saved_fn`
 plumbing is added and tested.
 
-## Skipping and stopping — what a hook can actually do (design/27)
+## Skipping and stopping — discarding pixels versus preventing exposures
 
 "Skip this event" via a return value DOES NOT EXIST over the ZMQ bridge, on
 any hook, under any microclaw runner. pyjavaz sends a hook's None return as an
@@ -441,7 +465,7 @@ by the time any image is processed, the acquisition's terminator is already
 queued ahead of (or the event source has already consumed) anything the hook
 adds, so the hook's event is orphaned and never executed. Nothing raises and
 nothing warns — the run completes looking successful while the added event
-was silently dropped (design/24).
+was silently dropped behind the terminator.
 
   - Never push new events:  event_queue.put({...}) is silently discarded.
   - Never push None:        event_queue.put(None) does NOT end the acquisition
@@ -517,14 +541,15 @@ there is no hard deadline, memory cap, network isolation, or native-crash recove
   React after each image is persisted    image_saved_fn (native pycro-manager;
                                            not yet wired by Microclaw)
   Branch acquisition on a group of       run_adaptive_survey + adaptive hook
-    images before deciding                 (NOT AcquisitionFuture; see design/24)
-  Analyze a completed saved dataset      offline adapter over restricted DatasetView
-                                           (orchestrator owns ndstorage.Dataset;
-                                            design/26 proposal, not yet implemented)
+    images before deciding                 (runner owns dispatch; no AcquisitionFuture)
+  Analyze a completed saved dataset      run_analysis_on_saved_dataset + reviewed
+                                           saved adapter: analyze_completed_dataset
+                                           or analyze_saved_frame; selection-limited
+                                           reads and bounded artifact emission above
 
 ## Observation-only SNR hook
 
-`snr_observer` is the pre-coded positive-control hook for design/26 Run A. It
+`snr_observer` is the pre-coded observation-only reference for fixed surveys. It
 calls the shared `compute_stats` implementation and writes one
 `microclaw.analysis-observation/v1` record per image, including SNR, focus metric
 and validity, intensity statistics, saturation, analysis time, and acquisition
