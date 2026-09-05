@@ -3,6 +3,13 @@
 Closes register row **R91**. Settles LOCAL — the fixture is a real Nikon sweep
 already on disk. No rig is needed to decide it or to gate it.
 
+**CLOSED 2026-09-05**, block 76a merged. A property sweep now reports
+`value_spans`, and its no-match refusal names each observed value's measured-Z
+extent and run count. On the recorded Nikon sweep the refusal now says
+`'Within range of focus search' at [2385.975, 2399.0] um (1 run)` — the
+coordinate that session spent 348 further planes re-deriving, and got wrong by
+20 µm.
+
 ## Problem
 
 A `stop_when_found` property sweep reports **which** values it observed and not
@@ -142,4 +149,4 @@ job; they are not findings.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 76a | `design76/sweep-value-spans` | `fea3a89` (2026-09-05), worktree `../microclaw-76a` | | **No rig gate** — see §Blocks. | |
+| 76a | `design76/sweep-value-spans` | `fea3a89` (2026-09-05), worktree `../microclaw-76a` | `62468b0` (1 Codex start + 1 revision turn). **Round 1 shipped a fix that undid itself**: `_band_admit`'s no-match branch went from `sorted(set(readings))` — bounded by *distinct values* — to one entry per *run*, bounded by *planes*. Coordinator measured it on the runner's tree: 491 alternating readings produced a **14,001-character refusal listing 491 runs**, where the old string was `observed ['A', 'B']`. Not hypothetical — `_band_admit` carries a branch for non-contiguous in-range planes and design/56 measured that lagging-sensor case on a PFS, so intermittency is exactly where a caller most needs a readable refusal. Re-bounded to one entry per distinct value with its extent and run count: **331 characters**, and the Nikon fixture still reads `'Within range of focus search' at [2385.975, 2399.0] um (1 run)`. Three smaller findings: `value_spans` wrote raw floats beside a neighbour rounded to 3 (`0.1` and `0.10000000000000009` for one plane, in one payload); the run-grouping was hand-rolled **twice**, lookahead in `_band_admit` and lookback in `_sweep_payload`, which the coordinator's own "prefer no new helper" wording had invited — now one `_value_spans`, **added to the exporter's inline tuple**; and a pre-existing test named `..._lists_distinct_observed_values` still passed while no longer describing the branch, since renamed with *strengthened* assertions. **Four of the runner's five reported failures were the coordinator's**: the baseline was measured outside the Codex sandbox, which cannot bind a socket or run `pip wheel`, so it was unmeetable — the runner was right to stop and right to refuse to edit `test_suite_integrity.py`. **The runner corrected the design**: D1 said measured and requested Z differ on every plane; it is 455 of 491, checked against the artifact. Coordinator suite **2837 passed / 99 skipped**, outside the sandbox, against a 2830 baseline — 2830 + 7 new, nothing else moved. Watch-it-fail reproduced independently on `7844e5c`: `KeyError: 'value_spans'`, and the refusal assertion failing against the real old `observed ['Out of fo…` string through the real `single_sweep_autofocus` caller. | **No rig gate** — see §Blocks. Nothing here touches dose, motion or hardware, and the fixture is a real rig's own recorded payload. | |
