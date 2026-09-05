@@ -44,7 +44,7 @@ class FocusProbe:
     read: Callable[[], float | str | tuple[float | str, bool]]
     #: Resolved dwell actually used, so the payload never has to re-derive it.
     choose: Callable[[list], int]
-    admit: Callable[[list], Optional[str]]
+    admit: Callable[[list, list[float]], Optional[str]]
     exposures_per_plane: int
     describe: str
     in_focus_values: frozenset[str] = frozenset()
@@ -121,7 +121,24 @@ def _strings(values) -> list[str]:
     return [str(value) for value in values]
 
 
-def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
+def _value_spans(readings, measured_z_positions, in_focus_values):
+    """Contiguous equal readings with measured endpoints and inclusive indices."""
+    spans = []
+    for index, value in enumerate(readings):
+        if index == 0 or value != readings[index - 1]:
+            spans.append({
+                "value": value,
+                "z_um": [measured_z_positions[index]] * 2,
+                "planes": [index, index],
+                "in_range": value in in_focus_values,
+            })
+        else:
+            spans[-1]["z_um"][1] = measured_z_positions[index]
+            spans[-1]["planes"][1] = index
+    return spans
+
+
+def _band_admit(readings, measured_z_positions, in_focus_values, step_um, lo_um, hi_um):
     flags = [reading in in_focus_values for reading in readings]
     start, length = longest_true_run(flags)
     if len(set(readings)) == 1 and readings and not flags[0]:
@@ -134,10 +151,26 @@ def _band_admit(readings, in_focus_values, step_um, lo_um, hi_um):
             "constant too. Widen the window before suspecting the hardware."
         )
     if length == 0:
+        # One entry per distinct value keeps intermittent sensors readable.
+        extents = {}
+        for span in _value_spans(readings, measured_z_positions, in_focus_values):
+            value = span["value"]
+            lo, hi = sorted(span["z_um"])
+            if value not in extents:
+                extents[value] = [lo, hi, 1]
+            else:
+                extent = extents[value]
+                extent[0] = min(extent[0], lo)
+                extent[1] = max(extent[1], hi)
+                extent[2] += 1
+        observed = [
+            f"{value!r} at [{lo}, {hi}] um ({runs} run{'s' if runs != 1 else ''})"
+            for value, (lo, hi, runs) in extents.items()
+        ]
         return (
             f"No plane between {lo_um} and {hi_um} um read one of "
             f"{sorted(in_focus_values)} ({len(readings)} planes, {step_um} um "
-            f"step); observed {sorted(set(readings))}. The focus is outside "
+            f"step); observed {'; '.join(observed)}. The focus is outside "
             "this window, or the step is coarser "
             "than the lock's capture range. This sweep costs no exposures — "
             "widen it or halve the step."
@@ -193,7 +226,7 @@ def image_probe(ctrl, metric_fn, region, min_contrast) -> FocusProbe:
         return metric_fn(snap_to_numpy(ctrl))
     def choose(readings):
         return int(np.argmax(readings))
-    def admit(readings):
+    def admit(readings, measured_z_positions):
         contrast = curve_contrast(readings)
         if contrast < min_contrast:
             return (
@@ -243,8 +276,8 @@ def property_probe(core, device, prop, in_focus_values=None, *,
                 [reading in admitted for reading in readings]
             )
             return start + length // 2
-        def admit(readings):
-            return _band_admit(readings, admitted, step_um, lo_um, hi_um)
+        def admit(readings, measured_z_positions):
+            return _band_admit(readings, measured_z_positions, admitted, step_um, lo_um, hi_um)
         return FocusProbe(
             read=read, choose=choose, admit=admit,
             exposures_per_plane=0,
@@ -261,7 +294,7 @@ def property_probe(core, device, prop, in_focus_values=None, *,
         return float(core.get_property(device, prop))
     def choose_number(readings):
         return int(np.argmax(readings))
-    def admit_number(readings):
+    def admit_number(readings, measured_z_positions):
         del readings
         return None
     return FocusProbe(
@@ -525,7 +558,7 @@ def coarse_then_fine_autofocus(
         raise
     coarse_contrast = (curve_contrast(coarse.metric_values)
                        if active_probe.exposures_per_plane else None)
-    cause = active_probe.admit(coarse.metric_values)
+    cause = active_probe.admit(coarse.metric_values, coarse.measured_z_positions)
     if coarse.unsettled_indices:
         cause = (f"{len(coarse.unsettled_indices)} plane readings did not settle; "
                  "an unsettled sweep cannot converge.")
@@ -559,7 +592,7 @@ def coarse_then_fine_autofocus(
         raise
     fine_contrast = (curve_contrast(fine.metric_values)
                      if active_probe.exposures_per_plane else None)
-    cause = active_probe.admit(fine.metric_values)
+    cause = active_probe.admit(fine.metric_values, fine.measured_z_positions)
     if fine.unsettled_indices:
         cause = (f"{len(fine.unsettled_indices)} plane readings did not settle; "
                  "an unsettled sweep cannot converge.")
@@ -631,7 +664,7 @@ def single_sweep_autofocus(
         raise
     contrast = (curve_contrast(sweep.metric_values)
                 if active_probe.exposures_per_plane else None)
-    cause = active_probe.admit(sweep.metric_values)
+    cause = active_probe.admit(sweep.metric_values, sweep.measured_z_positions)
     if sweep.target_found:
         cause = None
     if sweep.unsettled_indices:

@@ -161,7 +161,7 @@ def test_06_sweep_probe_move_delivers_the_declared_core_focus_accuracy():
     ctrl.core = core
     ctrl._guard = _focus_guard(0.35)
     probe = FocusProbe(read=lambda: 1.0, choose=lambda values: 0,
-                       admit=lambda values: None, exposures_per_plane=0,
+                       admit=lambda values, measured_z_positions: None, exposures_per_plane=0,
                        describe="fixture")
     with pytest.raises(StageMoveError) as caught:
         sweep_autofocus(ctrl, 9, 11, 1, settle_ms=0, move_to_best=False,
@@ -200,7 +200,7 @@ def test_06_declared_band_survives_a_controller_that_computes_its_guard():
     ctrl = ComputedGuard()
     ctrl.core = core
     probe = FocusProbe(read=lambda: 1.0, choose=lambda values: 0,
-                       admit=lambda values: None, exposures_per_plane=0,
+                       admit=lambda values, measured_z_positions: None, exposures_per_plane=0,
                        describe="fixture")
     with pytest.raises(StageMoveError) as caught:
         sweep_autofocus(ctrl, 9, 11, 1, settle_ms=0, move_to_best=False,
@@ -301,7 +301,7 @@ def test_08_autofocus_aggregates_unverifiable_planes_without_refusal():
     ctrl.core = core
     ctrl._guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(z_min=0, z_max=20)))
     probe = FocusProbe(read=lambda: 1.0, choose=lambda values: 0,
-                       admit=lambda values: None, exposures_per_plane=0,
+                       admit=lambda values, measured_z_positions: None, exposures_per_plane=0,
                        describe="fixture")
     result = sweep_autofocus(ctrl, 9, 11, 1, settle_ms=0,
                              move_to_best=False, probe=probe)
@@ -390,7 +390,7 @@ def _drive_hook_named_stage(core, guard):
     pytest.param(lambda core, guard: sweep_autofocus(
         _ctrl_with(core, guard), 9, 11, 1, settle_ms=0, move_to_best=False,
         probe=FocusProbe(read=lambda: 1.0, choose=lambda values: 0,
-                         admit=lambda values: None, exposures_per_plane=0,
+                         admit=lambda values, measured_z_positions: None, exposures_per_plane=0,
                          describe="fixture")), id="sweep_autofocus"),
     pytest.param(lambda core, guard: _restore(_ctrl_with(core, guard), 50.0),
                  id="autofocus._restore"),
