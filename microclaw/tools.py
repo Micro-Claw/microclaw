@@ -721,7 +721,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
                 shape["channel_exposures_ms"] = [exposure]
         prefix = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
         lines = [hook_source + prefix,
-                 f"# acquisition_order={order}; timing={params.result.get('timing', {})!r}"]
+                 f"# acquisition_order={order}; timing={params.result.get('timing', {}).get('strategy')!r}; requested_interval_s={protocol_params.get('interval_s')!r}"]
         for index, group in enumerate(groups):
             event_shape = dict(shape)
             if protocol == "zstack" or all(p.get("z_um") is None for p in group):
@@ -823,7 +823,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
     elif exposure is not None:
         lines.append(f"    core.set_exposure({exposure!r})")
     timing_strategy = "per_position_clock" if protocol == "timelapse" else "no_time_axis"
-    lines.append(f"    # acquisition_order={order}; timing={timing_strategy}; requested_interval_s={protocol_params.get('interval_s')!r}; exposure cadence owes rig verification")
+    lines.append(f"    # acquisition_order={order}; timing={timing_strategy}; requested_interval_s={protocol_params.get('interval_s')!r}")
     lines.extend([
         f"    events = multi_d_acquisition_events(**{event_args!r})",
         "    with Acquisition(directory=str(_HERE / position['name']), "
@@ -5200,7 +5200,64 @@ def export_dataset_as_tiff(
             "artifact": {"kind": "tiff", "path": output_path}}
 
 
-def _iter_present_coords(dataset, fixed_axes: dict) -> Any:
+def _report_frame_spacing(timing: dict, rows: list[dict]) -> None:
+    """Best-effort metadata-only measurement after acquisition saving completes.
+
+    Read every saved frame once; no pixel decoding, retries, or sampling. Keys
+    must be consistent within a field: clocks of different kinds cannot mix.
+    """
+    meanings = {"ElapsedTime-ms": "milliseconds since acquisition start",
+                "TimeReceivedByCore": "absolute arrival time at the core"}
+    spacing, keys = {}, {}
+    try:
+        for row in rows:
+            dataset = Dataset(row["dataset_path"])
+            try:
+                fields = {}
+                for coords, metadata in _iter_present_coords(dataset, {}, with_metadata=True):
+                    label = str(coords.get("position", row.get("position", "0")))
+                    key = next((k for k in meanings if k in metadata), None)
+                    if key is None:
+                        raise ValueError("owes rig verification; no frame timestamp key established")
+                    value = (float(metadata[key]) if key == "ElapsedTime-ms" else
+                             datetime.fromisoformat(metadata[key]))
+                    if key == "ElapsedTime-ms" and not math.isfinite(value):
+                        raise ValueError("non-finite frame timestamp")
+                    fields.setdefault(label, []).append((coords.get("time", 0), key, value))
+                if not fields:
+                    raise ValueError("no saved frame coordinates available")
+                for label, frames in fields.items():
+                    frames.sort(key=lambda frame: frame[0])
+                    if len({f[0] for f in frames}) != len(frames):
+                        raise ValueError("multiple frames at one field time coordinate; spacing is ambiguous")
+                    field_keys = {f[1] for f in frames}
+                    if len(field_keys) != 1:
+                        raise ValueError("mixed frame timestamp keys within a field")
+                    key = keys[label] = frames[0][1]
+                    gaps = [b[2] - a[2] for a, b in zip(frames, frames[1:])]
+                    spacing[label] = [round(g / 1000 if key == "ElapsedTime-ms" else
+                                            g.total_seconds(), 6) for g in gaps]
+            finally:
+                close = getattr(dataset, "close", None)
+                if callable(close):
+                    close()
+        if not spacing:
+            return
+        same_key = len(set(keys.values())) == 1
+        timing.update(
+            observed_per_field_spacing=spacing,
+            frame_timestamp_metadata_key=next(iter(keys.values())) if same_key else keys,
+            frame_timestamp_meaning=(meanings[next(iter(keys.values()))] if same_key else
+                                     {label: meanings[key] for label, key in keys.items()}),
+            verification="observed saved-frame spacing in seconds; downstream of shutter",
+        )
+    except Exception as exc:
+        timing.update(observed_per_field_spacing=None, frame_timestamp_metadata_key=None,
+                      frame_timestamp_meaning=None,
+                      verification=f"frame spacing unavailable: {exc}")
+
+
+def _iter_present_coords(dataset, fixed_axes: dict, *, with_metadata=False) -> Any:
     """Yield real coordinates for present cells in a sparse NDTiff dataset."""
     unknown = set(fixed_axes) - set(dataset.axes)
     if unknown:
@@ -5211,6 +5268,12 @@ def _iter_present_coords(dataset, fixed_axes: dict) -> Any:
     }
     if invalid:
         raise ValueError(f"Dataset axis selections are not present: {invalid}")
+
+    if with_metadata:
+        for coords in dataset.get_image_coordinates_list():
+            if all(coords.get(axis) == value for axis, value in fixed_axes.items()):
+                yield coords, dataset.read_metadata(**coords)
+        return
 
     axis_names = list(dataset.axes)
     values = [
@@ -7353,8 +7416,9 @@ def run_multiposition_acquisition(
         "requested_interval_s": params.get("interval_s"),
         "exposure_ms": params.get("exposure_ms"),
         "observed_per_field_spacing": None,
-        "exposure_timestamp_metadata_key": None,
-        "verification": "owes rig verification; no exposure timestamp key established",
+        "frame_timestamp_metadata_key": None,
+        "frame_timestamp_meaning": None,
+        "verification": "owes rig verification; no frame timestamp key established",
         "hook_observed_at": "callback arrival time, not exposure time",
     }
     if save_dir:
@@ -7529,6 +7593,8 @@ def run_multiposition_acquisition(
                 reservation.close()
 
     total = len(position_names or positions)
+    if protocol == "timelapse":
+        _report_frame_spacing(timing, [r for r in results if r.get("dataset_path")])
     n_ok = sum(1 for r in results if "error" not in r)
     payload = {
         "status": f"{n_ok}/{total} positions completed.",
@@ -8442,10 +8508,12 @@ def _acquire_positions_with_hook(
                 "min_snr": hook.min_snr, "min_snr_source": hook.threshold_source,
             }
         if not split:
+            _report_frame_spacing(timing, [result])
             return {**result, "acquisition_order": acquisition_order, "timing": timing}
         results.append({**result, "position": group[0]["name"],
                         "x_um": group[0]["x_um"], "y_um": group[0]["y_um"],
                         "xy_move": xy_move})
+    _report_frame_spacing(timing, results)
     return {"status": f"{len(results)}/{len(positions)} positions completed.",
             "results": results, "acquisition_order": acquisition_order, "timing": timing,
             "dataset_layout": "one dataset and fresh hook per position; results index datasets and logs",

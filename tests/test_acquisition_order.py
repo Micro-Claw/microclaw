@@ -370,7 +370,7 @@ def test_multiposition_timing_has_one_shape_for_every_execution_path(rig):
     assert all(set(timing) == set(timings[0]) for timing in timings)
     assert all(timing['hook_observed_at'] == 'callback arrival time, not exposure time'
                for timing in timings)
-    assert all(timing['exposure_timestamp_metadata_key'] is None for timing in timings)
+    assert all(timing['frame_timestamp_metadata_key'] is None for timing in timings)
 
 
 def test_every_stage_move_error_subclass_carries_the_completed_movie_attribute():
@@ -393,3 +393,65 @@ def test_every_stage_move_error_subclass_carries_the_completed_movie_attribute()
         error = (cls(result, ['x']) if cls is XYStageMoveError
                  else cls({**result, 'start_um': 0., 'requested_um': 20., 'measured_um': 0.}))
         assert error.positions_completed is None, cls
+
+@pytest.mark.parametrize('mode', ['real', 'fallback', 'absent', 'unreadable', 'split'])
+def test_frame_spacing_from_recorded_metadata(rig, monkeypatch, mode):
+    import json
+    data = json.loads(Path('design/77-block77b-limbA-metadata.json').read_text(encoding='utf-8'))
+    pairs = list(zip(data['coordinates'], data['metadata']))
+    assert [m['ElapsedTime-ms'] for _, m in pairs] == [20, 39, 60, 100, 110, 130]
+    class Replay:
+        axes = data['axes']
+        def __init__(self, path):
+            if mode == 'unreadable':
+                raise OSError('injected unreadable dataset')
+            self.pairs = pairs
+            if mode == 'split':
+                label = 'gateA' if 'gateA' in path else 'gateB'
+                self.pairs = [(c, m) for c, m in pairs if c['position'] == label]
+        def get_image_coordinates_list(self):
+            return [dict(reversed(list(c.items()))) for c, _ in reversed(self.pairs)]
+        def read_metadata(self, **coords):
+            metadata = dict(next(m for c, m in self.pairs if c == coords))
+            if mode in ('fallback', 'absent'):
+                metadata.pop('ElapsedTime-ms', None)
+            if mode == 'fallback':
+                metadata['TimeReceivedByCore'] = f"2026-09-06 09:49:57.{coords['time'] * 100000:06d}"
+            if mode == 'absent':
+                metadata.pop('TimeReceivedByCore', None)
+            return metadata
+    monkeypatch.setattr(tools, 'Dataset', Replay)
+    result = rig.run(hook_strategy='snr_observer',
+                     positions=[dict(p, name=n) for p, n in zip(POSITIONS, ['gateA', 'gateB'])],
+                     protocol_params=dict(n_frames=3, interval_s=2 if mode == 'split' else 0))
+    assert 'error' not in result
+    timing = result['timing']
+    assert 'exposure_timestamp_metadata_key' not in timing
+    key = timing['frame_timestamp_metadata_key']
+    if mode in ('absent', 'unreadable'):
+        assert key is None
+        assert timing['observed_per_field_spacing'] is None
+        assert ('injected unreadable dataset' if mode == 'unreadable' else 'no frame timestamp key established') in timing['verification']
+    else:
+        assert key == ('TimeReceivedByCore' if mode == 'fallback' else 'ElapsedTime-ms')
+        assert timing['observed_per_field_spacing'] == (
+            {'gateA': [.1, .1], 'gateB': [.1, .1]} if mode == 'fallback' else
+            {'gateA': [.019, .021], 'gateB': [.01, .02]})
+        assert timing['frame_timestamp_meaning'] == (
+            'absolute arrival time at the core' if mode == 'fallback' else
+            'milliseconds since acquisition start')
+        if mode == 'split':
+            assert len(result['results']) == 2
+
+@pytest.mark.parametrize('hook', [None, 'snr_observer'])
+def test_export_omits_recorded_measurements(rig, tmp_path, hook):
+    from tests.test_session_script_export import export, completed_call
+    kw = {**rig.params, 'hook_strategy': hook}
+    result = rig.run(**kw)
+    result['timing'].update(observed_per_field_spacing={'measurement_sentinel': [123.456]},
+                            frame_timestamp_metadata_key='ElapsedTime-ms')
+    _, report, source = export(tmp_path, completed_call('run_multiposition_acquisition', kw, result))
+    assert report['emitted_calls'] == 1
+    assert 'measurement_sentinel' not in source
+    assert 'ElapsedTime-ms' not in source
+    assert 'requested_interval_s=0' in source
