@@ -448,10 +448,17 @@ The decision is settled above; do not re-open it. Build:
    invented one, and this repository has been caught by that shape before. The
    hook log's `observed_at` is a callback arrival stamp, not an exposure stamp;
    if that is all there is, label the limitation.
-6. **Emitters.** `run_multiposition_acquisition` routes to `_emit_adaptive` with
-   a hook and `_emit_acquisition` without. Both must reproduce the executed
-   order *and* the timing strategy. An emitter's fallbacks are the tool's
-   defaults, not constants.
+6. **Emitters.** Corrected 2026-09-06 by the coordinator, read out of the code
+   rather than carried from the notebook's prose: `run_multiposition_acquisition`
+   is `@emits(_emit_multiposition)` — it does **not** route to `_emit_adaptive`
+   or `_emit_acquisition`. `_emit_multiposition` branches internally: a hooked
+   observation-only run emits one combined `multi_d_acquisition_events` call
+   (`tools.py:719`), and the hookless run emits a per-position Python loop with
+   an `Acquisition` per position (`tools.py:783`). Two further emitters forward
+   into it and inherit whatever it does — `_emit_tile` and
+   `_emit_multiposition_with_autofocus`. Both branches must reproduce the
+   executed order *and* the timing strategy, and the forwarders must carry the
+   argument. An emitter's fallbacks are the tool's defaults, not constants.
 
 **The trap this block carries.** Splitting the hooked path into N acquisitions
 puts it straight into block 60a's territory: each acquisition needs its own
