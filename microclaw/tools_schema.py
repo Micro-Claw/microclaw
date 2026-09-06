@@ -203,7 +203,12 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Compile the supplied append-only session record to a standalone "
             "pycro-manager Python script. Unsupported calls make the script fail "
-            "loudly rather than being reconstructed."
+            "loudly rather than being reconstructed. Refusals appear in "
+            "not_emitted_calls with complete: false; each reason names the exact "
+            "missing export capability. This is a Microclaw capability gap, "
+            "never a camera, rig or hardware defect: quote the reason in your "
+            "report rather than attributing it to hardware. For a diagnosis "
+            "needing source detail, read the emitted artifact."
         ),
         "input_schema": {
             "type": "object",

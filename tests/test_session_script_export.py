@@ -4357,3 +4357,87 @@ def test_exported_script_does_not_claim_nothing_happened_for_a_landed_write(tmp_
     assert "The session completed nothing here" not in source
     assert "The requested value was observed on the device after the failed write" in source
     assert "this script deliberately does not repeat that uncertain call" in source
+
+
+def test_80a_incident_categories_and_selected_subset(tmp_path):
+    records = json.loads((Path(__file__).parent / "fixtures" /
+                          "80a-beads-autofocus-session.json").read_text())
+    records += [call("list_stages", {})]
+    _, result, _ = export(tmp_path, records)
+    refused = result["not_emitted_calls"]
+    assert result["complete"] is False
+    assert result["emitted_calls"] == 1
+    assert refused == [
+        {"tool_use_id": tool_id, "tool": "run_multiposition_acquisition",
+         "reason": f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"}
+        for tool_id, hook in [
+            ("toolu_018Yq2fYpP2BxKmFQRyuwvzh", "autofocus_per_position"),
+            ("toolu_017TXJCzN1xmcjzzqZTHe4Yp", "autofocus_mm_plugin"),
+        ]
+    ]
+    assert len(result["skipped_failed_calls"]) == 1
+    assert "unexpected keyword argument 'method'" in result["skipped_failed_calls"][0]["reason"]
+    assert all("unexpected keyword" not in item["reason"] for item in refused)
+    assert all("hooked acquisition" not in item["reason"] for item in result["skipped_failed_calls"])
+    assert "2 calls" in result["status"] and "not_emitted_calls" in result["status"]
+    for selection in (["toolu_01F9qtEFXVpd5dE6Q1bJL9AD", "list_stages"],
+                      ["list_stages"], [], ["toolu_012yhPfTp3TStsngUtGqhKhp"]):
+        subset = tools.export_session_script(None, Guard(tmp_path), "subset.py", records,
+                                            tool_use_ids=selection)
+        assert subset["complete"] is True
+        assert subset["not_emitted_calls"] == []
+        assert bool(subset.get("skipped_failed_calls")) == (selection == ["toolu_012yhPfTp3TStsngUtGqhKhp"])
+        assert "selection_warning" in subset
+
+
+@pytest.mark.parametrize("kind", ["unknown", "declared", "partial"])
+def test_80a_refusal_sites_and_status_precedence(tmp_path, kind):
+    name = {"unknown": "unknown_tool", "declared": "build_stage_coordinate_mosaic",
+            "partial": "run_multiposition_acquisition"}[kind]
+    records = completed_call(name, {}, {"results": [{"dataset_path": "ok"},
+                                                       {"position": "p2", "error": "lost frame"}]}
+                             if kind == "partial" else {})
+    refused_id = records[0]["content"][0]["id"]
+    records += completed_call("set_exposure", {"ms": 10}, {"error": "failed"})
+    result = tools.export_session_script(None, Guard(tmp_path), "routine.py", records,
+                                        tool_use_ids=[r["content"][0]["id"] for r in records if r["role"] == "assistant"])
+    assert result["status"].startswith("Session script exported, but incomplete:")
+    assert "1 calls" in result["status"] and "not_emitted_calls" in result["status"]
+    assert result["complete"] is False
+    assert result["emitted_calls"] == 0
+    assert len(result["skipped_failed_calls"]) == 1
+    refusal, = result["not_emitted_calls"]
+    assert refusal["tool_use_id"] == refused_id and refusal["tool"] == name
+    if kind == "unknown":
+        assert refusal["reason"] == "no standalone emitter has been implemented for this tool"
+    elif kind == "declared":
+        assert refusal["reason"] == tools.TOOL_REGISTRY[name]._microclaw_refusal_reason
+    else:
+        assert "'p2': lost frame" in refusal["reason"]
+
+
+@pytest.mark.parametrize("position", ["early", "middle", "final"])
+def test_80a_artifact_announces_before_core_and_stops_at_refusal(tmp_path, position):
+    writes = [call("set_exposure", {"ms": value}) for value in (10, 20)]
+    index = {"early": 0, "middle": 1, "final": 2}[position]
+    refused = call("unknown_tool", {})
+    refused["content"][0]["id"] = "refusal-80a"
+    records = writes[:index] + [refused] + writes[index:]
+    _, _, source = export(tmp_path, records)
+    events = []
+
+    class Core:
+        def __init__(self): events.append("Core")
+        def set_exposure(self, value): events.append(value)
+
+    runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+    namespace = {"__file__": str(tmp_path / "routine.py"), "Core": Core,
+                 "Acquisition": object, "multi_d_acquisition_events": lambda **kwargs: [],
+                 "print": lambda *args, **kwargs: events.append(" ".join(map(str, args)))}
+    with pytest.raises(RuntimeError, match="NOT EMITTED: unknown_tool"):
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert "incomplete" in str(events[0]).lower(), events
+    assert "unknown_tool" in events[0]
+    assert "refusal-80a" in events[0]
+    assert "no standalone emitter has been implemented for this tool" in events[0]
+    assert events[1:] == ["Core", *[10, 20][:index]]

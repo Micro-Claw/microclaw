@@ -2068,6 +2068,7 @@ def export_session_script(
     emitted = 0
     emitted_ids: list[str] = []
     skipped_failed_calls: list[dict[str, str]] = []
+    not_emitted_calls: list[dict[str, str]] = []
 
     def one_line(reason: object) -> str:
         """Fold a recorded message onto one line so it stays inside its comment.
@@ -2083,8 +2084,9 @@ def export_session_script(
         """
         return " ".join(str(reason).split())
 
-    def refuse(tool: str, reason: str) -> None:
+    def refuse(tool: str, reason: str, tool_use_id: str) -> None:
         """One shape for every refusal: a comment, then a step that cannot run."""
+        not_emitted_calls.append({"tool_use_id": tool_use_id, "tool": tool, "reason": reason})
         body_lines.append(f"# NOT EMITTED: {tool} — {one_line(reason)}")
         body_lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
 
@@ -2108,7 +2110,7 @@ def export_session_script(
             refuse(name, getattr(
                 fn, "_microclaw_refusal_reason",
                 "no standalone emitter has been implemented for this tool",
-            ))
+            ), params["_tool_use_id"])
             continue
         # Checked after the tool-level refusals so those keep their own wording,
         # and before the renderer so a call that did not succeed can never be
@@ -2120,7 +2122,7 @@ def export_session_script(
         if outcome is not None:
             completed, reason = outcome
             if completed == "partial":
-                refuse(name, reason)
+                refuse(name, reason, params["_tool_use_id"])
             else:
                 body_lines.append(f"# SKIPPED: {name} — {one_line(reason)}")
                 if "write_reported_failure_but_value_changed" in str(reason):
@@ -2138,7 +2140,7 @@ def export_session_script(
         try:
             rendered = renderer(params)
         except CannotEmit as exc:
-            refuse(name, str(exc))
+            refuse(name, str(exc), params["_tool_use_id"])
             continue
         body_lines.extend(rendered.splitlines())
         emitted += 1
@@ -2156,8 +2158,14 @@ def export_session_script(
         or "settle_xy_move(" in body_text
         or "read_xy_start_position(" in body_text
     )
+    refusal_summary = "\n".join([
+        f"INCOMPLETE SESSION EXPORT: {len(not_emitted_calls)} calls could not be emitted.",
+        *(f"{item['tool']} ({item['tool_use_id']}): {item['reason']}"
+          for item in not_emitted_calls),
+    ])
     lines = [
         "from __future__ import annotations",
+        *([f"print({refusal_summary!r})"] if not_emitted_calls else []),
         *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
         "import math",
         "import time",
@@ -2225,6 +2233,8 @@ def export_session_script(
     _write_text_output(path, source, overwrite=True)
     result = {
         "status": "Session script exported.",
+        "complete": not not_emitted_calls,
+        "not_emitted_calls": not_emitted_calls,
         "output_path": str(path),
         "emitted_calls": emitted,
         "emitted_tool_use_ids": emitted_ids,
@@ -2238,7 +2248,14 @@ def export_session_script(
         result["skipped_failed_calls"] = skipped_failed_calls
     if selected_ids is not None:
         result["selection_warning"] = selection_warning
-    if emitted == 0 and skipped_failed_calls:
+    # Incompleteness wins over both no-hardware-step statuses: a refusal is
+    # not a failed-no-effect skip or an empty selection.
+    if not_emitted_calls:
+        result["status"] = (
+            f"Session script exported, but incomplete: {len(not_emitted_calls)} calls "
+            "could not be emitted. See not_emitted_calls for the exact reasons."
+        )
+    elif emitted == 0 and skipped_failed_calls:
         result["status"] = (
             "Session script exported, but it performs no hardware step: every "
             "recorded mutating call failed and was skipped. See "
