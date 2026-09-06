@@ -34,7 +34,7 @@ is only what a fake cannot answer:
 - **Whether a per-position acquisition really gives field B its own clock.**
   The settled decision rests entirely on this. Limb C measures it against real
   stage settling.
-- **What exposure-timestamp key this camera writes, if any.** D3 says to name
+- **What frame-timestamp key this camera writes, if any.** D3 says to name
   the key the implementation reads and verify it on a rig first; the shipped
   code reports `null` and declares the field owing. **Limb D is the one limb
   that can change the product**, and it is a report, not a criterion: it fails
@@ -119,12 +119,17 @@ at each of two fields, which is the spacing it then checks.
   decision exists to avoid, and the limb names the field that burst.
   **These are callback-arrival gaps, not exposure timestamps** — they bound the
   spacing from above, which is all that is needed to rule out a burst.
-- **D — what exposure-timestamp key does this camera write.** A **report**.
+- **D — what frame-timestamp key does this camera write.** A **report**.
   It opens limb A's dataset, enumerates every per-image metadata key, and writes
   the time-like ones with their values to `D-metadata-keys.json`. It fails only
   if the dataset cannot be read. **Send this file back whatever it says**: if it
   names a key, D3 gets a real one to read; if it names none, D3's `null` is
   confirmed correct for this camera and the limitation stays labelled.
+  **Round 1 answer**: `ElapsedTime-ms` and `TimeReceivedByCore`, now read in
+  that order. `Time` is present and is deliberately never used — second
+  precision, and malformed here (`"2026-09-06 09:49:57 -"`). Both keys are
+  *downstream of the shutter*, so this limb was renamed from
+  "exposure-timestamp key", as was the product's field.
 - **F — the exported script runs and agrees.** Exports limb A's call, checks it
   imports nothing from `microclaw`, runs it as a child process against this same
   bridge, and compares the standalone hook log's order with the live one.

@@ -460,6 +460,69 @@ The decision is settled above; do not re-open it. Build:
    executed order *and* the timing strategy, and the forwarders must carry the
    argument. An emitter's fallbacks are the tool's defaults, not constants.
 
+### 77b — what shipped, and what the rig measured
+
+Written after the gate, 2026-09-06. The checklist above is the work as it was
+*commissioned*; this is what exists. Where they disagree, this wins.
+
+Items 1–4 and 6 shipped as specified. Item 5 shipped in two stages, because it
+was conditional on rig evidence the block did not have until its gate ran.
+
+**Measured on the Windows demo machine** (`design/77-block77b-gate.md`,
+7/8 PASS; the one FAIL was the gate's own limb G omitting `axis_selection`, and
+the criterion was then settled off-rig from the returned dataset):
+
+* Real AcqEngJ executes a `ptcz` position-axis list **in submitted order** —
+  `gateA gateA gateA gateB gateB gateB`, scored from the hook log's arrival
+  order and independently corroborated by the dataset's own `ElapsedTime-ms`
+  (20/39/60 against 100/110/130).
+* `time_then_position` really interleaves: `gateA gateB gateA gateB gateA gateB`.
+* **Each field gets its own clock.** Field B's acquisition began 0.601 s after
+  field A's last frame and then held 2.03 / 2.002 s gaps; the two spans were
+  4.061 s and 4.033 s. Under one shared clock B's deadlines (0, 2, 4 s) would
+  all have been past and B would have burst.
+* The exported script ran standalone against the bridge and reproduced the order.
+* The split keeps provenance: each per-field dataset carries its own `position`
+  axis.
+
+**Item 5's key, which D3 said to verify before relying on:** the demo machine
+writes `ElapsedTime-ms` (int, ms since acquisition start) and
+`TimeReceivedByCore` (absolute, µs). The implementation prefers the first, falls
+back to the second, and **never uses `Time`** — second precision, and malformed
+on this camera (`"2026-09-06 09:49:57 -"`). Absence is reported as null with the
+limitation labelled. **This is `DemoCamera-MultiMode`, n=1**: both keys are
+written by MM's core rather than a camera adapter, so they are probably
+portable, but the code reports the key it actually found per dataset and assumes
+nothing.
+
+`exposure_timestamp_metadata_key` was **renamed** to
+`frame_timestamp_metadata_key`: neither key is an exposure timestamp.
+`ElapsedTime-ms` is elapsed-since-acquisition-start and `TimeReceivedByCore` is
+arrival at the core; both are downstream of the shutter, and the payload says so.
+
+**A measurement must not reach the exported script.** The emitted comment
+carried the whole recorded `timing` dict, so one run's observed spacing would
+have shipped in a standalone script as if it described what the script does when
+re-run. Emitters now carry the declared/requested semantics only.
+
+**A run with no time axis says so**, rather than reporting a measurement
+failure. A hooked Z-stack reached the reporter with `z` coordinates, collapsed
+every frame to `time=0` and reported *"spacing is ambiguous"* — which reads as a
+defect in the run. Both paths now return
+`"not applicable: acquisition has no time axis"` and open no dataset at all.
+
+**Per-field spacing means different things under the two orders, and the payload
+now says which.** Under `time_then_position` the gaps between one field's
+consecutive frames span a visit to every other field, so the number is a
+**revisit interval**, not a cadence — probed at 0.02 s for a camera really
+firing every 10 ms. That is precisely the conflation the incident turned on
+(*"roughly 4.7 seconds between a field's frames"*), and D3 asks for it by name.
+`observed_per_field_spacing_meaning` is derived from the resolved order.
+
+**Carried forward:** `R98` — a spaced hooked grid writes one hook log per field
+and `rank_hook_log` takes a single path, so a cross-field ranking is no longer
+one call. A consequence of the settled split, not a defect.
+
 **The trap this block carries.** Splitting the hooked path into N acquisitions
 puts it straight into block 60a's territory: each acquisition needs its own
 supervised teardown, its own reservation, and a typed `AcquisitionUnterminated`
