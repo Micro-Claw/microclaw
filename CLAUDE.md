@@ -155,6 +155,25 @@ replacement for it.
 
 ## Engineering principles
 
+- **Choose the fastest correct approach.** Performance is part of correctness
+  when cadence, feedback latency, or time under illumination affects the
+  experiment. Compare supported native acquisition, configured plugins, and
+  existing tools before building a custom loop. Keep LLM turns, global GUI
+  refreshes, repeated discovery, and unrelated hardware reads out of per-frame
+  control. Batch independent work and reuse valid discovery; preserve fresh
+  safety checks, required settling, read-back, audit, restoration, and standalone
+  export. Never silently relax frame synchronization or analysis coverage for
+  speed. For changes affecting acquisition or repeated operations, state the
+  timing contract, measure the relevant baseline and changed path, and attribute
+  delays before declaring them unavoidable. When the cause has not been
+  isolated, report measured timing, say the cost is not attributed, and name
+  the measurement needed to investigate it. Tests must cover unnecessary work
+  as well as successful results; rig gates must measure cadence and feedback
+  latency where relevant. See design/78 and design/79.
+  **Per-write GUI/EMU refresh is not required during acquisition** (operator
+  decision, 2026-09-06). Prefer speed, keep users aware through inexpensive
+  progress and write logs, and coalesce the GUI refresh after restoration.
+
 - **A confirmation is for something Microclaw is about to do on the user's
   behalf, where "no" changes what happens.** Every legitimate one in this
   codebase fits that: writing a safety config, clearing MM's position list,
