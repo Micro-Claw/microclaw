@@ -371,3 +371,25 @@ def test_multiposition_timing_has_one_shape_for_every_execution_path(rig):
     assert all(timing['hook_observed_at'] == 'callback arrival time, not exposure time'
                for timing in timings)
     assert all(timing['exposure_timestamp_metadata_key'] is None for timing in timings)
+
+
+def test_every_stage_move_error_subclass_carries_the_completed_movie_attribute():
+    """execute_tool reads .positions_completed on any StageMoveError it catches.
+
+    XYStageMoveError overrides __init__ without calling super(), so declaring
+    the attribute inside StageMoveError.__init__ leaves every XY failure without
+    it and turns execute_tool's own error handler into an AttributeError.
+    """
+    from microclaw.controller import StageMoveError, XYStageMoveError
+
+    result = {'start_um': [0., 0.], 'requested_um': [20., 0.], 'measured_um': [0., 0.],
+              'elapsed_s': 0., 'tolerance_um': 2., 'band_source': 'relative',
+              'x_tolerance_um': 2., 'x_band_source': 'relative',
+              'y_tolerance_um': 2., 'y_band_source': 'relative',
+              'last_device_status': 'busy'}
+    subclasses = [StageMoveError, *StageMoveError.__subclasses__()]
+    assert XYStageMoveError in subclasses
+    for cls in subclasses:
+        error = (cls(result, ['x']) if cls is XYStageMoveError
+                 else cls({**result, 'start_um': 0., 'requested_um': 20., 'measured_um': 0.}))
+        assert error.positions_completed is None, cls
