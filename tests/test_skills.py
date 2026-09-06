@@ -247,3 +247,52 @@ def test_built_wheel_contains_the_source_tree_skill_catalog(tmp_path):
         capture_output=True, text=True,
     )
     assert set(json.loads(completed.stdout)) == tree_names
+
+
+def test_model_visible_guidance_has_no_development_references():
+    import re
+
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.tools_schema import TOOLS
+
+    surface = {"SYSTEM_PROMPT": agent.SYSTEM_PROMPT}
+    assert skills.SKILL_CATALOG
+    for item in skills.SKILL_CATALOG:
+        surface[f"skill:{item.name}"] = tools.load_skill(None, None, item.name)["documentation"]
+    # Include parameter descriptions as well as each tool's main description.
+    assert TOOLS
+    surface["TOOLS"] = json.dumps(TOOLS)
+    assert PRECODED_HOOK_REGISTRY
+    for name in PRECODED_HOOK_REGISTRY:
+        surface[f"hook:{name}"] = tools.describe_hook(None, None, name)["class_docstring"] or ""
+    # Tool payloads can expose literals outside the schema (e.g. calibration notes).
+    # Module/class/function docstrings are internal unless included above.
+    root = Path(tools.__file__).parent
+    allowed_emitter_comment = (
+        "    # an EMU rig genuinely needs it (design/43b), and a GUI failure"
+    )
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.body and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        }
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if id(node) in docstrings:
+                continue
+            # This exact literal is an ordinary developer comment in an exported
+            # script, not runtime guidance. No blanket exemption for tools.py.
+            if path == Path(tools.__file__) and node.value == allowed_emitter_comment:
+                continue
+            surface[f"{path.relative_to(root)}:{node.lineno}:{node.col_offset}"] = node.value
+    leaks = {
+        name: re.findall(r"[^\n]*\bdesign/\d+[^\n]*", text)
+        for name, text in surface.items() if re.search(r"\bdesign/\d+", text)
+    }
+    assert not leaks, f"Model-visible development references: {leaks}"

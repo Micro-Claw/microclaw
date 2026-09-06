@@ -320,6 +320,87 @@ instructions; update the agent's planning guidance and acquisition tool wording.
 Replay the initial request through the model before any acquisition. This block
 must establish advance hook planning even on a rig without offline support.
 
+### 77a checklist — what the implementer owns
+
+The audit surface is enumerated in §Code findings and was re-verified at
+`32a95f1`: ten `design/NN` in `hook-authoring/SKILL.md`, and four of the seven
+pre-coded hook class docstrings (`focus_feedback` design/36, `position_filter`
+design/27, `snr_observer` design/26, `mm_plugin_analyzer` design/09) reaching the
+model as `class_docstring`. `tools_schema.py` has none.
+
+1. **Reconcile the skill with the implemented offline contract.** Both stale
+   passages (SKILL.md lines 66–68 and the capability-table row at 521–523) say
+   the orchestrator and `DatasetView` are unimplemented. They are implemented:
+   `microclaw/completed_dataset.py` (`OFFLINE_VERBS`, `DatasetView`,
+   `ArtifactDirectory.emit`, `run_analysis_on_saved_dataset`'s limits). Replace
+   them with the contract as the code actually defines it, and state the D1 rule
+   inside the skill: a skill explains how to compose tools and directs capability
+   checks to the installed schema and the tool's own refusal; it does not
+   maintain a competing declaration of what exists.
+2. **Remove development references from every string the model can be shown**,
+   substituting the substance — never a bare deletion, never an unexplained
+   internal class name. Sweep the surface programmatically rather than fixing the
+   enumerated list only: every `microclaw/skills/*/SKILL.md` shipped by
+   `load_skill`, every `TOOLS` description, and every pre-coded hook class
+   docstring returned by `list_hooks`/`describe_hook`. `design/NN` in an ordinary
+   code comment stays.
+3. **Guard it with a test that enumerates that surface from the code**, not from
+   a literal file list, so a skill or hook added later is covered. A second test
+   pins the skill's offline section to `completed_dataset.py` itself — assert it
+   names what `OFFLINE_VERBS` and the module's default artifact limits actually
+   are — so the two cannot drift apart again. Watch both fail on the pre-fix tree.
+4. **Agent planning guidance** (`agent.py`'s `SYSTEM_PROMPT`), from D1, D3 and D4:
+   map each requested deliverable to an executable path while planning, before the
+   acquisition that feeds it, and offer to write and attach the observation hooks
+   then rather than after an offline attempt fails; check the installed tool
+   contract and its actual refusal before calling anything unavailable, and say
+   "not verified" when discovery is inconclusive — "no adapter written yet" is not
+   "custom offline execution unavailable", and a missing tracker dependency blocks
+   that tracker, not the path; never cite a design number, register row or
+   milestone in a microscope session; and keep exposure, requested interval and
+   observed cadence distinct, stating order and frames per field before the run.
+5. **Acquisition tool wording** (`tools_schema.py`,
+   `run_multiposition_acquisition`). Today the description promises a
+   per-position protocol and does not say that passing `hook_strategy` routes
+   through a combined event list whose engine default is time-outer, so every
+   position is visited at each time point. Make the wording true of the code as it
+   stands, including the interim guidance in D2 — separate hooked `run_timelapse`
+   calls per position when the deliverable is continuous per-field motion.
+   **77b replaces this wording when the default changes**; that churn is expected
+   and is not a reason for 77a to document a behaviour that does not exist yet.
+
+6. **Make the advertised path reachable** (added mid-block, operator decision
+   2026-09-05, after review round 1). The reconciled skill sends an author to
+   `run_analysis_on_saved_dataset` "with a reviewed, hash-pinned adapter from the
+   saved manifest", and `generate_and_save_hook` — the **only** caller of
+   `save_hook` — refused that class shape outright:
+   `"No top-level class defines analyze_frame(self, image, metadata) or
+   image_process_fn(self, image, metadata, event_queue)."` The runner accepted the
+   offline verbs; the saver did not, so no adapter could reach the manifest at
+   all and round 1 would have turned the stale text's false negative into a false
+   positive. The suite missed it because `tests/test_completed_dataset.py`'s
+   `offline_home` fixture **writes the manifest entry by hand** — a fixture that
+   cannot reach the code is not coverage of it. The static contract check now
+   knows `OFFLINE_VERBS`, arity-checked per verb, and the end-to-end test saves
+   through the real tool and runs what it saved.
+
+   And a saved offline adapter has to say **which runner takes it**: `resolvable`
+   answers "would the source be refused", not "by whom", and the prompt's own
+   ladder says to name a resolvable hook and use it. `describe_hook` and
+   `list_hooks` carry a `route`; attaching one to an acquisition refuses by name.
+
+Out of scope for 77a: `acquisition_order`, event construction, emitters, the
+timing origin. Those are 77b, and the open question above gates them.
+
+**The gate is a model replay and the coordinator owns it** (block-workflow step 5).
+It calls a live model and spends real money, so it is priced and agreed before it
+runs. It replays the opening of `20260905_165524_640862_microclaw_history.jsonl`
+against recorded tool results and scores three things mechanically: no development
+reference in what the model says, analysis proposed before the acquisition that
+feeds it, and the overlay accounted for separately from the live verdict. It runs
+the available-offline fixture, an unavailable one and an empty manifest, and the
+"you moved through all six fields at each time point" challenge from line 155.
+
 **77b — explicit, consistent acquisition order.** Settle the open question
 above, then extend `run_multiposition_acquisition`, `run_tile_acquisition`'s
 forwarding, event construction and applicable emitter sites — including the
@@ -387,12 +468,16 @@ cannot support it; do not mark that output delivered by this design.
 
 ## Run ledger
 
-Baseline before the notebook: `main` `c2f19dd`. **The coordinator suite has not
-been run for this notebook yet** — measure it and record the count here before
-assigning 77a, rather than carrying design/76's 2830/99/2 forward.
+Baseline before the notebook: `main` `c2f19dd`, coordinator-run suite
+**2862 passed / 99 skipped / 2 warnings** in 163.6 s (2026-09-05,
+`.venv/bin/python -m pytest -q`). The two warnings are the one benign
+`phase_cross_correlation` `UserWarning` from
+`test_featureless_field_returns_error_not_garbage` doing its job; they are not
+findings. The notebook fast-forwarded onto `main` as `32a95f1`, which is
+design-only and changes no count.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 77a | — | not started | | | |
+| 77a | `design77/truthful-guidance` | `32a95f1` (2026-09-05), worktree `../microclaw-77a` | `7f813ab` + `14dbdc5` + `6e7c571` (1 Codex start, 1 revision, 1 coordinator commit). **Round 1 shipped a skill that advertised an unreachable path** — see checklist item 6; the coordinator found it by trying the save through the tool rather than reading the diff, which no amount of diff review would have shown. Four smaller round-1 findings: the reconciled offline section stated the verbs and the artifact budget but **not the return contract**, and this skill teaches `HookResult` everywhere, so a reader would have hit `TypeError: Offline analysis results must be dictionaries or None`; the prompt's 4b ladder still taught `analyze_frame` as the only saved-hook shape, which is the incident's second half; the new leak guard covered skills/schema/prompt/hook-docstrings but **not strings the tools return**, which is exactly the site the notebook's own enumeration missed (`calibration_note`, `tools.py:5818`); and the "never cite development documents" rule was filed under saved-hook resolvability rather than in the Reporting section where this prompt keeps its speech rules. **The revision turn hit its provider usage limit after committing and before reporting**, so `14dbdc5` arrived with no handoff: the coordinator reviewed the diff, re-ran the suite, and reproduced every watch-it-fail independently rather than accepting it. Round 2 then left `list_hooks` calling an offline adapter `resolvable` with no route and refusing it at attach time with a bare `AttributeError`; `6e7c571` is the coordinator's fix. Coordinator suite **2868 passed / 99 skipped**, against a 2862 baseline — 2862 + 6 new, nothing else moved. Watch-it-fail reproduced independently at each round: both round-1 guards on `f6eb4d0`; all four offline save/run tests on `7f813ab` with the real preflight refusal quoted; the AST half of the leak guard isolated by restoring `f6eb4d0`'s `tools.py` alone, where it reports the `calibration_note` leak **and only that**; and `KeyError: 'route'` plus the old `AttributeError` for the coordinator commit. | **PASS on arm B; arm A measured nothing.** The gate is `design/77-block77a-replay.py`, run locally against `claude-opus-4-8` (microclaw's `DEFAULT_MODEL`, and the model that ran the incident), swapping `--tree` between a pre-77a checkout and this branch so the skill file changes with the prompt. **Arm B, the line-124 decision point: 0 of 8 control samples named an offline verb, 6 of 6 on the tree under test.** Complete separation. `run_analysis_on_saved_dataset` alone does **not** discriminate — 1/8 against 5/6 — because a model that believes the path is gone still names the tool while declining to use it; only `analyze_completed_dataset`/`analyze_saved_frame` separates them. The control reproduced the incident's substance in its own words (*"the offline adapter path for generated hooks isn't shipped yet"*, *"the sanctioned offline-movie path doesn't exist"*) and the tree under test produced the D1 distinction the design asked for, unprompted: *"[the adapter does] not exist yet — writing it is the right answer, and I'll write it."* **Arm A is underpowered and is not evidence**: 0/4 control against 1/3 on the branch, at ~5 minutes and ~$0.32 a sample, and its 6-turn cap truncates the model mid-orientation before it reaches the analysis plan. Reported as measured-nothing, not as a null result. **Five defects, all the instrument's, none the product's.** A sample cut off mid-tool-loop scored `NEITHER`, so four control samples read as a real null before `NO_DECISION` existed. The pruned arm B fixture attached the session's *first* `run_analysis_on_saved_dataset` result — a near-blank TIRF check on another dataset — under a synthetic claim that the six kinesin movies were saved; the model noticed and spent its decision turn arguing with the premise, so results are now selected by what the call was about. The scored criterion had to leave prose entirely: eight control samples claimed unavailability in five wordings, so the phrase list is unbounded and fitting it to the control is the design/61 trap. `authored` — a `def` or a `generate_and_save_hook` call — is stronger and **this fixture cannot reach it**, because the prompt requires waiting for confirmation before saving a hook, so the replay ends at the question and scoring required behaviour as failure made both trees read zero. And arm A drove operator replies for up to fourteen turns against a docstring saying it stops at the first question. Measured spend **$3.97** across the runs that reported it, ~$6.7 including two killed arm A runs, against a $10 authorisation. | |
 | 77b | — | not started; blocked on the open question above | | | |
 | 77c | — | not started; follows 77b | | | |

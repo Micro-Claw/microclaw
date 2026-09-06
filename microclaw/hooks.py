@@ -309,8 +309,8 @@ class AutofocusHook(HookBase):
 class FocusFeedbackHook(HookBase):
     """Corrects Z drift per frame during timelapse using a sharpness metric.
 
-    The metric is Tenengrad over total flux squared (design/36). Both halves
-    matter, and each fixes a different failure:
+    The metric is Tenengrad over total flux squared to separate sharpness from
+    brightness. Both halves matter, and each fixes a different failure:
 
       * Tenengrad, because the normalized Laplacian variance this used before is
         MINIMISED at focus on real fields. This gate was therefore jogging Z
@@ -459,7 +459,7 @@ class PositionFilterHook(HookBase):
     Returns None to discard the image — and NOTHING else happens: no event is
     dropped, and a rejected position keeps being moved to and exposed for the
     rest of the acquisition; each of its frames is discarded one by one as it
-    arrives (design/27). To stop exposures from happening at all, use the
+    arrives after exposure. To stop exposures from happening at all, use the
     adaptive survey runner (stop = don't submit), not this hook.
     """
 
@@ -486,7 +486,7 @@ class PositionFilterHook(HookBase):
 class SNRObservationHook(HookBase):
     """Record deterministic per-tile image statistics without changing the run.
 
-    This is design/26 Run A's positive-control analyzer. It deliberately has no
+    This is an observation-only reference for fixed surveys. It deliberately has no
     threshold action: every image is returned unchanged, no events are submitted,
     and no hardware is touched. Offline code may rank its records by SNR after the
     fixed survey has completed.
@@ -539,7 +539,7 @@ class MMPluginHook(HookBase):
     here — use MMAutofocusPluginHook for that.
 
     Only a scalar crosses the bridge (np.mean of the image); the full image never
-    leaves Python. See design/09 "Composing plugins in a reusable hook".
+    leaves Python, so choose a plugin method that accepts a scalar, not an image.
     """
 
     def __init__(self, ctrl, guard, classpath: str, method: str = "analyze",

@@ -1330,7 +1330,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_multiposition_acquisition",
         "description": (
-            "Visit each position and run a per-position protocol (snap, zstack, or timelapse). "
+            "Run a multiposition protocol (snap, zstack, or timelapse). Without hook_strategy, "
+            "complete each position's protocol before moving to the next. "
             "PROTOCOL CHOICE: when the deliverable is per-position NUMBERS (max/min/"
             "mean intensity, focus metric), protocol='snap' already returns them for "
             "every position — writing nothing to disk is correct when nothing was "
@@ -1338,12 +1339,15 @@ TOOLS: list[dict[str, Any]] = [
             "statistics; reach for them only when data must land on disk. "
             "Supply either position_names (labels already in the MM position list) OR positions "
             "(a list of {name, x_um, y_um, z_um?} dicts — no prior mark_position needed). "
-            "Saves each position's data to a subdirectory of save_dir. "
+            "Without hooks, saves each position's data to a subdirectory of save_dir. "
             "Pass mark_positions=true to also record every visited position into the "
             "stage position list. "
             "Pass hook_strategy to run one hooked acquisition across every position: a "
             "single dataset with a `position` axis and one hook log covering every "
-            "point. Prefer this single-dataset option for a tiled acquisition; do not "
+            "point. The combined events use engine order='tpcz': time outer, so a "
+            "timelapse visits every position at each time point before the next time point. "
+            "For continuous motion within each field, plan separate hooked run_timelapse "
+            "calls per position. Prefer the single-dataset option for a tiled acquisition; do not "
             "also run the per-position form unless the user explicitly requests both, "
             "because doing both repeats every exposure. Not compatible with "
             "protocol='snap' (display-only, no acquisition "
@@ -1424,7 +1428,9 @@ TOOLS: list[dict[str, Any]] = [
                     ],
                     "description": (
                         "One hook name or an ordered list (from list_hooks). Runs ONE "
-                        "acquisition across all positions. Cannot be "
+                        "acquisition across all positions, with time outer (order='tpcz'): every "
+                        "position is visited at each time point. For continuous per-field motion, "
+                        "use separate hooked run_timelapse calls per position. Cannot be "
                         "combined with protocol='snap'. BATCHED: every position's "
                         "event is submitted before the first frame arrives, so the "
                         "hook can measure and log but can never stop the scan early "
@@ -2184,7 +2190,12 @@ TOOLS: list[dict[str, Any]] = [
                 "runner_contract": {
                     "type": "string",
                     "enum": ["fixed", "adaptive"],
-                    "description": "Runner that will execute the hook; adaptive requires analyze_frame.",
+                    "description": (
+                        "Static callback contract: fixed accepts live callbacks or saved offline "
+                        "adapters for run_analysis_on_saved_dataset; adaptive additionally "
+                        "requires analyze_frame. Saving an offline adapter does not make it "
+                        "a live acquisition hook."
+                    ),
                     "default": "fixed",
                 },
             },

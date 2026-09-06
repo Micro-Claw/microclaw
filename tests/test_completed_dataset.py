@@ -610,3 +610,111 @@ def test_shared_writer_closed_vocabulary():
     from microclaw.hooks import write_analysis_observation
     with pytest.raises(ValueError, match="Unknown analysis observation status"):
         write_analysis_observation([], analyzer="a", analyzer_version="1", result={}, status="final")
+
+
+def test_hook_skill_offline_contract_matches_runner(offline_home, monkeypatch):
+    from microclaw.skills import load_skill_text
+
+    # Observe the defaults the imported runner actually passes to its writer;
+    # they are local to that function, not exported constants.
+    limits_seen = []
+    writer = completed_dataset.write_hook_artifact
+
+    def record_limits(target, filename, payload, *, state, **limits):
+        limits_seen.append(limits)
+        return writer(target, filename, payload, state=state, **limits)
+
+    monkeypatch.setattr(completed_dataset, "write_hook_artifact", record_limits)
+    save, *_ = offline_home
+    save("contract_probe", '''
+class ContractProbe:
+ def analyze_completed_dataset(self, dataset_view, selection, context):
+  context.artifacts.emit("probe.bin", b"probe")
+''')
+    assert run(offline_home, "contract_probe")["status"] == "completed"
+    assert len(limits_seen) == 1
+    text = load_skill_text("hook-authoring")
+    missing = [verb for verb in completed_dataset.OFFLINE_VERBS if verb not in text]
+    missing.extend(f'"{key}": {value}' for key, value in limits_seen[0].items()
+                   if f'"{key}": {value}' not in text)
+    assert not missing, f"Skill omits offline runner contract: {missing}"
+
+
+@pytest.mark.parametrize("verb", completed_dataset.OFFLINE_VERBS)
+def test_offline_adapter_saved_and_run_through_tools(tmp_path, monkeypatch, verb):
+    from microclaw import hook_manager, tools
+
+    hooks = tmp_path / "hooks"
+    manifest = hooks / "manifest.json"
+    monkeypatch.setattr(hook_manager, "HOOKS_DIR", hooks)
+    monkeypatch.setattr(hook_manager, "MANIFEST", manifest)
+    monkeypatch.setattr(completed_dataset, "MANIFEST", manifest)
+    monkeypatch.setattr(completed_dataset, "Dataset", lambda path: FakeDataset())
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    (dataset / "NDTiff.index").write_bytes(b"saved pixels")
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+    whole = verb == completed_dataset.OFFLINE_VERBS[0]
+    args = "dataset_view, selection" if whole else "image, metadata"
+    result = "[{'count': 1}]" if whole else "{'count': 1}"
+    code = f'''class OfflineAdapter:
+ def {verb}(self, {args}, context):
+  context.artifacts.emit("result.bin", b"verified")
+  context.emit_observation({{"via_context": True}}, status="provisional")
+  return {result}
+'''
+    assert not manifest.exists()
+    saved = tools.generate_and_save_hook(
+        None, guard, "offline", code, "Offline measurement", runner_contract="fixed",
+    )
+    assert "error" not in saved, saved
+    assert manifest.exists()
+    described = tools.describe_hook(None, guard, "offline")
+    assert described["callback"] == verb
+    assert described["provenance"]["matches_manifest"] is True
+    assert not described["resolve_refusal"]["would_refuse"]
+    # `resolvable` is true and the hook is still not attachable, so the route has
+    # to say which runner takes it -- and the adaptive-survey note, which is
+    # about hardware actions during an acquisition, must not be offered at all.
+    assert described["route"].startswith("run_analysis_on_saved_dataset")
+    assert "cannot be passed as hook_strategy" in described["route"]
+    assert "adaptive_hardware_actions" not in described
+    listed = tools.list_hooks(None, guard)["saved"]["offline"]
+    assert listed["resolvable"] is True
+    assert listed["route"] == described["route"]
+    analyzed = tools.run_analysis_on_saved_dataset(
+        None, guard, str(dataset), "offline", {"time": 0, "position": "p0"},
+        "frames", {}, str(tmp_path / "analysis"),
+    )
+    assert analyzed["status"] == "completed", analyzed["failure"]
+    assert [item["result"] for item in analyzed["observations"]] == [
+        {"via_context": True}, {"count": 1},
+    ]
+    assert Path(analyzed["artifacts"][0]["path"]).read_bytes() == b"verified"
+    adaptive = tools.generate_and_save_hook(
+        None, guard, "adaptive", code, "Wrong route", runner_contract="adaptive",
+    )
+    assert adaptive["contract_errors"] == [
+        "This runner requires analyze_frame; the hook does not define it."
+    ]
+    assert "adaptive" not in json.loads(manifest.read_text(encoding="utf-8"))
+    # The acquisition route refuses it by name, as a ValueError -- which is what
+    # every run_* tool converts into a returned error. A bare AttributeError here
+    # would reach the operator as an unexplained traceback.
+    with pytest.raises(ValueError, match="run_analysis_on_saved_dataset"):
+        hook_manager.load_hook_class("offline")
+
+
+@pytest.mark.parametrize("verb", completed_dataset.OFFLINE_VERBS)
+def test_offline_save_rejects_missing_context(tmp_path, monkeypatch, verb):
+    from microclaw import hook_manager, tools
+
+    monkeypatch.setattr(hook_manager, "HOOKS_DIR", tmp_path / "hooks")
+    monkeypatch.setattr(hook_manager, "MANIFEST", tmp_path / "manifest.json")
+    result = tools.generate_and_save_hook(
+        None, None, "short", f"class Short:\n def {verb}(self, first, second): pass\n",
+        "Missing offline context",
+    )
+    assert any(f"Short.{verb} must accept" in error
+               for error in result["contract_errors"]), result
+    assert not hook_manager.MANIFEST.exists()

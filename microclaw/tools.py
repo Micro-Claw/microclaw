@@ -5818,8 +5818,8 @@ def _resolve_current_affine(ctrl: MicroscopeController) -> tuple[Any, dict]:
                 "Micro-Manager's PixelSizeAffine is axis-aligned with identical "
                 "column scales — the signature of MM's Manual-Simple calibrator, "
                 "which snaps orientation to one of eight cases and reuses your "
-                "existing pixel size on both axes without measuring either "
-                "(design/29). Its orientation is trustworthy and centring "
+                "existing pixel size on both axes without measuring either scale. "
+                "Its orientation is trustworthy and centring "
                 "converges through a scale error; on M2 the true optics were "
                 "anisotropic by 14%. Run calibrate_stage_to_camera before "
                 "trusting this scale for a mosaic or a stage-coordinate figure."
@@ -10064,6 +10064,11 @@ def list_hooks(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
             refusal = {"would_refuse": True, "reasons": [described["error"]]}
         entry["resolvable"] = not refusal["would_refuse"]
         entry["resolve_refusal"] = refusal
+        # `resolvable` says the source would not be refused; it does not say by
+        # which runner. Carry the route so an offline adapter is not attached to
+        # an acquisition on the strength of a true `resolvable`.
+        if described.get("route"):
+            entry["route"] = described["route"]
     return {
         "precoded": list(PRECODED_HOOK_REGISTRY.keys()),
         "saved": saved,
@@ -10083,7 +10088,8 @@ def describe_hook(
     rather than importing or executing the source.
     """
     from microclaw.hooks import PRECODED_HOOK_REGISTRY
-    from microclaw.hook_manager import describe_saved_hook, list_saved_hooks
+    from microclaw.hook_manager import describe_saved_hook, hook_route, list_saved_hooks
+    from microclaw.completed_dataset import OFFLINE_VERBS
 
     if name in PRECODED_HOOK_REGISTRY:
         hook_cls = PRECODED_HOOK_REGISTRY[name]
@@ -10115,6 +10121,7 @@ def describe_hook(
             "class_docstring": inspect.cleandoc(own_doc) if own_doc else None,
             "constructor_parameters": parameters,
             "callback": callback,
+            "route": hook_route(callback or ""),
             "resolve_refusal": {"would_refuse": False, "reasons": []},
             "parameter_handling": {
                 "stripped": [],
@@ -10126,6 +10133,8 @@ def describe_hook(
         }
     if name in list_saved_hooks():
         description = describe_saved_hook(name)
+        if description.get("callback") in OFFLINE_VERBS:
+            return description
         description["adaptive_hardware_actions"] = (
             "run_adaptive_survey may apply MoveNamedStage or SetDeviceProperty "
             "to the event selected by the same HookResult, within acquisition-call "
