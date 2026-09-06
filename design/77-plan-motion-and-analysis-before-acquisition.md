@@ -76,8 +76,9 @@ interval, field B's frame *k* is due at `k * dt` from a clock that has already
 spent field A's whole movie, so **every one of B's deadlines is already past
 when B starts** and B bursts. Static per-field offsets can express a planned
 schedule, but cannot reliably preserve spacing relative to an unpredictable
-actual field start. That requires an execution-aware timing origin — see the
-open question below.
+actual field start. That requires an execution-aware timing origin — but only when
+`interval_s > 0`, which is what §The open question, settled establishes and is
+why the fix splits in two.
 
 **The export.** Multiple emitter sites in `tools.py` generate calls to
 `multi_d_acquisition_events` without an explicit `order`. Calls using a combined
@@ -284,46 +285,43 @@ settle that scope before its acquisition. A script merely written to disk is
 not an executed analysis or a delivered overlay. Do not re-expose a sample simply
 to compensate for failing to attach an available observer the first time.
 
-## The one open question 77b must answer first
+## The open question, settled
 
-`position_then_time` with `interval_s > 0` needs a per-field timing origin.
-The engine's unmodified static timestamps reuse the acquisition origin and make
-later fields catch up. Static offsets can define a planned schedule, but stage
-movement, settling and acquisition delays make actual field starts unpredictable.
-Three options remain; choose the execution contract before implementing 77b:
+Settled 2026-09-06 by operator decision, on evidence measured against the
+installed `multi_d_acquisition_events` rather than argued:
 
-1. **Refuse the combination temporarily.** Keep continuous position-outer runs
-   and explicitly interleaved spaced runs, and reject the unsupported combination
-   before hardware action. This is honest but removes an ordinary experiment:
-   "sample this field every 2 s for a minute, then move on". Do not regress the
-   already-supported hookless per-position case merely to simplify validation.
-2. **Synchronize streamed deadlines with execution.** A generator alone is not
-   sufficient. `_survey_event_stream` explicitly distinguishes events dispatched
-   in microseconds from acquisition over minutes — a pre-dispatched event "sits
-   in the engine's queue within microseconds" — and a yield timestamp is
-   therefore not a field-start timestamp. Note what this does and does not rule
-   out: a blocking generator *can* gate dispatch, which is how the adaptive
-   runner already holds a scan open, so the missing piece is the acknowledgment,
-   not the ability to hold back. This option needs a concrete execution acknowledgment,
-   a defined field-start event and clock origin aligned with the engine's
-   acquisition clock, and a barrier preventing later deadlines from being
-   stamped before that acknowledgment. Specify timeout, cancellation and export
-   behavior too. Reuse streaming machinery where appropriate, but do not claim
-   it already supplies this synchronization.
-3. **Per-position acquisitions with coordinated hook state and logging.** The
-   hookless path already provides the timing semantics. Keep this option open:
-   it may be simpler and more reliable than adding synchronization. It changes
-   the single-dataset layout introduced by design/19 F2, so explicitly account
-   for dataset identity, position provenance, hook lifecycle and a combined log
-   or result index. A single dataset is useful, but does not automatically
-   outweigh correct sampling and implementation simplicity.
+```
+order="tpcz"  (today's default)   P0T0 P1T0 P0T1 P1T1 P0T2 P1T2   <- the incident
+order="ptcz"                      P0T0 P0T1 P0T2 P1T0 P1T1 P1T2   <- the default we want
 
-There is no unconditional recommendation for option 2. Compare it with option 3
-using an execution-level timing experiment, including delayed queue consumption
-and variable stage settling, before choosing. If only a restricted first cut is
-ready, document and test its refusal; never silently substitute bursting or
-interleaving. The fake-clock acceptance check below must exercise the supported
-spaced path, and any unsupported path must refuse before movement or exposure.
+interval_s=0   min_start_time is None on every event -- there is no clock
+interval_s=2   field B's events carry min_start_time 0, 2, 4, the SAME values
+               as field A, all already past when B starts. B bursts.
+```
+
+**The catch-up problem exists only when `interval_s > 0`.** That was not obvious
+from the design and it splits the work in two:
+
+* **`interval_s == 0` — one acquisition, `order="ptcz"`.** The engine emits no
+  `min_start_time` at all, so there is nothing to catch up on. The single dataset
+  with a `position` axis survives, and so does `build_stage_coordinate_mosaic`,
+  which cannot take per-position datasets. This is the tiling and continuous-burst
+  case, and it is close to a one-argument change.
+* **`interval_s > 0` — option 3, per-position acquisitions.** One shared clock
+  cannot express per-field spacing, and the hookless path already gets this right
+  by giving each position its own acquisition. Making the hooked path do what the
+  working path does beats building the synchronisation option 2 would need.
+
+Option 2 is **not** being built. It needed an execution acknowledgement, a defined
+field-start event, a barrier and cancellation semantics that do not exist; option 3
+needs none of that and is already proven on the hookless path. Option 1 is rejected
+outright: refusing "sample this field every 2 s for a minute, then move on" removes
+an ordinary experiment, and the operator's instruction is that the default must be
+sensible, never that the alternative be blocked.
+
+**This is a default, not a restriction.** `time_then_position` stays available for
+slow processes and for anyone who asks for it, and an explicitly requested order is
+never overridden by a keyword heuristic.
 
 ## Implementation blocks
 
@@ -403,7 +401,7 @@ model as `class_docstring`. `tools_schema.py` has none.
    `list_hooks` carry a `route`; attaching one to an acquisition refuses by name.
 
 Out of scope for 77a: `acquisition_order`, event construction, emitters, the
-timing origin. Those are 77b, and the open question above gates them.
+timing origin. Those are 77b, whose decision is settled above.
 
 **The gate is a model replay and the coordinator owns it** (block-workflow step 5).
 It calls a live model and spends real money, so it is priced and agreed before it
@@ -414,12 +412,58 @@ feeds it, and the overlay accounted for separately from the live verdict. It run
 the available-offline fixture, an unavailable one and an empty manifest, and the
 "you moved through all six fields at each time point" challenge from line 155.
 
-**77b — explicit, consistent acquisition order.** Settle the open question
-above, then extend `run_multiposition_acquisition`, `run_tile_acquisition`'s
+**77b — explicit, consistent acquisition order.** The open question is settled
+(see above); extend `run_multiposition_acquisition`, `run_tile_acquisition`'s
 forwarding, event construction and applicable emitter sites — including the
 hookless path — to implement D2–D3. Keep the default independent of whether
 an observer is attached. Test scheduling and state boundaries, not just argument
 propagation or generated-source compilation.
+
+### 77b checklist — what the implementer owns
+
+The decision is settled above; do not re-open it. Build:
+
+1. **`acquisition_order` on `run_multiposition_acquisition`**, values
+   `position_then_time` (default) and `time_then_position`, forwarded from
+   `run_tile_acquisition`. Thread it through schema, validation, planning,
+   execution and results. Reject an inapplicable order **before** any hardware
+   action, never by silently ignoring it.
+2. **Hooked, `interval_s == 0`: one acquisition with `order="ptcz"`.** Measured:
+   the engine emits no `min_start_time`, so there is nothing to catch up on, and
+   the single dataset with a `position` axis is preserved. `_build_acquisition_events`
+   currently forwards no `order` at all and inherits the engine's `"tpcz"`.
+3. **Hooked, `interval_s > 0`: one acquisition per position.** Each gets its own
+   clock, which is the only thing that makes per-field spacing expressible.
+   Account explicitly for what design/19 F2's single-dataset layout gave you and
+   this gives up: dataset identity, position provenance, hook lifecycle and
+   initialisation/completion per movie, and a combined log or result index.
+4. **The hookless path owes `time_then_position`.** It is position-outer
+   structurally, so it already satisfies the default — but a per-position loop
+   **cannot** implement explicit interleaving by forwarding an order argument.
+   That case needs a real path, and the acceptance evidence names it.
+5. **D3's reporting.** Record the resolved order and timing semantics in the
+   result and the exported plan. To report *observed* per-field frame spacing,
+   **name the metadata key the code reads and verify it on a rig before relying
+   on it** — a plausible key no camera adapter writes is as damaging as an
+   invented one, and this repository has been caught by that shape before. The
+   hook log's `observed_at` is a callback arrival stamp, not an exposure stamp;
+   if that is all there is, label the limitation.
+6. **Emitters.** `run_multiposition_acquisition` routes to `_emit_adaptive` with
+   a hook and `_emit_acquisition` without. Both must reproduce the executed
+   order *and* the timing strategy. An emitter's fallbacks are the tool's
+   defaults, not constants.
+
+**The trap this block carries.** Splitting the hooked path into N acquisitions
+puts it straight into block 60a's territory: each acquisition needs its own
+supervised teardown, its own reservation, and a typed `AcquisitionUnterminated`
+that survives to `execute_tool`. 60a returned four defects and every one was a
+broad `except Exception` between a supervised acquisition and its boundary,
+including one that flattened a failure into a per-position error and **kept
+acquiring**. A per-position loop is exactly that shape. Ask who catches
+`Exception` between the raise and the boundary before writing the loop.
+
+**Not in 77b**: 77c's end-to-end delivery check, the saved-adapter overlay, and
+anything needing a rig.
 
 **77c — end-to-end delivery check.** Exercise a small continuous movie per field
 with an observation hook, plus an explicit slow-process interleaved control.
@@ -491,6 +535,6 @@ design-only and changes no count.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 77a | `design77/truthful-guidance` | `32a95f1` (2026-09-05), worktree `../microclaw-77a` | `7f813ab` + `14dbdc5` + `6e7c571` (1 Codex start, 1 revision, 1 coordinator commit). **Round 1 shipped a skill that advertised an unreachable path** — see checklist item 6; the coordinator found it by trying the save through the tool rather than reading the diff, which no amount of diff review would have shown. Four smaller round-1 findings: the reconciled offline section stated the verbs and the artifact budget but **not the return contract**, and this skill teaches `HookResult` everywhere, so a reader would have hit `TypeError: Offline analysis results must be dictionaries or None`; the prompt's 4b ladder still taught `analyze_frame` as the only saved-hook shape, which is the incident's second half; the new leak guard covered skills/schema/prompt/hook-docstrings but **not strings the tools return**, which is exactly the site the notebook's own enumeration missed (`calibration_note`, `tools.py:5818`); and the "never cite development documents" rule was filed under saved-hook resolvability rather than in the Reporting section where this prompt keeps its speech rules. **The revision turn hit its provider usage limit after committing and before reporting**, so `14dbdc5` arrived with no handoff: the coordinator reviewed the diff, re-ran the suite, and reproduced every watch-it-fail independently rather than accepting it. Round 2 then left `list_hooks` calling an offline adapter `resolvable` with no route and refusing it at attach time with a bare `AttributeError`; `6e7c571` is the coordinator's fix. Coordinator suite **2868 passed / 99 skipped**, against a 2862 baseline — 2862 + 6 new, nothing else moved. Watch-it-fail reproduced independently at each round: both round-1 guards on `f6eb4d0`; all four offline save/run tests on `7f813ab` with the real preflight refusal quoted; the AST half of the leak guard isolated by restoring `f6eb4d0`'s `tools.py` alone, where it reports the `calibration_note` leak **and only that**; and `KeyError: 'route'` plus the old `AttributeError` for the coordinator commit. | **PASS on arm B; arm A measured nothing.** The gate is `design/77-block77a-replay.py`, run locally against `claude-opus-4-8` (microclaw's `DEFAULT_MODEL`, and the model that ran the incident), swapping `--tree` between a pre-77a checkout and this branch so the skill file changes with the prompt. **Arm B, the line-124 decision point: 0 of 8 control samples named an offline verb, 6 of 6 on the tree under test.** Complete separation. `run_analysis_on_saved_dataset` alone does **not** discriminate — 1/8 against 5/6 — because a model that believes the path is gone still names the tool while declining to use it; only `analyze_completed_dataset`/`analyze_saved_frame` separates them. The control reproduced the incident's substance in its own words (*"the offline adapter path for generated hooks isn't shipped yet"*, *"the sanctioned offline-movie path doesn't exist"*) and the tree under test produced the D1 distinction the design asked for, unprompted: *"[the adapter does] not exist yet — writing it is the right answer, and I'll write it."* **Arm A is underpowered and is not evidence**: 0/4 control against 1/3 on the branch, at ~5 minutes and ~$0.32 a sample, and its 6-turn cap truncates the model mid-orientation before it reaches the analysis plan. Reported as measured-nothing, not as a null result. **Five defects, all the instrument's, none the product's.** A sample cut off mid-tool-loop scored `NEITHER`, so four control samples read as a real null before `NO_DECISION` existed. The pruned arm B fixture attached the session's *first* `run_analysis_on_saved_dataset` result — a near-blank TIRF check on another dataset — under a synthetic claim that the six kinesin movies were saved; the model noticed and spent its decision turn arguing with the premise, so results are now selected by what the call was about. The scored criterion had to leave prose entirely: eight control samples claimed unavailability in five wordings, so the phrase list is unbounded and fitting it to the control is the design/61 trap. `authored` — a `def` or a `generate_and_save_hook` call — is stronger and **this fixture cannot reach it**, because the prompt requires waiting for confirmation before saving a hook, so the replay ends at the question and scoring required behaviour as failure made both trees read zero. And arm A drove operator replies for up to fourteen turns against a docstring saying it stops at the first question. **Spend overran its authorisation: $12.13 against $10.** The coordinator reported $3.97, which was the total across the five runs that reached their end-of-run print, plus a guess of ~$2.7 for the killed ones; the real figure for those was ~$8.2, and the operator's dashboard is what caught it. Two of the killed runs were arm A at fourteen turns a sample, and every fresh process re-wrote the 31.6k-token cache prefix at 1.25x. The instrument now meters after **every sample** and takes a `--budget` that stops before the sample which would exceed it: a budget metered only at the end is not a budget, because a killed run reports nothing at all. | `9837d73` merged 2026-09-06; branch deleted locally and on `origin`, worktree removed. Post-merge design gate in `design77/close-ledger`: D1's audit corrected in place (the notebook's enumeration missed `calibration_note`), D4 reconciled to what shipped, and the reachability of the saved-adapter path recorded as the block's real scope change. **77b and 77c are untouched by this block** and remain blocked on the open question. |
-| 77b | — | not started; blocked on the open question above | | | |
+| 77a | `design77/truthful-guidance` | `32a95f1` (2026-09-05), worktree `../microclaw-77a` | `7f813ab` + `14dbdc5` + `6e7c571` (1 Codex start, 1 revision, 1 coordinator commit). **Round 1 shipped a skill that advertised an unreachable path** — see checklist item 6; the coordinator found it by trying the save through the tool rather than reading the diff, which no amount of diff review would have shown. Four smaller round-1 findings: the reconciled offline section stated the verbs and the artifact budget but **not the return contract**, and this skill teaches `HookResult` everywhere, so a reader would have hit `TypeError: Offline analysis results must be dictionaries or None`; the prompt's 4b ladder still taught `analyze_frame` as the only saved-hook shape, which is the incident's second half; the new leak guard covered skills/schema/prompt/hook-docstrings but **not strings the tools return**, which is exactly the site the notebook's own enumeration missed (`calibration_note`, `tools.py:5818`); and the "never cite development documents" rule was filed under saved-hook resolvability rather than in the Reporting section where this prompt keeps its speech rules. **The revision turn hit its provider usage limit after committing and before reporting**, so `14dbdc5` arrived with no handoff: the coordinator reviewed the diff, re-ran the suite, and reproduced every watch-it-fail independently rather than accepting it. Round 2 then left `list_hooks` calling an offline adapter `resolvable` with no route and refusing it at attach time with a bare `AttributeError`; `6e7c571` is the coordinator's fix. Coordinator suite **2868 passed / 99 skipped**, against a 2862 baseline — 2862 + 6 new, nothing else moved. Watch-it-fail reproduced independently at each round: both round-1 guards on `f6eb4d0`; all four offline save/run tests on `7f813ab` with the real preflight refusal quoted; the AST half of the leak guard isolated by restoring `f6eb4d0`'s `tools.py` alone, where it reports the `calibration_note` leak **and only that**; and `KeyError: 'route'` plus the old `AttributeError` for the coordinator commit. | **PASS on arm B; arm A measured nothing.** The gate is `design/77-block77a-replay.py`, run locally against `claude-opus-4-8` (microclaw's `DEFAULT_MODEL`, and the model that ran the incident), swapping `--tree` between a pre-77a checkout and this branch so the skill file changes with the prompt. **Arm B, the line-124 decision point: 0 of 8 control samples named an offline verb, 6 of 6 on the tree under test.** Complete separation. `run_analysis_on_saved_dataset` alone does **not** discriminate — 1/8 against 5/6 — because a model that believes the path is gone still names the tool while declining to use it; only `analyze_completed_dataset`/`analyze_saved_frame` separates them. The control reproduced the incident's substance in its own words (*"the offline adapter path for generated hooks isn't shipped yet"*, *"the sanctioned offline-movie path doesn't exist"*) and the tree under test produced the D1 distinction the design asked for, unprompted: *"[the adapter does] not exist yet — writing it is the right answer, and I'll write it."* **Arm A is underpowered and is not evidence**: 0/4 control against 1/3 on the branch, at ~5 minutes and ~$0.32 a sample, and its 6-turn cap truncates the model mid-orientation before it reaches the analysis plan. Reported as measured-nothing, not as a null result. **Five defects, all the instrument's, none the product's.** A sample cut off mid-tool-loop scored `NEITHER`, so four control samples read as a real null before `NO_DECISION` existed. The pruned arm B fixture attached the session's *first* `run_analysis_on_saved_dataset` result — a near-blank TIRF check on another dataset — under a synthetic claim that the six kinesin movies were saved; the model noticed and spent its decision turn arguing with the premise, so results are now selected by what the call was about. The scored criterion had to leave prose entirely: eight control samples claimed unavailability in five wordings, so the phrase list is unbounded and fitting it to the control is the design/61 trap. `authored` — a `def` or a `generate_and_save_hook` call — is stronger and **this fixture cannot reach it**, because the prompt requires waiting for confirmation before saving a hook, so the replay ends at the question and scoring required behaviour as failure made both trees read zero. And arm A drove operator replies for up to fourteen turns against a docstring saying it stops at the first question. **Spend overran its authorisation: $12.13 against $10.** The coordinator reported $3.97, which was the total across the five runs that reached their end-of-run print, plus a guess of ~$2.7 for the killed ones; the real figure for those was ~$8.2, and the operator's dashboard is what caught it. Two of the killed runs were arm A at fourteen turns a sample, and every fresh process re-wrote the 31.6k-token cache prefix at 1.25x. The instrument now meters after **every sample** and takes a `--budget` that stops before the sample which would exceed it: a budget metered only at the end is not a budget, because a killed run reports nothing at all. | `9837d73` merged 2026-09-06; branch deleted locally and on `origin`, worktree removed. Post-merge design gate in `design77/close-ledger`: D1's audit corrected in place (the notebook's enumeration missed `calibration_note`), D4 reconciled to what shipped, and the reachability of the saved-adapter path recorded as the block's real scope change. **77b and 77c are untouched by this block.** 77b's open question was settled separately on 2026-09-06 — see §The open question, settled. |
+| 77b | `design77/acquisition-order` | `e7d40fc` (2026-09-06), suite **2868 passed / 99 skipped**. Open question settled; **step 2 not started — no implementer assigned, no worktree created.** A new session resumes at the block workflow's step 2 with the checklist above. | | | |
 | 77c | — | not started; follows 77b | | | |
