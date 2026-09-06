@@ -9429,3 +9429,68 @@ do not claim a total**; and when a number a person set a limit on cannot be
 observed from inside, say the number is unmeasured rather than estimating it.
 The instrument now prints cumulative spend after every sample and takes a
 `--budget` that stops before the sample that would breach it.
+
+## Block 77b — explicit acquisition order (merged 2026-09-06)
+
+Four Codex turns, **three killed**, two of them producing no report at all. The
+start turn died to *the coordinator's own machine* running out of memory, after
+it had committed; its `session-id` was never written, and was recovered from
+`initial.events.jsonl`'s `thread_id` using the wrapper's own extraction
+expression rather than a guessed one. The first revision died to a provider
+usage limit mid-edit, leaving uncommitted work that **did not parse**. Both were
+preserved and committed as UNREVIEWED per the workflow, and neither was believed
+until re-derived.
+
+**The block's central lesson is that re-running the suite is not a formality.**
+The killed revision's uncommitted work looked coherent on inspection — it
+addressed four of six findings correctly. It also declared `positions_completed`
+as an instance attribute in `StageMoveError.__init__`, while `XYStageMoveError`
+overrides `__init__` without calling `super()`. Every XY move failure therefore
+reached `execute_tool`'s error handler without the attribute, and **the handler
+itself raised `AttributeError`** — four failures in design/68's own boundary
+test. A diff review would not have caught it; running the suite did, in three
+minutes. The fix is a class attribute plus a regression test over
+`StageMoveError.__subclasses__()`, because the hazard is the *next* subclass.
+
+**A probe beats a reading.** The finding that sent round 1 back was found by
+driving a spaced hooked run through `execute_tool` with field B's move failing:
+the typed `StageMoveError` was flattened to a string and field A's finished
+dataset — three accounted frames on disk — vanished from the report entirely.
+Reading the code suggested it; the probe proved it and produced the exact payload
+to quote back. Same again for item 5's two findings: a hooked Z-stack reporting
+*"spacing is ambiguous"* for a run that has no time axis, and interleaved
+per-field spacing being a **revisit interval** with nothing saying so — 0.02 s
+reported for a camera really firing every 10 ms, which is the incident's own
+conflation reappearing inside its own fix.
+
+**Disprove a handoff's caveats as readily as its claims.** The runner flagged the
+metadata read as having no frame-count cap. Measured against the rig's dataset:
+26.6 µs/frame, so 100,000 frames is ~2.7 s after a 95-minute acquisition. The
+instruction back was to *drop* the concern, not bound it — an unmeasured caveat
+that survives into a design doc becomes a phantom constraint someone later
+designs around.
+
+**The gate's one FAIL was the gate's, and it cost no second trip.** Limb G called
+`build_stage_coordinate_mosaic` without `axis_selection` on a dataset carrying
+`time=[0,1,2]`; the tool correctly refused an ambiguous selection. It was settled
+off-rig from the dataset the gate itself returned. The reason the selftest missed
+it is worth keeping: **no fake produces a real NDTiff, so the healthy case could
+only assert that limb G does *not* pass.** A limb the selftest can check only
+negatively is the one to read hardest on the first real run — the same shape as
+design/60's glob, one level further out.
+
+**Order the block so the rig unblocks the code, not the reverse.** Item 5 was
+conditional on a metadata key nobody had verified, so it shipped honestly as
+`null` with the limitation labelled, the gate's limb D enumerated what the camera
+actually writes, and item 5 was then implemented *afterwards* on the same branch
+and verified off-rig against that gate's own returned dataset. One rig trip, no
+guessed key. The keys are `ElapsedTime-ms` and `TimeReceivedByCore`;
+`exposure_timestamp_metadata_key` was renamed because **neither is an exposure
+timestamp** — both are downstream of the shutter, and a field name that overstates
+its value is the same defect class as a key nobody writes.
+
+**A ledger that does not render is not a ledger.** The coordinator's own 77b row
+carried embedded newlines; a newline ends a markdown table row, so it had been
+rendering as one truncated row plus six lines of loose text since the first
+update. Found only by counting columns with `awk`. If step 9 says a cold session
+resumes from the remote alone, the row it resumes from has to parse.
