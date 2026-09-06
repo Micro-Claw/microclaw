@@ -1331,7 +1331,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_multiposition_acquisition",
         "description": (
             "Run a multiposition protocol (snap, zstack, or timelapse). Without hook_strategy, "
-            "complete each position's protocol before moving to the next. "
+            "the default completes each position's protocol before moving to the next. "
             "PROTOCOL CHOICE: when the deliverable is per-position NUMBERS (max/min/"
             "mean intensity, focus metric), protocol='snap' already returns them for "
             "every position — writing nothing to disk is correct when nothing was "
@@ -1339,25 +1339,29 @@ TOOLS: list[dict[str, Any]] = [
             "statistics; reach for them only when data must land on disk. "
             "Supply either position_names (labels already in the MM position list) OR positions "
             "(a list of {name, x_um, y_um, z_um?} dicts — no prior mark_position needed). "
-            "Without hooks, saves each position's data to a subdirectory of save_dir. "
+            "The hookless default saves each position's data to a subdirectory of save_dir. "
             "Pass mark_positions=true to also record every visited position into the "
             "stage position list. "
-            "Pass hook_strategy to run one hooked acquisition across every position: a "
-            "single dataset with a `position` axis and one hook log covering every "
-            "point. The combined events use engine order='tpcz': time outer, so a "
-            "timelapse visits every position at each time point before the next time point. "
-            "For continuous motion within each field, plan separate hooked run_timelapse "
-            "calls per position. Prefer the single-dataset option for a tiled acquisition; do not "
-            "also run the per-position form unless the user explicitly requests both, "
-            "because doing both repeats every exposure. Not compatible with "
-            "protocol='snap' (display-only, no acquisition "
-            "images) — use protocol='timelapse' with n_frames=1 instead. Without "
-            "hook_strategy, zstack/timelapse writes one dataset per position; those "
-            "separate datasets CANNOT be passed to build_stage_coordinate_mosaic."
+            "The default acquisition_order='position_then_time' completes each field's movie, "
+            "with or without hooks. Explicit time_then_position interleaves fields on a shared "
+            "time-point clock in one combined dataset, with or without hooks. A zero-interval "
+            "hooked run preserves a single dataset with a `position` axis. "
+            "A spaced position-outer hooked run uses one acquisition clock, dataset and fresh hook log "
+            "per position; results index those datasets and logs. interval_s=0 adds no requested delay, "
+            "not a guaranteed frame rate. Observed exposure cadence owes rig verification. "
+            "Hooks are incompatible with snap (display-only, no acquisition images). "
+            "Without hook_strategy the default saves one dataset per position; separate datasets "
+            "CANNOT be passed to build_stage_coordinate_mosaic."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "acquisition_order": {
+                    "type": "string",
+                    "enum": ["position_then_time", "time_then_position"],
+                    "default": "position_then_time",
+                    "description": "Finish each field's movie by default, with or without hooks. time_then_position interleaves fields on one shared time-point clock and is inapplicable to snap and zstack.",
+                },
                 "position_names": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1427,14 +1431,11 @@ TOOLS: list[dict[str, Any]] = [
                         {"type": "array", "items": {"type": "string"}, "minItems": 1},
                     ],
                     "description": (
-                        "One hook name or an ordered list (from list_hooks). Runs ONE "
-                        "acquisition across all positions, with time outer (order='tpcz'): every "
-                        "position is visited at each time point. For continuous per-field motion, "
-                        "use separate hooked run_timelapse calls per position. Cannot be "
-                        "combined with protocol='snap'. BATCHED: every position's "
-                        "event is submitted before the first frame arrives, so the "
-                        "hook can measure and log but can never stop the scan early "
-                        "— for stop-on-condition use run_adaptive_survey."
+                        "One hook name or an ordered list from list_hooks. Order is independent of hooks. "
+                        "Zero-interval position-outer movies share one dataset and log; spaced ones use "
+                        "a fresh hook and separate log per position. Explicit interleaving shares one "
+                        "acquisition clock. Cannot be combined with snap. Fixed movie events are "
+                        "submitted before images arrive; use run_adaptive_survey for stop-on-condition."
                     ),
                 },
                 "hook_params": {
@@ -1476,9 +1477,11 @@ TOOLS: list[dict[str, Any]] = [
             "reach for them only when data must land on disk. "
             "Pass mark_positions=true to also record every tile into the stage "
             "position list. "
-            "Pass hook_strategy to run one hooked acquisition across the whole grid: a "
-            "single dataset with a `position` axis and one hook log covering every "
-            "tile. This is how you compute a custom per-tile quantity that snap does "
+            "Order is independent of hooks: position_then_time finishes each tile's movie; "
+            "time_then_position interleaves tiles. Hooked zero-interval or interleaved runs "
+            "use a single dataset with a `position` axis and one log. Spaced position-outer "
+            "hooked runs use a fresh acquisition clock, dataset and hook log per tile. "
+            "This is how you compute a custom per-tile quantity that snap does "
             "not already return — never spell a "
             "grid as N single-plane z-stacks. Not compatible with protocol='snap' "
             "(display-only, no acquisition images) — use protocol='timelapse' with "
@@ -1488,6 +1491,12 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "acquisition_order": {
+                    "type": "string",
+                    "enum": ["position_then_time", "time_then_position"],
+                    "default": "position_then_time",
+                    "description": "Finish each field's movie by default, with or without hooks. time_then_position interleaves fields on one shared time-point clock and is inapplicable to snap and zstack.",
+                },
                 "rows": {"type": "integer", "description": "Number of rows in the grid."},
                 "cols": {"type": "integer", "description": "Number of columns in the grid."},
                 "step_um": {"type": "number", "description": "Step size between tiles in µm."},
@@ -1531,10 +1540,10 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "Hook strategy name (from list_hooks). Runs ONE acquisition "
-                        "across the whole grid with a single hook instance. Cannot be "
-                        "combined with protocol='snap'. BATCHED: every tile's event "
-                        "is submitted before the first frame arrives, so the hook "
-                        "can measure and log but can never stop the grid early — "
+                        "for each movie, preserving the selected acquisition_order. "
+                        "Spaced position-outer movies have separate hooks and logs; otherwise "
+                        "the grid shares one hook and log. Cannot be combined with snap. "
+                        "Fixed movie events are submitted before frames arrive; "
                         "for stop-on-condition use run_adaptive_survey."
                     ),
                 },
@@ -1545,8 +1554,9 @@ TOOLS: list[dict[str, Any]] = [
                 "log_path": {
                     "type": "string",
                     "description": (
-                        "Path for the hook's output log, covering every tile "
-                        "(optional). Read it back with read_hook_log."
+                        "Optional hook log path. Spaced position-outer movies derive separate "
+                        "collision-free log paths from it, indexed in results. Read each returned "
+                        "log_path with read_hook_log."
                     ),
                 },
                 "center_x_um": {
@@ -1581,14 +1591,20 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "DEPRECATED forwarding name. Use run_multiposition_acquisition with "
             "hook_strategy='autofocus_per_position' (or an ordered hook list). "
-            "The forwarded run writes one dataset with a `position` axis. The old "
-            "implementation wrote one dataset per position, whose output CANNOT be "
-            "used as one position-axis acquisition; that duplicated path is gone. "
+            "Zero-interval or interleaved runs write one dataset with a `position` axis. "
+            "Spaced position-outer movies write one dataset per position with separate hook "
+            "logs indexed in results; those datasets CANNOT be used as one position-axis acquisition. "
             "Display-only snap is not supported by this deprecated wrapper."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "acquisition_order": {
+                    "type": "string",
+                    "enum": ["position_then_time", "time_then_position"],
+                    "default": "position_then_time",
+                    "description": "Finish each field's movie by default, with or without hooks. time_then_position interleaves fields on one shared time-point clock and is inapplicable to snap and zstack.",
+                },
                 "position_names": {
                     "type": "array",
                     "items": {"type": "string"},

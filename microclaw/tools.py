@@ -491,6 +491,7 @@ def _emit_multiposition_with_autofocus(params: RecordedParams) -> str:
         "name": value("name"),
         "save_dir": value("save_dir"),
         "protocol_params": value("protocol_params"),
+        "acquisition_order": value("acquisition_order"),
         "preserve_unsupported": value("preserve_unsupported"),
         "log_path": compatibility_log,
         "hook_strategy": "autofocus_per_position",
@@ -632,8 +633,10 @@ def _emit_go_to_position(params: RecordedParams) -> str:
 
 
 def _emit_multiposition(params: RecordedParams) -> str:
+    signature = inspect.signature(run_multiposition_acquisition)
+    order = params.get("acquisition_order", signature.parameters["acquisition_order"].default)
     hook = params.get("hook_strategy")
-    omitted_hook_comment = ""
+    hook_source = ""
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
         if isinstance(hook, list):
@@ -651,9 +654,23 @@ def _emit_multiposition(params: RecordedParams) -> str:
             raise CannotEmit(
                 f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"
             )
-        omitted_hook_comment = (
-            f"# OBSERVATION HOOK NOT ATTACHED: {hook!r}; this standalone script "
-            "reproduces imaging only and does not reproduce its measurements or hook log.\n"
+        exported_hook_params = RecordedParams(dict(params), params.result)
+        observation = params.result.get("observation_parameters") or next(
+            (r["observation_parameters"] for r in params.result.get("results", [])
+             if "observation_parameters" in r), None)
+        if observation:
+            exported_hook_params["hook_params"] = {"min_snr": observation["min_snr"]}
+        elif (params.get("hook_params") or {}).get("calibration_path"):
+            raise CannotEmit("the record lacks the hook's resolved calibration threshold")
+        source, constructor, _ = _adaptive_hook_export(exported_hook_params)
+        hook_source = (
+            "import hashlib, io, itertools, json, logging, queue, threading\n"
+            "from datetime import datetime, timezone\n"
+            "from types import SimpleNamespace\n"
+            "from dataclasses import asdict, dataclass, field\n"
+            + _analysis_source(include_autofocus=True) + "\n"
+            + _adaptive_runner_source() + "\n" + _portable_log_path_source() + "\n" + source + "\n"
+            + "guard = SimpleNamespace(analysis_min_snr=None)\n"
         )
     positions = params.get("positions")
     if positions is None:
@@ -677,13 +694,11 @@ def _emit_multiposition(params: RecordedParams) -> str:
         raise CannotEmit("the record contains a resolved position without a label")
     protocol = params["protocol"]
     protocol_params = dict(params.get("protocol_params") or {})
-    if hook:
+    _protocol_shape_kwargs(protocol, protocol_params, order)
+    if hook or order == "time_then_position":
         if protocol == "timelapse":
-            if any(position.get("z_um") is None for position in positions):
-                raise CannotEmit(
-                    "observation-only hooked timelapse has positions without recorded Z"
-                )
             shape = {
+                "order": "ptcz" if order == "position_then_time" else "tpcz",
                 "num_time_points": protocol_params["n_frames"],
                 "time_interval_s": protocol_params.get("interval_s", 0),
             }
@@ -695,17 +710,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
             }
         else:
             raise CannotEmit(f"unknown recorded hooked protocol {protocol!r}")
-        sweeps_z = protocol == "zstack"
-        if sweeps_z:
-            shape["xy_positions"] = [
-                (position["x_um"], position["y_um"]) for position in positions
-            ]
-        else:
-            shape["xyz_positions"] = [
-                (position["x_um"], position["y_um"], position["z_um"])
-                for position in positions
-            ]
-        shape["position_labels"] = [position["name"] for position in positions]
+        split = protocol == "timelapse" and order == "position_then_time" and shape["time_interval_s"] > 0
+        groups = [[p] for p in positions] if split else [positions]
         channel = protocol_params.get("channel")
         exposure = protocol_params.get("exposure_ms")
         if channel:
@@ -714,13 +720,49 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if exposure is not None:
                 shape["channel_exposures_ms"] = [exposure]
         prefix = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
-        return (
-            omitted_hook_comment + prefix
-            + f"events = multi_d_acquisition_events(**{shape!r})\n"
-            + "with Acquisition(directory=str(_HERE), "
-            f"name={params.get('name', 'multipos')!r}) as acq:\n"
-            + "    acq.acquire(events)"
-        )
+        lines = [hook_source + prefix,
+                 f"# acquisition_order={order}; timing={params.result.get('timing', {})!r}"]
+        for index, group in enumerate(groups):
+            event_shape = dict(shape)
+            if protocol == "zstack" or all(p.get("z_um") is None for p in group):
+                event_shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in group]
+            else:
+                # A missing Z uses the current focus plane, as in live execution.
+                if any(p.get("z_um") is None for p in group):
+                    raise CannotEmit("mixed recorded and unrecorded Z coordinates")
+                event_shape["xyz_positions"] = [(p["x_um"], p["y_um"], p["z_um"]) for p in group]
+            event_shape["position_labels"] = [p["name"] for p in group]
+            movie_name = group[0]["name"] if split else params.get("name", signature.parameters["name"].default)
+            directory = f"_HERE / {movie_name!r}" if split else "_HERE"
+            if split:
+                position = group[0]
+                recorded_move = next((r.get("xy_move") or {} for r in params.result.get("results", [])
+                                      if r.get("position") == position["name"]), {})
+                _, _, _, configured_x, configured_y = _recorded_xy_contract(recorded_move)
+                # Use the same settled XY contract as the live controller.
+                lines.extend([
+                    "_xy_device = core.get_xy_stage_device()",
+                    "_sx, _sy = read_xy_start_position(core, _xy_device, "
+                    f"{position['x_um']!r}, {position['y_um']!r}, 'relative', {configured_x!r}, {configured_y!r})",
+                    f"core.set_xy_position({position['x_um']!r}, {position['y_um']!r})",
+                    "settle_xy_move(core, _xy_device, "
+                    f"{position['x_um']!r}, {position['y_um']!r}, _sx, _sy, 'relative', {configured_x!r}, {configured_y!r})",
+                ])
+                if position.get("z_um") is not None:
+                    lines += [f"core.set_position({position['z_um']!r})",
+                              "core.wait_for_device(core.get_focus_device())"]
+            if hook:
+                log = params.get("log_path")
+                log_name = (f"{Path(log).stem}_{index}{Path(log).suffix}" if split else Path(log).name) if log else None
+                lines += [f"_log_path = _next_available_log_path(_HERE / {log_name!r})" if log_name else "_log_path = None",
+                          f"hook = {constructor}"]
+                if observation:
+                    lines.append(f"hook.threshold_source = {observation['min_snr_source']!r}")
+            lines += [f"events = multi_d_acquisition_events(**{event_shape!r})",
+                      f"with Acquisition(directory=str({directory}), name={movie_name!r}"
+                      + (", image_process_fn=hook.image_process_fn" if hook else "") + ") as acq:",
+                      "    acq.acquire(events)"]
+        return "\n".join(lines)
     # Every per-position XY move in the live tile path is settled, so every one
     # here is too. The targets are literals but the START is read per position
     # at run time, exactly as _run_protocol_at reads it; only the declared bands
@@ -755,6 +797,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
             "    image = snap_to_numpy(mm)",
             f"    stats = compute_stats(image, min_snr={min_snr!r})",
         ])
+        lines.append(f"    # acquisition_order={order}; timing=no_time_axis")
         return "\n".join(lines)
     if protocol == "timelapse":
         shape = {
@@ -779,6 +822,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
             event_args["channel_exposures_ms"] = [exposure]
     elif exposure is not None:
         lines.append(f"    core.set_exposure({exposure!r})")
+    timing_strategy = "per_position_clock" if protocol == "timelapse" else "no_time_axis"
+    lines.append(f"    # acquisition_order={order}; timing={timing_strategy}; requested_interval_s={protocol_params.get('interval_s')!r}; exposure cadence owes rig verification")
     lines.extend([
         f"    events = multi_d_acquisition_events(**{event_args!r})",
         "    with Acquisition(directory=str(_HERE / position['name']), "
@@ -7028,8 +7073,13 @@ def import_mm_positions(
 
 # --- Multiposition acquisition ---
 
-def _protocol_shape_kwargs(protocol: str, params: dict) -> dict:
+def _protocol_shape_kwargs(protocol: str, params: dict,
+                           acquisition_order: str = "position_then_time") -> dict:
     """Validate protocol_params and return acquisition-event shape kwargs."""
+    if acquisition_order not in {"position_then_time", "time_then_position"}:
+        raise ValueError("acquisition_order must be position_then_time or time_then_position.")
+    if protocol in {"snap", "zstack"} and acquisition_order == "time_then_position":
+        raise ValueError(f"time_then_position is inapplicable to {protocol}: no acquisition time axis.")
     required = {
         "timelapse": ("n_frames", "interval_s"),
         "zstack": ("z_start_um", "z_end_um", "z_step_um"),
@@ -7242,6 +7292,7 @@ def run_multiposition_acquisition(
     preserve_unsupported: bool = False,
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
+    acquisition_order: str = "position_then_time",
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -7270,10 +7321,13 @@ def run_multiposition_acquisition(
     stage position list (microclaw's list + MM's Position List Manager), as
     the mark_position tool would.
 
-    hook_strategy switches to a single Acquisition spanning every position: one
-    dataset with a `position` axis and one hook log covering every point, rather
-    than the per-position loop's N datasets and N logs (design/19 F2). Not
-    compatible with protocol="snap", which takes no acquisition images.
+    acquisition_order defaults to position_then_time independently of hooks.
+    time_then_position interleaves fields on a shared acquisition clock and is
+    inapplicable to snap and zstack. Zero-interval hooked movies share one dataset
+    with a position axis. Spaced position-outer hooked movies each have a fresh
+    acquisition clock, hook, dataset and log, indexed in results. Hook logs record
+    callback arrival times, not exposure timestamps. Hooks require acquisition
+    images and cannot be attached to snap.
     """
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
@@ -7283,7 +7337,7 @@ def run_multiposition_acquisition(
         return {"error": f"save_dir is required for protocol '{protocol}'."}
     params = protocol_params or {}
     try:
-        shape = _protocol_shape_kwargs(protocol, params)
+        shape = _protocol_shape_kwargs(protocol, params, acquisition_order)
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
     if save_dir:
@@ -7315,12 +7369,14 @@ def run_multiposition_acquisition(
             (p["name"], p["x_um"], p["y_um"], p.get("z_um")) for p in positions
         ]
 
-    if hook_strategy:
+    if hook_strategy or acquisition_order == "time_then_position":
         if protocol == "snap":
             return {"error":
                     "hook_strategy needs acquisition images; 'snap' is display-only. "
                     "Use protocol='timelapse' with protocol_params={'n_frames': 1, "
                     "'interval_s': 0} to capture one hooked frame per position."}
+        if params.get("laser_slot") is not None:
+            _verify_trigger_line_armed(ctrl, params["laser_slot"])
         if results:
             return {"error": "Positions not found in position list: "
                              f"{[r['position'] for r in results]}"}
@@ -7352,6 +7408,7 @@ def run_multiposition_acquisition(
                     channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
                     illumination_envelope=illumination_envelope,
                     artifact_limits=artifact_limits,
+                    acquisition_order=acquisition_order,
                     **shape,
                 )
             except AcquisitionUnterminated:
@@ -7453,6 +7510,15 @@ def run_multiposition_acquisition(
     payload = {
         "status": f"{n_ok}/{total} positions completed.",
         "results": results,
+        "acquisition_order": acquisition_order,
+        "timing": {
+            "strategy": "per_position_clock" if protocol == "timelapse" else "no_time_axis",
+            "requested_interval_s": params.get("interval_s"),
+            "exposure_ms": params.get("exposure_ms"),
+            "observed_per_field_spacing": None,
+            "exposure_timestamp_metadata_key": None,
+            "verification": "owes rig verification; no exposure timestamp key established",
+        },
     }
     restore = _live_restore_report(live_state)
     if restore:
@@ -7483,6 +7549,7 @@ def run_tile_acquisition(
     center_x_um: float | None = None,
     center_y_um: float | None = None,
     return_to_center: bool = True,
+    acquisition_order: str = "position_then_time",
 ) -> dict:
     """Acquire a rows×cols tile grid centered on center_x_um/center_y_um.
 
@@ -7495,11 +7562,11 @@ def run_tile_acquisition(
     Pass center_* to pin a grid to absolute coordinates and reproduce an earlier
     scan exactly.
 
-    hook_strategy runs one hooked Acquisition across the whole grid; see
-    run_multiposition_acquisition.
+    acquisition_order and hook_strategy follow run_multiposition_acquisition,
+    including separate clocks and logs for spaced position-outer movies.
     """
     try:
-        _protocol_shape_kwargs(protocol, protocol_params or {})
+        _protocol_shape_kwargs(protocol, protocol_params or {}, acquisition_order)
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
     center_x = ctrl.core.get_x_position() if center_x_um is None else center_x_um
@@ -7533,6 +7600,7 @@ def run_tile_acquisition(
         positions=positions,
         name=name,
         protocol_params=protocol_params,
+        acquisition_order=acquisition_order,
         mark_positions=mark_positions,
         hook_strategy=hook_strategy,
         hook_params=hook_params,
@@ -7577,6 +7645,7 @@ def run_multiposition_with_autofocus(
     protocol_params: dict | None = None,
     preserve_unsupported: bool = False,
     positions: list[dict] | None = None,
+    acquisition_order: str = "position_then_time",
 ) -> dict:
     """Deprecated forwarding wrapper for composed multiposition acquisition."""
     # Planning and authorization are deliberately delegated: the forwarded
@@ -7594,7 +7663,7 @@ def run_multiposition_with_autofocus(
                      "snap. Use protocol='timelapse' with n_frames=1 and interval_s=0."
         }
     try:
-        _protocol_shape_kwargs(protocol, protocol_params or {})
+        _protocol_shape_kwargs(protocol, protocol_params or {}, acquisition_order)
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
     save_dir = guard.resolve_in_workspace(save_dir)  # before any forwarded move
@@ -7605,6 +7674,7 @@ def run_multiposition_with_autofocus(
         ctrl, guard, protocol=protocol, save_dir=save_dir,
         position_names=position_names, positions=positions, name=name,
         protocol_params=protocol_params,
+        acquisition_order=acquisition_order,
         hook_strategy="autofocus_per_position",
         hook_params={"z_range_um": z_range_um, "z_step_um": z_step_um,
                      "settle_ms": settle_ms},
@@ -7613,10 +7683,13 @@ def run_multiposition_with_autofocus(
     )
     if "error" not in result:
         autofocus_by_position: dict[str, dict[str, Any]] = {}
-        try:
-            records = json.loads(Path(compatibility_log).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            records = []
+        records = []
+        log_paths = [r["log_path"] for r in result.get("results", []) if r.get("log_path")]
+        for path in log_paths or [compatibility_log]:
+            try:
+                records.extend(json.loads(Path(path).read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                pass
         for record in records:
             position = record.get("position")
             if position is not None and (
@@ -7634,7 +7707,13 @@ def run_multiposition_with_autofocus(
              "status": "complete"}
             for tile in result.get("tiles", [])
         ]
-        result["results"] = compatibility_results
+        if result.get("results"):
+            result["results"] = [
+                {**row, **autofocus_by_position.get(str(row["position"]), {})}
+                for row in result["results"]
+            ]
+        else:
+            result["results"] = compatibility_results
         result["status"] = (
             f"{len(compatibility_results)}/{len(compatibility_results)} positions "
             "completed with autofocus."
@@ -7645,8 +7724,8 @@ def run_multiposition_with_autofocus(
             "run_multiposition_with_autofocus is deprecated; use "
             "run_multiposition_acquisition(..., "
             "hook_strategy='autofocus_per_position'). This forwarding path writes "
-            "one dataset with a position axis; the former implementation wrote one "
-            "dataset per position."
+            "one dataset with a position axis for zero-interval or interleaved movies, and separate "
+            "datasets and logs for spaced position-outer movies."
         ),
     }
 
@@ -8196,16 +8275,17 @@ def _acquire_positions_with_hook(
     positions: list[dict],
     save_dir: str,
     name: str,
-    hook_strategy: str | list[str],
+    hook_strategy: str | list[str] | None,
     hook_params: dict | list[dict | None] | None = None,
     log_path: str | None = None,
     channel: str | None = None,
     exposure_ms: float | None = None,
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
+    acquisition_order: str = "position_then_time",
     **shape_kwargs: Any,
 ) -> dict:
-    """One Acquisition across every position, with one or composed hooks.
+    """Run combined events, or separately clocked position-outer movies.
 
     positions are {name, x_um, y_um, z_um?} dicts; shape_kwargs carry the
     per-position event shape (z_start/z_end/z_step or num_time_points/
@@ -8213,8 +8293,9 @@ def _acquire_positions_with_hook(
 
     pycro-manager moves the stage here, so each image's metadata carries
     axes["position"] — the hook keys its log to the grid point instead of
-    guessing metadata names (design/19 F3). Contrast a per-position loop, where
-    a fresh hook per position truncates a shared log (see HookBase._write_log).
+    guessing metadata names (design/19 F3). Spaced position-outer movies use
+    fresh hooks and collision-free per-movie logs: sharing a log would truncate
+    earlier movies (HookBase._write_log). Results index their paths.
     """
     save_dir = guard.resolve_in_workspace(save_dir)
     log_path = _prepare_log_path(guard, log_path)
@@ -8244,58 +8325,115 @@ def _acquire_positions_with_hook(
         if not channel:
             ctrl.core.set_exposure(exposure_ms)   # eventless exposure; see run_zstack
 
-    try:
-        hook = _resolve_hooks(ctrl, guard, hook_strategy, hook_params, log_path)
-    except ValueError as e:
-        return {"error": str(e)}
-
-    if not sweeps_z and any(p.get("z_um") is not None for p in positions):
-        # xyz_positions is all-or-nothing: a point without a Z holds the current
-        # focus plane rather than dropping out of the event list.
-        current_z = ctrl.core.get_position()
-        shape_kwargs["xyz_positions"] = [
-            (p["x_um"], p["y_um"], p["z_um"] if p.get("z_um") is not None else current_z)
-            for p in positions
-        ]
-    else:
-        shape_kwargs["xy_positions"] = [(p["x_um"], p["y_um"]) for p in positions]
-
-    events = _build_acquisition_events(
-        channel=channel, exposure_ms=exposure_ms,
-        position_labels=[p["name"] for p in positions], **shape_kwargs,
-    )
-    try:
-        _configure_hook_capabilities(hook, ctrl, guard, save_dir, name,
-                                     illumination_envelope, artifact_limits)
-    except _HookArtifactBudgetError as exc:
-        return {"error": str(exc)}
-    plan = _plan_with_hook_dose(plan_events(ctrl, events, exposure_ms), hook)
-    reservation = _authorize_acquisition(ctrl, guard, plan)
-    started_at = datetime.now(timezone.utc)
-    started = time.monotonic()
-    try:
-        dataset_path = _acquire_with_hooks(
-            guard, save_dir, name, events, hook, reservation=reservation,
-            policy=DEFAULT,
-            ctrl=ctrl, plan=plan, runtime_plan=plan,
+    split = (acquisition_order == "position_then_time"
+             and shape_kwargs.get("time_interval_s", 0) > 0)
+    timing = {
+        "strategy": ("per_position_clock" if split else
+                     "shared_timepoint_clock" if shape_kwargs.get("time_interval_s", 0) > 0
+                     else "no_requested_delay" if "num_time_points" in shape_kwargs
+                     else "no_time_axis"),
+        "requested_interval_s": shape_kwargs.get("time_interval_s"),
+        "exposure_ms": exposure_ms,
+        "observed_per_field_spacing": None,
+        "exposure_timestamp_metadata_key": None,
+        "verification": "owes rig verification; no exposure timestamp key established",
+        "hook_observed_at": "callback arrival time, not exposure time",
+    }
+    _emit_acquisition_diagnostic({
+        "type": "acquisition_plan", "acquisition_order": acquisition_order,
+        "timing": timing, "positions": [p["name"] for p in positions],
+        "frames_per_position": shape_kwargs.get("num_time_points"),
+    })
+    results = []
+    groups = [[position] for position in positions] if split else [positions]
+    for group in groups:
+        movie_name = group[0]["name"] if split else name
+        movie_dir = guard.resolve_in_workspace(str(Path(save_dir) / movie_name)) if split else save_dir
+        movie_log = (_prepare_log_path(
+            guard, None, default=str(Path(log_path).parent / (Path(log_path).stem +
+                f"_{len(results)}" + Path(log_path).suffix))) if split and log_path else log_path)
+        try:
+            hook = (_resolve_hooks(ctrl, guard, hook_strategy, hook_params, movie_log)
+                    if hook_strategy else None)
+        except ValueError as exc:
+            return {"error": str(exc), "results": results}
+        event_shape = dict(shape_kwargs)
+        if not sweeps_z and any(p.get("z_um") is not None for p in group):
+            current_z = ctrl.core.get_position()
+            event_shape["xyz_positions"] = [
+                (p["x_um"], p["y_um"], p["z_um"] if p.get("z_um") is not None else current_z)
+                for p in group
+            ]
+        else:
+            event_shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in group]
+        if "num_time_points" in shape_kwargs:
+            event_shape["order"] = ("ptcz" if acquisition_order == "position_then_time" else "tpcz")
+        events = _build_acquisition_events(
+            channel=channel, exposure_ms=exposure_ms,
+            position_labels=[p["name"] for p in group], **event_shape,
         )
-    except _HookedAcquisitionFailure as exc:
-        return _hooked_failure_result(exc, log_path)
-    completed_at = datetime.now(timezone.utc)
-    # Say how many positions ran. "Adaptive acquisition complete." over a grid
-    # left no way to confirm every tile fired without opening the log.
-    return _adaptive_result(
-        dataset_path, log_path,
-        status=f"Hooked acquisition complete across {len(positions)} position(s).",
-        positions=len(positions),
-        positions_planned=len(positions), positions_completed=len(positions),
-        frames_planned=len(events), frames_acquired=len(events),
-        reservation_frames_planned=plan.frames,
-        hook_extra_exposures_planned=plan.frames - len(events),
-        started_at=started_at.isoformat(), completed_at=completed_at.isoformat(),
-        duration_s=round(time.monotonic() - started, 6),
-        **_reservation_report(reservation),
-    )
+        if hook is not None:
+            try:
+                _configure_hook_capabilities(hook, ctrl, guard, movie_dir, movie_name,
+                                             illumination_envelope, artifact_limits)
+            except _HookArtifactBudgetError as exc:
+                return {"error": str(exc), "results": results}
+        plan = plan_events(ctrl, events, exposure_ms)
+        if hook is not None:
+            plan = _plan_with_hook_dose(plan, hook)
+        reservation = _authorize_acquisition(ctrl, guard, plan)
+        started_at = datetime.now(timezone.utc)
+        started = time.monotonic()
+        xy_move = None
+        try:
+            if split:
+                # Settle BEFORE construction starts this field's acquisition clock.
+                # Retain coordinates/labels in events for dataset and hook provenance.
+                p = group[0]
+                xy_move = ctrl.set_xy(p["x_um"], p["y_um"])
+                if p.get("z_um") is not None:
+                    ctrl.core.set_position(p["z_um"])
+                    _wait(ctrl, ctrl.core.get_focus_device())
+        except Exception:
+            reservation.close()
+            raise
+        try:
+            dataset_path = _acquire_with_hooks(
+                guard, movie_dir, movie_name, events, hook, reservation=reservation,
+                policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan,
+            )
+        except AcquisitionUnterminated as exc:
+            exc.positions_completed = [r for r in results if r.get("dataset_path") and "error" not in r]
+            raise
+        except _HookedAcquisitionFailure as exc:
+            failed = _hooked_failure_result(exc, movie_log)
+            return {**failed, **({"position": group[0]["name"]} if split else {}),
+                    "results": results, "acquisition_order": acquisition_order,
+                    "timing": timing}
+        result = _adaptive_result(
+            dataset_path, movie_log,
+            status=f"Acquisition complete across {len(group)} position(s).",
+            positions=len(group), positions_planned=len(group), positions_completed=len(group),
+            frames_planned=len(events), frames_acquired=reservation.completed_frames,
+            reservation_frames_planned=plan.frames,
+            hook_extra_exposures_planned=plan.frames - len(events),
+            started_at=started_at.isoformat(), completed_at=datetime.now(timezone.utc).isoformat(),
+            duration_s=round(time.monotonic() - started, 6),
+            **_reservation_report(reservation),
+        )
+        if hasattr(hook, "min_snr") and hasattr(hook, "threshold_source"):
+            result["observation_parameters"] = {
+                "min_snr": hook.min_snr, "min_snr_source": hook.threshold_source,
+            }
+        if not split:
+            return {**result, "acquisition_order": acquisition_order, "timing": timing}
+        results.append({**result, "position": group[0]["name"],
+                        "x_um": group[0]["x_um"], "y_um": group[0]["y_um"],
+                        "xy_move": xy_move})
+    return {"status": f"{len(results)}/{len(positions)} positions completed.",
+            "results": results, "acquisition_order": acquisition_order, "timing": timing,
+            "dataset_layout": "one dataset and fresh hook per position; results index datasets and logs",
+            "hook_log_note": "Read each results entry's log_path separately; no shared log is overwritten."}
 
 
 class SurveyProgress:
