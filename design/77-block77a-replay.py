@@ -106,6 +106,13 @@ with `--full-history`. Those are chars/4 estimates, not `count_tokens` figures;
 treat them as the order of magnitude, and note the ephemeral cache lives five
 minutes, so samples have to run back to back to get the read price.
 
+Pass `--budget` to stop before the sample that would exceed it. Spend is
+reported **after every sample**, because a run that is killed mid-flight never
+reaches the end-of-run total and its cost is then invisible: block 77a's own
+gate was authorised at $10, reported $3.97 from the runs that printed, and
+actually cost **$12.13** — the difference was three killed runs, two of them at
+fourteen turns a sample. A budget metered only at the end is not a budget.
+
 `--dry-run` costs nothing and exercises every code path here except the API.
 
     python design/77-block77a-replay.py --dry-run --arm both
@@ -608,6 +615,11 @@ def main(argv=None) -> int:
                     help="Write every sample's text and tool calls here. A "
                          "verdict that cannot be read back is not evidence.")
     ap.add_argument("--model")
+    ap.add_argument("--budget", type=float, default=None,
+                    help="Dollars. Stop before the next sample once reported "
+                         "usage reaches this. Metering is per sample because a "
+                         "run that is killed prints nothing, and its cost is "
+                         "then invisible to whoever set the budget.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Score a scripted transcript; makes no API call.")
     args = ap.parse_args(argv)
@@ -654,6 +666,11 @@ def main(argv=None) -> int:
                   f"dev_ref={result['dev_ref']} "
                   f"attach={result['attach']} calls={len(result['calls'])} "
                   f"unrecorded={result['unrecorded']}")
+            print(f"      ${client.spent():.2f} cumulative")
+            if args.budget and client.spent() >= args.budget:
+                print(f"  -- STOPPING: ${client.spent():.2f} reached the "
+                      f"${args.budget:.2f} budget after {n + 1} samples")
+                break
             if args.transcript:
                 with args.transcript.open("a", encoding="utf-8") as fh:
                     fh.write(f"\n\n===== arm {arm} | {args.tree} | sample "
@@ -677,7 +694,7 @@ def _dry_run(args) -> int:
         client = ScriptedClient(turns)
         result = run_sample(client, "scripted", "system", [],
                             [{"role": "user", "content": "go"}], {}, {},
-                            max_turns=args.max_turns, replies=[])
+                            max_turns=args.max_turns or 6, replies=[])
         print(f"{label:>6}: {result['verdict']:<20} dev_ref={result['dev_ref']} "
               f"offline={result['offline']} attach={result['attach']}")
     return 0

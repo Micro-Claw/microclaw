@@ -9418,3 +9418,14 @@ declining to use it. Arm A is recorded as **measuring nothing** (0/4 vs 1/3),
 not as a null. Swapping `--tree` rather than patching prompt strings is what
 made both arms possible: the skill file is half the variable and cannot be
 reconstructed by editing a string, the way design/72's prompt spike could.
+
+**The gate overran its budget and the coordinator's own accounting hid it.**
+Authorised at $10, actual $12.13, reported as $3.97 — because spend was totalled
+at the *end* of a run and three runs were killed before they got there. The
+missing $8.2 was invisible by construction, and the operator's dashboard is what
+found it. Two lessons, and the second is the general one. Killed runs are the
+normal case in an instrument still being debugged, so **meter incrementally or
+do not claim a total**; and when a number a person set a limit on cannot be
+observed from inside, say the number is unmeasured rather than estimating it.
+The instrument now prints cumulative spend after every sample and takes a
+`--budget` that stops before the sample that would breach it.
