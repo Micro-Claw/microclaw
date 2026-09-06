@@ -4333,6 +4333,7 @@ def test_failed_adaptive_call_exports_no_trace_and_explains_why(tmp_path):
     assert result["emitted_calls"] == 0
     assert "every recorded mutating call failed" in result["status"]
     assert result["skipped_failed_calls"] == [{
+        "tool_use_id": records[0]["content"][0]["id"],
         "tool": "run_timelapse",
         "reason": (
             "the recorded call did not succeed: property restoration failed: "
@@ -4361,7 +4362,7 @@ def test_exported_script_does_not_claim_nothing_happened_for_a_landed_write(tmp_
 
 def test_80a_incident_categories_and_selected_subset(tmp_path):
     records = json.loads((Path(__file__).parent / "fixtures" /
-                          "80a-beads-autofocus-session.json").read_text())
+                          "80a-beads-autofocus-session.json").read_text(encoding="utf-8"))
     records += [call("list_stages", {})]
     _, result, _ = export(tmp_path, records)
     refused = result["not_emitted_calls"]
@@ -4375,8 +4376,14 @@ def test_80a_incident_categories_and_selected_subset(tmp_path):
             ("toolu_017TXJCzN1xmcjzzqZTHe4Yp", "autofocus_mm_plugin"),
         ]
     ]
-    assert len(result["skipped_failed_calls"]) == 1
-    assert "unexpected keyword argument 'method'" in result["skipped_failed_calls"][0]["reason"]
+    failed, = result["skipped_failed_calls"]
+    assert failed["tool_use_id"] == "toolu_012yhPfTp3TStsngUtGqhKhp"
+    assert failed["tool"] == "run_multiposition_acquisition"
+    assert "unexpected keyword argument 'method'" in failed["reason"]
+    assert {item["tool_use_id"] for item in refused}.isdisjoint(
+        {item["tool_use_id"] for item in result["skipped_failed_calls"]}
+    )
+    assert "1 calls" not in result["status"] and "2 calls could not" in result["status"]
     assert all("unexpected keyword" not in item["reason"] for item in refused)
     assert all("hooked acquisition" not in item["reason"] for item in result["skipped_failed_calls"])
     assert "2 calls" in result["status"] and "not_emitted_calls" in result["status"]
@@ -4402,7 +4409,8 @@ def test_80a_refusal_sites_and_status_precedence(tmp_path, kind):
     result = tools.export_session_script(None, Guard(tmp_path), "routine.py", records,
                                         tool_use_ids=[r["content"][0]["id"] for r in records if r["role"] == "assistant"])
     assert result["status"].startswith("Session script exported, but incomplete:")
-    assert "1 calls" in result["status"] and "not_emitted_calls" in result["status"]
+    assert "1 call could not" in result["status"]
+    assert "not_emitted_calls" in result["status"]
     assert result["complete"] is False
     assert result["emitted_calls"] == 0
     assert len(result["skipped_failed_calls"]) == 1
@@ -4441,3 +4449,36 @@ def test_80a_artifact_announces_before_core_and_stops_at_refusal(tmp_path, posit
     assert "refusal-80a" in events[0]
     assert "no standalone emitter has been implemented for this tool" in events[0]
     assert events[1:] == ["Core", *[10, 20][:index]]
+
+
+def test_80a_refusal_disclosure_folds_a_bridge_stack_trace_and_counts_one_call(
+    tmp_path,
+):
+    """A recorded bridge failure must not splice newlines through the disclosure.
+
+    Every Micro-Manager bridge exception carries a Java stack trace, so the
+    partial-outcome refusal reason really does arrive multi-line. Unfolded it
+    breaks the printed summary's one-line-per-refusal shape -- and since
+    2026-08-17 that print is the only disclosure the exported script has.
+    """
+    records = completed_call("run_multiposition_acquisition", {}, {"results": [
+        {"dataset_path": "a"},
+        {"position": "p2", "error": _MULTILINE_BRIDGE_ERROR},
+    ]})
+
+    _, result, source = export(tmp_path, records)
+
+    refusal, = result["not_emitted_calls"]
+    assert "\n" not in refusal["reason"]
+    assert "ZMQServer.runMethod" in refusal["reason"]
+    # One refused call reads as one call, in both places an operator sees it.
+    assert "1 call could not be emitted" in result["status"]
+    assert "1 calls" not in result["status"]
+    summary, = [line for line in source.splitlines() if line.startswith("print(")]
+    printed = ast.literal_eval(summary[len("print("):-1])
+    assert printed.startswith("INCOMPLETE SESSION EXPORT: 1 call could not be emitted.")
+    # Two lines exactly: the header, and one line for the one refused call.
+    assert len(printed.splitlines()) == 2
+    assert "ZMQServer.runMethod" in printed.splitlines()[1]
+    # The in-place raise still carries the untouched original.
+    assert _MULTILINE_BRIDGE_ERROR.splitlines()[-1] in source

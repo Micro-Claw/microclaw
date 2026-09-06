@@ -2085,8 +2085,18 @@ def export_session_script(
         return " ".join(str(reason).split())
 
     def refuse(tool: str, reason: str, tool_use_id: str) -> None:
-        """One shape for every refusal: a comment, then a step that cannot run."""
-        not_emitted_calls.append({"tool_use_id": tool_use_id, "tool": tool, "reason": reason})
+        """One shape for every refusal: a comment, then a step that cannot run.
+
+        The reported reason is folded to one line for the same purpose
+        ``one_line`` exists for, and ``skipped_failed_calls`` already does: a
+        recorded bridge failure carries a Java stack trace, and unfolded it
+        splices newlines through the printed disclosure -- which since
+        2026-08-17 is the only disclosure an exported script has. The ``raise``
+        below keeps the full text, escaped by ``!r``.
+        """
+        not_emitted_calls.append(
+            {"tool_use_id": tool_use_id, "tool": tool, "reason": one_line(reason)}
+        )
         body_lines.append(f"# NOT EMITTED: {tool} — {one_line(reason)}")
         body_lines.append(f"raise RuntimeError({('NOT EMITTED: ' + tool + ' — ' + reason)!r})")
 
@@ -2135,7 +2145,10 @@ def export_session_script(
                     body_lines.append(
                         "# The session completed nothing here, so neither does this script."
                     )
-                skipped_failed_calls.append({"tool": name, "reason": one_line(reason)})
+                skipped_failed_calls.append({
+                    "tool_use_id": params["_tool_use_id"], "tool": name,
+                    "reason": one_line(reason),
+                })
             continue
         try:
             rendered = renderer(params)
@@ -2158,8 +2171,11 @@ def export_session_script(
         or "settle_xy_move(" in body_text
         or "read_xy_start_position(" in body_text
     )
+    refused_count = (
+        f"{len(not_emitted_calls)} call" + ("" if len(not_emitted_calls) == 1 else "s")
+    )
     refusal_summary = "\n".join([
-        f"INCOMPLETE SESSION EXPORT: {len(not_emitted_calls)} calls could not be emitted.",
+        f"INCOMPLETE SESSION EXPORT: {refused_count} could not be emitted.",
         *(f"{item['tool']} ({item['tool_use_id']}): {item['reason']}"
           for item in not_emitted_calls),
     ])
@@ -2252,8 +2268,8 @@ def export_session_script(
     # not a failed-no-effect skip or an empty selection.
     if not_emitted_calls:
         result["status"] = (
-            f"Session script exported, but incomplete: {len(not_emitted_calls)} calls "
-            "could not be emitted. See not_emitted_calls for the exact reasons."
+            f"Session script exported, but incomplete: {refused_count} could not "
+            "be emitted. See not_emitted_calls for the exact reasons."
         )
     elif emitted == 0 and skipped_failed_calls:
         result["status"] = (
