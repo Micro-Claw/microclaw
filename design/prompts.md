@@ -9338,3 +9338,94 @@ could reach came from part 2's *history*: the model summarises a
 acquired and saved."** The result keeps D2's distinction; the summary collapses
 it. **No limb reads what the model says** — if a block's deliverable is what an
 operator is told, the conversation history is the artifact, not the score file.
+
+## design/77 block 77a — truthful runtime guidance and planning
+
+**The finding was not that text went stale.** The incident's session had
+**successfully run** `run_analysis_on_saved_dataset` two turns before the
+assistant told the microscopist that path was unimplemented. It had read the
+schema, used the tool, and then read `hook-authoring/SKILL.md` — and followed
+the skill. A skill that maintains a competing capability declaration overrides
+the installed tool contract in practice, which is why D1's durable half is a
+rule about where capability claims may live, not a wording fix.
+
+**The notebook's own leak enumeration was incomplete, and an AST sweep found it
+in a minute.** §Code findings listed `SKILL.md` and four hook docstrings. A
+sweep for `design/NN` inside *non-docstring string literals* also found
+`tools.py`'s `calibration_note`, which is returned in a tool payload. The
+coordinator ran that sweep because the notebook asserted the surface was
+"small" — an enumeration in a design doc is a starting point, and the cheap
+mechanical check is worth running against it before handing it to a runner.
+
+**Reading the diff would never have found the block's central defect.** Round 1
+was correct on everything it was asked. It also reconciled the skill to send
+authors at `run_analysis_on_saved_dataset` "with a reviewed, hash-pinned adapter
+from the saved manifest" — and `generate_and_save_hook`, the only caller of
+`save_hook`, refuses that class shape outright. The coordinator found it by
+*trying the save through the tool*, in a six-line probe. A round of review that
+only reads code cannot distinguish a true claim from a reachable one; when a
+change tells a user to do something, do it.
+
+That defect survived because `tests/test_completed_dataset.py`'s `offline_home`
+fixture **writes the manifest entry by hand**. The standing rule — *a fixture
+that cannot reach the code is not coverage of it* — has now been paid for by
+58a's `github:` guard, 60a's one-entry registry, and this. The end-to-end test
+now saves through the real tool and runs what it saved.
+
+**Round 2 then opened a smaller hole of the same shape**, and it is worth
+naming: `list_hooks` reported the new offline adapter as `resolvable: true`
+with nothing about its route, while `SYSTEM_PROMPT` says to name a resolvable
+hook and use it. `resolvable` answers *"would the runner refuse this source"*
+and not *"which runner"*. A new capability that widens what a discovery tool
+returns has to widen what that tool *says*, or the discovery is a trap.
+
+**The Codex turn hit its provider usage limit after committing and before
+reporting.** That is the preserved-turn case with no handoff at all: the
+coordinator reviewed the diff, re-ran the suite, and reproduced every
+watch-it-fail independently rather than believe an unreported commit. It held
+up. Retry windows on that provider are hours long — plan the block around a
+turn that may not report.
+
+**The gate produced five defects and all five were the instrument's.** Same
+shape as 69a and 75b. Worth keeping:
+
+* A sample cut off mid-tool-loop scored `NEITHER`, so four control samples read
+  as a real null. *A limb that could not run its mechanism is never a pass* —
+  applied to a model replay, that is a `NO_DECISION` verdict, and the fix is in
+  the driver rather than in the reading.
+* The pruned fixture attached the session's **first** result for a tool called
+  many times on different inputs — a near-blank check on another dataset, under
+  a synthetic claim that the kinesin movies were saved. The model noticed the
+  contradiction and spent its decision turn on it. The lossy shortcut had been
+  flagged in the instrument's own docstring and shipped anyway.
+* **The scored criterion had to leave prose entirely.** Eight control samples
+  claimed unavailability in five different wordings. A phrase list chasing that
+  is unbounded *and* fitted to whatever the control happened to say — design/61's
+  trap, one level up. The criterion that worked is a name the model can only
+  have got from the reconciled text.
+* The strongest criterion — did it *author* the adapter — is one this fixture
+  **structurally cannot reach**, because the prompt requires waiting for
+  confirmation before saving a hook. Scoring the consequence of required
+  behaviour as failure made both trees read zero, which is 69a's "a limb must
+  not score the block's own workflow as a failure" in a new costume.
+* Arm A drove operator replies for fourteen turns against a docstring that said
+  it stops at the first question, and burned wall-clock and budget doing it.
+
+**What the gate is worth**: arm B separated **0 of 8** control samples from
+**6 of 6**, and `run_analysis_on_saved_dataset` alone did *not* discriminate
+(1/8 vs 5/6) — a model that believes a path is gone still names the tool while
+declining to use it. Arm A is recorded as **measuring nothing** (0/4 vs 1/3),
+not as a null. Swapping `--tree` rather than patching prompt strings is what
+made both arms possible: the skill file is half the variable and cannot be
+reconstructed by editing a string, the way design/72's prompt spike could.
+
+**The gate overran its budget and the coordinator's own accounting hid it.**
+Authorised at $10, actual $12.13, reported as $3.97 — because spend was totalled
+at the *end* of a run and three runs were killed before they got there. The
+missing $8.2 was invisible by construction, and the operator's dashboard is what
+found it. Two lessons, and the second is the general one. Killed runs are the
+normal case in an instrument still being debugged, so **meter incrementally or
+do not claim a total**; and when a number a person set a limit on cannot be
+observed from inside, say the number is unmeasured rather than estimating it.
+The instrument now prints cumulative spend after every sample and takes a
+`--budget` that stops before the sample that would breach it.
