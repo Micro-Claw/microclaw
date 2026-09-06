@@ -27,6 +27,14 @@ STAGE_MOVE_STABILITY_WINDOW_S = 0.1
 class StageMoveError(RuntimeError):
     """A stage failed to demonstrate that it reached and settled at its target."""
 
+    # Composite acquisitions attach only child movies that finished before this
+    # move failed; the tool boundary projects their readable paths. This is a
+    # CLASS attribute deliberately: XYStageMoveError overrides __init__ without
+    # calling super(), so an instance attribute set in this __init__ would be
+    # missing on every XY failure and execute_tool's own error handler would
+    # raise AttributeError while reporting it.
+    positions_completed: list[dict] | None = None
+
     def __init__(self, result: dict):
         self.result = result
         start, measured = result["start_um"], result["measured_um"]

@@ -141,9 +141,9 @@ def test_snap_multiposition_route_reaches_preflight(params, expected, monkeypatc
     seen = []
     original = tools._protocol_shape_kwargs
 
-    def record(protocol, supplied):
+    def record(protocol, supplied, acquisition_order="position_then_time"):
         seen.append(protocol)
-        return original(protocol, supplied)
+        return original(protocol, supplied, acquisition_order)
 
     monkeypatch.setattr(tools, "_protocol_shape_kwargs", record)
     result = tools.run_multiposition_acquisition(

@@ -114,6 +114,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R31` | [Adaptive+refocus dataset is a dense hypercube with padding frames](#r31) | HIGH | LARGE |  |
 | `R40` | [A stitched mosaic's zero padding corrupts every ImageStats statistic](#r40) | HIGH | SMALL |  |
 | `R42` | [A model-invented rule overrode an explicit operator instruction](#r42) | HIGH | SMALL |  |
+| `R98` | [A spaced hooked grid writes one hook log per field, and rank_hook_log takes one path](#r98) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -1316,6 +1317,19 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 One driven session or one standalone script run on the Windows demo machine. Cheap, always available, no dose.
 
 
+### R99 — The post-acquisition metadata read has never run on hardware
+
+**Block 77b item 5 reads the saved dataset's frame timestamps immediately after the acquisition context exits. Every test drives a replay of recorded metadata; no rig has executed the live read.**
+
+- **Status** — OPEN, **and deliberately not gated.** The reasoning is sound — `Acquisition.__exit__` runs `mark_finished()` then `await_completion()`, and `CLAUDE.md`'s eighth engine contract says frame accounting completes on the thread that join waits for — but *sound reasoning about NDTiff finalisation* is exactly the shape this repository keeps being wrong about. What has been verified is only that the keys exist (block 77b's gate limb D) and that the parsing is right (replay of that gate's own recorded metadata).
+- **Why it does not justify a rig trip on its own** — the failure mode is benign and self-reporting. If the read races finalisation, `_report_frame_spacing`'s best-effort handler catches it and the payload says `"frame spacing unavailable: <reason>"`, which is exactly what shipped before item 5. It cannot fail an acquisition, corrupt a dataset, or spend dose. The operator's time is the real budget (`CLAUDE.md` §step 6).
+- **How it gets closed for free** — `design/77-block77b-demo-gate.py` already performs the acquisitions this needs. Whenever that gate is re-run for any other reason, add one assertion to limb A: the returned `timing` carries a non-null `frame_timestamp_metadata_key` and per-field spacing consistent with the hook log's arrival gaps. Do not book a session for it.
+- **Importance** — LOW.
+- **Where** — RIG:demo, but only as a passenger on a run booked for something else.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — coordinator review of block 77b item 5, 2026-09-06; the implementer reported the finalisation question as reasoning rather than measurement, and it was accepted as such.
+
 ### R27 — The agent started live view unprompted on a laser-dose rig
 
 **The agent may start live view without being asked, potentially exposing a sample continuously when camera triggers drive lasers.**
@@ -2388,6 +2402,18 @@ model summarising several tool results as one, which matters for gate scoring.
 - **Effort** — SMALL
 - **Provenance** — derived while scoring block 75b's round-2 gate, 2026-09-05, by reconciling two timeout timings that should have agreed and did not.
 
+
+### R98 — A spaced hooked grid writes one hook log per field, and rank_hook_log takes one path
+
+**`design/77` block 77b split the hooked path into one acquisition per position whenever `interval_s > 0`. Each field then gets its own hook log, and `read_hook_log`/`rank_hook_log` both take a single `log_path` — so a grid that used to be ranked in one call now needs N.**
+
+- **Status** — OPEN, **a consequence of a settled decision, not a defect.** The split is what gives each field its own acquisition clock, which is the whole point of 77b; the per-field logs follow from `HookBase._write_log` rewriting the whole file, so one shared path would truncate every field but the last (design/19 Fix 3). The tool result indexes every `log_path` and the schema says to read each one, so nothing is lost — it is more calls.
+- **What it costs** — `rank_hook_log` is the one that bites. Its purpose is *whole-record* ranking across a survey ("which tiles are worth returning to"), and a per-field log cannot express a cross-field ranking at all. A caller must now rank each field separately and merge by hand, which is exactly the model-side arithmetic `rank_hook_log` exists to remove. `read_hook_log` is only mildly worse: N reads instead of one.
+- **Importance** — MEDIUM. It affects only hooked grids with `interval_s > 0`; the zero-interval tiling case, which is what surveys actually use, still writes one dataset and one log and is unaffected. Nobody has hit it yet.
+- **Where** — LOCAL. Accepting a list of log paths, or a directory, would settle it; so would having the split path write a combined index alongside the per-field logs.
+- **Block** — NONE. Worth folding into whichever block next touches `rank_hook_log` rather than opening one for it.
+- **Effort** — SMALL
+- **Provenance** — noticed by the coordinator while reviewing block 77b's split path, 2026-09-06; not found by a gate, and no session has hit it.
 
 
 ## Blocked on someone else — not schedulable here

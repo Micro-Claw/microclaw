@@ -492,8 +492,8 @@ class SNRObservationHook(HookBase):
     fixed survey has completed.
     """
 
-    # Script export may omit this processor while preserving the hardware
-    # routine exactly: it returns every image unchanged and submits no events.
+    # Fixed-plan export can inline this observer and its log writer: it returns
+    # every image unchanged and submits no events.
     _observation_only = True
 
     def __init__(self, min_snr: float | None = None, log_path: str | None = None,

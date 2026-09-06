@@ -1299,8 +1299,8 @@ def test_observation_only_hook_emits_hardware_but_decision_hook_refuses(tmp_path
     )])
     assert "# NOT EMITTED:" not in observed
     assert "xyz_positions': [(1, 2, 3)]" in observed
-    assert "# OBSERVATION HOOK NOT ATTACHED: 'snr_observer'" in observed
-    assert "does not reproduce its measurements or hook log" in observed
+    assert "image_process_fn=hook.image_process_fn" in observed
+    assert "class SNRObservationHook" in observed
 
     _, _, deciding = export(tmp_path, [call(
         "run_multiposition_acquisition", {**base, "hook_strategy": "position_filter"}
@@ -1318,7 +1318,7 @@ def test_observation_only_tile_uses_same_documented_imaging_only_export(tmp_path
     })])
 
     assert "# NOT EMITTED:" not in source
-    assert "# OBSERVATION HOOK NOT ATTACHED: 'snr_observer'" in source
+    assert "image_process_fn=hook.image_process_fn" in source
 
 
 @pytest.mark.parametrize("name", [
@@ -4017,6 +4017,7 @@ def test_autofocus_multiposition_emitter_forwards_the_tool_call_exactly(monkeypa
 
     assert rendered == "# delegated"
     assert captured == {
+        "acquisition_order": "position_then_time",
         "protocol": "timelapse",
         "positions": None,
         "position_names": ["p0"],
