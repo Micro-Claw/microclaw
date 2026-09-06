@@ -9494,3 +9494,62 @@ carried embedded newlines; a newline ends a markdown table row, so it had been
 rendering as one truncated row plus six lines of loose text since the first
 update. Found only by counting columns with `awk`. If step 9 says a cold session
 resumes from the remote alone, the row it resumes from has to parse.
+
+## Block 80a — an incomplete session export that says so
+
+**A killed turn's work is only preserved if you then do the reviewer's whole
+job, and the suite is the first part of it.** The Codex start turn hit its
+provider usage limit after its edits had landed and before it reported anything,
+so `3f4e9f6` was committed UNREVIEWED per the workflow. By luck of timing it had
+already run its own pre-fix check, and that made its work *look* finished —
+seven tests, all watched failing, a clean diff. **It had never run the full
+suite, and the suite was red**: the new fixture read did not name its encoding
+and `test_suite_integrity` failed. A turn that dies at the end has done its work
+in an unknown order; assume the last thing it did is the only thing it did.
+
+**A gate step that offers two branches can be wrong about both.** Step 2 asked
+whether M2's knowledge base held a stale entry **or** whether the assistant had
+fabricated the citation. The entry was real, and the answer was a third thing:
+an *earlier* session, 2026-09-03, had made the same reading error, saved it, and
+the beads session recited it back two days later — `WORKAROUND: hand-write the
+pipeline` and `Worth reporting upstream` included. The incident was two days
+older than the notebook that investigated it. Ask what a store already says
+before concluding a model invented something.
+
+**And the hardware attribution was ours.** `save_knowledge` refuses a `devices/`
+entry without `observed_on` and resolves it from live identity, so a note about
+a *program* limitation — which has no category to live in among
+`rig|samples|devices|strategies` — is stored as a fact about the camera it
+happened to be seen on. The agent did not invent "the known Andor/EMU export
+defect"; it read a field Microclaw stamped. Register row **R100**. The generic
+lesson is design/77's, one layer over: a store that maintains a competing
+capability declaration overrides the installed tool contract in practice, and a
+*stored* declaration outranks a tool description.
+
+**Reproduce the incident off-rig before assigning the block.** The notebook's
+evidence was all from the rig artifact. Pruning the four calls that mattered out
+of the real history into an 8 KB fixture and running it through the exporter took
+minutes, reproduced the incident exactly, and meant the runner was handed
+measured numbers instead of a described defect — and the same fixture is now the
+regression test. The bundle for this had been sitting in the evidence archive the
+whole time.
+
+**Hand the runner the warning count from its own venv, and check what the
+warnings are.** The worktree measured 2908/99/**4** where the primary checkout
+measures 2. The extra pair is a `starlette`/`anyio` `DeprecationWarning` from
+freshly resolved `[serve]` extras. 77b's row already recorded the count
+mismatch; what was missing was the cause, and "benign, do not chase" is only
+credible from someone who looked.
+
+**Four review findings, all coordinator-fixed because Codex was out of credits
+and every one was small.** The substantive one: a refusal reason reached both
+`not_emitted_calls` and the artifact's printed disclosure **unfolded**, while
+`skipped_failed_calls` had folded through `one_line()` since 2026-08-17. Every
+bridge exception carries a Java stack trace and the partial-outcome reason is
+built from recorded per-position errors, so it is reachable — demonstrated
+first, then guarded. Also `1 calls`, and — the one that matters most —
+`skipped_failed_calls` carrying no `tool_use_id` while `not_emitted_calls` did.
+**Conflating those two lists is the entire incident**, and this session names
+`run_multiposition_acquisition` three times, so without an id an entry cannot be
+lined up against `recorded_calls` at all. When a block exists because two
+categories were confused, give them the same shape.
