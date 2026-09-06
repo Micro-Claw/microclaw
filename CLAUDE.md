@@ -540,12 +540,12 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — nine contracts we got wrong
+## The pycro-manager acquisition engine — ten contracts we got wrong
 
 The first three were found on a rig by block 52a, the fourth by block 56, the
 fifth by design/56, the sixth by design/55, the seventh by an operator's M2
-dSTORM run, the eighth by block 75a's gate, and the ninth by block 75b's — each
-after a full green suite.
+dSTORM run, the eighth by block 75a's gate, the ninth by block 75b's, and the tenth by
+block 77b's — each after a full green suite.
 The first five were missed because a test fake encoded our assumption instead of
 the hardware's behaviour; the sixth because every test that could have caught it
 supplied the one argument whose absence was the defect. Check code against these
@@ -673,6 +673,29 @@ input, ask which fixtures produce that shape, and write one that does.
   is the obvious one: an ordinary subclassable stand-in. A fake of `Acquisition`
   must dispatch the way the real one does, or it is testing your assumption
   rather than the engine.
+
+- **`min_start_time` is resolved against the *acquisition's* start, so one
+  acquisition cannot give two fields their own clocks.** `multi_d_acquisition_events`
+  stamps `min_start_time = time_index * time_interval_s`, and AcqEngJ measures
+  that from when the acquisition began — not from when the field did. Under
+  `order="ptcz"` with a nonzero interval, field B's deadlines (0, 2, 4 s) are all
+  already past by the time B starts, and **B bursts**. There is no static offset
+  that fixes it, because a field's real start time is not knowable in advance.
+  Block 77b's answer is one acquisition *per position* whenever `interval_s > 0`;
+  measured on the demo machine, field B began 0.601 s after field A's last frame
+  and then held 2.03 / 2.002 s gaps, spans 4.061 s against 4.033 s. The catch-up
+  problem exists **only** when `interval_s > 0`: at zero interval the engine emits
+  no `min_start_time` at all, so a single dataset with a `position` axis is safe
+  and keeps working with `build_stage_coordinate_mosaic`.
+
+  The other half, also measured there: **real AcqEngJ executes a position-axis
+  event list in the order `multi_d_acquisition_events` emitted it**, so
+  `order="ptcz"` really does finish each field's movie. Every order test in the
+  suite reads a fake's frame list; that had never been observed. And the engine's
+  own default is `"tpcz"` — time outer — so any path that builds a combined
+  position/time event list and forwards no `order` silently interleaves. That is
+  the whole incident: the same tool call, with and without a hook, took two
+  different execution paths and produced two different temporal sequences.
 
 - **`acquire()` only submits.** It returns an `AcquisitionFuture`; completion is
   awaited in `Acquisition.__exit__` (`mark_finished()` then `await_completion()`).
