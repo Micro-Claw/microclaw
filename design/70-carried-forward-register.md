@@ -1330,6 +1330,21 @@ One driven session or one standalone script run on the Windows demo machine. Che
 - **Effort** — SMALL
 - **Provenance** — coordinator review of block 77b item 5, 2026-09-06; the implementer reported the finalisation question as reasoning rather than measurement, and it was accepted as such.
 
+### R100 — `save_knowledge` stamps a rig attribution onto a Microclaw limitation, and the next session reads it back as a hardware defect
+
+**A note about a Microclaw capability gap has no category to live in, so it is filed under `devices/` — where the tool *refuses* it unless it carries `observed_on`, and resolves that from live identity. The software limitation is then stored as a fact about that rig's camera.**
+
+- **Measured, not inferred** — M2's `~/.microclaw/knowledge.yaml`, entry `devices.export_session_script_limitation`, dated 2026-09-03 and supplied by the operator 2026-09-06. It carries `observed_on: Andor / EMU htSMLM rig`. `save_knowledge` requires `observed_on` for every `devices/` entry (`tools.py:10568`) and resolves it itself; the schema tells the model *not* to send one (`tools_schema.py:2424`). **The hardware attribution was stamped by Microclaw, not written by the model.**
+- **What it then caused** — two days later the 2026-09-05 beads session cited *"the known Andor/EMU export defect already recorded in your knowledge base"*, followed the entry's own `WORKAROUND:` instruction to hand-write an untested stand-in, and echoed its closing *"Worth reporting upstream."* Nearly the whole misreport is a replay of the stored entry. That is design/80's incident, and design/77's lesson one layer over: **a store that maintains a competing capability declaration overrides the installed tool contract in practice.**
+- **Why the entry is wrong is separable and worse** — it lists ten tools as "marked as SKIPPED comments instead of code". Seven are `@emits_nothing` and emit `# No hardware-routine effect.`, which is the designed correct answer (`save_position_list`, `export_dataset_as_tiff`, `mark_position`, `write_text_file`, `start_live_view`, `stop_live_view`, `run_analysis_on_saved_dataset`); one is the single documented permanent `@refuses`, `build_stage_coordinate_mosaic`; only two are `@emits`. Checked on `fa8aed4`, and `git log -S` shows no decorator churn since 2026-09-01, so the same held on 2026-09-03. The run3 artifact itself is not in the archive, so what is established is the entry's characterisation, not that session's export.
+- **The generic defect** — the categories are `rig|samples|devices|strategies`. None of them means *"a limitation of this program"*, and the `devices/` guard that forces `observed_on` is right for a device quirk and exactly wrong for a software limitation, which holds on every rig. **A tool limitation cannot currently be recorded without being attributed to hardware.**
+- **What 80a does and does not reach** — block 80a makes the export *result* say what was refused and tells a reading model it is a capability gap, never a hardware defect. It does not reach a wrong entry already in a user's store, and a stored entry is the stronger signal in practice.
+- **Importance** — HIGH. It manufactures false hardware attributions, and they persist and compound across sessions.
+- **Where** — LOCAL for the schema change. The one existing wrong entry is the operator's own file on M2 and is theirs to correct; a drafted replacement is in `design/80-block80a-gate.md`.
+- **Block** — none opened. Wants its own, and it is not design/80's subject.
+- **Effort** — MEDIUM
+- **Provenance** — block 80a's gate step 2, answered by the operator 2026-09-06. The step was written as *"either the entry is wrong or the citation was fabricated"*; the answer was the first, plus a cause neither branch anticipated.
+
 ### R27 — The agent started live view unprompted on a laser-dose rig
 
 **The agent may start live view without being asked, potentially exposing a sample continuously when camera triggers drive lasers.**
