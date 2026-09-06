@@ -347,3 +347,121 @@ and both nine-position acquisitions, correctly skips the invalid first attempt,
 imports nothing from Microclaw, and preserves the observed autofocus contracts.
 Until both capability blocks pass, the tool must clearly report the remaining
 refusal rather than claim a faithful full-session export.
+
+## Block 80a — implementation checklist
+
+Off-rig. `microclaw/tools.py` `export_session_script`, `microclaw/tools_schema.py`,
+`tests/test_session_script_export.py`. No emitter gains a new capability in this
+block: 80a changes what the *result* says and what the *artifact announces*, and
+nothing else. The three refused hooks stay refused.
+
+1. **`refuse()` records the call it refused.** Every `refuse()` site inside
+   `export_session_script` accumulates `{"tool_use_id", "tool", "reason"}` into
+   `not_emitted_calls`. `params["_tool_use_id"]` is in scope at all of them, so
+   this is one extra argument, not a new pass. The three sites are: no emitter /
+   `@refuses` reason, a `partial` recorded outcome, and a renderer's
+   `CannotEmit`. The top-level `ast.parse` failure is not one of them — it raises
+   and writes no file, which stays.
+2. **The categories stay distinct.** `skipped_failed_calls` keeps meaning *the
+   recorded call completed nothing*; excluded-by-selection and
+   `@emits_nothing` calls appear in neither list. A `partial` outcome is an
+   unsupported/partially-completed call and belongs in `not_emitted_calls`, not
+   in `skipped_failed_calls`. The incident's whole reporting defect is one list
+   being read as the other, so a test must assert the failed first attempt lands
+   in `skipped_failed_calls` **and not** in `not_emitted_calls`, and both
+   successful hooked calls the reverse.
+3. **`complete` is always in the result** — `true` when `not_emitted_calls` is
+   empty, `false` otherwise — and the `status` string says so when it is false.
+   Fold this into the existing status branch that already degrades `status` for
+   `emitted == 0 and skipped_failed_calls` and for an empty selection; do not add
+   a parallel branch. The incomplete status must name the count and point at
+   `not_emitted_calls`, and it must win over the two existing degraded strings
+   when both apply.
+4. **The artifact announces its own incompleteness before it touches the
+   microscope.** When `not_emitted_calls` is non-empty, emit a summary at the top
+   of the file — before `core = Core()` and before any hardware step — that
+   **prints**, naming each refused tool, its id and its reason. It does not raise:
+   a top-of-file raise would destroy the legitimate case of ten supported steps
+   ahead of one refusal, and the disclosure-in-output/consent-by-running decision
+   of 2026-08-17 already settles which of the two this is. The in-place
+   `# NOT EMITTED` comment and `raise RuntimeError` stay exactly where they are.
+5. **Existing result fields and artifact shape are preserved.** `status`,
+   `output_path`, `emitted_calls`, `emitted_tool_use_ids`, `recorded_calls`,
+   `artifact`, `skipped_failed_calls`, `selection_warning` all keep their current
+   names and meanings; the file still parses under `ast.parse` before it is
+   written.
+6. **Tool guidance names the fields and forbids the misdiagnosis.** The
+   `export_session_script` description says a refusal is reported in
+   `not_emitted_calls` with `complete: false`, that the named reason is the exact
+   missing export capability, and that it is a Microclaw capability gap — never a
+   camera, rig or hardware defect — so a report must quote the reason rather than
+   attribute it. The existing `write_text_file` guidance about hand-written
+   stand-ins stays and is not duplicated; add only the pointer that a diagnosis
+   needing source detail should read the emitted artifact.
+7. **Fixture and offline reproduction.** Build a compact fixture from the real
+   session (`tests/fixtures/80a-beads-autofocus-session.json`, already in the tree —
+   a pruned copy of the real history holding only these four calls and their
+   results, verified by the coordinator to reproduce the incident exactly)
+   holding the four calls that matter: the failed `run_multiposition_acquisition`
+   (`toolu_012yhPfTp3TStsngUtGqhKhp`), the `set_device_property` laser write
+   (`toolu_01F9qtEFXVpd5dE6Q1bJL9AD`), and the two successful hooked
+   `run_multiposition_acquisition` calls
+   (`toolu_018Yq2fYpP2BxKmFQRyuwvzh`, built-in `autofocus_per_position`, and
+   `toolu_017TXJCzN1xmcjzzqZTHe4Yp`, `autofocus_mm_plugin`/OughtaFocus). Assert
+   the pre-80b truth: one emitted call, one skipped-failed call, two
+   `not_emitted_calls` carrying those two ids and the two current refusal
+   reasons, `complete: false`.
+
+   Measured by the coordinator on `caa3554` with this fixture, so these are the
+   pre-fix numbers the block starts from, not estimates: 459-line artifact,
+   `status` `"Session script exported."`, `emitted_calls` 1, one
+   `skipped_failed_calls` entry, and two `# NOT EMITTED` lines whose reasons are
+   `hooked acquisition ('autofocus_per_position'): inlining HookBase would import
+   microclaw safety and hook decisions` and the same sentence for
+   `autofocus_mm_plugin`. Nothing in the returned dict mentions either.
+8. **Execute the incomplete artifact, do not grep it.** `exec` the emitted source
+   against a fake bridge and assert: the summary is printed **before** `Core()` is
+   constructed and before any hardware write; supported steps preceding the
+   refusal do execute; the refusal raises; **no step after it executes**. Cover
+   both an early refusal (nothing supported ran) and a final refusal (supported
+   steps ran first). A string search over the source is not this test.
+9. **Watch each new test fail** on the pre-fix tree, for its stated reason, and
+   report the exact failure text. `test_suite_integrity` and every existing
+   export test stay green; the emitted *body* of a session with no refusals is
+   byte-identical before and after this block.
+
+**Not in 80a, deliberately.** The unused stage-move helper block (419 of the
+incident script's 478 lines) is dependency closure and belongs to 80b item 2.
+`autofocus_used` keeps its current meaning here.
+
+### 80a gate
+
+Off-rig apart from one operator lookup. Scored from the artifact, not the
+verdict: the coordinator re-exports the fixture, reads the emitted file, and
+checks `not_emitted_calls` against the `# NOT EMITTED` lines in it. The one
+rig-side item is the knowledge base: the agent claimed "the known Andor/EMU
+export defect already recorded in your knowledge base" (history line 36). The
+operator greps M2's `~/.microclaw/knowledge.yaml` for it. **If no such entry
+exists the claim was fabricated**, which is a different finding from a stale
+entry and is worth recording either way; only a found entry gets corrected.
+
+## Run ledger
+
+Baseline before the notebook: `main` `caa3554`, coordinator-run suite
+**2908 passed / 99 skipped / 2 warnings** in 203.1 s
+(`.venv/bin/python -m pytest -q`, 2026-09-06). The two warnings are the benign
+`phase_cross_correlation` `UserWarning` from
+`test_featureless_field_returns_error_not_garbage` doing its job.
+
+The coordinator reproduced the incident off-rig before assigning 80a, against
+`caa3554` and the committed fixture: 459-line artifact, `emitted_calls` 1,
+`status` `"Session script exported."`, one `skipped_failed_calls` entry, two
+`# NOT EMITTED` lines, and **no field in the returned dict naming either
+refusal**. 439 of the 459 lines are the unused stage-move contract, which is
+80b's dependency-closure item, not 80a's.
+
+| block | branch | start | implementation | gate | merge |
+|---|---|---|---|---|---|
+| 80a | `design80/explicit-incomplete-export` | | | | |
+| 80b | — | not started; follows 80a | | | |
+| 80c | — | not started; needs Micro-Manager with OughtaFocus, so it waits on instrument time | | | |
