@@ -130,7 +130,10 @@ at each of two fields, which is the spacing it then checks.
   bridge, and compares the standalone hook log's order with the live one.
   Parsing is necessary but insufficient.
 - **G — the zero-interval dataset still mosaics.** `build_stage_coordinate_mosaic`
-  over limb A's single position-axis dataset.
+  over limb A's single position-axis dataset, pinning every non-position axis
+  from what limb D enumerated. Round 1 omitted that pin, and the tool's correct
+  refusal of an ambiguous selection was scored as a product failure; the
+  criterion was then settled off-rig from the returned dataset.
 
 ## 3. The control arm, on this machine
 

@@ -451,14 +451,24 @@ def main():
         if not dataset_path:
             raise NotExercised("limb A's result carries no dataset_path")
         output = args.out / "G-mosaic.tif"
+        # A mosaic is ONE plane across the position axis, so every other axis
+        # must be pinned. This run has time=[0,1,2] and the tool refuses an
+        # ambiguous selection -- correctly. The first version of this limb
+        # omitted the argument and scored that refusal as a product failure;
+        # the selftest could not catch it, because no fake produces a real
+        # NDTiff and the healthy case could only assert that G did NOT pass.
+        selection = {axis: values[0]
+                     for axis, values in state["D"]["axes"].items()
+                     if axis != "position"} if "D" in state else {"time": 0}
         result = tools.build_stage_coordinate_mosaic(
-            ctrl, guard, dataset_path=str(dataset_path), output_path=str(output))
+            ctrl, guard, dataset_path=str(dataset_path), output_path=str(output),
+            axis_selection=selection)
         if isinstance(result, dict) and result.get("error"):
             raise AssertionError(f"the mosaic refused: {result['error']}")
         if not output.exists():
             raise AssertionError(f"the mosaic reported success but wrote no {output}")
-        return (f"mosaicked limb A's single dataset to {output.name} "
-                f"({output.stat().st_size} bytes)")
+        return (f"mosaicked limb A's single dataset at {selection} to "
+                f"{output.name} ({output.stat().st_size} bytes)")
 
     # Leave the stage where it was found. This is housekeeping, not a limb.
     if "ctrl" in state:
