@@ -29,6 +29,9 @@ class StageMoveError(RuntimeError):
 
     def __init__(self, result: dict):
         self.result = result
+        # Composite acquisitions attach only child movies that finished before
+        # this move failed. The tool boundary projects their readable paths.
+        self.positions_completed: list[dict] | None = None
         start, measured = result["start_um"], result["measured_um"]
         if start is None:
             target_text = ("no resolved target (relative move)"

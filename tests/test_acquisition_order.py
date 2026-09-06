@@ -302,3 +302,72 @@ def test_unterminated_spaced_movie_survives_real_entry_boundary_without_next_acq
         if isinstance(pending,dict):
             pending['waiter'].join(1)
     assert rig.reservations[0]._closed
+
+
+@pytest.mark.parametrize('tool_name', ['run_multiposition_acquisition', 'run_tile_acquisition',
+                                      'run_multiposition_with_autofocus'])
+def test_stage_failure_at_second_movie_preserves_type_and_finished_dataset(rig, monkeypatch, tool_name):
+    """Execute the first movie, fail B's settled move, and count real constructions."""
+    import json
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    monkeypatch.setattr(tools, '_resolve_hooks', lambda *_: HookBase())
+    failure = tools.StageMoveError({
+        'start_um': [0., 0.], 'requested_um': [10., 0.], 'measured_um': [0., 0.],
+        'elapsed_s': 1., 'tolerance_um': 2., 'band_source': 'relative',
+        'last_device_status': 'busy',
+    })
+    moves = []
+    def move(x, y):
+        moves.append((x, y))
+        if len(moves) == 2:
+            raise failure
+        return rig.move(x, y)
+    rig.ctrl.set_xy.side_effect = move
+    seen = []
+    original_hint = tools._hint_for_tool_error
+    def hint(fn, exc):
+        seen.append(exc)
+        return original_hint(fn, exc)
+    monkeypatch.setattr(tools, '_hint_for_tool_error', hint)
+    params = {**rig.params, 'hook_strategy': 'observer',
+              'protocol_params': dict(n_frames=3, interval_s=2)}
+    if tool_name == 'run_tile_acquisition':
+        params.pop('positions')
+        params.update(rows=1, cols=2, step_um=10, center_x_um=5, center_y_um=0)
+    elif tool_name == 'run_multiposition_with_autofocus':
+        params.pop('hook_strategy')
+        params.update(z_range_um=2, z_step_um=1)
+    result = json.loads(tools.execute_tool(tool_name, params, rig.ctrl, rig.guard))
+    assert seen == [failure], result  # The original typed object reaches execute_tool.
+    assert result['error'].startswith('StageMoveError:'), result
+    assert len(rig.acquisitions) == 1 and len(moves) == 2
+    assert len(rig.frames) == 3
+    assert result['positions_completed'][0]['dataset_path'] == rig.acquisitions[0]._dataset_disk_location
+    assert len(result['positions_completed']) == 1
+    assert all(r._closed for r in rig.reservations)
+
+
+@pytest.mark.parametrize('hook', [False, True])
+def test_interleaved_trigger_preflight_only_preserves_hookless_contract(rig, monkeypatch, hook):
+    calls = []
+    monkeypatch.setattr(tools, '_verify_trigger_line_armed', lambda *args: calls.append(args))
+    result = rig.run(acquisition_order='time_then_position',
+                     hook_strategy='snr_observer' if hook else None,
+                     protocol_params=dict(n_frames=3, interval_s=0, laser_slot=1))
+    assert 'error' not in result, result
+    assert len(calls) == (0 if hook else 1)
+
+
+def test_multiposition_timing_has_one_shape_for_every_execution_path(rig):
+    timings = []
+    for hook in (None, 'snr_observer'):
+        for order in ('position_then_time', 'time_then_position'):
+            for interval in (0, 2):
+                result = rig.run(hook_strategy=hook, acquisition_order=order,
+                                 protocol_params=dict(n_frames=3, interval_s=interval))
+                assert 'error' not in result, result
+                timings.append(result['timing'])
+    assert all(set(timing) == set(timings[0]) for timing in timings)
+    assert all(timing['hook_observed_at'] == 'callback arrival time, not exposure time'
+               for timing in timings)
+    assert all(timing['exposure_timestamp_metadata_key'] is None for timing in timings)

@@ -1003,6 +1003,7 @@ def test_callers_select_policy_after_event_and_hook_construction(monkeypatch, sh
     with pytest.raises(ReachedSupervisor):
         if shape == "positions":
             tools._acquire_positions_with_hook(
+                timing={},
                 _ctrl(False), _guard(),
                 [{"name": f"p{i}", "x_um": i, "y_um": i} for i in range(1000)],
                 "/data", "positions", hook_strategy="probe", num_time_points=1,

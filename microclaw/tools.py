@@ -7340,6 +7340,23 @@ def run_multiposition_acquisition(
         shape = _protocol_shape_kwargs(protocol, params, acquisition_order)
     except (ValueError, KeyError) as exc:
         return {"error": str(exc)}
+    # One reporting shape for every route; private execution consumes this
+    # resolved plan rather than maintaining another timing vocabulary.
+    timing = {
+        "strategy": (
+            "no_time_axis" if protocol != "timelapse" else
+            "per_position_clock" if acquisition_order == "position_then_time"
+            and (not hook_strategy or params["interval_s"] > 0) else
+            "shared_timepoint_clock" if params["interval_s"] > 0 else
+            "no_requested_delay"
+        ),
+        "requested_interval_s": params.get("interval_s"),
+        "exposure_ms": params.get("exposure_ms"),
+        "observed_per_field_spacing": None,
+        "exposure_timestamp_metadata_key": None,
+        "verification": "owes rig verification; no exposure timestamp key established",
+        "hook_observed_at": "callback arrival time, not exposure time",
+    }
     if save_dir:
         # Resolve the root before the per-position directories are derived from
         # it, so mkdir never creates a tree outside a configured workspace.
@@ -7375,7 +7392,10 @@ def run_multiposition_acquisition(
                     "hook_strategy needs acquisition images; 'snap' is display-only. "
                     "Use protocol='timelapse' with protocol_params={'n_frames': 1, "
                     "'interval_s': 0} to capture one hooked frame per position."}
-        if params.get("laser_slot") is not None:
+        # The hookless interleaved route bypasses run_timelapse, which performs
+        # this caller-requested trigger check in the position-outer route. Keep
+        # that contract without adding a new preflight to existing hooked runs.
+        if not hook_strategy and params.get("laser_slot") is not None:
             _verify_trigger_line_armed(ctrl, params["laser_slot"])
         if results:
             return {"error": "Positions not found in position list: "
@@ -7408,10 +7428,10 @@ def run_multiposition_acquisition(
                     channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
                     illumination_envelope=illumination_envelope,
                     artifact_limits=artifact_limits,
-                    acquisition_order=acquisition_order,
+                    acquisition_order=acquisition_order, timing=timing,
                     **shape,
                 )
-            except AcquisitionUnterminated:
+            except (AcquisitionUnterminated, StageMoveError):
                 raise
             except SafetyViolation as exc:
                 if not added_labels:
@@ -7490,7 +7510,7 @@ def run_multiposition_acquisition(
                     ]
                     unterminated = True
                     raise
-                except StageMoveError:
+                except StageMoveError as exc:
                     # A stage that did not demonstrate its response is not a
                     # per-position error to record and walk past: the very next
                     # thing this loop does is command that stage again. Block
@@ -7498,6 +7518,9 @@ def run_multiposition_acquisition(
                     # flattened a typed failure and KEPT ACQUIRING, with the
                     # session-level refusal powerless because it lives at
                     # execute_tool, outside the loop.
+                    exc.positions_completed = [
+                        item for item in results if item.get("dataset_path") and "error" not in item
+                    ]
                     raise
                 except Exception as e:
                     results.append({"position": pos_label, **where, "error": str(e)})
@@ -7511,14 +7534,7 @@ def run_multiposition_acquisition(
         "status": f"{n_ok}/{total} positions completed.",
         "results": results,
         "acquisition_order": acquisition_order,
-        "timing": {
-            "strategy": "per_position_clock" if protocol == "timelapse" else "no_time_axis",
-            "requested_interval_s": params.get("interval_s"),
-            "exposure_ms": params.get("exposure_ms"),
-            "observed_per_field_spacing": None,
-            "exposure_timestamp_metadata_key": None,
-            "verification": "owes rig verification; no exposure timestamp key established",
-        },
+        "timing": timing,
     }
     restore = _live_restore_report(live_state)
     if restore:
@@ -8276,6 +8292,7 @@ def _acquire_positions_with_hook(
     save_dir: str,
     name: str,
     hook_strategy: str | list[str] | None,
+    timing: dict,
     hook_params: dict | list[dict | None] | None = None,
     log_path: str | None = None,
     channel: str | None = None,
@@ -8327,18 +8344,6 @@ def _acquire_positions_with_hook(
 
     split = (acquisition_order == "position_then_time"
              and shape_kwargs.get("time_interval_s", 0) > 0)
-    timing = {
-        "strategy": ("per_position_clock" if split else
-                     "shared_timepoint_clock" if shape_kwargs.get("time_interval_s", 0) > 0
-                     else "no_requested_delay" if "num_time_points" in shape_kwargs
-                     else "no_time_axis"),
-        "requested_interval_s": shape_kwargs.get("time_interval_s"),
-        "exposure_ms": exposure_ms,
-        "observed_per_field_spacing": None,
-        "exposure_timestamp_metadata_key": None,
-        "verification": "owes rig verification; no exposure timestamp key established",
-        "hook_observed_at": "callback arrival time, not exposure time",
-    }
     _emit_acquisition_diagnostic({
         "type": "acquisition_plan", "acquisition_order": acquisition_order,
         "timing": timing, "positions": [p["name"] for p in positions],
@@ -8394,7 +8399,14 @@ def _acquire_positions_with_hook(
                 if p.get("z_um") is not None:
                     ctrl.core.set_position(p["z_um"])
                     _wait(ctrl, ctrl.core.get_focus_device())
-        except Exception:
+        except Exception as exc:
+            # No Acquisition exists for this movie yet, so this reservation is
+            # ours to close. Preserve prior movies on the typed stage failure,
+            # just as AcquisitionUnterminated carries completed siblings.
+            if isinstance(exc, StageMoveError):
+                exc.positions_completed = [
+                    r for r in results if r.get("dataset_path") and "error" not in r
+                ]
             reservation.close()
             raise
         try:
@@ -8410,6 +8422,10 @@ def _acquire_positions_with_hook(
             return {**failed, **({"position": group[0]["name"]} if split else {}),
                     "results": results, "acquisition_order": acquisition_order,
                     "timing": timing}
+        # Both layouts report saved-frame callbacks actually accounted after
+        # teardown, not the submitted event count. A mismatch with frames_planned
+        # means frame delivery/accounting was incomplete; it is not evidence of
+        # how many exposures the camera made.
         result = _adaptive_result(
             dataset_path, movie_log,
             status=f"Acquisition complete across {len(group)} position(s).",
@@ -11340,10 +11356,16 @@ def execute_tool(
         # nothing (design/14 §7). Known errors get an actionable one-liner, and
         # the hint names the subsystem that actually failed — a blanket "may be
         # a hardware error" on a FileNotFoundError sends the model to the stage.
-        return json.dumps({
+        result = {
             "error": f"{type(e).__name__}: {humanize_java_error(e)}",
             "hint": _hint_for_tool_error(fn, e),
-        })
+        }
+        if isinstance(e, StageMoveError) and e.positions_completed:
+            result["positions_completed"] = [
+                record for item in e.positions_completed
+                if (record := _completed_position_record(item))
+            ]
+        return json.dumps(result)
     finally:
         for key, value in previous_context.items():
             if value is missing:
