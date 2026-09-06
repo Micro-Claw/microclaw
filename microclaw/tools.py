@@ -5206,6 +5206,8 @@ def _report_frame_spacing(timing: dict, rows: list[dict]) -> None:
     Read every saved frame once; no pixel decoding, retries, or sampling. Keys
     must be consistent within a field: clocks of different kinds cannot mix.
     """
+    if timing["strategy"] == "no_time_axis":
+        return
     meanings = {"ElapsedTime-ms": "milliseconds since acquisition start",
                 "TimeReceivedByCore": "absolute arrival time at the core"}
     spacing, keys = {}, {}
@@ -7416,9 +7418,18 @@ def run_multiposition_acquisition(
         "requested_interval_s": params.get("interval_s"),
         "exposure_ms": params.get("exposure_ms"),
         "observed_per_field_spacing": None,
+        "observed_per_field_spacing_meaning": (
+            None if protocol != "timelapse" else
+            "consecutive frames within one field's movie"
+            if acquisition_order == "position_then_time" else
+            "revisit interval spanning the other fields' exposures"
+        ),
         "frame_timestamp_metadata_key": None,
         "frame_timestamp_meaning": None,
-        "verification": "owes rig verification; no frame timestamp key established",
+        "verification": (
+            "not applicable: acquisition has no time axis" if protocol != "timelapse" else
+            "owes rig verification; no frame timestamp key established"
+        ),
         "hook_observed_at": "callback arrival time, not exposure time",
     }
     if save_dir:

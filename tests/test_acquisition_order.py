@@ -51,9 +51,9 @@ class RecordingBackend:
             r.now = max(r.now, self.origin + event.get('min_start_time', 0))
             axes = event['axes']
             label = axes.get('position', 'A' if r.xy[0] == 0 else 'B')
-            r.frames.append((label, axes['time'], r.now))
+            r.frames.append((label, axes.get('time', axes.get('z')), r.now))
             metadata = {'Axes': dict(axes), 'PositionName': label,
-                        'FrameIndex': axes['time'],
+                        'FrameIndex': axes.get('time', axes.get('z')),
                         'XPosition_um_Intended': r.xy[0], 'YPosition_um_Intended': r.xy[1]}
             processor = self.kwargs.get('image_process_fn')
             if processor:
@@ -455,3 +455,56 @@ def test_export_omits_recorded_measurements(rig, tmp_path, hook):
     assert 'measurement_sentinel' not in source
     assert 'ElapsedTime-ms' not in source
     assert 'requested_interval_s=0' in source
+
+
+@pytest.mark.parametrize('hook', [None, 'snr_observer'])
+def test_no_time_axis_spacing_is_not_applicable(rig, monkeypatch, hook):
+    import json
+    data = json.loads(Path('design/77-block77b-limbA-metadata.json').read_text(encoding='utf-8'))
+    coordinates = [{'position': c['position'], 'z': c['time']} for c in data['coordinates']]
+    opened = []
+    class ZReplay:
+        axes = {'position': data['axes']['position'], 'z': data['axes']['time']}
+        def __init__(self, path):
+            opened.append(path)
+        def get_image_coordinates_list(self):
+            return coordinates
+        def read_metadata(self, **coords):
+            return data['metadata'][coordinates.index(coords)]
+    monkeypatch.setattr(tools, 'Dataset', ZReplay)
+    result = rig.run(protocol='zstack', hook_strategy=hook,
+                     protocol_params=dict(z_start_um=0, z_end_um=2, z_step_um=1))
+    assert 'error' not in result, result
+    assert len(rig.frames) == 6
+    timing = result['timing']
+    assert timing['verification'] == 'not applicable: acquisition has no time axis'
+    assert timing['strategy'] == 'no_time_axis'
+    for field in ('observed_per_field_spacing', 'observed_per_field_spacing_meaning',
+                  'frame_timestamp_metadata_key', 'frame_timestamp_meaning'):
+        assert timing[field] is None
+    assert not opened
+
+
+@pytest.mark.parametrize('order,meaning,gap', [
+    ('position_then_time', 'consecutive frames within one field\'s movie', .01),
+    ('time_then_position', 'revisit interval spanning the other fields\' exposures', .02),
+])
+def test_spacing_meaning_follows_resolved_order(rig, monkeypatch, order, meaning, gap):
+    class Replay:
+        axes = {'position': ['A', 'B'], 'time': [0, 1, 2]}
+        def __init__(self, path):
+            pass
+        def get_image_coordinates_list(self):
+            return [{'position': p, 'time': t} for p in self.axes['position'] for t in self.axes['time']]
+        def read_metadata(self, position, time):
+            # Every camera frame is 10 ms apart; only field ordering differs.
+            p = self.axes['position'].index(position)
+            index = p * 3 + time if order == 'position_then_time' else time * 2 + p
+            return {'ElapsedTime-ms': index * 10}
+    monkeypatch.setattr(tools, 'Dataset', Replay)
+    result = rig.run(hook_strategy='snr_observer', acquisition_order=order)
+    assert 'error' not in result, result
+    assert result['acquisition_order'] == order
+    timing = result['timing']
+    assert timing['observed_per_field_spacing'] == {'A': [gap, gap], 'B': [gap, gap]}
+    assert timing['observed_per_field_spacing_meaning'] == meaning
