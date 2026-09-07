@@ -9630,3 +9630,63 @@ discarded a whole set of gate fixes, which only showed up because the
 watch-it-fail run that followed *passed* when it should have failed. The second
 attempt used a file copy. Never trust the git dance for the same reason the
 workflow says never trust the `sed`.
+
+
+## design/80, block 80c step 0 — the probe that answered wrongly
+
+**A probe is an instrument, and its verdict is a claim about the instrument
+before it is a claim about the machine.** M2's first run printed *the returned
+method does not expose its property names over this bridge*, which read as a
+fact about OughtaFocus. It was not: the call had answered, with a Java
+`String[]`, and the probe's drain could only read a Collection. The tell was in
+the transcript the whole time — `'[Ljava_lang_String;' object has no attribute
+'iterator'` names the shape it failed on — and it survived only because a
+verdict is easier to read than an error. The second run answered the question in
+seconds: 13 of 13 settings, readable.
+
+**The fakes were written from the caller, not the dependency.** All four
+pre-flight fakes returned a collection for `get_property_names()`, because that
+is what `_drain_java_iterable` consumes. `CLAUDE.md` already says this about
+gate code; it is just as true of a probe, and the fix is to read the
+dependency's own source before writing the stand-in. Reading `pyjavaz/bridge.py`
+took ten minutes and explained the failure completely. The fakes had also never
+been committed, so nobody could check them.
+
+**Two review findings, both proven by running the runner's code rather than
+reading it.** An empty read was credited as a working route, so a probe whose
+every reader returned nothing printed `settings_readable — 0/0 values read` and
+the guessed-name fallback three lines apart; the selftest already carried an
+`empty=` parameter no case used, which is the tell that a branch was built and
+never exercised. And a per-element diagnostic could abort the measurement it
+decorated — the product's drain succeeded, its answer sat recorded in the
+findings, and the transcript said *the autofocus manager itself is unreachable*
+with no verdict at all. That is this block's own failure mode reproduced one
+level down, inside the fix for it.
+
+**A rewrite deletes things that were load-bearing.** Round 1 dropped the pre-fix
+probe's *"The probe itself failed. That is a probe defect, not an answer about
+the plugin"* handler — the single most important line in a file whose whole
+subject is that confusion — and the `default=str` that keeps the JSON writable
+at the end of a rig trip. Neither was mentioned; both were found by diffing
+against the version being replaced.
+
+**Legibility of a transcript is evidence, not polish.** The original defect was
+diagnosable months-later because the M2 output was readable; round 1 replaced it
+with a wall of dict reprs. And the corrected output still shipped one em-dash,
+which PowerShell's UTF-16 redirect returned as `settings_readable u Names read
+via` — the one line the run exists to produce. A rig-facing transcript must be
+ASCII, and that is now a selftest case.
+
+**Score a passing run from its artifacts anyway.** Round 2's verdict was right,
+but what makes it trustworthy is that the values were read twice by independent
+paths — `getPropertyValue(name)` and the `PropertyItem[]` from
+`getProperties()` — and agree on all 13 in the same order. The same scoring pass
+found the caveat the verdict does not carry: the hardware was off, and the only
+two hardware-referencing settings came back empty.
+
+**The trip bought more than its yes/no.** `Arrays.asList` was recorded as
+unsettled by the runner and came back settled — it does not resolve over this
+bridge — and `SearchRange_um=10` / `Tolerance_um=1` turned out not to be the
+built-in sweep's 15/0.5, which is what makes printing the snapshot worth the
+code rather than a nicety. A probe that asks every route independently answers
+questions nobody thought to ask.

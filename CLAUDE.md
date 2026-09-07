@@ -928,6 +928,26 @@ Route all static `JavaClass` through `controller._new_static_java_class(port,
 classpath)`, which evicts the colliding cache key first. `JavaObject`
 (instances) is unaffected. See design/12 for the full trace.
 
+A Java **array** is a third shape, and the drain that handles a collection does
+not read it. `AutofocusMethod.getPropertyNames()` returns `String[]`, which
+pyjavaz delivers as an ordinary `_JavaObjectShadow`: `_deserialize` routes a
+non-primitive array through `unserialized-object`, `deserialize_array` converts
+primitive arrays only, and `_JavaClassFactory.create` gives the shadow just the
+methods and fields the server reported — for an array, `java.lang.Object`'s, and
+none. So there is no `iterator()`, no `length`, no `__len__` and no
+`__getitem__`, and `_drain_java_iterable` raises
+`AttributeError: '[Ljava_lang_String;' object has no attribute 'iterator'`.
+Read one through `java.lang.reflect.Array.getLength`/`get`, wrapped by
+`_new_static_java_class`. **`java.util.Arrays.asList` does not work** — measured
+on M2, `Incorrect arguments. Expected java.lang.Object[]`, because pyjavaz's
+argument matching will not resolve a `String[]` shadow to the varargs
+`Object[]`. This cost design/80 a rig trip, and it cost one because the probe's
+four fakes all returned a *collection* for that call: written from our caller,
+which is what `_drain_java_iterable` consumes, rather than from `bridge.py`.
+`design/80-block80c-probe-selftest.py` holds an array-shaped fake written the
+right way — reuse it rather than reaching for a `MagicMock`, which hands back
+Python-friendly objects and hides both shapes.
+
 Field access and method access use **different naming conventions** over the
 bridge. A Java object's **public fields** keep their raw camelCase name —
 `sp.numAxes`, NOT `sp.num_axes` (the snake_case version silently returns wrong
