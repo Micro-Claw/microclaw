@@ -1,9 +1,10 @@
 # Fast Duration0 updates and the htSMLM option
 
-Status: **PROPOSED**, 2026-09-06; evidence re-scored against the artifacts and
-the pycro-manager source on 2026-09-06. Investigation and design only; no block
-has run and no fix has been measured. General policy and performance work
-belongs to [design/79](79-fastest-correct-execution.md).
+Status: **IN PROGRESS**, 2026-09-07. Evidence re-scored against the artifacts
+and the pycro-manager source on 2026-09-06; the AcqEngJ half of 78b's open
+question settled from the jar on 2026-09-07 (§"The Java mechanism, confirmed").
+78a and 78b are assigned; no fix has been measured on a rig yet. General policy
+and performance work belongs to [design/79](79-fastest-correct-execution.md).
 
 Input directory: `/Users/zachcm/Documents/Documents - Beyonce/Projects/Micro-Claw/duration0-slow-change`.
 References below are file lines or local CoreLog timestamps on 2026-09-04.
@@ -107,11 +108,68 @@ At 0.0001 s, frames 0–9 truncate to 0 ms, frames 10–19 to 1 ms, and so on:
 sub-millisecond spacing can produce groups of equal deadlines, not an entire
 arbitrarily long run at 0 ms. All five deadlines in the M5 incident fall in
 the first group. Its refusal, alongside M2's successful dense 200-entry plan
-at **0.001 s**, is consistent with this explanation. However, M5 and M2 run
-AcqEngJ over the bridge, not this Python backend. The Java mechanism and any
-minimum interval remain hypotheses until 78b checks AcqEngJ and tests the
-actual dispatch. Only then should guidance name a threshold; distinct
-integer-millisecond deadlines are the candidate condition to verify.
+at **0.001 s**, is consistent with this explanation.
+
+### The Java mechanism, confirmed — and it is not a threshold
+
+Read off `AcqEngJ-0.39.4.jar` (the jar this laptop's Micro-Manager
+2.0.3-20260625 loads) with `javap -c`, 2026-09-07, by the coordinator. This
+closes the paragraph above's open question **before** 78b starts, and it
+changes what 78b may conclude.
+
+`AcquisitionEvent.fromJSON` stores the deadline as `Long` milliseconds by
+**truncation toward zero**, exactly as the Python backend does:
+
+    getDouble("min_start_time") × 1000.0d → d2l → Long.valueOf → miniumumStartTimeMs_
+
+`getMinimumStartTimeAbsolute()` adds `Acquisition.getStartTimeMs()` to that
+field, so an equal *relative* pair is an equal *absolute* pair and the run's
+start time cancels. `Engine.isSequencable` refuses a pair only here:
+
+    if both t-indices are non-null and differ:
+        if both absolute min-start-times are non-null and differ:
+            return false
+
+So two consecutive frames are hardware-sequencable **exactly when
+`int(k × interval_s × 1000) == int((k+1) × interval_s × 1000)`**, and a
+missing `min_start_time` — which `multi_d_acquisition_events` omits at
+`time_interval_s == 0` — makes every pair sequencable regardless of t-index.
+That is design/77b's zero-interval finding arriving from the Java side.
+
+**A threshold is the wrong shape for the guidance, and 78b must not ship one.**
+Evaluating that predicate over the deadlines
+`multi_d_acquisition_events` actually emits (`min_start_time = time_index ×
+time_interval_s`, `acquisition_superclass.py:552`) gives, over 2,000 frames:
+
+| `interval_s` | first equal-consecutive pair | longest equal run |
+|---|---|---:|
+| 0.0001 | frames 0,1 | 10 |
+| 0.0005 | frames 0,1 | 2 |
+| 0.0009 | frames 0,1 | 2 |
+| ≥ 0.001 | none | 1 |
+
+which looks like a clean 1 ms threshold — and is not one. Extending the same
+scan to 200,000 frames, **`interval_s = 0.001` collides at frames 4006/4007**:
+`4007 × 0.001 = 4.006999999999999…`, whose truncation is 4006, the same
+millisecond as frame 4006. Every other tested value at or above 0.001
+(0.0010000001, 0.00123, 0.0017, 0.002, 0.00333, 0.01, 0.0333, 0.1) is clean
+over 200,000 frames. So the safety of an interval depends on the **frame
+count** as well as the interval, through double rounding — and a rule of the
+form "use at least 1 ms" would have been stated with confidence, been wrong,
+and been wrong only on the long runs where it matters.
+
+Both facts are known at plan time: `n_frames` and `interval_s` are arguments.
+78b should therefore **evaluate the predicate**, not compare against a
+constant. Below is the exact deadline model to reproduce; it is short enough
+that a test can own it outright.
+
+    def _sequenced_ms(index, interval_s):
+        # AcqEngJ AcquisitionEvent.fromJSON: (long)(min_start_time * 1000.0),
+        # truncation toward zero. Python's int() truncates the same way.
+        return int(index * interval_s * 1000.0)
+
+Confirmed in the jar; **not yet confirmed against a running engine**, which is
+78b's demo-machine limb.
 
 Two defects follow. The refusal's advice was already satisfied by its caller —
 *an instruction a legitimate caller cannot act on is not guidance* — and it
@@ -219,11 +277,16 @@ elsewhere.
   it as a pass/fail threshold; report the
   residual as measured, not by subtraction. Exercise a second authorized
   property for generality and confirm on M2 when it is free.
-- **78b — Sequencing threshold and exact-frame dispatch.** Test the proposed
-  integer-millisecond mechanism against AcqEngJ's source and a demo-machine run:
-  0.0001 s, 0.001 s, 0.05 s and 0 s, fixed plan and adaptive, before and after
-  export. Move the refusal to plan time, and correct its message, the parameter
-  description and the skill text to state the real threshold. Prove each planned
+- **78b — Sequencing predicate and exact-frame dispatch.** The AcqEngJ half is
+  settled above; 78b owns the running-engine half. Test the confirmed
+  integer-millisecond mechanism on the demo machine: 0.0001 s, 0.001 s, 0.05 s
+  and 0 s, fixed plan and adaptive, before and after export, and include a
+  frame count large enough to reach the 0.001 s / frame 4007 collision if the
+  demo camera's cadence allows it. Move the refusal to plan time and make it
+  **evaluate the deadline predicate** over `n_frames` and `interval_s`;
+  correct its message, the parameter description and the skill text to state
+  that condition. **Do not state a threshold** — see the table above for why a
+  1 ms rule is wrong on long runs. Prove each planned
   value precedes its exposure and that no ghost frames appear on stop or
   failure. Before proposing one acquisition per frame as the "one-event
   handoff", weigh block 75a's measurement: a one-frame acquisition costs
@@ -255,9 +318,14 @@ To `design/70-carried-forward-register.md` unless a block above claims them:
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 78a | — | — | — | — | — |
-| 78b | — | — | — | — | — |
+| 78a | `design78/no-per-frame-refresh` | `42965c1` | Codex runner, queued 2026-09-07 for 01:57 | M5 (owed) | — |
+| 78b | `design78/sequencing-predicate` | `42965c1` | Codex runner, queued 2026-09-07 for 01:57 | demo machine (owed) | — |
 | 78c | — | — | — | — | — |
+
+78a and 78b were assigned together, in separate worktrees, because their gates
+are on different machines and neither depends on the other's result. They do
+share `hook_decisions.py` and `tools.py`; whichever merges second rebases.
+78c stays behind 78a's measurement, as this document requires.
 
 This document authorises no rig exposure and no plugin change; each block
 follows the repository's block workflow.
