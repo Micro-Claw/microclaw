@@ -45,7 +45,7 @@ cd D:\Code\microclaw
 git fetch origin
 git checkout design80/hooked-multiposition-export
 git pull
-git merge-base --is-ancestor 739af82 HEAD
+git merge-base --is-ancestor 248302e HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" }
 else { "STOP - wrong tree, do not run the gate" }
 ```
@@ -73,8 +73,19 @@ sweeps, which are ~5 snaps per position at the default 4 µm / 1 µm. The XY sta
 moves 20 µm between the two fields; Z sweeps ±2 µm around wherever it finds
 focus. Nothing is written to Micro-Manager on any exit path.
 
-If a 4 µm sweep leaves this rig's Z bounds, limb 0 says so and names the number
-to lower: re-run with `--z-range-um 2`.
+**The gate chooses its own sweep** and prints what it chose. Round 1 stood down
+here: the stage sat at Z=1.0 with `z_min = 0.0`, the default 4 µm sweep reached
+-1.0, and seven limbs reported NOT EXERCISED for a reason that was the gate's,
+not the code's. It now reads this machine's Z envelope and the current Z, picks
+a centre and range that fit with a margin clear of each bound, and shrinks the
+range on a narrow envelope. `--z-range-um` is an upper bound, not an
+instruction. Only a rig whose whole envelope cannot hold a sweep is NOT
+EXERCISED, and limb 0 then prints the envelope and the floor it needed.
+
+(Round 1's runbook told the operator to "re-run with `--z-range-um 2`". That was
+wrong: at Z=1.0 a 2 µm sweep lands exactly on the inclusive bound, so it would
+have "passed" while leaving the hook no room. The gate deriving the number is
+the fix.)
 
 ### What each limb settles
 
@@ -103,7 +114,9 @@ to lower: re-run with `--z-range-um 2`.
 - **F — an image hook round-trips too.** `intensity_adaptive`, live and
   standalone, exposure changes compared. No Z motion.
 - **G — the hookless grid is byte-identical.** A plain SMLM grid must not start
-  emitting an adaptive runner.
+  emitting an adaptive runner. It reaches no microscope, so it is scored even
+  when the control stands the gate down — round 1 lost it to a coupling that has
+  since been removed.
 
 ## 3. Send back
 
@@ -128,13 +141,20 @@ suite's dispatching fake engine:
 uv run python -m pytest -q design\80-block80b-gate-selftest.py
 ```
 
-It found **four defects in this gate before it shipped** — limb B exported a
+It found **four defects in this gate before it shipped, and three more after
+round 1 came back** — limb B exported a
 `call_input` limb A never recorded; limb B carried dead scaffolding; limb G
 checksummed the emitter's body against a constant measured over the whole file,
 so it could never have matched; and the teardown called a
-`MicroscopeController.close()` that does not exist. It also discriminates: run
-against a pre-80b product it fails exactly the two cases that assert 80b
-behaviour and passes the rest.
+`MicroscopeController.close()` that does not exist. Round 2 added the sweep
+derivation, limb G's independence, and survival of a missing safety config —
+`load_safety_config_or_exit` raises `SystemExit` by design, and the first cut of
+the G fix let it through, which would have produced no `score.json` at all on a
+machine without a config.
+
+It discriminates in both directions: against a pre-80b *product* it fails
+exactly the cases that assert 80b behaviour, and against the pre-round-2 *gate*
+all eight new cases fail.
 
 **It cannot cover limbs C and F**, because no fake can be a real AcqEngJ in a
 child process. That is precisely what this trip is for.
