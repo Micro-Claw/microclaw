@@ -467,6 +467,36 @@ operator greps M2's `~/.microclaw/knowledge.yaml` for it. **If no such entry
 exists the claim was fabricated**, which is a different finding from a stale
 entry and is worth recording either way; only a found entry gets corrected.
 
+## 80b — what shipped
+
+Merged `c7d4e41`, 2026-09-07. This supersedes the commissioned checklist below
+where they differ.
+
+All four built-ins emit. The capability decision is one predicate feeding both
+the runtime-inclusion and `_export_safety_limits` sites, and it keys on the tool
+*name* for the wrapper case, because `run_multiposition_with_autofocus` records
+no `hook_strategy` at all. Dependencies key on **rendered** capabilities, so a
+refused call no longer drags in helpers nothing calls — the incident's own
+449-line dead block is gone.
+
+Two things the design got only half right:
+
+- It framed the guard question as "supply `_export_guard_source(limits)` where
+  the hook requires it". The right predicate is where the **plan** moves an
+  axis: `position_filter` takes no `guard` and still moves XY and nominal Z.
+- Bound-completeness is checked **per axis actually used**, and the axis set is
+  derived by walking the inlined hook source for `check_z` rather than from a
+  list of Z-moving hook names. That is sound because every Z-moving hook in the
+  registry calls `self.guard.check_z(...)` immediately before its
+  `set_position` (`hooks.py:284`, `387`, `606`).
+
+The emitted script prints its counts after teardown and discloses that it
+enforces **no dose budget**: the reservation it binds is a counting adapter, not
+the live budget, and saying so is the 2026-08-17 disclosure decision applied
+here. `snr_observer` is unchanged, deliberately (item 3). The plugin hooks keep
+their refusal and now carry its accurate reason — the Studio accessor, not
+`ctrl`/`guard` — which is the sentence 80c will remove.
+
 ## Block 80b — implementation checklist
 
 Off-rig to implement and test; a demo-machine replay closes it. `microclaw/tools.py`

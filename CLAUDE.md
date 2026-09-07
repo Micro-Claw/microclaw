@@ -58,8 +58,30 @@ replacement for it.
   hand-copied copy that drifts reintroduces ghost exposures silently. `CannotEmit`
   survives for the narrow cases: an unrecoverable hook source, an unresolvable
   seed position, a hook reaching a capability the script has no equivalent for
-  (`mm_plugin_analyzer` and `autofocus_mm_plugin` take `ctrl`/`guard`), and an
-  authorized illumination envelope whose conversions are rig-configured.
+  (`mm_plugin_analyzer` and `autofocus_mm_plugin`, which reach
+  `PluginAccess.get_autofocus_method` and so need a Studio connection — **not**
+  because they take `ctrl`/`guard`, which `_adaptive_hook_export` injects for
+  every precoded hook by signature), and an authorized illumination envelope
+  whose conversions are rig-configured.
+
+  **The fixed-plan multiposition emitter also emits its hooks** (design/80 block
+  80b, merged 2026-09-07): `autofocus_per_position`, `focus_feedback`,
+  `intensity_adaptive` and `position_filter`, all through the same
+  `_adaptive_hook_export` source extraction. Two things that block paid for.
+  **The portable guard and the seed preflight belong to the *plan*, not to the
+  hook**: they were gated on whether the hook's `__init__` takes a `guard`, so a
+  `position_filter` grid emitted its XY moves and a nominal-Z `set_position` with
+  no preflight at all — *laxer* than the tool it reproduces, which validates the
+  whole seed plan for every hook. And **the emitted callback set must come from
+  the same `getattr` triple the live runner selects by `hasattr`**, never
+  enumerated per hook: `autofocus_per_position` defines only
+  `post_hardware_hook_fn`, while the emitter attached only `image_process_fn`, so
+  lifting the refusal alone would have constructed a hook the acquisition never
+  calls — the run reports success and the frames are unfocused. An incomplete
+  recorded envelope refuses at export time for the axes the program actually
+  uses, derived by walking the inlined hook source for `check_z` rather than
+  from a list of hook names. `snr_observer` keeps its pre-existing export with no
+  new bound requirement.
 
   **A tool that takes a hook has two emitters, and the hookless one must not
   change.** `run_timelapse` and `run_zstack` route to `_emit_adaptive` only when
