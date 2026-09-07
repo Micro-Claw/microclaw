@@ -197,3 +197,68 @@ def test_standdown_on_a_pre_80b_tree(gate):
         pytest.skip("this tree has 80b in it; run with MICROCLAW_TREE_UNDER_TEST "
                     "pointed at a pre-80b checkout to exercise the stand-down")
     assert "HookBase" in rendered or "hooked acquisition" in rendered
+
+
+# --- Added after the demo machine's first run stood the whole gate down. -----
+# The gate guessed a 4 um sweep, the stage sat at Z=1.0 with z_min=0.0, and
+# seven limbs reported NOT EXERCISED for a reason that was the gate's, not the
+# product's. These cases carry that machine's exact numbers.
+
+def test_choose_sweep_fits_the_demo_machines_actual_envelope(gate):
+    """The run that failed: Z at 1.0, z_min 0.0. It must now choose, not refuse."""
+    centre, used, note = gate.choose_sweep(
+        z_now=1.0, z_min=0.0, z_max=100.0, requested=4.0, z_step=1.0)
+    assert used == 4.0, note
+    assert centre - used / 2 >= 0.0, f"{centre} - {used}/2 is below z_min"
+    assert centre - used / 2 > 0.0, (
+        "the sweep sits exactly on the inclusive bound, which passes the check "
+        "while leaving the hook no room")
+    assert "centre moved" in note
+
+
+def test_choose_sweep_shrinks_rather_than_standing_down(gate):
+    centre, used, note = gate.choose_sweep(
+        z_now=1.0, z_min=0.0, z_max=3.0, requested=10.0, z_step=0.5)
+    assert used < 10.0 and used <= 3.0
+    assert 0.0 <= centre - used / 2 and centre + used / 2 <= 3.0
+    assert "shrunk" in note
+
+
+def test_choose_sweep_leaves_a_usable_stage_alone(gate):
+    centre, used, note = gate.choose_sweep(
+        z_now=50.0, z_min=0.0, z_max=100.0, requested=4.0, z_step=1.0)
+    assert (centre, used) == (50.0, 4.0)
+    assert "already clear" in note
+
+
+def test_choose_sweep_reports_not_exercised_only_when_nothing_fits(gate):
+    with pytest.raises(gate.NotExercised, match="cannot hold"):
+        gate.choose_sweep(z_now=0.2, z_min=0.0, z_max=0.4, requested=4.0, z_step=1.0)
+
+
+def test_choose_sweep_never_returns_an_out_of_bounds_edge(gate):
+    """Property sweep: whatever it returns must be inside the envelope."""
+    for z_now in (-5.0, 0.0, 0.5, 1.0, 7.0, 99.0, 500.0):
+        for z_min, z_max in ((0.0, 100.0), (0.0, 3.0), (-50.0, -10.0), (10.0, 11.0)):
+            try:
+                centre, used, _ = gate.choose_sweep(z_now, z_min, z_max, 4.0, 1.0)
+            except gate.NotExercised:
+                continue
+            assert z_min <= centre - used / 2, (z_now, z_min, z_max, centre, used)
+            assert centre + used / 2 <= z_max, (z_now, z_min, z_max, centre, used)
+
+
+def test_limb_g_is_not_coupled_to_the_bridge(gate):
+    """G is a checksum over an emitted file and must survive a stand-down.
+
+    On the demo machine's first run G reported NOT EXERCISED because limb 0
+    could not establish the rig -- evidence lost to a coupling this gate
+    introduced while fixing G's checksum.
+    """
+    source = gate.GATE_PATH.read_text(encoding="utf-8") if hasattr(gate, "GATE_PATH") \
+        else (ROOT / "design" / "80-block80b-demo-gate.py").read_text(encoding="utf-8")
+    assert '"G - the hookless grid is byte-identical",' in source
+    later = source[source.index("LATER = ("):source.index("# Limb E first") if "# Limb E first" in source else source.index("stood_down =")]
+    assert "hookless grid" not in later, (
+        "limb G is still in the stand-down list, so limb E taking the gate down "
+        "would take G's bridge-free evidence with it")
