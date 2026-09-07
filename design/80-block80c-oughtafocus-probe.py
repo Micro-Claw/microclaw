@@ -1,157 +1,264 @@
-"""Block 80c's open design question, asked on a rig. Nothing is decided here.
+"""Measure autofocus settings through the product accessor; this is not a gate.
 
-design/80's 80c section defers exactly one decision to a measurement:
+Moves no stage, drives no acquisition and spends no dose. Each bridge question
+is independent: a failed reader is not evidence that the plugin did not answer.
+Whether _drain_java_iterable should learn arrays, and whether the emitted script
+prints settings or declares an external precondition, remain 80c's decisions
+from this measurement. Whatever the answer, the 2026-08-17 operator decision
+requires the envelope to disclose that behaviour is not determined by source.
 
-    before settling for a declared external precondition, check on a rig
-    whether the returned `AutofocusMethod` exposes `get_property_names()` /
-    `get_property_value()` over the bridge. If it does, the settings are
-    recordable and the emitted script can print them in its envelope; if it
-    does not, say so in the doc and declare the precondition.
-
-Until that is answered, 80c's checklist would be guessing at its own central
-decision -- and this notebook has already paid for one guessed parameter (the
-80b gate's default sweep, which stood a whole trip down). So this probe runs
-first and its output goes into design/80.
-
-**It is a probe, not a gate.** It scores nothing, drives no acquisition, moves
-no stage and spends no dose. It reads the autofocus manager, names the methods
-it finds, selects the requested one, and then interrogates the returned object
-about its own settings. Every question is asked in a `try` and reported as an
-answer, because "this bridge does not expose that" is the finding, not an error.
-
-Two rules it obeys:
-
-* **A bridge collection is not Python-iterable** (design/59a, which cost a rig
-  trip: `list()` over one raises `TypeError: 'mmcorej_StrVector' object is not
-  iterable` on every rig and works against every fake). Every collection here is
-  drained through the product's own `_drain_java_iterable`, never with `list()`.
-* **Validate the method name before selecting it.** `setAutofocusMethodByName`
-  rejects a class name with a cryptic Java `IllegalArgumentException`, so
-  `PluginAccess.get_autofocus_method` validates first; this probe goes through
-  that accessor rather than around it, so it measures the path 80c will inline.
-
-Run it on a machine whose Micro-Manager has OughtaFocus, with the bridge on:
-
-    uv run python design\\80-block80c-oughtafocus-probe.py > oughtafocus-probe.txt 2>&1
-
-Send the whole file back. If `--plugin` is not installed the probe says which
-methods *are*, which is itself the answer to "can this machine host 80c".
+Run with the Micro-Manager bridge on; send stdout and the --out JSON back.
 """
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import version
 import json
+from pathlib import Path
 import sys
 import traceback
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from microclaw import controller
 
-FINDINGS: dict[str, object] = {}
+FINDINGS = {}
+DEFAULT_NAMES = ('SearchRange_um,Tolerance_um,CropFactor,Exposure,'
+                 'FFTLowerCutoff(%),FFTUpperCutoff(%),ShowImages,Maximize,Channel')
+ROUTES = {'names__drain': '_drain_java_iterable',
+          'names__reflect_array': 'reflect.Array',
+          'names__arrays_as_list': 'Arrays.asList'}
 
 
-def ask(label: str, fn):
-    """Ask the bridge one question. An exception IS an answer here."""
+def observe(label, obj):
+    row = {'answered': True, 'type': type(obj).__name__}
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        row['value'] = obj
+    if isinstance(obj, list):
+        row['value'] = [x if isinstance(x, (str, int, float, bool)) or x is None
+                        else {'type': type(x).__name__} for x in obj]
+    FINDINGS[label] = row
+    return obj
+
+
+def ask(label, fn, quiet=False):
     try:
-        value = fn()
-    except Exception as exc:                        # noqa: BLE001 - the finding
-        FINDINGS[label] = {"answered": False,
-                           "error": f"{type(exc).__name__}: {exc}"}
-        print(f"  {label}: NOT AVAILABLE - {type(exc).__name__}: {exc}")
+        value = observe(label, fn())
+        if not quiet:
+            if isinstance(value, list) and any(not isinstance(x, str) for x in value):
+                display = f'{len(value)} items (types and fields in JSON)'
+            else:
+                display = repr(value) if isinstance(value, (str, int, float, bool, list)) else f'<{type(value).__name__}>'
+            print(f'  {label}: {display}')
+        return value
+    except Exception as exc:
+        FINDINGS[label] = {'answered': False,
+                           'error': f'{type(exc).__name__}: {exc}'}
+        print(f"  {label}: NOT AVAILABLE - {FINDINGS[label]['error']}")
         return None
-    FINDINGS[label] = {"answered": True, "value": value}
-    print(f"  {label}: {value!r}")
+
+
+def as_text(label, obj):
+    observe(label, obj)
+    conversion = 'str' if isinstance(obj, str) else 'to_string'
+    FINDINGS[label]['conversion'] = conversion
+    value = obj if isinstance(obj, str) else observe(label + '__to_string', obj.to_string())
+    if not isinstance(value, str):
+        raise TypeError('to_string() did not return str')
     return value
 
 
+def drain(obj, label, convert=True):
+    # First measure the unmodified product function on the actual bridge object.
+    # Its str() discards element types, so separately inspect the elements for
+    # diagnostic types and defensive text conversion; keep both findings.
+    product = observe(label + '__product_result', controller._drain_java_iterable(obj))
+    elements = []
+
+    diagnostic_failed = False
+
+    def element(value):
+        nonlocal diagnostic_failed
+        key = f'{label}__element_{len(elements)}'
+        converted = ask(key + '__text', lambda: as_text(key, value), quiet=True) if convert else observe(key, value)
+        if convert and converted is None:
+            diagnostic_failed = True
+        elements.append(converted)
+
+    def inspect_elements():
+        if isinstance(obj, (list, tuple, set)):
+            for value in obj:
+                element(value)
+        else:
+            iterator = observe(label + '__iterator', obj.iterator())
+            has_next = iterator.has_next if hasattr(iterator, 'has_next') else iterator.hasNext
+            while has_next():
+                element(iterator.next())
+        return True
+
+    inspected = ask(label + '__inspection', inspect_elements, quiet=True)
+    if convert and (not inspected or diagnostic_failed):
+        FINDINGS[label + '__diagnostic_fallback'] = True
+        print(f'  {label}: diagnostic inspection failed; fell back to the product drain result.')
+        return product
+    if not convert and not inspected:
+        FINDINGS[label + '__truncated'] = True
+        print(f'  {label}: TRUNCATED - inspection stopped after {len(elements)} items; '
+              'the following items are only a partial cross-check.')
+    return elements
+
+
+def array_read(obj, label, port, route, convert=True):
+    path = 'java.lang.reflect.Array' if route == 'reflect.Array' else 'java.util.Arrays'
+    helper = observe(label + '__helper', controller._new_static_java_class(port, path))
+    if route == 'Arrays.asList':
+        collection = observe(label + '__list', helper.as_list(obj))
+        return drain(collection, label, convert)
+    count = observe(label + '__length', helper.get_length(obj))
+    items = []
+    for i in range(count):
+        key = f'{label}__element_{i}'
+        value = helper.get(obj, i)
+        if convert:
+            text = ask(key + '__text', lambda: as_text(key, value), quiet=True)
+            if text is None:
+                text = str(value)
+                FINDINGS[key + '__diagnostic_fallback'] = True
+                print(f'  {key}: conversion failed; fell back to str(), which may be a shadow repr.')
+            items.append(text)
+        else:
+            items.append(observe(key, value))
+    return items
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--port', type=int, default=4827)
+    parser.add_argument('--plugin', default='OughtaFocus')
+    parser.add_argument('--out', type=Path, default=Path('oughtafocus-probe.json'))
+    parser.add_argument('--probe-names', default=DEFAULT_NAMES,
+                        help='comma-separated guessed names; used only without enumerated names')
+    return parser.parse_args()
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=4827)
-    parser.add_argument("--plugin", default="OughtaFocus")
-    parser.add_argument("--out", type=Path, default=Path("oughtafocus-probe.json"))
-    args = parser.parse_args()
-
-    from microclaw.controller import MicroscopeController, _drain_java_iterable
-
-    print(f"Tree: {ROOT}")
-    print(f"Asking about autofocus method {args.plugin!r} on port {args.port}\n")
-
-    ctrl = MicroscopeController(port=args.port)
-
-    print("1. What autofocus methods does this Micro-Manager have?")
-    #    Drained, never list()-ed: design/59a.
-    methods = ask("all_autofocus_methods", lambda: _drain_java_iterable(
-        ctrl.plugins._studio.get_autofocus_manager().get_all_autofocus_methods()))
-    if methods is None:
-        print("\nThe manager itself is unreachable; 80c cannot be hosted here.")
-        return finish(args)
-    if args.plugin not in methods:
-        print(f"\n{args.plugin!r} is NOT installed on this machine. Installed: "
-              f"{methods}. 80c needs a machine that has it.")
-        return finish(args)
-
-    print(f"\n2. Select {args.plugin!r} through the product's own accessor.")
-    #    Not through ask(): a Java proxy's repr is noise in output a person
-    #    reads, and only its type is the finding.
+    args = _parse_args()
+    FINDINGS.clear()
+    status = 0
     try:
-        af = ctrl.plugins.get_autofocus_method(args.plugin)
-    except Exception as exc:                        # noqa: BLE001 - the finding
-        FINDINGS["get_autofocus_method"] = {
-            "answered": False, "error": f"{type(exc).__name__}: {exc}"}
-        print(f"  NOT AVAILABLE - {type(exc).__name__}: {exc}")
-        return finish(args)
-    FINDINGS["get_autofocus_method"] = {"answered": True,
-                                        "value": f"<{type(af).__name__}>"}
-    print(f"  returned a {type(af).__name__}")
+        _measure(args)
+    except Exception:
+        FINDINGS['probe_defect'] = traceback.format_exc()
+        traceback.print_exc()
+        print('\nThe probe itself failed. That is a probe defect, not an answer '
+              'about the plugin; report it as such. The findings collected before '
+              'the failure are written below and are still worth sending back.')
+        status = 2
+    finish(args)
+    return status
 
-    print("\n3. THE QUESTION: does the returned method expose its own settings?")
-    names = ask("get_property_names", lambda: _drain_java_iterable(af.get_property_names()))
-    if names:
-        print(f"\n4. And can each one be read back? ({len(names)} properties)")
-        values = {}
-        for name in names:
-            try:
-                values[name] = str(af.get_property_value(name))
-                print(f"  {name} = {values[name]!r}")
-            except Exception as exc:                # noqa: BLE001 - the finding
-                values[name] = f"UNREADABLE: {type(exc).__name__}: {exc}"
-                print(f"  {name}: UNREADABLE - {type(exc).__name__}: {exc}")
-        FINDINGS["property_values"] = values
-        readable = [k for k, v in values.items()
-                    if not str(v).startswith("UNREADABLE")]
-        print(f"\nVERDICT: {len(readable)} of {len(names)} settings are recordable.")
-        print("  -> 80c CAN print the plugin's settings in the emitted envelope."
-              if len(readable) == len(names) else
-              "  -> 80c can record only some settings; the doc must say which.")
+
+def _measure(args):
+    FINDINGS.update(port=args.port, disclosure_required=True)
+    print(f'Tree: {ROOT}\nAsking about {args.plugin!r} on port {args.port}')
+    for package in ('pycromanager', 'pyjavaz'):
+        ask('version__' + package, lambda package=package: version(package))
+    ctrl = ask('controller', lambda: controller.MicroscopeController(port=args.port), quiet=True)
+    print('\n1. What autofocus methods does this Micro-Manager have?')
+    manager = ask('autofocus_manager', lambda: ctrl.plugins._studio.get_autofocus_manager(), quiet=True)
+    raw_methods = ask('all_autofocus_methods__object', lambda: manager.get_all_autofocus_methods(), quiet=True)
+    methods = ask('all_autofocus_methods', lambda: drain(raw_methods, 'methods'))
+    if methods is None:
+        print('The autofocus manager itself is unreachable or its methods could not be read.')
+        return
+    if args.plugin not in methods:
+        print(f'{args.plugin!r} is NOT installed. Installed: {methods}')
+        return
+    print('\n2. Select through the product\'s own accessor.')
+    af = ask('get_autofocus_method', lambda: ctrl.plugins.get_autofocus_method(args.plugin))
+    if af is None:
+        return
+    print('\n3. Does the returned method expose its own settings?')
+    obj = ask('get_property_names', lambda: af.get_property_names())
+    names = []
+    worked = []
+    read_routes = {}
+    if FINDINGS['get_property_names']['answered']:
+        for label, route in ROUTES.items():
+            result = ask(label, lambda label=label, route=route: (
+                drain(obj, label) if route == '_drain_java_iterable' else
+                array_read(obj, label, args.port, route)))
+            if result is not None:
+                read_routes[route] = result
+                if result:
+                    worked.append(route)
+                    names.extend(name for name in result if name not in names)
+    disagreement = len({tuple(result) for result in read_routes.values()}) > 1
+    FINDINGS['names_disagreement'] = read_routes if disagreement else False
+    if disagreement:
+        print('  Name routes disagree; reading the union of their answers:')
+        for route, result in read_routes.items():
+            print(f'    {route}: {result!r}')
+    FINDINGS['names_routes'] = worked
+    FINDINGS['names_route'] = worked[0] if worked else None
+    values = {}
+    print('\n4. Enumerated values')
+    for name in names:
+        label = 'value__' + name
+        ask(label, lambda name=name, label=label: as_text(label + '__raw', af.get_property_value(name)))
+        values[name] = FINDINGS[label]
+    FINDINGS['property_values'] = values
+    if not FINDINGS['get_property_names']['answered']:
+        verdict = 'names_not_exposed'
+        detail = 'the returned method does not expose its property names over this bridge.'
+    elif read_routes and not names:
+        verdict = 'names_returned_but_empty'
+        detail = 'The names call answered and readers returned no names; settings readability is not established.'
+    elif not worked:
+        verdict = 'names_returned_but_unreadable'
+        detail = (f"Returned {type(obj).__name__}; every route failed (see failures above). "
+                  'This is not the same as the plugin not exposing its settings.')
     else:
-        print("\nVERDICT: the returned method does not expose its property names "
-              "over this bridge.\n  -> 80c must DECLARE the settings snapshot as "
-              "an external precondition, and the emitted script must say in its "
-              "envelope that its behaviour is not determined by its source.")
+        failed = [name for name, row in values.items() if not row['answered']]
+        verdict = 'settings_partially_readable' if failed else 'settings_readable'
+        detail = f'Names read via {worked}; {len(names) - len(failed)}/{len(names)} values read. '
+        detail += (f'The doc must say which values were unreadable: {failed}.' if failed else
+                   '80c can print these settings in the emitted envelope.')
+    FINDINGS['verdict'] = verdict
+    print(f'\nVERDICT: {verdict} - {detail}')
 
-    # Whatever the answer, the emitted script's behaviour depends on rig state
-    # the source does not carry, and the 2026-08-17 decision says the print is
-    # the only disclosure there is. Record the fact, not an opinion about it.
-    FINDINGS["disclosure_required"] = True
-    return finish(args)
+    print('\n5. Secondary PropertyItem cross-check (does not alter the verdict)')
+    items_obj = ask('get_properties', lambda: af.get_properties())
+    for route in read_routes:
+        if route == '_drain_java_iterable':
+            continue
+        label = 'properties__' + route
+        items = ask(label, lambda: array_read(items_obj, label, args.port, route, False))
+        if items is None:
+            continue
+        for i, item in enumerate(items):
+            # Public fields retain their exact Java names, never snake_case.
+            for field in ('key', 'name', 'value'):
+                key = f'{label}__item_{i}__{field}'
+                ask(key, lambda item=item, field=field, key=key:
+                    as_text(key + '__raw', getattr(item, field)))
+    if not names:
+        print('\n6. GUESSED NAMES, NOT ENUMERATED ONES; failures say nothing about the plugin.')
+        FINDINGS['guessed_names'] = {}
+        for name in filter(None, (n.strip() for n in args.probe_names.split(','))):
+            label = 'guessed__' + name
+            ask(label, lambda name=name, label=label: as_text(label + '__raw', af.get_property_value(name)))
+            FINDINGS['guessed_names'][name] = FINDINGS[label]
+    return
 
 
 def finish(args):
-    args.out.write_text(json.dumps(FINDINGS, indent=2, default=str),
-                        encoding="utf-8")
-    print(f"\nFindings written to {args.out}. Send this whole output back; "
-          "design/80 records the answer and 80c's checklist is written from it.")
+    print('\nDisclosure required: exported script behaviour is not determined by its source; '
+          'the script must print this in its envelope.')
+    args.out.write_text(json.dumps(FINDINGS, indent=2, default=str), encoding='utf-8')
+    print(f'Findings written to {args.out}. Send this whole output back.')
     return 0
 
 
-if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except SystemExit:
-        raise
-    except Exception:                               # noqa: BLE001 - reported
-        traceback.print_exc()
-        print("\nThe probe itself failed. That is a probe defect, not an answer "
-              "about the plugin; report it as such.")
-        raise SystemExit(2)
+if __name__ == '__main__':
+    raise SystemExit(main())
