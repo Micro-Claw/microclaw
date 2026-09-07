@@ -420,3 +420,113 @@ def test_standdown_on_a_pre_80c_tree(gate):
         pytest.skip("this tree has 80c in it; run with MICROCLAW_TREE_UNDER_TEST "
                     "pointed at a pre-80c checkout to exercise the stand-down")
     assert "plugin capabilities" in rendered
+
+
+# --- Added after the demo machine's first run, whose two non-PASS rows were
+# --- both the instrument's. Every criterion was satisfied by the artifacts the
+# --- operator sent; only the gate misread them. These carry that run's numbers.
+
+def _limb_source(name):
+    tree = ast.parse(GATE_PATH.read_text(encoding="utf-8"))
+    return next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+def test_limb_d_does_not_refuse_on_a_counter_this_hook_cannot_move(gate):
+    """Round 1 FAILed on `hook_exposures= 0`, which is correct for this hook.
+
+    That counter is incremented through the reservation by a hook that snaps its
+    own sweep (`AutofocusHook`, hooks.py:299). `MMAutofocusPluginHook` snaps
+    nothing -- the plugin searches inside Java and microclaw never sees those
+    frames -- so it is 0 in both arms and always will be. The limb was scoring
+    the block's own central workflow as a failure. `saved_frames` is no better:
+    CLAUDE.md's eighth contract forbids gating a predicate on the saved-frame
+    callback.
+    """
+    # The refusal lives in the `if`, not in the `raise` -- an earlier cut of
+    # this case walked Raise nodes only and passed against the very gate it was
+    # written to reject. Check the CONDITION that guards each raise.
+    for node in ast.walk(_limb_source("limb_d")):
+        if not isinstance(node, ast.If):
+            continue
+        if not any(isinstance(inner, ast.Raise) for inner in ast.walk(node)):
+            continue
+        names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+        assert "exposures" not in names, (
+            "limb D refuses on hook_exposures again; it is 0 for this hook in "
+            "every healthy run, so the limb would score the block's own central "
+            "workflow as a failure")
+        assert "saved" not in names, (
+            "limb D refuses on saved_frames, which the eighth engine contract "
+            "says a predicate must never be gated on")
+
+
+def test_limb_d_scores_the_hook_log_which_only_the_callback_writes(gate):
+    """The honest signal: a record per position, written from inside the callback."""
+    # Matched on the string CONSTANT, not on the dump text: the pre-fix limb
+    # said "the frames are unfocused", which contains "focused" and made a
+    # substring check pass against the gate it was meant to reject.
+    literals = {n.value for n in ast.walk(_limb_source("limb_d"))
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert "focused" in literals, (
+        "limb D no longer reads state['C']['focused'], the standalone hook log, "
+        "which is the only evidence that post_hardware_hook_fn fired under real "
+        "AcqEngJ")
+
+
+def test_the_demo_machines_round_1_stdout_now_reads_as_a_pass(gate):
+    """The exact bytes the demo machine produced on 2026-09-07.
+
+    A REGRESSION case, not watch-it-fail evidence: it drives helpers this fix
+    did not change, so it passes on both trees by design. It is here because
+    the decisive verification was running the corrected predicates against the
+    operator's real artifacts, and this pins that run's shape in the tree.
+    """
+    out = (
+        "HOOK ACQUISITION ENVELOPE: this script enforces no dose budget.\n"
+        "AUTOFOCUS PLUGIN ENVELOPE: autofocus:OughtaFocus\n"
+        "The plugin's live settings, not this script, decide the focus.\n"
+        "Recorded settings snapshot: {'SearchRange_um': '10', 'FFTLowerCutoff(%)': '2,5'}\n"
+        "Live settings snapshot: {'SearchRange_um': '10', 'FFTLowerCutoff(%)': '2,5'}\n"
+        "HOOK ACQUISITION COUNTS live_plugin saved_frames= 2 hook_exposures= 0 no dose budget\n"
+    )
+    assert gate.DISCLOSURE in out
+    recorded = gate.printed_snapshot(out, "Recorded settings snapshot:")
+    live = gate.printed_snapshot(out, "Live settings snapshot:")
+    assert recorded == live and recorded is not None
+    # The locale value must survive the round trip as text, never as a number.
+    assert recorded["FFTLowerCutoff(%)"] == "2,5"
+    assert ("settings differ" in out) == (recorded != live)
+    # And the log the limb now scores on, in that run's own shape.
+    records = [{"position": "gateA", "best_z_um": 6.0, "plugin": "OughtaFocus"},
+               {"position": "gateB", "best_z_um": 6.0, "plugin": "OughtaFocus"}]
+    assert len(gate.focused_records(records)) == 2
+
+
+def test_limb_h_takes_its_dataset_prefix_from_the_record(gate):
+    """Round 1 globbed 'run'*, which was 80b's dataset name, not this run's.
+
+    The standalone dataset was sitting beside the script as `live_plugin_1` and
+    the limb reported NOT EXERCISED over it. That is 60b's defect exactly: a
+    glob written from the previous gate rather than from what this one produces.
+    """
+    node = _limb_source("limb_h")
+    literals = {n.value for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert "run" not in literals, (
+        "limb H is matching a hardcoded dataset name again")
+    assert "call_input" in ast.dump(node), (
+        "limb H no longer derives the dataset prefix from the recorded call")
+
+
+def test_limb_h_prefix_matches_what_the_demo_machine_actually_wrote(gate, tmp_path):
+    """`name='live_plugin'` produced `live_plugin_1`. Check the match, not the guess."""
+    (tmp_path / "live_plugin_1").mkdir()
+    (tmp_path / "unrelated").mkdir()
+    prefix = "live_plugin"
+    matches = [p for p in sorted(tmp_path.iterdir())
+               if p.is_dir() and p.name.startswith(prefix)]
+    assert [p.name for p in matches] == ["live_plugin_1"]
+    assert not [p for p in sorted(tmp_path.iterdir())
+                if p.is_dir() and p.name.startswith("run")], (
+        "the round-1 glob would still find nothing here")

@@ -168,12 +168,49 @@ DemoCamera's frames carry no Z-dependent contrast, so OughtaFocus will search
 and land somewhere without ever having a peak to find. That is a passenger for
 the next M2 or Nikon trip, and it does not gate this block.
 
+## Round 1, 2026-09-07: 6/8, and **both non-PASS rows were the instrument's**
+
+The block's central claim passed. Limb C ran the exported script against this
+bridge and this OughtaFocus and the two hook logs were **identical field by
+field**; the envelope printed the disclosure and both snapshots, with
+`FFTLowerCutoff(%)` surviving end to end as `'2,5'` — the locale value that a
+single coercion anywhere would have crashed on.
+
+Two limbs misread their own evidence, and both criteria were satisfied by the
+artifacts that came back. Neither needed a second trip; both were settled
+off-rig, as block 60b's false-negative was from the `NDTiff.index` an operator
+sent.
+
+* **Limb D FAILed on `hook_exposures= 0`.** That counter is incremented through
+  the reservation by a hook that snaps its own sweep (`AutofocusHook`,
+  `hooks.py:299`). `MMAutofocusPluginHook` snaps nothing — OughtaFocus searches
+  inside Java and microclaw never sees those frames — so it is 0 in both arms
+  and always will be. The predicate was copied from 80b, whose hook has a
+  different mechanism, and it **scored this block's own central workflow as a
+  failure**. The standalone hook log carried 2 records, one per position,
+  written from inside `post_hardware_hook_fn` — which is the honest proof the
+  callback fired, and is what the limb now scores. Both counters are reported,
+  neither is scored.
+* **Limb H reported NOT EXERCISED over a directory that was sitting there.** It
+  globbed `run*`, which was 80b's dataset name; this run's was `live_plugin_1`.
+  That is 60b's defect exactly — a glob written from the previous gate instead
+  of from what this one produces. The prefix now comes from the recorded call.
+  Re-scored off-rig from the two datasets: **2 uniquely indexed frames each,
+  `{time, z, position}` keyed `gateA`/`gateB`, identical**.
+
 ## Selftest, already run
 
 ```
 .venv/bin/python -m pytest -q design/80-block80c-gate-selftest.py
-24 passed, 1 skipped
+29 passed, 1 skipped
 ```
+
+Three of those 29 are the round-1 corrections and all three were watched failing
+against the pre-fix gate. Two of them did **not** discriminate when first
+written — one walked `Raise` nodes when the refusal lives in the `if`, and one
+substring-matched `"focused"` against a message reading *"the frames are
+unfocused"* — so they passed against the very gate they were written to reject,
+and were sharpened until they failed.
 
 The skip is the pre-80c stand-down case, which needs a pre-80c checkout; the
 coordinator ran that separately against a real one on 2026-09-07 and the control

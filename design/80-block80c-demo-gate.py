@@ -680,24 +680,36 @@ def main():
     def limb_d():
         if "C" not in state:
             raise NotExercised("stood down: limb C did not run the exported script")
+        ctrl, guard, fields = need("ctrl", "guard", "fields")
         out = state["C"]["proc"].stdout
         counts = [l for l in out.splitlines() if "HOOK ACQUISITION COUNTS" in l]
         if not counts:
             raise AssertionError(
                 "the exported script printed no HOOK ACQUISITION COUNTS line, so "
                 "its own accounting cannot be read")
-        # Scored on hook_exposures, which the HOOK increments through its
-        # reservation -- never on saved_frames, which arrives on the callback
-        # CLAUDE.md's eighth contract says a predicate must not be gated on.
-        exposures = [int(m) for m in re.findall(r"hook_exposures=\s*(\d+)", out)]
-        if not exposures:
-            raise AssertionError(f"could not read hook_exposures from: {counts}")
-        if not any(n > 0 for n in exposures):
+        # Scored on the HOOK'S OWN LOG, which MMAutofocusPluginHook writes only
+        # from inside post_hardware_hook_fn -- so a record per position is proof
+        # the callback fired under real AcqEngJ.
+        #
+        # NOT on hook_exposures, and round 1 failed here for exactly that reason.
+        # That counter is incremented through the reservation by a hook that
+        # snaps its own sweep (`AutofocusHook`, hooks.py:299). This hook snaps
+        # nothing: the plugin does its search inside Java and microclaw never
+        # sees those frames, so hook_exposures is 0 in BOTH arms and always will
+        # be. A limb must not score the block's own central workflow as a
+        # failure. And not on saved_frames either -- CLAUDE.md's eighth contract
+        # says a predicate must never be gated on the saved-frame callback.
+        standalone = state["C"]["focused"]
+        if len(standalone) != len(fields):
             raise AssertionError(
-                "hook_exposures is 0 in the standalone run: real AcqEngJ never "
-                "invoked post_hardware_hook_fn, so the frames are unfocused while "
-                "the script reports success. That is 80b's lesson and the defect "
-                "this block exists to prevent.")
+                f"the standalone hook log carries {len(standalone)} plugin "
+                f"record(s) for {len(fields)} positions. The hook writes one only "
+                "from inside post_hardware_hook_fn, so real AcqEngJ did not "
+                "invoke the callback and the frames are unfocused while the "
+                "script reports success -- 80b's lesson and the defect this "
+                "block exists to prevent.")
+        exposures = [int(m) for m in re.findall(r"hook_exposures=\s*(\d+)", out)]
+        saved = [int(m) for m in re.findall(r"saved_frames=\s*(\d+)", out)]
         if DISCLOSURE not in out:
             raise AssertionError(
                 "the envelope never printed the disclosure. This is the one "
@@ -723,8 +735,11 @@ def main():
         note = ("the live read agrees with the recorded one" if recorded == live
                 else "the live read DIFFERS and the script flagged it, which is "
                      "information and not a refusal")
-        return (f"hook_exposures {exposures}; the envelope disclosed and printed "
-                f"both snapshots; {note}")
+        return (f"{len(standalone)} plugin record(s) written from inside "
+                f"post_hardware_hook_fn, one per position; the envelope disclosed "
+                f"and printed both snapshots; {note}. Reported, not scored: "
+                f"saved_frames {saved}, hook_exposures {exposures} -- 0 is correct "
+                f"for this hook, whose exposures happen inside the plugin")
 
     @limb("H - live and standalone datasets carry the same frame identity",
           "two runs of the same plan writing different axes, or a dataset short "
@@ -736,11 +751,18 @@ def main():
         if not live_path or not Path(live_path).exists():
             raise NotExercised(
                 f"the live run reported no readable dataset ({live_path!r})")
+        # The prefix comes from the RECORD, never a hardcoded name. Round 1
+        # looked for "run", which was 80b's dataset name, and reported NOT
+        # EXERCISED over a directory that was sitting right there -- 60b's
+        # defect exactly, a glob written from the previous gate instead of from
+        # what this one produces.
+        prefix = str(state["A"]["call_input"]["name"])
         matches = [p for p in sorted(state["B"]["path"].parent.iterdir())
-                   if p.is_dir() and p.name.startswith("run")]
+                   if p.is_dir() and p.name.startswith(prefix)]
         if not matches:
             raise NotExercised(
-                "the standalone run wrote no dataset directory beside its script")
+                "the standalone run wrote no dataset directory beside its "
+                f"script; looked for {prefix!r}* in {state['B']['path'].parent}")
         try:
             live_axes = dataset_axes(Path(live_path))
             standalone_axes = dataset_axes(matches[-1])
