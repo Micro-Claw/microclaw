@@ -951,7 +951,18 @@ four fakes all returned a *collection* for that call: written from our caller,
 which is what `_drain_java_iterable` consumes, rather than from `bridge.py`.
 `design/80-block80c-probe-selftest.py` holds an array-shaped fake written the
 right way — reuse it rather than reaching for a `MagicMock`, which hands back
-Python-friendly objects and hides both shapes.
+Python-friendly objects and hides both shapes. Both failures were reproduced
+verbatim on the demo machine on 2026-09-07, so this is **n=2**, not one rig's
+story.
+
+**A value read over the bridge is locale-formatted text, and coercing it is a
+machine-dependent crash.** The same OughtaFocus setting reads
+`FFTLowerCutoff(%) = '2,5'` on the demo machine and `'2.5'` on M2 — one value,
+two JVM locales. `float('2,5')` raises, so any coercion works on one machine and
+dies on the other. Carry such values as opaque text end to end, and compare them
+textually: block 80c's emitted envelope prints the recorded and live snapshots
+and flags a difference, which correctly flags a locale change as a difference
+rather than pretending to understand it.
 
 Field access and method access use **different naming conventions** over the
 bridge. A Java object's **public fields** keep their raw camelCase name —
