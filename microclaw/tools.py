@@ -501,6 +501,9 @@ def _emit_multiposition_with_autofocus(params: RecordedParams) -> str:
             "settle_ms": value("settle_ms"),
         },
     }, params.result)
+    for key in ("_export_safety_limits", "_export_safety_limits_error"):
+        if key in params:
+            forwarded[key] = params[key]
     return _emit_multiposition(forwarded)
 
 
@@ -637,6 +640,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
     order = params.get("acquisition_order", signature.parameters["acquisition_order"].default)
     hook = params.get("hook_strategy")
     hook_source = ""
+    guarded_hook = False
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
         if isinstance(hook, list):
@@ -650,7 +654,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
                 f"saved or unknown hook ({hook!r}): the fixed-plan exporter cannot "
                 "inline its adapter and observation log"
             )
-        if not getattr(hook_cls, "_observation_only", False):
+        if hook not in {"autofocus_per_position", "focus_feedback",
+                        "intensity_adaptive", "position_filter", "snr_observer"}:
             raise CannotEmit(
                 f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"
             )
@@ -663,15 +668,17 @@ def _emit_multiposition(params: RecordedParams) -> str:
         elif (params.get("hook_params") or {}).get("calibration_path"):
             raise CannotEmit("the record lacks the hook's resolved calibration threshold")
         source, constructor, _ = _adaptive_hook_export(exported_hook_params)
-        hook_source = (
-            "import hashlib, io, itertools, json, logging, queue, threading\n"
-            "from datetime import datetime, timezone\n"
-            "from types import SimpleNamespace\n"
-            "from dataclasses import asdict, dataclass, field\n"
-            + _analysis_source(include_autofocus=True) + "\n"
-            + _adaptive_runner_source() + "\n" + _portable_log_path_source() + "\n" + source + "\n"
-            + "guard = SimpleNamespace(analysis_min_snr=None)\n"
-        )
+        if "guard" in inspect.signature(hook_cls.__init__).parameters and not getattr(
+            hook_cls, "_observation_only", False
+        ):
+            guarded_hook = True
+            limits = params.get("_export_safety_limits")
+            if not limits:
+                raise CannotEmit(params.get("_export_safety_limits_error")
+                                 or "the record carries no export-time safety limits")
+            hook_source = _export_guard_source(limits) + "mm._guard = guard\n" + source + "\n"
+        else:
+            hook_source = source + "\nguard = SimpleNamespace(analysis_min_snr=None)\n"
     positions = params.get("positions")
     if positions is None:
         if params.get("_position_resolution_error"):
@@ -719,7 +726,20 @@ def _emit_multiposition(params: RecordedParams) -> str:
             shape.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
             if exposure is not None:
                 shape["channel_exposures_ms"] = [exposure]
-        prefix = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
+        prefix = ""
+        if guarded_hook:
+            # Match _acquire_positions_with_hook: validate the whole seed plan
+            # before the first position or eventless exposure write.
+            for position in positions:
+                prefix += f"guard.check_xy({position['x_um']!r}, {position['y_um']!r})\n"
+                if protocol != "zstack" and position.get("z_um") is not None:
+                    prefix += f"guard.check_z({position['z_um']!r})\n"
+            if protocol == "zstack":
+                prefix += f"guard.check_z({shape['z_start']!r})\nguard.check_z({shape['z_end']!r})\n"
+            if exposure is not None:
+                prefix += f"guard.check_exposure({exposure!r})\n"
+        if exposure is not None and not channel:
+            prefix += f"core.set_exposure({exposure!r})\n"
         lines = [hook_source + prefix,
                  f"# acquisition_order={order}; timing={params.result.get('timing', {}).get('strategy')!r}; requested_interval_s={protocol_params.get('interval_s')!r}"]
         for index, group in enumerate(groups):
@@ -752,15 +772,31 @@ def _emit_multiposition(params: RecordedParams) -> str:
                     lines += [f"core.set_position({position['z_um']!r})",
                               "core.wait_for_device(core.get_focus_device())"]
             if hook:
-                log = params.get("log_path")
+                log = params.get("log_path") or params.result.get("log_path")
                 log_name = (f"{Path(log).stem}_{index}{Path(log).suffix}" if split else Path(log).name) if log else None
                 lines += [f"_log_path = _next_available_log_path(_HERE / {log_name!r})" if log_name else "_log_path = None",
                           f"hook = {constructor}"]
                 if observation:
                     lines.append(f"hook.threshold_source = {observation['min_snr_source']!r}")
-            lines += [f"events = multi_d_acquisition_events(**{event_shape!r})",
-                      f"with Acquisition(directory=str({directory}), name={movie_name!r}"
-                      + (", image_process_fn=hook.image_process_fn" if hook else "") + ") as acq:",
+            lines.append(f"events = multi_d_acquisition_events(**{event_shape!r})")
+            if hook:
+                # The live runner binds before selecting this same callback triple.
+                # Standalone accounting is local to this acquisition; there is no
+                # Microclaw session ledger to mutate when the script is replayed.
+                lines += [
+                    "_saved_frames = SurveyProgress(len(events))",
+                    "_hook_exposures = SurveyProgress(0)",
+                    "_reservation = SimpleNamespace(commit_frame=_hook_exposures.image_done)",
+                    "if hasattr(hook, 'bind_reservation'):",
+                    "    hook.bind_reservation(_reservation)",
+                    "_hook_callbacks = {name: callback for name, callback in {"
+                    "'image_process_fn': getattr(hook, 'image_process_fn', None), "
+                    "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
+                    "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
+                    "}.items() if callback is not None}",
+                ]
+            lines += [f"with Acquisition(directory=str({directory}), name={movie_name!r}"
+                      + (", image_saved_fn=lambda axes, dataset: _saved_frames.image_done(), **_hook_callbacks" if hook else "") + ") as acq:",
                       "    acq.acquire(events)"]
         return "\n".join(lines)
     # Every per-position XY move in the live tile path is settled, so every one
@@ -1558,7 +1594,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     # script whose header claims recorded limits while checking nothing, which
     # is the defect this refusal exists to prevent.
     limits = params.get("_export_safety_limits")
-    if not limits:
+    if not limits or params.get("_export_safety_limits_error"):
         raise CannotEmit(params.get("_export_safety_limits_error")
                          or "the record carries no export-time safety limits")
     recorded_log = params.get("log_path") or params.result.get("log_path")
@@ -1975,31 +2011,17 @@ def export_session_script(
         (name, params) for name, params in recorded
         if selected_ids is None or params["_tool_use_id"] in selected_ids
     ]
-    adaptive_used = any(
-        name.startswith("run_adaptive_") or (
-            name in {"run_timelapse", "run_zstack"} and (
-                params.get("hook_strategy") or
-                params.get("hook_action_plan") is not None
-            )
-        )
-        for name, params in included
-    )
-    analysis_used = adaptive_used or any(
-        name in {"snap_and_analyze", "run_autofocus", "find_features", "center_feature"}
-        or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
-            and params.get("protocol") == "snap")
-        for name, params in included
-    )
-    detection_used = any(
-        name in {"find_features", "center_feature"}
-        for name, params in included
-    )
-    autofocus_used = adaptive_used or any(
-        name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
-        for name, params in included
-    )
+    hook_runtime_calls = [
+        params for name, params in included
+        if name.startswith("run_adaptive_")
+        or name == "run_multiposition_with_autofocus"
+        or (name in {"run_timelapse", "run_zstack", "run_multiposition_acquisition",
+                     "run_tile_acquisition"} and (
+            params.get("hook_strategy") or params.get("hook_action_plan") is not None
+        ))
+    ]
     safety_limits = safety_limits_error = None
-    if adaptive_used:
+    if hook_runtime_calls:
         # Read strictly: a renamed field must not degrade to "no limits", which
         # would emit a script whose header claims recorded bounds while its seed
         # check accepts anything. Carried to the renderer as a reason rather than
@@ -2026,39 +2048,25 @@ def export_session_script(
             for axis in ("x", "y", "z"):
                 pair = safety_limits[f"{axis}_um"]
                 if any(edge is None or not math.isfinite(float(edge)) for edge in pair):
-                    safety_limits = None
                     safety_limits_error = (
                         f"recorded stage bounds are incomplete for {axis.upper()}; "
                         f"both {axis}_min and {axis}_max are required"
                     )
-                    break
+                    # Adaptive seeds require every axis. Fixed plans check only
+                    # the axes they use, just like _acquire_positions_with_hook;
+                    # an XY-only intensity run must not gain a Z requirement.
+                    if any(edge is not None and not math.isfinite(float(edge)) for edge in pair):
+                        safety_limits = None
+                        break
         except (AttributeError, TypeError, ValueError) as exc:
             safety_limits = None
             safety_limits_error = (
                 "adaptive export safety constraints are unavailable or have an "
                 f"unsupported shape: {exc}"
             )
-    for name, params in recorded:
-        if name.startswith("run_adaptive_") or (
-            name in {"run_timelapse", "run_zstack"} and (
-                params.get("hook_strategy") or
-                params.get("hook_action_plan") is not None
-            )
-        ):
-            params["_export_safety_limits"] = safety_limits
-            params["_export_safety_limits_error"] = safety_limits_error
-    # Every one of these is reached only by the adaptive block: hashlib/io/json
-    # by the hook artifact and log writers, queue by the candidate stream,
-    # threading by SurveyProgress, asdict and
-    # datetime by the decision dataclasses and the observation envelope, logging
-    # by _note_budget_exhausted. Conditional for the same reason the analysis and
-    # channel blocks are: a snap-only session was carrying ten unused imports and
-    # an unused logger into the script the operator keeps (demo gate, 2026-08-10).
-    adaptive_imports = [
-        "import hashlib", "import io", "import itertools", "import json", "import logging",
-        "import queue", "import threading",
-        "from datetime import datetime, timezone",
-    ] if adaptive_used else []
+    for params in hook_runtime_calls:
+        params["_export_safety_limits"] = safety_limits
+        params["_export_safety_limits_error"] = safety_limits_error
     selection_warning = (
         "Hardware state is order- and history-dependent: excluded setup calls "
         "such as channel, ROI, and stage changes may be required by kept "
@@ -2158,14 +2166,44 @@ def export_session_script(
         body_lines.extend(rendered.splitlines())
         emitted += 1
         emitted_ids.append(params["_tool_use_id"])
+    rendered_calls = [(name, params) for name, params in included
+                      if params["_tool_use_id"] in emitted_ids]
+    hook_runtime_used = any(params["_tool_use_id"] in emitted_ids
+                            for params in hook_runtime_calls)
+    analysis_used = hook_runtime_used or any(
+        name in {"snap_and_analyze", "run_autofocus", "find_features", "center_feature"}
+        or (name in {"run_multiposition_acquisition", "run_tile_acquisition"}
+            and params.get("protocol") == "snap")
+        for name, params in rendered_calls
+    )
+    detection_used = any(
+        name in {"find_features", "center_feature"}
+        for name, params in rendered_calls
+    )
+    autofocus_used = hook_runtime_used or any(
+        name == "run_autofocus" or params.get("hook_strategy") == "autofocus_per_position"
+        for name, params in rendered_calls
+    )
+    # Every one of these is reached only by the adaptive block: hashlib/io/json
+    # by the hook artifact and log writers, queue by the candidate stream,
+    # threading by SurveyProgress, asdict and
+    # datetime by the decision dataclasses and the observation envelope, logging
+    # by _note_budget_exhausted. Conditional for the same reason the analysis and
+    # channel blocks are: a snap-only session was carrying ten unused imports and
+    # an unused logger into the script the operator keeps (demo gate, 2026-08-10).
+    hook_runtime_imports = [
+        "import hashlib", "import io", "import itertools", "import json", "import logging",
+        "import queue", "import threading",
+        "from datetime import datetime, timezone",
+    ] if hook_runtime_used else []
     body_text = "\n".join(body_lines)
     # Inline helpers based on the program the emitters actually produced. This
     # keeps nested/composite emitters from having to duplicate a tool-name or
     # recorded-result predicate here when they start using a shared helper.
-    channel_writes = adaptive_used or "_verify_property(" in body_text
+    channel_writes = hook_runtime_used or "_verify_property(" in body_text
     # The adaptive runner source already carries the settlement contract, so
     # gate on its absence to keep exactly one definition in every script.
-    stage_moves = not adaptive_used and (
+    stage_moves = not hook_runtime_used and (
         autofocus_used or "settle_stage_move(" in body_text
         or "stage_move_dispatch_failure(" in body_text
         or "settle_xy_move(" in body_text
@@ -2185,8 +2223,8 @@ def export_session_script(
         *([f"# WARNING: {selection_warning}"] if selected_ids is not None else []),
         "import math",
         "import time",
-        *adaptive_imports,
-        f"from dataclasses import {'asdict, dataclass, field' if adaptive_used else 'dataclass, field'}",
+        *hook_runtime_imports,
+        f"from dataclasses import {'asdict, dataclass, field' if hook_runtime_used else 'dataclass, field'}",
         "from pathlib import Path",
         "from types import SimpleNamespace",
         "from typing import Any, Callable, NamedTuple, Optional",
@@ -2198,8 +2236,8 @@ def export_session_script(
             include_detection=detection_used,
         ).rstrip()]
           if analysis_used else []),
-        *(["", _portable_log_path_source().rstrip()] if adaptive_used else []),
-        *(["", _adaptive_runner_source().rstrip()] if adaptive_used else []),
+        *(["", _portable_log_path_source().rstrip()] if hook_runtime_used else []),
+        *(["", _adaptive_runner_source().rstrip()] if hook_runtime_used else []),
         *(["", _stage_move_contract_source().rstrip()] if stage_moves else []),
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
@@ -2224,8 +2262,8 @@ def export_session_script(
            "        pass",
            "",
            "mm = SimpleNamespace(core=core, refresh_gui=_refresh_gui)"]
-          if adaptive_used else ["mm = SimpleNamespace(core=core)"]),
-        *(["logger = logging.getLogger(__name__)"] if adaptive_used else []),
+          if hook_runtime_used else ["mm = SimpleNamespace(core=core)"]),
+        *(["logger = logging.getLogger(__name__)"] if hook_runtime_used else []),
         *body_lines,
     ]
     if any("_HERE" in line for line in lines):
