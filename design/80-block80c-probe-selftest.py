@@ -316,6 +316,19 @@ def truncated_properties():
     assert data['verdict'] == 'settings_readable'
 
 
+def ascii_transcript():
+    # M2 round 2 came back with "settings_readable u Names read via" -- PowerShell's
+    # UTF-16 redirect mangled an em-dash in the one line the whole run exists to
+    # produce. A rig-facing transcript must survive `> file 2>&1` on Windows.
+    for kwargs in ({}, {'empty': True}, {'partial_properties': True},
+                   {'unavailable': ('java.lang.reflect.Array', 'java.util.Arrays')}):
+        _, output, _, _ = run(**kwargs)
+        try:
+            output.encode('ascii')
+        except UnicodeEncodeError as exc:
+            raise AssertionError(f'non-ASCII in operator transcript ({kwargs}): {exc}') from exc
+
+
 def header_first():
     _, output, _, _ = run()
     assert output.startswith('Tree:'), 'version lines precede the transcript header'
@@ -362,6 +375,7 @@ def main():
         ('unexpected measurement preserves findings', unexpected_measurement),
         ('partial PropertyItem enumeration disclosed', truncated_properties),
         ('header before versions', header_first),
+        ('transcript is ASCII (PowerShell-safe)', ascii_transcript),
         ('pre-fix control fires', control),
     ]
     failed = 0

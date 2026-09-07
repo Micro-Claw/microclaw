@@ -103,7 +103,7 @@ def drain(obj, label, convert=True):
         return product
     if not convert and not inspected:
         FINDINGS[label + '__truncated'] = True
-        print(f'  {label}: TRUNCATED — inspection stopped after {len(elements)} items; '
+        print(f'  {label}: TRUNCATED - inspection stopped after {len(elements)} items; '
               'the following items are only a partial cross-check.')
     return elements
 
@@ -225,7 +225,7 @@ def _measure(args):
         detail += (f'The doc must say which values were unreadable: {failed}.' if failed else
                    '80c can print these settings in the emitted envelope.')
     FINDINGS['verdict'] = verdict
-    print(f'\nVERDICT: {verdict} — {detail}')
+    print(f'\nVERDICT: {verdict} - {detail}')
 
     print('\n5. Secondary PropertyItem cross-check (does not alter the verdict)')
     items_obj = ask('get_properties', lambda: af.get_properties())

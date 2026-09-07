@@ -1,6 +1,8 @@
 # Hooked autofocus acquisitions must survive session export
 
-Status: **80a MERGED** 2026-09-06 (`7ddcf11`); 80b and 80c proposed. The
+Status: **80a MERGED** 2026-09-06 (`7ddcf11`), **80b MERGED** 2026-09-07
+(`c7d4e41`). **80c's open design question is answered** — see §"The answer, M2,
+2026-09-07 round 2"; its implementation checklist is written from that. The
 findings below were written before any implementation; §"Block 80a —
 implementation checklist" and the run ledger record what actually shipped, and
 where a measurement replaced an assumption the ledger says so.
@@ -365,8 +367,9 @@ static class must be wrapped through `controller._new_static_java_class`
 collection: `list()` fails on both, and the drain that fixes the first fails on
 the second.
 
-It reached the rig because the probe's four fakes were written from the caller
-rather than from the dependency — every one of them returned a collection for
+That verdict was corrected by a second run on the same machine; the answer is
+below. It reached the rig because the probe's four fakes were written from the
+caller rather than from the dependency — every one of them returned a collection for
 `get_property_names()`, because that is what `_drain_java_iterable` consumes. It
 is `CLAUDE.md`'s own rule about gate fakes, applied to a probe, and it also
 matters that those fakes were never committed. The corrected probe ships its
@@ -385,6 +388,52 @@ guessed-name reads still run). Empty routes are not credited as name sources.
 Disagreeing route lists are reported before reading their union. The secondary
 `get_properties()` cross-check and **guessed, not enumerated** `--probe-names`
 reads (only without enumerated names) never change that outcome.
+
+### The answer, M2, 2026-09-07 round 2
+
+**`settings_readable`. OughtaFocus enumerates 13 settings over this bridge and
+all 13 read back**, so the emitted script can print them in its envelope and 80c
+does not declare an external precondition. Artifacts: `80c-probe-m2-round2/`.
+
+| | |
+| --- | --- |
+| `names__drain` | **fails** — `AttributeError: '[Ljava_lang_String;' object has no attribute 'iterator'`. The product's `_drain_java_iterable` cannot read this, measured on a rig. |
+| `names__reflect_array` | **works** — 13 names. This is the route. |
+| `names__arrays_as_list` | **fails** — `Incorrect arguments. Expected java.lang.Object[] Got <class 'pyjavaz.bridge.[Ljava_lang_String;'>`. `asList` is varargs over `Object[]` and pyjavaz's argument matching does not resolve a `String[]` shadow to it. Settled, not assumed. |
+
+```
+OptimizerStrategy=Brent  FocusDrive=''      SearchRange_um=10  Tolerance_um=1
+CropFactor=1             Exposure=100       FFTLowerCutoff(%)=2.5
+FFTUpperCutoff(%)=14     ShowImages=No      ShowGraph=No       Maximize=Edges
+Channel=''               KeepShutterOpen=No
+```
+
+Scored from the artifact, not the verdict. The values were read **twice by
+independent paths** — `getPropertyValue(name)` and the `PropertyItem[]` from
+`getProperties()`, itself read through `reflect.Array` — and they agree on all
+13, in the same order, with no diagnostic fallback, no truncation and no
+`probe_defect`. Every element deserialized as a real `str`, so no `to_string()`
+conversion was needed. `PropertyItem` exposes `name` and `value` and has **no**
+`key` field, which also confirms the camelCase public-field rule over this
+bridge.
+
+Three things this settles for 80c's implementation. The reader must be
+`java.lang.reflect.Array` through `controller._new_static_java_class`; `asList`
+is not an option and neither is the drain as it stands, so 80c decides whether
+`_drain_java_iterable` learns arrays or a separate array reader is inlined
+beside it. And the snapshot is worth printing: `SearchRange_um=10` /
+`Tolerance_um=1` are *not* the built-in sweep's 15 µm/0.5 µm, which is exactly
+the substitution §80c forbids — the emitted script would have been wrong about
+the numbers that matter, silently.
+
+**The caveat, stated because it is visible in the data.** The rig's hardware was
+off for this run. The two settings that reference hardware — `FocusDrive` and
+`Channel` — came back empty, and this run cannot distinguish "empty because
+nothing was loaded" from "empty in OughtaFocus's saved profile on M2". Readability
+is fully settled either way; what a *live* snapshot contains is not, and n=1. It
+changes no decision: an empty `FocusDrive` means OughtaFocus falls back to Core's
+current focus device, which is rig state the settings do not name — so it
+strengthens the 2026-08-17 disclosure requirement rather than altering it.
 
 **The corrected probe asks each route separately and records the shape, not just
 the error.** Nothing here decides anything for 80c: whether
@@ -732,6 +781,131 @@ objects and hides the collection defect that failed design/59a on the rig. The
 runbook is written when the implementation is reviewed, from the gates that have
 already run on that machine.
 
+## Block 80c — implementation checklist
+
+`microclaw/tools.py`, `microclaw/hooks.py`, `microclaw/safety.py` (one recorded
+field) and `tests/test_session_script_export.py`. Written from the M2 round-2
+answer above; **do not re-derive its decisions.** Scope is
+`autofocus_mm_plugin` **only** — `mm_plugin_analyzer` keeps a refusal, with a
+corrected reason (item 6).
+
+Everything below was measured by the coordinator on `2a6f5c6`, not read off the
+design.
+
+### The gap, measured
+
+Read out of `PRECODED_HOOK_REGISTRY`, not from prose:
+
+| hook | callbacks | `__init__` | guard calls | reaches |
+| --- | --- | --- | --- | --- |
+| `autofocus_per_position` (emits since 80b) | `post_hardware_hook_fn` only | `ctrl, guard, z_range_um, z_step_um, settle_ms` | `check_z` | `core.get_position` |
+| `autofocus_mm_plugin` | `post_hardware_hook_fn` only | `ctrl, guard, plugin_name` | `check_z`, **`check_plugin_motion`** | **`plugins.get_autofocus_method`** |
+| `mm_plugin_analyzer` | `image_process_fn` | `ctrl, guard, classpath, method, reject_below` | `check_plugin` | **`plugins.get_object`** |
+
+So `autofocus_mm_plugin` differs from the hook 80b already emits in **exactly
+two things**: one extra guard call and one different `ctrl` reach. Its callback
+set is identical, so 80b's `getattr` triple already wires it; it calls `check_z`,
+so 80b's Z-envelope walker already requires a complete envelope for it. The
+refusal is one condition (`tools.py:1463`), and almost everything behind it is
+already built. **This is a small block wearing a large refusal.**
+
+`mm_plugin_analyzer` is not that: `get_object(classpath)` constructs an arbitrary
+class by name, and `check_plugin` is a runtime *blocklist* read from the rig's
+safety config — authorization state, not source. It stays refused.
+
+### The work
+
+1. **Narrow the refusal** at `tools.py:1463` to `mm_plugin_analyzer`, with the
+   reason above. Nothing about `ctrl`/`guard` — `_adaptive_hook_export` has
+   injected both by signature since before this notebook opened.
+2. **Record the settings snapshot, then render it.** An emitter may only render
+   what the record contains, and today nothing records what the plugin was set
+   to. `MMAutofocusPluginHook.__init__` already holds `self._af`; have it read
+   the snapshot there and the tool surface it in its result, the way 63a made
+   three tools report what they wrote before they could be emitted. **The reader
+   is `java.lang.reflect.Array` through `controller._new_static_java_class`** —
+   `_drain_java_iterable` cannot read a Java array and `Arrays.asList` does not
+   resolve over this bridge, both measured on M2. Whether the drain grows an
+   array branch or a separate reader sits beside it is this block's call; the
+   drain is inlined into exported scripts, so a change there travels.
+   A snapshot that cannot be read is recorded as unavailable **with its reason**
+   and does not fail the run — the live hook works without it.
+3. **A standalone adapter for the accessor.** Inline
+   `PluginAccess.get_autofocus_method` and `_drain_java_iterable` with
+   `inspect.getsource` (the drain is `get_all_autofocus_methods`' validation
+   path, which is what turns a wrong name into a message instead of a Java
+   `IllegalArgumentException`). The method uses `self._studio`, so the emitted
+   script constructs `Studio()` and hangs the accessor on `mm.plugins` — the
+   namespace at `tools.py:2295` is `SimpleNamespace(core=core, refresh_gui=…)`
+   and a hook reaching `mm.plugins` finds nothing there. **That is block 52b's
+   defect exactly** (`SimpleNamespace(core=core)` with no `refresh_gui`, which
+   compiled and died on its first property write), so it is the first thing to
+   test by execution.
+4. **`check_plugin_motion` on the portable guard**, modelled on
+   `authorize_property_write` in `_export_guard_source`: the recorded live run
+   passed this rig's `plugins.allow_hardware_motion` gate for exactly this
+   plugin, so pin that one `autofocus:<name>` token and refuse any other. Not
+   stricter than the tool it reproduces — no other plugin is reachable, because
+   the constructor is rendered from the record.
+5. **Print the snapshot in the envelope, and print the live one beside it.**
+   This is the one exported script whose behaviour is not determined by its
+   source, and per the 2026-08-17 decision the print is the only disclosure there
+   is. The script reads the plugin's current settings at run time and prints both
+   sets, flagging any that differ. **It does not refuse on a difference and it
+   does not prompt** — the live tool compares nothing, an emitted step must not
+   be stricter than the tool it reproduces, and a decline that only aborts the
+   run is information, not consent. The disclosure is worth the code because
+   M2's real `SearchRange_um=10` / `Tolerance_um=1` are *not* the built-in
+   sweep's 15/0.5: a reader who assumed otherwise would be wrong about the two
+   numbers that decide the focus.
+6. **Correct `CLAUDE.md`'s export section** (step 10). It records
+   `autofocus_mm_plugin` as a legitimate permanent `CannotEmit` for two reasons
+   that are both wrong: "take `ctrl`/`guard`" was already stale, and it lumps
+   both plugin hooks under `PluginAccess.get_autofocus_method` when
+   `mm_plugin_analyzer` reaches `get_object`. One hook now emits; the other stays
+   refused for the reason in the table above.
+
+### What must not change
+
+`mm_plugin_analyzer`'s refusal. `snr_observer`'s pre-existing export and its
+freedom from new bound requirements. The hookless multiposition export, byte for
+byte (`sha256 9a56d7a9ca1e93e173cb4358712d94f4b837dfcfe7a933010af9f4df033b0826`,
+460 lines). And the hook's passive-guard semantics: the plugin owns the motion,
+microclaw asserts on the result and **raises** rather than re-driving Z or
+returning `None` (design/27) — the emitted copy is `inspect.getsource` of the
+live class, so this holds by construction and a hand-written sweep would break it.
+
+### Acceptance
+
+1. Execute the emitted script against fakes and **drive `post_hardware_hook_fn`
+   per event**, as 52b requires; compiling is not running. Assert the hook is
+   attached to that callback and not merely constructed — 80b's lesson is that
+   constructing a hook the acquisition never calls reports success over unfocused
+   frames.
+2. **The fake `getPropertyNames()` must return an array-shaped object with no
+   `iterator()`, no `__len__` and no `__getitem__`.** A collection-shaped fake is
+   the defect this block's own probe shipped to a rig, and
+   `design/80-block80c-probe-selftest.py` already holds one written from
+   `bridge.py` — reuse its shape. A `MagicMock` will not do (design/59a).
+3. An unreadable snapshot exports with the reason recorded and the envelope
+   saying so; it does not refuse and does not fabricate settings.
+4. An incomplete recorded Z envelope refuses, by 80b's `check_z` source walk,
+   with no frames taken.
+5. The emitted script imports nothing from `microclaw` and is parsed before it
+   is written.
+
+### Gate
+
+Needs a Micro-Manager with the plugin. **Check the demo machine before booking
+M2**: `design/80-block80c-oughtafocus-probe.py --plugin OughtaFocus` answers
+"can this machine host the gate" for free, and it is now the reusable form of
+that question. Score live against standalone the way 80b's round 2 did — hook
+logs field by field, and the recorded snapshot against the one the standalone
+run prints. Two passengers, both cheap: capture a snapshot with the hardware
+**on**, since M2's round-2 `FocusDrive` and `Channel` were empty with it off and
+that is unsettled; and **R101**, convergence on a real focus curve, which
+DemoCamera's contrast-free frames cannot show.
+
 ## Run ledger
 
 Baseline before the notebook: `main` `caa3554`, coordinator-run suite
@@ -751,4 +925,4 @@ refusal**. 439 of the 459 lines are the unused stage-move contract, which is
 |---|---|---|---|---|---|
 | 80a | `design80/explicit-incomplete-export` | `25ee645` (2026-09-06), worktree `../microclaw-80a`, baseline **2908 passed / 99 skipped / 4 warnings** measured *in the runner's own venv* — the primary checkout reports 2, and the extra pair is a `starlette`/`anyio` `DeprecationWarning` from this venv's freshly resolved `[serve]` extras, checked rather than assumed before being handed over. | `3f4e9f6` (UNREVIEWED) + `fa8aed4` + `6cd9c28`. **The Codex start turn hit its provider usage limit after its edits had landed and before it produced any report**, so `3f4e9f6` is preserved per the workflow with a message saying plainly that nothing about it had been reviewed. It had, by luck of timing, already run its own pre-fix check — but **it had never run the full suite, and the suite was red**: the new fixture read did not name its encoding and `test_suite_integrity::test_test_text_io_always_names_its_encoding` failed. That is the finding the workflow's *re-run the suite yourself* step exists for. **Four findings, all fixed by the coordinator on the branch** (step 7, sized to the finding; Codex was out of credits until 14:59 and every one was small). The substantive one: a refusal reason reached both `not_emitted_calls` and the artifact's printed disclosure **unfolded**, while `skipped_failed_calls` had folded through `one_line()` since 2026-08-17 — and the partial-outcome reason is built from recorded per-position errors, so a Java stack trace really does splice newlines through the one disclosure an exported script has. Demonstrated before being fixed. Then `1 calls` in both the status and that disclosure; and `skipped_failed_calls` carrying no `tool_use_id` while `not_emitted_calls` did — **conflating those two lists is the entire incident**, and this session names `run_multiposition_acquisition` three times, so without an id an entry cannot be lined up against `recorded_calls` at all. Both lists now have one shape. **Watch-it-fail was reproduced independently, never taken from the runner's file**: all seven start-turn tests on `25ee645` (`KeyError: 'not_emitted_calls'`, the old status string, and `['Core', 10, 20]` — `Core` constructed with no disclosure ahead of it), and the new folding test on `3f4e9f6`. Coordinator suite **2916 passed / 99 skipped**, reconciling as 2908 + 7 + 1, nothing else moved. Scored from the artifact: the fixture now returns `complete: false`, a status naming 2 calls, and two `not_emitted_calls` with ids — while the failed first attempt sits alone in `skipped_failed_calls` with its own id. | **PASS, and the finding is the gate's own step 2** — `design/80-block80a-gate.md`. Deliberately small: the block adds no emitter capability, so nothing needs driving and everything deterministic was settled off-rig. **Step 2 was written as a false dichotomy — *either the entry is wrong or the citation was fabricated* — and the answer was neither branch as stated.** The operator supplied M2's `knowledge.yaml`: `devices.export_session_script_limitation` is real and dated **2026-09-03, two days before this session**. It lists ten tools as dropped; **eight were behaving correctly** — seven `@emits_nothing` emitting `# No hardware-routine effect.` and one the documented permanent `@refuses` — checked on `fa8aed4`, with `git log -S` showing no decorator churn since 2026-09-01, so it held on the day. So an *earlier* session made the same reading error, saved it, and the beads session recited it back, `WORKAROUND: hand-write the pipeline` and `Worth reporting upstream` included. That is why no read-back call appears between the export and the diagnosis. **And the rig attribution was ours**: `devices/` refuses an entry without `observed_on` and `save_knowledge` resolves it from live identity, so a program limitation with no category to live in is stored as a fact about the camera — register row **R100**, opened, not fixed here. The run3 artifact is not in the archive, so what is established is the entry's characterisation, not that session's export. **The replay arm was declined by the operator** (2026-09-06): 80a therefore merges on off-rig evidence with the model-behaviour arm unmeasured, recorded as declined rather than passed. Nothing was written to any knowledge base; a drafted replacement entry sits in the gate doc. | `7ddcf11` merged 2026-09-06; branch deleted locally and on `origin`, worktree removed, notes in `design/prompts.md`. Post-merge design gate done on `main`: the notebook's status line and 80a's knowledge-base paragraph reconciled to what step 2 actually found, and `R100` opened in the register. **80b and 80c are untouched by this block.** |
 | 80b | `design80/hooked-multiposition-export` | `660bd28` (2026-09-07), worktree `../microclaw-80b`, baseline **2916 passed / 99 skipped / 4 warnings** measured *in the runner's own venv*; the primary checkout reports 2 warnings, and the extra pair is a `starlette`/`anyio` `DeprecationWarning` from freshly resolved `[serve]` extras. The hookless byte baseline `sha256 9a56d7a9ca1e93e173cb4358712d94f4b837dfcfe7a933010af9f4df033b0826` was checked reproducible across two temp directories and against the primary checkout before being handed over as an acceptance criterion. | `53796f7` + `64ee74a` (UNREVIEWED) + `739af82` + `c5d7a31` (1 Codex start, 2 revisions, 1 gate commit). **Two of the three Codex turns were killed or refused**: revision 1 died to *coordinator-machine memory pressure* after its edits landed and before it ran the suite or reported, so `64ee74a` was preserved per the workflow with a message saying plainly nothing in it was reviewed — and **its suite was red**, one failing test, its own. Revision 2 then hit a provider usage limit and failed instantly with no edits; it was relaunched by a detached `nohup` waiter verified at PPID 1, which fired at 12:04 and finished at 12:16 unattended. **Round 1 returned three findings, all proven by probe rather than by reading.** The serious one was found by *executing the artifact*: an incomplete stage envelope exported with `complete: true` and produced a script that died in the guard having taken **zero frames** — the defect 80a had just fixed one level up, reintroduced one level down. The fix derives the Z requirement by walking the *inlined hook source* for `check_z`, which is sound because every Z-moving hook calls it immediately before `set_position` (`hooks.py:284`, `387`, `606`); measured per hook, `focus_feedback` and `autofocus_per_position` refuse on incomplete Z while exposure-only `intensity_adaptive` still emits. Also: `_saved_frames`/`_hook_exposures` were write-only and a stub reservation made the hook enter its `if self._reservation is not None` branch while enforcing no budget (now disclosed in the envelope, per the 2026-08-17 decision); and a hardcoded five-name allowlist had pre-empted `_adaptive_hook_export`, so both plugin hooks were refused with *"inlining HookBase"* — a sentence **false about everything** once four hooks inline fine. **Round 2's single finding was the runner's own failing test, and it was right**: the seed preflight was gated on whether the *hook* takes a guard rather than whether the *plan* moves an axis, so a `position_filter` grid emitted XY moves and a nominal-Z `set_position` with no preflight and no guard — *laxer* than the tool it reproduces, the inverse of `CLAUDE.md`'s rule and what 63a's first round was rejected for. `snr_observer` deliberately unchanged (design/80 item 3: no new bound requirements on observation-only calls). **Watch-it-fail reproduced independently at every round**, never taken from a runner's table: 21 cases on `660bd28`, and revision 2's on `64ee74a` with the failure text matching verbatim — `('write_exposure', 20) != ('check_xy', 1, 2)`, the pre-fix script writing to hardware before any guard check. The runner reported 4 failures; **all four were its sandbox** (socket-bind `PermissionError`, a wheel-build subprocess) and none reproduced. Coordinator suite **2950 passed / 99 skipped / 0 failed**, reconciling as 2916 + 21 + 12 + 1. Hookless export byte-identical throughout. | **Round 1: 1/8, stood down at limb 0. Every cause was the gate's; no product evidence was produced.** The control worked exactly as designed — limb E PASSed, nothing cascaded, NOT EXERCISED was not counted as a pass and the exit was nonzero — but the trip measured nothing. **The gate guessed its sweep**: `--z-range-um 4.0` against a stage sitting at Z=1.0 with `z_min = 0.0`, so the sweep reached -1.0 and limb 0 refused. That is *a literal command must be established, never guessed* applied to a parameter — the gate held the bounds and the current Z at that moment and could have chosen. Worse, the runbook told the operator to re-run with `--z-range-um 2`, which at Z=1.0 lands **exactly on the inclusive bound**, so it would have 'passed' while leaving the hook no room. `choose_sweep` now derives centre and range from the envelope with a margin, shrinks for a narrow envelope, and only reports NOT EXERCISED when nothing fits. **And limb G was lost to a coupling the gate itself introduced**: a checksum over an emitted file, reaching no microscope, had been made to `need("guard")` while its checksum bug was being fixed — so a stand-down for an unrelated reason took bridge-free evidence with it. *A limb that reports NOT EXERCISED as a machine limitation is a place to suspect the instrument.* **The fix for that then broke a third thing**, caught by the selftest rather than by a second trip: it loaded the safety config before the control and re-raised `load_safety_config_or_exit`'s `SystemExit`, so a machine without a config would have produced no `score.json` at all. The load is now lazy, after the control, and never exits. Eight new selftest cases carry the demo machine's own numbers and all eight fail against the pre-round-2 gate. **Round 2: 8/8 PASS on the block's central claim.** The gate chose its own sweep — 4.00 um centred on 2.40, moved up from the stage's 1.00 for headroom inside 0.0..100.0 — and every limb ran. The evidence, scored from artifacts: **the live and standalone hook logs are identical field by field**, position, coordinates, best Z, convergence *and* the convergence warning, which carries the computed argmax (`best 0.400 um sits at a sweep boundary`); **14 real autofocus snaps** in the child process; the exported script carries the machine's real `_LIMITS` (`z_um: (0.0, 100.0)`), fires `check_xy`/`check_z`/`check_exposure` for the whole seed plan **before** its first `core.set_exposure`, injects `ctrl`/`guard`, and imports nothing from `microclaw`; the hookless export unchanged at `sha256 9a56d7a9…` over 460 lines. **Three numbers from independent places agree**: `frames_planned 16`, `hook_exposures 14`, `frames_accounted 2` — 14 + 2 = 16. And the four real NDTiff datasets each hold 2 uniquely indexed frames keyed `{time, position, z}`, live and standalone equal. **But the verdict overstated three limbs, found by scoring the artifacts by hand.** Limb C credited `best_z_um`, which on a contrast-free field is the *restored entry Z* in both arms — agreement on a number neither run chose; it now compares whole records. Limb F asserted nothing beyond an exit code, so it could not fail (58a); it now requires log equality, and states that this hook logs once per exposure *change*, so one record for two frames is correct. Limb A was named *focuses at every position* **and did not focus** — both arms reported `converged: false`, correctly, because DemoCamera's frames carry no Z-dependent contrast; renamed to *sweep runs*, and it now requires that a non-convergence is never silent. A new limb H scores the four datasets the gate had collected and never looked at. All of it **re-scored off-rig against round 2's own artifacts and passing**, so no third trip was needed. Convergence on a real focus curve is **R101**, closable as a passenger on the next M2 or Nikon trip. | `c7d4e41` merged 2026-09-07; branch deleted locally and on `origin`, worktree removed, notes in `design/prompts.md`. **80c is untouched.** |
-| 80c | `design80/80c-probe-array-shape` (probe step only) | Start commit `85ed749` (2026-09-07). **The probe ran on M2 on 2026-09-07 and did not settle the question** — artifacts in `80c-probe-m2/`. It established that the machine can host 80c (six autofocus methods, `OughtaFocus` among them, selected through the product's own accessor) and that `af.get_property_names()` **answered**, returning a `[Ljava_lang_String;`. The probe's own drain could not read it: `_drain_java_iterable` drives `iterator()`, which is a Java **Collection**'s contract, and MM's autofocus API returns arrays. So its printed verdict — *the returned method does not expose its property names* — is the instrument's failure reported as the machine's, and 80c's checklist is still unwritable. **All four of the probe's pre-flight fakes returned a collection for that call**, because that is what the drain consumes: a fake written from the caller instead of the dependency, which is this document's own gate rule applied one level down, and they were never committed. This block corrects the probe, ships its selftest beside it, and asks for one more bridge-only run. It changes nothing in `microclaw/`: whether the drain should learn arrays is 80c's decision to make from the answer. | `b9f19f7` + `b826ed4` + `a1d72bc` (1 Codex start, 2 revisions) + a coordinator commit. Baseline **2950 passed / 99 skipped**, measured in the runner's own venv. **Round 1's two serious findings were proven by executing the runner's own code, not by reading it.** An empty read was credited as a working route, so a probe whose every reader returned nothing printed `settings_readable — 0/0 values read. 80c can print these settings` and, three lines later, the guessed-name fallback; the selftest already carried an `empty=` parameter that no case used, which is the tell. And a per-element type diagnostic could abort the measurement it decorated: with one unconvertible element, the product's drain succeeded and its answer sat recorded in the findings while the transcript said *the autofocus manager itself is unreachable* and the run reached no verdict at all — this block's own failure mode, one level down. Round 2 restored the pre-fix probe's *"The probe itself failed. That is a probe defect, not an answer about the plugin"* handler, which round 1 had deleted; it is the single most load-bearing line in the file, and it now also preserves the findings gathered before the crash. Also fixed: an unreadable transcript (the legibility of M2's output is what made the original defect diagnosable after the fact), a lost `default=str` that would discard the whole JSON at the end of a rig trip, two routes' disagreeing answers silently unioned, and a silent partial in the secondary cross-check. **Watch-it-fail reproduced independently at every round**, never taken from a runner's table: the coordinator reproduced M2's exact failure off-rig before the runner reported anything (`AttributeError: '[Ljava_lang_String;' object has no attribute 'iterator'` against a fake built from `bridge.py`), then checked out each prior commit under the current selftest — 6 cases fail on `b9f19f7`, 3 on `b826ed4`, each for its stated reason. Selftest **22/22, 0 not exercised**, including a control that drives the `d08ab45` probe and asserts it prints the wrong verdict. The runner reported 4 suite failures; **all four were its sandbox** (three loopback `PermissionError` binds and a wheel-build subprocess) and all four pass outside it. Coordinator suite unchanged. The baseline's warning count was 4 on the venv's first run and 3 on both later runs; pass/skip are stable and the diff touches three `design/` files only, so it is not caused by this change — **cause not identified**, and not worth instrument time. | | |
+| 80c | `design80/80c-probe-array-shape` (probe step only) | Start commit `85ed749` (2026-09-07). **The probe ran on M2 on 2026-09-07 and did not settle the question** — artifacts in `80c-probe-m2/`. It established that the machine can host 80c (six autofocus methods, `OughtaFocus` among them, selected through the product's own accessor) and that `af.get_property_names()` **answered**, returning a `[Ljava_lang_String;`. The probe's own drain could not read it: `_drain_java_iterable` drives `iterator()`, which is a Java **Collection**'s contract, and MM's autofocus API returns arrays. So its printed verdict — *the returned method does not expose its property names* — is the instrument's failure reported as the machine's, and 80c's checklist is still unwritable. **All four of the probe's pre-flight fakes returned a collection for that call**, because that is what the drain consumes: a fake written from the caller instead of the dependency, which is this document's own gate rule applied one level down, and they were never committed. This block corrects the probe, ships its selftest beside it, and asks for one more bridge-only run. It changes nothing in `microclaw/`: whether the drain should learn arrays is 80c's decision to make from the answer. | `b9f19f7` + `b826ed4` + `a1d72bc` (1 Codex start, 2 revisions) + a coordinator commit. Baseline **2950 passed / 99 skipped**, measured in the runner's own venv. **Round 1's two serious findings were proven by executing the runner's own code, not by reading it.** An empty read was credited as a working route, so a probe whose every reader returned nothing printed `settings_readable — 0/0 values read. 80c can print these settings` and, three lines later, the guessed-name fallback; the selftest already carried an `empty=` parameter that no case used, which is the tell. And a per-element type diagnostic could abort the measurement it decorated: with one unconvertible element, the product's drain succeeded and its answer sat recorded in the findings while the transcript said *the autofocus manager itself is unreachable* and the run reached no verdict at all — this block's own failure mode, one level down. Round 2 restored the pre-fix probe's *"The probe itself failed. That is a probe defect, not an answer about the plugin"* handler, which round 1 had deleted; it is the single most load-bearing line in the file, and it now also preserves the findings gathered before the crash. Also fixed: an unreadable transcript (the legibility of M2's output is what made the original defect diagnosable after the fact), a lost `default=str` that would discard the whole JSON at the end of a rig trip, two routes' disagreeing answers silently unioned, and a silent partial in the secondary cross-check. **Watch-it-fail reproduced independently at every round**, never taken from a runner's table: the coordinator reproduced M2's exact failure off-rig before the runner reported anything (`AttributeError: '[Ljava_lang_String;' object has no attribute 'iterator'` against a fake built from `bridge.py`), then checked out each prior commit under the current selftest — 6 cases fail on `b9f19f7`, 3 on `b826ed4`, each for its stated reason. Selftest **22/22, 0 not exercised**, including a control that drives the `d08ab45` probe and asserts it prints the wrong verdict. The runner reported 4 suite failures; **all four were its sandbox** (three loopback `PermissionError` binds and a wheel-build subprocess) and all four pass outside it. Coordinator suite unchanged. The baseline's warning count was 4 on the venv's first run and 3 on both later runs; pass/skip are stable and the diff touches three `design/` files only, so it is not caused by this change — **cause not identified**, and not worth instrument time. | **The probe ran on M2 on 2026-09-07 and answered: `settings_readable`, 13 of 13 settings enumerated and read.** Artifacts `80c-probe-m2-round2/`. Scored from the artifact rather than the verdict: the values were read twice by independent paths — `getPropertyValue(name)` and the `PropertyItem[]` from `getProperties()` — and **agree on all 13 in the same order**, with no diagnostic fallback, no truncation and no `probe_defect`. Every route reported honestly: the product's drain failed with M2's original `AttributeError`, `java.lang.reflect.Array` returned the names, and `Arrays.asList` failed with `Incorrect arguments. Expected java.lang.Object[]` — the varargs overload risk round 1 had flagged as unsettled, now settled as an answer rather than an error, which is what the probe was rebuilt to do. **Two things the trip bought beyond the yes/no**: the reader must be `reflect.Array` (neither the drain nor `asList` is an option), and the snapshot is worth printing at all — `SearchRange_um=10` / `Tolerance_um=1` are *not* the built-in sweep's 15/0.5, which is precisely the substitution §80c forbids. **Caveat stated because it is visible in the data**: the rig's hardware was off, and the only two hardware-referencing settings (`FocusDrive`, `Channel`) came back empty — readability is settled either way, what a live snapshot *contains* is not, n=1. **One instrument defect the run exposed and the coordinator fixed**: PowerShell's UTF-16 redirect mangled an em-dash, so the single line the whole run exists to produce came back as `settings_readable u Names read via` — a rig-facing transcript must survive `> file 2>&1` on Windows. Fixed to ASCII with a selftest case that asserts the transcript is ASCII-encodable across four scenarios; watched failing first (`'ascii' codec can't encode character '\u2014'`). Selftest **23/23**. | Merged as the probe step of 80c; `design/80-block80c-oughtafocus-probe.py` and its selftest stay in the tree, and the probe is now the reusable *can this machine host the gate* check. **80c's implementation checklist is written from the answer** and the block is unassigned. |
