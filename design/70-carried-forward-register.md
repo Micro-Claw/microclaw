@@ -1345,6 +1345,20 @@ One driven session or one standalone script run on the Windows demo machine. Che
 - **Effort** — MEDIUM
 - **Provenance** — block 80a's gate step 2, answered by the operator 2026-09-06. The step was written as *"either the entry is wrong or the citation was fabricated"*; the answer was the first, plus a cause neither branch anticipated.
 
+### R101 — The emitted autofocus hook has never converged on a real focus curve
+
+**Block 80b's demo gate proved the emitted hook runs, fires under real AcqEngJ and logs identically to the live run — but on a camera whose frames carry no Z-dependent contrast. Both arms reported `converged: false`, and the exported sweep has still never found a focus maximum.**
+
+- **What was measured** (2026-09-07, demo machine, round 2, 8/8): two live hooked autofocus sweeps and two standalone ones; `hook_exposures = 14` real snaps in the child process; live and standalone hook logs **identical field by field**, warning text and computed argmax included; four real NDTiff datasets with 2 uniquely indexed frames each and live/standalone axes equal. The mechanism is established.
+- **What was not** — convergence and restoration-after-a-real-peak. Every sweep hit `Fine focus peak is at the edge of the searched Z range … Z was NOT moved (restored to 2.400 µm)`, which is the correct answer for a contrast-free field. So `best_z_um` was the **restored entry Z** in both arms: strong agreement, but agreement on a number neither run chose. design/80's validation item 4 asked for a **peaked** field and a flat one; only the flat-equivalent was reachable.
+- **Why the demo machine cannot close it** — DemoCamera synthesises frames with no Z dependence, so no `--z-range-um` will produce an interior maximum. This is a property of the camera, not a limitation of the gate; re-running it there would reproduce the same null.
+- **How it gets closed for free** — `design/80-block80b-demo-gate.py` runs unchanged against a rig with real optics. On **M2 or the Nikon**, with beads or any structured field, limbs A and C would additionally report `converged: true` and a `best_z_um` that differs from the entry Z, and limb C's field-by-field comparison then agrees on a value both arms actually computed. Do not book a session for it: run it as a passenger on the next trip booked for something else.
+- **Importance** — MEDIUM. The export contract is established; what is unproven is that the inlined `coarse_then_fine_autofocus` picks the *same peak* as the live one when there is a peak to pick. design/36 spent a rig gate establishing that this algorithm's **normaliser** was what made the metric minimise at focus, so agreement on a real curve is worth having.
+- **Where** — RIG:M2 or RIG:nikon, as a passenger.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — coordinator scoring of block 80b's round-2 artifacts, 2026-09-07. The gate reported PASS; this row is what the artifacts said that the verdict did not.
+
 ### R27 — The agent started live view unprompted on a laser-dose rig
 
 **The agent may start live view without being asked, potentially exposing a sample continuously when camera triggers drive lasers.**
