@@ -4,7 +4,7 @@ Fakes follow installed pyjavaz/bridge.py, not the probe's consumers. Static
 helper success models Java reflection/Arrays contracts; actual overload matching
 on a given bridge version remains a rig measurement, especially for asList.
 """
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
 import io
 import json
@@ -70,7 +70,7 @@ class NotExercised(Exception):
 def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
         installed=True, unreachable=False, path=PROBE, guessed=True,
         shadow_names=False, properties_raise=False, empty=False, opaque_methods=False,
-        opaque_names=False, disagreement=False, unexpected_json=False):
+        opaque_names=False, disagreement=False, unexpected_json=False, probe_defect=False, partial_properties=False):
     names = [] if empty else [TextShadow() if shadow_names else 'SearchRange_um', 'Exposure']
     if opaque_names:
         names.append(Opaque())
@@ -125,6 +125,29 @@ def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
         if classpath == 'java.lang.reflect.Array':
             return SimpleNamespace(get_length=lambda obj: len(storage[obj]),
                                    get=lambda obj, index: storage[obj][index])
+        if classpath == 'java.util.Arrays' and partial_properties:
+            # bridge.py:793-794: any later iterator call can raise a bridge
+            # exception. First (product) traversal succeeds; inspection fails.
+            class InterruptedCollection(Collection):
+                traversals = 0
+
+                def iterator(self):
+                    self.traversals += 1
+                    iterator = super().iterator()
+                    if self.traversals == 2:
+                        original_next = iterator.next
+                        count = 0
+
+                        def next_item():
+                            nonlocal count
+                            count += 1
+                            if count == 2:
+                                raise RuntimeError('PropertyItem inspection interrupted')
+                            return original_next()
+                        iterator.next = next_item
+                    return iterator
+            return SimpleNamespace(as_list=lambda obj: InterruptedCollection(storage[obj])
+                                   if obj is items else Collection(storage[obj]))
         if classpath == 'java.util.Arrays':
             return SimpleNamespace(as_list=lambda obj: Collection(['Channel'] if disagreement and obj is array else storage[obj]))
         raise AssertionError('unexpected static class ' + classpath)
@@ -134,6 +157,11 @@ def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
         spec = importlib.util.spec_from_file_location('probe_under_test', path)
         probe = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(probe)
+        if probe_defect:
+            class BrokenRoutes(dict):
+                def items(self):
+                    raise RuntimeError('injected measurement defect')
+            probe.ROUTES = BrokenRoutes(probe.ROUTES)
         if unexpected_json:
             original_finish = probe.finish
 
@@ -147,8 +175,10 @@ def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
         stdout = io.StringIO()
         with patch.object(controller, 'MicroscopeController', return_value=SimpleNamespace(plugins=plugins)), \
              patch.object(controller, '_new_static_java_class', side_effect=static), \
-             patch.object(sys, 'argv', argv), redirect_stdout(stdout):
-            assert probe.main() == 0
+             patch.object(sys, 'argv', argv), redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+            status = probe.main()
+            assert status == (2 if probe_defect else 0), f'unexpected exit status {status}'
+        assert out.exists(), 'findings JSON was not written'
         return json.loads(out.read_text(encoding='utf-8')), stdout.getvalue(), calls, helpers
 
 
@@ -269,6 +299,28 @@ def route_disagreement():
     assert {'SearchRange_um', 'Exposure', 'Channel'} <= set(calls)
 
 
+def unexpected_measurement():
+    data, output, _, _ = run(probe_defect=True)
+    assert 'The probe itself failed. That is a probe defect, not an answer' in output
+    assert 'RuntimeError: injected measurement defect' in data['probe_defect']
+    assert data['get_property_names']['answered']
+    assert data['all_autofocus_methods']['value'] == ['OughtaFocus', 'Other']
+
+
+def truncated_properties():
+    data, output, _, _ = run(partial_properties=True)
+    assert data.get('properties__Arrays.asList__truncated'), 'partial PropertyItem enumeration not marked truncated'
+    assert 'TRUNCATED' in output, 'truncation missing from transcript'
+    assert len(data['properties__Arrays.asList']['value']) == 1
+    assert not data['properties__Arrays.asList__inspection']['answered']
+    assert data['verdict'] == 'settings_readable'
+
+
+def header_first():
+    _, output, _, _ = run()
+    assert output.startswith('Tree:'), 'version lines precede the transcript header'
+
+
 def control():
     try:
         old = subprocess.run(['git', 'show', 'd08ab45:design/80-block80c-oughtafocus-probe.py'],
@@ -307,6 +359,9 @@ def main():
         ('readable transcript', readable_transcript),
         ('unexpected JSON object', json_resilience),
         ('route disagreement', route_disagreement),
+        ('unexpected measurement preserves findings', unexpected_measurement),
+        ('partial PropertyItem enumeration disclosed', truncated_properties),
+        ('header before versions', header_first),
         ('pre-fix control fires', control),
     ]
     failed = 0

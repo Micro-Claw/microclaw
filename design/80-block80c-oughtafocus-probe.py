@@ -16,6 +16,7 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import sys
+import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -100,6 +101,10 @@ def drain(obj, label, convert=True):
         FINDINGS[label + '__diagnostic_fallback'] = True
         print(f'  {label}: diagnostic inspection failed; fell back to the product drain result.')
         return product
+    if not convert and not inspected:
+        FINDINGS[label + '__truncated'] = True
+        print(f'  {label}: TRUNCATED — inspection stopped after {len(elements)} items; '
+              'the following items are only a partial cross-check.')
     return elements
 
 
@@ -126,19 +131,38 @@ def array_read(obj, label, port, route, convert=True):
     return items
 
 
-def main():
+def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=4827)
     parser.add_argument('--plugin', default='OughtaFocus')
     parser.add_argument('--out', type=Path, default=Path('oughtafocus-probe.json'))
     parser.add_argument('--probe-names', default=DEFAULT_NAMES,
                         help='comma-separated guessed names; used only without enumerated names')
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main():
+    args = _parse_args()
     FINDINGS.clear()
+    status = 0
+    try:
+        _measure(args)
+    except Exception:
+        FINDINGS['probe_defect'] = traceback.format_exc()
+        traceback.print_exc()
+        print('\nThe probe itself failed. That is a probe defect, not an answer '
+              'about the plugin; report it as such. The findings collected before '
+              'the failure are written below and are still worth sending back.')
+        status = 2
+    finish(args)
+    return status
+
+
+def _measure(args):
     FINDINGS.update(port=args.port, disclosure_required=True)
+    print(f'Tree: {ROOT}\nAsking about {args.plugin!r} on port {args.port}')
     for package in ('pycromanager', 'pyjavaz'):
         ask('version__' + package, lambda package=package: version(package))
-    print(f'Tree: {ROOT}\nAsking about {args.plugin!r} on port {args.port}')
     ctrl = ask('controller', lambda: controller.MicroscopeController(port=args.port), quiet=True)
     print('\n1. What autofocus methods does this Micro-Manager have?')
     manager = ask('autofocus_manager', lambda: ctrl.plugins._studio.get_autofocus_manager(), quiet=True)
@@ -146,14 +170,14 @@ def main():
     methods = ask('all_autofocus_methods', lambda: drain(raw_methods, 'methods'))
     if methods is None:
         print('The autofocus manager itself is unreachable or its methods could not be read.')
-        return finish(args)
+        return
     if args.plugin not in methods:
         print(f'{args.plugin!r} is NOT installed. Installed: {methods}')
-        return finish(args)
+        return
     print('\n2. Select through the product\'s own accessor.')
     af = ask('get_autofocus_method', lambda: ctrl.plugins.get_autofocus_method(args.plugin))
     if af is None:
-        return finish(args)
+        return
     print('\n3. Does the returned method expose its own settings?')
     obj = ask('get_property_names', lambda: af.get_property_names())
     names = []
@@ -225,7 +249,7 @@ def main():
             label = 'guessed__' + name
             ask(label, lambda name=name, label=label: as_text(label + '__raw', af.get_property_value(name)))
             FINDINGS['guessed_names'][name] = FINDINGS[label]
-    return finish(args)
+    return
 
 
 def finish(args):
