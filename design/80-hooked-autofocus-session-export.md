@@ -467,6 +467,129 @@ operator greps M2's `~/.microclaw/knowledge.yaml` for it. **If no such entry
 exists the claim was fabricated**, which is a different finding from a stale
 entry and is worth recording either way; only a found entry gets corrected.
 
+## Block 80b — implementation checklist
+
+Off-rig to implement and test; a demo-machine replay closes it. `microclaw/tools.py`
+and `tests/test_session_script_export.py`. **80c is not in this block** —
+`autofocus_mm_plugin` and `mm_plugin_analyzer` keep their present refusal, whose
+wording changes only in 80c.
+
+Everything below was measured by the coordinator on `ac2a582`, not read off the
+design. Where a number appears, it came from running the thing.
+
+### The four hazards, measured
+
+1. **The wrapper carries no `hook_strategy`.** `run_multiposition_with_autofocus`
+   records none; `_emit_multiposition_with_autofocus` synthesizes
+   `hook_strategy="autofocus_per_position"` into a forwarded `RecordedParams`
+   (`tools.py:497`) at emit time. **Verified by export**: such a session refuses
+   with `('autofocus_per_position')` while `"hook_strategy" in recorded params`
+   is `False`. A predicate reading the recorded field answers False for that
+   whole session — today that is invisible because it refuses anyway; the moment
+   80b lifts the refusal it emits **with no hook runtime and no safety limits,
+   silently.** This is the single most dangerous way to get item 1 wrong.
+2. **`autofocus_per_position` defines `post_hardware_hook_fn` and nothing else**,
+   while `_emit_multiposition` attaches only `image_process_fn` (`tools.py:763`).
+   Read out of `PRECODED_HOOK_REGISTRY`, not from prose:
+
+   | hook | callbacks | `__init__` takes |
+   | --- | --- | --- |
+   | `autofocus_per_position` | `post_hardware_hook_fn` **only** | `ctrl`, `guard` |
+   | `focus_feedback` | `image_process_fn` | `ctrl`, `guard` |
+   | `intensity_adaptive` | `image_process_fn` | `ctrl`, `guard` |
+   | `position_filter` | `image_process_fn` | **neither** |
+   | `snr_observer` | `image_process_fn` | `guard` — the only `_observation_only` |
+
+   So lifting the `_observation_only` gate (`tools.py:653`) alone constructs an
+   autofocus hook the acquisition never calls: **the run reports success and the
+   frames are unfocused**, which is worse than the refusal it replaced. And
+   `position_filter` taking neither argument means injection stays
+   signature-driven, as `_adaptive_hook_export` already does it.
+3. **The guard stub cannot carry a Z-moving hook.** `_emit_multiposition` hands
+   `_adaptive_hook_export` a `SimpleNamespace(analysis_min_snr=None)`, which has
+   no `check_z`. `_export_guard_source(limits)` already renders a portable one.
+4. **`autofocus_used` is true for a call whose emitter then refuses.** Measured,
+   one position, one hook each:
+
+   | fixture | today |
+   | --- | --- |
+   | hookless multiposition | emits, **460 lines**, `sha256 9a56d7a9ca1e93e1…` |
+   | `autofocus_per_position` | refuses, and still emits **449 lines** — every one a helper nothing calls |
+   | `focus_feedback` / `intensity_adaptive` / `position_filter` | refuse in **18 lines** |
+   | `snr_observer` | emits **3743 lines**, through the observation branch's *local* helper inlining |
+
+   The 449-vs-18 gap is the whole of item 2: the dead block belongs to
+   `autofocus_used`, which only that hook sets.
+
+### The work
+
+1. **One capability decision, consumed at both sites.** `adaptive_used`
+   (`tools.py:1978`) and the `_export_safety_limits` loop (`tools.py:2041`)
+   repeat the same condition; changing one and not the other leaves the limits
+   computed and unattached, and the renderer then refuses with "the record
+   carries no export-time safety limits". Derive both from one decision, and
+   rename `adaptive_used` for the capability it actually selects. **The decision
+   must be true for the wrapper of hazard 1**, whose recorded params name no
+   hook — so it cannot be a plain read of `hook_strategy`/`hook_action_plan`.
+2. **Emit each helper once.** The observation branch inlines
+   `_adaptive_runner_source` and `_portable_log_path_source` locally; broadening
+   global inclusion without consolidating duplicates them. Base inclusion on
+   **rendered capabilities, including refusals**, so a refused call stops
+   dragging in the 449-line block — and once autofocus emits, its helpers must
+   appear **exactly once**. Do not assert their absence merely because the
+   incident's export did not use them.
+3. **Give the hook the guard it needs.** Supply `_export_guard_source(limits)`
+   where the hook requires it. Keep the observation-hook calibration-threshold
+   refusal (`tools.py:664`) and do not impose new bound requirements on
+   observation-only calls. Replace the blanket `_observation_only` gate only for
+   a hook whose whole execution contract is available.
+4. **Wire the callbacks from the shared triple.** `_emit_adaptive` already emits
+   `getattr(hook, ..., None)` over the three (`tools.py:1738–1740`, `1830–1832`)
+   and the live runner selects the same three by `hasattr` (`tools.py:4417–4423`),
+   binding the reservation first. Read the emitted set off the live one; **never
+   enumerate callbacks per hook** — that assumption is how the one-callback gap
+   got here. Preserve `bind_reservation`, frame accounting and per-position logs.
+
+Target `autofocus_per_position`, `focus_feedback`, `intensity_adaptive` and
+`position_filter`. Preserve event positions and axes, acquisition order,
+nominal-Z behaviour, post-hardware callback timing, exact range/step/settling
+defaults, convergence and restoration, and channel/laser preflight effects.
+**An emitted step must not be stricter than the tool it reproduces** — check the
+settlement path the emitted sweep takes against the live one. Composed and saved
+hooks stay refused. Do not re-write hook or autofocus logic in the emitter:
+everything is `inspect.getsource` of the code that ran.
+
+### Acceptance
+
+- **The hookless multiposition export is byte-identical**, against the recorded
+  `sha256 9a56d7a9ca1e93e173cb4358712d94f4b837dfcfe7a933010af9f4df033b0826`.
+- A session using `run_multiposition_with_autofocus` — recording **no**
+  `hook_strategy` — emits with the hook runtime and safety limits attached.
+  This is hazard 1 and it needs its own test.
+- **Execute, do not grep.** Nine uniquely indexed final frames and nine autofocus
+  callbacks/log entries per grid, XY movement before autofocus and capture after.
+  The fake `Acquisition` must **dispatch** rather than be subclassable
+  (`CLAUDE.md`'s ninth engine contract) and must fire `image_saved_fn` from
+  `__exit__`, not from `acquire()` (the eighth). A fake that gets either wrong
+  is testing our assumption.
+- Live/export comparison per hook: focus-feedback state and corrections,
+  intensity-driven exposure changes, position-filter discards, per-hook logs and
+  failure paths. Peaked and flat focus fields; bounds and settlement failures.
+- `test_observation_only_hook_emits_hardware_but_decision_hook_refuses` pins
+  today's behaviour and must change; say what it becomes and why.
+- Watch every new test fail, and for an order/structure test mutate that one
+  property instead.
+
+### 80b gate
+
+Demo machine, and it must **drive a real hooked multiposition acquisition and
+run its exported script standalone**, comparing the two — block 77b's limb F
+shape. Ship it as a program with a bridge-shaped selftest
+(`design/55-gate-probe-selftest.py`): a `MagicMock` hands back Python-friendly
+objects and hides the collection defect that failed design/59a on the rig. The
+runbook is written when the implementation is reviewed, from the gates that have
+already run on that machine.
+
 ## Run ledger
 
 Baseline before the notebook: `main` `caa3554`, coordinator-run suite
@@ -485,5 +608,5 @@ refusal**. 439 of the 459 lines are the unused stage-move contract, which is
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 80a | `design80/explicit-incomplete-export` | `25ee645` (2026-09-06), worktree `../microclaw-80a`, baseline **2908 passed / 99 skipped / 4 warnings** measured *in the runner's own venv* — the primary checkout reports 2, and the extra pair is a `starlette`/`anyio` `DeprecationWarning` from this venv's freshly resolved `[serve]` extras, checked rather than assumed before being handed over. | `3f4e9f6` (UNREVIEWED) + `fa8aed4` + `6cd9c28`. **The Codex start turn hit its provider usage limit after its edits had landed and before it produced any report**, so `3f4e9f6` is preserved per the workflow with a message saying plainly that nothing about it had been reviewed. It had, by luck of timing, already run its own pre-fix check — but **it had never run the full suite, and the suite was red**: the new fixture read did not name its encoding and `test_suite_integrity::test_test_text_io_always_names_its_encoding` failed. That is the finding the workflow's *re-run the suite yourself* step exists for. **Four findings, all fixed by the coordinator on the branch** (step 7, sized to the finding; Codex was out of credits until 14:59 and every one was small). The substantive one: a refusal reason reached both `not_emitted_calls` and the artifact's printed disclosure **unfolded**, while `skipped_failed_calls` had folded through `one_line()` since 2026-08-17 — and the partial-outcome reason is built from recorded per-position errors, so a Java stack trace really does splice newlines through the one disclosure an exported script has. Demonstrated before being fixed. Then `1 calls` in both the status and that disclosure; and `skipped_failed_calls` carrying no `tool_use_id` while `not_emitted_calls` did — **conflating those two lists is the entire incident**, and this session names `run_multiposition_acquisition` three times, so without an id an entry cannot be lined up against `recorded_calls` at all. Both lists now have one shape. **Watch-it-fail was reproduced independently, never taken from the runner's file**: all seven start-turn tests on `25ee645` (`KeyError: 'not_emitted_calls'`, the old status string, and `['Core', 10, 20]` — `Core` constructed with no disclosure ahead of it), and the new folding test on `3f4e9f6`. Coordinator suite **2916 passed / 99 skipped**, reconciling as 2908 + 7 + 1, nothing else moved. Scored from the artifact: the fixture now returns `complete: false`, a status naming 2 calls, and two `not_emitted_calls` with ids — while the failed first attempt sits alone in `skipped_failed_calls` with its own id. | **PASS, and the finding is the gate's own step 2** — `design/80-block80a-gate.md`. Deliberately small: the block adds no emitter capability, so nothing needs driving and everything deterministic was settled off-rig. **Step 2 was written as a false dichotomy — *either the entry is wrong or the citation was fabricated* — and the answer was neither branch as stated.** The operator supplied M2's `knowledge.yaml`: `devices.export_session_script_limitation` is real and dated **2026-09-03, two days before this session**. It lists ten tools as dropped; **eight were behaving correctly** — seven `@emits_nothing` emitting `# No hardware-routine effect.` and one the documented permanent `@refuses` — checked on `fa8aed4`, with `git log -S` showing no decorator churn since 2026-09-01, so it held on the day. So an *earlier* session made the same reading error, saved it, and the beads session recited it back, `WORKAROUND: hand-write the pipeline` and `Worth reporting upstream` included. That is why no read-back call appears between the export and the diagnosis. **And the rig attribution was ours**: `devices/` refuses an entry without `observed_on` and `save_knowledge` resolves it from live identity, so a program limitation with no category to live in is stored as a fact about the camera — register row **R100**, opened, not fixed here. The run3 artifact is not in the archive, so what is established is the entry's characterisation, not that session's export. **The replay arm was declined by the operator** (2026-09-06): 80a therefore merges on off-rig evidence with the model-behaviour arm unmeasured, recorded as declined rather than passed. Nothing was written to any knowledge base; a drafted replacement entry sits in the gate doc. | `7ddcf11` merged 2026-09-06; branch deleted locally and on `origin`, worktree removed, notes in `design/prompts.md`. Post-merge design gate done on `main`: the notebook's status line and 80a's knowledge-base paragraph reconciled to what step 2 actually found, and `R100` opened in the register. **80b and 80c are untouched by this block.** |
-| 80b | — | not started; follows 80a | | | |
+| 80b | `design80/hooked-multiposition-export` | `ac2a582` (2026-09-06), worktree `../microclaw-80b` | | | |
 | 80c | — | not started; needs Micro-Manager with OughtaFocus, so it waits on instrument time | | | |
