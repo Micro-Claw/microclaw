@@ -299,8 +299,25 @@ Preserve plugin selection, exception/log behavior, passive Z checking and abort
 on unsafe Z. Do not add a compensating Z movement after the plugin. Never
 substitute the built-in sweep's 15 µm/0.5 µm settings for the plugin's.
 
-On the settings snapshot: before settling for a declared external precondition,
-check on a rig whether the returned `AutofocusMethod` exposes
+On the settings snapshot: **this is 80c's first step and it is a probe, not a
+runner.** `design/80-block80c-oughtafocus-probe.py` asks the question and decides
+nothing; run it on a machine whose Micro-Manager has OughtaFocus, with the bridge
+on, and fold its answer in here before any checklist is written:
+
+```powershell
+uv run python design\80-block80c-oughtafocus-probe.py > oughtafocus-probe.txt 2>&1
+```
+
+It drives the product's own `PluginAccess.get_autofocus_method`, drains every
+collection through `_drain_java_iterable` (never `list()` — design/59a), moves no
+stage and spends no dose, and reports "this bridge does not expose that" as an
+answer rather than an error. Verified against bridge-shaped fakes on all four
+branches: settings readable, names exposed but values unreadable, no property
+names at all, and the plugin not installed. Writing 80c's checklist before the
+answer would be guessing at its central decision, which is what the 80b gate's
+guessed sweep already cost this notebook a trip for.
+
+The question it settles: whether the returned `AutofocusMethod` exposes
 `get_property_names()` / `get_property_value()` over the bridge. If it does, the
 settings are recordable and the emitted script can print them in its envelope;
 if it does not, say so in the doc and declare the precondition. Either way this
