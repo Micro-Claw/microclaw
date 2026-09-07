@@ -167,6 +167,45 @@ def emitter_probe(tools):
         return f"REFUSED: {exc}"
 
 
+def choose_sweep(z_now: float, z_min: float, z_max: float, requested: float,
+                 z_step: float) -> tuple[float, float, str]:
+    """Pick a sweep this rig can actually make, and say what was chosen.
+
+    The demo machine's first run stood the whole gate down because the default
+    4 um sweep, centred on a stage sitting at Z=1.0 with z_min=0.0, reached
+    -1.0. The gate holds the bounds and the current Z at that moment, so
+    guessing a range and telling the operator to lower it by hand was the
+    defect -- *a literal command must be established, never guessed*, applied
+    to a parameter. Only a rig where no usable sweep fits is NOT EXERCISED.
+
+    Returns (centre, range, note). Raises NotExercised when the envelope cannot
+    hold a sweep worth making.
+    """
+    span = z_max - z_min
+    floor = max(2.0 * z_step, 1.0)
+    if span < floor:
+        raise NotExercised(
+            f"this rig's Z envelope is {span:.2f} um ({z_min}..{z_max}), which "
+            f"cannot hold even a {floor:.2f} um sweep at --z-step-um {z_step}")
+    used = min(requested, span)
+    # Keep a tenth of the sweep clear of each bound rather than sitting exactly
+    # on it: the bounds are inclusive, so an on-the-boundary sweep "passes"
+    # while leaving the hook no room, which measures nothing.
+    margin = used / 10
+    low, high = z_min + used / 2 + margin, z_max - used / 2 - margin
+    if low > high:                      # no margin available; fall back to fit
+        low, high = z_min + used / 2, z_max - used / 2
+    centre = min(max(z_now, low), high)
+    notes = []
+    if used < requested:
+        notes.append(f"sweep shrunk from {requested} to {used:.2f} um to fit "
+                     f"a {span:.2f} um envelope")
+    if abs(centre - z_now) > 1e-9:
+        notes.append(f"centre moved from {z_now:.2f} to {centre:.2f} um for "
+                     f"headroom inside {z_min}..{z_max}")
+    return centre, used, "; ".join(notes) or "the stage was already clear of both bounds"
+
+
 def hookless_checksum(tools, guard, path: Path) -> tuple[str, int]:
     """The regression that matters most: a plain grid must not change at all.
 
@@ -223,13 +262,45 @@ def main():
     from microclaw.controller import MicroscopeController
     from microclaw.safety import SafetyGuard
 
+    loaded = {}
+
+    def safety():
+        """This machine's own config, loaded once, never exiting the process.
+
+        `load_safety_config_or_exit` raises SystemExit by design, so a gate that
+        lets it through prints no score at all. Called lazily and AFTER the
+        control, so a config problem can never take limb E's answer with it.
+        """
+        if not loaded:
+            try:
+                config = load_safety_config_or_exit(None)
+                loaded.update(config=config, guard=SafetyGuard(config.constraints))
+            except (SystemExit, Exception) as exc:  # noqa: BLE001 - reported
+                loaded.update(config=None, guard=None, error=str(exc) or type(exc).__name__)
+        return loaded["config"], loaded["guard"]
+
+    def score_hookless():
+        _, offline_guard = safety()
+        if offline_guard is None:
+            raise NotExercised(
+                "this machine's safety config could not be loaded: "
+                + loaded.get("error", "unknown"))
+        digest, lines = hookless_checksum(
+            tools, offline_guard, args.out / "G-hookless.py")
+        if digest != HOOKLESS_SHA:
+            raise AssertionError(
+                f"the hookless export is {digest} over {lines} lines, not the "
+                f"recorded {HOOKLESS_SHA}. A plain SMLM grid changed.")
+        return f"sha256 {digest[:16]}... over {lines} lines, unchanged"
+
+    # G is deliberately NOT in this list: it reaches no microscope, so a
+    # stand-down must not take its evidence with it.
     LATER = ("0 - bridge, camera, and a reachable field pair",
              "A - a live hooked autofocus grid focuses at every position",
              "B - the exported script is standalone and inlines the real hook",
              "C - the exported script RUNS and agrees with the live run",
              "D - post_hardware_hook_fn really fired under real AcqEngJ",
-             "F - an image hook round-trips too",
-             "G - the hookless grid is byte-identical")
+             "F - an image hook round-trips too")
 
     # E first, and it is the control: it needs no bridge and it FIRES on a
     # pre-80b tree, where this emitter refuses. 58a's lesson is that a limb
@@ -252,6 +323,8 @@ def main():
                             "detail": "stood down: limb E found no 80b in this build",
                             "fails_if": "n/a"})
             print(f"NOT EXERCISED: {name} - stood down by limb E")
+        limb("G - the hookless grid is byte-identical",
+             "80b having changed a plain multiposition export")(score_hookless)
         return finish(args)
 
     state = {}
@@ -259,22 +332,31 @@ def main():
     @limb("0 - bridge, camera, and a reachable field pair",
           "no ZMQ bridge, no camera, no XY or Z stage, or fields outside this rig's bounds")
     def limb_0():
+        parsed, guard = safety()
+        if parsed is None or guard is None:
+            raise NotExercised(
+                "this machine's safety config could not be loaded: "
+                + loaded.get("error", "unknown"))
         ctrl = MicroscopeController(port=args.port)
-        parsed = load_safety_config_or_exit(None)
-        guard = SafetyGuard(parsed.constraints)
         camera = str(ctrl.core.get_camera_device() or "")
         if not camera:
             raise NotExercised("Micro-Manager has no camera configured")
-        stage = str(ctrl.core.get_xy_stage_device() or "")
-        if not stage:
+        stage_device = str(ctrl.core.get_xy_stage_device() or "")
+        if not stage_device:
             raise NotExercised("Micro-Manager has no XY stage configured")
         focus = str(ctrl.core.get_focus_device() or "")
         if not focus:
             raise NotExercised("Micro-Manager has no focus device; autofocus cannot run")
         x0, y0 = float(ctrl.core.get_x_position()), float(ctrl.core.get_y_position())
         z0 = float(ctrl.core.get_position())
-        fields = [{"name": "gateA", "x_um": x0, "y_um": y0, "z_um": z0},
-                  {"name": "gateB", "x_um": x0 + args.step_um, "y_um": y0, "z_um": z0}]
+        stage = parsed.constraints.stage
+        z_centre, z_range, sweep_note = choose_sweep(
+            z0, float(stage.z_min), float(stage.z_max), args.z_range_um,
+            args.z_step_um)
+        state["z_range"] = z_range
+        fields = [{"name": "gateA", "x_um": x0, "y_um": y0, "z_um": z_centre},
+                  {"name": "gateB", "x_um": x0 + args.step_um, "y_um": y0,
+                   "z_um": z_centre}]
         for field in fields:
             try:
                 guard.check_xy(field["x_um"], field["y_um"])
@@ -284,25 +366,28 @@ def main():
                     f"{field['name']} at ({field['x_um']}, {field['y_um']}, "
                     f"{field['z_um']}) is outside this rig's configured bounds: {exc}"
                 ) from exc
-        # The sweep itself must fit the envelope, or limb A measures the hook's
-        # own skip path rather than a focus run.
-        try:
-            guard.check_z(z0 - args.z_range_um / 2)
-            guard.check_z(z0 + args.z_range_um / 2)
-        except Exception as exc:                    # noqa: BLE001 - reported
-            raise NotExercised(
-                f"a {args.z_range_um} um sweep centred on {z0} leaves this rig's Z "
-                f"bounds: {exc}. Lower --z-range-um and re-run."
-            ) from exc
+        # A check on choose_sweep's arithmetic now, not on the operator's
+        # parameter: if the edges it returned are outside the bounds it read,
+        # that is this gate's defect and it must say so loudly.
+        for edge in (z_centre - z_range / 2, z_centre + z_range / 2):
+            try:
+                guard.check_z(edge)
+            except Exception as exc:                # noqa: BLE001 - reported
+                raise AssertionError(
+                    f"choose_sweep returned centre {z_centre} range {z_range}, "
+                    f"whose edge {edge} is outside the very bounds it read: {exc}"
+                ) from exc
         workspace = getattr(parsed.constraints, "workspace_dir", None)
         root = Path(workspace) / "block80b" if workspace else args.out / "data"
         root.mkdir(parents=True, exist_ok=True)
         state.update(ctrl=ctrl, guard=guard, fields=fields, root=root,
-                     camera=camera, stage=stage, focus=focus, home=(x0, y0, z0),
-                     parsed=parsed)
-        return (f"camera {camera!r}, XY {stage!r}, focus {focus!r}; fields "
-                f"{args.step_um} um apart from ({x0:.1f}, {y0:.1f}, {z0:.1f}); "
-                f"saving under {root}")
+                     camera=camera, stage=stage_device, focus=focus,
+                     home=(x0, y0, z0), parsed=parsed)
+        return (f"camera {camera!r}, XY {stage_device!r}, focus {focus!r}; fields "
+                f"{args.step_um} um apart from ({x0:.1f}, {y0:.1f}); sweep "
+                f"{z_range:.2f} um centred on {z_centre:.2f} "
+                f"(Z envelope {stage.z_min}..{stage.z_max}, stage at {z0:.2f}) - "
+                f"{sweep_note}; saving under {root}")
 
     def need(*keys):
         for key in keys:
@@ -320,7 +405,7 @@ def main():
         call_input = dict(
             protocol="timelapse", positions=fields, save_dir=str(root),
             name="live_af", hook_strategy="autofocus_per_position",
-            hook_params={"z_range_um": args.z_range_um,
+            hook_params={"z_range_um": state["z_range"],
                          "z_step_um": args.z_step_um},
             log_path=str(log_path),
             protocol_params={"n_frames": 1, "interval_s": 0,
@@ -504,13 +589,9 @@ def main():
     @limb("G - the hookless grid is byte-identical",
           "80b having changed a plain multiposition export")
     def limb_g():
-        (guard,) = need("guard")
-        digest, lines = hookless_checksum(tools, guard, args.out / "G-hookless.py")
-        if digest != HOOKLESS_SHA:
-            raise AssertionError(
-                f"the hookless export is {digest} over {lines} lines, not the "
-                f"recorded {HOOKLESS_SHA}. A plain SMLM grid changed.")
-        return f"sha256 {digest[:16]}... over {lines} lines, unchanged"
+        # No need(): a checksum over an emitted file reaches no microscope, and
+        # must still be scored when the rig limbs stand down.
+        return score_hookless()
 
     # No teardown here on purpose: MicroscopeController has no close(), and
     # microclaw writes nothing to Micro-Manager on any exit path.

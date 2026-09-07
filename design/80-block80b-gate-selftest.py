@@ -253,12 +253,71 @@ def test_limb_g_is_not_coupled_to_the_bridge(gate):
 
     On the demo machine's first run G reported NOT EXERCISED because limb 0
     could not establish the rig -- evidence lost to a coupling this gate
-    introduced while fixing G's checksum.
+    introduced while fixing G's own checksum. Read structurally, not by
+    grepping for a marker comment that any edit can move.
     """
-    source = gate.GATE_PATH.read_text(encoding="utf-8") if hasattr(gate, "GATE_PATH") \
-        else (ROOT / "design" / "80-block80b-demo-gate.py").read_text(encoding="utf-8")
-    assert '"G - the hookless grid is byte-identical",' in source
-    later = source[source.index("LATER = ("):source.index("# Limb E first") if "# Limb E first" in source else source.index("stood_down =")]
-    assert "hookless grid" not in later, (
-        "limb G is still in the stand-down list, so limb E taking the gate down "
-        "would take G's bridge-free evidence with it")
+    import ast as _ast
+    tree = _ast.parse(GATE_PATH.read_text(encoding="utf-8"))
+    later = None
+    for node in _ast.walk(tree):
+        if (isinstance(node, _ast.Assign)
+                and any(getattr(x, "id", None) == "LATER" for x in node.targets)):
+            later = [e.value for e in node.value.elts
+                     if isinstance(e, _ast.Constant)]
+    assert later is not None, "the gate no longer has a LATER stand-down list"
+    assert not any("hookless" in name for name in later), (
+        f"limb G is still in the stand-down list {later}, so limb E taking the "
+        "gate down would take G's bridge-free evidence with it")
+    # And the rig limbs must still be there, or the stand-down reports nothing.
+    assert any(name.startswith("A ") for name in later)
+    assert any(name.startswith("C ") for name in later)
+
+
+def _synthetic_config(monkeypatch):
+    """Give the gate a config without one being installed on this machine."""
+    import microclaw.config as cfg
+    from microclaw.safety import SafetyConstraints, StageConstraints
+    parsed = SimpleNamespace(constraints=SafetyConstraints(stage=StageConstraints(
+        x_min=-1000, x_max=1000, y_min=-1000, y_max=1000, z_min=0.0, z_max=100.0)))
+    monkeypatch.setattr(cfg, "load_safety_config_or_exit", lambda _p=None: parsed)
+    return parsed
+
+
+def test_limb_g_scores_even_when_the_control_stands_the_gate_down(gate, tmp_path,
+                                                                  monkeypatch):
+    """Drive main() with a refusing control and require a PASSING G row."""
+    _synthetic_config(monkeypatch)
+    monkeypatch.setattr(gate, "emitter_probe", lambda _t: "REFUSED: pretend pre-80b")
+    monkeypatch.setattr(sys, "argv", ["gate", "--out", str(tmp_path / "ev")])
+    rc = gate.main()
+    assert rc == 1, "a stood-down gate must exit nonzero"
+    rows = {r["name"]: r for r in gate.RESULTS}
+    g = [name for name in rows if name.startswith("G ")]
+    assert g, f"no G row in a stood-down run: {list(rows)}"
+    assert rows[g[0]]["status"] == "PASS", rows[g[0]]
+    assert rows[[n for n in rows if n.startswith("A ")][0]]["status"] == "NOT EXERCISED"
+
+
+def test_a_missing_safety_config_does_not_kill_the_gate(gate, tmp_path, monkeypatch):
+    """load_safety_config_or_exit raises SystemExit BY DESIGN.
+
+    An earlier cut of this fix loaded it before the control and re-raised, so a
+    machine with no safety config would have produced no score.json at all --
+    the control's answer lost to an unrelated missing file.
+    """
+    import microclaw.config as cfg
+
+    def explode(_p=None):
+        raise SystemExit("No safety config at /nowhere/safety_config.yaml.")
+
+    monkeypatch.setattr(cfg, "load_safety_config_or_exit", explode)
+    monkeypatch.setattr(sys, "argv", ["gate", "--out", str(tmp_path / "ev")])
+    rc = gate.main()
+    assert rc == 1
+    rows = {r["name"]: r["status"] for r in gate.RESULTS}
+    control = [n for n in rows if n.startswith("E ")]
+    assert control and rows[control[0]] == "PASS", (
+        f"the control must still be scored without a safety config: {rows}")
+    assert (tmp_path / "ev" / "score.json").exists(), "no score was written"
+    detail = next(r["detail"] for r in gate.RESULTS if r["name"].startswith("0 "))
+    assert "safety config" in detail, detail
