@@ -369,7 +369,10 @@ the drain). Both static helpers use `controller._new_static_java_class`.
 Outcomes: `settings_readable` names the successful route and all values;
 `settings_partially_readable` identifies unreadable values;
 `names_returned_but_unreadable` means the call answered but every reader failed;
-`names_not_exposed` means the names call itself raised. The secondary
+`names_not_exposed` means the names call itself raised;
+`names_returned_but_empty` means a reader succeeded but returned no names (so
+guessed-name reads still run). Empty routes are not credited as name sources.
+Disagreeing route lists are reported before reading their union. The secondary
 `get_properties()` cross-check and **guessed, not enumerated** `--probe-names`
 reads (only without enumerated names) never change that outcome.
 

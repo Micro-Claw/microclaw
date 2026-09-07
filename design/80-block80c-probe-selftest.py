@@ -58,14 +58,22 @@ class TextShadow:
         return 'shadow value'
 
 
+class Opaque:
+    # bridge.py:595-644 only exposes server-reported methods; no text method.
+    pass
+
+
 class NotExercised(Exception):
     pass
 
 
 def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
         installed=True, unreachable=False, path=PROBE, guessed=True,
-        shadow_names=False, properties_raise=False, empty=False):
+        shadow_names=False, properties_raise=False, empty=False, opaque_methods=False,
+        opaque_names=False, disagreement=False, unexpected_json=False):
     names = [] if empty else [TextShadow() if shadow_names else 'SearchRange_um', 'Exposure']
+    if opaque_names:
+        names.append(Opaque())
     array = StringArray()
     items = PropertyArray()
     # bridge.py:595-602 preserves exact field names. Missing fields really raise.
@@ -92,7 +100,7 @@ def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
 
     class Manager:
         def get_all_autofocus_methods(self):
-            return Collection(['OughtaFocus', 'Other'] if installed else ['Other'])
+            return Collection(['OughtaFocus', Opaque() if opaque_methods else 'Other'] if installed else ['Other'])
 
         def set_autofocus_method_by_name(self, name):
             assert name == 'OughtaFocus'
@@ -118,7 +126,7 @@ def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
             return SimpleNamespace(get_length=lambda obj: len(storage[obj]),
                                    get=lambda obj, index: storage[obj][index])
         if classpath == 'java.util.Arrays':
-            return SimpleNamespace(as_list=lambda obj: Collection(storage[obj]))
+            return SimpleNamespace(as_list=lambda obj: Collection(['Channel'] if disagreement and obj is array else storage[obj]))
         raise AssertionError('unexpected static class ' + classpath)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +134,13 @@ def run(shape='array', unavailable=(), bad_value=False, names_raise=False,
         spec = importlib.util.spec_from_file_location('probe_under_test', path)
         probe = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(probe)
+        if unexpected_json:
+            original_finish = probe.finish
+
+            def finish(args):
+                probe.FINDINGS['unexpected'] = Opaque()
+                return original_finish(args)
+            probe.finish = finish
         argv = ['probe', '--port', '4912', '--out', str(out)]
         if guessed:
             argv += ['--probe-names', 'GuessedOne,GuessedTwo']
@@ -213,6 +228,47 @@ def guessed_fallback_only():
     assert calls == defaults and list(data['guessed_names']) == defaults
 
 
+def empty_names():
+    data, output, calls, _ = run(empty=True)
+    assert data['verdict'] == 'names_returned_but_empty', f"empty enumeration classified as {data['verdict']}"
+    assert data['names_routes'] == [] and data['names_route'] is None
+    assert 'GuessedOne' in calls and 'GUESSED NAMES' in output
+    assert '80c can print' not in output
+    assert data['names__reflect_array']['value'] == []
+
+
+def opaque_diagnostic(where):
+    data, output, _, _ = run(**{f'opaque_{where}': True})
+    assert 'verdict' in data, 'successful product drain lost; no verdict'
+    if where == 'names':
+        assert data['names__arrays_as_list']['answered'], 'successful name drain lost to diagnostic conversion'
+    assert 'fell back' in output, 'diagnostic fallback not disclosed'
+    assert any(not row.get('answered', True) for key, row in data.items()
+               if '__element_' in key and isinstance(row, dict)), 'failed element not recorded'
+
+
+def readable_transcript():
+    data, output, _, _ = run()
+    assert "{'answered':" not in output, 'stdout contains diagnostic dict reprs'
+    assert not any('__has_next' in key for key in data), 'has_next findings retained'
+    assert '1.' in output and 'VERDICT:' in output and 'SearchRange_um' in output
+
+
+def json_resilience():
+    data, _, _, _ = run(unexpected_json=True)
+    assert isinstance(data['unexpected'], str)
+    assert data['verdict'] == 'settings_readable'
+
+
+def route_disagreement():
+    data, output, calls, _ = run(disagreement=True)
+    assert data.get('names_disagreement'), 'different route answers silently unioned'
+    assert data['names_disagreement'] == {
+        'reflect.Array': ['SearchRange_um', 'Exposure'], 'Arrays.asList': ['Channel']}
+    assert 'disagree' in output.lower(), 'route disagreement missing from transcript'
+    assert {'SearchRange_um', 'Exposure', 'Channel'} <= set(calls)
+
+
 def control():
     try:
         old = subprocess.run(['git', 'show', 'd08ab45:design/80-block80c-oughtafocus-probe.py'],
@@ -245,6 +301,12 @@ def main():
         ('dependency shape contracts', shape_contract),
         ('shadow name conversion', lambda: check_case('settings_readable', 'reflect.Array', shadow_names=True)),
         ('secondary failure isolated', lambda: check_case('settings_readable', 'reflect.Array', properties_raise=True)),
+        ('empty enumeration', empty_names),
+        ('opaque methods diagnostic', lambda: opaque_diagnostic('methods')),
+        ('opaque names diagnostic', lambda: opaque_diagnostic('names')),
+        ('readable transcript', readable_transcript),
+        ('unexpected JSON object', json_resilience),
+        ('route disagreement', route_disagreement),
         ('pre-fix control fires', control),
     ]
     failed = 0

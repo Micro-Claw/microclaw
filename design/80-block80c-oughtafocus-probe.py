@@ -37,13 +37,19 @@ def observe(label, obj):
         row['value'] = [x if isinstance(x, (str, int, float, bool)) or x is None
                         else {'type': type(x).__name__} for x in obj]
     FINDINGS[label] = row
-    print(f'  {label}: {row!r}')
     return obj
 
 
-def ask(label, fn):
+def ask(label, fn, quiet=False):
     try:
-        return observe(label, fn())
+        value = observe(label, fn())
+        if not quiet:
+            if isinstance(value, list) and any(not isinstance(x, str) for x in value):
+                display = f'{len(value)} items (types and fields in JSON)'
+            else:
+                display = repr(value) if isinstance(value, (str, int, float, bool, list)) else f'<{type(value).__name__}>'
+            print(f'  {label}: {display}')
+        return value
     except Exception as exc:
         FINDINGS[label] = {'answered': False,
                            'error': f'{type(exc).__name__}: {exc}'}
@@ -55,7 +61,6 @@ def as_text(label, obj):
     observe(label, obj)
     conversion = 'str' if isinstance(obj, str) else 'to_string'
     FINDINGS[label]['conversion'] = conversion
-    print(f'  {label}: conversion={conversion}')
     value = obj if isinstance(obj, str) else observe(label + '__to_string', obj.to_string())
     if not isinstance(value, str):
         raise TypeError('to_string() did not return str')
@@ -66,21 +71,35 @@ def drain(obj, label, convert=True):
     # First measure the unmodified product function on the actual bridge object.
     # Its str() discards element types, so separately inspect the elements for
     # diagnostic types and defensive text conversion; keep both findings.
-    observe(label + '__product_result', controller._drain_java_iterable(obj))
+    product = observe(label + '__product_result', controller._drain_java_iterable(obj))
     elements = []
 
-    def element(value):
-        key = f'{label}__element_{len(elements)}'
-        elements.append(as_text(key, value) if convert else observe(key, value))
+    diagnostic_failed = False
 
-    if isinstance(obj, (list, tuple, set)):
-        for value in obj:
-            element(value)
-    else:
-        iterator = observe(label + '__iterator', obj.iterator())
-        has_next = iterator.has_next if hasattr(iterator, 'has_next') else iterator.hasNext
-        while observe(label + '__has_next', has_next()):
-            element(iterator.next())
+    def element(value):
+        nonlocal diagnostic_failed
+        key = f'{label}__element_{len(elements)}'
+        converted = ask(key + '__text', lambda: as_text(key, value), quiet=True) if convert else observe(key, value)
+        if convert and converted is None:
+            diagnostic_failed = True
+        elements.append(converted)
+
+    def inspect_elements():
+        if isinstance(obj, (list, tuple, set)):
+            for value in obj:
+                element(value)
+        else:
+            iterator = observe(label + '__iterator', obj.iterator())
+            has_next = iterator.has_next if hasattr(iterator, 'has_next') else iterator.hasNext
+            while has_next():
+                element(iterator.next())
+        return True
+
+    inspected = ask(label + '__inspection', inspect_elements, quiet=True)
+    if convert and (not inspected or diagnostic_failed):
+        FINDINGS[label + '__diagnostic_fallback'] = True
+        print(f'  {label}: diagnostic inspection failed; fell back to the product drain result.')
+        return product
     return elements
 
 
@@ -95,7 +114,15 @@ def array_read(obj, label, port, route, convert=True):
     for i in range(count):
         key = f'{label}__element_{i}'
         value = helper.get(obj, i)
-        items.append(as_text(key, value) if convert else observe(key, value))
+        if convert:
+            text = ask(key + '__text', lambda: as_text(key, value), quiet=True)
+            if text is None:
+                text = str(value)
+                FINDINGS[key + '__diagnostic_fallback'] = True
+                print(f'  {key}: conversion failed; fell back to str(), which may be a shadow repr.')
+            items.append(text)
+        else:
+            items.append(observe(key, value))
     return items
 
 
@@ -112,10 +139,10 @@ def main():
     for package in ('pycromanager', 'pyjavaz'):
         ask('version__' + package, lambda package=package: version(package))
     print(f'Tree: {ROOT}\nAsking about {args.plugin!r} on port {args.port}')
-    ctrl = ask('controller', lambda: controller.MicroscopeController(port=args.port))
+    ctrl = ask('controller', lambda: controller.MicroscopeController(port=args.port), quiet=True)
     print('\n1. What autofocus methods does this Micro-Manager have?')
-    manager = ask('autofocus_manager', lambda: ctrl.plugins._studio.get_autofocus_manager())
-    raw_methods = ask('all_autofocus_methods__object', lambda: manager.get_all_autofocus_methods())
+    manager = ask('autofocus_manager', lambda: ctrl.plugins._studio.get_autofocus_manager(), quiet=True)
+    raw_methods = ask('all_autofocus_methods__object', lambda: manager.get_all_autofocus_methods(), quiet=True)
     methods = ask('all_autofocus_methods', lambda: drain(raw_methods, 'methods'))
     if methods is None:
         print('The autofocus manager itself is unreachable or its methods could not be read.')
@@ -131,14 +158,23 @@ def main():
     obj = ask('get_property_names', lambda: af.get_property_names())
     names = []
     worked = []
+    read_routes = {}
     if FINDINGS['get_property_names']['answered']:
         for label, route in ROUTES.items():
             result = ask(label, lambda label=label, route=route: (
                 drain(obj, label) if route == '_drain_java_iterable' else
                 array_read(obj, label, args.port, route)))
             if result is not None:
-                worked.append(route)
-                names.extend(name for name in result if name not in names)
+                read_routes[route] = result
+                if result:
+                    worked.append(route)
+                    names.extend(name for name in result if name not in names)
+    disagreement = len({tuple(result) for result in read_routes.values()}) > 1
+    FINDINGS['names_disagreement'] = read_routes if disagreement else False
+    if disagreement:
+        print('  Name routes disagree; reading the union of their answers:')
+        for route, result in read_routes.items():
+            print(f'    {route}: {result!r}')
     FINDINGS['names_routes'] = worked
     FINDINGS['names_route'] = worked[0] if worked else None
     values = {}
@@ -151,6 +187,9 @@ def main():
     if not FINDINGS['get_property_names']['answered']:
         verdict = 'names_not_exposed'
         detail = 'the returned method does not expose its property names over this bridge.'
+    elif read_routes and not names:
+        verdict = 'names_returned_but_empty'
+        detail = 'The names call answered and readers returned no names; settings readability is not established.'
     elif not worked:
         verdict = 'names_returned_but_unreadable'
         detail = (f"Returned {type(obj).__name__}; every route failed (see failures above). "
@@ -166,7 +205,7 @@ def main():
 
     print('\n5. Secondary PropertyItem cross-check (does not alter the verdict)')
     items_obj = ask('get_properties', lambda: af.get_properties())
-    for route in worked:
+    for route in read_routes:
         if route == '_drain_java_iterable':
             continue
         label = 'properties__' + route
@@ -192,7 +231,7 @@ def main():
 def finish(args):
     print('\nDisclosure required: exported script behaviour is not determined by its source; '
           'the script must print this in its envelope.')
-    args.out.write_text(json.dumps(FINDINGS, indent=2), encoding='utf-8')
+    args.out.write_text(json.dumps(FINDINGS, indent=2, default=str), encoding='utf-8')
     print(f'Findings written to {args.out}. Send this whole output back.')
     return 0
 
