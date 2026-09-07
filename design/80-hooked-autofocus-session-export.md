@@ -362,6 +362,17 @@ is `CLAUDE.md`'s own rule about gate fakes, applied to a probe, and it also
 matters that those fakes were never committed. The corrected probe ships its
 selftest beside it.
 
+The corrected probe tries, independently and in order, `names__drain` (the
+product's `_drain_java_iterable`), `names__reflect_array` (`reflect.Array`
+`get_length`/`get`), then `names__arrays_as_list` (`Arrays.asList` followed by
+the drain). Both static helpers use `controller._new_static_java_class`.
+Outcomes: `settings_readable` names the successful route and all values;
+`settings_partially_readable` identifies unreadable values;
+`names_returned_but_unreadable` means the call answered but every reader failed;
+`names_not_exposed` means the names call itself raised. The secondary
+`get_properties()` cross-check and **guessed, not enumerated** `--probe-names`
+reads (only without enumerated names) never change that outcome.
+
 **The corrected probe asks each route separately and records the shape, not just
 the error.** Nothing here decides anything for 80c: whether
 `_drain_java_iterable` should learn arrays, and whether the emitted script prints
