@@ -580,6 +580,32 @@ everything is `inspect.getsource` of the code that ran.
 - Watch every new test fail, and for an order/structure test mutate that one
   property instead.
 
+### Settled off-rig before the gate, 2026-09-07
+
+Two assumptions the whole block rests on, checked against the installed
+dependency and the hook source rather than left for the rig:
+
+- **`post_hardware_hook_fn` is AcqEngJ's `AFTER_HARDWARE_HOOK`** — mapped at
+  `pycromanager/acquisition/java_backend_acquisitions.py:464-470`, and its
+  documented contract is "run just before the hardware is updated before
+  acquiring a new image… but before the camera sequence has been started."
+  That is exactly the ordering `autofocus_per_position` needs: hardware moved to
+  the position, then the sweep, then capture. The design's central assumption is
+  sound for the engine.
+- **`AutofocusHook.post_hardware_hook_fn` is batch-safe** (`hooks.py:272-279`).
+  Its first branch is `if isinstance(event, list)`, recursing per item and
+  threading each result back in place. This matters because the hooked fixed
+  plan runs at `interval_s: 0`, which `CLAUDE.md`'s first engine contract says is
+  *exactly* the hardware-sequencing shape, and the pycro-manager docstring
+  confirms the callback then fires once per dispatched sequence rather than per
+  frame. Every fake in the suite passes a single event, so this could only have
+  been read off the source. The emitted script inlines that same source and
+  inherits the behaviour; the emitter must not "fix" it.
+
+The gate therefore does **not** need a limb for either. What it still needs is
+whether the emitted script *runs* — 52b's rule that a script which compiles is
+not a script that works.
+
 ### 80b gate
 
 Demo machine, and it must **drive a real hooked multiposition acquisition and
