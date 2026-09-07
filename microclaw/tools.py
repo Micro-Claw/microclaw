@@ -1427,6 +1427,9 @@ class _RecordedSafetyGuard:
         else:
             self._bounded(value, envelope["min"], envelope["max"],
                           f"Property {{device}}.{{prop}}")
+    def check_plugin_motion(self, token):
+        if token != globals().get("_PLUGIN_MOTION_TOKEN") or token is None:
+            raise SafetyViolation(f"Plugin {{token!r}} has no recorded motion envelope")
     def check_illumination(self, core, device, prop, value, **kwargs):
         return None
     @property
@@ -1460,10 +1463,11 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
         raise CannotEmit("adaptive hook composition is not supported by the standalone runner")
     if not isinstance(strategy, str) or not strategy:
         raise CannotEmit("the record contains no single hook strategy")
-    if strategy in {"mm_plugin_analyzer", "autofocus_mm_plugin"}:
+    if strategy == "mm_plugin_analyzer":
         raise CannotEmit(
             f"hook {strategy!r} requires Micro-Manager plugin capabilities through "
-            "the Microclaw controller and has no standalone equivalent"
+            "plugins.get_object(classpath), which constructs an arbitrary class by name; "
+            "check_plugin reads the rig safety config runtime blocklist (authorization state, not source)"
         )
     params_expr = repr(dict(params.get("hook_params") or {}))
     from microclaw.hooks import PRECODED_HOOK_REGISTRY, HookBase
@@ -1474,10 +1478,50 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
                 f"precoded hook {strategy!r} does not implement the portable HookBase contract"
             )
         source = inspect.getsource(cls)
+        plugin_source = ""
+        from microclaw.hooks import MMAutofocusPluginHook
+        if cls is MMAutofocusPluginHook:
+            from microclaw.controller import (
+                PluginAccess, _drain_java_iterable, _new_static_java_class,
+                _autofocus_settings_snapshot,
+            )
+            token = f"autofocus:{(params.get('hook_params') or {}).get('plugin_name') or '<active>'}"
+            snapshots = [params.result.get("autofocus_settings_snapshot")]
+            if params.result.get("results"):
+                snapshots = [r.get("autofocus_settings_snapshot")
+                             for r in params.result["results"]]
+            snapshots = [v if v is not None else {
+                "available": False, "reason": "settings snapshot absent from recorded result"
+            } for v in snapshots]
+            plugin_source = "\n".join([
+                "from pycromanager import Studio",
+                inspect.getsource(_new_static_java_class),
+                inspect.getsource(_drain_java_iterable),
+                inspect.getsource(_autofocus_settings_snapshot),
+                "class _StandaloneAutofocusAccess:",
+                textwrap.indent(textwrap.dedent(inspect.getsource(
+                    PluginAccess.get_autofocus_method)), "    "),
+                "mm.plugins = _StandaloneAutofocusAccess()",
+                "# Use the port of the Core connection already opened by this script.",
+                "mm._port = core._creation_port",
+                "mm.plugins._studio = Studio(port=mm._port)",
+                f"_PLUGIN_MOTION_TOKEN = {token!r}",
+                f"_recorded_af_snapshots = iter({snapshots!r})",
+                "def _disclose_autofocus(hook):",
+                "    recorded = next(_recorded_af_snapshots, {'available': False, 'reason': 'settings snapshot absent from recorded result'})",
+                "    live = hook.autofocus_settings_snapshot",
+                "    print('AUTOFOCUS PLUGIN ENVELOPE:', _PLUGIN_MOTION_TOKEN)",
+                "    print(\"The plugin's live settings, not this script, decide the focus.\")",
+                "    print('Recorded settings snapshot:', recorded)",
+                "    print('Live settings snapshot:', live)",
+                "    if recorded != live: print('Autofocus settings differ (textual comparison).')",
+                "    return hook",
+            ]) + "\n"
         available = _source_bound_names(_adaptive_runner_source())
         available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
         available.update(_source_bound_names(source))
-        source = _without_microclaw_imports(source, available)
+        available.update(_source_bound_names(plugin_source))
+        source = plugin_source + _without_microclaw_imports(source, available)
         signature = inspect.signature(cls.__init__)
         injected = []
         if "ctrl" in signature.parameters:
@@ -1488,7 +1532,9 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
         constructor = (
             f"{cls.__name__}(**{{**{params_expr}, 'log_path': _log_path{extras}}})"
         )
-        # The five emittable built-ins share these exact bases/helpers. Analysis
+        if plugin_source:
+            constructor = f"_disclose_autofocus({constructor})"
+        # The emittable built-ins share these exact bases/helpers. Analysis
         # and autofocus functions are supplied by the existing inline path.
         return source, constructor, False
 
@@ -4934,7 +4980,7 @@ def run_zstack(
     }
     if hook is not None:
         result.update(_adaptive_result(
-            dataset_path, log_path, status="Z-stack complete.",
+            dataset_path, log_path, status="Z-stack complete.", hook=hook,
             frames_planned=len(events), frames_acquired=len(events),
             frames_exposed=len(events),
             started_at=started_at.isoformat(),
@@ -5224,7 +5270,7 @@ def run_timelapse(
         result["declared_illumination_properties"] = illumination
     if hook is not None:
         result.update(_adaptive_result(
-            dataset_path, log_path, status="Timelapse complete.",
+            dataset_path, log_path, status="Timelapse complete.", hook=hook,
             frames_planned=len(events), frames_acquired=len(events),
             frames_exposed=len(events),
             started_at=started_at.isoformat(),
@@ -8450,6 +8496,7 @@ def _adaptive_result(
     dataset_path: str,
     log_path: str | None,
     status: str = "Adaptive acquisition complete.",
+    hook=None,
     **extra: Any,
 ) -> dict:
     result: dict[str, Any] = {
@@ -8458,6 +8505,8 @@ def _adaptive_result(
         "artifact": {"kind": "dataset", "path": dataset_path},
         **extra,
     }
+    if hook is not None and hasattr(hook, "autofocus_settings_snapshot"):
+        result["autofocus_settings_snapshot"] = hook.autofocus_settings_snapshot
     if log_path:
         result["log_path"] = log_path
         result["hint"] = "Call read_hook_log to retrieve per-image results."
@@ -8606,7 +8655,7 @@ def _acquire_positions_with_hook(
         # means frame delivery/accounting was incomplete; it is not evidence of
         # how many exposures the camera made.
         result = _adaptive_result(
-            dataset_path, movie_log,
+            dataset_path, movie_log, hook=hook,
             status=f"Acquisition complete across {len(group)} position(s).",
             positions=len(group), positions_planned=len(group), positions_completed=len(group),
             frames_planned=len(events), frames_acquired=reservation.completed_frames,
@@ -9125,7 +9174,7 @@ def _acquire_survey_with_detector(
             "positions": len(positions),
         }
     return _adaptive_result(
-        dataset_path, hook.log_path,
+        dataset_path, hook.log_path, hook=hook,
         **route_result,
         **(_reservation_report(reservation) if reservation is not None else {}),
         **({"_acquire_reservation": acquire_reservation}

@@ -221,6 +221,14 @@ class TestListMMPluginsTool:
 
 
 class TestMMAutofocusPluginHook:
+    @pytest.fixture(autouse=True)
+    def unavailable_settings_bridge(self, monkeypatch):
+        # These tests cover the existing focus callback, not a bridge session.
+        # The array-shaped snapshot/export tests live in test_session_script_export.
+        def unavailable(*args):
+            raise RuntimeError("unit test has no settings bridge")
+        monkeypatch.setattr("microclaw.controller._new_static_java_class", unavailable)
+
     def test_motion_gate_denies_by_default(self):
         with pytest.raises(SafetyViolation, match="allow_hardware_motion"):
             MMAutofocusPluginHook(_ctrl_with_autofocus(MagicMock()), _guard())

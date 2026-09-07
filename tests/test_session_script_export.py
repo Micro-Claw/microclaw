@@ -1322,12 +1322,11 @@ def test_observation_and_position_filter_hooks_emit_fixed_plan_hardware(tmp_path
         **base, "hook_strategy": "snr_observer", "hook_params": {"calibration_path": "missing.json"},
     })])
     assert result["not_emitted_calls"][0]["reason"] == "the record lacks the hook's resolved calibration threshold"
-    for plugin in ("autofocus_mm_plugin", "mm_plugin_analyzer"):
+    for plugin in ("mm_plugin_analyzer",):
         _, result, source = export(tmp_path, [call("run_multiposition_acquisition", {
             **base, "hook_strategy": plugin,
         })])
-        assert result["not_emitted_calls"][0]["reason"] == (
-            f"hook {plugin!r} requires Micro-Manager plugin capabilities through the Microclaw controller and has no standalone equivalent")
+        assert "requires Micro-Manager plugin capabilities" in result["not_emitted_calls"][0]["reason"]
         assert "class HookBase" not in source
     for strategy, reason in ((["position_filter"], "composed hooks:"),
                              ("saved_hook", "saved or unknown hook")):
@@ -4393,15 +4392,9 @@ def test_80a_incident_categories_and_selected_subset(tmp_path):
     records += [call("list_stages", {})]
     _, result, _ = export(tmp_path, records)
     refused = result["not_emitted_calls"]
-    assert result["complete"] is False
-    assert result["emitted_calls"] == 2
-    assert refused == [
-        {"tool_use_id": tool_id, "tool": "run_multiposition_acquisition",
-         "reason": f"hook {hook!r} requires Micro-Manager plugin capabilities through the Microclaw controller and has no standalone equivalent"}
-        for tool_id, hook in [
-            ("toolu_017TXJCzN1xmcjzzqZTHe4Yp", "autofocus_mm_plugin"),
-        ]
-    ]
+    assert result["complete"] is True
+    assert result["emitted_calls"] == 3
+    assert refused == []
     failed, = result["skipped_failed_calls"]
     assert failed["tool_use_id"] == "toolu_012yhPfTp3TStsngUtGqhKhp"
     assert failed["tool"] == "run_multiposition_acquisition"
@@ -4409,10 +4402,8 @@ def test_80a_incident_categories_and_selected_subset(tmp_path):
     assert {item["tool_use_id"] for item in refused}.isdisjoint(
         {item["tool_use_id"] for item in result["skipped_failed_calls"]}
     )
-    assert "1 calls" not in result["status"] and "1 call could not" in result["status"]
     assert all("unexpected keyword" not in item["reason"] for item in refused)
     assert all("hooked acquisition" not in item["reason"] for item in result["skipped_failed_calls"])
-    assert "1 call" in result["status"] and "not_emitted_calls" in result["status"]
     for selection in (["toolu_01F9qtEFXVpd5dE6Q1bJL9AD", "list_stages"],
                       ["list_stages"], [], ["toolu_012yhPfTp3TStsngUtGqhKhp"]):
         subset = tools.export_session_script(None, Guard(tmp_path), "subset.py", records,
@@ -5059,3 +5050,238 @@ def test_80b_position_filter_checks_complete_seed_before_hardware(tmp_path, hook
     # Plan guarding must not change this hook's signature-driven construction.
     assert not hasattr(namespace["hook"], "ctrl")
     assert not hasattr(namespace["hook"], "guard")
+
+
+@pytest.fixture
+def plugin_bridge(monkeypatch, hooked_engine):
+    # Same object-array shape as design/80-block80c-probe-selftest.py, whose
+    # shape follows pyjavaz/bridge.py. Storage is external to the shadow.
+    StringArray = type('[Ljava_lang_String;', (), {})
+    names = StringArray()
+    with pytest.raises(TypeError):
+        list(names)
+    assert not any(hasattr(names, attr) for attr in ('iterator', '__len__', '__getitem__'))
+    settings = {'SearchRange_um': '10', 'Tolerance_um': '1', 'FFTLowerCutoff(%)': '2,5'}
+    state = SimpleNamespace(settings=settings, error=None, focus_error=None,
+                            focus_z=4., reads=0, focuses=0, selected=[], static=[],
+                            port=4912, studio_ports=[])
+    # pyjavaz's _JavaObjectShadow stores the creating bridge's port here;
+    # mmpycorex.Core returns that shadow on the Java backend.
+    hooked_engine.core._creation_port = state.port
+
+    class Collection:
+        def iterator(self):
+            values = iter(['OughtaFocus', 'Other'])
+            remaining = 2
+            class Iterator:
+                def has_next(self): return remaining > 0
+                def next(self):
+                    nonlocal remaining
+                    remaining -= 1
+                    return next(values)
+            return Iterator()
+        def __iter__(self): raise TypeError('bridge Collection is not Python iterable')
+
+    class AF:
+        def get_property_names(self):
+            state.reads += 1
+            if state.error: raise RuntimeError(state.error)
+            return names
+        def get_property_value(self, name): return settings[name]
+        def full_focus(self):
+            state.focuses += 1
+            if state.focus_error: raise RuntimeError(state.focus_error)
+            hooked_engine.core.z = state.focus_z
+            return state.focus_z
+    af = AF()
+    manager = SimpleNamespace(get_all_autofocus_methods=lambda: Collection(),
+                              set_autofocus_method_by_name=state.selected.append,
+                              get_autofocus_method=lambda: af)
+    studio = SimpleNamespace(get_autofocus_manager=lambda: manager)
+    def java_class(classpath, port):
+        state.static.append((classpath, port))
+        assert classpath == 'java.lang.reflect.Array'
+        return SimpleNamespace(get_length=lambda obj: len(settings) if obj is names else None,
+                               get=lambda obj, i: list(settings)[i] if obj is names else None)
+    import pycromanager
+    def connect_studio(port=None):
+        state.studio_ports.append(port)
+        return studio
+    monkeypatch.setattr(pycromanager, 'Studio', connect_studio)
+    monkeypatch.setattr(pycromanager, 'JavaClass', java_class)
+    plugins = object.__new__(controller.PluginAccess)
+    plugins._studio = studio
+    state.ctrl = SimpleNamespace(core=hooked_engine.core, plugins=plugins, _port=state.port)
+    state.af = af
+    return state
+
+
+def _80c_export(tmp_path, snapshot=None, **changes):
+    params = {**_80B_BASE, 'hook_strategy': 'autofocus_mm_plugin',
+              'hook_params': {'plugin_name': 'OughtaFocus'}, **changes}
+    result = {} if snapshot is None else {'autofocus_settings_snapshot': snapshot}
+    return export(tmp_path, completed_call('run_multiposition_acquisition', params, result))
+
+
+@pytest.mark.parametrize('unavailable', [False, True])
+def test_80c_live_snapshot_reaches_tool_result(tmp_path, hooked_engine, plugin_bridge, unavailable):
+    state = plugin_bridge
+    hooked_engine.guard._c.plugins.allow_hardware_motion = True
+    if unavailable: state.error = 'property names unavailable\nbridge detail'
+    result = tools._acquire_positions_with_hook(
+        state.ctrl, hooked_engine.guard, _80B_BASE['positions'],
+        timing={'strategy': 'no_time_axis'}, num_time_points=1, time_interval_s=0,
+        save_dir=str(tmp_path), name='live', hook_strategy='autofocus_mm_plugin',
+        hook_params={'plugin_name': 'OughtaFocus'}, log_path=None,
+        acquisition_order='position_then_time')
+    snapshot = result['autofocus_settings_snapshot']
+    if unavailable:
+        assert snapshot == {'available': False, 'reason': 'RuntimeError: property names unavailable\nbridge detail'}
+    else:
+        assert snapshot == {'available': True, 'settings': state.settings}
+    assert state.reads == 1
+    assert state.focuses == 2
+    assert state.static == [('java.lang.reflect.Array', state.port)]
+
+
+@pytest.mark.parametrize('mode', ['same', 'different', 'recorded_unavailable', 'live_unavailable', 'absent'])
+def test_80c_export_executes_plugin_and_discloses(tmp_path, hooked_engine, plugin_bridge, capsys, mode):
+    state = plugin_bridge
+    snapshot = {'available': True, 'settings': dict(state.settings)}
+    if mode == 'different': snapshot['settings']['FFTLowerCutoff(%)'] = '2.5'
+    if mode == 'recorded_unavailable': snapshot = {'available': False, 'reason': 'recorded bridge failure'}
+    if mode == 'live_unavailable': state.error = 'live bridge failure'
+    if mode == 'absent': snapshot = None
+    _, result, source = _80c_export(tmp_path, snapshot)
+    assert result['complete'], result['not_emitted_calls']
+    assert 'input(' not in source
+    tree = ast.parse(source)
+    assert not any(isinstance(node, ast.ImportFrom) and (node.module or '').startswith('microclaw')
+                   for node in ast.walk(tree))
+    # Execute every import too: the backend is dispatched, with frame callbacks
+    # deferred until exit, as in the existing 80b engine fake.
+    import pycromanager
+    from unittest.mock import patch
+    with patch.object(pycromanager, 'Core', lambda: hooked_engine.core), patch.object(
+            pycromanager, 'Acquisition', hooked_engine.Acquisition):
+        namespace = {'__file__': str(tmp_path / 'routine.py')}
+        exec(compile(source, 'routine.py', 'exec'), namespace)
+    assert namespace['mm'].plugins._studio is not None
+    assert hooked_engine.backends[0].kwargs['post_hardware_hook_fn'].__self__ is namespace['hook']
+    assert state.selected == ['OughtaFocus']
+    assert state.focuses == 2 and state.reads == 1
+    assert [capture[2] for capture in hooked_engine.core.captures] == [4., 4.]
+    output = capsys.readouterr().out
+    assert "The plugin's live settings, not this script, decide the focus." in output
+    assert state.studio_ports == [state.port]
+    assert state.static == [('java.lang.reflect.Array', state.port)]
+    assert 'Recorded settings snapshot:' in output and 'Live settings snapshot:' in output
+    assert ('settings differ' in output) == (mode != 'same')
+    if mode == 'recorded_unavailable': assert 'recorded bridge failure' in output
+    if mode == 'live_unavailable': assert 'live bridge failure' in output
+    if mode == 'absent': assert 'settings snapshot absent from recorded result' in output
+    assert '2,5' in output
+    namespace['guard'].check_plugin_motion('autofocus:OughtaFocus')
+    with pytest.raises(namespace['SafetyViolation'], match='no recorded motion envelope'):
+        namespace['guard'].check_plugin_motion('autofocus:Other')
+    with pytest.raises(ValueError, match="Unknown autofocus method 'Missing'. Valid names"):
+        namespace['mm'].plugins.get_autofocus_method('Missing')
+    assert state.selected == ['OughtaFocus']
+
+
+@pytest.mark.parametrize('mode', ['unsafe', 'exception'])
+def test_80c_export_preserves_passive_guard(tmp_path, hooked_engine, plugin_bridge, mode):
+    state = plugin_bridge
+    if mode == 'unsafe': state.focus_z = 2000.
+    else: state.focus_error = 'plugin focus failed'
+    _, result, source = _80c_export(tmp_path)
+    assert result['complete'], result['not_emitted_calls']
+    import pycromanager
+    from unittest.mock import patch
+    namespace = {'__file__': str(tmp_path / 'routine.py')}
+    with patch.object(pycromanager, 'Core', lambda: hooked_engine.core), patch.object(
+            pycromanager, 'Acquisition', hooked_engine.Acquisition):
+        if mode == 'unsafe':
+            with pytest.raises(Exception, match='Autofocus plugin left Z at 2000.000'):
+                exec(compile(source, 'routine.py', 'exec'), namespace)
+            assert not hooked_engine.core.captures
+            assert hooked_engine.core.z == 2000.
+            assert _80b_log(namespace['hook'])[0]['autofocus'] == 'unsafe_abort'
+        else:
+            exec(compile(source, 'routine.py', 'exec'), namespace)
+            assert len(hooked_engine.core.captures) == 2
+            assert all(row['reason'] == 'plugin focus failed' for row in _80b_log(namespace['hook']))
+    assert [row for row in hooked_engine.core.trace if row[0] == 'z'] == [('z', 3.)] * (1 if mode == 'unsafe' else 2)
+
+
+def test_80c_plugin_z_envelope_refuses_before_frames(tmp_path, hooked_engine):
+    guard = Guard(tmp_path)
+    guard._c.stage.z_min = None
+    # No nominal Z in the seed: only the inlined hook's check_z requires Z.
+    positions = [{k: v for k, v in p.items() if k != 'z_um'}
+                 for p in _80B_BASE['positions']]
+    result = tools.export_session_script(None, guard, 'routine.py', [call(
+        'run_multiposition_acquisition', {**_80B_BASE, 'hook_strategy': 'autofocus_mm_plugin',
+                                         'positions': positions,
+                                         'hook_params': {'plugin_name': 'OughtaFocus'}})])
+    assert 'recorded stage bounds are incomplete for Z' in result['not_emitted_calls'][0]['reason']
+    source = (tmp_path / 'routine.py').read_text(encoding='utf-8')
+    with pytest.raises(RuntimeError, match='recorded stage bounds are incomplete for Z'):
+        hooked_engine.execute(source)
+    assert not hooked_engine.backends and not hooked_engine.core.captures
+
+
+def test_80c_portable_motion_guard_pins_one_token():
+    namespace = {'math': __import__('math'), '_PLUGIN_MOTION_TOKEN': 'autofocus:OughtaFocus'}
+    exec(tools._export_guard_source({}), namespace)
+    namespace['guard'].check_plugin_motion('autofocus:OughtaFocus')
+    for token in ('autofocus:Other', 'autofocus:<active>', None):
+        with pytest.raises(namespace['SafetyViolation'], match='no recorded motion envelope'):
+            namespace['guard'].check_plugin_motion(token)
+
+
+def test_80c_analyzer_refusal_names_arbitrary_construction_and_authorization(tmp_path):
+    _, result, _ = export(tmp_path, [call('run_multiposition_acquisition', {
+        **_80B_BASE, 'hook_strategy': 'mm_plugin_analyzer'})])
+    reason = result['not_emitted_calls'][0]['reason']
+    assert 'plugins.get_object(classpath)' in reason
+    assert 'runtime blocklist (authorization state, not source)' in reason
+
+
+def test_80c_split_movies_disclose_each_recorded_snapshot(tmp_path, hooked_engine, plugin_bridge, capsys):
+    params = {**_80B_BASE, 'hook_strategy': 'autofocus_mm_plugin',
+              'protocol_params': {'n_frames': 1, 'interval_s': 1}}
+    records = completed_call('run_multiposition_acquisition', params, {'results': [
+        {'position': p, 'autofocus_settings_snapshot': {'available': False, 'reason': reason}}
+        for p, reason in [('a', 'first snapshot unavailable'), ('b', 'second snapshot unavailable')]]})
+    _, result, source = export(tmp_path, records)
+    assert result['complete'], result['not_emitted_calls']
+    import pycromanager
+    from unittest.mock import patch
+    with patch.object(pycromanager, 'Core', lambda: hooked_engine.core), patch.object(
+            pycromanager, 'Acquisition', hooked_engine.Acquisition):
+        namespace = {'__file__': str(tmp_path / 'routine.py')}
+        exec(compile(source, 'routine.py', 'exec'), namespace)
+    output = capsys.readouterr().out
+    assert output.count('first snapshot unavailable') == 1
+    assert output.count('second snapshot unavailable') == 1
+    assert plugin_bridge.selected == []  # default active method does not select by name
+    assert plugin_bridge.reads == 2 and plugin_bridge.focuses == 2
+    namespace['guard'].check_plugin_motion('autofocus:<active>')
+    assert len(hooked_engine.backends) == 2
+
+
+def test_80c_missing_controller_port_records_unavailable(hooked_engine, plugin_bridge):
+    from microclaw.hooks import MMAutofocusPluginHook
+    state = plugin_bridge
+    del state.ctrl._port
+    hooked_engine.guard._c.plugins.allow_hardware_motion = True
+    hook = MMAutofocusPluginHook(state.ctrl, hooked_engine.guard, 'OughtaFocus')
+    assert hook.autofocus_settings_snapshot == {
+        'available': False,
+        'reason': "AttributeError: 'types.SimpleNamespace' object has no attribute '_port'",
+    }
+    assert state.static == []
+    event = {'axes': {'position': 0}}
+    assert hook.post_hardware_hook_fn(event) is event
+    assert state.focuses == 1
