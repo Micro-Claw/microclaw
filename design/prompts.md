@@ -9690,3 +9690,71 @@ bridge — and `SearchRange_um=10` / `Tolerance_um=1` turned out not to be the
 built-in sweep's 15/0.5, which is what makes printing the snapshot worth the
 code rather than a nicety. A probe that asks every route independently answers
 questions nobody thought to ask.
+
+## Block 80c — the plugin autofocus hook exports (merged `ef47c86`, 2026-09-07)
+
+**Settle the venue before booking the trip.** The probe step's own artifact was
+reusable as a *can this machine host the gate* check, so the first thing this
+block did was run it on the demo machine. It answered `settings_readable`, and
+80c booked no instrument time at all. That question costs seconds and can only
+be asked before the runbook is written.
+
+**A second machine bought a finding the first could not.** The two probe runs
+agreed on 12 of 13 settings and differed on one: `FFTLowerCutoff(%)` is `'2,5'`
+here and `'2.5'` on M2 — one value, two JVM locales. `float('2,5')` raises, so
+any coercion would have worked on M2 and crashed on the demo machine, inside the
+one disclosure an exported script has. It went into the checklist as *opaque
+text, compared textually* before a line of code was written, and it survived
+record → emitted source → printed envelope intact on the rig. **Run a
+second machine when one is free; the disagreement is the payload.**
+
+**The two findings that mattered came from generating the artifact, not reading
+the diff.** The envelope printed the token and two dicts but never the *fact*
+design/80 requires it to print — that the plugin's live settings decide the
+focus — so on the agreeing path the output said nothing about what governs the
+run. And `getattr(ctrl, "_port", 4827)` **always** took its fabricated default
+in the emitted script, because `mm` is a `SimpleNamespace` with no `_port`. It
+agreed with the script's own `Core()` default by luck; where it did not, the
+reader would get another microscope's settings printed as this run's live
+snapshot. Neither was visible in the diff. Both were obvious the moment an
+export was generated and read.
+
+**A fixture whose value equals the default cannot detect the default.** That
+port bug's own test set `_port=4827` and asserted the observed port was 4827 —
+passing whether the port is read from the controller, ignored, or dropped
+entirely. Moving the fixture to 4912 turned three separate mutations into eight,
+five and five failures. When an assertion names a constant, ask what else
+produces that constant.
+
+**A predicate copied from a sibling is a predicate about the sibling.** The
+gate's limb D scored `hook_exposures`, which 80b's `AutofocusHook` increments
+because it snaps its own sweep. `MMAutofocusPluginHook` snaps nothing —
+OughtaFocus searches inside Java — so the counter is 0 in every healthy run, and
+the limb FAILed the block's own central workflow. The tell was in the same
+score file: limb C had just reported two plugin runs in the standalone log. **When
+two limbs contradict each other, at least one of them is the instrument.**
+
+**And the neighbouring limb reproduced 60b exactly**: it globbed `run*`, which
+was 80b's dataset name, over a directory called `live_plugin_1` that was sitting
+beside the script. Both criteria were satisfied by round 1's artifacts, so both
+were re-scored off-rig and no second trip was booked — the same close-out 60b
+and 80b's round 2 used.
+
+**My own new tests did not discriminate, twice, in one sitting.** One walked
+`Raise` nodes when the refusal lives in the `if` above it; the other
+substring-matched `"focused"` against a message reading *"the frames are
+unfocused"*. Both passed against the very gate they were written to reject.
+Watch-it-fail is not a formality — it is the only thing that catches a test
+which cannot see its own subject.
+
+**One process note against myself.** A suite run was discarded because I applied
+mutations to the same tree while it was in flight, and `inspect.getsource` reads
+the file rather than the imported module. Mutate a copy, or wait.
+
+**The runner's turn was killed by a usage limit with its edits landed and no
+report** — the second time in this notebook. Preserved as an unreviewed commit
+saying so plainly, then verified independently; nothing needed the runner again,
+because everything left was the coordinator's own. Its one open judgement call —
+a separate array reader rather than teaching `_drain_java_iterable` arrays — was
+right, and worth stating: the drain is inlined into every exported script, so a
+change there travels to code that has nothing to do with this hook.

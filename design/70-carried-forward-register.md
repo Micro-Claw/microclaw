@@ -1357,7 +1357,8 @@ One driven session or one standalone script run on the Windows demo machine. Che
 - **Where** — RIG:M2 or RIG:nikon, as a passenger.
 - **Block** — NONE.
 - **Effort** — SMALL
-- **Provenance** — coordinator scoring of block 80b's round-2 artifacts, 2026-09-07. The gate reported PASS; this row is what the artifacts said that the verdict did not.
+- **Also true of the plugin hook, measured 2026-09-07 (block 80c).** `autofocus_mm_plugin` now emits too, and its demo gate reproduced the same null one layer out: OughtaFocus searched its own 10 µm range at each of four positions and both arms returned **exactly the entry Z, 6.0 µm**, because DemoCamera gives Brent nothing to optimise. So the row covers both emitted autofocus hooks and closes for both on the same passenger trip — on a structured field, limb C's field-by-field comparison would then agree on a Z the plugin actually chose. `design/80-block80c-demo-gate.py` runs unchanged there. One extra thing that trip would settle for free: whether `FocusDrive` is non-empty on a rig where OughtaFocus has been configured against a real focus drive (empty on M2 **and** the demo machine, n=2, and the empty value means it falls back to Core's current focus device).
+- **Provenance** — coordinator scoring of block 80b's round-2 artifacts, 2026-09-07, extended by block 80c's gate the same day. Both gates reported the mechanism working; this row is what the artifacts said that the verdicts did not.
 
 ### R27 — The agent started live view unprompted on a laser-dose rig
 
