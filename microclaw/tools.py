@@ -640,7 +640,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
     order = params.get("acquisition_order", signature.parameters["acquisition_order"].default)
     hook = params.get("hook_strategy")
     hook_source = ""
-    guarded_hook = False
+    guarded_plan = False
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
         if isinstance(hook, list):
@@ -663,10 +663,11 @@ def _emit_multiposition(params: RecordedParams) -> str:
         elif (params.get("hook_params") or {}).get("calibration_path"):
             raise CannotEmit("the record lacks the hook's resolved calibration threshold")
         source, constructor, _ = _adaptive_hook_export(exported_hook_params)
-        if "guard" in inspect.signature(hook_cls.__init__).parameters and not getattr(
-            hook_cls, "_observation_only", False
-        ):
-            guarded_hook = True
+        # Seed-plan safety is independent of the hook's constructor injection,
+        # which _adaptive_hook_export handles. Design/80 item 3 deliberately
+        # preserves the pre-existing observation-only export without new bounds.
+        if not getattr(hook_cls, "_observation_only", False):
+            guarded_plan = True
             limits = params.get("_export_safety_limits")
             if not limits:
                 raise CannotEmit(params.get("_export_safety_limits_error")
@@ -726,10 +727,12 @@ def _emit_multiposition(params: RecordedParams) -> str:
             "print('HOOK ACQUISITION ENVELOPE: this script enforces no dose budget.')\n"
             if hook else ""
         )
-        if guarded_hook:
+        if guarded_plan:
             required_axes = ("x", "y")
             # Read the hook's guard use from the same source we inline, rather
             # than maintaining a second list of Z-moving hook names.
+            # The registered Z-moving hooks check_z before moving focus, so
+            # this reads their actual guard use even without a nominal-Z seed.
             if (protocol == "zstack" or any(p.get("z_um") is not None for p in positions)
                     or any(isinstance(node, ast.Attribute) and node.attr == "check_z"
                            for node in ast.walk(ast.parse(source)))):

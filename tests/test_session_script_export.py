@@ -1308,13 +1308,16 @@ def test_observation_and_position_filter_hooks_emit_fixed_plan_hardware(tmp_path
     assert "# NOT EMITTED:" not in deciding
     assert "class PositionFilterHook" in deciding
 
-    # The observer and filter need no motion guard injected into the hook.
+    # Only the existing observer export is exempt from plan-bound requirements
+    # (design/80 item 3). The filter's plan needs them despite its constructor.
     guard = Guard(tmp_path)
     guard._c = None
     for strategy in ("snr_observer", "position_filter"):
         result = tools.export_session_script(None, guard, "unbounded.py", [call(
             "run_multiposition_acquisition", {**base, "hook_strategy": strategy})])
-        assert result["complete"]
+        assert result["complete"] is (strategy == "snr_observer")
+        if strategy == "position_filter":
+            assert "safety constraints are unavailable" in result["not_emitted_calls"][0]["reason"]
     _, result, _ = export(tmp_path, [call("run_multiposition_acquisition", {
         **base, "hook_strategy": "snr_observer", "hook_params": {"calibration_path": "missing.json"},
     })])
@@ -5009,3 +5012,50 @@ def test_80b_precoded_export_follows_class_not_registry_spelling(tmp_path, monke
         **_80B_BASE, "hook_strategy": "renamed_position_filter",
     })])
     assert result["complete"], result["not_emitted_calls"]
+
+
+def test_80b_position_filter_checks_complete_seed_before_hardware(tmp_path, hooked_engine, monkeypatch):
+    import sys
+
+    params = {**_80B_BASE, "hook_strategy": "position_filter",
+              "protocol_params": {"n_frames": 1, "interval_s": 0, "exposure_ms": 20}}
+    _, result, source = export(tmp_path, [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    order = []
+    original_exposure = hooked_engine.core.set_exposure
+    def set_exposure(value):
+        order.append(("write_exposure", value))
+        original_exposure(value)
+    monkeypatch.setattr(hooked_engine.core, "set_exposure", set_exposure)
+    original_xy = hooked_engine.core.set_xy_position
+    def set_xy(x, y):
+        order.append(("write_xy", x, y))
+        original_xy(x, y)
+    monkeypatch.setattr(hooked_engine.core, "set_xy_position", set_xy)
+
+    # Observe actual portable-guard calls without replacing their checks or
+    # changing the exported script. The dispatching backend still owns motion.
+    def profile(frame, event, arg):
+        if event != "call" or type(frame.f_locals.get("self")).__name__ != "_RecordedSafetyGuard":
+            return
+        name = frame.f_code.co_name
+        arguments = {"check_xy": ("x", "y"), "check_z": ("z",),
+                     "check_exposure": ("exposure_ms",)}.get(name)
+        if arguments is not None:
+            order.append((name, *(frame.f_locals[key] for key in arguments)))
+    previous_profile = sys.getprofile()
+    try:
+        sys.setprofile(profile)
+        namespace = hooked_engine.execute(source)
+    finally:
+        sys.setprofile(previous_profile)
+
+    assert order[:5] == [
+        ("check_xy", 1, 2), ("check_z", 3),
+        ("check_xy", 11, 2), ("check_z", 3), ("check_exposure", 20),
+    ]
+    assert order[5] == ("write_exposure", 20)
+    assert len(hooked_engine.backends[-1].saved) == 2
+    # Plan guarding must not change this hook's signature-driven construction.
+    assert not hasattr(namespace["hook"], "ctrl")
+    assert not hasattr(namespace["hook"], "guard")
