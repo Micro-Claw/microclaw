@@ -1287,7 +1287,7 @@ def test_go_to_position_emits_coordinates_from_recorded_result(tmp_path):
     assert "core.set_position(3.5)" in source
 
 
-def test_observation_only_hook_emits_hardware_but_decision_hook_refuses(tmp_path):
+def test_observation_and_position_filter_hooks_emit_fixed_plan_hardware(tmp_path):
     base = {
         "protocol": "timelapse",
         "positions": [{"name": "a", "x_um": 1, "y_um": 2, "z_um": 3}],
@@ -1299,14 +1299,42 @@ def test_observation_only_hook_emits_hardware_but_decision_hook_refuses(tmp_path
     )])
     assert "# NOT EMITTED:" not in observed
     assert "xyz_positions': [(1, 2, 3)]" in observed
-    assert "image_process_fn=hook.image_process_fn" in observed
+    assert "'image_process_fn': getattr(hook, 'image_process_fn', None)" in observed
     assert "class SNRObservationHook" in observed
 
     _, _, deciding = export(tmp_path, [call(
         "run_multiposition_acquisition", {**base, "hook_strategy": "position_filter"}
     )])
-    assert "# NOT EMITTED: run_multiposition_acquisition — hooked acquisition" in deciding
-    assert "HookBase" in deciding
+    assert "# NOT EMITTED:" not in deciding
+    assert "class PositionFilterHook" in deciding
+
+    # Only the existing observer export is exempt from plan-bound requirements
+    # (design/80 item 3). The filter's plan needs them despite its constructor.
+    guard = Guard(tmp_path)
+    guard._c = None
+    for strategy in ("snr_observer", "position_filter"):
+        result = tools.export_session_script(None, guard, "unbounded.py", [call(
+            "run_multiposition_acquisition", {**base, "hook_strategy": strategy})])
+        assert result["complete"] is (strategy == "snr_observer")
+        if strategy == "position_filter":
+            assert "safety constraints are unavailable" in result["not_emitted_calls"][0]["reason"]
+    _, result, _ = export(tmp_path, [call("run_multiposition_acquisition", {
+        **base, "hook_strategy": "snr_observer", "hook_params": {"calibration_path": "missing.json"},
+    })])
+    assert result["not_emitted_calls"][0]["reason"] == "the record lacks the hook's resolved calibration threshold"
+    for plugin in ("autofocus_mm_plugin", "mm_plugin_analyzer"):
+        _, result, source = export(tmp_path, [call("run_multiposition_acquisition", {
+            **base, "hook_strategy": plugin,
+        })])
+        assert result["not_emitted_calls"][0]["reason"] == (
+            f"hook {plugin!r} requires Micro-Manager plugin capabilities through the Microclaw controller and has no standalone equivalent")
+        assert "class HookBase" not in source
+    for strategy, reason in ((["position_filter"], "composed hooks:"),
+                             ("saved_hook", "saved or unknown hook")):
+        _, result, _ = export(tmp_path, [call("run_multiposition_acquisition", {
+            **base, "hook_strategy": strategy,
+        })])
+        assert result["not_emitted_calls"][0]["reason"].startswith(reason)
 
 
 def test_observation_only_tile_uses_same_documented_imaging_only_export(tmp_path):
@@ -1318,7 +1346,7 @@ def test_observation_only_tile_uses_same_documented_imaging_only_export(tmp_path
     })])
 
     assert "# NOT EMITTED:" not in source
-    assert "image_process_fn=hook.image_process_fn" in source
+    assert "'image_process_fn': getattr(hook, 'image_process_fn', None)" in source
 
 
 @pytest.mark.parametrize("name", [
@@ -3979,7 +4007,7 @@ def test_emu_power_emits_recorded_readback_with_dose_comment(tmp_path):
     assert "slope" not in source
 
 
-def test_autofocus_multiposition_wrapper_delegates_to_specific_hook_refusal(tmp_path):
+def test_autofocus_multiposition_wrapper_refuses_unresolved_positions(tmp_path):
     _, _, source = export(tmp_path, [call("run_multiposition_with_autofocus", {
         "position_names": ["p0"], "z_range_um": 4, "z_step_um": 0.5,
         "protocol": "timelapse", "save_dir": "session", "name": "af",
@@ -3987,9 +4015,8 @@ def test_autofocus_multiposition_wrapper_delegates_to_specific_hook_refusal(tmp_
         "preserve_unsupported": True,
     })])
     assert (
-        "# NOT EMITTED: run_multiposition_with_autofocus — hooked acquisition "
-        "('autofocus_per_position'): inlining HookBase would import microclaw safety "
-        "and hook decisions"
+        "# NOT EMITTED: run_multiposition_with_autofocus — "
+        "the record contains no resolved position coordinates"
     ) in source
     assert "no standalone emitter has been implemented" not in source
 
@@ -4367,12 +4394,11 @@ def test_80a_incident_categories_and_selected_subset(tmp_path):
     _, result, _ = export(tmp_path, records)
     refused = result["not_emitted_calls"]
     assert result["complete"] is False
-    assert result["emitted_calls"] == 1
+    assert result["emitted_calls"] == 2
     assert refused == [
         {"tool_use_id": tool_id, "tool": "run_multiposition_acquisition",
-         "reason": f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"}
+         "reason": f"hook {hook!r} requires Micro-Manager plugin capabilities through the Microclaw controller and has no standalone equivalent"}
         for tool_id, hook in [
-            ("toolu_018Yq2fYpP2BxKmFQRyuwvzh", "autofocus_per_position"),
             ("toolu_017TXJCzN1xmcjzzqZTHe4Yp", "autofocus_mm_plugin"),
         ]
     ]
@@ -4383,10 +4409,10 @@ def test_80a_incident_categories_and_selected_subset(tmp_path):
     assert {item["tool_use_id"] for item in refused}.isdisjoint(
         {item["tool_use_id"] for item in result["skipped_failed_calls"]}
     )
-    assert "1 calls" not in result["status"] and "2 calls could not" in result["status"]
+    assert "1 calls" not in result["status"] and "1 call could not" in result["status"]
     assert all("unexpected keyword" not in item["reason"] for item in refused)
     assert all("hooked acquisition" not in item["reason"] for item in result["skipped_failed_calls"])
-    assert "2 calls" in result["status"] and "not_emitted_calls" in result["status"]
+    assert "1 call" in result["status"] and "not_emitted_calls" in result["status"]
     for selection in (["toolu_01F9qtEFXVpd5dE6Q1bJL9AD", "list_stages"],
                       ["list_stages"], [], ["toolu_012yhPfTp3TStsngUtGqhKhp"]):
         subset = tools.export_session_script(None, Guard(tmp_path), "subset.py", records,
@@ -4482,3 +4508,554 @@ def test_80a_refusal_disclosure_folds_a_bridge_stack_trace_and_counts_one_call(
     assert "ZMQServer.runMethod" in printed.splitlines()[1]
     # The in-place raise still carries the untouched original.
     assert _MULTILINE_BRIDGE_ERROR.splitlines()[-1] in source
+
+
+def test_80b_wrapper_gets_hook_runtime_and_limits_without_recorded_strategy(tmp_path, hooked_engine):
+    params = {
+        "protocol": "timelapse",
+        "positions": [{"name": "a", "x_um": 1, "y_um": 2, "z_um": 3}],
+        "protocol_params": {"n_frames": 1, "interval_s": 0},
+        "save_dir": "/data", "name": "run", "z_range_um": 2,
+        "z_step_um": 0.5, "settle_ms": 0,
+    }
+    assert "hook_strategy" not in params
+    _, result, source = export(tmp_path, [call("run_multiposition_with_autofocus", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    assert "class HookBase" in source
+    assert "'z_um': (-1000.0, 1000.0)" in source
+    assert "mm._guard = guard" in source
+    namespace = hooked_engine.execute(source)
+    assert namespace["hook"]._reservation is namespace["_reservation"]
+    assert namespace["_saved_frames"].n_done == 1
+    assert len(namespace["hook"].get_summary()) == 1
+
+
+_80B_BASE = {
+    "protocol": "timelapse",
+    "positions": [{"name": "a", "x_um": 1, "y_um": 2, "z_um": 3},
+                  {"name": "b", "x_um": 11, "y_um": 2, "z_um": 3}],
+    "protocol_params": {"n_frames": 1, "interval_s": 0},
+    "save_dir": "/data", "name": "run",
+}
+
+
+@pytest.fixture
+def hooked_engine(monkeypatch, tmp_path):
+    """Dispatch like Acquisition.__new__; delivery only during backend exit.
+
+    Use pycro-manager's real event builder. Pixel and callback ordering model
+    the software-stepped position path, not hardware-sequenced time batches.
+    """
+    from pycromanager import multi_d_acquisition_events
+    from microclaw.safety import SafetyGuard, SafetyConstraints, StageConstraints
+
+    # Shorten the polling interval, not the required sample count or arrival band.
+    monkeypatch.setattr(controller, "STAGE_MOVE_POLL_S", 0.0001)
+    monkeypatch.setattr(controller, "STAGE_MOVE_STABILITY_WINDOW_S", 0.0001)
+    monkeypatch.setattr(controller, "STAGE_MOVE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(autofocus, "STAGE_MOVE_POLL_S", 0.0001)
+    guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(
+        x_min=-1000, x_max=1000, y_min=-1000, y_max=1000,
+        z_min=-1000, z_max=1000,
+    )))
+
+    class Core:
+        def __init__(self, field="peaked"):
+            self.field, self.z, self.xy, self.exposure = field, 3., (0., 0.), 10.
+            self.trace, self.probes, self.captures = [], [], []
+            self.fail_write = False
+            self.stuck = False
+            self.images = []
+        def get_focus_device(self): return "Z"
+        def get_xy_stage_device(self): return "XY"
+        def get_x_position(self): return self.xy[0]
+        def get_y_position(self): return self.xy[1]
+        def get_position(self, _device=None): return self.z
+        def set_position(self, z):
+            if self.fail_write: raise RuntimeError("focus write failed")
+            self.trace.append(("z", float(z)))
+            if not self.stuck: self.z = float(z)
+        def set_xy_position(self, x, y):
+            self.xy = (float(x), float(y))
+            self.trace.append(("xy", self.xy))
+        def wait_for_device(self, device): pass
+        def device_busy(self, device): return False
+        def get_exposure(self): return self.exposure
+        def set_exposure(self, exposure):
+            if self.fail_write: raise RuntimeError("exposure write failed")
+            self.exposure = float(exposure)
+            self.trace.append(("exposure", self.exposure))
+        def set_config(self, group, preset): self.trace.append(("channel", group, preset))
+        def get_image_width(self): return 128
+        def get_image_height(self): return 128
+        def get_bytes_per_pixel(self): return 2
+        def get_number_of_components(self): return 1
+        def frame(self):
+            # A smooth focus-dependent amplitude with a unique interior maximum.
+            peak = 3.5 + self.xy[0] / 10
+            amplitude = 1000 if self.field == "flat" else 1000 * np.exp(-((self.z - peak) / 1.3)**2)
+            stripes = (np.indices((128, 128))[1] // 4) % 2
+            return (100 + amplitude * stripes).astype(np.uint16)
+        def snap_image(self):
+            self.probes.append((self.xy, self.z))
+            self.trace.append(("probe", self.xy, self.z))
+        def get_tagged_image(self):
+            return SimpleNamespace(pix=self.frame(), tags={"Width": 128, "Height": 128})
+
+    state = SimpleNamespace(core=Core(), backends=[], guard=guard, events=multi_d_acquisition_events)
+
+    class Backend:
+        def __init__(self, **kwargs):
+            self.kwargs, self.events, self.saved, self.hook = kwargs, [], [], None
+            self._dataset_disk_location = str(tmp_path / kwargs["name"])
+            self._exception = None
+            state.backends.append(self)
+            callbacks = [kwargs.get(key) for key in (
+                "post_hardware_hook_fn", "pre_hardware_hook_fn", "image_process_fn")]
+            self.hook = next((cb.__self__ for cb in callbacks if cb is not None), None)
+        def __enter__(self): return self
+        def acquire(self, events):
+            self.events = list(events)
+            assert self.saved == []
+            state.core.trace.append(("submit", len(self.events)))
+        def __exit__(self, *exc):
+            state.core.trace.append(("exit",))
+            for index, original in enumerate(self.events):
+                # Closed transport key set, including the native axes identity.
+                event = {k: v for k, v in original.items() if k in {
+                    "axes", "x", "y", "z", "exposure", "config_group", "min_start_time",
+                    "tags", "properties", "stage_positions", "camera", "timeout_ms",
+                }}
+                pre = self.kwargs.get("pre_hardware_hook_fn")
+                if pre is not None: event = pre(event)
+                if "x" in event: state.core.set_xy_position(event["x"], event["y"])
+                if "z" in event: state.core.set_position(event["z"])
+                if "config_group" in event: state.core.set_config(*event["config_group"])
+                if "exposure" in event: state.core.set_exposure(event["exposure"])
+                post = self.kwargs.get("post_hardware_hook_fn")
+                if post is not None:
+                    state.core.trace.append(("post", dict(event["axes"]), state.core.z))
+                    event = post(event)
+                state.core.captures.append((dict(event["axes"]), state.core.xy, state.core.z))
+                state.core.trace.append(("capture", dict(event["axes"]), state.core.z))
+                image = state.core.images[index] if state.core.images else state.core.frame()
+                metadata = {"Axes": dict(event["axes"]), "PositionName": event["axes"].get("position"),
+                            "XPosition_um_Intended": event.get("x"), "YPosition_um_Intended": event.get("y"),
+                            "ZPosition_um_Intended": event.get("z")}
+                process = self.kwargs.get("image_process_fn")
+                event_queue = queue.Queue()
+                processed = process(image, metadata, event_queue) if process else (image, metadata)
+                assert event_queue.empty()
+                if processed is not None:
+                    self.saved.append(dict(event["axes"]))
+                    saved = self.kwargs.get("image_saved_fn")
+                    if saved is not None: saved(dict(event["axes"]), None)
+            return False
+
+    class Acquisition:
+        def __new__(cls, **kwargs): return Backend(**kwargs)
+        def __init__(self, **kwargs): raise AssertionError("dispatcher __init__ must not run")
+
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    state.Acquisition, state.Core = Acquisition, Core
+
+    def execute(source):
+        namespace = {"__file__": str(tmp_path / "routine.py"), "Core": lambda: state.core,
+                     "Acquisition": Acquisition, "multi_d_acquisition_events": multi_d_acquisition_events}
+        runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+        return namespace
+    state.execute = execute
+    return state
+
+
+def _80b_log(hook):
+    return [{k: v for k, v in entry.items() if k != "observed_at"}
+            for entry in hook.get_summary()]
+
+
+def _80b_live(engine, strategy, params, events, log_path):
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.acquisition import AcquisitionLedger, plan_events
+    ctrl = SimpleNamespace(core=engine.core, _guard=engine.guard)
+    cls = PRECODED_HOOK_REGISTRY[strategy]
+    injection = {k: v for k, v in {"ctrl": ctrl, "guard": engine.guard}.items()
+                 if k in inspect.signature(cls).parameters}
+    hook = cls(**params, **injection, log_path=str(log_path))
+    plan = tools._plan_with_hook_dose(plan_events(ctrl, events), hook)
+    reservation = AcquisitionLedger().reserve(engine.guard, plan)
+    tools._acquire_with_hooks(engine.guard, str(log_path.parent), log_path.stem,
+                             events, hook, reservation=reservation, ctrl=ctrl, plan=plan, policy=tools.DEFAULT)
+    return hook, reservation
+
+
+@pytest.mark.parametrize("field", ["peaked", "flat", "bounds", "settlement"])
+def test_80b_autofocus_grid_executes_like_live(tmp_path, hooked_engine, field):
+    engine = hooked_engine
+    positions = [{"name": f"r{r}c{c}", "x_um": 10*c, "y_um": 10*r, "z_um": 3+c}
+                 for r in range(3) for c in range(3)]
+    hp = {"z_range_um": 4, "z_step_um": 0.25, "settle_ms": 0}
+    params = {**_80B_BASE, "positions": positions, "hook_strategy": "autofocus_per_position",
+              "hook_params": hp, "log_path": "grid.json"}
+    export_guard = Guard(tmp_path)
+    if field == "settlement":
+        engine.guard._c.stage.z_move_tolerance_um = export_guard._c.stage.z_move_tolerance_um = 0.05
+    if field == "bounds":
+        engine.guard._c.stage.z_min = export_guard._c.stage.z_min = 2.5
+    result = tools.export_session_script(None, export_guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    events = engine.events(num_time_points=1, time_interval_s=0, order="ptcz",
+                           xyz_positions=[(p["x_um"], p["y_um"], p["z_um"]) for p in positions],
+                           position_labels=[p["name"] for p in positions])
+    engine.core = engine.Core(field)
+    if field == "settlement": engine.core.stuck = True
+    if field == "settlement":
+        with pytest.raises(Exception, match="Stage move did not demonstrate the requested response"):
+            _80b_live(engine, "autofocus_per_position", hp, events, tmp_path / "live.json")
+        live_probes = engine.core.probes[:]
+        engine.core = engine.Core(field)
+        engine.core.stuck = True
+        with pytest.raises(Exception, match="Stage move did not demonstrate the requested response"):
+            engine.execute(source)
+        assert engine.core.probes == live_probes == []
+        assert engine.core.captures == []
+        return
+    live_hook, reservation = _80b_live(engine, "autofocus_per_position", hp, events, tmp_path / "live.json")
+    live_core = engine.core
+    engine.core = engine.Core(field)
+    namespace = engine.execute(source)
+    assert engine.core.probes == live_core.probes
+    assert engine.core.captures == live_core.captures
+    live_log, emitted_log = _80b_log(live_hook), _80b_log(namespace["hook"])
+    if field == "bounds":
+        assert "1.0" in live_log[0]["reason"] and "2.5" in live_log[0]["reason"]
+        assert "1.0" in emitted_log[0]["reason"] and "2.5" in emitted_log[0]["reason"]
+        live_log = [{k:v for k,v in row.items() if k != "reason"} for row in live_log]
+        emitted_log = [{k:v for k,v in row.items() if k != "reason"} for row in emitted_log]
+    assert emitted_log == live_log
+    assert len(engine.backends[-1].saved) == 9
+    assert len({tuple(sorted(axes.items())) for axes in engine.backends[-1].saved}) == 9
+    assert len(namespace["hook"].get_summary()) == 9
+    assert namespace["_saved_frames"].n_done == 9
+    assert namespace["_hook_exposures"].n_done + 9 == reservation.completed_frames
+    assert len([item for item in engine.core.trace if item[0] == "post"]) == 9
+    for index, item in enumerate(engine.core.trace):
+        if item[0] != "post": continue
+        assert engine.core.trace[index-2][0] == "xy"
+        next_capture = next(i for i in engine.core.trace[index+1:] if i[0] == "capture")
+        assert next_capture[1] == item[1]
+    if field == "peaked":
+        assert all(entry["converged"] for entry in _80b_log(live_hook))
+        assert [c[2] for c in engine.core.captures] == pytest.approx([3.5+c for r in range(3) for c in range(3)], abs=0.125)
+    elif field == "flat":
+        assert all(not entry["converged"] for entry in _80b_log(live_hook))
+        assert [c[2] for c in engine.core.captures] == [3+c for r in range(3) for c in range(3)]
+    else:
+        assert _80b_log(live_hook)[0]["autofocus"] == "skipped"
+    assert len(json.loads((tmp_path / "grid.json").read_text(encoding="utf-8"))) == 9
+
+
+@pytest.mark.parametrize("strategy,mode", [
+    ("focus_feedback", "correct"), ("focus_feedback", "bounds"), ("focus_feedback", "write_error"),
+    ("intensity_adaptive", "correct"), ("intensity_adaptive", "bounds"), ("intensity_adaptive", "write_error"),
+    ("position_filter", "discard"),
+])
+def test_80b_image_hooks_match_live_state_writes_and_logs(tmp_path, hooked_engine, strategy, mode):
+    engine = hooked_engine
+    hp = {"target_mean": 100} if strategy == "intensity_adaptive" else {}
+    params = {**_80B_BASE, "hook_strategy": strategy, "hook_params": hp, "log_path": "images.json",
+              "protocol_params": {"n_frames": 2, "interval_s": 0}}
+    export_guard = Guard(tmp_path)
+    if mode == "bounds":
+        if strategy == "focus_feedback":
+            export_guard._c.stage.z_max = engine.guard._c.stage.z_max = 3.1
+        else:
+            export_guard._c.camera.max_exposure_ms = engine.guard._c.camera.max_exposure_ms = 15
+    result = tools.export_session_script(None, export_guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    events = engine.events(num_time_points=2, time_interval_s=0, order="ptcz",
+                           xyz_positions=[(1,2,3), (11,2,3)], position_labels=["a", "b"])
+    sharp = engine.core.frame()
+    frames = ([sharp, np.full_like(sharp, 100), sharp, np.full_like(sharp, 100)]
+              if strategy == "focus_feedback" else
+              [np.full_like(sharp, mean) for mean in (20, 20, 200, 200)])
+    engine.core.images = frames
+    engine.core.fail_write = mode == "write_error"
+    # Simulate a device failure only inside the image callback, after event motion.
+    if mode == "write_error":
+        engine.core.fail_write = False
+        # Hardware movement itself remains supported; the hook's snap/write fails.
+        if strategy == "focus_feedback":
+            engine.core.snap_image = lambda: (_ for _ in ()).throw(RuntimeError("snap failed"))
+        else:
+            engine.core.set_exposure = lambda value: (_ for _ in ()).throw(RuntimeError("exposure write failed"))
+    live_hook, _ = _80b_live(engine, strategy, hp, events, tmp_path / "live.json")
+    live_core = engine.core
+    engine.core = engine.Core()
+    engine.core.images = frames
+    if mode == "write_error":
+        if strategy == "focus_feedback":
+            engine.core.snap_image = lambda: (_ for _ in ()).throw(RuntimeError("snap failed"))
+        else:
+            engine.core.set_exposure = lambda value: (_ for _ in ()).throw(RuntimeError("exposure write failed"))
+    namespace = engine.execute(source)
+    emitted_hook = namespace["hook"]
+    assert engine.core.trace == live_core.trace
+    # Bound error wording names recorded bounds in standalone; compare the outcome,
+    # and separately require both paths to carry a reason when blocked.
+    live_log, emitted_log = _80b_log(live_hook), _80b_log(emitted_hook)
+    if mode == "bounds":
+        assert any(row.get("reason") for row in live_log)
+        assert any(row.get("reason") for row in emitted_log)
+        live_log = [{k:v for k,v in row.items() if k != "reason"} for row in live_log]
+        emitted_log = [{k:v for k,v in row.items() if k != "reason"} for row in emitted_log]
+    assert emitted_log == live_log
+    assert emitted_log
+    if strategy == "focus_feedback":
+        assert emitted_hook.reference_metric == live_hook.reference_metric
+        assert emitted_hook.background_offset == live_hook.background_offset
+        assert emitted_log[0]["outcome"] == {"correct": "recovered", "bounds": "blocked_by_guard", "write_error": "hardware_error"}[mode]
+    elif strategy == "intensity_adaptive":
+        assert engine.core.exposure == live_core.exposure
+        if mode == "correct": assert emitted_log[0]["new_exposure_ms"] == 50
+        else: assert emitted_log[0]["exposure_change"] == ("blocked" if mode == "bounds" else "error")
+    else:
+        assert emitted_hook.rejected == live_hook.rejected == ["a"]
+        assert len(engine.backends[-1].saved) == 2
+        assert len(engine.core.captures) == 4
+    assert namespace["_saved_frames"].n_done == len(engine.backends[-1].saved)
+
+
+def test_80b_hookless_bytes_stay_identical(tmp_path):
+    import hashlib
+    _, _, source = export(tmp_path, [call("run_multiposition_acquisition", _80B_BASE)])
+    assert len(source.splitlines()) == 460
+    assert hashlib.sha256(source.encode()).hexdigest() == "9a56d7a9ca1e93e173cb4358712d94f4b837dfcfe7a933010af9f4df033b0826"
+
+
+def test_80b_rendered_dependencies_appear_once_and_refusals_add_none(tmp_path):
+    refused_params = {**_80B_BASE, "positions": [], "hook_strategy": "autofocus_per_position",
+                      "hook_params": {"z_range_um": 4, "z_step_um": 0.5}}
+    _, result, source = export(tmp_path, [call("run_multiposition_acquisition", refused_params)])
+    assert not result["complete"]
+    assert "def settle_stage_move" not in source
+    assert "class HookBase" not in source
+    records = [call("run_multiposition_acquisition", {
+        **_80B_BASE, "hook_strategy": "snr_observer",
+    }), call("run_timelapse", {
+        "n_frames": 1, "interval_s": 0, "save_dir": "/data",
+        "hook_strategy": "autofocus_per_position",
+        "hook_params": {"z_range_um": 4, "z_step_um": 0.5},
+    })]
+    _, result, source = export(tmp_path, records)
+    assert result["complete"]
+    for helper in (tools.SurveyProgress, tools._next_available_log_path,
+                   controller.settle_stage_move, controller.settle_xy_move,
+                   autofocus.coarse_then_fine_autofocus, autofocus.sweep_autofocus):
+        assert source.count(inspect.getsource(helper)) == 1, helper.__name__
+    assert source.count("class HookBase:") == 1
+    assert "import microclaw" not in source and "from microclaw" not in source
+
+
+@pytest.mark.parametrize("order", ["position_then_time", "time_then_position"])
+def test_80b_spaced_movies_keep_order_fresh_hooks_and_logs(tmp_path, hooked_engine, order):
+    params = {**_80B_BASE, "hook_strategy": "intensity_adaptive", "hook_params": {"target_mean": 100},
+              "protocol_params": {"n_frames": 2, "interval_s": 0.01, "channel": "FITC", "exposure_ms": 20,
+                                  "laser_slot": 3},
+              "acquisition_order": order, "log_path": "movies.json"}
+    _, result, source = export(tmp_path, [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    hooked_engine.execute(source)
+    backends = hooked_engine.backends
+    assert len(backends) == (2 if order == "position_then_time" else 1)
+    axes = [capture[0] for capture in hooked_engine.core.captures]
+    expected = ([(p,t) for p in ("a", "b") for t in (0,1)] if order == "position_then_time"
+                else [(p,t) for t in (0,1) for p in ("a", "b")])
+    assert [(a["position"], a["time"]) for a in axes] == expected
+    for backend in backends:
+        assert [e["min_start_time"] for e in backend.events] == (
+            [0, 0.01] if order == "position_then_time" else [0, 0, 0.01, 0.01])
+        assert all(e["exposure"] == 20 and e["config_group"] == ["Channel", "FITC"] for e in backend.events)
+        assert len(json.loads(Path(backend.hook.log_path).read_text(encoding="utf-8"))) == len(backend.events)
+    if order == "position_then_time":
+        assert backends[0].hook is not backends[1].hook
+        assert backends[0].hook.log_path != backends[1].hook.log_path
+        assert [Path(b.hook.log_path).name for b in backends] == ["movies_0.json", "movies_1.json"]
+
+
+def test_80b_zstack_keeps_absolute_planes_and_nominal_z_is_not_an_offset(tmp_path, hooked_engine):
+    params = {**_80B_BASE, "protocol": "zstack", "hook_strategy": "position_filter",
+              "protocol_params": {"z_start_um": 1, "z_end_um": 2, "z_step_um": 1, "exposure_ms": 15}}
+    _, result, source = export(tmp_path, [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    hooked_engine.execute(source)
+    assert [capture[2] for capture in hooked_engine.core.captures] == [1, 2, 1, 2]
+    assert hooked_engine.core.trace[0] == ("exposure", 15)
+    assert len(hooked_engine.backends[-1].saved) == 4
+
+
+@pytest.mark.parametrize("limit", ["xy", "z", "exposure"])
+def test_80b_seed_preflight_precedes_any_hardware_write(tmp_path, hooked_engine, limit):
+    params = {**_80B_BASE, "hook_strategy": "focus_feedback",
+              "protocol_params": {"n_frames": 1, "interval_s": 0, "exposure_ms": 20}}
+    guard = Guard(tmp_path)
+    if limit == "xy": guard._c.stage.x_max = 5  # Second position: all seeds must be checked first.
+    elif limit == "z": guard._c.stage.z_max = 2
+    else: guard._c.camera.max_exposure_ms = 10
+    result = tools.export_session_script(None, guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    with pytest.raises(Exception, match="exceeds recorded maximum"):
+        hooked_engine.execute(source)
+    assert hooked_engine.core.trace == []
+    assert hooked_engine.backends == []
+
+
+def test_80b_intensity_xy_plan_does_not_require_unused_z_bounds(tmp_path, hooked_engine):
+    params = {**_80B_BASE, "positions": [{"name": "a", "x_um": 1, "y_um": 2}],
+              "hook_strategy": "intensity_adaptive", "hook_params": {"target_mean": 100}}
+    guard = Guard(tmp_path)
+    guard._c.stage.z_min = guard._c.stage.z_max = None
+    result = tools.export_session_script(None, guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    namespace = hooked_engine.execute(source)
+    assert len(hooked_engine.core.captures) == 1
+    assert namespace["hook"].get_summary()[0]["new_exposure_ms"] > 0
+
+
+@pytest.mark.parametrize("strategy,nominal_z,protocol,axis", [
+    ("autofocus_per_position", True, "timelapse", "z"),
+    ("autofocus_per_position", False, "timelapse", "z"),
+    ("focus_feedback", False, "timelapse", "z"),
+    ("intensity_adaptive", True, "timelapse", "z"),
+    ("position_filter", True, "timelapse", "z"),
+    ("intensity_adaptive", False, "zstack", "z"),
+    ("intensity_adaptive", False, "timelapse", "x"),
+    ("intensity_adaptive", False, "timelapse", "y"),
+])
+def test_80b_used_axis_requires_complete_export_bounds(tmp_path, strategy, nominal_z, protocol, axis):
+    positions = [dict(position) for position in _80B_BASE["positions"]]
+    if not nominal_z:
+        for position in positions:
+            position.pop("z_um")
+    hp = ({"z_range_um": 4, "z_step_um": 0.5} if strategy == "autofocus_per_position"
+          else {"target_mean": 100} if strategy == "intensity_adaptive" else {})
+    params = {**_80B_BASE, "positions": positions, "hook_strategy": strategy,
+              "hook_params": hp, "protocol": protocol}
+    if protocol == "zstack":
+        params["protocol_params"] = {"z_start_um": 1, "z_end_um": 2, "z_step_um": 1}
+    guard = Guard(tmp_path)
+    setattr(guard._c.stage, f"{axis}_min", None)
+    setattr(guard._c.stage, f"{axis}_max", None)
+    result = tools.export_session_script(None, guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"] is False, "an incomplete used-axis envelope must refuse during export"
+    assert result["not_emitted_calls"][0]["reason"] == (
+        f"recorded stage bounds are incomplete for {axis.upper()}; both {axis}_min and {axis}_max are required")
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    assert "class HookBase" not in source
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_80b_accounting_is_disclosed_after_teardown_without_claiming_a_budget(tmp_path, hooked_engine, capsys, fail):
+    guard = Guard(tmp_path)
+    guard._c.stage.z_move_tolerance_um = 0.05
+    hooked_engine.core.stuck = fail
+    params = {**_80B_BASE, "hook_strategy": "autofocus_per_position",
+              "hook_params": {"z_range_um": 4, "z_step_um": 0.5, "settle_ms": 0}}
+    result = tools.export_session_script(None, guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"]
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    observations = []
+    original_xy = hooked_engine.core.set_xy_position
+    def move(x, y):
+        observations.append(capsys.readouterr().out)
+        original_xy(x, y)
+    hooked_engine.core.set_xy_position = move
+    if fail:
+        with pytest.raises(Exception, match="Stage move did not demonstrate"):
+            hooked_engine.execute(source)
+    else:
+        hooked_engine.execute(source)
+    output = capsys.readouterr().out
+    assert "no dose budget" in observations[0], "disclose the missing budget before hardware moves"
+    assert "HOOK ACQUISITION COUNTS" in output
+    assert f"saved_frames= {len(hooked_engine.backends[-1].saved)}" in output
+    assert f"hook_exposures= {len(hooked_engine.core.probes)}" in output
+    assert "no dose budget" in output
+
+
+def test_80b_every_precoded_hook_has_a_shared_export_classification(tmp_path):
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY, HookBase
+    for strategy, cls in PRECODED_HOOK_REGISTRY.items():
+        assert issubclass(cls, HookBase), f"unclassified precoded hook: {strategy}"
+        params = tools.RecordedParams({**_80B_BASE, "hook_strategy": strategy})
+        try:
+            tools._adaptive_hook_export(params)
+        except tools.CannotEmit as exc:
+            reason = str(exc)
+            assert "requires Micro-Manager plugin capabilities" in reason, (
+                f"unclassified precoded hook {strategy}: {reason}")
+        else:
+            reason = None
+        _, result, _ = export(tmp_path, [call("run_multiposition_acquisition", params)])
+        actual = result["not_emitted_calls"][0]["reason"] if result["not_emitted_calls"] else None
+        assert actual == reason, f"{strategy}: fixed-plan and shared export classification disagree"
+
+
+def test_80b_precoded_export_follows_class_not_registry_spelling(tmp_path, monkeypatch):
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY, PositionFilterHook
+    monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "renamed_position_filter", PositionFilterHook)
+    _, result, _ = export(tmp_path, [call("run_multiposition_acquisition", {
+        **_80B_BASE, "hook_strategy": "renamed_position_filter",
+    })])
+    assert result["complete"], result["not_emitted_calls"]
+
+
+def test_80b_position_filter_checks_complete_seed_before_hardware(tmp_path, hooked_engine, monkeypatch):
+    import sys
+
+    params = {**_80B_BASE, "hook_strategy": "position_filter",
+              "protocol_params": {"n_frames": 1, "interval_s": 0, "exposure_ms": 20}}
+    _, result, source = export(tmp_path, [call("run_multiposition_acquisition", params)])
+    assert result["complete"], result["not_emitted_calls"]
+    order = []
+    original_exposure = hooked_engine.core.set_exposure
+    def set_exposure(value):
+        order.append(("write_exposure", value))
+        original_exposure(value)
+    monkeypatch.setattr(hooked_engine.core, "set_exposure", set_exposure)
+    original_xy = hooked_engine.core.set_xy_position
+    def set_xy(x, y):
+        order.append(("write_xy", x, y))
+        original_xy(x, y)
+    monkeypatch.setattr(hooked_engine.core, "set_xy_position", set_xy)
+
+    # Observe actual portable-guard calls without replacing their checks or
+    # changing the exported script. The dispatching backend still owns motion.
+    def profile(frame, event, arg):
+        if event != "call" or type(frame.f_locals.get("self")).__name__ != "_RecordedSafetyGuard":
+            return
+        name = frame.f_code.co_name
+        arguments = {"check_xy": ("x", "y"), "check_z": ("z",),
+                     "check_exposure": ("exposure_ms",)}.get(name)
+        if arguments is not None:
+            order.append((name, *(frame.f_locals[key] for key in arguments)))
+    previous_profile = sys.getprofile()
+    try:
+        sys.setprofile(profile)
+        namespace = hooked_engine.execute(source)
+    finally:
+        sys.setprofile(previous_profile)
+
+    assert order[:5] == [
+        ("check_xy", 1, 2), ("check_z", 3),
+        ("check_xy", 11, 2), ("check_z", 3), ("check_exposure", 20),
+    ]
+    assert order[5] == ("write_exposure", 20)
+    assert len(hooked_engine.backends[-1].saved) == 2
+    # Plan guarding must not change this hook's signature-driven construction.
+    assert not hasattr(namespace["hook"], "ctrl")
+    assert not hasattr(namespace["hook"], "guard")
