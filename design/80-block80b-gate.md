@@ -45,7 +45,7 @@ cd D:\Code\microclaw
 git fetch origin
 git checkout design80/hooked-multiposition-export
 git pull
-git merge-base --is-ancestor 248302e HEAD
+git merge-base --is-ancestor 6be4e7f HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" }
 else { "STOP - wrong tree, do not run the gate" }
 ```
