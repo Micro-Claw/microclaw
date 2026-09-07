@@ -1,8 +1,11 @@
 # Hooked autofocus acquisitions must survive session export
 
 Status: **80a MERGED** 2026-09-06 (`7ddcf11`), **80b MERGED** 2026-09-07
-(`c7d4e41`). **80c's open design question is answered** — see §"The answer, M2,
-2026-09-07 round 2"; its implementation checklist is written from that. The
+(`c7d4e41`). **80c is in flight** on `design80/standalone-plugin-capability`.
+Its open design question is answered — see §"The answer, M2, 2026-09-07 round 2"
+— and its implementation checklist is written from that; **its gate venue is
+answered too**, §"The demo machine can host it, 2026-09-07", so nothing here
+books instrument time except `R101`. The
 findings below were written before any implementation; §"Block 80a —
 implementation checklist" and the run ledger record what actually shipped, and
 where a measurement replaced an assumption the ledger says so.
@@ -450,6 +453,50 @@ stated reason there — "take `ctrl`/`guard`" — is already stale, since
 `AutofocusHook`. The real reason is the Studio accessor. Fix that sentence in
 the same block, per step 10.
 
+### The demo machine can host it, 2026-09-07
+
+Run before booking instrument time, because the Gate section says to. Artifacts:
+`80c-probe-demo/`. **`settings_readable` again**, by the same route: OughtaFocus
+present (seven methods here against M2's six — this config also exposes a plain
+`Autofocus`), selected through the product's accessor, **13/13 names enumerated
+and 13/13 values read**. So 80c gates on the demo machine and books nothing.
+
+Scored from the artifact. `getPropertyValue(name)` and the `PropertyItem[]` from
+`getProperties()` agree on all 13 **in the same order**; zero `to_string`
+conversions, zero diagnostic fallbacks, no truncation, no `probe_defect`. The 15
+unanswered labels are exactly the three known negatives — 13 for the absent
+`key` field, one drain, one `asList`. Both bridge failures reproduced M2's text
+verbatim, so `_drain_java_iterable` cannot read a Java array and `asList` cannot
+resolve a `String[]` shadow are each now **n=2** rather than one machine's story.
+
+**The one thing this run bought that M2 could not.** The two snapshots agree on
+12 of 13 settings and differ on one:
+
+| | demo | M2 |
+| --- | --- | --- |
+| `FFTLowerCutoff(%)` | `'2,5'` | `'2.5'` |
+
+The same value, rendered by a different JVM locale. That is a constraint, not
+trivia: `float('2,5')` raises, so any coercion of a snapshot value would work on
+M2 and crash on the demo machine, inside the single disclosure an exported
+script has. Items 2 and 5 now say the values are opaque text and the live-versus-
+recorded comparison is textual. A locale change between export and run therefore
+*flags* a difference that is not one — the correct conservative report, and free,
+because flagging is information and item 5 refuses nothing.
+
+**And the `FocusDrive` caveat is discharged as far as a probe can take it.**
+`FocusDrive` and `Channel` came back empty **here too**, with a config loaded —
+so "the rig's hardware was off" no longer accounts for M2's empties, and the
+likelier reading is OughtaFocus's own default: fall back to Core's current focus
+device. Held at n=2, not settled, because the probe reads no core devices and
+cannot confirm what was loaded. It changes no decision and strengthens the
+2026-08-17 disclosure requirement, which is where the M2 caveat had already left
+it.
+
+Incidental, and worth one line because it is the fix working: PowerShell wrote
+the transcript as UTF-16LE and the ASCII content survived intact, where round
+1's em-dash had been mangled into `settings_readable u Names read via`.
+
 ### Sequencing
 
 80a is off-rig, small, and fixes the half of this incident that did damage: the
@@ -830,6 +877,12 @@ safety config — authorization state, not source. It stays refused.
    drain is inlined into exported scripts, so a change there travels.
    A snapshot that cannot be read is recorded as unavailable **with its reason**
    and does not fail the run — the live hook works without it.
+   **Every value is opaque text and is never coerced to a number**, anywhere:
+   not in the record, not in the envelope, not in item 5's comparison. The demo
+   machine reports `FFTLowerCutoff(%)` as `'2,5'` where M2 reports `'2.5'` — the
+   same setting, rendered by a different JVM locale — so a `float()` on that
+   value raises on one machine and works on the other, in the one disclosure an
+   exported script has. Measured, not anticipated.
 3. **A standalone adapter for the accessor.** Inline
    `PluginAccess.get_autofocus_method` and `_drain_java_iterable` with
    `inspect.getsource` (the drain is `get_all_autofocus_methods`' validation
@@ -851,7 +904,10 @@ safety config — authorization state, not source. It stays refused.
    This is the one exported script whose behaviour is not determined by its
    source, and per the 2026-08-17 decision the print is the only disclosure there
    is. The script reads the plugin's current settings at run time and prints both
-   sets, flagging any that differ. **It does not refuse on a difference and it
+   sets, flagging any that differ. The comparison is **textual**, for the locale
+   reason in item 2: `'2,5'` and `'2.5'` flag as a difference, which is the
+   correct conservative report and costs nothing, because a flag is information.
+   **It does not refuse on a difference and it
    does not prompt** — the live tool compares nothing, an emitted step must not
    be stricter than the tool it reproduces, and a decline that only aborts the
    run is information, not consent. The disclosure is worth the code because
@@ -896,15 +952,16 @@ live class, so this holds by construction and a hand-written sweep would break i
 
 ### Gate
 
-Needs a Micro-Manager with the plugin. **Check the demo machine before booking
-M2**: `design/80-block80c-oughtafocus-probe.py --plugin OughtaFocus` answers
-"can this machine host the gate" for free, and it is now the reusable form of
-that question. Score live against standalone the way 80b's round 2 did — hook
-logs field by field, and the recorded snapshot against the one the standalone
-run prints. Two passengers, both cheap: capture a snapshot with the hardware
-**on**, since M2's round-2 `FocusDrive` and `Channel` were empty with it off and
-that is unsettled; and **R101**, convergence on a real focus curve, which
-DemoCamera's contrast-free frames cannot show.
+**The demo machine hosts this gate** — settled 2026-09-07 by running the probe
+there before booking anything; see §"The demo machine can host it" above. Score
+live against standalone the way 80b's round 2 did — hook logs field by field,
+and the recorded snapshot against the one the standalone run prints.
+
+**R101** — convergence on a real focus curve — is the one thing the demo machine
+cannot show, because DemoCamera's frames carry no Z-dependent contrast. It does
+not gate 80c and stays a passenger on the next M2 or Nikon trip. The other
+passenger the checklist used to name, *capture a snapshot with the hardware on*,
+is discharged below at n=2.
 
 ## Run ledger
 
