@@ -9553,3 +9553,80 @@ first, then guarded. Also `1 calls`, and — the one that matters most —
 `run_multiposition_acquisition` three times, so without an id an entry cannot be
 lined up against `recorded_calls` at all. When a block exists because two
 categories were confused, give them the same shape.
+
+## Block 80b — the hooked multiposition export
+
+**A gate's parameter is part of its instrument, exactly like its interpreter.**
+Round 1 scored 1/8 and produced no product evidence: the gate defaulted to a
+4 µm autofocus sweep, the demo machine's stage sat at Z=1.0 with `z_min = 0.0`,
+the sweep reached -1.0, and limb 0 refused. The gate held the bounds and the
+current Z at that moment and could simply have chosen. *A literal command must
+be established, never guessed* is usually read as being about shell lines; it
+applies to every number a runbook ships. And the remedy the runbook offered —
+"re-run with `--z-range-um 2`" — was itself guessed and wrong: at Z=1.0 that
+lands **exactly on the inclusive bound**, so it would have "passed" while
+leaving the hook no room to sweep, and would probably have cost a third trip.
+
+**A limb that reaches no microscope must not stand down with the ones that do.**
+Limb G is a checksum over an emitted file. It reported NOT EXERCISED in round 1
+because limb 0 could not establish the rig — a coupling *the gate itself had
+introduced* while fixing G's checksum bug. A fix that creates a regression in
+the thing it fixes is the ordinary case, not the exception, which is why the
+selftest is worth more than the review.
+
+**And that selftest earned its keep twice over: seven defects in gate code
+nobody else reads.** Four before round 1 shipped — a `call_input` limb B
+exported that limb A never recorded, dead `if False else None` scaffolding, a
+checksum compared against a constant measured over a *different artifact* (the
+whole file versus the emitter's body, so it could never have matched), and a
+`MicroscopeController.close()` that does not exist. Three more after round 1,
+including the one that matters most: `load_safety_config_or_exit` raises
+`SystemExit` **by design**, and the first cut of the G fix loaded it before the
+control and re-raised, so a machine with no safety config would have produced no
+`score.json` at all — the control's answer lost to an unrelated missing file.
+
+**Score a PASS as hard as a FAIL, and check whether each limb's name matches
+what it measured.** Round 2 came back 8/8 and the product evidence was real, but
+three limbs claimed more than they held. Limb A was called *focuses at every
+position* and did not focus: DemoCamera's frames carry no Z-dependent contrast,
+so both arms reported `converged: false`, correctly. Limb C credited
+`best_z_um` — which on such a field is the **restored entry Z in both arms**, so
+it would have agreed even if the two sweeps had computed different curves; the
+strong evidence was the *warning text*, which carries the computed argmax and
+matched byte for byte. Limb F asserted nothing beyond an exit code. All three
+were re-scored off-rig against round 2's own artifacts, which is why there was
+no third trip — **the artifacts a gate collects outlive the criteria it was
+written with.**
+
+**A gate that collects evidence and never looks at it is worth checking for.**
+Round 2 wrote four real NDTiff datasets and scored none of them; the frame-axes
+identity — the engine's own identity, and the one place a hooked multi-position
+run would hide a collision — had to be read by hand. It is limb H now. The
+cheapest cross-check in the whole trip was arithmetic across three
+independently produced numbers: `frames_planned 16`, `hook_exposures 14`,
+`frames_accounted 2`.
+
+**Settle from the dependency what a rig cannot say better.** Two assumptions the
+whole block rested on were read off the installed pycro-manager and the hook
+source rather than gated: `post_hardware_hook_fn` is AcqEngJ's
+`AFTER_HARDWARE_HOOK`, and `AutofocusHook.post_hardware_hook_fn` already handles
+a batched event list — which matters because the hooked fixed plan runs at
+`interval_s: 0`, the hardware-sequencing shape. **Every fake in the suite passes
+a single event**, so neither could have come from the test suite, and no rig
+limb would have been better evidence than the source.
+
+**Two of three Codex turns did not report.** One died to coordinator-machine
+memory pressure with its edits landed and its suite unrun — and **its suite was
+red**, one failing test, its own, which was right and became the next round's
+finding. The other hit a usage limit and was relaunched by a `nohup` waiter
+verified at PPID 1, which fired and finished unattended while the session was
+away. The waiter is the reason the block did not lose four hours; the preserved
+commit is the reason its work was not lost, and the message on it saying plainly
+that nothing had been reviewed is the reason it was not trusted.
+
+**And a coordinator's own git is unreviewed code too.** A
+`stash -u` / `checkout` / `stash pop` / `checkout HEAD --` sequence silently
+discarded a whole set of gate fixes, which only showed up because the
+watch-it-fail run that followed *passed* when it should have failed. The second
+attempt used a file copy. Never trust the git dance for the same reason the
+workflow says never trust the `sed`.
