@@ -96,15 +96,23 @@ the fix.)
   criterion (58a).
 - **0 — bridge, camera, XY, focus, and a reachable field pair.** Refuses to
   proceed rather than measure the hook's own skip path.
-- **A — a live hooked autofocus grid focuses at every position.** Scored from
-  the hook log's `best_z_um`, one completed sweep per position. A record saying
-  `autofocus: "skipped"` is the hook refusing its own Z bounds — a real outcome,
-  reported separately, and **not** a pass for this limb.
+- **A — a live hooked autofocus sweep runs at every position.** One completed
+  sweep per position, from the hook log's `best_z_um`. It says *runs*, not
+  *focuses*, deliberately: DemoCamera's frames carry no Z-dependent contrast, so
+  the sweep finds no interior maximum and reports `converged: false` with a
+  warning. That is the honest outcome here and **convergence cannot be exercised
+  on this machine at all** — the limb requires only that a non-convergence is
+  never silent. A record saying `autofocus: "skipped"` is the hook refusing its
+  own Z bounds, reported separately, and **not** a pass.
 - **B — the export is standalone.** Parses, imports nothing from `microclaw`,
   and carries the inlined `AutofocusHook`, the real
   `coarse_then_fine_autofocus`, its recorded `_LIMITS`, and the seed preflight.
 - **C — the exported script RUNS and agrees.** The point of the trip. Child
-  process, its own directory, compared against limb A's sweep count and best Z.
+  process, its own directory, and the standalone hook log compared with the live
+  one **field by field** — position, coordinates, best Z, convergence and the
+  warning text, which carries the computed argmax. Not `best_z_um` alone: on a
+  flat field that is the restored entry Z in both arms, so it would agree even
+  if the two sweeps had computed different curves.
 - **D — `post_hardware_hook_fn` really fired under real AcqEngJ.** Read from the
   script's own printed `HOOK ACQUISITION COUNTS`, and scored on
   `hook_exposures`, which the *hook* increments — never on `saved_frames`, which
@@ -113,6 +121,11 @@ the fix.)
   exists to prevent**: the run reports success and the frames are unfocused.
 - **F — an image hook round-trips too.** `intensity_adaptive`, live and
   standalone, exposure changes compared. No Z motion.
+- **H — live and standalone datasets carry the same frame identity.** Every
+  frame's `axes` read through ndstorage, checked for collisions and compared
+  between the two runs. `axes` is the one identity the engine must preserve
+  because the dataset is indexed by it, and a hooked multi-position run is
+  exactly where a collision would hide.
 - **G — the hookless grid is byte-identical.** A plain SMLM grid must not start
   emitting an adaptive runner. It reaches no microscope, so it is scored even
   when the control stands the gate down — round 1 lost it to a coupling that has

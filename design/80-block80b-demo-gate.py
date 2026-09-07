@@ -122,6 +122,34 @@ def skipped_records(records: list[dict]) -> list[dict]:
     return [r for r in records if r.get("autofocus") == "skipped"]
 
 
+def comparable(records: list[dict]) -> list[dict]:
+    """Hook records with the only field that cannot agree across runs removed.
+
+    `observed_at` is a wall-clock arrival stamp. Everything else -- position,
+    coordinates, best Z, convergence, and the warning text, which carries the
+    computed argmax -- must match, and on the demo machine it matched byte for
+    byte. Round 2 credited only the count and `best_z_um`, and `best_z_um` was
+    the *restored entry Z* in both arms, so the limb was scoring agreement on a
+    number neither run had chosen.
+    """
+    return [{k: v for k, v in r.items() if k != "observed_at"} for r in records]
+
+
+def dataset_axes(path: Path) -> list[dict]:
+    """Every frame's axes identity, sorted. The engine's own identity (contract 2).
+
+    Read through ndstorage rather than by globbing filenames: block 60b's gate
+    lost its one rig limb to a glob that matched what its fake wrote instead of
+    what ndstorage writes.
+    """
+    try:
+        from ndstorage import Dataset
+    except ImportError:                             # older pycro-manager
+        from pycromanager import Dataset
+    ds = Dataset(str(path))
+    return sorted(ds.get_image_coordinates_list(), key=lambda d: sorted(d.items()))
+
+
 def export_hooked(tools, ctrl, guard, out: Path, name: str) -> tuple[dict, str, Path]:
     """Export THIS session and return (result, source, path).
 
@@ -300,7 +328,8 @@ def main():
              "B - the exported script is standalone and inlines the real hook",
              "C - the exported script RUNS and agrees with the live run",
              "D - post_hardware_hook_fn really fired under real AcqEngJ",
-             "F - an image hook round-trips too")
+             "F - an image hook round-trips too",
+             "H - live and standalone datasets carry the same frame identity")
 
     # E first, and it is the control: it needs no bridge and it FIRES on a
     # pre-80b tree, where this emitter refuses. 58a's lesson is that a limb
@@ -395,7 +424,7 @@ def main():
                 raise NotExercised("stood down: limb 0 did not establish the rig")
         return [state[k] for k in keys]
 
-    @limb("A - a live hooked autofocus grid focuses at every position",
+    @limb("A - a live hooked autofocus sweep runs at every position",
           "the hook not running once per position, or reporting no best Z")
     def limb_a():
         ctrl, guard, fields, root = need("ctrl", "guard", "fields", "root")
@@ -428,8 +457,22 @@ def main():
                 f"expected one completed sweep per position ({len(fields)}), got "
                 f"{len(swept)} from {len(records)} records")
         zs = [r["best_z_um"] for r in swept]
-        return (f"{len(swept)} sweeps, best Z {zs}, converged "
-                f"{[r.get('converged') for r in swept]}; dataset "
+        converged = [bool(r.get("converged")) for r in swept]
+        # A non-converged sweep is a legitimate outcome and NOT a failure of
+        # this block -- but it must never be silent, and this limb must not
+        # claim a focus it did not achieve. DemoCamera's frames carry no
+        # Z-dependent contrast, so convergence cannot be exercised here at all.
+        unexplained = [r for r in swept
+                       if not r.get("converged") and not r.get("warning")]
+        if unexplained:
+            raise AssertionError(
+                f"{len(unexplained)} sweep(s) reported converged=False with no "
+                "warning explaining why; a non-convergence must never be silent")
+        note = ("all converged" if all(converged) else
+                f"converged {converged} - NOT a focus result, and on a camera "
+                "whose frames carry no Z-dependent contrast convergence cannot "
+                "be exercised at all; see the ledger")
+        return (f"{len(swept)} sweeps, best Z {zs}; {note}; dataset "
                 f"{result.get('dataset_path')}")
 
     @limb("B - the exported script is standalone and inlines the real hook",
@@ -506,9 +549,18 @@ def main():
             raise AssertionError(
                 f"the standalone run completed {len(swept)} sweeps against the live "
                 f"run's {len(live_swept)}")
-        return (f"exit 0; {len(swept)} sweeps standalone against {len(live_swept)} "
-                f"live; best Z standalone {[r['best_z_um'] for r in swept]} vs live "
-                f"{[r['best_z_um'] for r in live_swept]}")
+        # The whole record, not just best_z_um: on a flat field best_z_um is the
+        # restored entry Z in both arms, so comparing it alone would agree even
+        # if the two sweeps had computed different curves. The warning text
+        # carries the computed argmax, which is the value worth agreeing on.
+        mine, theirs = comparable(records), comparable(state["A"]["records"])
+        if mine != theirs:
+            raise AssertionError(
+                "the standalone hook log differs from the live one. live="
+                f"{theirs} standalone={mine}")
+        return (f"exit 0; {len(swept)} sweeps each; the hook logs are IDENTICAL "
+                f"field by field including the convergence warning's computed "
+                f"argmax; best Z {[r['best_z_um'] for r in swept]}")
 
     @limb("D - post_hardware_hook_fn really fired under real AcqEngJ",
           "a standalone run that saves frames while the hook never runs")
@@ -582,9 +634,61 @@ def main():
         if not standalone:
             raise NotExercised("the standalone intensity run wrote no hook log")
         emitted = read_hook_log(standalone[-1])
-        return (f"live {len(live)} record(s), standalone {len(emitted)}; live "
-                f"exposures {[r.get('new_exposure_ms') for r in live]} vs standalone "
-                f"{[r.get('new_exposure_ms') for r in emitted]}")
+        if comparable(emitted) != comparable(live):
+            raise AssertionError(
+                f"the standalone intensity log differs from the live one. live="
+                f"{comparable(live)} standalone={comparable(emitted)}")
+        # This hook logs only when it CHANGES exposure, so one record for two
+        # frames is correct once the first frame has corrected it. Assert the
+        # thing that would be wrong: no record at all.
+        if not live:
+            raise AssertionError(
+                "the intensity hook changed no exposure in either run, so this "
+                "limb exercised nothing")
+        state["F"] = {"live": live, "standalone": emitted, "path": path,
+                      "live_dataset": result.get("dataset_path")}
+        return (f"live and standalone logs IDENTICAL: {len(live)} record(s), "
+                f"exposures {[r.get('new_exposure_ms') for r in live]} "
+                f"(one record per exposure CHANGE, not per frame)")
+
+    @limb("H - live and standalone datasets carry the same frame identity",
+          "frames colliding on one axes key, or the two runs indexing differently")
+    def limb_h():
+        """The engine's own identity (contract 2), on a real NDTiff.
+
+        Round 2 had to be checked by hand off-rig: the gate collected four real
+        datasets and scored none of them. `axes` is the one identity the engine
+        must preserve, because the dataset is indexed by it, and a hooked
+        multi-position run is exactly where a collision would hide.
+        """
+        if "A" not in state or "C" not in state:
+            raise NotExercised("stood down: no live/standalone pair to compare")
+        live_path = state["A"]["result"].get("dataset_path")
+        if not live_path:
+            raise NotExercised("the live run reported no dataset_path")
+        pairs = [("autofocus", Path(live_path),
+                  state["B"]["path"].parent / Path(live_path).name)]
+        if "F" in state:
+            f_live = state["F"].get("live_dataset")
+            if f_live:
+                pairs.append(("intensity", Path(f_live),
+                              state["F"]["path"].parent / Path(f_live).name))
+        detail = []
+        for label, live_ds, standalone_ds in pairs:
+            if not live_ds.exists():
+                raise NotExercised(f"the live {label} dataset is not at {live_ds}")
+            if not standalone_ds.exists():
+                raise NotExercised(
+                    f"the standalone {label} dataset is not at {standalone_ds}")
+            live_axes, mine = dataset_axes(live_ds), dataset_axes(standalone_ds)
+            if len(live_axes) != len(set(map(str, live_axes))):
+                raise AssertionError(
+                    f"the live {label} dataset has colliding axes keys: {live_axes}")
+            if live_axes != mine:
+                raise AssertionError(
+                    f"{label}: live axes {live_axes} != standalone {mine}")
+            detail.append(f"{label} {len(live_axes)} frames {live_axes}")
+        return "; ".join(detail)
 
     @limb("G - the hookless grid is byte-identical",
           "80b having changed a plain multiposition export")
