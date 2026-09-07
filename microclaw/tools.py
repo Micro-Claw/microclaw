@@ -654,11 +654,6 @@ def _emit_multiposition(params: RecordedParams) -> str:
                 f"saved or unknown hook ({hook!r}): the fixed-plan exporter cannot "
                 "inline its adapter and observation log"
             )
-        if hook not in {"autofocus_per_position", "focus_feedback",
-                        "intensity_adaptive", "position_filter", "snr_observer"}:
-            raise CannotEmit(
-                f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"
-            )
         exported_hook_params = RecordedParams(dict(params), params.result)
         observation = params.result.get("observation_parameters") or next(
             (r["observation_parameters"] for r in params.result.get("results", [])
@@ -676,7 +671,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if not limits:
                 raise CannotEmit(params.get("_export_safety_limits_error")
                                  or "the record carries no export-time safety limits")
-            hook_source = _export_guard_source(limits) + "mm._guard = guard\n" + source + "\n"
+            hook_source = source + "\n"
         else:
             hook_source = source + "\nguard = SimpleNamespace(analysis_min_snr=None)\n"
     positions = params.get("positions")
@@ -726,8 +721,21 @@ def _emit_multiposition(params: RecordedParams) -> str:
             shape.update(channel_group=CHANNEL_CONFIG_GROUP, channels=[channel])
             if exposure is not None:
                 shape["channel_exposures_ms"] = [exposure]
-        prefix = ""
+        prefix = (
+            "# These counters report delivery and hook probes; they enforce no dose budget.\n"
+            "print('HOOK ACQUISITION ENVELOPE: this script enforces no dose budget.')\n"
+            if hook else ""
+        )
         if guarded_hook:
+            required_axes = ("x", "y")
+            # Read the hook's guard use from the same source we inline, rather
+            # than maintaining a second list of Z-moving hook names.
+            if (protocol == "zstack" or any(p.get("z_um") is not None for p in positions)
+                    or any(isinstance(node, ast.Attribute) and node.attr == "check_z"
+                           for node in ast.walk(ast.parse(source)))):
+                required_axes += ("z",)
+            hook_source = (_export_guard_source(limits, required_axes=required_axes)
+                           + "mm._guard = guard\n" + hook_source)
             # Match _acquire_positions_with_hook: validate the whole seed plan
             # before the first position or eventless exposure write.
             for position in positions:
@@ -781,8 +789,9 @@ def _emit_multiposition(params: RecordedParams) -> str:
             lines.append(f"events = multi_d_acquisition_events(**{event_shape!r})")
             if hook:
                 # The live runner binds before selecting this same callback triple.
-                # Standalone accounting is local to this acquisition; there is no
-                # Microclaw session ledger to mutate when the script is replayed.
+                # This is a counting adapter, not a dose reservation. Make its
+                # counts observable after teardown, even on the failure path;
+                # the envelope explicitly discloses that no budget is enforced.
                 lines += [
                     "_saved_frames = SurveyProgress(len(events))",
                     "_hook_exposures = SurveyProgress(0)",
@@ -795,9 +804,17 @@ def _emit_multiposition(params: RecordedParams) -> str:
                     "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
                     "}.items() if callback is not None}",
                 ]
-            lines += [f"with Acquisition(directory=str({directory}), name={movie_name!r}"
-                      + (", image_saved_fn=lambda axes, dataset: _saved_frames.image_done(), **_hook_callbacks" if hook else "") + ") as acq:",
-                      "    acq.acquire(events)"]
+            acquisition_lines = [f"with Acquisition(directory=str({directory}), name={movie_name!r}"
+                                 + (", image_saved_fn=lambda axes, dataset: _saved_frames.image_done(), **_hook_callbacks" if hook else "") + ") as acq:",
+                                 "    acq.acquire(events)"]
+            if hook:
+                lines += ["try:", *("    " + line for line in acquisition_lines),
+                          "finally:",
+                          f"    print('HOOK ACQUISITION COUNTS', {movie_name!r}, "
+                          "'saved_frames=', _saved_frames.n_done, "
+                          "'hook_exposures=', _hook_exposures.n_done, 'no dose budget')"]
+            else:
+                lines += acquisition_lines
         return "\n".join(lines)
     # Every per-position XY move in the live tile path is settled, so every one
     # here is too. The targets are literals but the START is read per position
@@ -1327,8 +1344,17 @@ def _adaptive_runner_source() -> str:
     return _without_microclaw_imports(source, available)
 
 
-def _export_guard_source(limits: dict[str, Any]) -> str:
-    """Render the acquisition-time motion bounds as a small literal guard."""
+def _export_guard_source(
+    limits: dict[str, Any], *, required_axes: tuple[str, ...] = (),
+) -> str:
+    """Validate the axes this program uses, then render its portable guard."""
+    for axis in required_axes:
+        pair = limits.get(f"{axis}_um") or (None, None)
+        if any(edge is None or not math.isfinite(float(edge)) for edge in pair):
+            raise CannotEmit(
+                f"recorded stage bounds are incomplete for {axis.upper()}; "
+                f"both {axis}_min and {axis}_max are required"
+            )
     return f'''# These are the limits recorded at export time; editing this dict edits the limits.
 # Seed-plan XY/Z events are checked here before acquisition; any additional
 # hardware action implemented inside a precoded hook remains that hook's responsibility.
@@ -1437,9 +1463,13 @@ def _adaptive_hook_export(params: RecordedParams) -> tuple[str, str, bool]:
             "the Microclaw controller and has no standalone equivalent"
         )
     params_expr = repr(dict(params.get("hook_params") or {}))
-    from microclaw.hooks import PRECODED_HOOK_REGISTRY
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY, HookBase
     if strategy in PRECODED_HOOK_REGISTRY:
         cls = PRECODED_HOOK_REGISTRY[strategy]
+        if not issubclass(cls, HookBase):
+            raise CannotEmit(
+                f"precoded hook {strategy!r} does not implement the portable HookBase contract"
+            )
         source = inspect.getsource(cls)
         available = _source_bound_names(_adaptive_runner_source())
         available.update(_source_bound_names(_analysis_source(include_autofocus=True)))
@@ -1594,13 +1624,13 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     # script whose header claims recorded limits while checking nothing, which
     # is the defect this refusal exists to prevent.
     limits = params.get("_export_safety_limits")
-    if not limits or params.get("_export_safety_limits_error"):
+    if not limits:
         raise CannotEmit(params.get("_export_safety_limits_error")
                          or "the record carries no export-time safety limits")
     recorded_log = params.get("log_path") or params.result.get("log_path")
     log_name = Path(recorded_log).name if recorded_log else None
     common = [
-        _export_guard_source(limits), "mm._guard = guard", hook_source,
+        _export_guard_source(limits, required_axes=("x", "y", "z")), "mm._guard = guard", hook_source,
         (f"_log_path = _next_available_log_path(_HERE / {log_name!r})"
          if log_name else "_log_path = None"),
         f"hook = {constructor}",
@@ -2047,17 +2077,15 @@ def export_session_script(
             }
             for axis in ("x", "y", "z"):
                 pair = safety_limits[f"{axis}_um"]
-                if any(edge is None or not math.isfinite(float(edge)) for edge in pair):
+                # Reject malformed literals here. Completeness is checked by
+                # _export_guard_source for the axes each rendered program uses.
+                if any(edge is not None and not math.isfinite(float(edge)) for edge in pair):
                     safety_limits_error = (
                         f"recorded stage bounds are incomplete for {axis.upper()}; "
                         f"both {axis}_min and {axis}_max are required"
                     )
-                    # Adaptive seeds require every axis. Fixed plans check only
-                    # the axes they use, just like _acquire_positions_with_hook;
-                    # an XY-only intensity run must not gain a Z requirement.
-                    if any(edge is not None and not math.isfinite(float(edge)) for edge in pair):
-                        safety_limits = None
-                        break
+                    safety_limits = None
+                    break
         except (AttributeError, TypeError, ValueError) as exc:
             safety_limits = None
             safety_limits_error = (

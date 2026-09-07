@@ -1324,7 +1324,7 @@ def test_observation_and_position_filter_hooks_emit_fixed_plan_hardware(tmp_path
             **base, "hook_strategy": plugin,
         })])
         assert result["not_emitted_calls"][0]["reason"] == (
-            f"hooked acquisition ({plugin!r}): inlining HookBase would import microclaw safety and hook decisions")
+            f"hook {plugin!r} requires Micro-Manager plugin capabilities through the Microclaw controller and has no standalone equivalent")
         assert "class HookBase" not in source
     for strategy, reason in ((["position_filter"], "composed hooks:"),
                              ("saved_hook", "saved or unknown hook")):
@@ -4394,7 +4394,7 @@ def test_80a_incident_categories_and_selected_subset(tmp_path):
     assert result["emitted_calls"] == 2
     assert refused == [
         {"tool_use_id": tool_id, "tool": "run_multiposition_acquisition",
-         "reason": f"hooked acquisition ({hook!r}): inlining HookBase would import microclaw safety and hook decisions"}
+         "reason": f"hook {hook!r} requires Micro-Manager plugin capabilities through the Microclaw controller and has no standalone equivalent"}
         for tool_id, hook in [
             ("toolu_017TXJCzN1xmcjzzqZTHe4Yp", "autofocus_mm_plugin"),
         ]
@@ -4921,3 +4921,91 @@ def test_80b_intensity_xy_plan_does_not_require_unused_z_bounds(tmp_path, hooked
     namespace = hooked_engine.execute(source)
     assert len(hooked_engine.core.captures) == 1
     assert namespace["hook"].get_summary()[0]["new_exposure_ms"] > 0
+
+
+@pytest.mark.parametrize("strategy,nominal_z,protocol,axis", [
+    ("autofocus_per_position", True, "timelapse", "z"),
+    ("autofocus_per_position", False, "timelapse", "z"),
+    ("focus_feedback", False, "timelapse", "z"),
+    ("intensity_adaptive", True, "timelapse", "z"),
+    ("position_filter", True, "timelapse", "z"),
+    ("intensity_adaptive", False, "zstack", "z"),
+    ("intensity_adaptive", False, "timelapse", "x"),
+    ("intensity_adaptive", False, "timelapse", "y"),
+])
+def test_80b_used_axis_requires_complete_export_bounds(tmp_path, strategy, nominal_z, protocol, axis):
+    positions = [dict(position) for position in _80B_BASE["positions"]]
+    if not nominal_z:
+        for position in positions:
+            position.pop("z_um")
+    hp = ({"z_range_um": 4, "z_step_um": 0.5} if strategy == "autofocus_per_position"
+          else {"target_mean": 100} if strategy == "intensity_adaptive" else {})
+    params = {**_80B_BASE, "positions": positions, "hook_strategy": strategy,
+              "hook_params": hp, "protocol": protocol}
+    if protocol == "zstack":
+        params["protocol_params"] = {"z_start_um": 1, "z_end_um": 2, "z_step_um": 1}
+    guard = Guard(tmp_path)
+    setattr(guard._c.stage, f"{axis}_min", None)
+    setattr(guard._c.stage, f"{axis}_max", None)
+    result = tools.export_session_script(None, guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"] is False, "an incomplete used-axis envelope must refuse during export"
+    assert result["not_emitted_calls"][0]["reason"] == (
+        f"recorded stage bounds are incomplete for {axis.upper()}; both {axis}_min and {axis}_max are required")
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    assert "class HookBase" not in source
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_80b_accounting_is_disclosed_after_teardown_without_claiming_a_budget(tmp_path, hooked_engine, capsys, fail):
+    guard = Guard(tmp_path)
+    guard._c.stage.z_move_tolerance_um = 0.05
+    hooked_engine.core.stuck = fail
+    params = {**_80B_BASE, "hook_strategy": "autofocus_per_position",
+              "hook_params": {"z_range_um": 4, "z_step_um": 0.5, "settle_ms": 0}}
+    result = tools.export_session_script(None, guard, "routine.py", [call("run_multiposition_acquisition", params)])
+    assert result["complete"]
+    source = (tmp_path / "routine.py").read_text(encoding="utf-8")
+    observations = []
+    original_xy = hooked_engine.core.set_xy_position
+    def move(x, y):
+        observations.append(capsys.readouterr().out)
+        original_xy(x, y)
+    hooked_engine.core.set_xy_position = move
+    if fail:
+        with pytest.raises(Exception, match="Stage move did not demonstrate"):
+            hooked_engine.execute(source)
+    else:
+        hooked_engine.execute(source)
+    output = capsys.readouterr().out
+    assert "no dose budget" in observations[0], "disclose the missing budget before hardware moves"
+    assert "HOOK ACQUISITION COUNTS" in output
+    assert f"saved_frames= {len(hooked_engine.backends[-1].saved)}" in output
+    assert f"hook_exposures= {len(hooked_engine.core.probes)}" in output
+    assert "no dose budget" in output
+
+
+def test_80b_every_precoded_hook_has_a_shared_export_classification(tmp_path):
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY, HookBase
+    for strategy, cls in PRECODED_HOOK_REGISTRY.items():
+        assert issubclass(cls, HookBase), f"unclassified precoded hook: {strategy}"
+        params = tools.RecordedParams({**_80B_BASE, "hook_strategy": strategy})
+        try:
+            tools._adaptive_hook_export(params)
+        except tools.CannotEmit as exc:
+            reason = str(exc)
+            assert "requires Micro-Manager plugin capabilities" in reason, (
+                f"unclassified precoded hook {strategy}: {reason}")
+        else:
+            reason = None
+        _, result, _ = export(tmp_path, [call("run_multiposition_acquisition", params)])
+        actual = result["not_emitted_calls"][0]["reason"] if result["not_emitted_calls"] else None
+        assert actual == reason, f"{strategy}: fixed-plan and shared export classification disagree"
+
+
+def test_80b_precoded_export_follows_class_not_registry_spelling(tmp_path, monkeypatch):
+    from microclaw.hooks import PRECODED_HOOK_REGISTRY, PositionFilterHook
+    monkeypatch.setitem(PRECODED_HOOK_REGISTRY, "renamed_position_filter", PositionFilterHook)
+    _, result, _ = export(tmp_path, [call("run_multiposition_acquisition", {
+        **_80B_BASE, "hook_strategy": "renamed_position_filter",
+    })])
+    assert result["complete"], result["not_emitted_calls"]
