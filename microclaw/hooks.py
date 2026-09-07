@@ -584,6 +584,9 @@ class MMAutofocusPluginHook(HookBase):
         # Hardware-motion plugin: gate on the global motion flag, not a blocklist.
         guard.check_plugin_motion(f"autofocus:{plugin_name or '<active>'}")
         self._af = ctrl.plugins.get_autofocus_method(plugin_name)
+        from microclaw.controller import _autofocus_settings_snapshot
+        self.autofocus_settings_snapshot = _autofocus_settings_snapshot(
+            self._af, getattr(ctrl, "_port", 4827))
 
     def post_hardware_hook_fn(self, event: dict | list[dict]):
         if isinstance(event, list):

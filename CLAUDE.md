@@ -58,11 +58,16 @@ replacement for it.
   hand-copied copy that drifts reintroduces ghost exposures silently. `CannotEmit`
   survives for the narrow cases: an unrecoverable hook source, an unresolvable
   seed position, a hook reaching a capability the script has no equivalent for
-  (`mm_plugin_analyzer` and `autofocus_mm_plugin`, which reach
-  `PluginAccess.get_autofocus_method` and so need a Studio connection — **not**
-  because they take `ctrl`/`guard`, which `_adaptive_hook_export` injects for
-  every precoded hook by signature), and an authorized illumination envelope
-  whose conversions are rig-configured.
+  (`mm_plugin_analyzer`, whose `plugins.get_object(classpath)` constructs an
+  arbitrary class and whose `check_plugin` reads a rig-configured runtime
+  blocklist — authorization state, not source), and an authorized illumination
+  envelope whose conversions are rig-configured.
+
+  `autofocus_mm_plugin` emits the live accessor through a Studio-backed
+  `mm.plugins` adapter, with the recorded motion token pinned by the portable
+  guard. Its best-effort settings snapshot uses `java.lang.reflect.Array`;
+  standalone runs print recorded and live opaque text and flag differences
+  without refusing or prompting. Snapshot failures retain their reason.
 
   **The fixed-plan multiposition emitter also emits its hooks** (design/80 block
   80b, merged 2026-09-07): `autofocus_per_position`, `focus_feedback`,

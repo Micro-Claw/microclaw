@@ -565,6 +565,27 @@ def _drain_java_iterable(iterable) -> list[str]:
     return out
 
 
+def _autofocus_settings_snapshot(af, port: int = 4827) -> dict:
+    """Read opaque setting text through the bridge's object-array reflection API.
+
+    Best effort, once at hook construction; a partial read is unavailable, not
+    a fabricated complete snapshot. Collection enumeration remains separate.
+    """
+    try:
+        array = _new_static_java_class(port, "java.lang.reflect.Array")
+        names = af.get_property_names()
+        settings = {}
+        for index in range(array.get_length(names)):
+            name = array.get(names, index)
+            value = af.get_property_value(name)
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise TypeError("autofocus setting name/value is not text")
+            settings[name] = value
+        return {"available": True, "settings": settings}
+    except Exception as exc:
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
 def dataset_stack_files(directory) -> list[Path]:
     """The TIFF files a dataset directory would open, in plane order.
 
