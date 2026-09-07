@@ -565,7 +565,7 @@ def _drain_java_iterable(iterable) -> list[str]:
     return out
 
 
-def _autofocus_settings_snapshot(af, port: int = 4827) -> dict:
+def _autofocus_settings_snapshot(af, port: int) -> dict:
     """Read opaque setting text through the bridge's object-array reflection API.
 
     Best effort, once at hook construction; a partial read is unavailable, not

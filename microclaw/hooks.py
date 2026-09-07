@@ -585,8 +585,13 @@ class MMAutofocusPluginHook(HookBase):
         guard.check_plugin_motion(f"autofocus:{plugin_name or '<active>'}")
         self._af = ctrl.plugins.get_autofocus_method(plugin_name)
         from microclaw.controller import _autofocus_settings_snapshot
-        self.autofocus_settings_snapshot = _autofocus_settings_snapshot(
-            self._af, getattr(ctrl, "_port", 4827))
+        try:
+            port = ctrl._port
+        except AttributeError as exc:
+            self.autofocus_settings_snapshot = {
+                "available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        else:
+            self.autofocus_settings_snapshot = _autofocus_settings_snapshot(self._af, port)
 
     def post_hardware_hook_fn(self, event: dict | list[dict]):
         if isinstance(event, list):

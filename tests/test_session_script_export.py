@@ -5063,7 +5063,11 @@ def plugin_bridge(monkeypatch, hooked_engine):
     assert not any(hasattr(names, attr) for attr in ('iterator', '__len__', '__getitem__'))
     settings = {'SearchRange_um': '10', 'Tolerance_um': '1', 'FFTLowerCutoff(%)': '2,5'}
     state = SimpleNamespace(settings=settings, error=None, focus_error=None,
-                            focus_z=4., reads=0, focuses=0, selected=[], static=[])
+                            focus_z=4., reads=0, focuses=0, selected=[], static=[],
+                            port=4912, studio_ports=[])
+    # pyjavaz's _JavaObjectShadow stores the creating bridge's port here;
+    # mmpycorex.Core returns that shadow on the Java backend.
+    hooked_engine.core._creation_port = state.port
 
     class Collection:
         def iterator(self):
@@ -5100,11 +5104,14 @@ def plugin_bridge(monkeypatch, hooked_engine):
         return SimpleNamespace(get_length=lambda obj: len(settings) if obj is names else None,
                                get=lambda obj, i: list(settings)[i] if obj is names else None)
     import pycromanager
-    monkeypatch.setattr(pycromanager, 'Studio', lambda: studio)
+    def connect_studio(port=None):
+        state.studio_ports.append(port)
+        return studio
+    monkeypatch.setattr(pycromanager, 'Studio', connect_studio)
     monkeypatch.setattr(pycromanager, 'JavaClass', java_class)
     plugins = object.__new__(controller.PluginAccess)
     plugins._studio = studio
-    state.ctrl = SimpleNamespace(core=hooked_engine.core, plugins=plugins, _port=4827)
+    state.ctrl = SimpleNamespace(core=hooked_engine.core, plugins=plugins, _port=state.port)
     state.af = af
     return state
 
@@ -5134,7 +5141,7 @@ def test_80c_live_snapshot_reaches_tool_result(tmp_path, hooked_engine, plugin_b
         assert snapshot == {'available': True, 'settings': state.settings}
     assert state.reads == 1
     assert state.focuses == 2
-    assert state.static == [('java.lang.reflect.Array', 4827)]
+    assert state.static == [('java.lang.reflect.Array', state.port)]
 
 
 @pytest.mark.parametrize('mode', ['same', 'different', 'recorded_unavailable', 'live_unavailable', 'absent'])
@@ -5147,6 +5154,7 @@ def test_80c_export_executes_plugin_and_discloses(tmp_path, hooked_engine, plugi
     if mode == 'absent': snapshot = None
     _, result, source = _80c_export(tmp_path, snapshot)
     assert result['complete'], result['not_emitted_calls']
+    assert 'input(' not in source
     tree = ast.parse(source)
     assert not any(isinstance(node, ast.ImportFrom) and (node.module or '').startswith('microclaw')
                    for node in ast.walk(tree))
@@ -5164,6 +5172,9 @@ def test_80c_export_executes_plugin_and_discloses(tmp_path, hooked_engine, plugi
     assert state.focuses == 2 and state.reads == 1
     assert [capture[2] for capture in hooked_engine.core.captures] == [4., 4.]
     output = capsys.readouterr().out
+    assert "The plugin's live settings, not this script, decide the focus." in output
+    assert state.studio_ports == [state.port]
+    assert state.static == [('java.lang.reflect.Array', state.port)]
     assert 'Recorded settings snapshot:' in output and 'Live settings snapshot:' in output
     assert ('settings differ' in output) == (mode != 'same')
     if mode == 'recorded_unavailable': assert 'recorded bridge failure' in output
@@ -5258,3 +5269,19 @@ def test_80c_split_movies_disclose_each_recorded_snapshot(tmp_path, hooked_engin
     assert plugin_bridge.reads == 2 and plugin_bridge.focuses == 2
     namespace['guard'].check_plugin_motion('autofocus:<active>')
     assert len(hooked_engine.backends) == 2
+
+
+def test_80c_missing_controller_port_records_unavailable(hooked_engine, plugin_bridge):
+    from microclaw.hooks import MMAutofocusPluginHook
+    state = plugin_bridge
+    del state.ctrl._port
+    hooked_engine.guard._c.plugins.allow_hardware_motion = True
+    hook = MMAutofocusPluginHook(state.ctrl, hooked_engine.guard, 'OughtaFocus')
+    assert hook.autofocus_settings_snapshot == {
+        'available': False,
+        'reason': "AttributeError: 'types.SimpleNamespace' object has no attribute '_port'",
+    }
+    assert state.static == []
+    event = {'axes': {'position': 0}}
+    assert hook.post_hardware_hook_fn(event) is event
+    assert state.focuses == 1
