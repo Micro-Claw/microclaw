@@ -318,8 +318,8 @@ To `design/70-carried-forward-register.md` unless a block above claims them:
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 78a | `design78/no-per-frame-refresh` | `42965c1` | Codex runner, queued 2026-09-07 for 01:57 | M5 (owed) | — |
-| 78b | `design78/sequencing-predicate` | `42965c1` | Codex runner, queued 2026-09-07 for 01:57 | demo machine (owed) | — |
+| 78a | `design78/no-per-frame-refresh` | `bfccc15` | Codex runner, queued 2026-09-07 for 01:57 | M5 (owed) | — |
+| 78b | `design78/sequencing-predicate` | `bfccc15` | Codex runner, queued 2026-09-07 for 01:57 | demo machine (owed) | — |
 | 78c | — | — | — | — | — |
 
 78a and 78b were assigned together, in separate worktrees, because their gates
