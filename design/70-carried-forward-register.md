@@ -95,6 +95,7 @@ Rows added since the triage:
 | `R94`–`R95` | `design/75` block 75a's gates, 2026-09-05 |
 | `R96`–`R97` | `design/75` block 75b's demo gate, 2026-09-05 |
 | `R102`–`R103` | `design/78` block 78a's M2 gate, 2026-09-08 |
+| `R104`–`R105` | `design/78`'s own carried-forward list, routed at close-out 2026-09-08 |
 
 
 ## The work queue
@@ -118,6 +119,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R98` | [A spaced hooked grid writes one hook log per field, and rank_hook_log takes one path](#r98) | MEDIUM | SMALL |  |
 | `R102` | [78a's fix is measured on one rig and one property](#r102) | LOW | SMALL |  |
 | `R103` | [The coalesced teardown refresh costs ~2.4 s per run on an EMU rig](#r103) | LOW | SMALL |  |
+| `R104` | [_set_channel_for_composite refreshes at every phase boundary, unmeasured](#r104) | MEDIUM | SMALL |  |
+| `R105` | [The residual per-frame dispatch cost is still unmeasured on M2](#r105) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2490,3 +2493,29 @@ visible; do not put one of these on a checklist.
 - **Importance** — LOW until someone runs a many-field hooked grid on an EMU rig.
 - **Effort** — SMALL
 - **Provenance** — coordinator scoring of block 78a's M2 artifacts, 2026-09-08.
+
+### R104 — `_set_channel_for_composite` refreshes at every phase boundary, unmeasured
+
+**Block 78a removed the per-frame `refresh_gui` and measured what it cost. The same call still runs at composite channel-phase boundaries and has never been measured.**
+
+- **Why it is worth more now than when it was written** — design/78 listed this as a carried item on the *suspicion* that an EMU rig might pay the same listener fan-out per phase. 78a turned that suspicion into a number: on M2 a single `refresh_gui` dragged **~2.3 s** of EMU device reads onto the calling thread, and the teardown one still does (`R103`). A composite with several channel phases per position would pay that per phase.
+- **What is NOT known** — whether `_set_channel_for_composite`'s refresh actually triggers the same fan-out. It is a different call site and possibly a different listener set. design/78 was explicit that M5's ~2.9 s write-path figure must not simply be assigned to it, and that remains right.
+- **Why it was deliberately out of 78a's scope** — per-phase, not per-frame. `CLAUDE.md`'s "scope it, do not sweep it" applies: 78a touched one call site and left the other nine, of which this is one.
+- **How to measure it** — `design/78-block78a-m5-gate.py` already counts GUI repaint windows and EMU retrievals per thread in any debug-level CoreLog. Point it at a composite channel run on an EMU rig with an arm window covering it; no new instrument is needed.
+- **Where** — RIG:M2 or RIG:M5, as a passenger on any composite channel acquisition already being run.
+- **Block** — NONE. If it measures large, the fix is a scoped design/79c item, not a reopening of 78a.
+- **Effort** — SMALL
+- **Provenance** — `design/78`'s carried-forward list, routed here at close-out 2026-09-08 with 78a's measurement attached.
+
+### R105 — The residual per-frame dispatch cost is still unmeasured on M2
+
+**78a was expected to measure this and did not, because every arm of its gate ran at `interval_s = 0.5`, which hides any residual below half a second.**
+
+- **What design/78 asked for** — M2's shorter frame gaps were ~0.20–0.35 s at 50 ms exposure in the 2026-09-04 session. After 78a removed the refresh, the ask was to measure what dispatch and required property operations still cost.
+- **Why 78a's gate did not answer it** — its three arms requested `interval_s = 0.5`, so the observed 0.499–0.505 s cadence is the engine honouring `min_start_time`, not a floor. Any residual under 0.5 s is invisible in that data. This is the distinction design/79 item 1 exists for, and the gate's own table now says so explicitly.
+- **What 78a *did* establish, and its limit** — the write→exposure span is 18–44 ms, which bounds the *write-associated* work. It says nothing about the rest of the per-frame dispatch, which happens outside that span.
+- **How to close it** — one short-interval or zero-interval hooked run on M2 with debug logging, scored with the existing gate. The cadence column then reports achieved timing rather than the requested interval. Cheap, and a natural passenger.
+- **Where** — RIG:M2 (or any EMU rig), as a passenger.
+- **Block** — NONE; `design/79c` owns the optimization if the number turns out to matter.
+- **Effort** — SMALL
+- **Provenance** — `design/78`'s carried-forward list, routed here at close-out 2026-09-08 after 78a's gate proved unable to answer it.
