@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def guidance():
     import json
-    return json.dumps(TOOLS) + '\n' + '\n'.join(p.read_text() for p in (ROOT/'microclaw/skills').glob('*/SKILL.md'))
+    return json.dumps(TOOLS) + '\n' + '\n'.join(p.read_text(encoding='utf-8') for p in (ROOT/'microclaw/skills').glob('*/SKILL.md'))
 
 
 def check_routes(text):
@@ -63,7 +63,7 @@ def test_skill_frontmatter_and_mutation(tmp_path):
         path = ROOT/'microclaw/skills'/name/'SKILL.md'
         assert _parse_skill(path).name == name
         broken = tmp_path/'SKILL.md'
-        broken.write_text(path.read_text().replace('---\n','',1))
+        broken.write_text(path.read_text(encoding='utf-8').replace('---\n','',1), encoding='utf-8')
         with pytest.raises(RuntimeError,match='frontmatter'): _parse_skill(broken)
-    text=(ROOT/'microclaw/skills/htsmlm/SKILL.md').read_text()
+    text=(ROOT/'microclaw/skills/htsmlm/SKILL.md').read_text(encoding='utf-8')
     assert all(word in text for word in ('2026-09-08','30b6bfd','one-second','1,000','three-frame','later version'))
