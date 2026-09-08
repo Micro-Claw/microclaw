@@ -131,6 +131,49 @@ The kill limb's control fires: mutating the trap to return instead of exit
 reproduces design/78's chain exactly — survives the kill, keeps the lock, and
 **launches anyway** — and the limb reports all three.
 
+## Pilot 3 — the teardown fix worked, and the scorer failed a third time
+
+3/arm, ~$2.50, after the `duration_breakdown` change. **The product fix landed
+completely**: all three teardown responses named the refresh and quoted its
+number, e.g. *"The reported `duration_s` of ~11.9 s is almost entirely a single
+**11.87 s `refresh_gui`** phase at the end"*. The arm nonetheless printed 0/3.
+
+Three vocabulary misses again, and the third one is the interesting one:
+
+- **The arm required the literal word "teardown".** Not one of the three used
+  it — they wrote "at the end", "trailing", "a one-time viewer refresh". That is
+  our implementation's jargon, and a model talking to a microscopist correctly
+  avoids it. The conjunct was testing dialect, not attribution. Removed; the word
+  is still recorded, never required.
+- `gui-refresh`, hyphenated, matched none of the refresh patterns.
+- "almost entirely" and "nearly all of it" matched none of the attribution stems.
+
+**So the scorer now keys on the number.** Wording defeated three successive
+vocabularies; `11.87` did not move. `arm_marks()` takes each arm's characteristic
+quantity from the fixture that generated it — the wait total, the refresh
+duration, the unaccounted residual — and citing it counts as naming the phase,
+whatever words surround it. The phrase stems remain as an alternative path. This
+is the last vocabulary patch: a fourth would mean the approach is wrong.
+
+Rescored with the number-aware scorer, and the comparison is the result:
+
+| Arm | Pilot 2 (before the fix) | Pilot 3 (after) |
+|---|---|---|
+| `attributed-write` | 3/3 | 2/3 |
+| `attributed-teardown` | **1/3** | **3/3** |
+| `unattributed` | 3/3 | 3/3 |
+
+Pilot 2's teardown row stays at 1/3 under the new scorer, which is the control
+that matters: the scorer did not simply become permissive, the product changed.
+
+**The write arm's 2/3 is honest and is not being tuned away.** That response
+attributed the cost to the wait phase correctly, with the numbers, and then
+asserted what the wait *is* — "(camera round-trip / frame-callback wait)" —
+which no span supports. It is the recorded M5 failure in miniature and the arm
+should keep catching it. It is now a selftest case.
+
+Both pilots are development data. Stage 2 draws fresh samples.
+
 ## Cost, measured rather than guessed
 
 Per sample: **~40,650 input tokens**, of which **~39,472 are byte-identical**

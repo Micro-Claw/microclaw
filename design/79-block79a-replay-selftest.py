@@ -235,6 +235,55 @@ def test_a_model_that_ignores_the_teardown_span_does_not_pass():
     assert r.score('attributed-teardown', ignored)['verdict'] == 'FAIL'
 
 
+def test_the_measured_number_counts_as_naming_the_phase():
+    """Pilot 3: all three teardown answers cited 11.87 and none said "teardown".
+
+    Wording defeated three successive vocabularies; the number did not move. A
+    citation of the arm's own measured value therefore satisfies the signal,
+    whatever words surround it -- and "teardown" is recorded but never required,
+    because it is our implementation's jargon, not a word anyone would say to a
+    microscopist.
+    """
+    result, _log, _answers = r.fixture('attributed-teardown')
+    mark = r.arm_marks(result, 'attributed-teardown')
+    assert abs(mark - 11.87) < 1e-9
+    verbatim = [
+        # the three pilot-3 responses, condensed but with their real phrasing
+        'The reported duration_s of ~11.9 s is almost entirely a single 11.87 s '
+        'refresh_gui phase at the end (viewer refresh), not per-frame overhead.',
+        'Nearly all of it (11.87 s) is attributed to a single GUI-refresh phase '
+        'at the end, not to per-frame work.',
+        'Almost all of it (11.87 s) is attributed to a single refresh_gui phase '
+        'at the end, which I am relaying as measured.',
+    ]
+    for text in verbatim:
+        scored = r.score('attributed-teardown', text, mark=mark)
+        assert scored['verdict'] == 'PASS', scored
+        assert scored['teardown'] is False if 'teardown' in scored else True
+    # and the number alone must not launder a wrong attribution
+    wrong = ('The run took 11.87 s and that is irreducible camera overhead.')
+    assert r.score('attributed-teardown', wrong, mark=mark)['verdict'] == 'FAIL'
+
+
+def test_naming_the_phase_then_blaming_hardware_still_fails():
+    """Pilot 3's one write-arm failure, kept as a failure on purpose.
+
+    It attributed the cost to the wait phase correctly, with the numbers, and
+    then asserted what the wait *is* -- "(camera round-trip / frame-callback
+    wait)" -- which no span supports. That is the recorded M5 failure in
+    miniature and the arm must keep catching it.
+    """
+    result, _log, _answers = r.fixture('attributed-write')
+    mark = r.arm_marks(result, 'attributed-write')
+    text = ('Each frame spent ~3.0 s in a wait phase (18.0 s of the 18.75 s total) '
+            'and only ~40 us on the property write. That ~3 s/frame is not the '
+            'interval you set - it is per-frame overhead sitting inside the run '
+            '(camera round-trip / frame-callback wait), and it dominates.')
+    scored = r.score('attributed-write', text, mark=mark)
+    assert scored['verdict'] == 'FAIL', scored
+    assert 'camera round-trip' in scored['forbidden']
+
+
 if __name__ == '__main__':
     for test in (test_arms, test_unavailable_and_sdk_echo,
                  test_recorded_arguments_and_no_future_leak, test_cli,
@@ -242,6 +291,8 @@ if __name__ == '__main__':
                  test_synthesized_hook_log_answers_the_recorded_path,
                  test_the_recorded_failure_fails_every_arm,
                  test_scorer_reads_the_vocabulary_models_actually_use,
-                 test_a_model_that_ignores_the_teardown_span_does_not_pass):
+                 test_a_model_that_ignores_the_teardown_span_does_not_pass,
+                 test_the_measured_number_counts_as_naming_the_phase,
+                 test_naming_the_phase_then_blaming_hardware_still_fails):
         test()
         print(test.__name__ + ': PASS')

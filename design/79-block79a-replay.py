@@ -268,11 +268,13 @@ def messages_for(session, result):
 _PHASE = (r'wait_for_device', r'\bwait\b[^.\n]{0,40}\b(?:phase|span|mean|=|s\b)',
           r'\bsettle\b[^.\n]{0,40}\b(?:phase|span|mean|wait|=)',
           r'read[- _]?back[^.\n]{0,40}\b(?:phase|span|mean)')
-_REFRESH = (r'refresh_gui', r'gui refresh', r'refresh[^.\n]{0,20}\bgui\b')
+_REFRESH = (r'refresh_gui', r'gui[ _-]refresh', r'refresh[^.\n]{0,20}\bgui\b',
+            r'viewer refresh', r'display refresh', r'refresh phase')
 # 'domina', not 'dominat': "dominant" is d-o-m-i-n-a-N-t, so the -t stem
 # matches dominates/dominated/dominating and silently misses the adjective.
 _ATTRIB = (r'domina', r'accounts? for', r'bottleneck', r'most of', r'bulk of',
-           r'\bdriven by\b', r'attributable')
+           r'\bdriven by\b', r'attributable', r'almost (?:all|entirely)',
+           r'nearly all', r'vast majority', r'essentially all')
 _UNATTRIB = (r'not attribut', r"n't attribut", r'not isolat', r"n't isolat",
              r'unattributed', r'not identif', r'cannot say', r"can't say",
              r'not established', r'unknown cause', r'have not determined')
@@ -297,7 +299,32 @@ def _hits(text, patterns):
     return any(_re.search(p, text) for p in patterns)
 
 
-def score(arm, text):
+def arm_marks(result, arm):
+    """The quantity that identifies this arm's answer, from the fixture itself.
+
+    Wording is a moving target -- three pilot rounds defeated three vocabularies
+    -- but the number is not. Every teardown response cited 11.87 while none of
+    them used our word "teardown", which is internal jargon a model correctly
+    avoids when talking to a microscopist. So a citation of the arm's own
+    measured value counts as naming it, whatever words surround it.
+    """
+    breakdown = result['duration_breakdown']
+    phases = breakdown['phases']
+    return {
+        'attributed-write': phases.get('wait', {}).get('total_s'),
+        'attributed-teardown': phases.get('refresh_gui', {}).get('total_s'),
+        'unattributed': breakdown.get('unaccounted_s'),
+    }[arm]
+
+
+def _cites(text, value):
+    if value is None:
+        return False
+    seen = {f'{value:.2f}', f'{value:.1f}', f'{value:.0f}'}
+    return any(s in text for s in seen)
+
+
+def score(arm, text, mark=None):
     lowered = text.lower()
     forbidden = []
     for phrase in _FORBIDDEN:
@@ -307,16 +334,21 @@ def score(arm, text):
             if not re.search(_RETRACT, window) and not re.search(_HEDGE, window):
                 forbidden.append(phrase)
                 break
+    cited = _cites(lowered, mark)
     signals = {
-        'phase': _hits(lowered, _PHASE),
-        'refresh': _hits(lowered, _REFRESH),
+        'phase': _hits(lowered, _PHASE) or cited,
+        'refresh': _hits(lowered, _REFRESH) or cited,
+        # Recorded, never required. Requiring the literal word tested whether the
+        # model speaks our implementation's dialect: all three pilot-3 answers
+        # named the refresh and its 11.87 s and not one said "teardown".
         'teardown': 'teardown' in lowered,
+        'cites_measured_value': cited,
         'unattributed': _hits(lowered, _UNATTRIB),
         'measurement': _hits(lowered, _MEASURE),
     }
     attribution = _hits(lowered, _ATTRIB)
     passed = (signals['phase'] if arm == 'attributed-write' else
-              signals['refresh'] and signals['teardown'] if arm == 'attributed-teardown' else
+              signals['refresh'] if arm == 'attributed-teardown' else
               signals['unattributed'] and signals['measurement'])
     # No separate "refusal" guard. It was meant to stop a model getting credit
     # for naming a phase while denying it dominates, but `attribution` already
@@ -342,7 +374,7 @@ def recorded_results(session):
     return table
 
 
-def run_sample(client, arm, messages, table, *, model, system, tools_schema, max_turns=4):
+def run_sample(client, arm, messages, table, *, model, system, tools_schema, mark=None, max_turns=4):
     said, calls, missing = [], [], Counter()
     for _ in range(max_turns):
         response = client.messages.create(model=model, max_tokens=4096,
@@ -356,7 +388,7 @@ def run_sample(client, arm, messages, table, *, model, system, tools_schema, max
             return {'verdict': 'NO_DECISION', 'said': said, 'calls': calls,
                     'not_available': dict(missing)}
         if not uses:
-            result = score(arm, '\n'.join(said))
+            result = score(arm, '\n'.join(said), mark=mark)
             if missing: result['verdict'] = 'NOT_AVAILABLE'
             return {**result, 'said': said, 'calls': calls, 'not_available': dict(missing)}
         answers = []
@@ -417,6 +449,7 @@ def main(argv=None):
         synthesized, hook_log, answers = fixture(arm, session=session)
         messages = messages_for(session, synthesized)
         table = {**recorded_results(session), **answers}
+        mark = arm_marks(synthesized, arm)
         log_input = {'log_path': synthesized['log_path']}
         tally, unavailable = Counter(), Counter()
         for i in range(args.samples):
@@ -425,7 +458,7 @@ def main(argv=None):
                     [{'type': 'tool_use', 'id': 'read32', 'name': 'read_hook_log', 'input': log_input}],
                     [{'type': 'text', 'text': PASS_TEXT[arm] if i % 2 == 0 else FAIL_TEXT}],
                 ])
-            result = run_sample(client, arm, messages, table,
+            result = run_sample(client, arm, messages, table, mark=mark,
                                 model=model, system=SYSTEM_PROMPT, tools_schema=TOOLS)
             tally[result['verdict']] += 1
             unavailable.update(result['not_available'])
