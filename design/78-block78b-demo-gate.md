@@ -51,7 +51,7 @@ Check the instrument before spending any time on the engine:
 uv run python -m pytest -q design\78-block78b-demo-gate-selftest.py
 ```
 
-Expect `6 passed`. If it fails, stop and send me the output.
+Expect `7 passed`. If it fails, stop and send me the output.
 
 ## 2 — start Micro-Manager
 
@@ -68,7 +68,7 @@ uv run python design\78-block78b-demo-gate.py --out block78b-evidence --long-run
 
 That is the whole gate. It prints one line per limb as it goes, writes
 `score.json` and `callback-shapes.json`, and exits nonzero on any FAIL or any
-NOT EXERCISED. Expect `exit: 0` and `7/7 PASS`.
+NOT EXERCISED. Expect `exit: 0` and `8/8 PASS`.
 
 `--long-run` acquires ~4008 frames at 1 ms exposure on the demo camera. If that
 takes unreasonably long on this machine, stop it, tell me how far it got, and
@@ -92,7 +92,8 @@ run — and I will re-score it rather than trusting `score.json`.
 | interval_s = 0 is batched | design/77b's finding, arriving from the Java side |
 | **0.001 s collides at frames 4006/4007** | **Why the block states a predicate and refuses to state a threshold.** The only limb that separates the two models |
 | a colliding hardware-control run is refused at plan time | The product change: refused before any `Acquisition` is constructed |
-| a well-spaced hardware-control run is NOT refused | The control — a refusal that always fires is not a criterion |
+| a well-spaced hardware-control run is NOT refused | The control — a refusal that always fires is not a criterion. It requires the run to **reach the acquisition**, because "the sequencing refusal did not fire" is also true of a run that died earlier for an unrelated reason |
+| the run asked to authorize hook hardware control | This block must not have removed the operator's authorization of hook hardware writes |
 
 ## If the 4006/4007 limb fails
 

@@ -153,9 +153,39 @@ def test_refusal_limbs_pass_against_the_real_product(tmp_path):
     report = gate.Report()
     gate.run_refusal_limbs(report, tmp_path, tmp_path / "tmp")
     limbs = {l["limb"]: l for l in report.limbs}
-    assert len(limbs) == 2
+    assert len(limbs) == 3
     for name, limb in limbs.items():
         assert limb["status"] == "PASS", f"{name}: {limb['detail']}"
+
+
+def test_the_control_limb_requires_actually_reaching_the_acquisition(tmp_path):
+    """Round 1's control passed while never reaching the engine.
+
+    On the demo machine it reported PASS with the detail 'reached the
+    acquisition (0 constructed)' -- self-contradictory -- because the run had
+    died one step earlier on 'hook_action_plan requires named_stage_envelope or
+    property_envelope' and the limb only asked whether the SEQUENCING refusal
+    had fired. It had not, for entirely the wrong reason.
+
+    The assertion that fixes it is that the acquisition was constructed, so
+    pin that: a run stopped before the engine must FAIL this limb, not pass it.
+    """
+    from microclaw import tools
+
+    real = tools.run_timelapse
+
+    def stops_early(*args, **kwargs):
+        raise ValueError("something unrelated stopped this run")
+
+    report = gate.Report()
+    tools.run_timelapse = stops_early
+    try:
+        gate.run_refusal_limbs(report, tmp_path, tmp_path / "tmp")
+    finally:
+        tools.run_timelapse = real
+    control = [l for l in report.limbs if "NOT refused" in l["limb"]][0]
+    assert control["status"] == "FAIL"
+    assert "did NOT reach the acquisition" in control["detail"]
 
 
 def test_exit_status_is_nonzero_unless_every_limb_passes(engine, tmp_path):

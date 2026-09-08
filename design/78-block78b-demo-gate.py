@@ -213,30 +213,79 @@ def run_refusal_limbs(report: Report, out: Path, tmp: Path):
     from microclaw import tools
     from microclaw.safety import SafetyConstraints, SafetyGuard
 
+    class StrVector:
+        """A Micro-Manager StrVector, which is NOT Python-iterable.
+
+        CLAUDE.md records that a bridge collection answers size()/get(i) and
+        that iterating one raises -- and that a MagicMock hides this by handing
+        back Python-friendly objects. The envelope validation below reads the
+        driver's allowed values through exactly such a collection, so the fake
+        has to be this shape or the limb is testing the mock.
+        """
+
+        def __init__(self, values):
+            self._values = list(values)
+
+        def size(self):
+            return len(self._values)
+
+        def get(self, index):
+            return self._values[index]
+
+        def __iter__(self):
+            raise TypeError("'mmcorej_StrVector' object is not iterable")
+
     ctrl = MagicMock()
     ctrl.core.get_image_width.return_value = 2
     ctrl.core.get_image_height.return_value = 2
     ctrl.core.get_bytes_per_pixel.return_value = 2
     ctrl.core.get_exposure.return_value = 1
+    ctrl.core.get_allowed_property_values.return_value = StrVector(["0", "1"])
+    ctrl.core.get_property.return_value = "0"
     guard = SafetyGuard(SafetyConstraints())
     guard.resolve_in_workspace = lambda path: path
 
     constructed = {"count": 0}
     real_acquisition = tools.Acquisition
+    real_confirm = tools.CONFIRM_FN
+    confirmations = []
+
+    def auto_confirm(message, **kwargs):
+        """Answer the product's hook-hardware-control confirmation.
+
+        This is a real confirmation and it is right that the product asks: the
+        operator is authorizing a hook to write hardware. Answering it here
+        moves no hardware -- `ctrl` is a mock and `Acquisition` is counted and
+        raises -- and the alternative is a gate that stops for a human in the
+        middle of a scripted run. The prompts are recorded and reported.
+        """
+        confirmations.append(message.splitlines()[0] if message else "")
+        return True
 
     def counting(*a, **k):
         constructed["count"] += 1
         raise RuntimeError("Acquisition constructed")
 
-    plan = [{"hook_event_index": 0, "actions": [
-        {"kind": "SetDeviceProperty", "value": "1"}]}]
+    # One entry per frame: the plan's indices must be exactly 0..n-1.
+    plan = [{"hook_event_index": index,
+             "actions": [{"kind": "SetDeviceProperty", "value": "1"}]}
+            for index in range(5)]
+    # A hook_action_plan REQUIRES its envelope. Round 1 of this gate omitted it,
+    # so the well-spaced control died on
+    # "hook_action_plan requires named_stage_envelope or property_envelope"
+    # one step BEFORE the acquisition -- and still passed, because the limb only
+    # asked whether the sequencing refusal fired. It had not, for the wrong
+    # reason. Supply the envelope so the control genuinely reaches the engine.
+    envelope = {"device": "D", "property": "P", "allowed_values": ["1"],
+                "max_writes": 8, "restore": "entry"}
     try:
         tools.Acquisition = counting
+        tools.CONFIRM_FN = auto_confirm
         # Colliding: must refuse, and must not construct an Acquisition.
         error = None
         try:
             tools.run_timelapse(ctrl, guard, 5, 0.0001, str(tmp),
-                                hook_action_plan=plan)
+                                hook_action_plan=plan, property_envelope=envelope)
         except Exception as exc:
             error = exc
         refused = isinstance(error, ValueError) and "truncated millisecond" in str(error)
@@ -253,19 +302,36 @@ def run_refusal_limbs(report: Report, out: Path, tmp: Path):
         error = None
         try:
             tools.run_timelapse(ctrl, guard, 5, 0.05, str(tmp),
-                                hook_action_plan=plan)
+                                hook_action_plan=plan, property_envelope=envelope)
         except Exception as exc:
             error = exc
         sequencing_refusal = (isinstance(error, ValueError)
                               and "truncated millisecond" in str(error))
+        # PASS requires the run to have REACHED the engine, not merely to have
+        # avoided this one refusal. "The sequencing refusal did not fire" is
+        # also true of a run that died earlier for an unrelated reason, and a
+        # control that cannot distinguish those is not a control.
+        reached = constructed["count"] > 0
         report.add("a well-spaced hardware-control run is NOT refused",
-                   "FAIL" if sequencing_refusal else "PASS",
+                   "PASS" if reached and not sequencing_refusal else "FAIL",
                    f"reached the acquisition ({constructed['count']} constructed)"
-                   if not sequencing_refusal else
-                   f"wrongly refused: {str(error)[:200]!r}",
-                   "the sequencing refusal firing on distinct deadlines")
+                   if reached and not sequencing_refusal else
+                   f"did NOT reach the acquisition ({constructed['count']} "
+                   f"constructed); stopped by "
+                   f"{type(error).__name__ if error else 'nothing'}: "
+                   f"{str(error)[:200]!r}",
+                   "the sequencing refusal firing on distinct deadlines, OR the "
+                   "run failing to reach the acquisition at all")
+        report.add("the run asked to authorize hook hardware control",
+                   "PASS" if confirmations else "FAIL",
+                   f"confirmations raised: {confirmations}" if confirmations else
+                   "no confirmation was requested for a run that authorizes a "
+                   "hook to write a device property; this block must not have "
+                   "removed one",
+                   "a hardware-control run authorizing itself silently")
     finally:
         tools.Acquisition = real_acquisition
+        tools.CONFIRM_FN = real_confirm
 
 
 def main(argv=None):
