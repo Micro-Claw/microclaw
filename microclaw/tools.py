@@ -1578,7 +1578,12 @@ def _emitted_acquisition_with_restoration(
         "# proved the failure path matters: a serial fault mid-run left the axis",
         "# parked where an emitted 'entry' policy had promised to return it.",
         "_restoration_attempted = {'named-stage': False, 'property': False}",
+        "_cleanup_done = False",
         "def _restore_hardware():",
+        "    global _cleanup_done",
+        "    if _cleanup_done:",
+        "        return []",
+        "    _cleanup_done = True",
         "    failures = []",
         "    for label, method_name, result_name in (",
         "        ('named-stage', 'restore_named_stage', '_named_stage_restoration'),",
@@ -1592,7 +1597,12 @@ def _emitted_acquisition_with_restoration(
         "            setattr(hook, result_name, method())",
         "        except Exception as restore_exc:",
         "            failures.append(f'{label} restoration failed: {restore_exc}')",
+        "    try:",
+        "        mm.refresh_gui()",
+        "    except Exception:",
+        "        pass",
         "    return failures",
+        "print('GUI controls can lag during a run; they synchronise once at teardown, after hardware restoration.')",
         "try:",
         *["    " + line for line in acquisition_lines],
         "except Exception as acquisition_exc:",
@@ -2319,17 +2329,11 @@ def export_session_script(
         *(["", _channel_verification_source().rstrip()] if channel_writes else []),
         "",
         "core = Core()",
-        # A property write calls ctrl.refresh_gui(); the stand-in used to be a
-        # bare SimpleNamespace, so the emitted script died on its FIRST property
-        # write with AttributeError -- measured on M5, 2026-08-17, after the
-        # script had compiled and been grepped clean. Reproduce the live
-        # behaviour rather than stubbing it: an EMU rig genuinely needs the
-        # repaint (design/43b), and it is best-effort and never raises, exactly
-        # as MicroscopeController.refresh_gui.
+        # Per-write refresh is removed by operator decision (design/78).
+        # Keep this attribute for the single coalesced teardown refresh.
         *(["def _refresh_gui():",
-           "    # Best-effort repaint, as MicroscopeController.refresh_gui does:",
-           "    # an EMU rig genuinely needs it (design/43b), and a GUI failure",
-           "    # must never turn a successful hardware write into a failed one.",
+           "    # GUI controls may lag during acquisition. Synchronise once",
+           "    # after restoration; a repaint failure must never fail cleanup.",
            "    # Imported here rather than at the top so a headless run, or a",
            "    # Micro-Manager without Studio, degrades to a no-op.",
            "    try:",
@@ -4659,6 +4663,12 @@ def _acquire_with_hooks(
             close_reservation or waiter_must_close_reservation
         ):
             reservation.close()
+        # One synchronous repaint, last: listeners may perform slow device
+        # reads. Neither their failure nor a controller fake may change cleanup.
+        try:
+            ctrl.refresh_gui()
+        except Exception:
+            pass
         return failures
 
     try:
@@ -4694,6 +4704,13 @@ def _acquire_with_hooks(
             "dataset_path": dataset_path,
             "frames_planned": plan.frames if plan is not None else None,
         }, lifecycle=True, publish=False)
+        if hook is not None:
+            _emit_acquisition_diagnostic({
+                "type": "acquisition_diagnostic",
+                "message": "GUI controls can lag during a run; they synchronise "
+                           "once at teardown, after hardware restoration.",
+                "dataset_path": dataset_path,
+            })
         acq.acquire(events)
 
         outcome: dict[str, Any] = {}

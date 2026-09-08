@@ -15,6 +15,16 @@ from microclaw import autofocus, controller, image_analysis, tools
 from microclaw.tools_schema import TOOLS
 
 
+
+@pytest.fixture(autouse=True)
+def _headless_studio(monkeypatch):
+    # Executed exports must not connect a real bridge in the unit suite.
+    # Tests of repaint behavior replace this with their counting Studio fake.
+    def unavailable():
+        raise RuntimeError("Studio unavailable in headless unit test")
+    monkeypatch.setattr("pycromanager.Studio", unavailable)
+
+
 class Guard:
     def __init__(self, root):
         self.root = Path(root)
@@ -3288,16 +3298,13 @@ def test_a_multiline_recorded_error_stays_inside_its_comment(tmp_path, label, re
     assert "Serial command failed" in source
 
 
-def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypatch):
-    """Run the emitted script, do not just compile it.
-
-    M5, 2026-08-17: the exported script compiled, passed every grep in the
-    runbook, and then died on its FIRST property write with
-    `AttributeError: 'types.SimpleNamespace' object has no attribute
-    'refresh_gui'`. `_apply_property` calls `ctrl.refresh_gui()`, which the live
-    controller has and the emitted stand-in did not. Compilation could never
-    have caught it; executing the dispatch does.
-    """
+@pytest.mark.parametrize("acquisition_failure", [False, True])
+@pytest.mark.parametrize("restoration_failure", [False, True])
+@pytest.mark.parametrize("refresh_failure", [False, True])
+def test_emitted_property_run_actually_dispatches_its_writes(
+    tmp_path, monkeypatch, acquisition_failure, restoration_failure, refresh_failure,
+):
+    """Execute the inlined adapter and both teardown paths against bridge fakes."""
     from microclaw.hook_manager import save_hook
     import microclaw.hook_manager as manager
 
@@ -3315,24 +3322,36 @@ def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypat
         "hook_strategy": "planned_property",
         "property_envelope": {"device": "Wheel", "property": "State",
                               "allowed_values": ["A", "B"], "max_writes": 2,
-                              "restore": "leave"},
+                              "restore": "entry"},
         "hook_action_plan": [
             {"hook_event_index": 0, "actions": [{"kind": "SetDeviceProperty", "value": "A"}]},
             {"hook_event_index": 1, "actions": [{"kind": "SetDeviceProperty", "value": "B"}]},
         ],
     })])
 
-    writes, repaints = [], []
+    writes, repaints, order, reads = [], [], [], []
+    exposure_refresh_counts, write_read_counts = [], []
+    exited = False
 
     class DemoCore:
-        def set_property(self, d, p, v): writes.append((d, p, v))
-        def get_property(self, d, p): return writes[-1][2] if writes else "A"
+        def set_property(self, d, p, v):
+            writes.append((d, p, v))
+            order.append("restore" if exited else "write")
+            if exited and restoration_failure:
+                raise RuntimeError("restore broken")
+        def get_property(self, d, p):
+            reads.append((d, p))
+            return writes[-1][2] if writes else "A"
         def get_property_type(self, _d, _p): return "String"
         def wait_for_device(self, _d): pass
 
     class DemoStudio:
         def app(self): return self
-        def refresh_gui_from_cache(self): repaints.append(True)
+        def refresh_gui_from_cache(self):
+            repaints.append(True)
+            order.append("refresh")
+            if refresh_failure:
+                raise RuntimeError("GUI broken")
 
     # The emitted helper imports Studio lazily, so patch it where it is looked up.
     monkeypatch.setattr("pycromanager.Studio", DemoStudio)
@@ -3341,10 +3360,23 @@ def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypat
         """Drives pre_hardware_hook_fn per event, as the engine does."""
         def __init__(self, **kwargs): self._hooks = kwargs
         def __enter__(self): return self
-        def __exit__(self, *args): pass
+        def __exit__(self, *args):
+            nonlocal exited
+            exited = True
+            order.append("exit")
+            if refresh_failure:
+                # Exercise the caller's protection too, independently of the
+                # emitted helper's own best-effort Studio wrapper.
+                namespace["mm"].refresh_gui = DemoStudio().refresh_gui_from_cache
+            if acquisition_failure:
+                raise RuntimeError("acquisition broken")
         def acquire(self, events):
             for event in events:
+                before = len(reads)
                 self._hooks["pre_hardware_hook_fn"](event)
+                exposure_refresh_counts.append(len(repaints))
+                write_read_counts.append(len(reads) - before)
+                order.append("exposure")
 
     def fake_events(**kwargs):
         return [{"axes": {"time": i}} for i in range(kwargs.get("num_time_points", 2))]
@@ -3352,13 +3384,51 @@ def test_emitted_property_run_actually_dispatches_its_writes(tmp_path, monkeypat
     # Strip the real pycromanager import so the fakes above are what runs, the
     # same way the rejected-then-successful test does.
     runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
-    exec(compile(runnable, "routine.py", "exec"), {
+    namespace = {
         "__file__": str(tmp_path / "routine.py"),
         "Core": DemoCore, "Acquisition": FakeAcquisition,
         "multi_d_acquisition_events": fake_events,
-    })
-    assert writes == [("Wheel", "State", "A"), ("Wheel", "State", "B")]
-    assert repaints, "the emitted script never repainted; an EMU rig needs this"
+    }
+    if acquisition_failure or restoration_failure:
+        with pytest.raises(RuntimeError) as caught:
+            exec(compile(runnable, "routine.py", "exec"), namespace)
+    else:
+        exec(compile(runnable, "routine.py", "exec"), namespace)
+    assert exposure_refresh_counts == [0, 0], "per-write refresh before exposure"
+    assert write_read_counts == [1, 1], "duplicate write read-back"
+    if acquisition_failure or restoration_failure:
+        expected = []
+        if acquisition_failure:
+            expected.append("acquisition broken")
+        if restoration_failure:
+            expected.append("property restoration failed: property write failed: restore broken")
+        assert str(caught.value) == "; ".join(expected)
+    assert writes == [("Wheel", "State", "A"), ("Wheel", "State", "B"),
+                      ("Wheel", "State", "A")]
+    assert repaints == [True]
+    assert order == ["write", "exposure", "write", "exposure", "exit", "restore", "refresh"]
+    # Idempotence: reaching cleanup again cannot issue another repaint.
+    namespace["_restore_hardware"]()
+    assert repaints == [True]
+    # Executed code really is the live adapter extracted via inspect.getsource.
+    import inspect
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    live = inspect.getsource(UntrustedHookAdapter._apply_property)
+    emitted = ast.get_source_segment(runnable, next(
+        node for node in ast.walk(ast.parse(runnable))
+        if isinstance(node, ast.FunctionDef) and node.name == "_apply_property"
+    ))
+    # The exporter strips microclaw imports to keep the program standalone.
+    def without_imports(source):
+        import textwrap
+        tree = ast.parse(textwrap.dedent(source))
+        tree.body[0].body = [node for node in tree.body[0].body
+                             if not isinstance(node, ast.ImportFrom)]
+        doc = ast.get_docstring(tree.body[0])
+        if doc is not None:
+            tree.body[0].body[0].value.value = doc
+        return ast.dump(tree, include_attributes=False)
+    assert without_imports(live) == without_imports(emitted)
 
 
 @pytest.mark.parametrize(

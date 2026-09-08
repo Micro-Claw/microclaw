@@ -1195,3 +1195,77 @@ def test_expired_bound_uses_explicit_policy_name(monkeypatch):
     finally:
         BlockingAcquisition.release.set()
     assert caught.value.expired_bound == "measured_test_bound"
+
+
+@pytest.mark.parametrize("acquisition_failure", [None, "submit", "exit"])
+@pytest.mark.parametrize("restoration_failure", [False, True])
+@pytest.mark.parametrize("refresh_failure", [False, True])
+def test_cleanup_refresh_once_last_preserves_failures(
+    monkeypatch, acquisition_failure, restoration_failure, refresh_failure,
+):
+    order = []
+    class Acquisition:
+        _exception = None
+        _dataset_disk_location = "/data/run"
+        def __init__(self, **kwargs): pass
+        def acquire(self, events):
+            if acquisition_failure == "submit":
+                raise RuntimeError("submit failed")
+        def __exit__(self, *args):
+            order.append("exit")
+            if acquisition_failure == "exit":
+                raise RuntimeError("exit failed")
+    class Hook:
+        def restore_named_stage(self):
+            order.append("stage outcome")
+            if restoration_failure:
+                raise RuntimeError("stage broken")
+            return {"restored": True}
+        def restore_property(self):
+            order.append("property outcome")
+            if restoration_failure:
+                raise RuntimeError("property broken")
+            return {"restored": True}
+    def refresh():
+        order.append("refresh")
+        if refresh_failure:
+            raise RuntimeError("GUI broken")
+    ctrl = SimpleNamespace(refresh_gui=refresh)
+    reservation = SimpleNamespace(
+        close=lambda: order.append("close"), completed_frames=0,
+    )
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    if acquisition_failure or restoration_failure:
+        with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+            _call_acquire(ctrl, _guard(), "/data", "run", [], hook=Hook(),
+                          reservation=reservation)
+        message = str(caught.value)
+        expected = []
+        if acquisition_failure:
+            expected.append(acquisition_failure + " failed")
+        if restoration_failure:
+            expected += ["named-stage restoration failed: stage broken",
+                         "property restoration failed: property broken"]
+        assert message == "; ".join(expected)
+        assert "GUI broken" not in message
+    else:
+        assert _call_acquire(ctrl, _guard(), "/data", "run", [], hook=Hook(),
+                             reservation=reservation) == "/data/run"
+    assert order == ([] if acquisition_failure == "submit" else ["exit"]) + [
+        "stage outcome", "property outcome", "close", "refresh",
+    ]
+
+
+def test_acquisition_sink_discloses_gui_lag_without_confirmation(monkeypatch):
+    received = []
+    class Acquisition:
+        _exception = None
+        def __init__(self, **kwargs): pass
+        def acquire(self, events): pass
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    monkeypatch.setattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", received.append, raising=False)
+    _call_acquire(_ctrl(), _guard(), "/data", "run", [], hook=object())
+    messages = [event.get("message", "") for event in received]
+    assert sum("GUI controls can lag" in message and "restoration" in message
+               for message in messages) == 1

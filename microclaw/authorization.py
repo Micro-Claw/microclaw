@@ -1825,13 +1825,16 @@ def read_back_after_failed_write(
     }
 
 
-def _verify_property(core: Any, device: str, prop: str, expected: str) -> None:
+def _verify_property(core: Any, device: str, prop: str, expected: str) -> str:
+    """Verify one fresh hardware observation and return it for the audit."""
     actual = str(core.get_property(device, prop))
     property_type = _property_type_name(core, device, prop)
     if not _property_values_equal(property_type, actual, expected):
         raise ChannelPlanError(
             f"Read-back verification failed for {device}.{prop}: requested {expected!r}, got {actual!r}."
         )
+
+    return actual
 
 
 def _wait_for_plan_device(core: Any, device: str) -> None:

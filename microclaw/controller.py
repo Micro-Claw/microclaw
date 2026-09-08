@@ -795,9 +795,11 @@ class MicroscopeController:
     def refresh_gui(self) -> None:
         """Repaint Micro-Manager's GUI from its current property cache.
 
-        MMCore's cache is already current after a write through the core, while
-        a full hardware refresh adds reads that can time out on a flaky serial
-        link. Repainting is best-effort and never raises: a GUI failure must not
+        MMCore's cache is already current after a write through the core.
+        Even this cache repaint can synchronously trigger listeners that read
+        unrelated devices, adding serial traffic, delays, and timeouts. Hook
+        acquisitions coalesce it after restoration; GUI controls can lag during
+        a run. Repainting is best-effort and never raises: a GUI failure must not
         turn a successful hardware write into a failed tool call. The failure is
         logged rather than silently discarded so operators and tests can see it;
         logging is itself guarded to keep the no-raise contract unconditional.
