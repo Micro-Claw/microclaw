@@ -264,6 +264,10 @@ HOOK_CAPABILITY_ARGS = (
     "illumination_envelope", "artifact_limits", "named_stage_envelope",
     "property_envelope", "hook_action_plan",
 )
+# artifact_limits budgets disk output; it does not authorize hardware control.
+HOOK_HARDWARE_CAPABILITY_ARGS = tuple(
+    name for name in HOOK_CAPABILITY_ARGS if name != "artifact_limits"
+)
 
 
 def emits(renderer: Callable[[dict[str, Any]], str]):
@@ -1695,7 +1699,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             inspect.getsource(_refuse_sequenced_time_axis),
             f"_refuse_sequenced_time_axis({params.get('n_frames')!r}, "
             f"{params['interval_s']!r}, hook=hook, hardware_actions="
-            f"{any(params.get(key) is not None for key in ('hook_action_plan', 'named_stage_envelope', 'property_envelope', 'illumination_envelope'))!r})",
+            f"{any(params.get(key) is not None for key in HOOK_HARDWARE_CAPABILITY_ARGS)!r})",
         ])
     from microclaw.authorization import CHANNEL_CONFIG_GROUP
     channel = params.get("channel")
@@ -5202,9 +5206,10 @@ def run_timelapse(
     if hook_action_plan is None:  # A fixed plan was checked above, before hook setup.
         _refuse_sequenced_time_axis(
             n_frames, interval_s, hook=hook,
-            hardware_actions=hook is not None and any(value is not None for value in (
-                illumination_envelope, named_stage_envelope, property_envelope,
-            )),
+            hardware_actions=hook is not None and any(
+                value is not None for key, value in locals().items()
+                if key in HOOK_HARDWARE_CAPABILITY_ARGS
+            ),
         )
     try:
         # Unconditional and ahead of set_exposure: a capability with no hook to
