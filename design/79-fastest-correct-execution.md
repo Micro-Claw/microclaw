@@ -238,11 +238,60 @@ can constrain, observe, stop and export. Design/78 owns the htSMLM evaluation.
   improvements and unresolved costs here; unowned work goes to design/70. Do not
   start a backend migration just because Python is present.
 
+## Block 79a as assigned, 2026-09-08
+
+Start commit `2b025e0`, branch `design79/make-the-time-visible`. Six decisions
+the coordinator made before the block was handed over, so the implementer is not
+inventing them and the reviewer is not renegotiating them.
+
+- **There is no enable/disable switch, and the acceptance criterion above is
+  reworded accordingly.** "Verify that disabled instrumentation adds no bridge
+  calls" presumed a toggle. A monotonic span is two `time.monotonic()` reads and
+  no bridge round trip, so a flag would be a layer guarding nothing —
+  `CLAUDE.md`'s "don't add layers". The criterion becomes: **spans are
+  unconditional, and a test asserts that adding them adds no bridge call at
+  all**, exactly as 78a's `test_property_write_spans_attribute_delay_without_
+  extra_bridge_calls` already asserts through `calls == [...]`.
+- **"Generalize 78a's write record" means the named-stage write and the
+  teardown.** `_apply_property` has spans; `_apply_named_stage` (`hook_decisions.py:591`)
+  has none, and it is the other budget-bounded hardware write. And
+  `finish_owned_cleanup` (`tools.py:4675`) is where the surviving `refresh_gui`
+  runs — the ~2.3 s EMU fan-out 78a measured. **Without a span there, "a slow GUI
+  callback" is not distinguishable from anything**, which is the one attribution
+  the acceptance criterion names by hand. Both are per-run or per-budgeted-write,
+  never per frame.
+- **The histogram gets more edges between 0.5 and 5 s, and the payload stops
+  emitting zero bins.** A fixed tuple is bounded by construction, which satisfies
+  "bounded memory" without a quantile estimator nobody needs; a t-digest here
+  would be a layer. But 35 edges emitted in full at up to 1 Hz is output that is
+  ~97% zeros — M5 line 31 carried 22 empty rows around one populated one. Emit
+  the populated rows only, under a key that says so. The edge tuple stays pinned
+  by a test, so the axis is still a documented constant.
+- **`median_le_s` / `p95_le_s` clamp into `[min_s, max_s]` and keep their names.**
+  They are upper bounds on a quantile and the `_le_` suffix is load-bearing; the
+  defect is that the bound is loose, not that it is a bound. M5 line 31 reported
+  `median_le_s: 5.0` beside `max_s: 3.203`.
+- **The route a run took is reported in 77b's existing vocabulary, not a new
+  one.** `run_multi_position_protocol` already returns a `timing` block whose
+  `strategy` names the route (`tools.py:7630`). `run_timelapse` and `run_zstack`
+  return no such thing, so the model cannot tell a hardware-sequenced burst from
+  a software-paced dispatch from a hooked run except by re-deriving it from its
+  own arguments. Report the route **as executed**, from the same `_sequenced_ms`
+  predicate 78b shipped — never a second copy of that arithmetic, and never a
+  millisecond threshold.
+- **The replay instrument is the implementer's; running it live is a gate step.**
+  It costs API tokens and needs network, which the runner sandbox does not have.
+  So the block ships `design/79-block79a-replay.py` and its bridge-shaped
+  selftest, copied in shape from `design/77-block77a-replay.py`, and the
+  coordinator runs it. Its two arms are fixtures **matching the schema this block
+  actually ships** — one whose spans establish the refresh, one whose spans do
+  not — and the second arm's pass condition is "not attributed", not silence.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 79a | — | — | — | — | — |
+| 79a | `design79/make-the-time-visible` | `2b025e0` | codex | — | — |
 | 79b | — | — | — | — | — |
 | 79c | — | — | — | — | — |
 
