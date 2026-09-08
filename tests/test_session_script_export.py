@@ -3648,7 +3648,7 @@ def test_emitted_hardware_restoration_preserves_acquisition_failure(
     else:
         tool_name = "run_timelapse"
         params = {
-            "n_frames": 2, "interval_s": 0, "save_dir": "session",
+            "n_frames": 2, "interval_s": .05, "save_dir": "session",
             "name": "fixed", "hook_strategy": "faulting_stage",
             "named_stage_envelope": envelope,
             "hook_action_plan": [
@@ -4827,6 +4827,12 @@ def test_80b_image_hooks_match_live_state_writes_and_logs(tmp_path, hooked_engin
     hp = {"target_mean": 100} if strategy == "intensity_adaptive" else {}
     params = {**_80B_BASE, "hook_strategy": strategy, "hook_params": hp, "log_path": "images.json",
               "protocol_params": {"n_frames": 2, "interval_s": 0}}
+    # Hardware-control fixtures need noncolliding deadlines; filtering does not.
+    interval = 0 if strategy == "position_filter" else .05
+    order = "ptcz" if strategy == "position_filter" else "tpcz"
+    params["protocol_params"]["interval_s"] = interval
+    if interval:
+        params["acquisition_order"] = "time_then_position"
     export_guard = Guard(tmp_path)
     if mode == "bounds":
         if strategy == "focus_feedback":
@@ -4836,7 +4842,7 @@ def test_80b_image_hooks_match_live_state_writes_and_logs(tmp_path, hooked_engin
     result = tools.export_session_script(None, export_guard, "routine.py", [call("run_multiposition_acquisition", params)])
     assert result["complete"], result["not_emitted_calls"]
     source = (tmp_path / "routine.py").read_text(encoding="utf-8")
-    events = engine.events(num_time_points=2, time_interval_s=0, order="ptcz",
+    events = engine.events(num_time_points=2, time_interval_s=interval, order=order,
                            xyz_positions=[(1,2,3), (11,2,3)], position_labels=["a", "b"])
     sharp = engine.core.frame()
     frames = ([sharp, np.full_like(sharp, 100), sharp, np.full_like(sharp, 100)]
@@ -5355,3 +5361,54 @@ def test_80c_missing_controller_port_records_unavailable(hooked_engine, plugin_b
     event = {'axes': {'position': 0}}
     assert hook.post_hardware_hook_fn(event) is event
     assert state.focuses == 1
+
+
+@pytest.mark.parametrize('n,interval', [(5, .0001), (200001, .001)])
+@pytest.mark.parametrize('route', ['plan_only', 'plan_hook', 'focus', 'multiposition'])
+def test_emitted_sequencing_refusal_executes_before_acquisition(tmp_path, monkeypatch, n, interval, route):
+    from unittest.mock import MagicMock
+    params = {'n_frames': n, 'interval_s': interval, 'save_dir': 'session'}
+    if route.startswith('plan'):
+        params.update(
+            named_stage_envelope={'device': 'TITIRF', 'min_um': 0, 'max_um': 7000,
+                                  'max_writes': n, 'restore': 'leave'},
+            hook_action_plan=[{'hook_event_index': k, 'actions': [
+                {'kind': 'MoveNamedStage', 'position_um': 1000}]} for k in range(n)])
+        if route == 'plan_hook':
+            from microclaw.hook_manager import save_hook
+            import microclaw.hook_manager as manager
+            hooks_dir = tmp_path / 'hooks'
+            monkeypatch.setattr(manager, 'HOOKS_DIR', hooks_dir)
+            monkeypatch.setattr(manager, 'MANIFEST', hooks_dir / 'manifest.json')
+            save_hook('fixture', 'class Hook:\n    def analyze_frame(self, image, metadata):\n        return None\n',
+                      'fixture', source='user_provided')
+            params['hook_strategy'] = 'fixture'
+    else:
+        params['hook_strategy'] = 'focus_feedback'
+    tool = 'run_timelapse'
+    if route == 'multiposition':
+        tool = 'run_multiposition_acquisition'
+        params = {'protocol': 'timelapse', 'protocol_params': {'n_frames': n, 'interval_s': interval},
+                  'positions': [{'name': 'a', 'x_um': 0, 'y_um': 0}],
+                  'acquisition_order': 'time_then_position', 'save_dir': 'session',
+                  'hook_strategy': 'focus_feedback'}
+    _, result, source = export(tmp_path, completed_call(tool, params, {'status': 'Acquisition complete.'}))
+    assert result['emitted_calls'] == 1, source[-1000:]
+    acquisition = MagicMock(side_effect=RuntimeError('counted Acquisition construction'))
+    core = MagicMock()
+    core.get_position.return_value = 500
+    core.get_image_width.return_value = 2
+    core.get_image_height.return_value = 2
+    runnable = re.sub(r'^from pycromanager import .*$', '', source, flags=re.M)
+    error = None
+    try:
+        exec(compile(runnable, 'routine.py', 'exec'), {
+            '__file__': str(tmp_path / 'routine.py'), 'Core': lambda: core,
+            'Acquisition': acquisition,
+            'multi_d_acquisition_events': tools.multi_d_acquisition_events,
+        })
+    except (ValueError, RuntimeError) as exc:
+        error = exc
+    assert acquisition.call_count == 0
+    assert isinstance(error, ValueError)
+    assert 'truncated millisecond' in str(error)

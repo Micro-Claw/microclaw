@@ -154,8 +154,9 @@ Pycro-manager supplies either one event dict or, when hardware sequencing is
 active, a list of event dicts. A callback must return the same shape it received;
 a one-element list is ordinary and must be handled. Per-frame planned hardware
 actions cannot run between exposures in a multi-event hardware-sequenced burst,
-so Microclaw refuses that burst before its first exposure and recommends a
-nonzero ``interval_s`` to disable time-axis sequencing.
+so Microclaw refuses the fixed plan when any consecutive
+``int(k * interval_s * 1000.0)`` deadlines match across its frame count.
+Choose an interval whose truncated millisecond deadlines remain distinct.
 
 ``run_multiposition_acquisition`` accepts one hook name or an ordered list.
 Post-hardware callbacks run in declared order and each receives the event

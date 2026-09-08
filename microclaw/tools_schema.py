@@ -113,10 +113,10 @@ _HOOK_ACTION_PLAN_SCHEMA = {
         "using exactly {'kind': 'MoveNamedStage', 'position_um': 12.5} or "
         "{'kind': 'SetDeviceProperty', 'value': 'On'}. Needs no hook_strategy -- "
         "a fixed plan carries itself -- but does need named_stage_envelope or "
-        "property_envelope to authorize it, and on run_timelapse a NONZERO "
-        "interval_s: interval_s=0 lets the engine hardware-sequence the time "
-        "axis and a sequenced burst runs no software between exposures, so a "
-        "per-frame plan cannot be honoured."
+        "property_envelope to authorize it. For a timelapse, every consecutive "
+        "int(k * interval_s * 1000.0) deadline must differ across n_frames; "
+        "equal truncated millisecond deadlines allow hardware-sequencing and "
+        "are refused at plan time for per-frame hardware control."
     ),
     "items": {"type": "object", "properties": {
         "hook_event_index": {"type": "integer", "minimum": 0},
@@ -681,8 +681,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_timelapse",
         "description": (
             "Run a fixed timelapse, plain or with an optional hook. A fixed "
-            "hook_action_plan needs no hook_strategy, and a per-frame plan requires "
-            "a nonzero interval_s. A hook may adapt "
+            "hook_action_plan needs no hook_strategy. A hook may adapt "
             "settings between frames, or measure every frame without changing the "
             "acquisition; for observation use snr_observer and call read_hook_log "
             "afterwards. Hooks cannot skip frames or stop early; use "
@@ -710,12 +709,13 @@ TOOLS: list[dict[str, Any]] = [
                     "n_frames or max_frames; max_frames requires hook_strategy."
                 )},
                 "interval_s": {"type": "number", "description": (
-                    "Interval between frames in seconds. Must be nonzero when "
-                    "hook_action_plan is set -- 0 lets the engine "
-                    "hardware-sequence the time axis, which leaves no software "
-                    "between exposures for a per-frame action. With n_frames>1 this "
-                    "is one burst, and Microclaw's Stop button and engine abort may "
-                    "not stop it promptly; thousands of further exposures may occur."
+                    "Interval between frames in seconds. Fixed runs with per-frame "
+                    "hardware control (including hook_action_plan) require distinct "
+                    "consecutive int(k * interval_s * 1000.0) deadlines throughout "
+                    "n_frames; equal truncated millisecond "
+                    "deadlines allow hardware-sequencing and are refused at plan time. "
+                    "Observation-only bursts remain allowed. At zero interval, the Stop button "
+                    "and engine abort may not stop a burst promptly."
                 )},
                 "channel": {"type": "string", "description": "Channel preset (optional)."},
                 "exposure_ms": {"type": "number", "description": "Exposure in ms (optional)."},

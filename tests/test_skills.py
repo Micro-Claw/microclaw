@@ -177,7 +177,7 @@ def test_smlm_skill_distinguishes_fixed_and_adaptive_timelapse_routes():
     assert "authorized dose cap" in density_flat
     assert "cannot widen" in density_flat
     assert "Do not combine it with" in density_flat
-    assert "spans more than one frame" in interval_section
+    assert "int(k * interval_s * 1000.0)" in interval_section
     assert "slows acquisition without reducing background" in interval_section
     assert "the operator may pulse" in dstorm_section
     assert "The operator gradually increases" in dstorm_section
@@ -193,7 +193,8 @@ def test_smlm_skill_distinguishes_fixed_and_adaptive_timelapse_routes():
     assert "no automatic final restoration" in density_flat
     assert "device stays at the last accepted value" in density_flat
     assert "not shutter control" in density_flat
-    assert "writes land asynchronously" in density_flat
+    assert "refused at plan time" in density_flat
+    assert "Observation-only zero-interval bursts remain allowed" in density_flat
     assert "Image-driven `SetDeviceProperty` and `MoveNamedStage` are refused" in density_flat
 
 

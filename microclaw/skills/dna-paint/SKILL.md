@@ -296,10 +296,10 @@ apply unasked.
 8. Set EMCCD readout mode for lowest noise consistent with the exposure time (Step 45).
 9. Acquire with `run_timelapse(n_frames=7500, interval_s=0, exposure_ms=300)` — `interval_s=0`
    is back-to-back frames, and the dataset is saved to disk by the acquisition itself
-   (Steps 46–47). **`interval_s=0` lets the engine hardware-sequence the time axis, which
-   means a per-frame hook action cannot run between exposures**; a hook that needs one
-   requires a nonzero interval, and microclaw refuses the combination rather than silently
-   dropping the action.
+   (Steps 46–47). Per-frame hardware control instead requires distinct consecutive
+   `int(k * interval_s * 1000.0)` deadlines throughout the frame count. Equal truncated
+   millisecond deadlines allow hardware-sequencing with no software between exposures;
+   Microclaw refuses such fixed plans before acquisition. Observation-only bursts remain allowed.
 10. Let the sample equilibrate 5–15 min, then acquire (Step 48).
 
 ### E. Reconstruction (pointer)

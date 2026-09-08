@@ -362,6 +362,17 @@ because a block looks small.
    patching, enumerate every path it names, and check that the ones which must
    exist do. Never trust the `sed`.
 
+   **And check the launcher can be stopped.** In POSIX `sh` a `trap ... TERM`
+   handler *returns and execution continues*, so `trap 'rmdir "$lock"' TERM`
+   makes a waiter survive `kill`, drop its lock, and launch anyway. design/78's
+   07:00 chain did exactly that on 2026-09-08: it outlived its kill, held no
+   lock to stop it, and started a redundant runner turn 80 minutes later that
+   burned most of a credit window. The handler must `exit`. The wider lesson is
+   about the selftest, not the trap — that launcher had been exercised against a
+   stub for retry, locking, ordering and failure isolation, and **not once for
+   whether it could be stopped**. A launcher you cannot stop is a launcher that
+   will run at the worst possible moment.
+
    **A long wait before launching work must outlive the session.** A
    `run_in_background` Bash task, `Monitor` and `CronCreate` are all
    session-scoped and die with it — measured: a tracked waiter was killed at 52
@@ -611,8 +622,39 @@ input, ask which fixtures produce that shape, and write one that does.
   (`test_acquisition.py:421`, `:446`). Handle both, return the same shape, and
   treat a one-element list as ordinary. A **per-frame** hardware action cannot be
   honoured inside a multi-event batch — the burst runs with no software between
-  exposures — so refuse it before the first exposure and tell the caller a
-  nonzero `interval_s` defeats time-axis sequencing.
+  exposures — so refuse it before the first exposure.
+
+  **"Use a nonzero `interval_s`" was the wrong advice, and this contract used to
+  give it.** A caller followed it on M5 at `interval_s = 0.0001` and the engine
+  batched anyway, so the refusal arrived mid-acquisition quoting an instruction
+  that caller had already obeyed. Read off `AcqEngJ-0.39.4` with `javap -c`
+  (design/78, 2026-09-07): `AcquisitionEvent.fromJSON` truncates
+  `min_start_time` to `Long` milliseconds with `d2l`,
+  `getMinimumStartTimeAbsolute` only adds the run's start so it cancels, and
+  `Engine.isSequencable` refuses a differing-t-index pair **only** when those
+  millisecond deadlines differ. So two consecutive frames sequence exactly when
+
+      int(k * interval_s * 1000.0) == int((k + 1) * interval_s * 1000.0)
+
+  and at `time_interval_s == 0` `multi_d_acquisition_events` emits no
+  `min_start_time` at all, which makes every pair sequencable — design/77b's
+  finding from the Java side.
+
+  **There is no safe threshold to quote.** Below 0.001 s every interval collides
+  at frames 0 and 1 and everything above is clean over 2,000 frames, which reads
+  as a 1 ms rule; at 200,000 frames `interval_s = 0.001` collides at frames
+  **4006/4007**, because `4007 * 0.001 * 1000` truncates to 4006. Safety depends
+  on the frame count as well as the interval, both are plan-time arguments, so
+  **evaluate the predicate and refuse at plan time** — never compare against a
+  constant and never write a millisecond threshold into a message, a parameter
+  description or a skill. `design/78-sequencing-deadline-scan.py` reproduces
+  both scans.
+
+  **Observed on a running engine** (block 78b's demo gate, 2026-09-08): over
+  4008 frames at `interval_s = 0.001`, AcqEngJ produced exactly one burst, at
+  exactly frames 4006/4007, and the predicted collision set equalled the
+  observed set over the whole run. Every shorter run at that interval was clean.
+  The prediction is confirmed behaviour, not just arithmetic.
 - **You cannot add a key to an event.** `event_to_json` / `event_from_json`
   serialise a **closed** key set (`axes`, `stage_positions`, `x`/`y`/`z`,
   `exposure`, `config_group`, `min_start_time`, `timeout_ms`, `camera`, `tags`,

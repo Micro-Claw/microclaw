@@ -264,6 +264,10 @@ HOOK_CAPABILITY_ARGS = (
     "illumination_envelope", "artifact_limits", "named_stage_envelope",
     "property_envelope", "hook_action_plan",
 )
+# artifact_limits budgets disk output; it does not authorize hardware control.
+HOOK_HARDWARE_CAPABILITY_ARGS = tuple(
+    name for name in HOOK_CAPABILITY_ARGS if name != "artifact_limits"
+)
 
 
 def emits(renderer: Callable[[dict[str, Any]], str]):
@@ -789,6 +793,11 @@ def _emit_multiposition(params: RecordedParams) -> str:
                           f"hook = {constructor}"]
                 if observation:
                     lines.append(f"hook.threshold_source = {observation['min_snr_source']!r}")
+            if hook and protocol == "timelapse":
+                lines += [inspect.getsource(_sequenced_ms),
+                          inspect.getsource(_refuse_sequenced_time_axis),
+                          f"_refuse_sequenced_time_axis({shape['num_time_points']!r}, "
+                          f"{shape['time_interval_s']!r}, hook=hook)"]
             lines.append(f"events = multi_d_acquisition_events(**{event_shape!r})")
             if hook:
                 # The live runner binds before selecting this same callback triple.
@@ -1694,6 +1703,14 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
          if log_name else "_log_path = None"),
         f"hook = {constructor}",
     ]
+    if kind == "timelapse" and not adaptive_timelapse:
+        common.extend([
+            inspect.getsource(_sequenced_ms),
+            inspect.getsource(_refuse_sequenced_time_axis),
+            f"_refuse_sequenced_time_axis({params.get('n_frames')!r}, "
+            f"{params['interval_s']!r}, hook=hook, hardware_actions="
+            f"{any(params.get(key) is not None for key in HOOK_HARDWARE_CAPABILITY_ARGS)!r})",
+        ])
     from microclaw.authorization import CHANNEL_CONFIG_GROUP
     channel = params.get("channel")
     shape: dict[str, Any]
@@ -5087,6 +5104,34 @@ def shutter_declared_illumination(
             "attempted": attempted, "shuttered": shuttered}
 
 
+def _sequenced_ms(index: int, interval_s: float) -> int:
+    # AcqEngJ AcquisitionEvent.fromJSON uses d2l truncation toward zero on
+    # min_start_time * 1000.0. Preserve the event builder's multiplication order.
+    return int(index * interval_s * 1000.0)
+
+
+def _refuse_sequenced_time_axis(n_frames: int | None, interval_s: float, *,
+                               hardware_actions: bool = False,
+                               hook: Any = None) -> None:
+    """Reject equal consecutive millisecond deadlines when software must act."""
+    hardware_actions = hardware_actions or getattr(type(hook), "_per_frame_hardware", False)
+    hardware_actions = hardware_actions or any(
+        getattr(type(child), "_per_frame_hardware", False)
+        for _name, child in getattr(hook, "named_hooks", ())
+    )
+    if not hardware_actions or n_frames is None:
+        return
+    for index in range(n_frames - 1):
+        if _sequenced_ms(index, interval_s) == _sequenced_ms(index + 1, interval_s):
+            raise ValueError(
+                f"Frames {index}/{index + 1} share a truncated millisecond deadline: "
+                "the engine can hardware-sequence the time axis with no software "
+                "between exposures. Per-frame hardware control is refused at plan time. "
+                "Choose an interval_s whose consecutive int(k * interval_s * 1000.0) "
+                "deadlines differ throughout this run's frame count."
+            )
+
+
 @_acquisition_entry_point
 @emits(_emit_timelapse)
 def run_timelapse(
@@ -5139,13 +5184,9 @@ def run_timelapse(
             "Acquisition and one hook log across every position. A "
             "hook_action_plan has no such route: its indices address one run's events."
         )
-    if hook_action_plan is not None and n_frames is not None and n_frames > 1 and interval_s == 0:
-        raise ValueError(
-            "interval_s=0 lets the engine hardware-sequence the time axis, and a "
-            "sequenced burst runs with no software between exposures, so a "
-            "per-frame hook_action_plan cannot be honoured. Pass a nonzero "
-            "interval_s to disable time-axis sequencing."
-        )
+    _refuse_sequenced_time_axis(
+        n_frames, interval_s, hardware_actions=hook_action_plan is not None,
+    )
     trigger_preflight = None
     if laser_slot is not None:
         trigger_preflight = _verify_trigger_line_armed(ctrl, laser_slot)
@@ -5185,6 +5226,14 @@ def run_timelapse(
     elif carries_plan:
         from microclaw.hook_decisions import PLAN_ONLY, UntrustedHookAdapter
         hook = UntrustedHookAdapter(PLAN_ONLY, log_path=log_path)
+    if hook_action_plan is None:  # A fixed plan was checked above, before hook setup.
+        _refuse_sequenced_time_axis(
+            n_frames, interval_s, hook=hook,
+            hardware_actions=hook is not None and any(
+                value is not None for key, value in locals().items()
+                if key in HOOK_HARDWARE_CAPABILITY_ARGS
+            ),
+        )
     try:
         # Unconditional and ahead of set_exposure: a capability with no hook to
         # carry it refuses before the camera is changed.
@@ -8613,6 +8662,11 @@ def _acquire_positions_with_hook(
                     if hook_strategy else None)
         except ValueError as exc:
             return {"error": str(exc), "results": results}
+        _refuse_sequenced_time_axis(
+            shape_kwargs.get("num_time_points", 1),
+            shape_kwargs.get("time_interval_s", 0), hook=hook,
+            hardware_actions=hook is not None and illumination_envelope is not None,
+        )
         event_shape = dict(shape_kwargs)
         if not sweeps_z and any(p.get("z_um") is not None for p in group):
             current_z = ctrl.core.get_position()
