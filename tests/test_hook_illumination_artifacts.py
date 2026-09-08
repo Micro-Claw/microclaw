@@ -597,7 +597,7 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
 def test_schema_states_the_three_rules_the_rig_kept_rediscovering(): 
     """Every constraint refused at plan time must be findable before the call.
 
-    The parameter descriptions must state the nonzero interval rule and the
+    The parameter descriptions must state the deadline predicate and the
     restoration contract: max_writes counts hook proposals, explicit restore
     targets stay bounded, and the exact recorded entry may be outside proposal
     bounds without consuming a proposal slot. These are statically knowable, and a caller reads
@@ -608,7 +608,7 @@ def test_schema_states_the_three_rules_the_rig_kept_rediscovering():
     from microclaw.tools_schema import TOOLS
     timelapse = next(t for t in TOOLS if t["name"] == "run_timelapse")
     props = timelapse["input_schema"]["properties"]
-    assert "nonzero" in props["interval_s"]["description"]
+    assert "int(k * interval_s * 1000.0)" in props["interval_s"]["description"]
     assert "hook_action_plan" in props["interval_s"]["description"]
     assert "Stop button" in props["interval_s"]["description"]
     assert "engine abort" in props["interval_s"]["description"]
