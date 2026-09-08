@@ -240,7 +240,7 @@ can constrain, observe, stop and export. Design/78 owns the htSMLM evaluation.
 
 ## Block 79a as assigned, 2026-09-08
 
-Start commit `2b025e0`, branch `design79/make-the-time-visible`. Six decisions
+Start commit `c43685d`, branch `design79/make-the-time-visible`. Six decisions
 the coordinator made before the block was handed over, so the implementer is not
 inventing them and the reviewer is not renegotiating them.
 
@@ -291,7 +291,7 @@ inventing them and the reviewer is not renegotiating them.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 79a | `design79/make-the-time-visible` | `2b025e0` | codex | — | — |
+| 79a | `design79/make-the-time-visible` | `c43685d` | codex | — | — |
 | 79b | — | — | — | — | — |
 | 79c | — | — | — | — | — |
 
