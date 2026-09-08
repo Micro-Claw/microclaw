@@ -29,6 +29,30 @@ PASS_TEXT = {
     'unattributed': 'The cost is not attributed. Measure exposure timestamps and callback arrival to isolate the missing time.',
 }
 FAIL_TEXT = 'This overhead is irreducible: the serial link and camera round trip.'
+#: The only fields the Messages API accepts back as input, per block type. The
+#: recorded session and the live response BOTH pass through this: microclaw's
+#: history writes `caller`/`toolset_name` on a tool_use and `parsed_output` on a
+#: text block, and the API rejects them. Measured on the M5 recording: 24 of its
+#: first 30 lines' blocks carry at least one.
+API_BLOCK_FIELDS = {
+    'text': ('type', 'text'), 'tool_use': ('type', 'id', 'name', 'input'),
+    'thinking': ('type', 'thinking', 'signature'),
+    'redacted_thinking': ('type', 'data'),
+    'tool_result': ('type', 'tool_use_id', 'content', 'is_error'),
+}
+
+
+def api_blocks(content):
+    """Strip a recorded or SDK block list down to what the API will accept."""
+    if not isinstance(content, list):
+        return content
+    kept = []
+    for block in content:
+        fields = API_BLOCK_FIELDS.get(block.get('type'))
+        if fields is None:
+            raise ValueError('unsendable recorded block type ' + repr(block.get('type')))
+        kept.append({k: block[k] for k in fields if k in block})
+    return kept
 
 
 def fixture(arm, *, session=None):
@@ -112,13 +136,27 @@ def fixture(arm, *, session=None):
 
 
 def session_fixture():
-    """34-line, session-shaped recording with the call at line 30."""
+    """34-line, session-shaped recording with the call at line 30.
+
+    Written from microclaw's *history writer*, not from the Messages API: line
+    27's blocks carry the `parsed_output` / `caller` / `toolset_name` fields the
+    recording really has and the API really rejects. A fixture shaped like the
+    API instead of like the recording cannot test that they are stripped.
+    """
     prefix = [{'role': 'user' if i % 2 == 0 else 'assistant',
                'content': 'Recorded session context.'} for i in range(29)]
+    prefix[26] = {'role': 'assistant', 'content': [
+        {'citations': None, 'text': 'Checking the sweep.', 'type': 'text',
+         'parsed_output': None},
+        {'id': 'probe27', 'caller': {'type': 'direct'}, 'input': {'x': 1},
+         'name': 'probe', 'type': 'tool_use', 'toolset_name': None}]}
+    prefix[27] = {'role': 'user', 'content': [
+        {'type': 'tool_result', 'tool_use_id': 'probe27', 'content': '{"recorded": true}'}]}
     prefix[-1]['content'] = 'Why did the five-frame property sweep take so long?'
     return [*prefix, {'role': 'assistant', 'content': [
-        {'type': 'tool_use', 'id': 'run30', 'name': 'run_timelapse',
-         'input': {'n_frames': 5, 'interval_s': .01, 'save_dir': '/replay'}}]},
+        {'id': 'run30', 'caller': {'type': 'direct'},
+         'input': {'n_frames': 5, 'interval_s': .01, 'save_dir': '/replay'},
+         'name': 'run_timelapse', 'type': 'tool_use', 'toolset_name': None}]},
         {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'run30',
                                     'content': '{}'}]},
         {'role': 'assistant', 'content': FAIL_TEXT},
@@ -133,8 +171,19 @@ def messages_for(session, result):
     uses = [b for b in call.get('content', []) if isinstance(b, dict) and b.get('type') == 'tool_use']
     if call.get('role') != 'assistant' or len(uses) != 1 or uses[0]['name'] != 'run_timelapse':
         raise ValueError('line 30 must contain exactly one run_timelapse tool call')
-    return [*copy.deepcopy(session[:30]), {'role': 'user', 'content': [
-        {'type': 'tool_result', 'tool_use_id': uses[0]['id'], 'content': json.dumps(result)}]}]
+    prefix = [{**m, 'content': api_blocks(m['content'])}
+              for m in copy.deepcopy(session[:30])]
+    # Two breakpoints, reusing the runtime's own helper rather than a second
+    # spelling of it. The recorded prefix is identical across every arm and
+    # every sample; the synthesized result is identical across an arm's
+    # samples. Without them each sample re-sends ~41k input tokens, and this
+    # notebook is about not paying costs that measurement can remove.
+    from microclaw.agent import _with_cache_breakpoint
+    return _with_cache_breakpoint([
+        *_with_cache_breakpoint(prefix),
+        {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': uses[0]['id'],
+             'content': json.dumps(result)}]}])
 
 
 def score(arm, text):
@@ -187,13 +236,7 @@ def run_sample(client, arm, messages, table, *, model, system, tools_schema, max
         response = client.messages.create(model=model, max_tokens=4096,
             system=system, tools=tools_schema, messages=messages)
         # SDK-shaped blocks carry response-only fields; echo only API input fields.
-        blocks = []
-        for block in response.content:
-            b = block.model_dump()
-            keys = {'text': ('type', 'text'), 'tool_use': ('type', 'id', 'name', 'input'),
-                    'thinking': ('type', 'thinking', 'signature'),
-                    'redacted_thinking': ('type', 'data')}[b['type']]
-            blocks.append({k: b[k] for k in keys})
+        blocks = api_blocks([block.model_dump() for block in response.content])
         said.extend(b['text'] for b in blocks if b['type'] == 'text')
         uses = [b for b in blocks if b['type'] == 'tool_use']
         messages = [*messages, {'role': 'assistant', 'content': blocks}]

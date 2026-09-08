@@ -29,7 +29,17 @@ def test_arms():
         expected_gap = .015 if arm == 'attributed-teardown' else 3.15
         assert abs(result['inter_frame_gap_summary']['mean_s'] - expected_gap) < 1e-8
         messages = r.messages_for(session, result)
-        assert messages[:30] == session[:30]
+        # NOT `messages[:30] == session[:30]`: the recorded prefix carries
+        # fields the API rejects, so passing it through unchanged was the
+        # defect. Assert instead that every block is API-shaped and that the
+        # conversation the model sees is still the recorded one.
+        for message in messages[:30]:
+            for block in message['content'] if isinstance(message['content'], list) else []:
+                allowed = {*r.API_BLOCK_FIELDS[block['type']], 'cache_control'}
+                assert set(block) <= allowed, block
+        assert [m['role'] for m in messages[:30]] == [m['role'] for m in session[:30]]
+        assert messages[29]['content'][0]['input'] == session[29]['content'][0]['input']
+        assert messages[26]['content'][0]['text'] == 'Checking the sweep.'
         assert messages[-1]['content'][0]['tool_use_id'] == 'run30'
         assert json.loads(messages[-1]['content'][0]['content']) == result
         for text, expected in ((r.PASS_TEXT[arm], 'PASS'), (r.FAIL_TEXT, 'FAIL')):
