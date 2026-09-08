@@ -5030,12 +5030,14 @@ def run_zstack(
             ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
+        duration_s = time.monotonic() - started
         return {**_hooked_failure_result(exc, log_path), "timing": timing,
-                "teardown_timing": teardown}
+                "duration_s": duration_s,
+                "duration_breakdown": _run_duration_breakdown(hook, teardown, duration_s)}
     result = {
         "status": "Z-stack complete.", "dataset_path": dataset_path,
         "inter_frame_gap_summary": _gap_summary_payload(cadence),
-        "timing": timing, "teardown_timing": teardown,
+        "timing": timing,
         "started_at": started_at.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "duration_s": round(time.monotonic() - started, 6),
@@ -5054,6 +5056,7 @@ def run_zstack(
         property_restoration = getattr(hook, "_property_restoration", None)
         if property_restoration is not None:
             result["property_restoration"] = property_restoration
+    result["duration_breakdown"] = _run_duration_breakdown(hook, teardown, result["duration_s"])
     return result
 
 
@@ -5341,6 +5344,10 @@ def run_timelapse(
                 "fallback_ceiling": False,
             },
         )
+        if "duration_breakdown" in result:
+            breakdown = result["duration_breakdown"]
+            breakdown["duration_s"] = result["duration_s"]
+            breakdown["unaccounted_s"] = result["duration_s"] - breakdown["accounted_s"]
         if trigger_preflight is not None:
             result["trigger_preflight"] = trigger_preflight
         return result
@@ -5375,12 +5382,14 @@ def run_timelapse(
             ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
+        duration_s = time.monotonic() - started
         return {**_hooked_failure_result(exc, log_path), "timing": timing,
-                "teardown_timing": teardown}
+                "duration_s": duration_s,
+                "duration_breakdown": _run_duration_breakdown(hook, teardown, duration_s)}
     result = {
         "status": "Timelapse complete.", "dataset_path": dataset_path,
         "inter_frame_gap_summary": _gap_summary_payload(cadence),
-        "timing": timing, "teardown_timing": teardown,
+        "timing": timing,
         "started_at": started_at.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "duration_s": round(time.monotonic() - started, 6),
@@ -5404,6 +5413,7 @@ def run_timelapse(
         property_restoration = getattr(hook, "_property_restoration", None)
         if property_restoration is not None:
             result["property_restoration"] = property_restoration
+    result["duration_breakdown"] = _run_duration_breakdown(hook, teardown, result["duration_s"])
     return result
 
 
@@ -8612,6 +8622,66 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         )
 
 
+def _run_duration_breakdown(hook, teardown: dict, duration_s: float) -> dict:
+    """Summarize one run in seconds, with constant additional storage.
+
+    Restoration encloses its own write spans. Subtract those intersections from
+    restoration so summing the phases counts each measured interval once.
+    Full absolute timestamps stay in the audit log, not the tool result.
+    """
+    phases = {}
+    slowest = []
+    record_count = 0
+    restoration_write_s = 0.0
+    restoration = teardown.get("restoration", {})
+    cleanup_record = {"timing": teardown}
+    for record in itertools.chain(getattr(hook, "_log", ()), (cleanup_record,)):
+        timing = record.get("timing", {})
+        if timing.get("clock") != "time.monotonic":
+            continue
+        if record is not cleanup_record:
+            record_count += 1
+        first, last = None, None
+        durations = {"clock": "time.monotonic"}
+        for phase in ("validation", "read_stage_start_position", "write",
+                      "wait", "read_back", "settle_stage_move", "restoration", "refresh_gui"):
+            span = timing.get(phase)
+            if span is None or "end_s" not in span:
+                continue
+            start, end = span["start_s"], span["end_s"]
+            duration = end - start
+            if record is not cleanup_record and "end_s" in restoration:
+                restoration_write_s += max(0.0, min(end, restoration["end_s"])
+                                            - max(start, restoration["start_s"]))
+            if record is cleanup_record and phase == "restoration":
+                duration -= restoration_write_s
+            durations[phase] = {"duration_s": duration}
+            first = start if first is None else min(first, start)
+            last = end if last is None else max(last, end)
+            aggregate = phases.setdefault(phase, {
+                "count": 0, "min_s": duration, "max_s": duration, "total_s": 0.0,
+            })
+            aggregate["count"] += 1
+            aggregate["min_s"] = min(aggregate["min_s"], duration)
+            aggregate["max_s"] = max(aggregate["max_s"], duration)
+            aggregate["total_s"] += duration
+        if first is not None and record is not cleanup_record:
+            slowest.append((last - first, {**record, "timing": durations}))
+            slowest.sort(key=lambda item: item[0], reverse=True)
+            del slowest[3:]
+    for aggregate in phases.values():
+        aggregate["mean_s"] = aggregate["total_s"] / aggregate["count"]
+    accounted_s = sum(phase["total_s"] for phase in phases.values())
+    return {
+        "clock": "time.monotonic", "duration_s": duration_s,
+        "record_count": record_count, "phases": phases,
+        "accounted_s": accounted_s, "unaccounted_s": duration_s - accounted_s,
+        "phase_meaning": "completed spans including failed actions; restoration excludes nested write spans; unaccounted_s is elapsed time outside these spans",
+        "slowest_records": [record for _, record in slowest],
+        "slowest_meaning": "up to three write records by first span start to last completed span end; earliest wins ties",
+    }
+
+
 def _adaptive_result(
     dataset_path: str,
     log_path: str | None,
@@ -8625,48 +8695,6 @@ def _adaptive_result(
         "artifact": {"kind": "dataset", "path": dataset_path},
         **extra,
     }
-    if hook is not None:
-        # One pass over the existing audit log, constant additional storage.
-        # max_writes is an authorization budget, not a tool-payload size limit.
-        phases = {}
-        slowest = []
-        record_count = 0
-        for record in getattr(hook, "_log", ()):
-            timing = record.get("timing", {})
-            if timing.get("clock") != "time.monotonic":
-                continue
-            record_count += 1
-            first, last = None, None
-            for phase in ("validation", "read_stage_start_position", "write",
-                          "wait", "read_back", "settle_stage_move"):
-                span = timing.get(phase)
-                if span is None or "end_s" not in span:
-                    continue
-                start, end = span["start_s"], span["end_s"]
-                duration = end - start
-                first = start if first is None else min(first, start)
-                last = end if last is None else max(last, end)
-                aggregate = phases.setdefault(phase, {
-                    "count": 0, "min_s": duration, "max_s": duration, "total_s": 0.0,
-                })
-                aggregate["count"] += 1
-                aggregate["min_s"] = min(aggregate["min_s"], duration)
-                aggregate["max_s"] = max(aggregate["max_s"], duration)
-                aggregate["total_s"] += duration
-            if first is not None:
-                slowest.append((last - first, record))
-                slowest.sort(key=lambda item: item[0], reverse=True)
-                del slowest[3:]
-        if record_count:
-            for aggregate in phases.values():
-                aggregate["mean_s"] = aggregate["total_s"] / aggregate["count"]
-            result["hardware_write_timing_summary"] = {
-                "clock": "time.monotonic", "record_count": record_count,
-                "phases": phases,
-                "phase_meaning": "completed spans, including failed actions and restoration; totals are not run duration",
-                "slowest_records": [record for _, record in slowest],
-                "slowest_meaning": "up to three records by first span start to last completed span end; earliest wins ties",
-            }
     if hook is not None and hasattr(hook, "autofocus_settings_snapshot"):
         result["autofocus_settings_snapshot"] = hook.autofocus_settings_snapshot
     if log_path:
@@ -8804,10 +8832,11 @@ def _acquire_positions_with_hook(
                 ]
             reservation.close()
             raise
+        teardown = {}
         try:
             dataset_path = _acquire_with_hooks(
                 guard, movie_dir, movie_name, events, hook, reservation=reservation,
-                policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan,
+                policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown,
             )
         except AcquisitionUnterminated as exc:
             exc.positions_completed = [r for r in results if r.get("dataset_path") and "error" not in r]
@@ -8832,6 +8861,7 @@ def _acquire_positions_with_hook(
             duration_s=round(time.monotonic() - started, 6),
             **_reservation_report(reservation),
         )
+        result["duration_breakdown"] = _run_duration_breakdown(hook, teardown, result["duration_s"])
         if hasattr(hook, "min_snr") and hasattr(hook, "threshold_source"):
             result["observation_parameters"] = {
                 "min_snr": hook.min_snr, "min_snr_source": hook.threshold_source,
@@ -9277,6 +9307,7 @@ def _acquire_survey_with_detector(
     acquire_reservation = None
     search_channel_effects = None
     planned_acquire_effects = None
+    started = time.monotonic()
     cadence = _new_gap_summary()
     teardown = {}
     try:
@@ -9308,8 +9339,10 @@ def _acquire_survey_with_detector(
             acquire_reservation.close()
         if reservation is not None:
             reservation.close()
+        duration_s = time.monotonic() - started
         return {**_hooked_failure_result(exc, getattr(hook, "log_path", None)),
-                "teardown_timing": teardown}
+                "duration_s": duration_s,
+                "duration_breakdown": _run_duration_breakdown(hook, teardown, duration_s)}
     except AcquisitionUnterminated:
         raise
     except Exception:
@@ -9342,9 +9375,11 @@ def _acquire_survey_with_detector(
             "status": f"Survey acquisition complete across {len(positions)} position(s).",
             "positions": len(positions),
         }
+    duration_s = time.monotonic() - started
     return _adaptive_result(
         dataset_path, hook.log_path, hook=hook,
-        **route_result, teardown_timing=teardown,
+        **route_result, duration_s=duration_s,
+        duration_breakdown=_run_duration_breakdown(hook, teardown, duration_s),
         **(_reservation_report(reservation) if reservation is not None else {}),
         **({"_acquire_reservation": acquire_reservation}
            if acquire_reservation is not None else {}),

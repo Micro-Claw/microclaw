@@ -28,10 +28,13 @@ def test_arms():
         assert [e['requested'] for e in accepted] == call['values']
         assert result['property_restoration']['policy'] == 'entry'
         assert result['inter_frame_gap_summary']['count'] == 4
-        summary = result['hardware_write_timing_summary']
+        summary = result['duration_breakdown']
         # Six, not five: restore='entry' is a real write-back and carries its
         # own timed record. The envelope came from the recorded call.
         assert summary['record_count'] == 6
+        assert abs(summary['accounted_s'] + summary['unaccounted_s'] - result['duration_s']) < 1e-8
+        assert 'teardown_timing' not in result
+        assert 'hardware_write_timing_summary' not in result
         assert accepted[-1]['requested'] == call['values'][-1]
         assert result['property_restoration'] == {
             'policy': 'entry', 'entry_value': '0', 'last_known_value': '0',
@@ -40,9 +43,9 @@ def test_arms():
         wait = summary['slowest_records'][0]['timing']['wait']
         expected_wait = (3.004 if arm == 'attributed-write' else .0021) * 6
         assert abs(summary['phases']['wait']['total_s'] - expected_wait) < 1e-8
-        refresh = result['teardown_timing']['refresh_gui']
-        assert abs(wait['end_s'] - wait['start_s'] - (3.004 if arm == 'attributed-write' else .0021)) < 1e-8
-        assert abs(refresh['end_s'] - refresh['start_s'] - (11.87 if arm == 'attributed-teardown' else .0009)) < 1e-8
+        refresh = summary['phases']['refresh_gui']
+        assert abs(wait['duration_s'] - (3.004 if arm == 'attributed-write' else .0021)) < 1e-8
+        assert abs(refresh['total_s'] - (11.87 if arm == 'attributed-teardown' else .0009)) < 1e-8
         expected_gap = .0148 if arm == 'attributed-teardown' else 3.1489
         assert abs(result['inter_frame_gap_summary']['mean_s'] - expected_gap) < 1e-8
         messages = r.messages_for(session, result)

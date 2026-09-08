@@ -137,11 +137,12 @@ def test_teardown_and_property_delay_are_distinguishable(monkeypatch, delayed):
     teardown = {}
     tools._acquire_with_hooks(guard, '/data', 'run', [], hook, ctrl=ctrl,
                              policy=tools.DEFAULT, teardown_timing=teardown)
-    spans = {**{p: v for p, v in hook._log[0]['timing'].items() if p != 'clock'},
-             **{p: v for p, v in teardown.items() if p != 'clock'}}
-    durations = {p: v['end_s'] - v['start_s'] for p, v in spans.items()}
+    breakdown = tools._run_duration_breakdown(hook, teardown, now[0] - 100)
+    durations = {p: v['total_s'] for p, v in breakdown['phases'].items()}
     assert durations[delayed] == 3
     assert max(durations, key=durations.get) == delayed
+    assert breakdown['accounted_s'] == 3
+    assert breakdown['unaccounted_s'] == 0
     assert calls == ['validation', 'write', 'wait', 'read_back', 'type',
                      'exit', 'restoration', 'refresh_gui']
     assert teardown['clock'] == 'time.monotonic'
@@ -164,11 +165,13 @@ def test_route_uses_engine_deadlines(n, interval, adaptive, expected):
 def test_run_result_surfaces_route_and_cleanup_without_gui_calls(
     monkeypatch, mock_ctrl, unconstrained_guard, tmp_path, kind, hooked,
 ):
+    now = [100.0]
+    monkeypatch.setattr(tools.time, 'monotonic', lambda: now[0])
     class Backend:
         _exception = None
         _dataset_disk_location = str(tmp_path / 'run')
         def acquire(self, events): pass
-        def __exit__(self, *args): pass
+        def __exit__(self, *args): now[0] += 8
     monkeypatch.setattr(tools, 'Acquisition', lambda **kwargs: Backend())
     if hooked:
         monkeypatch.setattr(tools, '_resolve_hook', lambda *a, **k: SimpleNamespace())
@@ -182,8 +185,19 @@ def test_run_result_surfaces_route_and_cleanup_without_gui_calls(
     assert 'error' not in result
     assert result['timing']['dispatch'] == ('hooked_fixed_plan' if hooked else 'fixed_plan')
     assert result['timing']['strategy'] == ('shared_timepoint_clock' if kind == 'timelapse' else 'no_time_axis')
-    assert set(result['teardown_timing']) == {'clock', 'restoration'}
-    assert result['duration_s'] >= 0
+    import json
+    assert 'dominant' not in json.dumps(result).lower()
+    assert 'teardown_timing' not in result
+    assert 'hardware_write_timing_summary' not in result
+    breakdown = result['duration_breakdown']
+    assert breakdown['phases']['restoration'] == {
+        'count': 1, 'min_s': 0, 'mean_s': 0, 'max_s': 0, 'total_s': 0,
+    }
+    assert breakdown['duration_s'] == result['duration_s'] == 8
+    assert breakdown['accounted_s'] == 0
+    assert breakdown['unaccounted_s'] == 8
+    assert set(breakdown) == {'clock', 'duration_s', 'record_count', 'phases',
+        'phase_meaning', 'slowest_records', 'slowest_meaning', 'accounted_s', 'unaccounted_s'}
     assert result['inter_frame_gap_summary']['count'] == 0
     mock_ctrl.refresh_gui.assert_not_called()
 
@@ -244,12 +258,12 @@ def test_write_timing_summary_bounds_aggregation_and_slowest_records():
                 'wait': {'start_s': 1, 'end_s': 1 + i % 10}}}
     tracemalloc.start()
     try:
-        result = tools._adaptive_result('/data', '/log', hook=SimpleNamespace(_log=records(100000)))
+        result = tools._run_duration_breakdown(SimpleNamespace(_log=records(100000)), {}, 600000)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
     assert 'hardware_write_records' not in result
-    summary = result['hardware_write_timing_summary']
+    summary = result
     assert summary['record_count'] == 100000
     assert summary['clock'] == 'time.monotonic'
     assert summary['phases'] == {
@@ -258,6 +272,31 @@ def test_write_timing_summary_bounds_aggregation_and_slowest_records():
     }
     assert len(summary['slowest_records']) == 3
     assert [r['hook_event_index'] for r in summary['slowest_records']] == [9, 19, 29]
-    assert len(json.dumps(result)) < 3000
+    sizes = [len(json.dumps(result))]
+    for count in (5, 10000):
+        sizes.append(len(json.dumps(tools._run_duration_breakdown(
+            SimpleNamespace(_log=records(count)), {}, 600000))))
+    assert max(sizes) < 3000
+    assert max(sizes) - min(sizes) < 300
     assert peak < 1000000, 'aggregation must not copy the full log'
-    assert result['log_path'] == '/log'
+    assert result['accounted_s'] == 550000
+    assert result['unaccounted_s'] == 50000
+    assert all('start_s' not in r['timing']['wait'] and 'end_s' not in r['timing']['wait']
+               for r in result['slowest_records'])
+
+
+def test_restoration_write_spans_are_not_counted_twice():
+    record = {'restoration': True, 'timing': {'clock': 'time.monotonic',
+        'write': {'start_s': 102, 'end_s': 104},
+        'wait': {'start_s': 104, 'end_s': 108}}}
+    teardown = {'clock': 'time.monotonic',
+                'restoration': {'start_s': 101, 'end_s': 110},
+                'refresh_gui': {'start_s': 110, 'end_s': 118}}
+    result = tools._run_duration_breakdown(SimpleNamespace(_log=[record]), teardown, 20)
+    assert {p: v['total_s'] for p, v in result['phases'].items()} == {
+        'write': 2, 'wait': 4, 'restoration': 3, 'refresh_gui': 8}
+    assert result['accounted_s'] == 17
+    assert result['unaccounted_s'] == 3
+    assert result['accounted_s'] + result['unaccounted_s'] == result['duration_s']
+    assert result['slowest_records'][0]['timing']['write'] == {'duration_s': 2}
+    assert record['timing']['write'] == {'start_s': 102, 'end_s': 104}
