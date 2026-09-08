@@ -14,19 +14,36 @@ def test_arms():
     session = r.session_fixture()
     original = copy.deepcopy(session)
     for arm in r.ARMS:
-        result, hook_log = r.fixture(arm)
+        result, hook_log, answers = r.fixture(arm)
         assert result['timing']['dispatch'] == 'hooked_fixed_plan'
-        assert result['timing']['requested_interval_s'] == .01
+        # Every argument must come from the recorded call, not from the
+        # fixture. This is the assertion the first pilot did not have.
+        call = r.recorded_call(session)
+        assert result['timing']['requested_interval_s'] == call['interval_s'] == .05
+        assert call['values'] == ['0', '100', '200', '300', '400']
+        assert call['restore'] == 'entry'
+        assert result['dataset_path'].startswith(call['save_dir'])
+        accepted = [e for e in hook_log['entries'] if e.get('decision') == 'accepted'
+                    and not e.get('restoration')]
+        assert [e['requested'] for e in accepted] == call['values']
+        assert result['property_restoration']['policy'] == 'entry'
         assert result['inter_frame_gap_summary']['count'] == 4
         summary = result['hardware_write_timing_summary']
-        assert summary['record_count'] == 5
+        # Six, not five: restore='entry' is a real write-back and carries its
+        # own timed record. The envelope came from the recorded call.
+        assert summary['record_count'] == 6
+        assert accepted[-1]['requested'] == call['values'][-1]
+        assert result['property_restoration'] == {
+            'policy': 'entry', 'entry_value': '0', 'last_known_value': '0',
+            'restored': True}
         assert len(summary['slowest_records']) == 3
         wait = summary['slowest_records'][0]['timing']['wait']
-        assert abs(summary['phases']['wait']['total_s'] - (15 if arm == 'attributed-write' else .01)) < 1e-8
+        expected_wait = (3.004 if arm == 'attributed-write' else .0021) * 6
+        assert abs(summary['phases']['wait']['total_s'] - expected_wait) < 1e-8
         refresh = result['teardown_timing']['refresh_gui']
-        assert abs(wait['end_s'] - wait['start_s'] - (3 if arm == 'attributed-write' else .002)) < 1e-8
-        assert abs(refresh['end_s'] - refresh['start_s'] - (12 if arm == 'attributed-teardown' else .001)) < 1e-8
-        expected_gap = .015 if arm == 'attributed-teardown' else 3.15
+        assert abs(wait['end_s'] - wait['start_s'] - (3.004 if arm == 'attributed-write' else .0021)) < 1e-8
+        assert abs(refresh['end_s'] - refresh['start_s'] - (11.87 if arm == 'attributed-teardown' else .0009)) < 1e-8
+        expected_gap = .0148 if arm == 'attributed-teardown' else 3.1489
         assert abs(result['inter_frame_gap_summary']['mean_s'] - expected_gap) < 1e-8
         messages = r.messages_for(session, result)
         # NOT `messages[:30] == session[:30]`: the recorded prefix carries
@@ -129,9 +146,9 @@ def test_synthesized_hook_log_answers_the_recorded_path():
     log_path = r'D:\SSD\uv_pulse_sweep_fast2_plan_log.jsonl'
     session[30]['content'][0]['content'] = json.dumps({'log_path': log_path})
     for arm in r.ARMS:
-        result, hook_log = r.fixture(arm, session=session)
+        result, hook_log, answers = r.fixture(arm, session=session)
         assert result['log_path'] == hook_log['log_path'] == log_path
-        assert hook_log['entry_count'] == len(hook_log['entries']) == 5
+        assert hook_log['entry_count'] == len(hook_log['entries']) == 6
         table = r.recorded_results(session)
         table[('read_hook_log', json.dumps({'log_path': log_path}, sort_keys=True))] = json.dumps(hook_log)
         use = {'type': 'tool_use', 'id': 'read32', 'name': 'read_hook_log', 'input': {'log_path': log_path}}
@@ -143,7 +160,7 @@ def test_synthesized_hook_log_answers_the_recorded_path():
         answer = json.loads(client.requests[1]['messages'][-1]['content'][0]['content'])
         assert answer == hook_log
         wait = answer['entries'][0]['timing']['wait']
-        assert abs(wait['end_s'] - wait['start_s'] - (3 if arm == 'attributed-write' else .002)) < 1e-8
+        assert abs(wait['end_s'] - wait['start_s'] - (3.004 if arm == 'attributed-write' else .0021)) < 1e-8
 
 
 if __name__ == '__main__':
