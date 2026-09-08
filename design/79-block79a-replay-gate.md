@@ -60,6 +60,52 @@ outside the repo on purpose: **its output is evidence and is never committed.**
 All three arms run by default and print one JSON line each. For stage 2,
 the same command with `--samples 16` and a fresh `--transcript` path.
 
+## Pilot record, and why stage 2 must use fresh samples
+
+**Pilot 1 — 5/arm, ~$4. Found the fixture was answering a different call.**
+13 of 15 samples `NOT_AVAILABLE`; the counter was the symptom. The fixture
+hard-coded `interval_s=0.01`, `/replay`, `restore='leave'` and values 0,1,2,3,4
+against a recorded call asking for 0.05, `D:/SSD/...`, `entry` and
+0,100,200,300,400. The model correctly refused a payload contradicting its own
+request and never reached the attribution question. Fixed by deriving every
+argument from the recording.
+
+**Pilot 2 — 3/arm, ~$2.50. Found the scorer, again.** All nine samples were the
+target behaviour and all nine scored FAIL, on vocabulary alone: the scorer wanted
+`dominates` and the model wrote `dominated`; it wanted `wait span` and the model
+wrote `` `wait` phase `` and `wait mean = 3.004 s`; it wanted the literal
+`not attributed` and the model wrote *I have not isolated exactly which*. Two
+further scorer defects surfaced in the fix: a `refusal` guard that punished the
+pilot's single best answer for the phrase *"what I can and can't attribute
+here"*, and a stem `dominat` that cannot match **dominant** — d-o-m-i-n-a-**n**-t.
+
+The scorer's vocabulary is now derived from those 15 real responses, and the
+selftest pins the exact forms that defeated the first version.
+
+**So pilot 2's numbers are a development set, not a result.** The scorer was
+tuned on them. Stage 2 must draw fresh samples, and its numbers are the only ones
+that get reported as the gate.
+
+For the record, pilot 2 rescored under the current scorer:
+
+| Arm | Development set |
+|---|---|
+| `attributed-write` | 3/3 |
+| `attributed-teardown` | **1/3** |
+| `unattributed` | 3/3 |
+
+**The teardown result is a product finding, not a scorer one, and it has
+deliberately not been tuned away.** The two failing responses never mention the
+teardown refresh at all — they report the per-write phases from
+`hardware_write_timing_summary` and read straight past `teardown_timing`, while
+an 11.87 s refresh accounts for 11.87 s of a 12.07 s run. A span the model does
+not read is not "surfaced", which is item 2's actual requirement. Settle whether
+to make it discoverable before stage 2, or stage 2 will measure a known gap.
+
+The recorded failure — line 32 of the M5 session, the turn this block exists to
+prevent — scores FAIL in all three arms, on `irreducible`, `serial link` and
+`camera round-trip`. That control is now in the selftest.
+
 ## Cost, measured rather than guessed
 
 Per sample: **~40,650 input tokens**, of which **~39,472 are byte-identical**
