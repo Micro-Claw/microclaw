@@ -350,6 +350,27 @@ because a block looks small.
    guessed* (step 6) applied to a runner prompt rather than a rig runbook; block
    69a-1 lost its whole first turn to it, and the runner was right to stop.
 
+   **But hand the runner the *targeted* command, not the whole suite. The full
+   suite is the coordinator's job on return** (operator decision, 2026-09-08).
+   A runner tests what it modified; step 3 already requires the coordinator to
+   re-run everything and to disbelieve the reported count, so a runner's
+   full-suite run buys nothing that the coordinator's own run does not.
+
+   It is not free, and the size is the point. design/79 block 79a measured one
+   revision turn at **6.2M input tokens** and the implementation turn at 5.0M —
+   because the runner invoked the full suite **10 and 22 times** respectively
+   inside a single turn. This suite takes ~4 minutes and prints ~3,000 lines,
+   every line stays in the turn's context, and each later tool call re-sends all
+   of it. One turn burned about **half a five-hour Codex window**. The prompt
+   that caused it said `.venv/bin/python -m pytest -q` with no scope, so the
+   runner did the literal thing and ran everything, every time.
+
+   So: name the test files the block touches (`.venv/bin/python -m pytest -q
+   tests/test_<thing>.py`), say the coordinator owns the full run, and say that
+   the watched-it-fail evidence in step 3 needs only the file under change — not
+   a suite pass per test. Ask for one full-suite run at the very end only when
+   the block plausibly reaches unrelated code, and treat even that as optional.
+
    **The coordinator's own tooling is code nobody reviews.** The wrapper scripts
    around `run-codex.sh` — waiters, retry loops, launchers — get no review pass,
    exactly like gate code, and they run unattended. Block 69a-2's launcher was
