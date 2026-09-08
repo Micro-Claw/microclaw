@@ -173,3 +173,32 @@ def test_probe_would_report_true_for_a_tree_that_still_refreshes(monkeypatch):
 
     monkeypatch.setattr(hook_decisions, "UntrustedHookAdapter", StillRefreshes)
     assert probe.tree_has_per_write_refresh() is True
+
+
+def test_readback_limb_is_not_exercised_when_the_counter_sees_nothing(tmp_path):
+    """A counter that sees no read-backs must not report 'exactly one'.
+
+    The read-back count comes from EMU's own log line, not MMCore's, so it is
+    not guaranteed across rigs the way the Core strings are. Strip those lines
+    and the limb must say NOT EXERCISED rather than pass on an empty count --
+    block 78b's gate shipped exactly this shape and passed a vacuous control.
+    """
+    text = EXCERPT.read_text(encoding="utf-8")
+    without_emu = "\n".join(l for l in text.splitlines()
+                            if "[EMU] -- Retrieved MMProperty" not in l) + "\n"
+    rc, score = _score(tmp_path, without_emu,
+                       [_arm("write-with-refresh", True),
+                        _arm("write-without-refresh", False)])
+    limbs = {l["limb"]: l for l in score["limbs"]}
+    assert limbs["exactly one read-back of the target per write"]["status"] == "NOT EXERCISED"
+
+
+def test_readback_limb_passes_when_the_counter_demonstrably_works(tmp_path):
+    """The control: with real EMU lines present the limb must be able to pass."""
+    text = EXCERPT.read_text(encoding="utf-8")
+    # The without-refresh arm keeps one read-back of the target and drops the
+    # GUI fan-out, which is the post-fix shape.
+    rc, score = _score(tmp_path, text, [_arm("write-with-refresh", True),
+                                        _arm("write-without-refresh", False)])
+    limbs = {l["limb"]: l for l in score["limbs"]}
+    assert limbs["exactly one read-back of the target per write"]["status"] != "NOT EXERCISED"

@@ -343,12 +343,32 @@ def main(argv=None):
                       "went away" if fan_off else ""),
                    "any EMU retrieval in that span, on any tid")
 
+        # This counter reads EMU's own "[EMU] -- Retrieved MMProperty [dev-prop]"
+        # line, which comes from the htSMLM/EMU plugin rather than from MMCore.
+        # MMCore's strings are identical across rigs (same build), EMU's are not
+        # guaranteed to be. If the with-refresh arm shows no read-backs at all,
+        # the counter cannot see them on this machine and "exactly one" would
+        # pass vacuously -- the same shape as block 78b's gate defect, which
+        # passed a control that never reached the engine. Say NOT EXERCISED.
+        seen_before = sum(w["read_backs_of_target"] for w in on["per_write"]) if on else 0
         extra = [w for w in off["per_write"] if w["read_backs_of_target"] > 1]
-        report.add("exactly one read-back of the target per write",
-                   "PASS" if not extra else "FAIL",
-                   f"{len(extra)} of {len(off['per_write'])} writes read the "
-                   "target more than once",
-                   "any write reading its own property twice")
+        if seen_before == 0:
+            report.add("exactly one read-back of the target per write",
+                       "NOT EXERCISED",
+                       "the with-refresh arm recorded zero read-backs of "
+                       f"{off['device']}.{off['property']}, so this rig's EMU "
+                       "does not emit the "
+                       "line this counter reads and 'exactly one' would pass "
+                       "without measuring anything",
+                       "a counter that cannot see a read-back it knows is there")
+        else:
+            report.add("exactly one read-back of the target per write",
+                       "PASS" if not extra else "FAIL",
+                       f"{len(extra)} of {len(off['per_write'])} writes read the "
+                       f"target more than once; the with-refresh arm recorded "
+                       f"{seen_before} read-backs across {len(on['per_write'])} "
+                       "writes, so the counter demonstrably works on this rig",
+                       "any write reading its own property twice")
 
     # Report the residual as measured. design/78 is explicit that the ~0.3 s
     # figure is a hypothesis to compare against, never a threshold to pass.

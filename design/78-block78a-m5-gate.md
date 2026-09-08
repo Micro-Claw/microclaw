@@ -1,4 +1,6 @@
-# Block 78a — M5 gate: does removing the per-write refresh remove the seconds?
+# Block 78a — rig gate: does removing the per-write refresh remove the seconds?
+
+**Runs on M5 or M2. Not on the demo machine — see "Which rig" below.**
 
 Branch `design78/no-per-frame-refresh`. This gate answers one question with
 three otherwise-identical runs: **no write**, **write with the per-frame GUI
@@ -8,6 +10,34 @@ Everything computational is in `design/78-block78a-m5-gate.py`. You run three
 acquisitions and then one script. The script reports every limb independently,
 never lets one refusal hide the others, and exits nonzero on any FAIL **or** any
 NOT EXERCISED. `NOT EXERCISED` is never a pass.
+
+## Which rig
+
+This gate needs a rig whose **EMU listeners fan out on the GUI refresh**. That is
+what costs the seconds, and a machine without it has nothing for this block to
+have removed.
+
+- **M5** — where design/78's evidence was taken. Debug logging was already on
+  there on 2026-09-04.
+- **M2 — equally valid, and in one way better.** It runs the same EMU/htSMLM
+  stack and its 2026-09-04 session wrote the *identical* pair, `Laser Trigger` /
+  `Duration0 (us)`, approved interval 10–50000 µs, with the same symptom:
+  3.47–3.57 s mean frame gaps at 50 ms exposure. design/78 could only say M2's
+  ~2.95 s silent periods were *consistent with* M5's fan-out, because M2's
+  CoreLog was at IFO level and hides device reads. This gate turns debug logging
+  on, which closes exactly that gap — and makes the fan-out attribution **n=2
+  across two rigs** instead of one rig's story.
+- **Not the demo machine.** No EMU means the repaint is nearly free, so the
+  control limb — "the with-refresh arm reproduces the fan-out" — reports NOT
+  EXERCISED and the gate exits nonzero. That is the gate working correctly:
+  with no fan-out there is nothing to prove was removed. The correctness half
+  (no repaint between write and exposure, one read-back per write) is already
+  covered by the unit suite, so a demo run would add little and score nothing.
+
+Everything below is written to be rig-agnostic. The device and property are
+arguments in `arms.json`, and the probe finds the CoreLog path from Core rather
+than assuming an install directory, so the same commands work on either machine.
+On M2 use its own exposure (50 ms in the 2026-09-04 session); on M5, 100 ms.
 
 ## What this gate is measuring, in one paragraph
 
@@ -25,7 +55,8 @@ counts EMU retrievals per thread, not in total.
 ## Dose — read before you start
 
 `Duration0 (us)` is the **UV/405 pulse length**. Writing it is a real dose, and
-these are three runs of the same acquisition. Treat this as any other
+these are three runs of the same acquisition. This is true on M2 as well as M5 —
+M2's camera triggers its lasers, so live view is a dose there too. Treat this as any other
 acquisition against your dose envelope:
 
 - Prefer a sacrificial or blank sample. Nothing in this gate needs a good one —
@@ -65,12 +96,12 @@ Confirm the scorer runs on this machine before you spend any dose:
 uv run python -m pytest -q design\78-block78a-m5-gate-selftest.py
 ```
 
-Expect `11 passed`. If that fails, stop and send me the output — the instrument
+Expect `13 passed`. If that fails, stop and send me the output — the instrument
 is broken and no rig time should be spent.
 
 ## 1 — start Micro-Manager once, with debug logging, and leave it up
 
-Start Micro-Manager with M5's ordinary htSMLM/MicroFPGA configuration and the
+Start Micro-Manager with this rig's ordinary htSMLM/EMU configuration and the
 ZMQ server. **Do not restart it between arms.** All three arms share one
 CoreLog, which is what lets the scorer compare them on one clock.
 
@@ -87,9 +118,9 @@ It prints four lines. Record `CORELOG` — you need it in step 3 — and
 
 ## 2 — the three arms
 
-Start Microclaw with M5's reviewed safety configuration. **Do not edit the
+Start Microclaw with this rig's reviewed safety configuration. **Do not edit the
 production safety configuration for this gate.** M5 has no `Channel` config
-group; pass no channel and do not invent one.
+group; pass no channel and do not invent one on either machine.
 
 Run the same acquisition three times. Keep frames, exposure, ROI and interval
 identical across all three — the comparison is worthless otherwise. Before each
@@ -105,7 +136,13 @@ Give the connected agent this prompt for **arm A (no write)**, verbatim:
 > `started_at` and `completed_at`.
 
 Then check out `main` for **arm B (write, with refresh)** — this arm must run
-the *old* code, because that is the behaviour being compared against:
+the *old* code, because that is the behaviour being compared against.
+
+`main` is the right baseline **because this branch has `main` merged into it**,
+so arms B and C differ by 78a's change and nothing else. That was not true for a
+few hours after block 78b merged, when this branch still predated it; if you
+ever find `git merge-base --is-ancestor main HEAD` failing on this branch, stop
+and tell me, because the comparison is void.
 
 ```powershell
 git checkout main
