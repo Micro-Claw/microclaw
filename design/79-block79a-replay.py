@@ -374,7 +374,7 @@ def recorded_results(session):
     return table
 
 
-def run_sample(client, arm, messages, table, *, model, system, tools_schema, mark=None, max_turns=4):
+def run_sample(client, arm, messages, table, *, model, system, tools_schema, mark=None, max_turns=4, acquisition_tools=()):
     said, calls, missing = [], [], Counter()
     for _ in range(max_turns):
         response = client.messages.create(model=model, max_tokens=4096,
@@ -387,6 +387,9 @@ def run_sample(client, arm, messages, table, *, model, system, tools_schema, mar
         if response.stop_reason == 'max_tokens':
             return {'verdict': 'NO_DECISION', 'said': said, 'calls': calls,
                     'not_available': dict(missing)}
+        if not uses and acquisition_tools:
+            return {'verdict': 'NO_DECISION', 'said': said, 'calls': calls,
+                    'not_available': dict(missing)}
         if not uses:
             result = score(arm, '\n'.join(said), mark=mark)
             if missing: result['verdict'] = 'NOT_AVAILABLE'
@@ -394,6 +397,10 @@ def run_sample(client, arm, messages, table, *, model, system, tools_schema, mar
         answers = []
         for b in uses:
             calls.append(b['name'])
+            if b['name'] in acquisition_tools:
+                return {'verdict': 'ACQUISITION', 'acquisition': b,
+                        'said': said, 'calls': calls,
+                        'not_available': dict(missing)}
             key = (b['name'], json.dumps(b['input'], sort_keys=True))
             content = table.get(key)
             if content is None:

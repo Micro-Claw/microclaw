@@ -111,8 +111,8 @@ _HOOK_ACTION_PLAN_SCHEMA = {
         "Exactly one indexed action list for every generated fixed-run event; "
         "empty action lists are explicit. Each action is a discriminated object, "
         "using exactly {'kind': 'MoveNamedStage', 'position_um': 12.5} or "
-        "{'kind': 'SetDeviceProperty', 'value': 'On'}. Needs no hook_strategy -- "
-        "a fixed plan carries itself -- but does need named_stage_envelope or "
+        "{'kind': 'SetDeviceProperty', 'value': 'On'}. hooked_fixed_plan needs no hook_strategy: "
+        "write, settle and read-back precede each event, without image-decision handoff. Needs named_stage_envelope or "
         "property_envelope to authorize it. For a timelapse, every consecutive "
         "int(k * interval_s * 1000.0) deadline must differ across n_frames; "
         "equal truncated millisecond deadlines allow hardware-sequencing and "
@@ -629,15 +629,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_zstack",
         "description": (
-            "Run a fixed Z-stack, plain or with an optional hook. A fixed "
-            "hook_action_plan needs no hook_strategy. A hook may adapt "
-            "settings between planes, or measure every plane without changing the "
-            "acquisition; for observation use snr_observer and call read_hook_log "
-            "afterwards. Hooks cannot skip planes or stop early; use "
-            "run_adaptive_survey for stop-on-condition work. Call list_hooks() "
-            "to include saved hooks. Hardware-moving plugin hooks are permitted by "
-            "default but require explicit user confirmation before enabling; microclaw "
-            "guards only the resulting position, not the plugin's motion itself."
+            'Run a Z-stack on no_time_axis: fixed_plan without a hook or action plan, hooked_fixed_plan otherwise. Hardware actions wait for validation, settling and read-back before their plane; their cost on this rig is not measured.'
         ),
         "input_schema": {
             "type": "object",
@@ -665,7 +657,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Dataset name. Defaults to 'zstack'.",
                     "default": "zstack",
                 },
-                "hook_strategy": {"type": "string", "description": "Optional hook from list_hooks."},
+                "hook_strategy": {"type": "string", "description": ("Optional hook from list_hooks. snr_observer measures every frame without changing the fixed acquisition or gating the next exposure on its result; read_hook_log afterwards. Processing/storage throughput is not measured. Fixed hooks cannot skip or stop; timelapse max_frames enables conditional stopping. Hardware-moving plugin hooks require confirmation; only their resulting position is guarded.")},
                 "hook_params": {"type": "object", "description": "Hook constructor parameters."},
                 "log_path": {"type": "string", "description": "Hook output log path."},
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
@@ -680,36 +672,24 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_timelapse",
         "description": (
-            "Run a fixed timelapse, plain or with an optional hook. A fixed "
-            "hook_action_plan needs no hook_strategy. A hook may adapt "
-            "settings between frames, or measure every frame without changing the "
-            "acquisition; for observation use snr_observer and call read_hook_log "
-            "afterwards. Hooks cannot skip frames or stop early; use "
-            "run_adaptive_survey for stop-on-condition work. Call list_hooks() "
-            "to include saved hooks. Hardware-moving plugin hooks are permitted by "
-            "default but require explicit user confirmation before enabling; microclaw "
-            "guards only the resulting position, not the plugin's motion itself. "
-            "On an EMU/htSMLM rig, pass laser_slot "
-            "(the EMU slot of the excitation laser, from get_emu_laser_map) so the "
-            "pre-flight can verify that laser's trigger line will actually fire — "
-            "otherwise a gated-off laser silently produces blank frames."
+            'Run one time series in one acquisition. fixed_plan submits the fixed events together; hooked_fixed_plan adds callbacks without restarting acquisition. adaptive_handoff publishes one successor only after analysis and guarded actions finish. Achieved cadence and callback/storage throughput on this rig are not measured.'
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "n_frames": {"type": ["integer", "null"], "description": (
-                    "Fixed-route frame count. Provide exactly one of n_frames or "
+                    "fixed_plan frame count; omit hooks and action plans when no analysis or control is needed. Provide exactly one of n_frames or "
                     "max_frames; pass null here when max_frames is used. With "
                     "interval_s=0 and more than one frame, "
-                    "the whole time axis is one hardware-sequenced burst; Microclaw's "
+                    "the time axis permits hardware sequencing if the devices support it; Microclaw's "
                     "Stop button and engine abort may not stop it promptly."
                 )},
                 "max_frames": {"type": "integer", "description": (
-                    "Adaptive-route frame and dose cap. Provide exactly one of "
+                    "adaptive_handoff frame and dose cap: analysis and verified actions gate each next exposure; handoff cost is not measured on this rig. A saved analyze_frame hook must return exactly one ContinueAcquisition or StopAcquisition per image. No hook_action_plan. Provide exactly one of "
                     "n_frames or max_frames; max_frames requires hook_strategy."
                 )},
                 "interval_s": {"type": "number", "description": (
-                    "Interval between frames in seconds. Fixed runs with per-frame "
+                    "Requested seconds between starts: interval_s=0 is no_requested_delay, not inverse-exposure frame rate; positive intervals use shared_timepoint_clock. Readout, processing and storage can add delay. Fixed runs with per-frame "
                     "hardware control (including hook_action_plan) require distinct "
                     "consecutive int(k * interval_s * 1000.0) deadlines throughout "
                     "n_frames; equal truncated millisecond "
@@ -725,11 +705,11 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "integer",
                     "description": (
                         "EMU slot index of the excitation laser (from "
-                        "get_emu_laser_map). The acquisition is refused if that "
+                        "get_emu_laser_map); pass on EMU/htSMLM rigs to verify the excitation trigger. The acquisition is refused if that "
                         "slot's trigger mode is '0 - Off' or its sequence is 0."
                     ),
                 },
-                "hook_strategy": {"type": "string", "description": "Optional hook from list_hooks."},
+                "hook_strategy": {"type": "string", "description": ("Optional hook from list_hooks. snr_observer measures every frame without changing the fixed acquisition or gating the next exposure on its result; read_hook_log afterwards. Processing/storage throughput is not measured. Fixed hooks cannot skip or stop; timelapse max_frames enables conditional stopping. Hardware-moving plugin hooks require confirmation; only their resulting position is guarded.")},
                 "hook_params": {"type": "object", "description": "Hook constructor parameters."},
                 "log_path": {"type": "string", "description": "Hook output log path."},
                 "illumination_envelope": _HOOK_ILLUMINATION_ENVELOPE_SCHEMA,
@@ -1347,15 +1327,6 @@ TOOLS: list[dict[str, Any]] = [
             "The hookless default saves each position's data to a subdirectory of save_dir. "
             "Pass mark_positions=true to also record every visited position into the "
             "stage position list. "
-            "The default acquisition_order='position_then_time' completes each field's movie, "
-            "with or without hooks. Explicit time_then_position interleaves fields on a shared "
-            "time-point clock in one combined dataset, with or without hooks. A hooked run with "
-            "interval_s=0 preserves a single dataset with a `position` axis. A hooked run with "
-            "interval_s>0 uses one acquisition clock, dataset and fresh hook log per position; "
-            "results index those datasets and logs, and read_hook_log takes one of them at a time. "
-            "interval_s=0 adds no requested delay, not a guaranteed frame rate. Observed exposure "
-            "cadence owes rig verification. "
-            "Hooks are incompatible with snap (display-only, no acquisition images). "
             "Prefer one call for a tiled acquisition; do not also run a second per-position form "
             "unless the user explicitly asks for both, because doing both repeats every exposure. "
             "Any route that writes one dataset per position — the hookless default, and a hooked "
@@ -1369,7 +1340,7 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["position_then_time", "time_then_position"],
                     "default": "position_then_time",
-                    "description": "Finish each field's movie by default, with or without hooks. time_then_position interleaves fields on one shared time-point clock and is inapplicable to snap and zstack.",
+                    "description": "Finish each field's movie by default, with or without hooks. Positive interval_s gives each position its own acquisition, dataset and clock; startup/settling cost on this rig is not measured. Hooked interval_s=0 shares a position-axis dataset and log. time_then_position interleaves on shared_timepoint_clock; inapplicable to snap and zstack.",
                 },
                 "position_names": {
                     "type": "array",
@@ -1506,7 +1477,7 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["position_then_time", "time_then_position"],
                     "default": "position_then_time",
-                    "description": "Finish each field's movie by default, with or without hooks. time_then_position interleaves fields on one shared time-point clock and is inapplicable to snap and zstack.",
+                    "description": "Finish each field's movie by default, with or without hooks. Positive interval_s gives each position its own acquisition, dataset and clock; startup/settling cost on this rig is not measured. Hooked interval_s=0 shares a position-axis dataset and log. time_then_position interleaves on shared_timepoint_clock; inapplicable to snap and zstack.",
                 },
                 "rows": {"type": "integer", "description": "Number of rows in the grid."},
                 "cols": {"type": "integer", "description": "Number of columns in the grid."},
@@ -1614,7 +1585,7 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["position_then_time", "time_then_position"],
                     "default": "position_then_time",
-                    "description": "Finish each field's movie by default, with or without hooks. time_then_position interleaves fields on one shared time-point clock and is inapplicable to snap and zstack.",
+                    "description": "Finish each field's movie by default, with or without hooks. Positive interval_s gives each position its own acquisition, dataset and clock; startup/settling cost on this rig is not measured. Hooked interval_s=0 shares a position-axis dataset and log. time_then_position interleaves on shared_timepoint_clock; inapplicable to snap and zstack.",
                 },
                 "position_names": {
                     "type": "array",

@@ -15,7 +15,7 @@ super-resolution image from the accumulated localizations.
 
 Microclaw's role is to:
   1. Help the user set up the correct acquisition parameters.
-  2. Run the raw-frame stack with run_timelapse (interval_s=0 for max frame rate).
+  2. Run the raw-frame stack with run_timelapse (interval_s=0 for no_requested_delay; achieved cadence is not measured).
   3. Export the dataset with export_dataset_as_tiff so external software can analyse it.
   4. Optionally attach an observation-only hook for real-time density logging.
 
@@ -41,7 +41,7 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
      - Expected AF647 yield: ~8,000 photons/localization, localization
        precision ~5 ± 2 nm lateral.
 
-  B) Regular STORM (faster, slightly reduced quality):
+  B) Regular STORM (shorter exposure, slightly reduced quality):
      - No separate pre-bleach; begin acquisition immediately at high power.
      - Acquisition: 30 ms exposure, ~20 kW/cm² excitation power.
      - Frame count: ~40,000 frames.
@@ -103,10 +103,12 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 - Use: run_timelapse(exposure_ms=<value>, ...)
 
 ### Frame interval
-- Set interval_s=0 to acquire as fast as the camera allows (back-to-back frames).
+- interval_s=0 means `no_requested_delay`; it permits time-axis batching,
+  subject to device support. Achieved exposure cadence on this rig is not measured.
 - For per-frame hardware control, choose an interval whose consecutive
   `int(k * interval_s * 1000.0)` deadlines differ throughout the frame count.
-  Otherwise, idle time slows acquisition without reducing background.
+  Any requested idle time adds delay when the engine reaches its deadline early;
+  it does not reduce the background accumulated during exposure.
 
 ### Number of frames
 - Fixed-cell dSTORM:
@@ -160,7 +162,7 @@ such as ThunderSTORM (FIJI plugin), SMAP, DECODE, or Picasso (see Software secti
 
 ### Multicolor imaging
 - Sequential multicolor: acquire one channel at a time, switching excitation laser
-  and emission filter between rounds. Simpler but slower; prone to drift between
+  and emission filter between rounds. Switching adds device moves and settling; prone to drift between
   channels.
 - Simultaneous multicolor (preferred for co-localization): an image splitter
   (dichroic + relay optics) splits the emission into two spectral bands and images
@@ -280,15 +282,19 @@ the setup if possible.
 For long acquisitions it is useful to track per-frame blinking density to detect:
   - Too many ON molecules (PSF overlap → poor localizations): reduce excitation
     power or 405 nm activation.
-  - Too few ON molecules (acquisition proceeding too slowly): increase 405 nm
+  - Too few ON molecules (sparse localizations per frame): increase 405 nm
     activation power.
 
 Observation-only density logging is supported on `run_timelapse`: a user-authored
 `analyze_frame(image, metadata) -> HookResult | None` hook can measure and log each
 frame. The shipped `snr_observer` is a reviewed built-in example of observation-only
-behavior, not the callback shape to copy for a user-authored hook.
+`hooked_fixed_plan`: results do not gate the next exposure. Processing/storage
+throughput is not measured on this rig. It is not the callback shape to copy
+for a user-authored hook.
 
-Fixed, predeclared property schedules are also supported with a bounded
+Predetermined writes use `hooked_fixed_plan` without an image-decision handoff:
+validation, settling and read-back precede the affected frame. Their cost on this
+rig is not measured. Supply a bounded
 `hook_action_plan` under a `property_envelope`. A per-frame plan spanning more than
 one frame requires distinct consecutive `int(k * interval_s * 1000.0)` deadlines
 throughout its frame count. Equal truncated millisecond deadlines allow
@@ -309,7 +315,7 @@ image-driven conditional stop is likewise refused on that fixed route.
 `run_adaptive_survey` is not a substitute for single-field STORM: it walks a planned
 position list.
 
-For a single-field adaptive time series, use the separate `max_frames` route. The
+For a single-field adaptive time series, `max_frames` selects `adaptive_handoff`: each next exposure waits for analysis and guarded actions; handoff cost on this rig is not measured. The
 saved hook returns exactly one `ContinueAcquisition` or `StopAcquisition` decision
 for every image, and the parent publishes at most one successor frame. For example,
 after reviewing and saving `density_stop_hook`:
@@ -341,7 +347,7 @@ localization fitting in one of these tools:
 |-----------------|-------------|----------------------------------------|
 | ThunderSTORM    | FIJI plugin | Widely used, good for 2D dSTORM/PALM  |
 | SMAP            | MATLAB/GUI  | State-of-art MLE, 3D, PSF calibration |
-| DECODE          | Python/GPU  | Deep-learning, very fast               |
+| DECODE          | Python/GPU  | Deep-learning               |
 | Picasso         | Python/GUI  | DNA-PAINT specialist tool              |
 | ZOLA-3D         | FIJI plugin | 3D PSF engineering                     |
 

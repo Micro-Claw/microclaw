@@ -141,7 +141,8 @@ def test_mosaic_and_multiposition_descriptions_agree_on_dataset_shape():
     autofocus = _SCHEMA_BY_NAME["run_multiposition_with_autofocus"]["description"]
 
     assert "ONE dataset" in mosaic and "hook_strategy" in mosaic
-    assert "single dataset with a `position` axis" in multipos
+    order = _SCHEMA_BY_NAME["run_multiposition_acquisition"]["input_schema"]["properties"]["acquisition_order"]["description"]
+    assert "Hooked interval_s=0 shares a position-axis dataset" in order
     assert "Without hook_strategy" in multipos and "CANNOT" in multipos
     assert "one dataset per position" in autofocus and "CANNOT" in autofocus
 

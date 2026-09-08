@@ -558,7 +558,8 @@ class LiveClient:
         for field in ("input_tokens", "output_tokens",
                       "cache_creation_input_tokens", "cache_read_input_tokens"):
             self.usage[field] += getattr(response.usage, field, None) or 0
-        return {"content": [_echoable(b.model_dump()) for b in response.content]}
+        return {"content": [_echoable(b.model_dump()) for b in response.content],
+                "stop_reason": response.stop_reason}
 
 
 # The SDK's model_dump() carries fields the API refuses on the way back in --
