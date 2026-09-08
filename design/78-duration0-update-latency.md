@@ -1,6 +1,7 @@
 # Fast Duration0 updates and the htSMLM option
 
-Status: **IN PROGRESS**, 2026-09-07. Evidence re-scored against the artifacts
+Status: **78a and 78b MERGED**, 2026-09-08; 78c not started and not yet
+warranted — see its section. Originally proposed 2026-09-06. Evidence re-scored against the artifacts
 and the pycro-manager source on 2026-09-06; the AcqEngJ half of 78b's open
 question settled from the jar on 2026-09-07 (§"The Java mechanism, confirmed").
 78a and 78b are assigned; no fix has been measured on a rig yet. General policy
@@ -275,8 +276,16 @@ accepted with read-back).
 
 ## Continuous feedback: control htSMLM or extend MicroClaw?
 
-78c is not on the critical path and is ordered **after** 78a is measured: the
-fix above predicts a substantial improvement. The plugin route also differs
+78c is not on the critical path and is ordered **after** 78a is measured. That
+measurement is now in: **78a removed essentially all of it.** A property write
+before every frame now costs about 5 ms above a no-write baseline on M2, against
+the ~2.1 s it cost before. The premise for 78c — that MicroClaw's synchronous
+per-frame barrier is too slow to be usable and a plugin might be the way out —
+is substantially weakened, and the table below already recorded that htSMLM's
+stop semantics do not match the experiment that prompted it. **Do not open 78c
+without a specific workflow whose timing MicroClaw's corrected path still cannot
+meet.** The original reasoning is kept below because the plugin-integration
+checks remain the right ones if that workflow appears. The plugin route also differs
 from the earlier three-frame-window/1,000-frame-stop request; this does not
 rule it out for other activation workflows.
 
@@ -370,14 +379,18 @@ To `design/70-carried-forward-register.md` unless a block above claims them:
 - M2's shorter gaps are ~0.20–0.35 s at 50 ms exposure. After 78a, measure
   the residual dispatch and required property-operation costs; design/79c owns
   further optimization.
-- `refresh_gui`'s docstring states a cache repaint adds no reads. True of
-  MMCore, false of MM's listeners. Correct it wherever it is quoted.
+- ~~`refresh_gui`'s docstring states a cache repaint adds no reads. True of
+  MMCore, false of MM's listeners.~~ **Done in 78a** — corrected in
+  `MicroscopeController.refresh_gui` and in the emitted script's stub comment.
+- Two rows opened in `design/70` from 78a's gate: `R102` (one rig, one property)
+  and `R103` (the teardown refresh costs ~2.4 s per run, and a spaced
+  multiposition grid would pay it per field).
 
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 78a | `design78/no-per-frame-refresh` | `bfccc15` | Codex runner | **M2, 10/10 PASS 2026-09-08** (M5 unavailable; M2 runs the same EMU stack and the same pair) | — |
+| 78a | `design78/no-per-frame-refresh` | `bfccc15` | Codex runner | **M2, 10/10 PASS 2026-09-08** (M5 unavailable; M2 runs the same EMU stack and the same pair) | `abfc527` |
 | 78b | `design78/sequencing-predicate` | `bfccc15` | Codex runner | demo machine, **8/8 PASS 2026-09-08** (7/7 as run, plus one limb re-scored off-rig after a gate defect) | `f0799da` |
 | 78c | — | — | — | — | — |
 

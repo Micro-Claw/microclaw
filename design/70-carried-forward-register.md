@@ -94,6 +94,7 @@ Rows added since the triage:
 | `R91`–`R93` | found while scoring the Nikon Ti's own `design/74` sessions, 2026-09-05 |
 | `R94`–`R95` | `design/75` block 75a's gates, 2026-09-05 |
 | `R96`–`R97` | `design/75` block 75b's demo gate, 2026-09-05 |
+| `R102`–`R103` | `design/78` block 78a's M2 gate, 2026-09-08 |
 
 
 ## The work queue
@@ -115,6 +116,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R40` | [A stitched mosaic's zero padding corrupts every ImageStats statistic](#r40) | HIGH | SMALL |  |
 | `R42` | [A model-invented rule overrode an explicit operator instruction](#r42) | HIGH | SMALL |  |
 | `R98` | [A spaced hooked grid writes one hook log per field, and rank_hook_log takes one path](#r98) | MEDIUM | SMALL |  |
+| `R102` | [78a's fix is measured on one rig and one property](#r102) | LOW | SMALL |  |
+| `R103` | [The coalesced teardown refresh costs ~2.4 s per run on an EMU rig](#r103) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2461,3 +2464,29 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE, and none should be opened. If a checklist ever appears to depend on this row, the dependency is wrong: route it through R83.
 - **Effort** — n/a
 - **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
+
+### R102 — 78a's fix is measured on one rig and one property
+
+**Block 78a's M2 gate is unambiguous about what it measured, and it measured one rig writing one device property.**
+
+- **What was measured** (2026-09-08, M2, 10/10): three ten-frame arms in one debug-level CoreLog. Median frame cadence 0.499 s with no write, 2.584 s writing `Laser Trigger` / `Duration0 (us)` with the per-frame refresh, 0.505 s writing it without — within 6 ms of the no-write baseline. EMU retrievals on the writing thread between write and exposure: 490 across ten writes, then zero.
+- **What was not** — two things. design/78 asked for a **second authorized property for generality**; the fourth run wrote the *same* pair with a different laser, so it did not exercise one. And **M5 itself is unmeasured**: it was down on the day, and every number in design/78's "Measured" section is M2's, including the numbers that replace M5's own 2026-09-04 evidence.
+- **Why this is LOW** — the change is in `UntrustedHookAdapter._apply_property`, which has no device-specific or property-specific branch; the refresh it removes is the same call whatever was written. Generality rests on reading the code rather than on a second measurement, which is ordinarily enough. It is listed because design/78 explicitly asked for the second property and the gate did not deliver it, not because there is reason to doubt the result.
+- **How it gets closed for free** — `design/78-block78a-m5-gate.py` and its runbook are rig-agnostic: the device and property are `arms.json` fields and the probe finds the CoreLog from Core. Run it as a passenger on the next M5 trip, or on M2 against any non-illumination authorized property, and it closes both halves at once.
+- **Where** — RIG:M5 or RIG:M2, as a passenger.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — coordinator scoring of block 78a's M2 artifacts, 2026-09-08.
+
+### R103 — The coalesced teardown refresh costs ~2.4 s per run on an EMU rig
+
+**Block 78a moved the GUI refresh out of the per-frame path and into teardown, which is the operator's 2026-09-06 decision working as intended. The cost did not vanish; it was relocated and is now measured.**
+
+- **What was measured** (2026-09-08, M2): in the without-refresh arm there is exactly one GUI repaint, at 15:17:25.201, after the last exposure ends at 15:17:24.895, and all 49 calling-thread EMU retrievals follow it, finishing at 15:17:27.643 — **~2.4 s**. That accounts for essentially the whole 2.5 s gap between the 7.69 s run and the 5.19 s no-write baseline.
+- **Why it is not a defect** — it is the design. One repaint per run instead of one per frame is the trade the operator approved, and paying it after the last exposure costs no acquisition time and no dose. A ten-frame run went from 29.19 s to 7.69 s carrying it.
+- **What is worth watching** — it is a per-*run* cost, so a workflow that runs many short acquisitions pays it many times. design/77b takes one acquisition per position when `interval_s > 0`, so a spaced multiposition grid pays ~2.4 s per field on an EMU rig. Nobody has measured that shape, and on a 100-field grid it would be four minutes of teardown repaints.
+- **Where** — RIG:M2 or RIG:M5. Measurable as a passenger on any spaced hooked grid already being run.
+- **Block** — NONE. If it turns out to matter, the fix is a scoped question for design/79c — whether the refresh belongs once per *composite* rather than once per acquisition — not a reopening of 78a.
+- **Importance** — LOW until someone runs a many-field hooked grid on an EMU rig.
+- **Effort** — SMALL
+- **Provenance** — coordinator scoring of block 78a's M2 artifacts, 2026-09-08.
