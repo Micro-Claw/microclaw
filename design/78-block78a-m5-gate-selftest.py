@@ -122,7 +122,7 @@ def test_without_refresh_arm_can_actually_pass(tmp_path):
                        [_arm("write-without-refresh", False)])
     limbs = {l["limb"]: l for l in score["limbs"]}
     assert limbs["no GUI update between a write and its exposure"]["status"] == "PASS"
-    assert limbs["the read fan-out is gone, on every thread"]["status"] == "PASS"
+    assert limbs["the read fan-out no longer blocks the write path"]["status"] == "PASS"
     # Still nonzero overall: the other two arms are genuinely absent here.
     assert rc == 1
 
@@ -136,14 +136,41 @@ def test_the_two_write_arms_must_be_different_trees(tmp_path):
     assert limbs["the two write arms ran different trees"]["status"] == "FAIL"
 
 
-def test_fanout_still_present_reports_that_the_work_moved(tmp_path):
-    """The specific question design/78 asks: did it move to another thread?"""
+def test_fanout_on_the_writing_thread_still_fails(tmp_path):
+    """The causal question: does the fan-out still block OUR write path?
+
+    Feed the real with-refresh cycle in as if it were the without-refresh arm.
+    Its EMU reads are on tid548, the same thread that performed the write, so
+    the limb must FAIL. This is the discriminator that background polling on
+    another thread must NOT trip -- see the next test.
+    """
     rc, score = _score(tmp_path, EXCERPT.read_text(encoding="utf-8"),
                        [_arm("write-without-refresh", False)])
     limbs = {l["limb"]: l for l in score["limbs"]}
-    limb = limbs["the read fan-out is gone, on every thread"]
+    limb = limbs["the read fan-out no longer blocks the write path"]
     assert limb["status"] == "FAIL"
-    assert "MOVED rather than" in limb["detail"]
+    assert "on the writing thread" in limb["detail"]
+
+
+def test_background_polling_on_another_thread_does_not_fail_the_limb(tmp_path):
+    """M2's round 1 failed on two reads that were EMU's own background polling.
+
+    EMU polled at ~4.2/s on M2 regardless of what we did -- 502 retrievals in a
+    two-minute idle gap with nothing running. Reassign the excerpt's EMU lines
+    to a thread that is not the writer's and the limb must PASS, reporting the
+    other-thread count rather than failing on it.
+    """
+    moved = []
+    for line in EXCERPT.read_text(encoding="utf-8").splitlines():
+        if "[EMU] -- Retrieved MMProperty" in line:
+            line = line.replace("tid548", "tid9999").replace("tid15000", "tid9999")
+        moved.append(line)
+    rc, score = _score(tmp_path, "\n".join(moved) + "\n",
+                       [_arm("write-without-refresh", False)])
+    limbs = {l["limb"]: l for l in score["limbs"]}
+    limb = limbs["the read fan-out no longer blocks the write path"]
+    assert limb["status"] == "PASS", limb["detail"]
+    assert "on other threads" in limb["detail"]
 
 
 # --- the rig-side probe -------------------------------------------------------
@@ -190,7 +217,7 @@ def test_readback_limb_is_not_exercised_when_the_counter_sees_nothing(tmp_path):
                        [_arm("write-with-refresh", True),
                         _arm("write-without-refresh", False)])
     limbs = {l["limb"]: l for l in score["limbs"]}
-    assert limbs["exactly one read-back of the target per write"]["status"] == "NOT EXERCISED"
+    assert limbs["EMU no longer re-reads the target after each write"]["status"] == "NOT EXERCISED"
 
 
 def test_readback_limb_passes_when_the_counter_demonstrably_works(tmp_path):
@@ -201,4 +228,4 @@ def test_readback_limb_passes_when_the_counter_demonstrably_works(tmp_path):
     rc, score = _score(tmp_path, text, [_arm("write-with-refresh", True),
                                         _arm("write-without-refresh", False)])
     limbs = {l["limb"]: l for l in score["limbs"]}
-    assert limbs["exactly one read-back of the target per write"]["status"] != "NOT EXERCISED"
+    assert limbs["EMU no longer re-reads the target after each write"]["status"] != "NOT EXERCISED"

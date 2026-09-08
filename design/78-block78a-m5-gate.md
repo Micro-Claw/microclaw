@@ -96,7 +96,7 @@ Confirm the scorer runs on this machine before you spend any dose:
 uv run python -m pytest -q design\78-block78a-m5-gate-selftest.py
 ```
 
-Expect `13 passed`. If that fails, stop and send me the output — the instrument
+Expect `14 passed`. If that fails, stop and send me the output — the instrument
 is broken and no rig time should be spent.
 
 ## 1 — start Micro-Manager once, with debug logging, and leave it up

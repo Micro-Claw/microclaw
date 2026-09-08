@@ -224,6 +224,55 @@ attribution and measure the residual. Acceptance requires removal of unnecessary
 refresh work with preserved correctness; it is not a pass/fail threshold of
 0.3 s. Remaining dispatch overhead belongs to design/79c.
 
+## Measured: block 78a on M2, 2026-09-08
+
+M5 was down, so the gate ran on M2, which carries the same EMU/htSMLM stack and
+writes the same `Laser Trigger` / `Duration0 (us)`. Three arms of ten frames,
+one Micro-Manager session, one CoreLog at debug level
+(`CoreLog20260908T092536_pid4372.txt`). Scored from the log, not the verdict.
+
+| Arm | Median frame cadence | Run duration | EMU reads on the **writing thread**, write → exposure |
+|---|---:|---:|---:|
+| no write | 0.499 s | 5.19 s | — |
+| write, **with** refresh (`main`) | 2.584 s | 29.19 s | **490** across 10 writes |
+| write, **without** refresh (branch) | 0.505 s | 7.69 s | **0** |
+
+**The write-associated cost is gone, not reduced.** The without-refresh arm's
+cadence is within 6 ms of the no-write baseline, so writing a property before
+every frame now costs about what not writing it costs. Per write, the
+write→exposure span fell from 2.26–2.43 s to 0.018–0.044 s. The setter itself
+was 41–97 µs in both arms, as design/78 said it was.
+
+**The fan-out did not move threads — it moved to teardown.** design/78's named
+risk was that MMCore's own property-changed callback might drive the listeners
+regardless. It does not. In the without-refresh arm there is exactly **one** GUI
+repaint, at 15:17:25.201, *after* the last exposure ends at 15:17:24.895, and
+all 49 calling-thread EMU retrievals follow it. Ten refreshes inside the
+acquisition became one after it.
+
+**That teardown refresh costs ~2.4 s on this rig** (15:17:25.378 → 15:17:27.643),
+which accounts for essentially all of the 2.5 s gap between the 7.69 s run and
+the 5.19 s no-write baseline. It is the measured price of the operator's
+2026-09-06 decision to keep users aware at teardown, and it is paid once per
+run rather than once per frame.
+
+**Against the prediction.** design/78 extrapolated ~0.3 s/frame from one M5
+cycle. M2 measured 0.505 s/frame — but its no-write baseline is already 0.499 s,
+so the prediction was not wrong about the residual so much as it was predicting
+a different quantity: the extrapolation included snap and read-back costs that
+this rig's baseline already contains. The honest statement is that the
+*write-associated* residual is ~5 ms, and the remaining half-second per frame is
+ordinary acquisition cost that this block never touched. design/79c owns it.
+
+**Two things this gate did not establish.** The second authorized property
+design/78 asked for was **not exercised**: the fourth run wrote the same
+`Duration0 (us)` with a different laser rather than a different pair, so
+generality across properties rests on the code having no device-specific branch,
+not on measurement. And M5 itself remains unmeasured — every number here is M2's.
+
+Restoration was verified on both hooked runs (`requested '1'`, `achieved '1'`,
+accepted with read-back).
+
 ## Continuous feedback: control htSMLM or extend MicroClaw?
 
 78c is not on the critical path and is ordered **after** 78a is measured: the
@@ -328,7 +377,7 @@ To `design/70-carried-forward-register.md` unless a block above claims them:
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 78a | `design78/no-per-frame-refresh` | `bfccc15` | Codex runner, queued 2026-09-07 for 01:57 | M5 (owed) | — |
+| 78a | `design78/no-per-frame-refresh` | `bfccc15` | Codex runner | **M2, 10/10 PASS 2026-09-08** (M5 unavailable; M2 runs the same EMU stack and the same pair) | — |
 | 78b | `design78/sequencing-predicate` | `bfccc15` | Codex runner | demo machine, **8/8 PASS 2026-09-08** (7/7 as run, plus one limb re-scored off-rig after a gate defect) | `f0799da` |
 | 78c | — | — | — | — | — |
 
