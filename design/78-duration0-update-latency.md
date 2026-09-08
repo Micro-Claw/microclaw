@@ -232,17 +232,32 @@ writes the same `Laser Trigger` / `Duration0 (us)`. Three arms of ten frames,
 one Micro-Manager session, one CoreLog at debug level
 (`CoreLog20260908T092536_pid4372.txt`). Scored from the log, not the verdict.
 
-| Arm | Median frame cadence | Run duration | EMU reads on the **writing thread**, write → exposure |
+All three arms: 10 frames, 50 ms exposure, **`interval_s = 0.5`**.
+
+| Arm | Median frame cadence (interval-limited) | Run duration | EMU reads on the **writing thread**, write → exposure |
 |---|---:|---:|---:|
 | no write | 0.499 s | 5.19 s | — |
 | write, **with** refresh (`main`) | 2.584 s | 29.19 s | **490** across 10 writes |
 | write, **without** refresh (branch) | 0.505 s | 7.69 s | **0** |
 
-**The write-associated cost is gone, not reduced.** The without-refresh arm's
-cadence is within 6 ms of the no-write baseline, so writing a property before
-every frame now costs about what not writing it costs. Per write, the
-write→exposure span fell from 2.26–2.43 s to 0.018–0.044 s. The setter itself
-was 41–97 µs in both arms, as design/78 said it was.
+**Read the cadence column carefully: it is interval-limited.** All three arms
+requested `interval_s = 0.5` at 50 ms exposure, so 0.499 s is the engine
+honouring `min_start_time`, **not** a measured floor. The right statement is
+that the without-refresh arm *meets its requested interval* while the
+with-refresh arm overran it by 2.08 s per frame. design/79 item 1 says to keep
+requested intervals separate from achieved timing; this table has both and the
+distinction matters.
+
+**The unconfounded measurement is the write→exposure span**, which no interval
+bounds: it fell from **2.26–2.43 s to 0.018–0.044 s** per write. That is the
+number to quote for what this block did. The setter itself was 41–97 µs in both
+arms, as design/78 said it was.
+
+So the write-associated cost is gone rather than reduced — but "gone" is
+established by the 18–44 ms span and by the fan-out count falling from 490 to
+zero on the writing thread, not by the cadence agreeing to 6 ms, which two
+interval-limited arms would do whatever the write cost as long as it fitted
+inside 0.5 s.
 
 **The fan-out did not move threads — it moved to teardown.** design/78's named
 risk was that MMCore's own property-changed callback might drive the listeners
@@ -258,12 +273,15 @@ the 5.19 s no-write baseline. It is the measured price of the operator's
 run rather than once per frame.
 
 **Against the prediction.** design/78 extrapolated ~0.3 s/frame from one M5
-cycle. M2 measured 0.505 s/frame — but its no-write baseline is already 0.499 s,
-so the prediction was not wrong about the residual so much as it was predicting
-a different quantity: the extrapolation included snap and read-back costs that
-this rig's baseline already contains. The honest statement is that the
-*write-associated* residual is ~5 ms, and the remaining half-second per frame is
-ordinary acquisition cost that this block never touched. design/79c owns it.
+cycle. That cannot be compared against this run's 0.505 s cadence, because the
+cadence here is the requested 0.5 s interval and would have read 0.5 s for any
+write cheap enough to fit inside it. Compared against the quantity the
+prediction was actually about — the work between the write and the exposure —
+the measurement is **18–44 ms against a predicted ~300 ms**, and the prediction
+was high because it carried snap and read-back costs that fall outside that
+span. **The residual dispatch cost this block did not touch remains unmeasured
+on M2**, because a 0.5 s interval hides it; that is `R105` and it is design/79c's
+to close.
 
 **Two things this gate did not establish.** The second authorized property
 design/78 asked for was **not exercised**: the fourth run wrote the same
@@ -372,13 +390,15 @@ elsewhere.
 
 To `design/70-carried-forward-register.md` unless a block above claims them:
 
-- `_set_channel_for_composite` refreshes at composite phase boundaries; on an
-  EMU rig it may trigger the same expensive listener work. Measure its phase
-  cost rather than assigning M5's ~2.9 s write-path measurement to it.
-  Per-phase, not per-frame, so out of 78a's scope.
-- M2's shorter gaps are ~0.20–0.35 s at 50 ms exposure. After 78a, measure
-  the residual dispatch and required property-operation costs; design/79c owns
-  further optimization.
+- ~~`_set_channel_for_composite` refreshes at composite phase boundaries.~~
+  **Routed to `design/70` as `R104`**, now with 78a's measurement behind it:
+  the per-write refresh cost ~2.3 s on M2, so the same call at a phase boundary
+  plausibly costs the same and nobody has measured it.
+- ~~M2's shorter gaps are ~0.20–0.35 s at 50 ms exposure; after 78a, measure the
+  residual.~~ **Routed to `design/70` as `R105`, still open.** 78a's gate did
+  **not** close it: every arm ran at `interval_s = 0.5`, which hides any
+  residual below half a second. Measuring it needs a zero- or short-interval
+  run.
 - ~~`refresh_gui`'s docstring states a cache repaint adds no reads. True of
   MMCore, false of MM's listeners.~~ **Done in 78a** — corrected in
   `MicroscopeController.refresh_gui` and in the emitted script's stub comment.
