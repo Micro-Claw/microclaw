@@ -662,10 +662,14 @@ class UntrustedHookAdapter:
             failure_result = exc.result if isinstance(exc, StageMoveError) else {}
             if isinstance(exc, StageMoveError) and exc.result["measured_um"] is not None:
                 ctx["last_known"] = exc.result["measured_um"]
+            dispatched = "write" in timing
             self._record_event(
-                event, event="named_stage_write_failure",
+                event, event=("named_stage_write_failure" if dispatched else
+                              "named_stage_start_position_failure"),
                 hook_event_index=index, action=self._action_record(action),
-                decision="failed", reason=f"parent stage move failed: {exc}",
+                decision="failed" if dispatched else "refused",
+                reason=(f"parent stage move failed: {exc}" if dispatched else
+                        f"start-position read failed before dispatch: {exc}"),
                 last_known_um=ctx["last_known"], restoration=restoration, timing=timing,
                 **failure_result,
             )

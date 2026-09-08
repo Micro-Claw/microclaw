@@ -3,8 +3,8 @@
 Live use requires --session, --samples and --transcript. Output is evidence;
 never commit it. The three arms change measured spans, not runtime guidance.
 Scores are literal substring signals, not a semantic assessment of prose.
-Forbidden phrases also match negations: inspect transcripts before interpreting
-counts. Missing fixture calls count as NOT_AVAILABLE, never a pass.
+Forbidden matches ignore explicit retractions within the preceding 12 words
+of the same clause (punctuation and but/however end a clause). Missing fixture calls count as NOT_AVAILABLE, never a pass.
 """
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import argparse
 import copy
 import json
 import math
+import re
+import tempfile
 import sys
 from collections import Counter
 from contextlib import ExitStack
@@ -29,7 +31,7 @@ PASS_TEXT = {
 FAIL_TEXT = 'This overhead is irreducible: the serial link and camera round trip.'
 
 
-def fixture(arm):
+def fixture(arm, *, session=None):
     """Run the shipped tool against controlled clocks and a dispatching backend.
 
     No hand-built result JSON: run_timelapse builds the result, the adapter
@@ -39,6 +41,15 @@ def fixture(arm):
     from microclaw import tools
     from microclaw.acquisition import AcquisitionPlan, AcquisitionLedger
     from microclaw.hook_decisions import PLAN_ONLY, SetDeviceProperty, UntrustedHookAdapter
+    log_path = '/replay/synthesized_plan_log.jsonl'
+    if session is not None:
+        call_id = next(b['id'] for b in session[29]['content'] if b.get('type') == 'tool_use')
+        recorded = next(b for b in session[30]['content']
+                        if b.get('type') == 'tool_result' and b['tool_use_id'] == call_id)
+        content = recorded['content']
+        if isinstance(content, list):
+            content = ''.join(b['text'] for b in content if b.get('type') == 'text')
+        log_path = json.loads(content).get('log_path') or log_path
     now = [100.0]
     def advance(seconds): now[0] += seconds
     class Core:
@@ -78,7 +89,7 @@ def fixture(arm):
             'Acquisition': lambda **kw: Backend(**kw),
             '_build_acquisition_events': lambda **kw: [{'axes': {'time': i}} for i in range(5)],
             '_resolve_hook': lambda *a, **kw: hook,
-            '_prepare_log_path': lambda *a, **kw: None,
+            '_prepare_log_path': lambda *a, **kw: log_path,
             '_configure_hook_capabilities': lambda *a, **kw: None,
             'plan_events': lambda *a, **kw: AcquisitionPlan(5, 1, .01, 5),
             '_plan_with_hook_dose': lambda plan, hook: plan,
@@ -88,8 +99,16 @@ def fixture(arm):
         }
         for name, value in replacements.items(): stack.enter_context(patch.object(tools, name, value))
         stack.enter_context(patch.object(tools.time, 'monotonic', lambda: now[0]))
-        return tools.run_timelapse(ctrl, guard, n_frames=5, interval_s=.01,
-                                  save_dir='/replay', hook_strategy='fixture')
+        result = tools.run_timelapse(ctrl, guard, n_frames=5, interval_s=.01,
+                                     save_dir='/replay', hook_strategy='fixture')
+    # Serialize through the adapter and read through the shipped log tool.
+    # Only the virtual path changes; the entries and response schema are real.
+    with tempfile.TemporaryDirectory() as directory:
+        hook.log_path = str(Path(directory) / 'hook.jsonl')
+        hook._write_log()
+        log = tools.read_hook_log(ctrl, SimpleNamespace(resolve_readable_path=lambda p: p), hook.log_path)
+    log['log_path'] = log['artifact']['path'] = log_path
+    return result, log
 
 
 def session_fixture():
@@ -120,8 +139,14 @@ def messages_for(session, result):
 
 def score(arm, text):
     lowered = text.lower()
-    forbidden = [s for s in ('irreducible', 'serial link', 'serial write', 'camera round trip',
-                              'camera round-trip') if s in lowered]
+    forbidden = []
+    for phrase in ('irreducible', 'serial link', 'serial write', 'camera round trip', 'camera round-trip'):
+        for hit in re.finditer(re.escape(phrase), lowered):
+            clause = re.split(r"[.!?;,\n]|\bbut\b|\bhowever\b", lowered[:hit.start()])[-1]
+            window = ' '.join(clause.split()[-12:]).replace('’', "'")
+            if not re.search(r"\b(?:not|isn't|is not|no longer|rather than|instead of|contrary to)\b", window):
+                forbidden.append(phrase)
+                break
     signals = {
         'phase': any(s in lowered for s in ('wait_for_device', 'wait span', 'settle span')),
         'refresh': any(s in lowered for s in ('refresh_gui', 'gui refresh')),
@@ -234,13 +259,19 @@ def main(argv=None):
         import anthropic
         client = anthropic.Anthropic()
     for arm in ARMS if args.arm == 'all' else (args.arm,):
-        synthesized = fixture(arm)
+        synthesized, hook_log = fixture(arm, session=session)
         messages = messages_for(session, synthesized)
+        table = recorded_results(session)
+        log_input = {'log_path': synthesized['log_path']}
+        table[('read_hook_log', json.dumps(log_input, sort_keys=True))] = json.dumps(hook_log)
         tally, unavailable = Counter(), Counter()
         for i in range(args.samples):
             if args.dry_run:
-                client = ScriptedClient([[{'type': 'text', 'text': PASS_TEXT[arm] if i % 2 == 0 else FAIL_TEXT}]])
-            result = run_sample(client, arm, messages, recorded_results(session),
+                client = ScriptedClient([
+                    [{'type': 'tool_use', 'id': 'read32', 'name': 'read_hook_log', 'input': log_input}],
+                    [{'type': 'text', 'text': PASS_TEXT[arm] if i % 2 == 0 else FAIL_TEXT}],
+                ])
+            result = run_sample(client, arm, messages, table,
                                 model=model, system=SYSTEM_PROMPT, tools_schema=TOOLS)
             tally[result['verdict']] += 1
             unavailable.update(result['not_available'])

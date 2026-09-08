@@ -5046,9 +5046,6 @@ def run_zstack(
             dataset_path, log_path, status="Z-stack complete.", hook=hook,
             frames_planned=len(events), frames_acquired=len(events),
             frames_exposed=len(events),
-            started_at=started_at.isoformat(),
-            completed_at=datetime.now(timezone.utc).isoformat(),
-            duration_s=round(time.monotonic() - started, 6),
             **_reservation_report(reservation),
         ))
         restoration = getattr(hook, "_named_stage_restoration", None)
@@ -5399,9 +5396,6 @@ def run_timelapse(
             dataset_path, log_path, status="Timelapse complete.", hook=hook,
             frames_planned=len(events), frames_acquired=len(events),
             frames_exposed=len(events),
-            started_at=started_at.isoformat(),
-            completed_at=datetime.now(timezone.utc).isoformat(),
-            duration_s=round(time.monotonic() - started, 6),
             **_reservation_report(reservation),
         ))
         restoration = getattr(hook, "_named_stage_restoration", None)
@@ -8632,10 +8626,47 @@ def _adaptive_result(
         **extra,
     }
     if hook is not None:
-        writes = [record for record in getattr(hook, "_log", ())
-                  if "timing" in record]
-        if writes:
-            result["hardware_write_records"] = writes
+        # One pass over the existing audit log, constant additional storage.
+        # max_writes is an authorization budget, not a tool-payload size limit.
+        phases = {}
+        slowest = []
+        record_count = 0
+        for record in getattr(hook, "_log", ()):
+            timing = record.get("timing", {})
+            if timing.get("clock") != "time.monotonic":
+                continue
+            record_count += 1
+            first, last = None, None
+            for phase in ("validation", "read_stage_start_position", "write",
+                          "wait", "read_back", "settle_stage_move"):
+                span = timing.get(phase)
+                if span is None or "end_s" not in span:
+                    continue
+                start, end = span["start_s"], span["end_s"]
+                duration = end - start
+                first = start if first is None else min(first, start)
+                last = end if last is None else max(last, end)
+                aggregate = phases.setdefault(phase, {
+                    "count": 0, "min_s": duration, "max_s": duration, "total_s": 0.0,
+                })
+                aggregate["count"] += 1
+                aggregate["min_s"] = min(aggregate["min_s"], duration)
+                aggregate["max_s"] = max(aggregate["max_s"], duration)
+                aggregate["total_s"] += duration
+            if first is not None:
+                slowest.append((last - first, record))
+                slowest.sort(key=lambda item: item[0], reverse=True)
+                del slowest[3:]
+        if record_count:
+            for aggregate in phases.values():
+                aggregate["mean_s"] = aggregate["total_s"] / aggregate["count"]
+            result["hardware_write_timing_summary"] = {
+                "clock": "time.monotonic", "record_count": record_count,
+                "phases": phases,
+                "phase_meaning": "completed spans, including failed actions and restoration; totals are not run duration",
+                "slowest_records": [record for _, record in slowest],
+                "slowest_meaning": "up to three records by first span start to last completed span end; earliest wins ties",
+            }
     if hook is not None and hasattr(hook, "autofocus_settings_snapshot"):
         result["autofocus_settings_snapshot"] = hook.autofocus_settings_snapshot
     if log_path:
