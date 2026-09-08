@@ -333,11 +333,69 @@ and a residual — `hardware_write_timing_summary` is assembled in
 there. And the existing bounds hold unchanged: a fixed set of phase names, at
 most three retained records, no per-frame array, and no extra bridge call.
 
+## Block 79a, closed 2026-09-08 — what was measured and what was not
+
+**Shipped.** Quantile bounds clamp into `[min_s, max_s]` (M5's `median_le_s: 5.0`
+beside `max_s: 3.203` is now 3.203). The histogram resolves 0.5–5 s and emits
+only populated bins. Monotonic spans reached the named-stage write and the
+teardown. `run_timelapse` / `run_zstack` report the executed route in 77b's
+vocabulary, from `_sequenced_ms` rather than a second copy of that arithmetic.
+And the two timing shapes became one `duration_breakdown`, in seconds, with
+`accounted_s` and the residual named.
+
+**Measured directly, not inferred.** `accounted_s + unaccounted_s == duration_s`
+reconciles exactly, with the restoration span's nested write spans subtracted so
+nothing is counted twice. The payload is flat at **2303 → 2359 bytes from 5 to
+100,000 writes**. No bridge call was added. Suite 3081 passed / 99 skipped, run
+by the coordinator, not taken from a report.
+
+**The replay, honestly.** Three rounds, 15 samples, and **the arms were sized at
+3, not the 16 this notebook's gate document specified.** That is underpowered and
+is recorded as such rather than as a gate pass — `design/59b` went 5/8 then 15/16
+on identical wording, so a 3-sample proportion from this instrument family is
+corroboration, never a result.
+
+| Arm | Before the teardown fix | After |
+|---|---|---|
+| `attributed-write` | 3/3 | 2/3 |
+| `attributed-teardown` | 1/3 | 3/3 |
+| `unattributed` | 3/3 | 3/3 |
+
+The control that gives the teardown row its meaning: pilot 2 **stays** at 1/3
+when rescored with the final scorer, so the change is the product's, not the
+instrument's. The recorded M5 failure — line 32, the turn this block exists to
+prevent — scores FAIL in all three arms and is pinned in the selftest.
+
+**Enlarging the sample was declined, deliberately** (operator decision). It buys
+a narrower interval on a corroborating measurement — roughly [0.44, 1.0] to
+[0.81, 1.0] — and no decision hinges on the difference: 79a's correctness is
+carried by direct measurement and 3081 tests, and 79b's arms are different ones.
+If the number is ever wanted, 79b runs this instrument anyway and these three
+arms ride along at near-zero marginal cost.
+
+**Three rounds of scorer defects, and the pattern is the finding.** Each round
+the scorer was written from imagined phrasing and failed answers that were
+correct: it wanted `dominates` and got "dominated"; `wait span` and got
+"`wait` phase"; the literal `not attributed` and got "I have not isolated exactly
+which"; and finally the literal word **"teardown"**, which no response used
+because it is our implementation's jargon rather than anything you would say to a
+microscopist. It now keys on the measured number, which did not move across any
+of it. *A mechanical scorer must be built from observed output, not from what a
+phrase ought to be* — design/61's lesson, relearned three times in one block.
+
+**The instrument's own defects outnumbered the product's, again.** Two pilot
+rounds died on the gate: one because the fixture answered a *different call* than
+the model had made (hard-coded interval, path, restore policy and sweep values
+against a recording that specified others), which the model correctly refused;
+one on scorer vocabulary. Neither was the product. Same shape as design/69a's 2
+product defects against 6 gate defects, and design/75's two rounds that both
+failed on the gate.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 79a | `design79/make-the-time-visible` | `aa8e666` | codex | — | — |
+| 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
 | 79b | — | — | — | — | — |
 | 79c | — | — | — | — | — |
 
