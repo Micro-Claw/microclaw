@@ -106,6 +106,31 @@ The recorded failure — line 32 of the M5 session, the turn this block exists t
 prevent — scores FAIL in all three arms, on `irreducible`, `serial link` and
 `camera round-trip`. That control is now in the selftest.
 
+## Round 3 is scheduled, not waiting on this session
+
+The Codex usage window closed mid-revision, so the teardown fix is handed to a
+detached launcher: `nohup`-started, **verified at PPID 1**, holding an atomic
+`mkdir` lock, firing `revise` (never `start` — the job directory already holds
+its `session-id`, which `start` refuses and `revise` requires) at 21:13 with a
+03:13 give-up, and retrying **only** on a usage-limit refusal. Any other failure
+stops for the coordinator rather than burying a real handoff failure under
+eleven attempts.
+
+It has a selftest, 17 limbs, and that selftest found two defects in it:
+
+- **It could not be stopped.** The first live start survived `SIGTERM` and kept
+  its lock — the very failure design/78's 07:00 chain had. The trap did `exit`;
+  the problem was one level down, in POSIX `sh`: a **foreground** `sleep` defers
+  the trap until it finishes, so a kill during a 60 s poll took a full minute.
+  The sleep is now backgrounded and `wait`ed on, which is interruptible.
+- **The selftest was hiding it**, because it drove the kill limb at `POLL=1`
+  where the latency is invisible. It now also runs a limb at the *production*
+  poll and requires the stop in seconds; it measures 1 s.
+
+The kill limb's control fires: mutating the trap to return instead of exit
+reproduces design/78's chain exactly — survives the kill, keeps the lock, and
+**launches anyway** — and the limb reports all three.
+
 ## Cost, measured rather than guessed
 
 Per sample: **~40,650 input tokens**, of which **~39,472 are byte-identical**
