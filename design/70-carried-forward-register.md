@@ -96,6 +96,7 @@ Rows added since the triage:
 | `R96`–`R97` | `design/75` block 75b's demo gate, 2026-09-05 |
 | `R102`–`R103` | `design/78` block 78a's M2 gate, 2026-09-08 |
 | `R104`–`R105` | `design/78`'s own carried-forward list, routed at close-out 2026-09-08 |
+| `R106` | `design/79` block 79a, found while pricing its replay gate 2026-09-08 |
 
 
 ## The work queue
@@ -121,6 +122,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R103` | [The coalesced teardown refresh costs ~2.4 s per run on an EMU rig](#r103) | LOW | SMALL |  |
 | `R104` | [_set_channel_for_composite refreshes at every phase boundary, unmeasured](#r104) | MEDIUM | SMALL |  |
 | `R105` | [The residual per-frame dispatch cost is still unmeasured on M2](#r105) | MEDIUM | SMALL |  |
+| `R106` | [DEFAULT_MODEL is claude-opus-4-8, and every measurement of the runtime inherits it](#r106) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2519,3 +2521,16 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE; `design/79c` owns the optimization if the number turns out to matter.
 - **Effort** — SMALL
 - **Provenance** — `design/78`'s carried-forward list, routed here at close-out 2026-09-08 after 78a's gate proved unable to answer it.
+
+### R106 — `DEFAULT_MODEL` is `claude-opus-4-8`, and every measurement of the runtime inherits it
+
+**`microclaw/agent.py:23` pins `DEFAULT_MODEL = "claude-opus-4-8"`. Newer Claude models have shipped since. Nobody has decided whether to move, and the decision is not only about sessions — it silently sets what every prompt-replay gate measures.**
+
+- **Why it surfaced here** — block 79a's replay resolves its model through `resolve_model()`, so it measures whatever the runtime default is. That is the *right* design: the gate should measure what microscopists actually run. It also means a stale default quietly makes every prompt experiment in this repository an experiment about a model nobody is using, and design/61, 72, 74, 77a and 79a are all prompt experiments.
+- **What is NOT known** — whether the pin is deliberate. There are good reasons to hold a version steady: prompt behaviour measured on one model is not evidence about another, and `design/59b`'s 5/8-then-15/16 spread shows how little it takes to make a comparison meaningless. Moving the default retroactively weakens every measurement taken under the old one.
+- **Why it is not a 79a change** — 79a's brief is making time visible. Changing the model every user's session runs on is not a side effect an implementation block gets to have, and `CLAUDE.md`'s confirmation rule applies: this is state the user owns.
+- **How to settle it** — decide the policy first, not the value: does microclaw pin a model and move deliberately, or track the newest? Then, if it moves, say which measurements are retired with it. `known_models()` already lists what a key can see, so the mechanics are free.
+- **Where** — LOCAL. No hardware, no rig, no dose.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — `design/79` block 79a, 2026-09-08, found while measuring the replay gate's token cost.
