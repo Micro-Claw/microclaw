@@ -7,6 +7,8 @@ uncommitted is stale. Neither has been measured: no block of *this* notebook has
 run. What has changed is that design/78 shipped, and two of the premises below
 moved with it — see "What design/78 already did" immediately after this.
 
+**Superseded 2026-09-08: block 79a has run and merged** (`fc8e2b7`). The sentence above — "no block of *this* notebook has run" — is stale, and so is 79a's entry in that list. See "Block 79a, closed" before the run ledger; 79b and 79c are still unstarted.
+
 `CLAUDE.md`'s paragraph is the rule of record; this notebook owns the detail and
 the evidence. Keep them from drifting: a change here that alters the rule must
 change that paragraph in the same commit.
@@ -165,7 +167,13 @@ or a benchmark framework. Each affected path needs:
    wall-clock limits against mocks. Execute exported programs against fakes and
    gate live/export timing equivalence on hardware where required.
 
-### The instrument we already have, and what is wrong with it
+### The instrument we already have, and what was wrong with it
+
+**Block 79a fixed everything in this section; it is kept as the statement of the
+problem, not of the current code.** The bounds now clamp, the 0.5–5 s range
+resolves, only populated bins are emitted, and the two timing shapes below have
+become one `duration_breakdown` carrying `accounted_s` and the residual. Line
+numbers are as they were when this was written and have moved.
 
 `_GAP_HISTOGRAM_UPPER_S` (`microclaw/tools.py:4272`) is dense to 0.5 s and then
 steps 1, 2, 5, 10, 30, 60, 300, 900 s. `count`, `min_s`, `mean_s` and `max_s`
@@ -188,6 +196,16 @@ The natural home for per-write spans is the hook log's existing per-write
 record, which is bounded by the write budget rather than by frame count. That
 keeps item 2's "no unbounded per-frame log" and gives the agent the one thing it
 currently lacks.
+
+**79a found the second half of that, on a rig-free gate.** Bounding by the write
+budget is not the same as bounding the *payload*: `max_writes` is validated only
+as a positive integer, so returning the records themselves put an unbounded list
+in the tool result. It is now a per-phase summary plus at most three retained
+records — flat at 2303 → 2359 bytes from 5 to 100,000 writes. And a span in the
+result is not a span the agent reads: the teardown refresh was present, correct,
+and ignored in two of three replay samples until it moved into the same shape and
+units as the spans beside it. *Surfaced* means "in the shape the reader already
+uses", not "present".
 
 Plugin reuse is an ordinary candidate, not a lab-specific default. Discovery
 must establish installed version, reachable instance, supported control API and
