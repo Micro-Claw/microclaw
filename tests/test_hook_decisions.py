@@ -1644,9 +1644,8 @@ def test_property_actions_apply_and_wait_before_the_separate_verify_pass():
         restore="leave", action_plan=plan,
     )
     adapter.pre_hardware_hook_fn({"axes": {}})
-    assert calls[:3] == [
-        ("set", "1"), ("wait", "1"), ("refresh", "1"),
-    ]
+    assert calls[:2] == [("set", "1"), ("wait", "1")]
+    assert not any(call[0] == "refresh" for call in calls)
     assert calls.index(("get", "1")) > calls.index(("stage-get", "Stage"))
 
 
@@ -1816,3 +1815,112 @@ def test_accepted_property_records_carry_their_frame_index():
                 if r.get("event") == "hook_action" and r.get("decision") == "accepted"]
     assert [r["hook_event_index"] for r in accepted] == [0, 1]
     assert [r["requested"] for r in accepted] == ["B", "C"]
+
+
+def _property_write_probe(*, adaptive=False, delayed=None, failure=None):
+    import time
+    calls = []
+    class Core:
+        value = "0"
+        def operation(self, name):
+            calls.append(name)
+            if delayed == name:
+                time.sleep(0.02)
+            if failure == name:
+                raise RuntimeError(name + " failed")
+        def set_property(self, device, prop, value):
+            self.operation("write")
+            self.value = value
+        def wait_for_device(self, device): self.operation("wait")
+        def get_property(self, device, prop):
+            self.operation("read_back")
+            # Numerically equal, but observably different from the request.
+            return "2" if failure == "mismatch" else self.value + ".0"
+        def get_property_type(self, device, prop):
+            calls.append("type")
+            return "Float"
+    core = Core()
+    ctrl = MagicMock(core=core, authorization_map=None)
+    guard = MagicMock()
+    guard.check_device_property.side_effect = lambda *a, **kw: core.operation("validation")
+    class Hook:
+        def analyze_frame(self, image, metadata):
+            return HookResult({}, (SetDeviceProperty("1"), ContinueAcquisition()))
+    adapter = UntrustedHookAdapter(Hook())
+    events = _events(2)
+    adapter.configure_property(
+        ctrl=ctrl, guard=guard, device="Detector", property="Gain",
+        allowed_values=None, min_value=0, max_value=10, max_writes=1,
+        initial_value="0", restore="leave",
+        action_plan=None if adaptive else _axes_plan((events[1]["axes"], (SetDeviceProperty("1"),))),
+    )
+    if adaptive:
+        candidates = queue.Queue()
+        adapter.configure_adaptive(events=events, candidates=candidates,
+                                   progress=SurveyProgress(2), guard=_Guard(), max_events=2)
+        adapter.pre_hardware_hook_fn(events[0])
+        adapter.image_process_fn(np.zeros((2, 2)), {"PositionName": "p0"}, object())
+        event = candidates.get_nowait()
+    else:
+        event = events[1]
+    return adapter, ctrl, calls, event
+
+
+@pytest.mark.parametrize("adaptive", [False, True], ids=["fixed", "adaptive"])
+def test_property_write_has_no_refresh_before_exposure(adaptive):
+    adapter, ctrl, calls, event = _property_write_probe(adaptive=adaptive)
+    assert adapter.pre_hardware_hook_fn(event) is event
+    # This is the exposure boundary: the engine gets the returned event.
+    ctrl.refresh_gui.assert_not_called()
+    assert calls.count("write") == 1
+
+
+def test_property_write_audit_reuses_one_real_verified_observation():
+    adapter, ctrl, calls, event = _property_write_probe()
+    adapter.pre_hardware_hook_fn(event)
+    assert calls.count("read_back") == 1
+    record = adapter._log[-1]
+    assert record["requested"] == "1"
+    assert record["achieved"] == "1.0"
+
+
+def test_property_write_mismatched_observation_still_fails():
+    adapter, ctrl, calls, event = _property_write_probe(failure="mismatch")
+    with pytest.raises(RuntimeError, match="requested '1', got '2'"):
+        adapter.pre_hardware_hook_fn(event)
+    assert calls.count("read_back") == 1
+    assert adapter._log[-1]["event"] == "property_verification_failure"
+
+
+@pytest.mark.parametrize("delayed", ["validation", "write", "wait", "read_back"])
+def test_property_write_spans_attribute_delay_without_extra_bridge_calls(delayed):
+    adapter, ctrl, calls, event = _property_write_probe(delayed=delayed)
+    adapter.pre_hardware_hook_fn(event)
+    timing = adapter._log[-1]["timing"]
+    assert timing["clock"] == "time.monotonic"
+    previous = 0
+    for phase in ("validation", "write", "wait", "read_back"):
+        span = timing[phase]
+        assert previous <= span["start_s"] <= span["end_s"]
+        previous = span["end_s"]
+    span = timing[delayed]
+    assert span["end_s"] - span["start_s"] >= 0.015
+    assert calls == ["validation", "write", "wait", "read_back", "type"]
+    ctrl.refresh_gui.assert_not_called()
+    assert len([r for r in adapter._log if "timing" in r]) == 1
+
+
+@pytest.mark.parametrize("failure", ["validation", "write", "wait", "read_back"])
+def test_property_write_failure_retains_completed_monotonic_spans(failure):
+    adapter, ctrl, calls, event = _property_write_probe(failure=failure)
+    with pytest.raises(RuntimeError, match=failure + " failed"):
+        adapter.pre_hardware_hook_fn(event)
+    timing = adapter._log[-1]["timing"]
+    phases = ["validation", "write", "wait", "read_back"]
+    attempted = phases[:phases.index(failure) + 1]
+    assert set(timing) == {"clock", *attempted}
+    previous = 0
+    for phase in attempted:
+        assert previous <= timing[phase]["start_s"] <= timing[phase]["end_s"]
+        previous = timing[phase]["end_s"]
+    assert calls == attempted

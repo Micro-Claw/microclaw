@@ -460,30 +460,46 @@ class UntrustedHookAdapter:
 
     def _apply_property(self, action: SetDeviceProperty, event: dict,
                         *, restoration: bool = False,
-                        hook_event_index: int | None = None) -> tuple[SetDeviceProperty, dict, int | None]:
+                        hook_event_index: int | None = None) -> tuple[SetDeviceProperty, dict, int | None, dict]:
+        """Validate, write and settle before exposure; verification follows.
+
+        GUI controls may lag until the single teardown refresh. Timing follows
+        this write through the separate verification pass in the same clock.
+        """
         from microclaw.authorization import authorize_property_write
         from microclaw.safety import _finite_number_text
+        import time
         ctx = self._property_context
+        # Absolute seconds from one monotonic clock; only attempted phases are
+        # present. This travels with the budget-bounded write, never per frame.
+        timing = {"clock": "time.monotonic", "validation": {"start_s": time.monotonic()}}
+        def refuse(reason):
+            timing["validation"]["end_s"] = time.monotonic()
+            self._record_event(
+                event, event="hook_action", action=self._action_record(action),
+                decision="refused", reason=reason, timing=timing,
+                hook_event_index=hook_event_index, restoration=restoration,
+            )
         if ctx is None:
-            self._refuse_event(event, action, "no property envelope was authorized for this run")
+            refuse("no property envelope was authorized for this run")
             raise RuntimeError("property action refused: no authorized envelope")
         value = action.value
         restoring_entry = restoration and value == ctx["initial_value"]
         if not restoring_entry and ctx["allowed_values"] is not None:
             if value not in ctx["allowed_values"]:
-                self._refuse_event(event, action, "proposal is outside the authorized property values")
+                refuse("proposal is outside the authorized property values")
                 raise RuntimeError("property action refused: outside authorized values")
         elif not restoring_entry:
             try:
                 number = _finite_number_text(value, "SetDeviceProperty.value")
             except Exception as exc:
-                self._refuse_event(event, action, f"malformed numeric property value: {exc}")
+                refuse(f"malformed numeric property value: {exc}")
                 raise RuntimeError(f"property action refused: {exc}") from exc
             if number < ctx["min"] or number > ctx["max"]:
-                self._refuse_event(event, action, "proposal is outside the authorized property interval")
+                refuse("proposal is outside the authorized property interval")
                 raise RuntimeError("property action refused: outside authorized interval")
         if not restoration and ctx["remaining"] <= 0:
-            self._refuse_event(event, action, "authorized property write budget exhausted")
+            refuse("authorized property write budget exhausted")
             raise RuntimeError("property action refused: write budget exhausted")
         try:
             authorize_property_write(
@@ -502,27 +518,35 @@ class UntrustedHookAdapter:
                 confirm_fn=None,
             )
         except Exception as exc:
-            self._refuse_event(event, action, f"property write refused: {exc}")
+            refuse(f"property write refused: {exc}")
             raise RuntimeError(f"property action refused: {exc}") from exc
+        timing["validation"]["end_s"] = time.monotonic()
         # max_writes caps hook proposals. Restoration is the envelope's own
         # teardown promise, not another proposal and never consumes that cap.
         if not restoration:
             ctx["remaining"] -= 1
         try:
-            ctx["core"].set_property(ctx["device"], ctx["property"], value)
-            ctx["core"].wait_for_device(ctx["device"])
-            ctx["ctrl"].refresh_gui()
+            timing["write"] = {"start_s": time.monotonic()}
+            try:
+                ctx["core"].set_property(ctx["device"], ctx["property"], value)
+            finally:
+                timing["write"]["end_s"] = time.monotonic()
+            timing["wait"] = {"start_s": time.monotonic()}
+            try:
+                ctx["core"].wait_for_device(ctx["device"])
+            finally:
+                timing["wait"]["end_s"] = time.monotonic()
         except Exception as exc:
             self._record_event(event, event="property_write_failure",
                                hook_event_index=hook_event_index,
                                action=self._action_record(action), decision="failed",
                                reason=f"parent device write failed: {exc}",
-                               last_known=ctx["last_known"], restoration=restoration)
+                               last_known=ctx["last_known"], restoration=restoration, timing=timing)
             raise RuntimeError(f"property write failed: {exc}") from exc
-        return action, event, hook_event_index
+        return action, event, hook_event_index, timing
 
     def _verify_property_actions(
-        self, applied: list[tuple[SetDeviceProperty, dict, int | None]],
+        self, applied: list[tuple[SetDeviceProperty, dict, int | None, dict]],
         *, restoration: bool = False,
     ) -> None:
         # The index travels with each applied action because the accept record is
@@ -530,24 +554,31 @@ class UntrustedHookAdapter:
         # Without it every accepted property write logged hook_event_index null
         # while its named-stage twin logged 0..N, so the property audit carried
         # no frame identity at all. Measured on M5, 2026-08-17.
+        import time
         from microclaw.authorization import _verify_property
         ctx = self._property_context
         assert ctx is not None
-        for action, event, hook_event_index in applied:
+        for action, event, hook_event_index, timing in applied:
+            timing["read_back"] = {"start_s": time.monotonic()}
             try:
-                _verify_property(ctx["core"], ctx["device"], ctx["property"], action.value)
+                try:
+                    observed = _verify_property(
+                        ctx["core"], ctx["device"], ctx["property"], action.value
+                    )
+                finally:
+                    timing["read_back"]["end_s"] = time.monotonic()
             except Exception as exc:
                 self._record_event(event, event="property_verification_failure",
                                    hook_event_index=hook_event_index,
                                    action=self._action_record(action), decision="failed",
-                                   reason=str(exc), restoration=restoration)
+                                   reason=str(exc), restoration=restoration, timing=timing)
                 raise RuntimeError(f"property verification failed: {exc}") from exc
-            ctx["last_known"] = str(ctx["core"].get_property(ctx["device"], ctx["property"]))
+            ctx["last_known"] = observed
             self._accept_event(event, action, "property write passed envelope, authorization, SafetyGuard, and read-back",
                                hook_event_index=hook_event_index,
                                device=ctx["device"], property=ctx["property"],
                                requested=action.value, achieved=ctx["last_known"],
-                               restoration=restoration)
+                               restoration=restoration, timing=timing)
 
     @staticmethod
     def axes_signature(event: dict) -> tuple:

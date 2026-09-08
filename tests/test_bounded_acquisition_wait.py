@@ -1195,3 +1195,129 @@ def test_expired_bound_uses_explicit_policy_name(monkeypatch):
     finally:
         BlockingAcquisition.release.set()
     assert caught.value.expired_bound == "measured_test_bound"
+
+
+@pytest.mark.parametrize("acquisition_failure", [None, "submit", "exit"])
+@pytest.mark.parametrize("restoration_failure", [False, True])
+@pytest.mark.parametrize("refresh_failure", [False, True])
+def test_cleanup_refresh_once_last_preserves_failures(
+    monkeypatch, acquisition_failure, restoration_failure, refresh_failure,
+):
+    order = []
+    class Acquisition:
+        _exception = None
+        _dataset_disk_location = "/data/run"
+        def __init__(self, **kwargs): pass
+        def acquire(self, events):
+            if acquisition_failure == "submit":
+                raise RuntimeError("submit failed")
+        def __exit__(self, *args):
+            order.append("exit")
+            if acquisition_failure == "exit":
+                raise RuntimeError("exit failed")
+    class Hook:
+        def restore_named_stage(self):
+            order.append("stage outcome")
+            if restoration_failure:
+                raise RuntimeError("stage broken")
+            return {"restored": True}
+        def restore_property(self):
+            order.append("property outcome")
+            if restoration_failure:
+                raise RuntimeError("property broken")
+            return {"restored": True}
+    def refresh():
+        order.append("refresh")
+        if refresh_failure:
+            raise RuntimeError("GUI broken")
+    ctrl = SimpleNamespace(refresh_gui=refresh)
+    reservation = SimpleNamespace(
+        close=lambda: order.append("close"), completed_frames=0,
+    )
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    if acquisition_failure or restoration_failure:
+        with pytest.raises(tools._HookedAcquisitionFailure) as caught:
+            _call_acquire(ctrl, _guard(), "/data", "run", [], hook=Hook(),
+                          reservation=reservation)
+        message = str(caught.value)
+        expected = []
+        if acquisition_failure:
+            expected.append(acquisition_failure + " failed")
+        if restoration_failure:
+            expected += ["named-stage restoration failed: stage broken",
+                         "property restoration failed: property broken"]
+        assert message == "; ".join(expected)
+        assert "GUI broken" not in message
+    else:
+        assert _call_acquire(ctrl, _guard(), "/data", "run", [], hook=Hook(),
+                             reservation=reservation) == "/data/run"
+    assert order == ([] if acquisition_failure == "submit" else ["exit"]) + [
+        "stage outcome", "property outcome", "close", "refresh",
+    ]
+
+
+def test_acquisition_sink_discloses_gui_lag_without_confirmation(monkeypatch):
+    received = []
+    class Acquisition:
+        _exception = None
+        def __init__(self, **kwargs): pass
+        def acquire(self, events): pass
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    monkeypatch.setattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", received.append, raising=False)
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    ctrl = _ctrl()
+    hook = UntrustedHookAdapter(object())
+    hook.configure_property(
+        ctrl=ctrl, guard=_guard(), device="Detector", property="Gain",
+        allowed_values=("A", "B"), min_value=None, max_value=None,
+        max_writes=1, initial_value="A", restore="leave", action_plan=None,
+    )
+    _call_acquire(ctrl, _guard(), "/data", "run", [], hook=hook)
+    messages = [event.get("message", "") for event in received]
+    assert sum("GUI controls can lag" in message and "restoration" in message
+               for message in messages) == 1
+    ctrl.refresh_gui.assert_called_once_with()
+
+
+
+@pytest.mark.parametrize("hook_kind", ["none", "observer", "saved_observer"])
+@pytest.mark.parametrize("acquisition_failure", [False, True])
+def test_no_hardware_hook_means_no_refresh_or_gui_lag_disclosure(
+    monkeypatch, hook_kind, acquisition_failure,
+):
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    received = []
+    frames = []
+    class Observer:
+        def image_process_fn(self, image, metadata, event_queue):
+            frames.append(metadata)
+            return image, metadata
+    hook = {
+        "none": None,
+        "observer": Observer(),
+        "saved_observer": UntrustedHookAdapter(Observer()),
+    }[hook_kind]
+    class Acquisition:
+        _exception = None
+        _dataset_disk_location = "/data/run"
+        def __init__(self, **kwargs): self.hooks = kwargs
+        def acquire(self, events):
+            callback = self.hooks.get("image_process_fn")
+            if callback:
+                callback(None, {"Axes": {"time": 0}}, object())
+        def __exit__(self, *args):
+            if acquisition_failure:
+                raise RuntimeError("acquisition failed")
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    monkeypatch.setattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", received.append, raising=False)
+    ctrl = _ctrl()
+    if acquisition_failure:
+        with pytest.raises(RuntimeError, match="acquisition failed"):
+            _call_acquire(ctrl, _guard(), "/data", "run", [{}], hook=hook)
+    else:
+        _call_acquire(ctrl, _guard(), "/data", "run", [{}], hook=hook)
+    if hook is not None:
+        assert len(frames) == 1
+    ctrl.refresh_gui.assert_not_called()
+    assert not any("GUI controls can lag" in item.get("message", "") for item in received)
