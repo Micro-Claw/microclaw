@@ -591,18 +591,27 @@ class UntrustedHookAdapter:
     def _apply_named_stage(self, action: MoveNamedStage, event: dict,
                            *, restoration: bool = False,
                            hook_event_index: int | None = None) -> None:
+        import time
+        timing = {"clock": "time.monotonic", "validation": {"start_s": time.monotonic()}}
+        def refuse(reason):
+            timing["validation"]["end_s"] = time.monotonic()
+            self._record_event(
+                event, event="hook_action", action=self._action_record(action),
+                decision="refused", reason=reason, timing=timing,
+                hook_event_index=hook_event_index, restoration=restoration,
+            )
         ctx = self._named_stage_context
         index = hook_event_index
         if ctx is None:
-            self._refuse_event(event, action, "no named-stage envelope was authorized for this run")
+            refuse("no named-stage envelope was authorized for this run")
             raise RuntimeError("named-stage action refused: no authorized envelope")
         target = float(action.position_um)
         restoring_entry = restoration and target == ctx["initial_value"]
         if not restoring_entry and (target < ctx["min_um"] or target > ctx["max_um"]):
-            self._refuse_event(event, action, "proposal is outside the authorized named-stage interval")
+            refuse("proposal is outside the authorized named-stage interval")
             raise RuntimeError("named-stage action refused: outside authorized interval")
         if not restoration and ctx["remaining"] <= 0:
-            self._refuse_event(event, action, "authorized named-stage write budget exhausted")
+            refuse("authorized named-stage write budget exhausted")
             raise RuntimeError("named-stage action refused: write budget exhausted")
         try:
             if restoring_entry:
@@ -612,29 +621,42 @@ class UntrustedHookAdapter:
             else:
                 ctx["guard"].check_named_stage(ctx["device"], target)
         except Exception as exc:
-            self._refuse_event(event, action, f"SafetyGuard refused named-stage motion: {exc}")
+            refuse(f"SafetyGuard refused named-stage motion: {exc}")
             raise RuntimeError(f"named-stage action refused: {exc}") from exc
+        timing["validation"]["end_s"] = time.monotonic()
         # The budget counts attempted dispatches, including writes that raise.
         if not restoration:
             ctx["remaining"] -= 1
         band_policy = "floor" if restoration else "relative"
         tolerance_lookup = getattr(ctx["guard"], "stage_move_tolerance", None)
         configured = tolerance_lookup(ctx["device"]) if tolerance_lookup else None
-        start_um = read_stage_start_position(
-            ctx["core"], ctx["device"], target, band_policy, configured
-        )
         try:
+            timing["read_stage_start_position"] = {"start_s": time.monotonic()}
             try:
-                ctx["core"].set_position(ctx["device"], target)
+                start_um = read_stage_start_position(
+                    ctx["core"], ctx["device"], target, band_policy, configured
+                )
+            finally:
+                timing["read_stage_start_position"]["end_s"] = time.monotonic()
+            try:
+                timing["write"] = {"start_s": time.monotonic()}
+                try:
+                    ctx["core"].set_position(ctx["device"], target)
+                finally:
+                    timing["write"]["end_s"] = time.monotonic()
             except Exception as exc:
                 raise stage_move_dispatch_failure(
                     ctx["core"], ctx["device"], target, start_um,
                     band_policy, configured, exc,
                 ) from exc
-            result = settle_stage_move(
-                ctx["core"], ctx["device"], target, start_um,
-                band_policy, configured,
-            )
+            timing["settle_stage_move"] = {"start_s": time.monotonic()}
+            try:
+                result = settle_stage_move(
+                    ctx["core"], ctx["device"], target, start_um,
+                    band_policy, configured,
+                )
+            finally:
+                timing["settle_stage_move"]["end_s"] = time.monotonic()
             achieved = result["measured_um"]
         except Exception as exc:
             failure_result = exc.result if isinstance(exc, StageMoveError) else {}
@@ -644,9 +666,12 @@ class UntrustedHookAdapter:
                 event, event="named_stage_write_failure",
                 hook_event_index=index, action=self._action_record(action),
                 decision="failed", reason=f"parent stage move failed: {exc}",
-                last_known_um=ctx["last_known"], restoration=restoration,
+                last_known_um=ctx["last_known"], restoration=restoration, timing=timing,
                 **failure_result,
             )
+            if "write" not in timing:
+                # Preserve the pre-dispatch typed refusal contract.
+                raise
             raise RuntimeError(f"named-stage move failed: {exc}") from exc
         ctx["last_known"] = achieved
         event["named_stage_device"] = ctx["device"]
@@ -673,7 +698,7 @@ class UntrustedHookAdapter:
             band_policy=result["band_policy"], band_source=result["band_source"],
             arrival_unverifiable=result["arrival_unverifiable"],
             verification_kind=result["verification_kind"],
-            restoration=restoration,
+            restoration=restoration, timing=timing,
         )
 
     def pre_hardware_hook_fn(self, event: dict | list[dict]) -> dict | list[dict]:

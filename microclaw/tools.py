@@ -4441,7 +4441,8 @@ _RUNTIME_FROM_ACCOUNTING_PLAN = object()
 _GAP_HISTOGRAM_UPPER_S = (
     0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2,
     0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
-    1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, float("inf"),
+    0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75,
+    3.0, 3.25, 3.5, 3.75, 4.0, 4.25, 4.5, 4.75, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, float("inf"),
 )
 
 
@@ -4469,7 +4470,7 @@ def _gap_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
         for upper, bucket_count in zip(_GAP_HISTOGRAM_UPPER_S, summary["bins"]):
             seen += bucket_count
             if seen >= target:
-                return summary["max_s"] if math.isinf(upper) else upper
+                return max(summary["min_s"], min(summary["max_s"], upper))
         return summary["max_s"]
     # min/max/mean are exact; the two percentiles are the BIN UPPER BOUND the
     # quantile falls in, named so nobody sizes design/65's per-frame software
@@ -4482,9 +4483,10 @@ def _gap_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
         "median_le_s": percentile(0.5),
         "p95_le_s": percentile(0.95),
         "max_s": summary["max_s"],
-        "histogram": [
+        "nonzero_histogram": [
             {"upper_s": (None if math.isinf(upper) else upper), "count": bucket_count}
             for upper, bucket_count in zip(_GAP_HISTOGRAM_UPPER_S, summary["bins"])
+            if bucket_count
         ],
     }
 
@@ -4503,6 +4505,7 @@ def _acquire_with_hooks(
     plan: AcquisitionPlan | None = None,
     runtime_plan: AcquisitionPlan | None | object = _RUNTIME_FROM_ACCOUNTING_PLAN,
     cadence_summary: dict[str, Any] | None = None,
+    teardown_timing: dict[str, Any] | None = None,
 ) -> str:
     """Run one Acquisition, attaching hook callables if a hook is supplied.
 
@@ -4674,12 +4677,18 @@ def _acquire_with_hooks(
     runtime_input = (
         plan if runtime_plan is _RUNTIME_FROM_ACCOUNTING_PLAN else runtime_plan
     )
+    teardown_timing = teardown_timing if teardown_timing is not None else {}
+    teardown_timing["clock"] = "time.monotonic"
     def finish_owned_cleanup() -> list[str]:
         nonlocal cleanup_done
         if cleanup_done:
             return []
         cleanup_done = True
-        failures = restore_hardware()
+        teardown_timing["restoration"] = {"start_s": time.monotonic()}
+        try:
+            failures = restore_hardware()
+        finally:
+            teardown_timing["restoration"]["end_s"] = time.monotonic()
         if reservation is not None and (
             close_reservation or waiter_must_close_reservation
         ):
@@ -4687,10 +4696,13 @@ def _acquire_with_hooks(
         # One synchronous repaint, last: listeners may perform slow device
         # reads. Neither their failure nor a controller fake may change cleanup.
         if any(restoration_attempted.values()):
+            teardown_timing["refresh_gui"] = {"start_s": time.monotonic()}
             try:
                 ctrl.refresh_gui()
             except Exception:
                 pass
+            finally:
+                teardown_timing["refresh_gui"]["end_s"] = time.monotonic()
         return failures
 
     try:
@@ -5005,17 +5017,28 @@ def run_zstack(
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
+    cadence = _new_gap_summary()
+    teardown = {}
+    timing = _single_run_timing(
+        n_frames=None, interval_s=None, hook=hook,
+    )
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             policy=DEFAULT,
             close_reservation=_reservation is None,
-            ctrl=ctrl, plan=plan, runtime_plan=plan,
+            ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
-        return _hooked_failure_result(exc, log_path)
+        return {**_hooked_failure_result(exc, log_path), "timing": timing,
+                "teardown_timing": teardown}
     result = {
         "status": "Z-stack complete.", "dataset_path": dataset_path,
+        "inter_frame_gap_summary": _gap_summary_payload(cadence),
+        "timing": timing, "teardown_timing": teardown,
+        "started_at": started_at.isoformat(),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "duration_s": round(time.monotonic() - started, 6),
         **_reservation_report(reservation),
     }
     if hook is not None:
@@ -5108,6 +5131,26 @@ def _sequenced_ms(index: int, interval_s: float) -> int:
     # AcqEngJ AcquisitionEvent.fromJSON uses d2l truncation toward zero on
     # min_start_time * 1000.0. Preserve the event builder's multiplication order.
     return int(index * interval_s * 1000.0)
+
+
+def _single_run_timing(*, n_frames: int | None, interval_s: float | None,
+                       hook: Any, adaptive: bool = False) -> dict:
+    return {
+        "strategy": ("no_time_axis" if interval_s is None else
+                     "shared_timepoint_clock" if interval_s > 0 else
+                     "no_requested_delay"),
+        "requested_interval_s": interval_s,
+        "dispatch": ("adaptive_handoff" if adaptive else
+                     "hooked_fixed_plan" if hook is not None else "fixed_plan"),
+        "time_axis_sequencing_eligible": (
+            False if adaptive or interval_s is None else
+            any(_sequenced_ms(i, interval_s) == _sequenced_ms(i + 1, interval_s)
+                for i in range((n_frames or 1) - 1))
+        ),
+        "sequencing_meaning": "equal engine deadlines permit batching; device sequencing support is not measured",
+        "gap_clock": "time.monotonic",
+        "gap_meaning": "saved-frame callback arrival spacing, not exposure timestamps",
+    }
 
 
 def _refuse_sequenced_time_axis(n_frames: int | None, interval_s: float, *,
@@ -5283,6 +5326,8 @@ def run_timelapse(
         except _HookArtifactBudgetError as exc:
             return {"error": str(exc)}
         result.update(
+            timing=_single_run_timing(n_frames=max_frames, interval_s=interval_s,
+                                      hook=hook, adaptive=True),
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
             duration_s=round(time.monotonic() - started, 6),
@@ -5321,18 +5366,27 @@ def run_timelapse(
     # standalone run, so a child with _reservation still uses DEFAULT.
     policy = (SHORT_FIXED if isinstance(events, list) and len(events) == 1
               and hook is None and _reservation is None else DEFAULT)
+    teardown = {}
+    timing = _single_run_timing(
+        n_frames=n_frames, interval_s=interval_s, hook=hook,
+    )
     try:
         dataset_path = _acquire_with_hooks(
             guard, save_dir, name, events, hook, reservation=reservation,
             policy=policy,
             close_reservation=_reservation is None,
-            ctrl=ctrl, plan=plan, runtime_plan=plan, cadence_summary=cadence,
+            ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
-        return _hooked_failure_result(exc, log_path)
+        return {**_hooked_failure_result(exc, log_path), "timing": timing,
+                "teardown_timing": teardown}
     result = {
         "status": "Timelapse complete.", "dataset_path": dataset_path,
         "inter_frame_gap_summary": _gap_summary_payload(cadence),
+        "timing": timing, "teardown_timing": teardown,
+        "started_at": started_at.isoformat(),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "duration_s": round(time.monotonic() - started, 6),
         **_reservation_report(reservation),
     }
     if trigger_preflight is not None:
@@ -8577,6 +8631,11 @@ def _adaptive_result(
         "artifact": {"kind": "dataset", "path": dataset_path},
         **extra,
     }
+    if hook is not None:
+        writes = [record for record in getattr(hook, "_log", ())
+                  if "timing" in record]
+        if writes:
+            result["hardware_write_records"] = writes
     if hook is not None and hasattr(hook, "autofocus_settings_snapshot"):
         result["autofocus_settings_snapshot"] = hook.autofocus_settings_snapshot
     if log_path:
@@ -9188,6 +9247,7 @@ def _acquire_survey_with_detector(
     search_channel_effects = None
     planned_acquire_effects = None
     cadence = _new_gap_summary()
+    teardown = {}
     try:
         if acquire_plan is not None:
             acquire_reservation = _authorize_acquisition(ctrl, guard, acquire_plan)
@@ -9204,7 +9264,7 @@ def _acquire_survey_with_detector(
             policy=DEFAULT,
             ctrl=ctrl, plan=survey_plan,
             runtime_plan=(runtime_plan if accounting_plan is not None else survey_plan),
-            cadence_summary=cadence,
+            cadence_summary=cadence, teardown_timing=teardown,
         )
     except _HookedAcquisitionFailure as exc:
         # The two fixed runners already translate this; the survey runner did
@@ -9217,7 +9277,8 @@ def _acquire_survey_with_detector(
             acquire_reservation.close()
         if reservation is not None:
             reservation.close()
-        return _hooked_failure_result(exc, getattr(hook, "log_path", None))
+        return {**_hooked_failure_result(exc, getattr(hook, "log_path", None)),
+                "teardown_timing": teardown}
     except AcquisitionUnterminated:
         raise
     except Exception:
@@ -9252,7 +9313,7 @@ def _acquire_survey_with_detector(
         }
     return _adaptive_result(
         dataset_path, hook.log_path, hook=hook,
-        **route_result,
+        **route_result, teardown_timing=teardown,
         **(_reservation_report(reservation) if reservation is not None else {}),
         **({"_acquire_reservation": acquire_reservation}
            if acquire_reservation is not None else {}),
