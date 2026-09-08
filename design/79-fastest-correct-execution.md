@@ -1,12 +1,46 @@
 # Choose the fastest correct execution path
 
-Status: **PROPOSED**, 2026-09-06. The policy text is written into `agent.py`'s
-system prompt and `CLAUDE.md`, but **both edits are uncommitted in the working
-tree** and neither has been measured. No block has run.
+Status: **PROPOSED**, 2026-09-06; reconciled against `design/78`'s merged blocks
+2026-09-08. The policy text is in `agent.py`'s system prompt and `CLAUDE.md`,
+and **both are now committed on `main`** — the original note that they were
+uncommitted is stale. Neither has been measured: no block of *this* notebook has
+run. What has changed is that design/78 shipped, and two of the premises below
+moved with it — see "What design/78 already did" immediately after this.
 
 `CLAUDE.md`'s paragraph is the rule of record; this notebook owns the detail and
 the evidence. Keep them from drifting: a change here that alters the rule must
 change that paragraph in the same commit.
+
+## What design/78 already did, and what it leaves this notebook
+
+Read this before planning 79a; two of its premises are out of date.
+
+- **79a's central complaint is half-fixed.** The text below says the hook log's
+  per-write record "carries **no timestamp at all**". That was true when it was
+  written and is **false on `main` since block 78a** (merged `abfc527`,
+  2026-09-08): `UntrustedHookAdapter._apply_property` now records monotonic
+  `validation` / `write` / `wait` / `read_back` spans on that exact record,
+  bounded by the write budget, with `clock: "time.monotonic"`. 79a's job is to
+  **generalize and verify** that, not to build it — and to do the rest of its
+  list, which is untouched: clamping the reported quantile bounds, resolution in
+  the 0.5–5 s range, and identifying the route a run took.
+- **79c inherits a measured residual and a failed attempt to measure another.**
+  design/78's carried item — M2's ~0.20–0.35 s shorter gaps at 50 ms — is now
+  `R105` in `design/70`, and it is still open **for an instructive reason**:
+  block 78a's gate was expected to measure it and could not, because all three
+  arms ran at `interval_s = 0.5`, which hides any residual below half a second.
+  `R104` (`_set_channel_for_composite`'s per-phase refresh) is the other row.
+- **Item 1 below has a worked example now.** "Keep requested intervals separate
+  from achieved timing" is not a formality: 78a's own gate write-up initially
+  read its 0.499 s / 0.505 s cadences as evidence that the write cost ~5 ms,
+  when both arms were simply meeting a requested 0.5 s interval and would have
+  agreed for any write that fitted inside it. The unconfounded number was the
+  write→exposure span, 18–44 ms. **A cadence column that equals the requested
+  interval is reporting the request, not the performance.**
+- **What 78a did measure, as a baseline for anything here**: on M2, one
+  `refresh_gui` drags ~2.3 s of EMU device reads onto the calling thread. That
+  is the size of a single GUI refresh on an EMU rig, and it is the number to
+  reach for before assuming any other refresh site is cheap.
 
 ## Problem and decision
 
@@ -44,9 +78,11 @@ timing from measured performance. Required fresh state checks remain.
 or blame hardware without evidence that isolates the cause" is followable now:
 the agent can report that the cause is unknown. A run returns `started_at`,
 `completed_at`, `duration_s` and a
-gap summary; the hook log's per-write record carries **no timestamp at all**
+gap summary; the hook log's per-write record carried **no timestamp at all**
 (`hook_decisions._record_event` → `HookBase.where_event`, position and
-coordinates only). The agent cannot see a write span, a refresh span or a
+coordinates only) — **until block 78a added monotonic validation/write/wait/
+read_back spans to it, merged 2026-09-08. The paragraph below describes the
+state before that; 79a generalizes the spans rather than introducing them.** The agent cannot see a write span, a refresh span or a
 read-back span through these results. Missing spans limit diagnosis, not honest
 reporting. The prompt now makes the fallback explicit: report measured cadence,
 say a cost is **not attributed** when the cause has not been isolated, and name
@@ -189,9 +225,11 @@ can constrain, observe, stop and export. Design/78 owns the htSMLM evaluation.
   uncertainty for this experiment. 59b's 5/8-then-15/16 spread on identical
   wording motivates that discipline but is not a universal significance threshold.
 - **79c — Optimize measured residuals.** Rank by total operator time,
-  acquisition impact and ease of correction. Two residuals are already measured
-  and waiting: M2's shorter histogram gaps at ~0.20–0.35 s with a 50 ms exposure
-  (not individually identified as write-free), and block 75a's measured
+  acquisition impact and ease of correction. Two residuals are waiting, and the
+  first is **not** measured despite an attempt: M2's shorter histogram gaps at
+  ~0.20–0.35 s with a 50 ms exposure (not individually identified as
+  write-free), now `R105` — block 78a's gate could not measure it because every
+  arm ran at `interval_s = 0.5`. The second is block 75a's measured
   **mark_finished → first frame accounted** p50 spans of 158.8 ms (demo) /
   275.3 ms (M2), reported as 96.7% / 99.1% of the respective measured windows.
   These describe those one-frame experiments, not a universal acquisition floor.
