@@ -7,7 +7,7 @@ uncommitted is stale. Neither has been measured: no block of *this* notebook has
 run. What has changed is that design/78 shipped, and two of the premises below
 moved with it — see "What design/78 already did" immediately after this.
 
-**Superseded 2026-09-08: block 79a has run and merged** (`fc8e2b7`). The sentence above — "no block of *this* notebook has run" — is stale, and so is 79a's entry in that list. See "Block 79a, closed" before the run ledger; 79b and 79c are still unstarted.
+**Superseded 2026-09-08: block 79a has run and merged** (`fc8e2b7`). The sentence above — "no block of *this* notebook has run" — is stale, and so is 79a's entry in that list. See "Block 79a, closed" before the run ledger. **79b is assigned 2026-09-08** on `design79/performance-aware-planning`; 79c is unstarted.
 
 `CLAUDE.md`'s paragraph is the rule of record; this notebook owns the detail and
 the evidence. Keep them from drifting: a change here that alters the rule must
@@ -409,12 +409,106 @@ one on scorer vocabulary. Neither was the product. Same shape as design/69a's 2
 product defects against 6 gate defects, and design/75's two rounds that both
 failed on the gate.
 
+## Block 79b as assigned, 2026-09-08
+
+Start commit `4baa9b1`, branch `design79/performance-aware-planning`. Nine
+decisions the coordinator made before the block was handed over, so the
+implementer is not inventing them and the reviewer is not renegotiating them.
+
+- **The change lands in tool descriptions, parameter descriptions and skill
+  files. The system prompt does not grow; where a rule moves, it shrinks.**
+  Prompt prose is this repository's weakest measured lever — design/61 found a
+  skill byte-identical to a prompt paragraph, and the rules-in-parameter-
+  descriptions finding measured a statically knowable refusal doing more work
+  once it sat on the argument it constrained. So every statically knowable rule
+  79b states goes on the **parameter** it constrains, or on the tool it is about.
+  `agent.py`'s performance paragraph stays as the general principle. A rule
+  moved out of prose must be **deleted** from the prose in the same commit: two
+  spellings of one rule is the "two functions that do almost the same thing"
+  defect, one surface over, and it is how prompt and schema drift apart.
+- **Do not add a route-lookup table keyed by scenario.** This is 79a's
+  `dominant_phase` trap in guidance form. If the text names the answer for each
+  requirement, a passing sample proves the model can read a table, and the
+  experiment stops being about route choice at all. State per tool what that
+  tool does and what it costs; let the comparison be the thing under test.
+  design/79's "Requirement → first candidates" table above is a design artefact
+  and does not ship into the runtime.
+- **No new millisecond thresholds, anywhere.** `CLAUDE.md` is explicit: the
+  sequencing predicate is evaluated at plan time, never compared against a
+  constant, and never written into a message, a parameter description or a
+  skill — because safety depends on the frame count as well as the interval.
+  Generalise it: a timing statement that ships must be **a predicate**, **a
+  measured number carrying its rig and date**, or **a statement of what is not
+  measured**. "Fast", "slow" and "negligible" unqualified by one of those three
+  do not ship. Where the honest answer is that nobody has measured it, the
+  description says so — that is the same discipline 79a's `unaccounted_s`
+  encodes in a result.
+- **The route names in guidance are the ones the result already reports.**
+  `_single_run_timing` returns `no_time_axis` / `shared_timepoint_clock` /
+  `no_requested_delay` and `fixed_plan` / `hooked_fixed_plan` /
+  `adaptive_handoff` (`tools.py:5136`). Guidance that describes a route uses
+  those words, so that what the model reads before the call and what it reads
+  after it are one vocabulary. This is 79a's "77b's vocabulary, not a second
+  one" rule moved one level up, and it is mechanically testable.
+- **The incompatible-plugin scenario needs a fact the runtime cannot currently
+  reach, and it belongs in `microclaw/skills/htsmlm/SKILL.md`.** design/78
+  examined htSMLM at commit `30b6bfd`: the stop path polls at one-second
+  intervals and waits a delay in **seconds**, which is not "1,000 frames after
+  the terminal value", and its image-pair analysis is not a three-frame blink
+  window. That is recorded only in `design/78`, which nothing at runtime reads,
+  so today the model has no way to know a delegated stop rule would change the
+  experiment. Record it in the skill **as a dated fact about that commit**,
+  never as a general claim about plugins, and phrase it so a later htSMLM can
+  falsify it. A faster route with different semantics is not the same experiment.
+- **The instrument is `design/79-block79b-route-replay.py`, and it reuses rather
+  than re-spells.** `--tree` and per-sample budget metering come from
+  `design/77-block77a-replay.py` — a budget metered only at the end is not a
+  budget, as 77a's own $3.97-reported/$12.13-actual gate proved. The
+  retraction- and hedge-aware forbidden-claim scan, `api_blocks`, `interval()`
+  and `run_sample` come from `design/79-block79a-replay.py` and are **imported,
+  not copied**: that scorer took three rounds and fifteen real responses to get
+  right, and a second copy will drift away from it silently. It ships with a
+  selftest in the shape of `design/79-block79a-replay-selftest.py`, and
+  `--dry-run` must exercise every path except the API.
+- **Scoring is on the tool call, not on prose.** Each scenario declares the call
+  that passes — tool name plus the arguments that make it the fast route — and a
+  sample ends at the model's first call to an *acquisition* tool. Discovery
+  calls (`get_system_state`, `list_hooks`, `list_devices`, `load_skill`, …) are
+  answered from fixtures, do not end the sample, and are counted. Prose is
+  scored only for the forbidden-claim signal, which is 79a's and rides along
+  unchanged. And **each scenario's user message is written as a microscopist's
+  request, never as a description of the route**: a prompt that names the answer
+  measures nothing, which is design/59b's three lost rounds in one sentence.
+- **Every scenario declares its expected control outcome before a sample is
+  drawn, and a scenario whose control cannot fail is not a criterion.** For each
+  of the seven: the passing call, at least one wrong-but-plausible call the
+  **control tree** is expected to produce, and which of two kinds it is —
+  a *movement* arm, where the control is expected to fail and the arm to pass,
+  or a *regression* arm, where both are expected to pass and the criterion is
+  that the arm does not degrade. design/77's per-field movie is the second kind
+  and is labelled as such in the report: quoting a regression arm's pass as
+  evidence that guidance improved something is exactly the error 79a's ledger
+  row warns about one notebook earlier.
+- **The sample size, the comparison and the thresholds are fixed in the gate
+  document, by the coordinator, before the first live sample.** The implementer
+  ships the instrument and its selftest and does **not** run it live — the
+  runner sandbox has no network — and must not hard-code a default `--samples`.
+  79a's arms ran at 3 and its ledger says plainly that this is corroboration and
+  never a result; 79b's numbers are the ones design/79 asks to report with
+  effect sizes and uncertainty, so they are drawn fresh, at a size chosen in
+  advance, after a pilot whose numbers are development data.
+
+`R107` rides along: 79a's three arms are re-run against this tree at near-zero
+marginal cost. It is not a 79b pass criterion — it is a measurement 79b makes
+possible, and if the sample cannot separate a blip from a habit, that is what
+gets written down.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
 | 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
-| 79b | — | — | — | — | — |
+| 79b | `design79/performance-aware-planning` | `4baa9b1` | codex | route replay, two trees (pending) | — |
 | 79c | — | — | — | — | — |
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
