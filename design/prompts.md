@@ -9814,3 +9814,55 @@ two fake engines — one batching by the truncation rule, one by a 1 ms threshol
 — and it failed *only* the 4006/4007 limb against the threshold engine. That is
 what made the long run worth the operator's time, and what made skipping it
 report NOT EXERCISED rather than a comfortable pass.
+
+## design/78 block 78a — the per-frame refresh (merged 2026-09-08, `abfc527`)
+
+**The gate found its own worst defect against real data before it shipped, and
+its second-worst after.** Drafting the scorer, the exposure marker I matched on
+was `[Snap Image] called` — which design/78 quotes from **M2** and which occurs
+zero times in M5's CoreLog. Run against M5's real log it found no exposures at
+all. Every cadence limb would have reported NOT EXERCISED on the rig, after the
+dose was spent. Then on M2 the fan-out limb FAILED on two EMU reads and
+announced the work had "MOVED to another thread". It had not: EMU polls
+continuously at ~7.6 reads/s, including **502 retrievals during a two-minute
+idle gap with no acquisition running**, so a 30 ms window catches one by
+coincidence about one time in eight. "Zero reads on any thread" was never the
+causal question. **When a limb asks for an absolute zero, ask what else produces
+the thing you are counting** — and measure that baseline in the same artifact,
+which the no-write arm was already there to provide.
+
+**A limb can pass while measuring the wrong thing, and the name is what lies.**
+"Exactly one read-back of the target per write" counted EMU's own retrieval
+line, not our verification `get_property`, so it could not evidence the
+duplicate-read removal it appeared to be about. Renamed to what it measures. The
+removal is evidenced by a unit test watched failing with "two reads instead of
+one" — which is fine, but the gate should not have looked like it was the proof.
+
+**A block merging changed another block's runbook out from under it.** 78b
+merged while 78a was awaiting its rig trip, and 78a's runbook said "run arm B on
+`main`". `main` now carried 78b, so the two write arms would have differed by
+more than the thing under test. Merged `main` into the branch instead. **When a
+sibling block merges, re-read the open block's runbook for anything that names a
+moving reference.**
+
+**M5 broke, and the substitute was better.** M2 runs the same EMU/htSMLM stack
+and the same `Laser Trigger` / `Duration0 (us)`, and its 2026-09-04 CoreLog was
+at IFO level — which is precisely why design/78 could only call its ~2.95 s
+silent periods "consistent with" M5's fan-out. Enabling debug logging there
+closed that gap and made the attribution n=2. The check that made the
+substitution safe rather than hopeful was mechanical: both rigs run **MMCore
+12.5.0**, so the `[dbg,Core]` strings the scorer matches are the same binary's
+output. EMU's line is *not* MMCore's, and that is exactly where a limb could
+have counted zero and passed on nothing — so it now requires the with-refresh
+arm to have recorded read-backs at all.
+
+**Writing the selftest for a new limb caught a `NameError` in it** that would
+have crashed the scorer on the rig, mid-scoring. The limb was three lines.
+
+**What the gate bought.** Median frame cadence 2.584 s → 0.505 s against a
+0.499 s no-write baseline; write-to-exposure 2.26–2.43 s → 0.018–0.044 s; EMU
+retrievals on the writing thread 490 → 0. And the answer to design/78's open
+risk, which no amount of local testing could have given: the fan-out is **not**
+driven by MMCore's own property-changed callback, so removing our call deleted
+the work rather than relocating it — one repaint after the last exposure instead
+of ten inside the acquisition.
