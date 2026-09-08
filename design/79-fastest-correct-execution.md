@@ -287,6 +287,52 @@ inventing them and the reviewer is not renegotiating them.
   actually ships** — one whose spans establish the refresh, one whose spans do
   not — and the second arm's pass condition is "not attributed", not silence.
 
+## The teardown span had to become discoverable, and must not become a label
+
+Block 79a's second pilot, 2026-09-08. `attributed-teardown` scored 1/3 while
+`attributed-write` and `unattributed` scored 3/3, and the two failures were not
+the scorer: neither response mentioned the teardown refresh at all. The model
+read the per-write phases out of `hardware_write_timing_summary` — which reports
+`count`/`min_s`/`mean_s`/`max_s`/`total_s` per phase, in seconds — and read past
+`teardown_timing`, a separate top-level key holding raw absolute monotonic
+timestamps. An 11.87 s refresh accounted for 11.87 s of a 12.07 s run and went
+unremarked twice out of three times.
+
+Item 2 asks for spans. Item 2 also says **"surface enough timing in tool results
+for the agent to report it without inventing statistics"**, and a span delivered
+as two absolute timestamps under a housekeeping name, in a different shape from
+the summary beside it, is not surfaced. Two spellings of "here is how long
+something took" in one result is the "two functions that do almost the same
+thing" defect, one field over.
+
+**The decision: one run-level breakdown, in the shape the model already reads.**
+Fold the teardown spans into the same per-phase summary as the write spans,
+report every phase as a *duration*, and add `accounted_s` against the run's
+measured duration with the residual stated. `teardown_timing` goes away rather
+than being kept alongside — there is no compatibility to preserve.
+
+The residual is the load-bearing half and it is why this is not merely cosmetic.
+The `unattributed` case is exactly "the spans do not add up to the elapsed
+time", and today the model can only reach that by doing the subtraction itself
+and trusting that it has found every span. Stating `unaccounted_s` makes the
+honest answer available from the record instead of from inference.
+
+**And the trap: do not add a `dominant_phase` field.** It is the obvious next
+step and it would quietly destroy the gate. The arm exists to measure whether a
+model *compares measured spans and attributes the cost*; if the result names the
+winner, a pass proves only that the model can read a label, and the measurement
+stops being about attribution at all. Report the numbers in one place, in one
+shape, and let the comparison be the thing under test. This is the same
+distinction design/79 draws between reporting the request and reporting the
+performance — a pre-computed answer is not evidence that anyone can compute it.
+
+Two constraints that come with it. The breakdown must appear for a **hookless**
+run too, where there are no write records but there is still a restoration span
+and a residual — `hardware_write_timing_summary` is assembled in
+`_adaptive_result`, which hooked runs alone reach, so this cannot simply live
+there. And the existing bounds hold unchanged: a fixed set of phase names, at
+most three retained records, no per-frame array, and no extra bridge call.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
