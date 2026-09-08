@@ -657,8 +657,10 @@ class UntrustedHookAdapter:
             reason = (
                 "a planned per-frame hardware action cannot be honoured inside a "
                 "hardware-sequenced burst because the burst runs with no software "
-                "callback between exposures; use a nonzero interval_s to disable "
-                "time-axis sequencing"
+                "callback between exposures. Consecutive time-axis deadlines must "
+                "differ after int(k * interval_s * 1000.0) truncation throughout "
+                "the run. This shape should have been refused at plan time; "
+                "report this planning gap."
             )
             record_event = event[0] if event and isinstance(event[0], dict) else {}
             self._record_event(

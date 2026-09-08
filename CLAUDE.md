@@ -611,8 +611,33 @@ input, ask which fixtures produce that shape, and write one that does.
   (`test_acquisition.py:421`, `:446`). Handle both, return the same shape, and
   treat a one-element list as ordinary. A **per-frame** hardware action cannot be
   honoured inside a multi-event batch — the burst runs with no software between
-  exposures — so refuse it before the first exposure and tell the caller a
-  nonzero `interval_s` defeats time-axis sequencing.
+  exposures — so refuse it before the first exposure.
+
+  **"Use a nonzero `interval_s`" was the wrong advice, and this contract used to
+  give it.** A caller followed it on M5 at `interval_s = 0.0001` and the engine
+  batched anyway, so the refusal arrived mid-acquisition quoting an instruction
+  that caller had already obeyed. Read off `AcqEngJ-0.39.4` with `javap -c`
+  (design/78, 2026-09-07): `AcquisitionEvent.fromJSON` truncates
+  `min_start_time` to `Long` milliseconds with `d2l`,
+  `getMinimumStartTimeAbsolute` only adds the run's start so it cancels, and
+  `Engine.isSequencable` refuses a differing-t-index pair **only** when those
+  millisecond deadlines differ. So two consecutive frames sequence exactly when
+
+      int(k * interval_s * 1000.0) == int((k + 1) * interval_s * 1000.0)
+
+  and at `time_interval_s == 0` `multi_d_acquisition_events` emits no
+  `min_start_time` at all, which makes every pair sequencable — design/77b's
+  finding from the Java side.
+
+  **There is no safe threshold to quote.** Below 0.001 s every interval collides
+  at frames 0 and 1 and everything above is clean over 2,000 frames, which reads
+  as a 1 ms rule; at 200,000 frames `interval_s = 0.001` collides at frames
+  **4006/4007**, because `4007 * 0.001 * 1000` truncates to 4006. Safety depends
+  on the frame count as well as the interval, both are plan-time arguments, so
+  **evaluate the predicate and refuse at plan time** — never compare against a
+  constant and never write a millisecond threshold into a message, a parameter
+  description or a skill. `design/78-sequencing-deadline-scan.py` reproduces
+  both scans; block 78b owns the running-engine confirmation.
 - **You cannot add a key to an event.** `event_to_json` / `event_from_json`
   serialise a **closed** key set (`axes`, `stage_positions`, `x`/`y`/`z`,
   `exposure`, `config_group`, `min_start_time`, `timeout_ms`, `camera`, `tags`,

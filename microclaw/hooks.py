@@ -235,6 +235,8 @@ class AutofocusHook(HookBase):
     focus device to the sharpest plane before the camera fires.
     """
 
+    _per_frame_hardware = True
+
     def __init__(
         self,
         ctrl,
@@ -340,6 +342,8 @@ class FocusFeedbackHook(HookBase):
     #: Percentile of the first frame taken as the camera pedestal (see above).
     BACKGROUND_PERCENTILE = 5.0
 
+    _per_frame_hardware = True
+
     def __init__(
         self,
         ctrl,
@@ -413,6 +417,8 @@ class FocusFeedbackHook(HookBase):
 
 class IntensityAdaptiveHook(HookBase):
     """Adjusts exposure per frame to keep mean intensity near a target."""
+
+    _per_frame_hardware = True
 
     def __init__(
         self,
@@ -574,6 +580,8 @@ class MMAutofocusPluginHook(HookBase):
     plugin owns the motion; microclaw only guards the *result* passively (never
     re-drives Z, which would fight the plugin's own safety controller).
     """
+
+    _per_frame_hardware = True
 
     def __init__(self, ctrl, guard, plugin_name: str | None = None,
                  log_path: str | None = None):

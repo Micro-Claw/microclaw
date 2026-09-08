@@ -129,7 +129,7 @@ def test_named_stage_plan_refuses_sequenced_batch_before_any_write(actions):
         {"axes": {"time": 0}},
         {"axes": {"time": 1}},
     ]
-    with pytest.raises(RuntimeError, match="nonzero interval_s"):
+    with pytest.raises(RuntimeError, match="should have been refused at plan time"):
         adapter.pre_hardware_hook_fn(events)
     core.set_position.assert_not_called()
     assert adapter._log[-1]["decision"] == "refused"

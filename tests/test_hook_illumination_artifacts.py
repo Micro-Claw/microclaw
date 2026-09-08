@@ -7,7 +7,7 @@ import pytest
 import tifffile
 
 from microclaw import tools
-from microclaw.tools import HOOK_CAPABILITY_ARGS
+from microclaw.tools import HOOK_CAPABILITY_ARGS, HOOK_HARDWARE_CAPABILITY_ARGS
 from microclaw.hook_decisions import EmitArtifact, HookResult, UntrustedHookAdapter
 from microclaw.hook_manager import saved_hook_source_refusal, validate_hook_contract
 from microclaw.safety import (
@@ -597,7 +597,7 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
 def test_schema_states_the_three_rules_the_rig_kept_rediscovering(): 
     """Every constraint refused at plan time must be findable before the call.
 
-    The parameter descriptions must state the nonzero interval rule and the
+    The parameter descriptions must state the deadline predicate and the
     restoration contract: max_writes counts hook proposals, explicit restore
     targets stay bounded, and the exact recorded entry may be outside proposal
     bounds without consuming a proposal slot. These are statically knowable, and a caller reads
@@ -608,7 +608,7 @@ def test_schema_states_the_three_rules_the_rig_kept_rediscovering():
     from microclaw.tools_schema import TOOLS
     timelapse = next(t for t in TOOLS if t["name"] == "run_timelapse")
     props = timelapse["input_schema"]["properties"]
-    assert "nonzero" in props["interval_s"]["description"]
+    assert "int(k * interval_s * 1000.0)" in props["interval_s"]["description"]
     assert "hook_action_plan" in props["interval_s"]["description"]
     assert "Stop button" in props["interval_s"]["description"]
     assert "engine abort" in props["interval_s"]["description"]
@@ -701,6 +701,39 @@ def test_reserved_run_refuses_every_hook_capability_before_work(
     acquire.assert_not_called()
     ctrl.core.set_exposure.assert_not_called()
     ctrl.core.set_position.assert_not_called()
+
+
+@pytest.mark.parametrize("capability", HOOK_HARDWARE_CAPABILITY_ARGS)
+def test_colliding_timelapse_refuses_every_hardware_capability_before_acquisition(
+    capability, monkeypatch, tmp_path
+):
+    ctrl = MagicMock()
+    ctrl.core.get_image_width.return_value = 2
+    ctrl.core.get_image_height.return_value = 2
+    ctrl.core.get_bytes_per_pixel.return_value = 2
+    ctrl.core.get_exposure.return_value = 1
+    guard = SafetyGuard(SafetyConstraints())
+    monkeypatch.setattr(guard, "resolve_in_workspace", lambda path: path)
+    hook = UntrustedHookAdapter(object())
+    monkeypatch.setattr(tools, "_resolve_hook", lambda *args: hook)
+    # Isolate sequencing from envelope validation and authorization. Keep the
+    # real event builder and acquisition runner, including constructor dispatch.
+    monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook: plan)
+    monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a: MagicMock())
+    acquisition = MagicMock(side_effect=RuntimeError("Acquisition constructed"))
+    monkeypatch.setattr(tools, "Acquisition", acquisition)
+    error = None
+    try:
+        tools.run_timelapse(
+            ctrl, guard, 5, 0.0001, str(tmp_path), hook_strategy="saved",
+            **{capability: [] if capability == "hook_action_plan" else {}},
+        )
+    except (ValueError, RuntimeError) as exc:
+        error = exc
+    assert acquisition.call_count == 0
+    assert isinstance(error, ValueError)
+    assert "truncated millisecond deadline" in str(error)
 
 
 def test_plain_reserved_timelapse_is_unchanged(monkeypatch, tmp_path):
