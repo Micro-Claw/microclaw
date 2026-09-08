@@ -1,0 +1,533 @@
+2026-09-04T14:11:13.035694 tid548 [dbg,Core:dev:Laser Trigger] Will set property "Duration0 (us)" to "100"
+2026-09-04T14:11:13.035726 tid548 [dbg,dev:COM4] Write -> (hex) 80 08 00 00 00 64 00 00 00
+2026-09-04T14:11:13.035728 tid548 [dbg,Core:dev:Laser Trigger] Did set property "Duration0 (us)" to "100"
+2026-09-04T14:11:13.036826 tid548 [dbg,Core] Waiting for device Laser Trigger...
+2026-09-04T14:11:13.036831 tid548 [dbg,Core] Finished waiting for device Laser Trigger
+2026-09-04T14:11:13.039529 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:13.039558 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:13.039771 tid548 [IFO,App] Updating GUI; config pad = true; from cache = true
+2026-09-04T14:11:13.039791 tid548 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.069536 tid548 [dbg,dev:COM17] GetAnswer <- 1=50.1162\n
+2026-09-04T14:11:13.069562 tid548 [dbg,dev:COM15] SetCommand -> :GP0\n
+2026-09-04T14:11:13.113543 tid548 [dbg,dev:COM15] GetAnswer <- :P0P399.4\n
+2026-09-04T14:11:13.113585 tid548 [dbg,dev:COM15] SetCommand -> :GP1\n
+2026-09-04T14:11:13.140551 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.159530 tid548 [dbg,dev:COM15] GetAnswer <- :P1P-560.0\n
+2026-09-04T14:11:13.160081 tid548 [IFO,App] Rebuilding config group table
+2026-09-04T14:11:13.160148 tid548 [IFO,App] Finished rebuilding config group table
+2026-09-04T14:11:13.160431 tid548 [IFO,App] Finished updating GUI
+2026-09-04T14:11:13.160746 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [HamamatsuHam_DCAM-Exposure] value: [100.0080].
+2026-09-04T14:11:13.160783 tid548 [dbg,dev:COM4] Write -> (hex) 00 08 00 00 00
+2026-09-04T14:11:13.174755 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.1162\n
+2026-09-04T14:11:13.174795 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1162].
+2026-09-04T14:11:13.188941 tid548 [dbg,dev:COM4] Read <- (hex) 64 00 00 00
+2026-09-04T14:11:13.188961 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration0 (us)] value: [100].
+2026-09-04T14:11:13.189006 tid548 [dbg,dev:COM4] Write -> (hex) 00 09 00 00 00
+2026-09-04T14:11:13.218961 tid548 [dbg,dev:COM4] Read <- (hex) a8 61 00 00
+2026-09-04T14:11:13.218983 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration1 (us)] value: [25000].
+2026-09-04T14:11:13.219022 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 4: 1. Enable] value: [0].
+2026-09-04T14:11:13.219041 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 4: 3. Level %] value: [25.9600].
+2026-09-04T14:11:13.219104 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 3: 3. Level %] value: [3.6100].
+2026-09-04T14:11:13.219145 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 3: 1. Enable] value: [0].
+2026-09-04T14:11:13.219153 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 2: 1. Enable] value: [0].
+2026-09-04T14:11:13.219163 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 2: 3. Level %] value: [4.6400].
+2026-09-04T14:11:13.219188 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 1: 3. Level %] value: [2.0000].
+2026-09-04T14:11:13.219210 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iChrome-MLE-TCP-Laser 1: 1. Enable] value: [1].
+2026-09-04T14:11:13.219223 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs Filter Wheel-State] value: [2].
+2026-09-04T14:11:13.219229 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs Filter Wheel-1-State] value: [2].
+2026-09-04T14:11:13.219257 tid548 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.250901 tid548 [dbg,dev:COM17] GetAnswer <- 1=50.12024\n
+2026-09-04T14:11:13.250939 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1202].
+2026-09-04T14:11:13.250983 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-External sensor] value: [0].
+2026-09-04T14:11:13.251014 tid548 [dbg,dev:COM4] Write -> (hex) 00 2f 00 00 00
+2026-09-04T14:11:13.274912 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.278912 tid548 [dbg,dev:COM4] Read <- (hex) 82 b5 00 00
+2026-09-04T14:11:13.278954 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Analog Input-AnalogInput1] value: [46466].
+2026-09-04T14:11:13.278995 tid548 [dbg,dev:COM4] Write -> (hex) 00 30 00 00 00
+2026-09-04T14:11:13.294887 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.12024\n
+2026-09-04T14:11:13.294912 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1202].
+2026-09-04T14:11:13.323939 tid548 [dbg,dev:COM4] Read <- (hex) ae 2b 00 00
+2026-09-04T14:11:13.323967 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Analog Input-AnalogInput2] value: [11182].
+2026-09-04T14:11:13.324010 tid548 [dbg,dev:COM4] Write -> (hex) 00 2e 00 00 00
+2026-09-04T14:11:13.368940 tid548 [dbg,dev:COM4] Read <- (hex) e3 7c 00 00
+2026-09-04T14:11:13.368961 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Analog Input-AnalogInput0] value: [31971].
+2026-09-04T14:11:13.369010 tid548 [dbg,dev:COM8] SetCommand -> sta ext\r
+2026-09-04T14:11:13.394907 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.415346 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.415364 tid548 [dbg,dev:COM8] GetAnswer <- \nON\r
+2026-09-04T14:11:13.415411 tid548 [dbg,dev:COM8] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:13.415432 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Booster-Enable ext trigger] value: [On].
+2026-09-04T14:11:13.415490 tid548 [dbg,dev:COM8] SetCommand -> sta la\r
+2026-09-04T14:11:13.431340 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.12024\n
+2026-09-04T14:11:13.431370 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1202].
+2026-09-04T14:11:13.461477 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.461493 tid548 [dbg,dev:COM8] GetAnswer <- \nOFF\r
+2026-09-04T14:11:13.461497 tid548 [dbg,dev:COM8] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:13.461528 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Booster-Laser Operation] value: [Off].
+2026-09-04T14:11:13.461598 tid548 [dbg,dev:COM8] SetCommand -> sh data\r
+2026-09-04T14:11:13.531386 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.551363 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.12024\n
+2026-09-04T14:11:13.551451 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1202].
+2026-09-04T14:11:13.652386 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.667419 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667477 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667483 tid548 [dbg,dev:COM8] GetAnswer <- \n          EEPROM: EARTH\r
+2026-09-04T14:11:13.667485 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667487 tid548 [dbg,dev:COM8] GetAnswer <- \n     active port: 1\r
+2026-09-04T14:11:13.667490 tid548 [dbg,dev:COM8] GetAnswer <- \n     baud port A: 115200\r
+2026-09-04T14:11:13.667493 tid548 [dbg,dev:COM8] GetAnswer <- \n     baud port B: 115200\r
+2026-09-04T14:11:13.667496 tid548 [dbg,dev:COM8] GetAnswer <- \n       talk mode: 3\r
+2026-09-04T14:11:13.667499 tid548 [dbg,dev:COM8] GetAnswer <- \n        Rth used: 1\r
+2026-09-04T14:11:13.667501 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667503 tid548 [dbg,dev:COM8] GetAnswer <- \n       echo mode: disabled\r
+2026-09-04T14:11:13.667506 tid548 [dbg,dev:COM8] GetAnswer <- \n      modulation: off\r
+2026-09-04T14:11:13.667509 tid548 [dbg,dev:COM8] GetAnswer <- \n      alt.prompt: enabled\r
+2026-09-04T14:11:13.667512 tid548 [dbg,dev:COM8] GetAnswer <- \n      enable CH1: disabled\r
+2026-09-04T14:11:13.667514 tid548 [dbg,dev:COM8] GetAnswer <- \n       P/I valid: yes\r
+2026-09-04T14:11:13.667517 tid548 [dbg,dev:COM8] GetAnswer <- \n       P/I curve: enabled\r
+2026-09-04T14:11:13.667518 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667520 tid548 [dbg,dev:COM8] GetAnswer <- \n        BOOT ...: enabled\r
+2026-09-04T14:11:13.667523 tid548 [dbg,dev:COM8] GetAnswer <- \n        laser on: enabled\r
+2026-09-04T14:11:13.667526 tid548 [dbg,dev:COM8] GetAnswer <- \n      enable CHn: enabled\r
+2026-09-04T14:11:13.667528 tid548 [dbg,dev:COM8] GetAnswer <- \n      enable EXT: enabled\r
+2026-09-04T14:11:13.667621 tid548 [dbg,dev:COM8] GetAnswer <- \n         fine on: disabled\r
+2026-09-04T14:11:13.667657 tid548 [dbg,dev:COM8] GetAnswer <- \n        TEC loop: enabled\r
+2026-09-04T14:11:13.667664 tid548 [dbg,dev:COM8] GetAnswer <- \n        TEC pass: disabled\r
+2026-09-04T14:11:13.667667 tid548 [dbg,dev:COM8] GetAnswer <- \n        PD reset: disabled\r
+2026-09-04T14:11:13.667670 tid548 [dbg,dev:COM8] GetAnswer <- \n        flashing: disabled\r
+2026-09-04T14:11:13.667674 tid548 [dbg,dev:COM8] GetAnswer <- \n      boot pulse: disabled\r
+2026-09-04T14:11:13.667675 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667680 tid548 [dbg,dev:COM8] GetAnswer <- \n         monitor: 8000h = 32768d -> 00000 mV\r
+2026-09-04T14:11:13.667685 tid548 [dbg,dev:COM8] GetAnswer <- \n         multi_1: 1F40h = 08000d -> 0.500  V\r
+2026-09-04T14:11:13.667689 tid548 [dbg,dev:COM8] GetAnswer <- \n         multi_2: FDE8h = 65000d -> 4.000  V\r
+2026-09-04T14:11:13.667693 tid548 [dbg,dev:COM8] GetAnswer <- \n        2nd clip: 49F4h = 18932d -> 245.0 mA\r
+2026-09-04T14:11:13.667694 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667698 tid548 [dbg,dev:COM8] GetAnswer <- \n    TEC setpoint: 4C81h = 19585d -> 025.0  C\r
+2026-09-04T14:11:13.667701 tid548 [dbg,dev:COM8] GetAnswer <- \n    proportional: 28000\r
+2026-09-04T14:11:13.667704 tid548 [dbg,dev:COM8] GetAnswer <- \n        integral: 16\r
+2026-09-04T14:11:13.667706 tid548 [dbg,dev:COM8] GetAnswer <- \n      derivative: 2\r
+2026-09-04T14:11:13.667709 tid548 [dbg,dev:COM8] GetAnswer <- \n       tolerance: 1000\r
+2026-09-04T14:11:13.667710 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667713 tid548 [dbg,dev:COM8] GetAnswer <- \n          EEPROM: SATELLITE\r
+2026-09-04T14:11:13.667714 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667717 tid548 [dbg,dev:COM8] GetAnswer <- \n         version: 502A002Axx-3-Axx\r
+2026-09-04T14:11:13.667718 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.667721 tid548 [dbg,dev:COM8] GetAnswer <- \n        channels:     2\r
+2026-09-04T14:11:13.671361 tid548 [dbg,dev:COM8] GetAnswer <- \n            Pmax:   150 mW\r
+2026-09-04T14:11:13.671371 tid548 [dbg,dev:COM8] GetAnswer <- \n            Imax: 237.0 mA\r
+2026-09-04T14:11:13.671376 tid548 [dbg,dev:COM8] GetAnswer <- \n     warned Imax: 237.0 mA\r
+2026-09-04T14:11:13.671377 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.671380 tid548 [dbg,dev:COM8] GetAnswer <- \n     degradation: enabled\r
+2026-09-04T14:11:13.671383 tid548 [dbg,dev:COM8] GetAnswer <- \n     POT rescale: disabled\r
+2026-09-04T14:11:13.671386 tid548 [dbg,dev:COM8] GetAnswer <- \n        polarity: subtract\r
+2026-09-04T14:11:13.671387 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.671390 tid548 [dbg,dev:COM8] GetAnswer <- \n      SKill used: 0\r
+2026-09-04T14:11:13.671391 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.671395 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH1 level: 4D43h = 19779d -> 060.0 mA\r
+2026-09-04T14:11:13.671400 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH2 level: 3BC2h = 15298d -> 096.9 mA\r
+2026-09-04T14:11:13.671405 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH3 level: 0000h = 00000d -> 003.2 mA\r
+2026-09-04T14:11:13.671409 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH4 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:13.671413 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH5 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:13.671414 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.671418 tid548 [dbg,dev:COM8] GetAnswer <- \n        1st clip: 4819h = 18457d -> 239.0 mA\r
+2026-09-04T14:11:13.671423 tid548 [dbg,dev:COM8] GetAnswer <- \n        POTmodu1: 01FFh = 00511d -> 001.0 mA/V\r
+2026-09-04T14:11:13.685359 tid548 [dbg,dev:COM8] GetAnswer <- \n        POTmodu2: 9000h = 36864d -> 056.3 %\r
+2026-09-04T14:11:13.685367 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.685372 tid548 [dbg,dev:COM8] GetAnswer <- \n          fine a: 00E5h = 00229d -> 089.8 %\r
+2026-09-04T14:11:13.685382 tid548 [dbg,dev:COM8] GetAnswer <- \n          fine b: 000Dh = 00013d -> 005.1 %\r
+2026-09-04T14:11:13.685385 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.685388 tid548 [dbg,dev:COM8] GetAnswer <- \n        CH1 setp: 000.00 mW\r
+2026-09-04T14:11:13.685391 tid548 [dbg,dev:COM8] GetAnswer <- \n        CH2 setp: 030.00 mW\r
+2026-09-04T14:11:13.685393 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.685394 tid548 [dbg,dev:COM8] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:13.685419 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Booster-Fine A (%)] value: [89.8000].
+2026-09-04T14:11:13.685458 tid548 [dbg,dev:COM8] SetCommand -> sh data\r
+2026-09-04T14:11:13.686368 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:13.686393 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:13.786417 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.806386 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.12024\n
+2026-09-04T14:11:13.806437 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1202].
+2026-09-04T14:11:13.890386 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.890397 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.890402 tid548 [dbg,dev:COM8] GetAnswer <- \n          EEPROM: EARTH\r
+2026-09-04T14:11:13.890404 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.890406 tid548 [dbg,dev:COM8] GetAnswer <- \n     active port: 1\r
+2026-09-04T14:11:13.890409 tid548 [dbg,dev:COM8] GetAnswer <- \n     baud port A: 115200\r
+2026-09-04T14:11:13.890412 tid548 [dbg,dev:COM8] GetAnswer <- \n     baud port B: 115200\r
+2026-09-04T14:11:13.890414 tid548 [dbg,dev:COM8] GetAnswer <- \n       talk mode: 3\r
+2026-09-04T14:11:13.890417 tid548 [dbg,dev:COM8] GetAnswer <- \n        Rth used: 1\r
+2026-09-04T14:11:13.890417 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.890420 tid548 [dbg,dev:COM8] GetAnswer <- \n       echo mode: disabled\r
+2026-09-04T14:11:13.890423 tid548 [dbg,dev:COM8] GetAnswer <- \n      modulation: off\r
+2026-09-04T14:11:13.890425 tid548 [dbg,dev:COM8] GetAnswer <- \n      alt.prompt: enabled\r
+2026-09-04T14:11:13.890428 tid548 [dbg,dev:COM8] GetAnswer <- \n      enable CH1: disabled\r
+2026-09-04T14:11:13.890430 tid548 [dbg,dev:COM8] GetAnswer <- \n       P/I valid: yes\r
+2026-09-04T14:11:13.890433 tid548 [dbg,dev:COM8] GetAnswer <- \n       P/I curve: enabled\r
+2026-09-04T14:11:13.890434 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.890437 tid548 [dbg,dev:COM8] GetAnswer <- \n        BOOT ...: enabled\r
+2026-09-04T14:11:13.890439 tid548 [dbg,dev:COM8] GetAnswer <- \n        laser on: enabled\r
+2026-09-04T14:11:13.890442 tid548 [dbg,dev:COM8] GetAnswer <- \n      enable CHn: enabled\r
+2026-09-04T14:11:13.890445 tid548 [dbg,dev:COM8] GetAnswer <- \n      enable EXT: enabled\r
+2026-09-04T14:11:13.890447 tid548 [dbg,dev:COM8] GetAnswer <- \n         fine on: disabled\r
+2026-09-04T14:11:13.890450 tid548 [dbg,dev:COM8] GetAnswer <- \n        TEC loop: enabled\r
+2026-09-04T14:11:13.890453 tid548 [dbg,dev:COM8] GetAnswer <- \n        TEC pass: disabled\r
+2026-09-04T14:11:13.892376 tid548 [dbg,dev:COM8] GetAnswer <- \n        PD reset: disabled\r
+2026-09-04T14:11:13.892382 tid548 [dbg,dev:COM8] GetAnswer <- \n        flashing: disabled\r
+2026-09-04T14:11:13.892385 tid548 [dbg,dev:COM8] GetAnswer <- \n      boot pulse: disabled\r
+2026-09-04T14:11:13.892386 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.892391 tid548 [dbg,dev:COM8] GetAnswer <- \n         monitor: 8000h = 32768d -> 00000 mV\r
+2026-09-04T14:11:13.892396 tid548 [dbg,dev:COM8] GetAnswer <- \n         multi_1: 1F40h = 08000d -> 0.500  V\r
+2026-09-04T14:11:13.892400 tid548 [dbg,dev:COM8] GetAnswer <- \n         multi_2: FDE8h = 65000d -> 4.000  V\r
+2026-09-04T14:11:13.892404 tid548 [dbg,dev:COM8] GetAnswer <- \n        2nd clip: 49F4h = 18932d -> 245.0 mA\r
+2026-09-04T14:11:13.892405 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.892409 tid548 [dbg,dev:COM8] GetAnswer <- \n    TEC setpoint: 4C81h = 19585d -> 025.0  C\r
+2026-09-04T14:11:13.892412 tid548 [dbg,dev:COM8] GetAnswer <- \n    proportional: 28000\r
+2026-09-04T14:11:13.892414 tid548 [dbg,dev:COM8] GetAnswer <- \n        integral: 16\r
+2026-09-04T14:11:13.892416 tid548 [dbg,dev:COM8] GetAnswer <- \n      derivative: 2\r
+2026-09-04T14:11:13.892419 tid548 [dbg,dev:COM8] GetAnswer <- \n       tolerance: 1000\r
+2026-09-04T14:11:13.892420 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.892423 tid548 [dbg,dev:COM8] GetAnswer <- \n          EEPROM: SATELLITE\r
+2026-09-04T14:11:13.892424 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.892427 tid548 [dbg,dev:COM8] GetAnswer <- \n         version: 502A002Axx-3-Axx\r
+2026-09-04T14:11:13.892428 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.892431 tid548 [dbg,dev:COM8] GetAnswer <- \n        channels:     2\r
+2026-09-04T14:11:13.894380 tid548 [dbg,dev:COM8] GetAnswer <- \n            Pmax:   150 mW\r
+2026-09-04T14:11:13.894386 tid548 [dbg,dev:COM8] GetAnswer <- \n            Imax: 237.0 mA\r
+2026-09-04T14:11:13.894388 tid548 [dbg,dev:COM8] GetAnswer <- \n     warned Imax: 237.0 mA\r
+2026-09-04T14:11:13.894389 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.894499 tid548 [dbg,dev:COM8] GetAnswer <- \n     degradation: enabled\r
+2026-09-04T14:11:13.894514 tid548 [dbg,dev:COM8] GetAnswer <- \n     POT rescale: disabled\r
+2026-09-04T14:11:13.894518 tid548 [dbg,dev:COM8] GetAnswer <- \n        polarity: subtract\r
+2026-09-04T14:11:13.894519 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.894522 tid548 [dbg,dev:COM8] GetAnswer <- \n      SKill used: 0\r
+2026-09-04T14:11:13.894523 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.894529 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH1 level: 4D43h = 19779d -> 060.0 mA\r
+2026-09-04T14:11:13.894535 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH2 level: 3BC2h = 15298d -> 096.9 mA\r
+2026-09-04T14:11:13.894539 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH3 level: 0000h = 00000d -> 003.2 mA\r
+2026-09-04T14:11:13.894544 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH4 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:13.894548 tid548 [dbg,dev:COM8] GetAnswer <- \n       CH5 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:13.894549 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.894553 tid548 [dbg,dev:COM8] GetAnswer <- \n        1st clip: 4819h = 18457d -> 239.0 mA\r
+2026-09-04T14:11:13.894557 tid548 [dbg,dev:COM8] GetAnswer <- \n        POTmodu1: 01FFh = 00511d -> 001.0 mA/V\r
+2026-09-04T14:11:13.906413 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:13.910388 tid548 [dbg,dev:COM8] GetAnswer <- \n        POTmodu2: 9000h = 36864d -> 056.3 %\r
+2026-09-04T14:11:13.910395 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.910400 tid548 [dbg,dev:COM8] GetAnswer <- \n          fine a: 00E5h = 00229d -> 089.8 %\r
+2026-09-04T14:11:13.910405 tid548 [dbg,dev:COM8] GetAnswer <- \n          fine b: 000Dh = 00013d -> 005.1 %\r
+2026-09-04T14:11:13.910412 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.910417 tid548 [dbg,dev:COM8] GetAnswer <- \n        CH1 setp: 000.00 mW\r
+2026-09-04T14:11:13.910420 tid548 [dbg,dev:COM8] GetAnswer <- \n        CH2 setp: 030.00 mW\r
+2026-09-04T14:11:13.910422 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.910423 tid548 [dbg,dev:COM8] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:13.910449 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Booster-Fine B (%)] value: [5.1000].
+2026-09-04T14:11:13.910494 tid548 [dbg,dev:COM8] SetCommand -> sta fine\r
+2026-09-04T14:11:13.940389 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:13.940425 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:13.956393 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:13.956403 tid548 [dbg,dev:COM8] GetAnswer <- \nON\r
+2026-09-04T14:11:13.956405 tid548 [dbg,dev:COM8] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:13.956422 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Booster-Enable Fine] value: [On].
+2026-09-04T14:11:13.956472 tid548 [dbg,dev:COM8] SetCommand -> sh level pow\r
+2026-09-04T14:11:14.016391 tid548 [dbg,dev:COM8] GetAnswer <- \n\r
+2026-09-04T14:11:14.016406 tid548 [dbg,dev:COM8] GetAnswer <- \nCH1, PWR:  0.000 mW\r
+2026-09-04T14:11:14.016411 tid548 [dbg,dev:COM8] GetAnswer <- \nCH2, PWR: 30.000 mW\r
+2026-09-04T14:11:14.016418 tid548 [dbg,dev:COM8] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:14.016447 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Booster-Power (mW)] value: [30.0000].
+2026-09-04T14:11:14.016500 tid548 [dbg,dev:COM13] SetCommand -> sh data\r
+2026-09-04T14:11:14.041157 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.061132 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:14.061162 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:14.161175 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.195135 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.1162\n
+2026-09-04T14:11:14.195212 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1162].
+2026-09-04T14:11:14.224137 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.224146 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.224151 tid548 [dbg,dev:COM13] GetAnswer <- \n          EEPROM: EARTH\r
+2026-09-04T14:11:14.224154 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.224157 tid548 [dbg,dev:COM13] GetAnswer <- \n     active port: 1\r
+2026-09-04T14:11:14.224160 tid548 [dbg,dev:COM13] GetAnswer <- \n     baud port A: 115200\r
+2026-09-04T14:11:14.224164 tid548 [dbg,dev:COM13] GetAnswer <- \n     baud port B: 115200\r
+2026-09-04T14:11:14.224167 tid548 [dbg,dev:COM13] GetAnswer <- \n       talk mode: 3\r
+2026-09-04T14:11:14.224170 tid548 [dbg,dev:COM13] GetAnswer <- \n        Rth used: 1\r
+2026-09-04T14:11:14.224171 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.224175 tid548 [dbg,dev:COM13] GetAnswer <- \n       echo mode: disabled\r
+2026-09-04T14:11:14.224187 tid548 [dbg,dev:COM13] GetAnswer <- \n      modulation: off\r
+2026-09-04T14:11:14.224191 tid548 [dbg,dev:COM13] GetAnswer <- \n      alt.prompt: enabled\r
+2026-09-04T14:11:14.224195 tid548 [dbg,dev:COM13] GetAnswer <- \n      enable CH1: disabled\r
+2026-09-04T14:11:14.224199 tid548 [dbg,dev:COM13] GetAnswer <- \n       P/I valid: yes\r
+2026-09-04T14:11:14.224202 tid548 [dbg,dev:COM13] GetAnswer <- \n       P/I curve: enabled\r
+2026-09-04T14:11:14.224204 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.224207 tid548 [dbg,dev:COM13] GetAnswer <- \n        BOOT ...: enabled\r
+2026-09-04T14:11:14.224211 tid548 [dbg,dev:COM13] GetAnswer <- \n        laser on: enabled\r
+2026-09-04T14:11:14.224215 tid548 [dbg,dev:COM13] GetAnswer <- \n      enable CHn: enabled\r
+2026-09-04T14:11:14.224218 tid548 [dbg,dev:COM13] GetAnswer <- \n      enable EXT: enabled\r
+2026-09-04T14:11:14.224220 tid548 [dbg,dev:COM13] GetAnswer <- \n         fine on: disabled\r
+2026-09-04T14:11:14.224223 tid548 [dbg,dev:COM13] GetAnswer <- \n        TEC loop: enabled\r
+2026-09-04T14:11:14.224226 tid548 [dbg,dev:COM13] GetAnswer <- \n        TEC pass: disabled\r
+2026-09-04T14:11:14.226138 tid548 [dbg,dev:COM13] GetAnswer <- \n        PD reset: disabled\r
+2026-09-04T14:11:14.226157 tid548 [dbg,dev:COM13] GetAnswer <- \n        flashing: disabled\r
+2026-09-04T14:11:14.226164 tid548 [dbg,dev:COM13] GetAnswer <- \n      boot pulse: disabled\r
+2026-09-04T14:11:14.226166 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.226173 tid548 [dbg,dev:COM13] GetAnswer <- \n         monitor: 8000h = 32768d -> 00000 mV\r
+2026-09-04T14:11:14.226179 tid548 [dbg,dev:COM13] GetAnswer <- \n         multi_1: 3E80h = 16000d -> 1.000  V\r
+2026-09-04T14:11:14.226183 tid548 [dbg,dev:COM13] GetAnswer <- \n         multi_2: 505Bh = 20571d -> 1.286  V\r
+2026-09-04T14:11:14.226187 tid548 [dbg,dev:COM13] GetAnswer <- \n        2nd clip: 47AEh = 18350d -> 230.0 mA\r
+2026-09-04T14:11:14.226188 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.226192 tid548 [dbg,dev:COM13] GetAnswer <- \n    TEC setpoint: 63B9h = 25529d -> 028.0  C\r
+2026-09-04T14:11:14.226195 tid548 [dbg,dev:COM13] GetAnswer <- \n    proportional: 70000\r
+2026-09-04T14:11:14.226198 tid548 [dbg,dev:COM13] GetAnswer <- \n        integral: 100\r
+2026-09-04T14:11:14.226200 tid548 [dbg,dev:COM13] GetAnswer <- \n      derivative: 2\r
+2026-09-04T14:11:14.226204 tid548 [dbg,dev:COM13] GetAnswer <- \n       tolerance: 1000\r
+2026-09-04T14:11:14.226205 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.226208 tid548 [dbg,dev:COM13] GetAnswer <- \n          EEPROM: SATELLITE\r
+2026-09-04T14:11:14.226209 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.226212 tid548 [dbg,dev:COM13] GetAnswer <- \n         version: 502A002Axx-3-Axx\r
+2026-09-04T14:11:14.226214 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.226216 tid548 [dbg,dev:COM13] GetAnswer <- \n        channels:     2\r
+2026-09-04T14:11:14.228138 tid548 [dbg,dev:COM13] GetAnswer <- \n            Pmax:    75 mW\r
+2026-09-04T14:11:14.228146 tid548 [dbg,dev:COM13] GetAnswer <- \n            Imax: 148.0 mA\r
+2026-09-04T14:11:14.228149 tid548 [dbg,dev:COM13] GetAnswer <- \n     warned Imax: 148.0 mA\r
+2026-09-04T14:11:14.228150 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.228152 tid548 [dbg,dev:COM13] GetAnswer <- \n     degradation: enabled\r
+2026-09-04T14:11:14.228155 tid548 [dbg,dev:COM13] GetAnswer <- \n     POT rescale: disabled\r
+2026-09-04T14:11:14.228158 tid548 [dbg,dev:COM13] GetAnswer <- \n        polarity: subtract\r
+2026-09-04T14:11:14.228159 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.228161 tid548 [dbg,dev:COM13] GetAnswer <- \n      SKill used: 0\r
+2026-09-04T14:11:14.228162 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.228167 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH1 level: 4992h = 18834d -> 060.0 mA\r
+2026-09-04T14:11:14.228171 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH2 level: 2D6Ch = 11628d -> 086.6 mA\r
+2026-09-04T14:11:14.228175 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH3 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:14.228179 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH4 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:14.228184 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH5 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:14.228185 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.228189 tid548 [dbg,dev:COM13] GetAnswer <- \n        1st clip: 3CDAh = 15578d -> 200.0 mA\r
+2026-09-04T14:11:14.228193 tid548 [dbg,dev:COM13] GetAnswer <- \n        POTmodu1: 0200h = 00512d -> 001.0 mA/V\r
+2026-09-04T14:11:14.230130 tid548 [dbg,dev:COM13] GetAnswer <- \n        POTmodu2: 4600h = 17920d -> 027.3 %\r
+2026-09-04T14:11:14.230134 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.230138 tid548 [dbg,dev:COM13] GetAnswer <- \n          fine a: 00E5h = 00229d -> 089.8 %\r
+2026-09-04T14:11:14.230148 tid548 [dbg,dev:COM13] GetAnswer <- \n          fine b: 0019h = 00025d -> 009.8 %\r
+2026-09-04T14:11:14.230149 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.230152 tid548 [dbg,dev:COM13] GetAnswer <- \n        CH1 setp: 000.00 mW\r
+2026-09-04T14:11:14.230155 tid548 [dbg,dev:COM13] GetAnswer <- \n        CH2 setp: 030.00 mW\r
+2026-09-04T14:11:14.230156 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.230157 tid548 [dbg,dev:COM13] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:14.230183 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Fine A (%)] value: [89.8000].
+2026-09-04T14:11:14.230230 tid548 [dbg,dev:COM13] SetCommand -> sta ext\r
+2026-09-04T14:11:14.270139 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.270149 tid548 [dbg,dev:COM13] GetAnswer <- \nON\r
+2026-09-04T14:11:14.270151 tid548 [dbg,dev:COM13] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:14.270170 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Enable ext trigger] value: [On].
+2026-09-04T14:11:14.270211 tid548 [dbg,dev:COM13] SetCommand -> sta la\r
+2026-09-04T14:11:14.295159 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.316136 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.316145 tid548 [dbg,dev:COM13] GetAnswer <- \nON\r
+2026-09-04T14:11:14.316147 tid548 [dbg,dev:COM13] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:14.316164 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Laser Operation] value: [On].
+2026-09-04T14:11:14.316211 tid548 [dbg,dev:COM13] SetCommand -> sh level pow\r
+2026-09-04T14:11:14.331135 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.1162\n
+2026-09-04T14:11:14.331162 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1162].
+2026-09-04T14:11:14.376149 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.376162 tid548 [dbg,dev:COM13] GetAnswer <- \nCH1, PWR:  0.000 mW\r
+2026-09-04T14:11:14.376166 tid548 [dbg,dev:COM13] GetAnswer <- \nCH2, PWR: 30.000 mW\r
+2026-09-04T14:11:14.376173 tid548 [dbg,dev:COM13] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:14.376201 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Power (mW)] value: [30.0000].
+2026-09-04T14:11:14.376250 tid548 [dbg,dev:COM13] SetCommand -> sh data\r
+2026-09-04T14:11:14.432168 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.466197 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:14.466229 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:14.567167 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.584137 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584145 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584184 tid548 [dbg,dev:COM13] GetAnswer <- \n          EEPROM: EARTH\r
+2026-09-04T14:11:14.584189 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584192 tid548 [dbg,dev:COM13] GetAnswer <- \n     active port: 1\r
+2026-09-04T14:11:14.584207 tid548 [dbg,dev:COM13] GetAnswer <- \n     baud port A: 115200\r
+2026-09-04T14:11:14.584210 tid548 [dbg,dev:COM13] GetAnswer <- \n     baud port B: 115200\r
+2026-09-04T14:11:14.584212 tid548 [dbg,dev:COM13] GetAnswer <- \n       talk mode: 3\r
+2026-09-04T14:11:14.584214 tid548 [dbg,dev:COM13] GetAnswer <- \n        Rth used: 1\r
+2026-09-04T14:11:14.584216 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584218 tid548 [dbg,dev:COM13] GetAnswer <- \n       echo mode: disabled\r
+2026-09-04T14:11:14.584221 tid548 [dbg,dev:COM13] GetAnswer <- \n      modulation: off\r
+2026-09-04T14:11:14.584224 tid548 [dbg,dev:COM13] GetAnswer <- \n      alt.prompt: enabled\r
+2026-09-04T14:11:14.584226 tid548 [dbg,dev:COM13] GetAnswer <- \n      enable CH1: disabled\r
+2026-09-04T14:11:14.584229 tid548 [dbg,dev:COM13] GetAnswer <- \n       P/I valid: yes\r
+2026-09-04T14:11:14.584232 tid548 [dbg,dev:COM13] GetAnswer <- \n       P/I curve: enabled\r
+2026-09-04T14:11:14.584233 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584235 tid548 [dbg,dev:COM13] GetAnswer <- \n        BOOT ...: enabled\r
+2026-09-04T14:11:14.584238 tid548 [dbg,dev:COM13] GetAnswer <- \n        laser on: enabled\r
+2026-09-04T14:11:14.584241 tid548 [dbg,dev:COM13] GetAnswer <- \n      enable CHn: enabled\r
+2026-09-04T14:11:14.584243 tid548 [dbg,dev:COM13] GetAnswer <- \n      enable EXT: enabled\r
+2026-09-04T14:11:14.584246 tid548 [dbg,dev:COM13] GetAnswer <- \n         fine on: disabled\r
+2026-09-04T14:11:14.584249 tid548 [dbg,dev:COM13] GetAnswer <- \n        TEC loop: enabled\r
+2026-09-04T14:11:14.584252 tid548 [dbg,dev:COM13] GetAnswer <- \n        TEC pass: disabled\r
+2026-09-04T14:11:14.584254 tid548 [dbg,dev:COM13] GetAnswer <- \n        PD reset: disabled\r
+2026-09-04T14:11:14.584257 tid548 [dbg,dev:COM13] GetAnswer <- \n        flashing: disabled\r
+2026-09-04T14:11:14.584260 tid548 [dbg,dev:COM13] GetAnswer <- \n      boot pulse: disabled\r
+2026-09-04T14:11:14.584261 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584266 tid548 [dbg,dev:COM13] GetAnswer <- \n         monitor: 8000h = 32768d -> 00000 mV\r
+2026-09-04T14:11:14.584271 tid548 [dbg,dev:COM13] GetAnswer <- \n         multi_1: 3E80h = 16000d -> 1.000  V\r
+2026-09-04T14:11:14.584275 tid548 [dbg,dev:COM13] GetAnswer <- \n         multi_2: 505Bh = 20571d -> 1.286  V\r
+2026-09-04T14:11:14.584279 tid548 [dbg,dev:COM13] GetAnswer <- \n        2nd clip: 47AEh = 18350d -> 230.0 mA\r
+2026-09-04T14:11:14.584280 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584284 tid548 [dbg,dev:COM13] GetAnswer <- \n    TEC setpoint: 63B9h = 25529d -> 028.0  C\r
+2026-09-04T14:11:14.584287 tid548 [dbg,dev:COM13] GetAnswer <- \n    proportional: 70000\r
+2026-09-04T14:11:14.584289 tid548 [dbg,dev:COM13] GetAnswer <- \n        integral: 100\r
+2026-09-04T14:11:14.584292 tid548 [dbg,dev:COM13] GetAnswer <- \n      derivative: 2\r
+2026-09-04T14:11:14.584294 tid548 [dbg,dev:COM13] GetAnswer <- \n       tolerance: 1000\r
+2026-09-04T14:11:14.584295 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584298 tid548 [dbg,dev:COM13] GetAnswer <- \n          EEPROM: SATELLITE\r
+2026-09-04T14:11:14.584299 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584302 tid548 [dbg,dev:COM13] GetAnswer <- \n         version: 502A002Axx-3-Axx\r
+2026-09-04T14:11:14.584304 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.584306 tid548 [dbg,dev:COM13] GetAnswer <- \n        channels:     2\r
+2026-09-04T14:11:14.586148 tid548 [dbg,dev:COM13] GetAnswer <- \n            Pmax:    75 mW\r
+2026-09-04T14:11:14.586157 tid548 [dbg,dev:COM13] GetAnswer <- \n            Imax: 148.0 mA\r
+2026-09-04T14:11:14.586161 tid548 [dbg,dev:COM13] GetAnswer <- \n     warned Imax: 148.0 mA\r
+2026-09-04T14:11:14.586162 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.586165 tid548 [dbg,dev:COM13] GetAnswer <- \n     degradation: enabled\r
+2026-09-04T14:11:14.586168 tid548 [dbg,dev:COM13] GetAnswer <- \n     POT rescale: disabled\r
+2026-09-04T14:11:14.586176 tid548 [dbg,dev:COM13] GetAnswer <- \n        polarity: subtract\r
+2026-09-04T14:11:14.586179 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.586181 tid548 [dbg,dev:COM13] GetAnswer <- \n      SKill used: 0\r
+2026-09-04T14:11:14.586182 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.586187 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH1 level: 4992h = 18834d -> 060.0 mA\r
+2026-09-04T14:11:14.586199 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH2 level: 2D6Ch = 11628d -> 086.6 mA\r
+2026-09-04T14:11:14.586210 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH3 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:14.586215 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH4 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:14.586220 tid548 [dbg,dev:COM13] GetAnswer <- \n       CH5 level: 0000h = 00000d -> 000.0 mA\r
+2026-09-04T14:11:14.586221 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.586225 tid548 [dbg,dev:COM13] GetAnswer <- \n        1st clip: 3CDAh = 15578d -> 200.0 mA\r
+2026-09-04T14:11:14.586230 tid548 [dbg,dev:COM13] GetAnswer <- \n        POTmodu1: 0200h = 00512d -> 001.0 mA/V\r
+2026-09-04T14:11:14.600238 tid548 [dbg,dev:COM13] GetAnswer <- \n        POTmodu2: 4600h = 17920d -> 027.3 %\r
+2026-09-04T14:11:14.600253 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.600266 tid548 [dbg,dev:COM13] GetAnswer <- \n          fine a: 00E5h = 00229d -> 089.8 %\r
+2026-09-04T14:11:14.600278 tid548 [dbg,dev:COM13] GetAnswer <- \n          fine b: 0019h = 00025d -> 009.8 %\r
+2026-09-04T14:11:14.600293 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.600304 tid548 [dbg,dev:COM13] GetAnswer <- \n        CH1 setp: 000.00 mW\r
+2026-09-04T14:11:14.600315 tid548 [dbg,dev:COM13] GetAnswer <- \n        CH2 setp: 030.00 mW\r
+2026-09-04T14:11:14.600324 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.600334 tid548 [dbg,dev:COM13] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:14.600366 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Fine B (%)] value: [9.8000].
+2026-09-04T14:11:14.600445 tid548 [dbg,dev:COM13] SetCommand -> sta fine\r
+2026-09-04T14:11:14.601146 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.1162\n
+2026-09-04T14:11:14.601170 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1162].
+2026-09-04T14:11:14.645141 tid548 [dbg,dev:COM13] GetAnswer <- \n\r
+2026-09-04T14:11:14.645151 tid548 [dbg,dev:COM13] GetAnswer <- \nOFF\r
+2026-09-04T14:11:14.645154 tid548 [dbg,dev:COM13] GetAnswer <- \n[OK]\r
+2026-09-04T14:11:14.645169 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [iBeamSmartCW-Enable Fine] value: [Off].
+2026-09-04T14:11:14.645226 tid548 [dbg,dev:COM4] Write -> (hex) 00 31 00 00 00
+2026-09-04T14:11:14.674195 tid548 [dbg,dev:COM4] Read <- (hex) 69 13 00 00
+2026-09-04T14:11:14.674224 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Analog Input-AnalogInput3] value: [4969].
+2026-09-04T14:11:14.674266 tid548 [dbg,dev:COM4] Write -> (hex) 00 08 00 00 00
+2026-09-04T14:11:14.701194 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.704168 tid548 [dbg,dev:COM4] Read <- (hex) 64 00 00 00
+2026-09-04T14:11:14.704238 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration0 (us)] value: [100].
+2026-09-04T14:11:14.704297 tid548 [dbg,dev:COM4] Write -> (hex) 00 09 00 00 00
+2026-09-04T14:11:14.735159 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:14.735281 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:14.749164 tid548 [dbg,dev:COM4] Read <- (hex) a8 61 00 00
+2026-09-04T14:11:14.749185 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration1 (us)] value: [25000].
+2026-09-04T14:11:14.749268 tid548 [dbg,dev:COM4] Write -> (hex) 00 11 00 00 00
+2026-09-04T14:11:14.794162 tid548 [dbg,dev:COM4] Read <- (hex) ff ff 00 00
+2026-09-04T14:11:14.794272 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Sequence1] value: [65535].
+2026-09-04T14:11:14.794321 tid548 [dbg,dev:COM4] Write -> (hex) 00 12 00 00 00
+2026-09-04T14:11:14.824175 tid548 [dbg,dev:COM4] Read <- (hex) ff ff 00 00
+2026-09-04T14:11:14.824237 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Sequence2] value: [65535].
+2026-09-04T14:11:14.824328 tid548 [dbg,dev:COM4] Write -> (hex) 00 08 00 00 00
+2026-09-04T14:11:14.836159 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.854158 tid548 [dbg,dev:COM4] Read <- (hex) 64 00 00 00
+2026-09-04T14:11:14.854177 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration0 (us)] value: [100].
+2026-09-04T14:11:14.854286 tid548 [dbg,dev:COM4] Write -> (hex) 00 09 00 00 00
+2026-09-04T14:11:14.870145 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.12024\n
+2026-09-04T14:11:14.870179 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1202].
+2026-09-04T14:11:14.884694 tid548 [dbg,dev:COM4] Read <- (hex) a8 61 00 00
+2026-09-04T14:11:14.884716 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration1 (us)] value: [25000].
+2026-09-04T14:11:14.884872 tid548 [dbg,dev:COM4] Write -> (hex) 00 08 00 00 00
+2026-09-04T14:11:14.914672 tid548 [dbg,dev:COM4] Read <- (hex) 64 00 00 00
+2026-09-04T14:11:14.914691 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration0 (us)] value: [100].
+2026-09-04T14:11:14.914751 tid548 [dbg,dev:COM4] Write -> (hex) 00 10 00 00 00
+2026-09-04T14:11:14.944694 tid548 [dbg,dev:COM4] Read <- (hex) ff ff 00 00
+2026-09-04T14:11:14.944767 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Sequence0] value: [65535].
+2026-09-04T14:11:14.944818 tid548 [dbg,dev:COM4] Write -> (hex) 00 00 00 00 00
+2026-09-04T14:11:14.970689 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:14.974669 tid548 [dbg,dev:COM4] Read <- (hex) 02 00 00 00
+2026-09-04T14:11:14.974778 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Mode0] value: [2 - Rising].
+2026-09-04T14:11:14.974846 tid548 [dbg,dev:COM4] Write -> (hex) 00 09 00 00 00
+2026-09-04T14:11:14.990655 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.1162\n
+2026-09-04T14:11:14.990703 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1162].
+2026-09-04T14:11:15.019711 tid548 [dbg,dev:COM4] Read <- (hex) a8 61 00 00
+2026-09-04T14:11:15.019758 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration1 (us)] value: [25000].
+2026-09-04T14:11:15.019815 tid548 [dbg,dev:COM4] Write -> (hex) 00 01 00 00 00
+2026-09-04T14:11:15.049711 tid548 [dbg,dev:COM4] Read <- (hex) 00 00 00 00
+2026-09-04T14:11:15.049731 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Mode1] value: [0 - Off].
+2026-09-04T14:11:15.049770 tid548 [dbg,dev:COM4] Write -> (hex) 00 11 00 00 00
+2026-09-04T14:11:15.079670 tid548 [dbg,dev:COM4] Read <- (hex) ff ff 00 00
+2026-09-04T14:11:15.079710 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Sequence1] value: [65535].
+2026-09-04T14:11:15.079751 tid548 [dbg,dev:COM4] Write -> (hex) 00 12 00 00 00
+2026-09-04T14:11:15.091702 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:15.109740 tid548 [dbg,dev:COM4] Read <- (hex) ff ff 00 00
+2026-09-04T14:11:15.109755 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Sequence2] value: [65535].
+2026-09-04T14:11:15.109789 tid548 [dbg,dev:COM4] Write -> (hex) 00 0a 00 00 00
+2026-09-04T14:11:15.125659 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.12227\n
+2026-09-04T14:11:15.125738 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1223].
+2026-09-04T14:11:15.139672 tid548 [dbg,dev:COM4] Read <- (hex) 1d 2b 00 00
+2026-09-04T14:11:15.139724 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration2 (us)] value: [11037].
+2026-09-04T14:11:15.139773 tid548 [dbg,dev:COM4] Write -> (hex) 00 02 00 00 00
+2026-09-04T14:11:15.169734 tid548 [dbg,dev:COM4] Read <- (hex) 00 00 00 00
+2026-09-04T14:11:15.169751 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Mode2] value: [0 - Off].
+2026-09-04T14:11:15.169789 tid548 [dbg,dev:COM4] Write -> (hex) 00 03 00 00 00
+2026-09-04T14:11:15.199723 tid548 [dbg,dev:COM4] Read <- (hex) 04 00 00 00
+2026-09-04T14:11:15.199739 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Mode3] value: [4 - Follow].
+2026-09-04T14:11:15.199775 tid548 [dbg,dev:COM4] Write -> (hex) 00 0b 00 00 00
+2026-09-04T14:11:15.225693 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:15.244824 tid548 [dbg,dev:COM4] Read <- (hex) f4 01 00 00
+2026-09-04T14:11:15.244861 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Duration3 (us)] value: [500].
+2026-09-04T14:11:15.244913 tid548 [dbg,dev:COM4] Write -> (hex) 00 13 00 00 00
+2026-09-04T14:11:15.245995 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:15.246027 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:15.289547 tid548 [dbg,dev:COM4] Read <- (hex) ff ff 00 00
+2026-09-04T14:11:15.289596 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Laser Trigger-Sequence3] value: [65535].
+2026-09-04T14:11:15.289657 tid548 [dbg,dev:COM3] SetCommand -> 0gp\r
+2026-09-04T14:11:15.335529 tid548 [dbg,dev:COM3] GetAnswer <- \n0PO0000C808\r
+2026-09-04T14:11:15.335556 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs ELL20-Position (um)] value: [50008].
+2026-09-04T14:11:15.335669 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs ELL17/ELL20-Go Home] value: [0].
+2026-09-04T14:11:15.335699 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs ELL20-Go Home] value: [0].
+2026-09-04T14:11:15.335717 tid548 [dbg,dev:COM11] SetCommand -> 8gp\r
+2026-09-04T14:11:15.346540 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:15.381539 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:15.381566 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:15.481554 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:15.501540 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:15.501573 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:15.562052 tid548 [dbg,dev:COM11] GetAnswer <- \n8PO000048A2\r
+2026-09-04T14:11:15.562092 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs ELL17/ELL20-Position (um)] value: [18158].
+2026-09-04T14:11:15.562158 tid548 [dbg,dev:COM11] SetCommand -> 8gp\r
+2026-09-04T14:11:15.602060 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:15.636046 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:15.636075 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:15.736082 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:15.757062 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:15.757091 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:15.787081 tid548 [dbg,dev:COM11] GetAnswer <- \n8PO000048A4\r
+2026-09-04T14:11:15.787136 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs ELL17/ELL20-Position (um)] value: [18160].
+2026-09-04T14:11:15.787188 tid548 [dbg,dev:COM5] SetCommand -> 2gp\r
+2026-09-04T14:11:15.858069 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:15.876054 tid548 [dbg,dev:COM5] GetAnswer <- \n2PO0000001F\r
+2026-09-04T14:11:15.876084 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs ELL6-State] value: [1].
+2026-09-04T14:11:15.876140 tid548 [dbg,dev:COM3] SetCommand -> 0gp\r
+2026-09-04T14:11:15.892044 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.1162\n
+2026-09-04T14:11:15.892073 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1162].
+2026-09-04T14:11:15.922046 tid548 [dbg,dev:COM3] GetAnswer <- \n0PO0000C808\r
+2026-09-04T14:11:15.922077 tid548 [dbg,App] [EMU] -- Retrieved MMProperty [Thorlabs ELL20-Position (um)] value: [50008].
+2026-09-04T14:11:15.923724 tid548 [dbg,dev:COM4] Write -> (hex) 00 08 00 00 00
+2026-09-04T14:11:15.965104 tid548 [dbg,dev:COM4] Read <- (hex) 64 00 00 00
+2026-09-04T14:11:15.973430 tid548 [dbg,dev:COM4] Write -> (hex) 00 08 00 00 00
+2026-09-04T14:11:15.992062 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:16.010108 tid548 [dbg,dev:COM4] Read <- (hex) 64 00 00 00
+2026-09-04T14:11:16.012050 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:16.012076 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:16.012405 tid29624 [dbg,Core] Will snap image from current camera
+2026-09-04T14:11:16.113073 tid15000 [dbg,dev:COM17] SetCommand -> TSP? 1\n
+2026-09-04T14:11:16.147053 tid15000 [dbg,dev:COM17] GetAnswer <- 1=50.11822\n
+2026-09-04T14:11:16.147085 tid15000 [dbg,App] [EMU] -- Retrieved MMProperty [PIZStage-Position] value: [50.1182].
+2026-09-04T14:11:16.161743 tid29624 [dbg,Core] Did snap image from current camera
