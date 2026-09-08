@@ -362,6 +362,17 @@ because a block looks small.
    patching, enumerate every path it names, and check that the ones which must
    exist do. Never trust the `sed`.
 
+   **And check the launcher can be stopped.** In POSIX `sh` a `trap ... TERM`
+   handler *returns and execution continues*, so `trap 'rmdir "$lock"' TERM`
+   makes a waiter survive `kill`, drop its lock, and launch anyway. design/78's
+   07:00 chain did exactly that on 2026-09-08: it outlived its kill, held no
+   lock to stop it, and started a redundant runner turn 80 minutes later that
+   burned most of a credit window. The handler must `exit`. The wider lesson is
+   about the selftest, not the trap — that launcher had been exercised against a
+   stub for retry, locking, ordering and failure isolation, and **not once for
+   whether it could be stopped**. A launcher you cannot stop is a launcher that
+   will run at the worst possible moment.
+
    **A long wait before launching work must outlive the session.** A
    `run_in_background` Bash task, `Monitor` and `CronCreate` are all
    session-scoped and die with it — measured: a tracked waiter was killed at 52
@@ -637,7 +648,13 @@ input, ask which fixtures produce that shape, and write one that does.
   **evaluate the predicate and refuse at plan time** — never compare against a
   constant and never write a millisecond threshold into a message, a parameter
   description or a skill. `design/78-sequencing-deadline-scan.py` reproduces
-  both scans; block 78b owns the running-engine confirmation.
+  both scans.
+
+  **Observed on a running engine** (block 78b's demo gate, 2026-09-08): over
+  4008 frames at `interval_s = 0.001`, AcqEngJ produced exactly one burst, at
+  exactly frames 4006/4007, and the predicted collision set equalled the
+  observed set over the whole run. Every shorter run at that interval was clean.
+  The prediction is confirmed behaviour, not just arithmetic.
 - **You cannot add a key to an event.** `event_to_json` / `event_from_json`
   serialise a **closed** key set (`axes`, `stage_positions`, `x`/`y`/`z`,
   `exposure`, `config_group`, `min_start_time`, `timeout_ms`, `camera`, `tags`,
