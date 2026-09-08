@@ -1265,7 +1265,59 @@ def test_acquisition_sink_discloses_gui_lag_without_confirmation(monkeypatch):
         def __exit__(self, *args): pass
     monkeypatch.setattr(tools, "Acquisition", Acquisition)
     monkeypatch.setattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", received.append, raising=False)
-    _call_acquire(_ctrl(), _guard(), "/data", "run", [], hook=object())
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    ctrl = _ctrl()
+    hook = UntrustedHookAdapter(object())
+    hook.configure_property(
+        ctrl=ctrl, guard=_guard(), device="Detector", property="Gain",
+        allowed_values=("A", "B"), min_value=None, max_value=None,
+        max_writes=1, initial_value="A", restore="leave", action_plan=None,
+    )
+    _call_acquire(ctrl, _guard(), "/data", "run", [], hook=hook)
     messages = [event.get("message", "") for event in received]
     assert sum("GUI controls can lag" in message and "restoration" in message
                for message in messages) == 1
+    ctrl.refresh_gui.assert_called_once_with()
+
+
+
+@pytest.mark.parametrize("hook_kind", ["none", "observer", "saved_observer"])
+@pytest.mark.parametrize("acquisition_failure", [False, True])
+def test_no_hardware_hook_means_no_refresh_or_gui_lag_disclosure(
+    monkeypatch, hook_kind, acquisition_failure,
+):
+    from microclaw.hook_decisions import UntrustedHookAdapter
+    received = []
+    frames = []
+    class Observer:
+        def image_process_fn(self, image, metadata, event_queue):
+            frames.append(metadata)
+            return image, metadata
+    hook = {
+        "none": None,
+        "observer": Observer(),
+        "saved_observer": UntrustedHookAdapter(Observer()),
+    }[hook_kind]
+    class Acquisition:
+        _exception = None
+        _dataset_disk_location = "/data/run"
+        def __init__(self, **kwargs): self.hooks = kwargs
+        def acquire(self, events):
+            callback = self.hooks.get("image_process_fn")
+            if callback:
+                callback(None, {"Axes": {"time": 0}}, object())
+        def __exit__(self, *args):
+            if acquisition_failure:
+                raise RuntimeError("acquisition failed")
+    monkeypatch.setattr(tools, "Acquisition", Acquisition)
+    monkeypatch.setattr(tools._ACQUISITION_EVENT_CONTEXT, "sink", received.append, raising=False)
+    ctrl = _ctrl()
+    if acquisition_failure:
+        with pytest.raises(RuntimeError, match="acquisition failed"):
+            _call_acquire(ctrl, _guard(), "/data", "run", [{}], hook=hook)
+    else:
+        _call_acquire(ctrl, _guard(), "/data", "run", [{}], hook=hook)
+    if hook is not None:
+        assert len(frames) == 1
+    ctrl.refresh_gui.assert_not_called()
+    assert not any("GUI controls can lag" in item.get("message", "") for item in received)

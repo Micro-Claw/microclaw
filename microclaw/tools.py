@@ -4641,7 +4641,11 @@ def _acquire_with_hooks(
                 continue
             restoration_attempted[label] = True
             try:
-                setattr(hook, result_name, method())
+                result = method()
+                setattr(hook, result_name, result)
+                # Adapters expose both methods even without either envelope.
+                # None means this capability had no restoration to attempt.
+                restoration_attempted[label] = result is not None
             except Exception as restore_exc:
                 failures.append(f"{label} restoration failed: {restore_exc}")
         return failures
@@ -4665,10 +4669,11 @@ def _acquire_with_hooks(
             reservation.close()
         # One synchronous repaint, last: listeners may perform slow device
         # reads. Neither their failure nor a controller fake may change cleanup.
-        try:
-            ctrl.refresh_gui()
-        except Exception:
-            pass
+        if any(restoration_attempted.values()):
+            try:
+                ctrl.refresh_gui()
+            except Exception:
+                pass
         return failures
 
     try:
@@ -4704,7 +4709,8 @@ def _acquire_with_hooks(
             "dataset_path": dataset_path,
             "frames_planned": plan.frames if plan is not None else None,
         }, lifecycle=True, publish=False)
-        if hook is not None:
+        if any(getattr(hook, context, None) is not None
+               for context in ("_named_stage_context", "_property_context")):
             _emit_acquisition_diagnostic({
                 "type": "acquisition_diagnostic",
                 "message": "GUI controls can lag during a run; they synchronise "

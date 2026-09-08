@@ -100,8 +100,8 @@ def test_3_property_is_registered_then_applied_and_read_back_before_publication(
     event = candidates.get_nowait()
     assert timeline == [], "image callback only registers; it makes no bridge call"
     adapter.pre_hardware_hook_fn(event)
-    assert timeline[:3] == [("set", "B"), ("wait", "Wheel"), ("gui",)]
-    assert timeline[3:] == [("read", "B"), ("read", "B")]
+    assert ("gui",) not in timeline, "no GUI refresh between the write and its frame"
+    assert timeline == [("set", "B"), ("wait", "Wheel"), ("read", "B")]
 
 
 def test_4_stop_closes_without_publishing_or_waiting():
