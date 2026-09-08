@@ -168,8 +168,18 @@ that a test can own it outright.
         # truncation toward zero. Python's int() truncates the same way.
         return int(index * interval_s * 1000.0)
 
-Confirmed in the jar; **not yet confirmed against a running engine**, which is
-78b's demo-machine limb.
+Confirmed in the jar, and **confirmed against a running engine on the demo
+machine, 2026-09-08**: over 4008 frames at `interval_s = 0.001` AcqEngJ produced
+**exactly one** hardware-sequenced burst, at **exactly frames 4006/4007**. Scored
+from `callback-shapes.json` rather than the gate's verdict, the full predicted
+collision set `[4006]` equals the observed set — an exhaustive match over the
+whole run, not just the first burst. `0.0001 s` batched all 8 frames into one
+callback (M5's incident shape, reproduced with no hardware), `interval_s = 0`
+batched (design/77b from the Java side), and 50 ms and short 1 ms runs did not.
+
+So the double-rounding prediction is not a curiosity of the arithmetic: a real
+engine batches there, and a "use at least 1 ms" rule would have been wrong on
+exactly the long runs where it matters.
 
 Two defects follow. The refusal's advice was already satisfied by its caller —
 *an instruction a legitimate caller cannot act on is not guidance* — and it
@@ -319,7 +329,7 @@ To `design/70-carried-forward-register.md` unless a block above claims them:
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
 | 78a | `design78/no-per-frame-refresh` | `bfccc15` | Codex runner, queued 2026-09-07 for 01:57 | M5 (owed) | — |
-| 78b | `design78/sequencing-predicate` | `bfccc15` | Codex runner, queued 2026-09-07 for 01:57 | demo machine (owed) | — |
+| 78b | `design78/sequencing-predicate` | `bfccc15` | Codex runner | demo machine, **8/8 PASS 2026-09-08** (7/7 as run, plus one limb re-scored off-rig after a gate defect) | `f0799da` |
 | 78c | — | — | — | — | — |
 
 78a and 78b were assigned together, in separate worktrees, because their gates

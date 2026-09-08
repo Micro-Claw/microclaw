@@ -9758,3 +9758,59 @@ because everything left was the coordinator's own. Its one open judgement call �
 a separate array reader rather than teaching `_drain_java_iterable` arrays — was
 right, and worth stating: the drain is inlined into every exported script, so a
 change there travels to code that has nothing to do with this hook.
+
+## design/78 block 78b — the sequencing predicate (merged 2026-09-08, `f0799da`)
+
+**The coordinator settled the block's open question before assigning it, and
+that changed the block.** design/78 left AcqEngJ's mechanism a hypothesis and
+told 78b to "name the real threshold" once it had checked. Checking it took
+`javap -c` on the jar this laptop already had — `AcquisitionEvent.fromJSON`
+truncates with `d2l`, `getMinimumStartTimeAbsolute` only adds the run's start so
+it cancels, `Engine.isSequencable` compares those Longs. Twenty minutes off-rig.
+And it inverted the instruction: extending the deadline scan from 2,000 to
+200,000 frames shows `interval_s = 0.001` colliding at frames 4006/4007, so
+**there is no threshold to name** and a block told to name one would have shipped
+a confident, wrong rule. Do the cheap investigation before writing the prompt.
+
+**Both runners' first turns stopped on a question, and both questions were
+defects in my prompts.** 78a asked something design/78 already answered and I
+had not quoted; 78b found an outright contradiction — `CLAUDE.md`'s own first
+engine contract mandated the "use a nonzero `interval_s`" advice the block
+existed to remove, while the prompt said `CLAUDE.md` overrides the prompt. It
+was right to refuse to pick a side. Before handing over a prompt that changes
+guidance, grep the guidance for what it currently says.
+
+**Two concurrent runners split a 19-minute credit window and both were killed
+mid-flight; sequential would have finished one.** Preserved both trees as
+unreviewed commits, verified independently, resumed. Running blocks in parallel
+optimizes for wall-clock only when the budget is not the constraint.
+
+**A refusal's stated reset time is not evidence.** Codex's `turn.failed` said
+"try again at 7:00 AM"; it worked at 06:25. A later refusal said 11:26 and that
+one held. Retry and find out — it costs one call.
+
+**My scheduling script survived its own `kill`.** A POSIX `sh` `trap ... TERM`
+handler returns and execution continues, so the killed chain dropped its lock
+and launched a redundant turn 80 minutes later, burning most of the next window.
+The selftest had covered retry, locking, ordering and failure isolation and
+never once tried to stop it. Written into `CLAUDE.md`'s coordinator-tooling
+paragraph.
+
+**The gate passed 7/7 and one limb was vacuous.** "A well-spaced hardware-control
+run is NOT refused" reported `reached the acquisition (0 constructed)` — its own
+detail contradicted itself. The run had died a step earlier on
+`hook_action_plan requires named_stage_envelope or property_envelope`, because
+the gate supplied a plan without the envelope a plan requires; the limb only
+asked whether the *sequencing* refusal had fired, and it had not, for the wrong
+reason. Behind that false pass were four more fixture defects, including an
+envelope that needed a **bridge-shaped `StrVector`** rather than a `MagicMock` —
+`CLAUDE.md`'s own warning, missed inside the gate that quotes it. Fixed by
+requiring what the limb claims: the acquisition must actually be constructed.
+Re-scored off-rig rather than re-booking the machine, because those limbs drive
+a mock and construct nothing.
+
+**What the gate got right was the discriminator.** Its selftest ran it against
+two fake engines — one batching by the truncation rule, one by a 1 ms threshold
+— and it failed *only* the 4006/4007 limb against the threshold engine. That is
+what made the long run worth the operator's time, and what made skipping it
+report NOT EXERCISED rather than a comfortable pass.
