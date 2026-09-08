@@ -9,7 +9,7 @@ import pytest
 from microclaw import tools
 from microclaw.hooks import FocusFeedbackHook, IntensityAdaptiveHook, AutofocusHook, MMAutofocusPluginHook
 from microclaw.hook_decisions import CompositeHook, UntrustedHookAdapter
-from microclaw.safety import SafetyConstraints, SafetyGuard, StageConstraints
+from microclaw.safety import SafetyConstraints, SafetyGuard, StageConstraints, PluginConstraints
 
 
 @pytest.mark.parametrize('interval', [0, 1e-9, 1e-6, .0001, .0005, .0009, .0009999999])
@@ -21,7 +21,7 @@ def test_long_run_double_rounding_collision_4006_4007():
     deadlines = [tools._sequenced_ms(k, .001) for k in range(200001)]
     pairs = [k for k in range(len(deadlines)-1) if deadlines[k] == deadlines[k+1]]
     assert not any(k < 1999 for k in pairs)
-    assert pairs[0] == 4006
+    assert pairs[:1] == [4006]
     assert deadlines[4006:4008] == [4006, 4006]
 
 
@@ -37,7 +37,12 @@ ROUTES = ['plan_only', 'plan_hook', 'illumination', 'focus', 'intensity', 'autof
 @pytest.fixture
 def acquisition_environment(monkeypatch, tmp_path):
     ctrl = MagicMock()
-    guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_min=-1, x_max=1, y_min=-1, y_max=1)))
+    # Real plugin-hook construction takes the documented no-port snapshot path.
+    del ctrl._port
+    guard = SafetyGuard(SafetyConstraints(
+        stage=StageConstraints(x_min=-1, x_max=1, y_min=-1, y_max=1),
+        plugins=PluginConstraints(allow_hardware_motion=True),
+    ))
     monkeypatch.setattr(guard, 'resolve_in_workspace', lambda path: path)
     acquisition = MagicMock(side_effect=RuntimeError('counted Acquisition construction'))
     monkeypatch.setattr(tools, 'Acquisition', acquisition)
@@ -54,9 +59,16 @@ def acquisition_environment(monkeypatch, tmp_path):
 
 def run_route(route, n, interval, env, monkeypatch, tmp_path):
     ctrl, guard, _ = env
-    classes = {'focus': FocusFeedbackHook, 'intensity': IntensityAdaptiveHook,
-               'autofocus': AutofocusHook, 'plugin_autofocus': MMAutofocusPluginHook}
-    hook = object.__new__(classes.get(route, FocusFeedbackHook)) if route in classes or route.startswith('multipos') else UntrustedHookAdapter(object())
+    if route == 'autofocus':
+        hook = AutofocusHook(ctrl, guard, z_range_um=2, z_step_um=1)
+    elif route == 'plugin_autofocus':
+        hook = MMAutofocusPluginHook(ctrl, guard)
+    elif route == 'intensity':
+        hook = IntensityAdaptiveHook(ctrl, guard, target_mean=100)
+    elif route == 'focus' or route.startswith('multipos'):
+        hook = FocusFeedbackHook(ctrl, guard)
+    else:
+        hook = UntrustedHookAdapter(object())
     if route == 'multipos_composed':
         hook = CompositeHook([('focus', hook)], None)
     monkeypatch.setattr(tools, '_resolve_hook', lambda *a, **k: hook)

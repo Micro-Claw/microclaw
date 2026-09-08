@@ -193,7 +193,8 @@ def test_smlm_skill_distinguishes_fixed_and_adaptive_timelapse_routes():
     assert "no automatic final restoration" in density_flat
     assert "device stays at the last accepted value" in density_flat
     assert "not shutter control" in density_flat
-    assert "writes land asynchronously" in density_flat
+    assert "refused at plan time" in density_flat
+    assert "Observation-only zero-interval bursts remain allowed" in density_flat
     assert "Image-driven `SetDeviceProperty` and `MoveNamedStage` are refused" in density_flat
 
 
