@@ -200,6 +200,14 @@ replacement for it.
   **Per-write GUI/EMU refresh is not required during acquisition** (operator
   decision, 2026-09-06). Prefer speed, keep users aware through inexpensive
   progress and write logs, and coalesce the GUI refresh after restoration.
+  **A run reports one `duration_breakdown`** (design/79 block 79a, merged
+  2026-09-08): every measured phase as a duration in one dict, `accounted_s`,
+  and the residual named — because *surfaced* means "in the shape the reader
+  already uses", not "present". A teardown span reported as two absolute
+  timestamps under its own key was ignored in two of three replay samples and
+  read in three of three once it joined the others. It carries **no**
+  pre-computed dominant phase, deliberately: naming the winner would turn the
+  agent's job from comparing measurements into reading a label.
 
 - **A confirmation is for something Microclaw is about to do on the user's
   behalf, where "no" changes what happens.** Every legitimate one in this
