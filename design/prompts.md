@@ -9866,3 +9866,64 @@ risk, which no amount of local testing could have given: the fan-out is **not**
 driven by MMCore's own property-changed callback, so removing our call deleted
 the work rather than relocating it — one repaint after the last exposure instead
 of ten inside the acquisition.
+
+## design/79 block 79a — make the time visible (merged `fc8e2b7`, 2026-09-08)
+
+**A killed turn's work was recoverable, and worth recovering.** The revision turn
+died on a Codex usage limit *after* its edits landed and before it could commit.
+`CLAUDE.md` says commit it and say plainly that it is unreviewed; the better
+version is to verify it first and say what you verified. Three probes and a suite
+run turned an unreviewed diff into a reviewed one, and the commit message records
+which claims were checked and which were still open.
+
+**Cost the runner, not just the reviewer.** One revision turn measured **6.2M
+input tokens** and the implementation turn 5.0M, because the prompt said
+`.venv/bin/python -m pytest -q` with no scope and the runner ran the whole suite
+**10 and 22 times** inside a single turn. Four minutes and ~3,000 lines each,
+all of it retained in the turn's context and re-sent on every later tool call.
+One turn burned about half a five-hour window. Every one of those runs was waste,
+because step 3 already requires the coordinator to re-run the suite and to
+disbelieve the reported count. The rule is now in step 2.
+
+**A gate's instrument failed three times; the product failed once.** Two pilots
+died on the gate before either could measure anything. The first: the fixture
+answered a **different call** than the model had made — hard-coded interval,
+save_dir, restore policy and sweep values against a recording that specified
+others — and the model correctly refused a payload contradicting its own request,
+naming the tells, including that the monotonic clock started at exactly 100.0.
+The second and third: scorer vocabulary. Same tally shape as design/69a (2
+product, 6 gate) and design/75 (both rounds on the gate).
+
+**A mechanical scorer must be built from observed output.** Three successive
+vocabularies each failed answers that were correct — `dominates` vs "dominated",
+`wait span` vs "`wait` phase", `not attributed` vs "I have not isolated exactly
+which", and finally the literal word **"teardown"**, which not one response used
+because it is our jargon and not what anyone says to a microscopist. Two of my
+own patterns were simply wrong: `\bn't\b` cannot match "won't", and the stem
+`dominat` cannot match **dominant**. The scorer now keys on the arm's measured
+number, which never moved. A fourth patch would have meant the approach was
+wrong.
+
+**The launcher's selftest found the launcher's worst defect, and then its own.**
+`CLAUDE.md` asks whether a waiter can be stopped; the first live start survived
+`SIGTERM` and kept its lock. The trap did `exit` — the bug was one level down, in
+POSIX `sh`, where a **foreground** `sleep` defers the trap until it finishes, so a
+kill during a 60 s poll took a full minute. And the selftest had missed it by
+driving the kill limb at `POLL=1`, where the latency is invisible: a limb testing
+a configuration production never uses. Backgrounding the sleep and `wait`ing on
+it fixed the launcher; a limb at the production poll now requires the stop in
+seconds, and mutating the trap to return reproduces design/78's 07:00 chain
+exactly — survives, holds the lock, launches anyway.
+
+**Declining to enlarge a sample is a result too.** The gate document specified
+16/arm; the arms ran at 3. Enlarging was declined once it was clear what it
+bought — roughly [0.44, 1.0] to [0.81, 1.0] on a *corroborating* measurement,
+with the block's correctness carried by direct measurement and 3081 tests. The
+ledger says 3/arm and underpowered rather than showing a green tick. The
+question it leaves is `R107`, and 79b gets it as a passenger.
+
+**A product change can quietly destroy its own gate.** Making the teardown span
+discoverable invited a `dominant_phase` field. It would have turned the arm from
+"does the model compare spans and attribute the cost" into "can the model read a
+label". The decision to report numbers and nothing else went into the design doc
+*before* the block was handed over, and a test now asserts no such field appears.

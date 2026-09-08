@@ -97,6 +97,7 @@ Rows added since the triage:
 | `R102`–`R103` | `design/78` block 78a's M2 gate, 2026-09-08 |
 | `R104`–`R105` | `design/78`'s own carried-forward list, routed at close-out 2026-09-08 |
 | `R106` | `design/79` block 79a, found while pricing its replay gate 2026-09-08 |
+| `R107` | `design/79` block 79a's replay, 2026-09-08; owned by 79b |
 
 
 ## The work queue
@@ -123,6 +124,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R104` | [_set_channel_for_composite refreshes at every phase boundary, unmeasured](#r104) | MEDIUM | SMALL |  |
 | `R105` | [The residual per-frame dispatch cost is still unmeasured on M2](#r105) | MEDIUM | SMALL |  |
 | `R106` | [DEFAULT_MODEL is claude-opus-4-8, and every measurement of the runtime inherits it](#r106) | MEDIUM | SMALL |  |
+| `R107` | [The agent attributes from spans correctly and then speculates about hardware anyway](#r107) | MEDIUM | SMALL | **79b** |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2534,3 +2536,16 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE.
 - **Effort** — SMALL
 - **Provenance** — `design/79` block 79a, 2026-09-08, found while measuring the replay gate's token cost.
+
+### R107 — The agent attributes from spans correctly and then speculates about hardware anyway
+
+**Block 79a's replay caught one response naming the dominating phase with its numbers and then asserting, unhedged, what that phase *is* — with nothing measuring it.**
+
+- **What it said** — "Each frame spent ~3.0 s in a wait phase (18.0 s of the 18.75 s total) and only ~40 µs on the property write. That ~3 s/frame is not the interval you set — it's per-frame overhead sitting inside the run **(camera round-trip / frame-callback wait)**, and it dominates." The first two sentences are exactly right and come from the spans. The parenthetical is the recorded M5 failure in miniature: no span distinguishes a camera round trip from anything else.
+- **Why it is not a 79a defect** — 79a's job was to make the time visible, and it did: the model found the phase and quoted its number. Whether the agent then *stops* at what it measured is a reporting-behaviour question, which is design/79's runtime policy and therefore 79b's.
+- **What is NOT known** — the rate. It was 1 of 3 samples in an arm sized at 3, which cannot distinguish a blip from a habit. Do not quote 1/3 as a frequency.
+- **How to settle it** — 79b re-runs `design/79-block79a-replay.py` against its own guidance change; these three arms ride along at near-zero marginal cost, and the scorer already flags the phrase (`_FORBIDDEN`, retraction- and hedge-guarded, with `test_naming_the_phase_then_blaming_hardware_still_fails` pinning this exact case).
+- **Where** — LOCAL, API credit only. No hardware, no dose.
+- **Block** — **79b**.
+- **Effort** — SMALL
+- **Provenance** — `design/79` block 79a's third pilot, 2026-09-08.
