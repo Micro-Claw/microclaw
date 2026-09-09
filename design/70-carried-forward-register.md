@@ -184,7 +184,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R12` | [An agent asked the operator for positions it could have read itself](#r12) | MEDIUM | SMALL |  |
 | `R13` | [Batched analyzer cannot batch a one-dataset-per-position survey](#r13) | MEDIUM | MEDIUM |  |
 | `R14` | [An exported adaptive survey prints nothing](#r14) | MEDIUM | SMALL |  |
-| `R69` \* | [Shipped context thresholds are unexercised](#r69) | MEDIUM | MEDIUM |  |
+| `R69` \* | [Shipped context thresholds are unexercised](#r69) | MEDIUM | MEDIUM | **82c** |
 | `R72` \* | [The model has never been observed saying what live view costs before starting one](#r72) | MEDIUM | SMALL |  |
 | `R03` | [design/65 carried row 1 - a hook choosing genuinely different targets per frame has never run on a rig](#r03) | LOW | SMALL |  |
 | `R47` | [saturated_fraction reporting precision is ungated](#r47) | LOW | SMALL |  |
@@ -1696,12 +1696,12 @@ testable without a Nikon.
 
 **The shipped context high/low water marks were never exercised at their real values; the gate ran at 1500/800.**
 
-- **Status** — OPEN - `microclaw/conversation.py:23`-`:24` ship 120_000/90_000, and the compaction behaviour at those values is asserted by test rather than measured in a real session.
-- **Importance** — MEDIUM - compaction at the shipped threshold is what a long rig session actually hits, and cache behaviour there is unmeasured.
-- **Where** — DEMO - a long driven demo session reaches the real threshold with no dose and no instrument.
-- **Block** — NONE
+- **Status** — OPEN, and **`design/82` now owns the subject.** The thresholds have been exercised: five real sessions on 2026-09-08/09 hit them 19 times, and `design/82-session-cost-reconstruction.py` replays those histories through the shipped `model_messages`. What that found is that compaction at 120_000/90_000 works and is **expensive in a way nobody had costed** — each compaction invalidates the whole cache prefix, 24 invalidations cost $17.02 of a $102.35 bill — and that the threshold is metered by an estimator which undercounts real message content by ~1.4x (`design/82` F4), so 120_000 was admitting ~166k and the peak call carried 208k.
+- **Importance** — MEDIUM - unchanged. The remaining question is not whether compaction fires but what the window *should* be, and that is a measurement against real usage records rather than a replay.
+- **Where** — DEMO for the threshold sweep; the estimator half is LOCAL and is `design/82` D4.
+- **Block** — **`design/82` block 82c** for the window; 82a records the usage the sweep needs.
 - **Effort** — MEDIUM
-- **Provenance** — *coordinator-triaged, not runner-evaluated.* The Codex usage limit was reached before this row got a runner; the judgement above is the coordinator's own code read.
+- **Provenance** — *coordinator-triaged, not runner-evaluated.* The Codex usage limit was reached before this row got a runner; the judgement above is the coordinator's own code read. Extended 2026-09-09 from `design/82`'s reconstruction — still not runner-evaluated, and the cache figures are reconstructed rather than instrumented.
 
 <details><summary>The original row, verbatim (`design/35` lines 10414–10415)</summary>
 
