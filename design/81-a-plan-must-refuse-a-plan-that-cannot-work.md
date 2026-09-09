@@ -767,13 +767,18 @@ Numbered from `R107`, the current highest in `design/70`.
 
 ## Run ledger
 
-Baseline before the block: `main` `95cfdfd` (the notebook's own commit;
-`e03f790` was the tree the findings were read against). Coordinator-run suite
-baseline measured at block start and recorded in the 81a-1 row.
+Baseline before the block: `main` `f915e5d`; `95cfdfd` is the notebook's own
+commit and `e03f790` was the tree the findings were read against.
+Coordinator-run suite on the 81a-1 worktree at that commit: **3086 passed, 99
+skipped, 4 warnings** in 267 s (`.venv/bin/python -m pytest -q`, uv + Python
+3.12.14). `design/81-degenerate-z-scan.py` run against the installed
+pycro-manager on the same tree reproduces F1's table row for row, including the
+`(0, 0, 0)` single event with no `z` key and the `(60, 60.5, 1)` overshoot to
+61.0.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 81a-1 | `design81/81a1-plan-time-refusal` | `95cfdfd` | | | |
+| 81a-1 | `design81/81a1-plan-time-refusal` | `f915e5d` | | | |
 | 81a-2 | — | not started; follows 81a-1 | | | |
 | 81b | — | not started; follows 81a-1 | | | |
 | 81c | — | not started; follows 81a-2 and 81b | | | |
