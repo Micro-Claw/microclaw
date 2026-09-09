@@ -929,7 +929,9 @@ class TestSetChannel:
     ):
         from microclaw import tools
 
-        monkeypatch.setattr(tools, "_build_acquisition_events", lambda **k: ["event"])
+        # No _build_acquisition_events fake: it used to return ["event"], a list
+        # of strings, and the real builder is pure. A fake that cannot carry a
+        # plane's Z is not a stand-in for an event list that has to.
         monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a, **k: None)
         monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: "/data/x")
         monkeypatch.setattr(tools, "_reservation_report", lambda r: {})

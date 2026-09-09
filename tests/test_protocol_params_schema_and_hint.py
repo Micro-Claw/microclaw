@@ -163,3 +163,18 @@ def test_execute_tool_keeps_generic_hint_for_inner_forwarding_error():
 
     assert result["hint"] == hint_for_error(exc)
     assert "protocol_params" not in result["hint"]
+
+
+@pytest.mark.parametrize('schema', [
+    tools_schema._PROTOCOL_PARAMS_SCHEMA,
+    _SCHEMA_BY_NAME['run_zstack']['input_schema'],
+])
+def test_z_parameter_descriptions_state_absolute_ascending_constraints(schema):
+    props = schema['properties']
+    for key in ('z_start_um', 'z_end_um', 'z_step_um'):
+        assert 'finite' in props[key]['description'].lower()
+    for key in ('z_start_um', 'z_end_um'):
+        assert 'absolute' in props[key]['description'].lower()
+    step = props['z_step_um']['description'].lower()
+    assert 'positive' in step and 'ascending' in step
+    assert 'inclusive-overshooting' in step and 'beyond' in step

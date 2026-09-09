@@ -26,9 +26,9 @@ _PROTOCOL_PARAMS_SCHEMA = {
             "type": "integer",
             "description": "Timelapse only: EMU trigger slot to pre-flight.",
         },
-        "z_start_um": {"type": "number"},
-        "z_end_um": {"type": "number"},
-        "z_step_um": {"type": "number"},
+        "z_start_um": {"type": "number", "description": 'First plane as an absolute stage Z coordinate in µm, not an offset from current focus or a half-thickness. Read current Z with get_system_state and place the stack around it. Must be finite and less than z_end_um; equal endpoints are one plane, not a stack, and are refused. Supply all three Z keys.'},
+        "z_end_um": {"type": "number", "description": 'Last requested plane as an absolute stage Z coordinate in µm. Must be finite and greater than z_start_um. The inclusive-overshooting final plane may lie up to one z_step_um beyond this value; actual generated extrema are guarded. Supply all three Z keys.'},
+        "z_step_um": {"type": "number", "description": 'Finite positive step in µm for ascending sweeps only; direction is not inferred. Supply all three Z keys with z_end_um greater than z_start_um. The inclusive-overshooting final plane may lie up to one step beyond z_end_um; actual generated extrema are guarded.'},
     },
 }
 
@@ -634,12 +634,9 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "z_start_um": {"type": "number", "description": "Start Z in µm."},
-                "z_end_um": {"type": "number", "description": "End Z in µm."},
-                "z_step_um": {
-                    "type": "number",
-                    "description": "Step size in µm (positive; direction is inferred).",
-                },
+                "z_start_um": _PROTOCOL_PARAMS_SCHEMA["properties"]["z_start_um"],
+                "z_end_um": _PROTOCOL_PARAMS_SCHEMA["properties"]["z_end_um"],
+                "z_step_um": _PROTOCOL_PARAMS_SCHEMA["properties"]["z_step_um"],
                 "channel": {
                     "type": "string",
                     "description": "Channel preset name. Uses current channel if omitted.",

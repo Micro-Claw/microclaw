@@ -1394,9 +1394,10 @@ class TestRunAdaptiveSurvey:
                             lambda _c, _g, channel: timeline.append(
                                 ("channel", channel)) or {"config_group": "Channel"})
         monkeypatch.setattr(tools, "_plan_protocol_repetitions",
-                            lambda _c, _p, pp, repetitions: AcquisitionPlan(
+                            lambda _c, _p, pp, repetitions: (AcquisitionPlan(
                                 pp["n_frames"] * repetitions,
-                                pp["exposure_ms"], 1, 1))
+                                pp["exposure_ms"], 1, 1),
+                                tools.multi_d_acquisition_events(num_time_points=pp["n_frames"])))
         monkeypatch.setattr(tools, "_channel_effects_for_later_phase",
                             lambda *_a: {"config_group": "Channel", "planned": True})
 
@@ -1486,7 +1487,8 @@ class TestRunAdaptiveSurvey:
         monkeypatch.setattr(tools, "_authorize_acquisition",
                             lambda _c, _g, plan, **_k: Reservation(plan))
         monkeypatch.setattr(tools, "_plan_protocol_repetitions",
-                            lambda *_a, **_k: AcquisitionPlan(4, 20, 1, 1))
+                            lambda *_a, **_k: (AcquisitionPlan(4, 20, 1, 1),
+                                               tools.multi_d_acquisition_events(num_time_points=4)))
         monkeypatch.setattr(tools, "_channel_effects_for_later_phase",
                             lambda *_a: {"config_group": "Channel", "planned": True})
         result = tools.run_adaptive_survey(

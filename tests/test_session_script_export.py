@@ -1803,8 +1803,8 @@ def test_all_adaptive_program_shapes_emit_seed_hook_and_runner(
     assert "class SNRObservationHook" in source
     assert "directory=str(_HERE)" in source
     if tool == "run_zstack":
-        assert "guard.check_z(-2)" in source
-        assert "guard.check_z(2)" in source
+        assert "guard.check_z(min(e['z'] for e in events))" in source
+        assert "guard.check_z(max(e['z'] for e in events))" in source
     elif tool == "run_adaptive_survey":
         assert "guard.check_xy(1.25, 2.5)" in source
     assert "# NOT EMITTED:" not in source
@@ -2639,6 +2639,23 @@ def test_emitted_adaptive_seed_check_refuses_out_of_bounds_before_acquisition(
         ),
         id="adaptive-runner-plan-only",
     ),
+    # Block 81a-1 taught the exporter to inline _build_acquisition_events, and
+    # this guard had no zstack param, so it could not see it. The coordinator's
+    # ZSweepShapeError then shipped a NameError into every exported zstack --
+    # the block-13/41b shape a third time. One param per emitter route that
+    # reaches the inline: plain, hooked and the multiposition pair.
+    pytest.param([call("run_zstack", {
+        "z_start_um": 60, "z_end_um": 62, "z_step_um": 1, "save_dir": "session",
+    })], id="zstack-events-inline-plain"),
+    pytest.param([call("run_zstack", {
+        "z_start_um": 60, "z_end_um": 62, "z_step_um": 1, "save_dir": "session",
+        "hook_strategy": "snr_observer", "hook_params": {},
+    })], id="zstack-events-inline-hooked"),
+    pytest.param([call("run_multiposition_acquisition", {
+        "protocol": "zstack", "save_dir": "session",
+        "positions": [{"name": "p0", "x_um": 0, "y_um": 0}],
+        "protocol_params": {"z_start_um": 60, "z_end_um": 62, "z_step_um": 1},
+    })], id="zstack-events-inline-multiposition"),
 ])
 def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
@@ -4676,6 +4693,7 @@ def hooked_engine(monkeypatch, tmp_path):
             self.hook = next((cb.__self__ for cb in callbacks if cb is not None), None)
         def __enter__(self): return self
         def acquire(self, events):
+            self.submitted_events = events
             self.events = list(events)
             assert self.saved == []
             state.core.trace.append(("submit", len(self.events)))
@@ -4720,9 +4738,9 @@ def hooked_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "Acquisition", Acquisition)
     state.Acquisition, state.Core = Acquisition, Core
 
-    def execute(source):
+    def execute(source, event_builder=multi_d_acquisition_events):
         namespace = {"__file__": str(tmp_path / "routine.py"), "Core": lambda: state.core,
-                     "Acquisition": Acquisition, "multi_d_acquisition_events": multi_d_acquisition_events}
+                     "Acquisition": Acquisition, "multi_d_acquisition_events": event_builder}
         runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
         exec(compile(runnable, "routine.py", "exec"), namespace)
         return namespace
@@ -4895,11 +4913,13 @@ def test_80b_image_hooks_match_live_state_writes_and_logs(tmp_path, hooked_engin
     assert namespace["_saved_frames"].n_done == len(engine.backends[-1].saved)
 
 
-def test_80b_hookless_bytes_stay_identical(tmp_path):
+def test_80b_hookless_bytes_pin_includes_81_whole_plan_preflight(tmp_path):
     import hashlib
     _, _, source = export(tmp_path, [call("run_multiposition_acquisition", _80B_BASE)])
-    assert len(source.splitlines()) == 460
-    assert hashlib.sha256(source.encode()).hexdigest() == "9a56d7a9ca1e93e173cb4358712d94f4b837dfcfe7a933010af9f4df033b0826"
+    # D1 adds the existing portable guard, validates all coordinates, and moves
+    # event construction before the position loop. The acquisition body is unchanged.
+    assert len(source.splitlines()) == 545
+    assert hashlib.sha256(source.encode()).hexdigest() == "7deb9ad0900e2e2fcf0b3d622519e475b600a1cbecb074db06c21ab93e8bee4b"
 
 
 def test_80b_rendered_dependencies_appear_once_and_refusals_add_none(tmp_path):
@@ -5121,7 +5141,8 @@ def test_80b_position_filter_checks_complete_seed_before_hardware(tmp_path, hook
         ("check_xy", 1, 2), ("check_z", 3),
         ("check_xy", 11, 2), ("check_z", 3), ("check_exposure", 20),
     ]
-    assert order[5] == ("write_exposure", 20)
+    assert order[5:7] == [("check_z", 3), ("check_z", 3)]
+    assert order[7] == ("write_exposure", 20)
     assert len(hooked_engine.backends[-1].saved) == 2
     # Plan guarding must not change this hook's signature-driven construction.
     assert not hasattr(namespace["hook"], "ctrl")
@@ -5412,3 +5433,104 @@ def test_emitted_sequencing_refusal_executes_before_acquisition(tmp_path, monkey
     assert acquisition.call_count == 0
     assert isinstance(error, ValueError)
     assert 'truncated millisecond' in str(error)
+
+
+@pytest.mark.parametrize('route', ['plain', 'adaptive', 'hooked', 'unhooked'])
+@pytest.mark.parametrize('shape,maximum,reason', [
+    ((0, 0, 1), 61, 'Equal Z endpoints'),
+    ((65, 65, 0), 70, 'z_step must be positive'),
+    ((60, 60.5, 1), 60.5, 'exceeds recorded maximum'),
+    ((60, 60.5, 1), 61, None),
+])
+def test_81_emitted_sweep_preflight_executes_before_effects(
+    tmp_path, hooked_engine, route, shape, maximum, reason,
+):
+    start, end, step = shape
+    pp = dict(z_start_um=start, z_end_um=end, z_step_um=step, exposure_ms=7)
+    if route in {'plain', 'adaptive'}:
+        tool = 'run_zstack'
+        params = dict(save_dir='session', **pp)
+        if route == 'adaptive':
+            params['hook_strategy'] = 'snr_observer'
+    else:
+        tool = 'run_multiposition_acquisition'
+        params = {**_80B_BASE, 'protocol': 'zstack', 'protocol_params': pp}
+        if route == 'hooked':
+            params['hook_strategy'] = 'snr_observer'
+    guard = Guard(tmp_path)
+    guard._c.stage.z_max = maximum
+    result = tools.export_session_script(None, guard, 'routine.py', [call(tool, params)])
+    assert result['complete'], result
+    source = (tmp_path / 'routine.py').read_text(encoding='utf-8')
+    if reason:
+        with pytest.raises(Exception, match=reason):
+            hooked_engine.execute(source)
+        assert hooked_engine.core.trace == []
+        assert not hooked_engine.backends
+    else:
+        namespace = hooked_engine.execute(source)
+        expected = tools.multi_d_acquisition_events(z_start=start, z_end=end, z_step=step)
+        actual = [e['z'] for b in hooked_engine.backends for e in b.events]
+        assert actual == [e['z'] for e in expected] * (2 if route in {'hooked', 'unhooked'} else 1)
+        assert namespace['events'] is hooked_engine.backends[-1].submitted_events
+
+
+def test_81_emitted_later_group_preflight_precedes_first_acquisition(
+    tmp_path, hooked_engine, monkeypatch,
+):
+    from pycromanager import multi_d_acquisition_events
+    def engine(**kwargs):
+        if kwargs.get('position_labels') == ['b']:
+            kwargs['xyz_positions'] = [(11, 2, 1001.)]
+            kwargs.pop('xy_positions', None)
+        return multi_d_acquisition_events(**kwargs)
+    params = {**_80B_BASE, 'hook_strategy': 'position_filter',
+              'protocol_params': dict(n_frames=2, interval_s=1, exposure_ms=7)}
+    _, result, source = export(tmp_path, [call('run_multiposition_acquisition', params)])
+    assert result['complete'], result
+    with pytest.raises(Exception, match='exceeds recorded maximum'):
+        hooked_engine.execute(source, event_builder=engine)
+    assert not hooked_engine.backends
+    assert hooked_engine.core.trace == []
+
+
+@pytest.mark.parametrize('maximum', [60.5, 61.])
+def test_emitted_acquire_on_hit_guards_generated_extrema(tmp_path, monkeypatch, hooked_engine, maximum):
+    monkeypatch.setattr(hooked_engine.core, 'wait_for_config',
+                        lambda group, preset: hooked_engine.core.trace.append(('wait_config', group, preset)),
+                        raising=False)
+    # Isolate the emitted acquire phase at the completed-search boundary. The
+    # hit is runtime input, not a recorded trace substituted by the emitter.
+    monkeypatch.setattr(tools, '_adaptive_hook_export', lambda _: ('', 'object()', True))
+    params = tools.RecordedParams({
+        'protocol': 'timelapse', 'protocol_params': {'n_frames': 1, 'interval_s': 0, 'channel': 'DAPI'},
+        'positions': [dict(name='seed', x_um=0., y_um=0.)], 'hook_strategy': 'saved',
+        '_export_safety_limits': {'x_um': (-1., 1.), 'y_um': (-1., 1.),
+                                  'z_um': (0., maximum), 'exposure_ms': (0., None)},
+        'acquire_on_hit': {'channel': 'FITC', 'protocol': 'zstack', 'max_hits': 1,
+                           'protocol_params': {'z_offset_start_um': 0., 'z_offset_end_um': .5,
+                                               'z_step_um': 1.}},
+    }, {'channel_effects': {'search': {'config_group': 'Channel'},
+                            'acquire': {'config_group': 'Channel'}}})
+    source = tools._emit_adaptive(params, 'survey')
+    phase = 'if len(hits) >' + source.split('if len(hits) >', 1)[1]
+    runnable = '\n'.join([
+        'import math', 'from pathlib import Path', 'from typing import Any',
+        '_HERE = Path(__file__).parent', 'core = Core()',
+        inspect.getsource(tools._build_acquisition_events),
+        tools._export_guard_source(params['_export_safety_limits']),
+        "hits = [dict(name='hit', x_um=0., y_um=0., z_um=60.)]", phase,
+    ])
+    if maximum == 60.5:
+        with pytest.raises(Exception, match='Z=61.0 exceeds recorded maximum 60.5'):
+            hooked_engine.execute(runnable)
+        assert not hooked_engine.backends
+        assert not hooked_engine.core.captures
+    else:
+        namespace = hooked_engine.execute(runnable)
+        assert len(hooked_engine.backends) == 1
+        assert namespace['acquire_events'] is hooked_engine.backends[0].submitted_events
+        assert hooked_engine.backends[0].events == tools.multi_d_acquisition_events(
+            z_start=60., z_end=60.5, z_step=1.,
+            xy_positions=[(0., 0.)], position_labels=['hit'],
+        )

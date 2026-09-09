@@ -308,6 +308,8 @@ def _emit_acquisition(
     shape: dict[str, Any], params: dict[str, Any], default_name: str
 ) -> str:
     """Render the pycro-manager primitive used by the adjacent acquisition tools."""
+    if "z_start" in shape and not params.get("_export_safety_limits"):
+        raise CannotEmit("the record carries no export-time safety limits for the Z sweep")
     event_args = dict(shape)
     channel = params.get("channel")
     exposure = params.get("exposure_ms")
@@ -319,9 +321,17 @@ def _emit_acquisition(
     prefix = ""
     if not channel and exposure is not None:
         prefix = f"core.set_exposure({exposure!r})\n"
+    if "z_start" not in shape:
+        return (prefix + f"events = multi_d_acquisition_events(**{event_args!r})\n"
+                + f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}) as acq:\n"
+                + "    acq.acquire(events)")
     return (
-        prefix
-        + f"events = multi_d_acquisition_events(**{event_args!r})\n"
+        _acquisition_events_source() + "\n"
+        + f"events = _build_acquisition_events(**{event_args!r})\n"
+        + _export_guard_source(params["_export_safety_limits"])
+        + "guard.check_z(min(event['z'] for event in events))\n"
+        + "guard.check_z(max(event['z'] for event in events))\n"
+        + prefix
         + f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}) as acq:\n"
         + "    acq.acquire(events)"
     )
@@ -644,6 +654,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
     order = params.get("acquisition_order", signature.parameters["acquisition_order"].default)
     hook = params.get("hook_strategy")
     hook_source = ""
+    source = ""
+    hook_cls = None
     guarded_plan = False
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
@@ -701,6 +713,16 @@ def _emit_multiposition(params: RecordedParams) -> str:
         raise CannotEmit("the record contains a resolved position without a label")
     protocol = params["protocol"]
     protocol_params = dict(params.get("protocol_params") or {})
+    if not guarded_plan and (hook or order == "time_then_position"):
+        limits = params.get("_export_safety_limits")
+        if limits:
+            hook_source = source + "\n"
+            guarded_plan = True
+        elif protocol == "zstack" or not getattr(hook_cls, "_observation_only", False):
+            raise CannotEmit(params.get("_export_safety_limits_error")
+                             or "the record carries no export-time safety limits for the position plan")
+        # Preserve design/80's observation-only no-sweep export exemption.
+        # A declared Z sweep always needs its actual planes guarded.
     _protocol_shape_kwargs(protocol, protocol_params, order)
     if hook or order == "time_then_position":
         if protocol == "timelapse":
@@ -732,7 +754,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if hook else ""
         )
         if guarded_plan:
-            required_axes = ("x", "y")
+            required_axes = ("x", "y") if hook_cls and not getattr(hook_cls, "_observation_only", False) else ()
             # Read the hook's guard use from the same source we inline, rather
             # than maintaining a second list of Z-moving hook names.
             # The registered Z-moving hooks check_z before moving focus, so
@@ -740,7 +762,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if (protocol == "zstack" or any(p.get("z_um") is not None for p in positions)
                     or any(isinstance(node, ast.Attribute) and node.attr == "check_z"
                            for node in ast.walk(ast.parse(source)))):
-                required_axes += ("z",)
+                if hook_cls and not getattr(hook_cls, "_observation_only", False):
+                    required_axes += ("z",)
             hook_source = (_export_guard_source(limits, required_axes=required_axes)
                            + "mm._guard = guard\n" + hook_source)
             # Match _acquire_positions_with_hook: validate the whole seed plan
@@ -749,12 +772,10 @@ def _emit_multiposition(params: RecordedParams) -> str:
                 prefix += f"guard.check_xy({position['x_um']!r}, {position['y_um']!r})\n"
                 if protocol != "zstack" and position.get("z_um") is not None:
                     prefix += f"guard.check_z({position['z_um']!r})\n"
-            if protocol == "zstack":
-                prefix += f"guard.check_z({shape['z_start']!r})\nguard.check_z({shape['z_end']!r})\n"
             if exposure is not None:
                 prefix += f"guard.check_exposure({exposure!r})\n"
-        if exposure is not None and not channel:
-            prefix += f"core.set_exposure({exposure!r})\n"
+        exposure_write = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
+        preflight = [_acquisition_events_source()] if protocol == "zstack" else []
         lines = [hook_source + prefix,
                  f"# acquisition_order={order}; timing={params.result.get('timing', {}).get('strategy')!r}; requested_interval_s={protocol_params.get('interval_s')!r}"]
         for index, group in enumerate(groups):
@@ -798,7 +819,12 @@ def _emit_multiposition(params: RecordedParams) -> str:
                           inspect.getsource(_refuse_sequenced_time_axis),
                           f"_refuse_sequenced_time_axis({shape['num_time_points']!r}, "
                           f"{shape['time_interval_s']!r}, hook=hook)"]
-            lines.append(f"events = multi_d_acquisition_events(**{event_shape!r})")
+            builder = "_build_acquisition_events" if protocol == "zstack" else "multi_d_acquisition_events"
+            preflight.append(f"_events_{index} = {builder}(**{event_shape!r})")
+            if guarded_plan:
+                preflight += [f"_zs = [e['z'] for e in _events_{index} if 'z' in e]",
+                              "if _zs:", "    guard.check_z(min(_zs))", "    guard.check_z(max(_zs))"]
+            lines.append(f"events = _events_{index}")
             if hook:
                 # The live runner binds before selecting this same callback triple.
                 # This is a counting adapter, not a dose reservation. Make its
@@ -827,6 +853,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
                           "'hook_exposures=', _hook_exposures.n_done, 'no dose budget')"]
             else:
                 lines += acquisition_lines
+        # Guard definitions precede preflight; exposure and movement follow it.
+        lines[0] = hook_source + prefix + "\n" + "\n".join(preflight) + "\n" + exposure_write
         return "\n".join(lines)
     # Every per-position XY move in the live tile path is settled, so every one
     # here is too. The targets are literals but the START is read per position
@@ -890,11 +918,26 @@ def _emit_multiposition(params: RecordedParams) -> str:
     timing_strategy = "per_position_clock" if protocol == "timelapse" else "no_time_axis"
     lines.append(f"    # acquisition_order={order}; timing={timing_strategy}; requested_interval_s={protocol_params.get('interval_s')!r}")
     lines.extend([
-        f"    events = multi_d_acquisition_events(**{event_args!r})",
+        "    events = _planned_events",
         "    with Acquisition(directory=str(_HERE / position['name']), "
         "name=position['name']) as acq:",
         "        acq.acquire(events)",
     ])
+    limits = params.get("_export_safety_limits")
+    if not limits:
+        raise CannotEmit("the record carries no export-time safety limits for the position plan")
+    builder = "_build_acquisition_events" if protocol == "zstack" else "multi_d_acquisition_events"
+    preflight = ([_acquisition_events_source()] if protocol == "zstack" else [])
+    preflight += [_export_guard_source(limits),
+                  f"_planned_events = {builder}(**{event_args!r})"]
+    if protocol == "zstack":
+        preflight += ["guard.check_z(min(e['z'] for e in _planned_events))",
+                      "guard.check_z(max(e['z'] for e in _planned_events))"]
+    for position in positions:
+        preflight.append(f"guard.check_xy({position['x_um']!r}, {position['y_um']!r})")
+        if position.get("z_um") is not None:
+            preflight.append(f"guard.check_z({position['z_um']!r})")
+    lines = preflight + lines
     return "\n".join(lines)
 
 
@@ -1717,10 +1760,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     if kind == "zstack":
         shape = {"z_start": params["z_start_um"], "z_end": params["z_end_um"],
                  "z_step": params["z_step_um"]}
-        common.extend([
-            f"guard.check_z({params['z_start_um']!r})",
-            f"guard.check_z({params['z_end_um']!r})",
-        ])
+
     elif kind == "timelapse" and not adaptive_timelapse:
         if params.get("n_frames") is None:
             raise CannotEmit(
@@ -1815,11 +1855,6 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             common.extend(
                 f"guard.check_xy({p['x_um']!r}, {p['y_um']!r})" for p in positions
             )
-        if protocol == "zstack":
-            common.extend([
-                f"guard.check_z({pp['z_start_um']!r})",
-                f"guard.check_z({pp['z_end_um']!r})",
-            ])
         if pp.get("exposure_ms") is not None:
             common.append(f"guard.check_exposure({pp['exposure_ms']!r})")
         if pp.get("channel") and acquire_on_hit is None:
@@ -1850,7 +1885,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         if acquire_on_hit is not None:
             common.append("hits = []")
         common.extend([
-            f"events = multi_d_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
+            f"events = {'_build_acquisition_events' if 'z_start' in shape else 'multi_d_acquisition_events'}(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
             *( [
                 "def _successor(index):",
                 "    event = dict(events[0])",
@@ -1900,7 +1935,6 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 acquire_shape_lines = [
                     f"    _z_start = hit['z_um'] + {ap['z_offset_start_um']!r}",
                     f"    _z_end = hit['z_um'] + {ap['z_offset_end_um']!r}",
-                    "    guard.check_z(_z_start)", "    guard.check_z(_z_end)",
                     f"    _shape = {{'z_start': _z_start, 'z_end': _z_end, "
                     f"'z_step': {ap['z_step_um']!r}}}",
                 ]
@@ -1917,9 +1951,12 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 "for hit in hits:",
                 "    guard.check_xy(hit['x_um'], hit['y_um'])",
                 *acquire_shape_lines,
-                "    _events = multi_d_acquisition_events(xy_positions=[(hit['x_um'], hit['y_um'])], position_labels=[hit['name']], **_shape)",
+                f"    _events = {'_build_acquisition_events' if acquire_on_hit['protocol'] == 'zstack' else 'multi_d_acquisition_events'}(xy_positions=[(hit['x_um'], hit['y_um'])], position_labels=[hit['name']], **_shape)",
                 *( ["    for _event in _events: _event['z'] = hit['z_um']"]
-                   if acquire_on_hit["protocol"] == "timelapse" else [] ),
+                   if acquire_on_hit["protocol"] == "timelapse" else [
+                       "    guard.check_z(min(event['z'] for event in _events))",
+                       "    guard.check_z(max(event['z'] for event in _events))",
+                   ] ),
                 "    acquire_events.extend(_events)",
                 *( [f"core.set_exposure({ap['exposure_ms']!r})"]
                    if ap.get("exposure_ms") is not None else [] ),
@@ -1927,6 +1964,13 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 f"    with Acquisition(directory=str(_HERE), name={(params.get('name', 'survey') + '_acquire')!r}, show_display=True) as acq:",
                 "        acq.acquire(acquire_events)",
             ])
+        if "z_start" in shape or (acquire_on_hit and acquire_on_hit["protocol"] == "zstack"):
+            common.insert(0, _acquisition_events_source())
+        if "z_start" in shape:
+            build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
+            build = common.pop(build_index)
+            common.insert(3, build)
+            common.insert(4, "guard.check_z(min(e['z'] for e in events))\nguard.check_z(max(e['z'] for e in events))")
         return "\n\n".join(common)
     exposure_ms = params.get("exposure_ms")
     if exposure_ms is not None:
@@ -1940,7 +1984,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     # laser_slot verifies the rig's trigger pre-flight; it is not a hardware
     # action and therefore intentionally emits no standalone script line.
     common.extend([
-        f"events = multi_d_acquisition_events(**{shape!r})",
+        f"events = {'_build_acquisition_events' if 'z_start' in shape else 'multi_d_acquisition_events'}(**{shape!r})",
         *( [f"_NAMED_STAGE_ENVELOPE = {named_stage_envelope!r}",
             f"hook_action_plan = {hook_action_plan!r}",
             "_axes_plan = {}",
@@ -1986,6 +2030,12 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "print('Dataset:', getattr(acq, '_dataset_disk_location', None) or "
         "'<location not reported by this acquisition>')",
     ])
+    if "z_start" in shape:
+        common.insert(0, _acquisition_events_source())
+        build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
+        build = common.pop(build_index)
+        common.insert(3, build)
+        common.insert(4, "guard.check_z(min(e['z'] for e in events))\nguard.check_z(max(e['z'] for e in events))")
     return "\n\n".join(common)
 
 
@@ -2127,7 +2177,8 @@ def export_session_script(
         ))
     ]
     safety_limits = safety_limits_error = None
-    if hook_runtime_calls:
+    if any(name in {"run_zstack", "run_multiposition_acquisition", "run_tile_acquisition"}
+           for name, _ in included) or hook_runtime_calls:
         # Read strictly: a renamed field must not degrade to "no limits", which
         # would emit a script whose header claims recorded bounds while its seed
         # check accepts anything. Carried to the renderer as a reason rather than
@@ -2168,7 +2219,7 @@ def export_session_script(
                 "adaptive export safety constraints are unavailable or have an "
                 f"unsupported shape: {exc}"
             )
-    for params in hook_runtime_calls:
+    for _name, params in included:
         params["_export_safety_limits"] = safety_limits
         params["_export_safety_limits_error"] = safety_limits_error
     selection_warning = (
@@ -4418,10 +4469,27 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- Acquisitions ---
 
+class ZSweepShapeError(ValueError):
+    """A refused Z sweep shape, carrying WHICH check failed.
+
+    run_adaptive_survey feeds hit-relative OFFSETS through this validator under
+    the absolute spelling, so it alone has to restate these refusals in its own
+    vocabulary. It does that off `check`: matching on message text silently
+    stops translating the day a message is reworded, and CLAUDE.md's rule is to
+    raise a typed exception for a case you mean to special-case rather than
+    infer it from shared state.
+    """
+
+    def __init__(self, check: str, message: str):
+        super().__init__(message)
+        self.check = check
+
+
 def _build_acquisition_events(
     *,
     channel: str | None = None,
     exposure_ms: float | None = None,
+    _events: list | None = None,
     **acq_kwargs: Any,
 ) -> list:
     """Build an event list via multi_d_acquisition_events with channel handling.
@@ -4430,12 +4498,63 @@ def _build_acquisition_events(
     Z-stack, or num_time_points/time_interval_s for a timelapse. The hook
     machinery is agnostic to which shape is used.
     """
+    sweep_keys = ("z_start", "z_end", "z_step")
+    sweeps_z = any(key in acq_kwargs for key in sweep_keys)
+    if sweeps_z:
+        if any(key not in acq_kwargs for key in sweep_keys):
+            raise ZSweepShapeError(
+                "incomplete_triple",
+                "Z sweep requires the complete z_start, z_end, z_step triple.")
+        for key in sweep_keys:
+            if acq_kwargs[key] is None or not math.isfinite(acq_kwargs[key]):
+                raise ZSweepShapeError("nonfinite", f"Z sweep {key} must be finite.")
+        if acq_kwargs["z_step"] <= 0:
+            raise ZSweepShapeError(
+                "nonpositive_step",
+                "Z sweep z_step must be positive; Microclaw supports ascending sweeps only.")
+        if acq_kwargs["z_end"] == acq_kwargs["z_start"]:
+            raise ZSweepShapeError(
+                "equal_endpoints",
+                'Equal Z endpoints are one plane, not a stack. Z values are absolute stage coordinates. '
+                'For one plane at a known Z, move there and use protocol="timelapse" with '
+                '{"n_frames": 1, "interval_s": 0}; for a stack around focus, use distinct '
+                'endpoints around the current Z.'
+            )
+        if acq_kwargs["z_end"] < acq_kwargs["z_start"]:
+            raise ZSweepShapeError(
+                "reversed_range",
+                "Z sweep z_end must be greater than z_start; Microclaw supports ascending sweeps only.")
     if channel:
         acq_kwargs.update(channel_group="Channel", channels=[channel])
         if exposure_ms is not None:
             acq_kwargs["channel_exposures_ms"] = [exposure_ms]
-    return multi_d_acquisition_events(**acq_kwargs)
+    events = multi_d_acquisition_events(**acq_kwargs) if _events is None else _events
+    if sweeps_z:
+        if not events:
+            raise ZSweepShapeError("no_events", "Z sweep generated no events.")
+        if any("z" not in event or event["z"] is None or not math.isfinite(event["z"])
+               for event in events):
+            raise ZSweepShapeError(
+                "generated_nonfinite",
+                "Z sweep generated missing or non-finite Z coordinates.")
+        if len({event["z"] for event in events}) < 2:
+            raise ZSweepShapeError(
+                "single_plane",
+                "Z sweep must generate at least two distinct Z coordinates.")
+    return events
 
+
+def _acquisition_events_source() -> str:
+    """The inlined validator AND the exception it raises.
+
+    _build_acquisition_events raises ZSweepShapeError, so a script that inlines
+    the function without the class NameErrors at runtime while every export
+    test that only compiles the source stays green -- the block-13/41b defect
+    exactly (see CLAUDE.md). Five emitters inline this; they all go through
+    here so there is one place to keep in step.
+    """
+    return (inspect.getsource(ZSweepShapeError) + "\n\n"
+            + inspect.getsource(_build_acquisition_events))
 
 _RUNTIME_FROM_ACCOUNTING_PLAN = object()
 _GAP_HISTOGRAM_UPPER_S = (
@@ -4951,6 +5070,7 @@ def run_zstack(
     hook_action_plan: list[dict] | None = None,
     artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
+    _events: list | None = None,
 ) -> dict:
     # Before set_exposure and before the sweep: an out-of-workspace save_dir
     # must not cost an acquisition to discover.
@@ -4969,8 +5089,6 @@ def run_zstack(
             "Acquisition and one hook log across every position. A "
             "hook_action_plan has no such route: its indices address one run's events."
         )
-    guard.check_z(z_start_um)
-    guard.check_z(z_end_um)
     if channel:
         _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
@@ -4980,9 +5098,11 @@ def run_zstack(
     # the rig, so the capability guard below can precede the preamble's one
     # mutation without changing the order of any observable hardware action.
     events = _build_acquisition_events(
-        channel=channel, exposure_ms=exposure_ms,
+        _events=_events, channel=channel, exposure_ms=exposure_ms,
         z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
+    guard.check_z(min(event["z"] for event in events))
+    guard.check_z(max(event["z"] for event in events))
     carries_plan = hook_action_plan is not None
     hook = None
     log_path = (
@@ -5197,6 +5317,7 @@ def run_timelapse(
     artifact_limits: dict | None = None,
     max_frames: int | None = None,
     _reservation: Reservation | None = None,
+    _events: list | None = None,
 ) -> dict:
     if (n_frames is None) == (max_frames is None):
         raise ValueError("Provide exactly one of n_frames or max_frames.")
@@ -5242,7 +5363,7 @@ def run_timelapse(
     # the rig, so the capability guard below can precede the preamble's one
     # mutation without changing the order of any observable hardware action.
     events = _build_acquisition_events(
-        channel=channel, exposure_ms=exposure_ms,
+        _events=_events, channel=channel, exposure_ms=exposure_ms,
         num_time_points=(n_frames if n_frames is not None else 1),
         time_interval_s=interval_s,
     )
@@ -7478,25 +7599,22 @@ def _protocol_shape_kwargs(protocol: str, params: dict,
 
 def _plan_protocol_repetitions(
     ctrl: MicroscopeController, protocol: str, params: dict, repetitions: int
-) -> AcquisitionPlan:
-    """Bound a repeated per-position protocol before the first stage move."""
+) -> tuple[AcquisitionPlan, list]:
+    """Bound a repeated protocol and retain its events before the first move."""
     if repetitions <= 0:
         raise SafetyViolation("Acquisition has no valid positions to acquire.")
     shape = _protocol_shape_kwargs(protocol, params)
     exposure_ms = params.get("exposure_ms")
-    one = plan_events(
-        ctrl,
-        _build_acquisition_events(
-            channel=params.get("channel"), exposure_ms=exposure_ms, **shape
-        ),
-        exposure_ms,
+    events = _build_acquisition_events(
+        channel=params.get("channel"), exposure_ms=exposure_ms, **shape
     )
+    one = plan_events(ctrl, events, exposure_ms)
     return AcquisitionPlan(
         one.frames * repetitions,
         one.exposure_ms_per_frame,
         one.estimated_duration_s * repetitions,
         one.estimated_bytes * repetitions,
-    )
+    ), events
 
 
 def _run_protocol_at(
@@ -7511,6 +7629,7 @@ def _run_protocol_at(
     params: dict,
     mark_position_in_list: bool = False,
     reservation: Reservation | None = None,
+    events: list | None = None,
 ) -> dict:
     guard.check_xy(x_um, y_um)
     # The tile path's own analogue of the per-position Z straggler: a scan that
@@ -7603,13 +7722,13 @@ def _run_protocol_at(
     if protocol == "zstack":
         r = run_zstack(
             ctrl, guard, save_dir=pos_save_dir, name=pos_label,
-            _reservation=reservation, **params
+            _reservation=reservation, _events=events, **params
         )
         return {"position": pos_label, **moved, **marked, **r}
     elif protocol == "timelapse":
         r = run_timelapse(
             ctrl, guard, save_dir=pos_save_dir, name=pos_label,
-            _reservation=reservation, **params
+            _reservation=reservation, _events=events, **params
         )
         return {"position": pos_label, **moved, **marked, **r}
     else:
@@ -7753,24 +7872,28 @@ def run_multiposition_acquisition(
         if results:
             return {"error": "Positions not found in position list: "
                              f"{[r['position'] for r in results]}"}
+        event_positions = [{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                           for n, x, y, z in resolved]
+        current_z = (ctrl.core.get_position()
+                     if "z_start" not in shape
+                     and any(p.get("z_um") is not None for p in event_positions)
+                     and any(p.get("z_um") is None for p in event_positions) else None)
+        prepared = _prepare_position_events(
+            guard, event_positions, shape, acquisition_order,
+            params.get("channel"), params.get("exposure_ms"), current_z,
+        )
+        if params.get("channel"):
+            _check_acquisition_channel(ctrl, guard, params["channel"])
+        if params.get("exposure_ms") is not None:
+            guard.check_exposure(params["exposure_ms"])
         if mark_positions:
-            # Match the non-hooked path: validate coordinates before publishing
-            # anything to the operator's native position list.
-            sweeps_z = "z_start" in shape
-            for _label, x_um, y_um, z_um in resolved:
-                guard.check_xy(x_um, y_um)
-                if not sweeps_z and z_um is not None:
-                    guard.check_z(z_um)
-            if sweeps_z:
-                guard.check_z(shape["z_start"])
-                guard.check_z(shape["z_end"])
-            # The grid coordinates are known up front, so marking needs no stage
-            # reads and no visit loop — mark before the Acquisition takes over.
             for pos_label, x_um, y_um, z_um in resolved:
                 ctrl.add_position(pos_label, float(x_um), float(y_um),
                                   float(z_um) if z_um is not None else None)
         added_labels = [item[0] for item in resolved] if mark_positions else []
         with _pause_live(ctrl, restore=False) as live_state:
+            if params.get("exposure_ms") is not None and not params.get("channel"):
+                ctrl.core.set_exposure(params["exposure_ms"])
             try:
                 hooked = _acquire_positions_with_hook(
                     ctrl, guard,
@@ -7782,6 +7905,7 @@ def run_multiposition_acquisition(
                     illumination_envelope=illumination_envelope,
                     artifact_limits=artifact_limits,
                     acquisition_order=acquisition_order, timing=timing,
+                    _prepared=prepared,
                     **shape,
                 )
             except (AcquisitionUnterminated, StageMoveError):
@@ -7821,12 +7945,19 @@ def run_multiposition_acquisition(
             for n, x, y, z in resolved
         ], **({"live_view_restore": restore} if restore else {})}
 
-    reservation = (
-        _authorize_acquisition(
-            ctrl, guard, _plan_protocol_repetitions(ctrl, protocol, params, len(resolved))
-        )
-        if protocol != "snap" else None
-    )
+    events = None
+    reservation = None
+    if protocol != "snap":
+        plan, events = _plan_protocol_repetitions(ctrl, protocol, params, len(resolved))
+        zs = [event["z"] for event in events if "z" in event]
+        if zs:
+            guard.check_z(min(zs))
+            guard.check_z(max(zs))
+        for _label, x, y, z in resolved:
+            guard.check_xy(x, y)
+            if z is not None:
+                guard.check_z(z)
+        reservation = _authorize_acquisition(ctrl, guard, plan)
     unterminated = False
     with _pause_live(ctrl, restore=False) as live_state:
         try:
@@ -7842,7 +7973,7 @@ def run_multiposition_acquisition(
                     result = _run_protocol_at(
                         ctrl, guard, pos_label, x_um, y_um, z_um, protocol, pos_save_dir,
                         params, mark_position_in_list=mark_positions,
-                        reservation=reservation,
+                        reservation=reservation, events=events,
                     )
                     results.append({**where, **result})
                 except AcquisitionUnterminated as exc:
@@ -8703,6 +8834,50 @@ def _adaptive_result(
     return result
 
 
+def _prepare_position_events(
+    guard: SafetyGuard, positions: list[dict], shape_kwargs: dict,
+    acquisition_order: str, channel: str | None = None,
+    exposure_ms: float | None = None, current_z: float | None = None,
+) -> tuple[bool, list[tuple[list[dict], list]]]:
+    """Construct and guard every fixed position group without hardware access."""
+    # A Z range makes the event list sweep Z itself, and multi_d_acquisition_events
+    # reads z_start/z_end as ABSOLUTE alongside xy_positions but as offsets
+    # RELATIVE to each point's Z alongside xyz_positions. The per-position z_um is
+    # therefore dropped when a range is present — which loses nothing, because the
+    # unhooked loop's run_zstack sweeps the same absolute range after its move to
+    # z_um. Swapping in xyz_positions here would silently reinterpret z_start_um.
+    sweeps_z = any(key in shape_kwargs for key in ("z_start", "z_end", "z_step"))
+    for p in positions:
+        guard.check_xy(p["x_um"], p["y_um"])
+        if not sweeps_z and p.get("z_um") is not None:
+            guard.check_z(p["z_um"])
+    split = (acquisition_order == "position_then_time"
+             and shape_kwargs.get("time_interval_s", 0) > 0)
+    groups = [[position] for position in positions] if split else [positions]
+    prepared = []
+    for group in groups:
+        event_shape = dict(shape_kwargs)
+        if not sweeps_z and any(p.get("z_um") is not None for p in group):
+            event_shape["xyz_positions"] = [
+                (p["x_um"], p["y_um"], p["z_um"] if p.get("z_um") is not None else current_z)
+                for p in group
+            ]
+        else:
+            event_shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in group]
+        if "num_time_points" in shape_kwargs:
+            event_shape["order"] = ("ptcz" if acquisition_order == "position_then_time" else "tpcz")
+        events = _build_acquisition_events(
+            channel=channel, exposure_ms=exposure_ms,
+            position_labels=[p["name"] for p in group], **event_shape,
+        )
+        zs = [event["z"] for event in events if "z" in event]
+        if zs:
+            guard.check_z(min(zs))
+            guard.check_z(max(zs))
+        prepared.append((group, events))
+    return split, prepared
+
+
 def _acquire_positions_with_hook(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -8718,6 +8893,7 @@ def _acquire_positions_with_hook(
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
     acquisition_order: str = "position_then_time",
+    _prepared: tuple | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """Run combined events, or separately clocked position-outer movies.
@@ -8735,46 +8911,32 @@ def _acquire_positions_with_hook(
     save_dir = guard.resolve_in_workspace(save_dir)
     log_path = _prepare_log_path(guard, log_path)
 
-    # A Z range makes the event list sweep Z itself, and multi_d_acquisition_events
-    # reads z_start/z_end as ABSOLUTE alongside xy_positions but as offsets
-    # RELATIVE to each point's Z alongside xyz_positions. The per-position z_um is
-    # therefore dropped when a range is present — which loses nothing, because the
-    # unhooked loop's run_zstack sweeps the same absolute range after its move to
-    # z_um. Swapping in xyz_positions here would silently reinterpret z_start_um.
-    sweeps_z = "z_start" in shape_kwargs
-
-    # The stage is driven by the Acquisition, not by us, so there is no
-    # per-move guard call. Check every point up front: the refusal must not
-    # arrive on tile 7 of 9, with the objective already out over the sample.
-    for p in positions:
-        guard.check_xy(p["x_um"], p["y_um"])
-        if not sweeps_z and p.get("z_um") is not None:
-            guard.check_z(p["z_um"])
-    if sweeps_z:
-        guard.check_z(shape_kwargs["z_start"])     # the planes actually visited
-        guard.check_z(shape_kwargs["z_end"])
+    if _prepared is None:
+        current_z = (ctrl.core.get_position()
+                     if "z_start" not in shape_kwargs
+                     and any(p.get("z_um") is not None for p in positions)
+                     and any(p.get("z_um") is None for p in positions) else None)
+        _prepared = _prepare_position_events(
+            guard, positions, shape_kwargs, acquisition_order, channel, exposure_ms, current_z
+        )
+    split, groups = _prepared
     if channel:
         _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
-        if not channel:
-            ctrl.core.set_exposure(exposure_ms)   # eventless exposure; see run_zstack
-
-    split = (acquisition_order == "position_then_time"
-             and shape_kwargs.get("time_interval_s", 0) > 0)
     _emit_acquisition_diagnostic({
         "type": "acquisition_plan", "acquisition_order": acquisition_order,
         "timing": timing, "positions": [p["name"] for p in positions],
         "frames_per_position": shape_kwargs.get("num_time_points"),
     })
     results = []
-    groups = [[position] for position in positions] if split else [positions]
-    for group in groups:
+    prepared = []
+    for group_index, (group, events) in enumerate(groups):
         movie_name = group[0]["name"] if split else name
         movie_dir = guard.resolve_in_workspace(str(Path(save_dir) / movie_name)) if split else save_dir
         movie_log = (_prepare_log_path(
             guard, None, default=str(Path(log_path).parent / (Path(log_path).stem +
-                f"_{len(results)}" + Path(log_path).suffix))) if split and log_path else log_path)
+                f"_{group_index}" + Path(log_path).suffix))) if split and log_path else log_path)
         try:
             hook = (_resolve_hooks(ctrl, guard, hook_strategy, hook_params, movie_log)
                     if hook_strategy else None)
@@ -8785,27 +8947,14 @@ def _acquire_positions_with_hook(
             shape_kwargs.get("time_interval_s", 0), hook=hook,
             hardware_actions=hook is not None and illumination_envelope is not None,
         )
-        event_shape = dict(shape_kwargs)
-        if not sweeps_z and any(p.get("z_um") is not None for p in group):
-            current_z = ctrl.core.get_position()
-            event_shape["xyz_positions"] = [
-                (p["x_um"], p["y_um"], p["z_um"] if p.get("z_um") is not None else current_z)
-                for p in group
-            ]
-        else:
-            event_shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in group]
-        if "num_time_points" in shape_kwargs:
-            event_shape["order"] = ("ptcz" if acquisition_order == "position_then_time" else "tpcz")
-        events = _build_acquisition_events(
-            channel=channel, exposure_ms=exposure_ms,
-            position_labels=[p["name"] for p in group], **event_shape,
-        )
         if hook is not None:
             try:
                 _configure_hook_capabilities(hook, ctrl, guard, movie_dir, movie_name,
                                              illumination_envelope, artifact_limits)
             except _HookArtifactBudgetError as exc:
                 return {"error": str(exc), "results": results}
+        prepared.append((group, movie_name, movie_dir, movie_log, hook, events))
+    for group, movie_name, movie_dir, movie_log, hook, events in prepared:
         plan = plan_events(ctrl, events, exposure_ms)
         if hook is not None:
             plan = _plan_with_hook_dose(plan, hook)
@@ -9205,9 +9354,15 @@ def _acquire_survey_with_detector(
     # by the hook at enqueue time; nothing else ever sees them.
     for p in positions:
         guard.check_xy(p["x_um"], p["y_um"])
+    survey_events = adaptive_events or _build_acquisition_events(
+        channel=channel, exposure_ms=exposure_ms,
+        position_labels=[p["name"] for p in positions],
+        xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
+        **shape_kwargs,
+    )
     if "z_start" in shape_kwargs:
-        guard.check_z(shape_kwargs["z_start"])
-        guard.check_z(shape_kwargs["z_end"])
+        guard.check_z(min(event["z"] for event in survey_events))
+        guard.check_z(max(event["z"] for event in survey_events))
     if channel:
         _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
@@ -9215,12 +9370,6 @@ def _acquire_survey_with_detector(
         if not channel:
             ctrl.core.set_exposure(exposure_ms)   # eventless exposure; see run_zstack
 
-    survey_events = adaptive_events or _build_acquisition_events(
-        channel=channel, exposure_ms=exposure_ms,
-        position_labels=[p["name"] for p in positions],
-        xy_positions=[(p["x_um"], p["y_um"]) for p in positions],
-        **shape_kwargs,
-    )
     _configure_hook_capabilities(
         hook, ctrl, guard, save_dir, name, illumination_envelope, artifact_limits,
         named_stage_envelope=named_stage_envelope,
@@ -9394,6 +9543,43 @@ def _acquire_survey_with_detector(
     )
 
 
+# Every sweep refusal restated in the offsets vocabulary. This caller alone
+# feeds hit-relative offsets through the shared validator under the absolute
+# spelling, so a message naming z_start/z_end names keys it refuses outright a
+# few lines above -- the refusal would contradict the tool that raised it.
+# Keyed on ZSweepShapeError.check, so a reworded message cannot silently stop
+# being translated; a check with no entry falls back to the shared wording
+# rather than inventing one.
+_OFFSET_SWEEP_REFUSALS = {
+    "incomplete_triple":
+        "A zstack acquire_on_hit needs the complete z_offset_start_um, "
+        "z_offset_end_um, z_step_um triple.",
+    "nonfinite":
+        "z_offset_start_um, z_offset_end_um and z_step_um must all be finite.",
+    "nonpositive_step":
+        "z_step_um must be positive; Microclaw acquires ascending sweeps only.",
+    "equal_endpoints":
+        "Equal z_offset_start_um/z_offset_end_um values are one plane, not a "
+        "stack. These are offsets from each hit's own Z, not absolute stage "
+        'coordinates. For one plane per hit, use acquire_on_hit.protocol='
+        '"timelapse" with acquire_on_hit.protocol_params={"n_frames": 1, '
+        '"interval_s": 0}; for a stack around each hit, use distinct offsets '
+        "with z_offset_end_um greater than z_offset_start_um.",
+    "reversed_range":
+        "z_offset_end_um must be greater than z_offset_start_um; Microclaw "
+        "acquires ascending sweeps only. Offsets may be negative -- "
+        "-2 to 2 sweeps around each hit.",
+    "no_events":
+        "The z_offset_start_um/z_offset_end_um/z_step_um combination generates "
+        "no planes.",
+    "generated_nonfinite":
+        "The requested offsets generate missing or non-finite Z coordinates.",
+    "single_plane":
+        "The requested offsets generate one plane, not a stack. Widen the "
+        "offset range or reduce z_step_um.",
+}
+
+
 @emits(_emit_adaptive_survey)
 @_acquisition_entry_point
 def run_adaptive_survey(
@@ -9549,9 +9735,13 @@ def run_adaptive_survey(
         if not search_channel:
             return {"error": "protocol_params.channel is required with acquire_on_hit."}
         try:
-            acquire_plan = _plan_protocol_repetitions(
+            acquire_plan, _ = _plan_protocol_repetitions(
                 ctrl, acquire_protocol, acquire_shape_for_plan, max_hits
             )
+        except ZSweepShapeError as exc:
+            if acquire_protocol == "zstack":
+                return {"error": _OFFSET_SWEEP_REFUSALS.get(exc.check, str(exc))}
+            return {"error": str(exc)}
         except (SafetyViolation, ValueError, KeyError) as exc:
             return {"error": str(exc)}
         channel_effects = {}
@@ -9599,8 +9789,6 @@ def run_adaptive_survey(
                     else:
                         z_start = hit["z_um"] + acquire_params["z_offset_start_um"]
                         z_end = hit["z_um"] + acquire_params["z_offset_end_um"]
-                        guard.check_z(z_start)
-                        guard.check_z(z_end)
                         hit_shape = {"z_start": z_start, "z_end": z_end,
                                      "z_step": acquire_params["z_step_um"]}
                     events_for_hit = _build_acquisition_events(
@@ -9611,6 +9799,9 @@ def run_adaptive_survey(
                     if acquire_protocol == "timelapse":
                         for event in events_for_hit:
                             event["z"] = hit["z_um"]
+                    else:
+                        guard.check_z(min(event["z"] for event in events_for_hit))
+                        guard.check_z(max(event["z"] for event in events_for_hit))
                     acquire_events.extend(events_for_hit)
                 acquire_path = _acquire_with_hooks(
                     guard, save_dir, f"{name}_acquire", acquire_events,
