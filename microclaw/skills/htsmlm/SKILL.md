@@ -137,13 +137,24 @@ These control which panels are visible. Useful for knowing what's available:
 
 ---
 
-## Acquisition: do NOT use htSMLM's Acquisition Wizard
+## Acquisition compatibility (examined 2026-09-08)
 
-htSMLM has its own multi-position acquisition wizard. Do not attempt to drive
-it programmatically. For all acquisitions use microclaw's native tools:
-  run_timelapse(...)             — single-position SMLM stacks
-  run_multiposition_acquisition(...) — multi-position
-  run_tile_acquisition(...)      — tile scans
+At htSMLM commit `30b6bfd` (`30b6bfd923a13076c08011ee001cc3a0e83c5434`),
+LocalizationAcquisition starts ActivationTask and MMStudio MDA. ActivationTask
+analyses queued image pairs concurrently and publishes to an EMU property;
+there is no before-every-frame verification barrier. Its stop path polls at
+one-second intervals and waits a delay in seconds after its criterion. This
+implements neither a three-frame blink window nor exactly 1,000 frames after
+the terminal value. Do not delegate those requirements to this implementation.
+A later version can supersede these facts only after inspecting its analysis
+window and stop implementation; record the installed version and evidence.
+
+For matching algorithms, check reachable instance, supported start/status/stop
+API, enforceable property/dose bounds, restoration, storage and standalone export
+before delegation. The shipped plugin
+hooks expose scalar analysis and autofocus, not a general activation controller;
+list_mm_plugins does not establish that the Acquisition Wizard is controllable.
+Use the acquisition tools for contracts those integrations cannot express.
 
 ---
 

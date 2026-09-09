@@ -178,7 +178,7 @@ def test_smlm_skill_distinguishes_fixed_and_adaptive_timelapse_routes():
     assert "cannot widen" in density_flat
     assert "Do not combine it with" in density_flat
     assert "int(k * interval_s * 1000.0)" in interval_section
-    assert "slows acquisition without reducing background" in interval_section
+    assert "adds delay when the engine reaches its deadline early" in interval_section
     assert "the operator may pulse" in dstorm_section
     assert "The operator gradually increases" in dstorm_section
     assert "Microclaw does not automate this feedback loop" in dstorm_section
