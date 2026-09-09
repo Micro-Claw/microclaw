@@ -78,3 +78,6 @@ block*-20*/
 
 # Retained rig histories staged at the repo root for comparison (evidence, not source).
 /*_microclaw_history_*.json
+
+# Runner handoff reports are job artifacts, never repo content.
+result.md
