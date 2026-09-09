@@ -131,6 +131,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R111` | [Autofocus re-commands a measured coordinate the guard never checked](#r111) | HIGH | SMALL | **81a-2** |
 | `R112` | [No record exists of an operator having SEEN the evidence behind a count](#r112) | LOW | SMALL |  |
 | `R113` | [Skipping one field and continuing is not expressible in a fixed-plan acquisition](#r113) | MEDIUM | LARGE |  |
+| `R114` | [An export-equivalence test of the non-response refusal fails intermittently](#r114) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2624,3 +2625,17 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE. Deferred out of **81a-2** by operator decision, 2026-09-09.
 - **Effort** — LARGE
 - **Provenance** — `design/81` D3(b); coordinator finding while preparing 81a-2's runner prompt, 2026-09-09.
+
+### R114 — An export-equivalence test of the non-response refusal fails intermittently
+
+**`test_80b_autofocus_grid_executes_like_live[peaked]` failed once in five full-suite runs, and passes 3/3 in isolation. The cause is NOT identified.**
+
+- **Observed** — one failure in five full-suite observations, across two commits (`dd462b8` clean ×2, `a2e1f55` failed ×1 then clean ×1) that differ only by design documents and a spike script. Nothing in that range touches `microclaw/`. That is **1 in 5, not a rate** — five runs cannot measure a frequency.
+- **The failure** — `_HookedAcquisitionFailure: Stage move did not demonstrate the requested response: started 3.0 um, requested 1.0 um, measured 1.0 um after 0.012 s using 2.0 um from floor policy (idle)`. design/66's non-response refusal, firing because the displacement is **exactly** 2.0 µm against the 2.0 µm floor band, where arrival cannot distinguish a completed move from one that never started. The test's `Guard` (`tests/test_session_script_export.py:28`) sets no `z_move_tolerance_um`, so the band is always the floor; whether the refusal fires turns on the precise Z the fake sits at when a sweep's first plane is commanded, accumulated across nine autofocus positions in a test whose own peak assertion is `abs=0.125`.
+- **What is NOT known** — why it varies. Order is deterministic (pytest 9.1.1, no random-order plugin), `hooked_engine` is function-scoped, and the test's `Guard` builds a fresh `SimpleNamespace` per instance, so none of the obvious leakage routes apply. A load-sensitive fake whose position advances per poll would explain it — `settle_stage_move` polls until it has `STAGE_MOVE_REQUIRED_SAMPLES` stable readings, so a differently-timed run takes a different number of reads — but **that is a hypothesis and was not verified.** Do not repeat it as the cause.
+- **Why it is worth a row rather than a shrug** — the subject is a **safety refusal**, and an intermittent test of a safety refusal is the shape `CLAUDE.md` warns about from the other direction: *a fake that encodes your assumption is not a test of it.* A displacement sitting exactly on the band boundary is also a fixture choice that tests nothing stable; if the intent is to exercise the refusal, the fixture should be unambiguously inside the band, and if the intent is to exercise a real move, unambiguously outside it.
+- **How to settle it** — reproduce under `-p no:cacheprovider` with a repeat count and machine load varied, log the fake's position at every poll, and decide whether the fixture's displacement should straddle the boundary at all. Cheap, and no hardware.
+- **Where** — LOCAL. No rig, no dose.
+- **Block** — NONE. **Explicitly out of scope for 81a-2**, which modifies this very path; the runner is told to report a recurrence and not to quiet the fake.
+- **Effort** — SMALL
+- **Provenance** — coordinator's pre-launch baseline runs for `design/81` block 81a-2, 2026-09-09.
