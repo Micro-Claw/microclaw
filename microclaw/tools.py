@@ -551,17 +551,17 @@ def _emit_autofocus(params: RecordedParams) -> str:
     # emits None -- the package rule, which is what such a run used.
     coarse = params.result.get("coarse") or {}
     configured = coarse.get("z_move_tolerance_um")
-    policy_line = (
-        _export_guard_source(params.get("_export_safety_limits") or {}, required_axes=("z",))
-        + "\nmm._guard = guard\n"
-        + f"guard.stage_move_tolerance = lambda device, core_focus=False: {configured!r}"
-    )
     if region == "drawn":
         region = params.result.get("region")
         if region is None:
             raise CannotEmit(
                 "the recorded drawn-region call has no resolved region"
             )
+    policy_line = (
+        _export_guard_source(params.get("_export_safety_limits") or {}, required_axes=("z",))
+        + "\nmm._guard = guard\n"
+        + f"guard.stage_move_tolerance = lambda device, core_focus=False: {configured!r}"
+    )
     z_range = params.get("z_range_um")
     z_step = params["z_step_um"]
     if z_min is None:
@@ -2038,14 +2038,14 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "_reservation = SimpleNamespace(commit_frame=_hook_exposures.image_done)",
         "if hasattr(hook, 'bind_reservation'): hook.bind_reservation(_reservation)",
         "def _saved_callback(axes, dataset): _saved_frames.image_done()",
-        "try:",
-        *["    " + line for line in _emitted_acquisition_with_restoration([
-            f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, image_saved_fn=_saved_callback, **_hook_callbacks) as acq:",
-            "    acq.acquire(events)",
+        *_emitted_acquisition_with_restoration([
+            "try:",
+            f"    with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, image_saved_fn=_saved_callback, **_hook_callbacks) as acq:",
+            "        acq.acquire(events)",
+            "finally:",
+            "    print('HOOK ACQUISITION COUNTS saved_frames=', _saved_frames.n_done, 'hook_exposures=', _hook_exposures.n_done, 'no dose budget')",
         ], restore_hardware=(named_stage_envelope is not None or
-                             property_envelope is not None))],
-        "finally:",
-        "    print('HOOK ACQUISITION COUNTS saved_frames=', _saved_frames.n_done, 'hook_exposures=', _hook_exposures.n_done, 'no dose budget')",
+                             property_envelope is not None)),
         # Print what the acquisition reports, or say it is unknown. The obvious
         # fallback -- _HERE / name -- is a path that usually does NOT exist,
         # because pycro-manager resolves collisions by appending _1, _2. Sending
@@ -9872,6 +9872,12 @@ def run_adaptive_survey(
     acquire_reservation = result.pop("_acquire_reservation", None)
     search_effects = result.pop("_search_channel_effects", None)
     planned_acquire_effects = result.pop("_planned_acquire_effects", None)
+    if "error" in result:
+        # An aborted run keeps its failure report verbatim — dataset path,
+        # frames exposed, last known hardware state, and design/38 F7's "do not
+        # treat the run as untouched" hint. The rewrites below would dress it as
+        # a completed survey and replace exactly that warning.
+        return result
     if acquire_on_hit is not None:
         channel_effects["search"] = search_effects
         channel_effects["acquire"] = planned_acquire_effects
@@ -9942,12 +9948,6 @@ def run_adaptive_survey(
     # (20260716_140329). Say what actually ran, from the counter the hook
     # itself drove — and attach the planned coordinates so the hook log
     # joins on `position` without re-imaging (design/23 Episode A).
-    if "error" in result:
-        # An aborted run keeps its failure report verbatim — dataset path,
-        # frames exposed, last known hardware state, and design/38 F7's "do not
-        # treat the run as untouched" hint. The rewrites below would dress it as
-        # a completed survey and replace exactly that warning.
-        return result
     stopped = progress.stopped_early
     result.pop("positions", None)   # "positions: 9" is the ambiguity this tool retires
     # "acquired of N planned tile(s)" read as coverage, and a hook may revisit a

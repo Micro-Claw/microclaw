@@ -85,9 +85,13 @@ def test_selected_measured_coordinate_outside_window_is_never_dispatched(monkeyp
 
 @pytest.mark.parametrize("shape", ["degenerate_incident", "two_plane", "no_event_z"])
 def test_unsafe_nominal_reach_constructs_zero_acquisitions(tmp_path, monkeypatch, shape):
+    _assert_nominal_refusal(tmp_path, monkeypatch, shape)
+
+
+def _assert_nominal_refusal(tmp_path, monkeypatch, shape, z_range=20, reason="below minimum"):
     from unittest.mock import MagicMock
     from microclaw import tools
-    from microclaw.acquisition import AcquisitionPlan
+    from microclaw.acquisition import AcquisitionPlan, AcquisitionLedger
     ctrl, guard = MagicMock(), MagicMock()
     ctrl.core.get_position.return_value = 1.
     guard.resolve_in_workspace.side_effect = lambda path: path
@@ -97,6 +101,8 @@ def test_unsafe_nominal_reach_constructs_zero_acquisitions(tmp_path, monkeypatch
     guard.check_z.side_effect = check
     monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
     monkeypatch.setattr(tools, "plan_events", lambda *a, **k: AcquisitionPlan(2, 1, 1, 1))
+    monkeypatch.setattr(tools, "_authorize_acquisition",
+                        lambda ctrl, guard, plan: AcquisitionLedger().reserve(guard, plan))
     acquisition = MagicMock(side_effect=AssertionError("Acquisition constructed"))
     monkeypatch.setattr(tools, "Acquisition", acquisition)
     monkeypatch.setattr("microclaw.authorization.authorize_path", lambda *a: None)
@@ -111,12 +117,12 @@ def test_unsafe_nominal_reach_constructs_zero_acquisitions(tmp_path, monkeypatch
         "protocol": "timelapse" if shape == "no_event_z" else "zstack",
         "protocol_params": params, "save_dir": str(tmp_path),
         "hook_strategy": "autofocus_per_position",
-        "hook_params": {"z_range_um": 20, "z_step_um": 1},
+        "hook_params": {"z_range_um": z_range, "z_step_um": 1},
     }, ctrl, guard))
     assert acquisition.call_count == 0, result
     assert "error" in result, result
     if shape != "degenerate_incident":
-        assert "below minimum" in result["error"]
+        assert reason in result["error"]
 
 
 @pytest.mark.parametrize("reset", [False, True])
@@ -146,20 +152,14 @@ def test_reach_absent_contract_is_not_reported_checked_and_reads_nothing():
 
 
 @pytest.mark.parametrize("value", [-1, float("nan"), float("inf")])
-def test_reach_refuses_invalid_parameters(value):
-    from microclaw.hooks import planned_hook_z_reach
-    with pytest.raises(ValueError, match="finite and non-negative"):
-        planned_hook_z_reach(AutofocusHook(None, None, value, 1), [], 0, None)
+def test_reach_refuses_invalid_parameters(value, tmp_path, monkeypatch):
+    _assert_nominal_refusal(tmp_path, monkeypatch, "no_event_z", z_range=value,
+                            reason="finite and non-negative")
 
 
-def test_empty_event_list_still_checks_entry_window():
-    from microclaw.hooks import planned_hook_z_reach
-    def check(z):
-        if z < 0:
-            raise SafetyViolation("below minimum")
-    guard = SimpleNamespace(check_z=check)
-    with pytest.raises(SafetyViolation, match="below minimum"):
-        planned_hook_z_reach(AutofocusHook(None, guard, 4, 1), [], 1, guard)
+def test_empty_event_list_still_checks_entry_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "_build_acquisition_events", lambda **kwargs: [])
+    _assert_nominal_refusal(tmp_path, monkeypatch, "no_event_z")
 
 
 @pytest.mark.parametrize("rows,counts,positions", [
@@ -184,15 +184,19 @@ def test_historical_outcomes_distinguish_events_positions_and_unknown(rows, coun
 from microclaw import tools
 
 
-@pytest.mark.parametrize("name", [name for name, fn in tools.TOOL_REGISTRY.items()
-    if getattr(fn, "_microclaw_acquisition_entry_point", False) and name != "run_mda"])
-def test_required_failure_survives_every_acquisition_boundary(name, tmp_path, monkeypatch):
+@pytest.mark.parametrize("name,followup", [(name, followup)
+    for name, fn in tools.TOOL_REGISTRY.items()
+    if getattr(fn, "_microclaw_acquisition_entry_point", False) and name != "run_mda"
+    for followup in ([False, True] if name == "run_adaptive_survey" else [False])])
+def test_required_failure_survives_every_acquisition_boundary(name, followup, tmp_path, monkeypatch):
     from unittest.mock import MagicMock
     from microclaw.acquisition import AcquisitionLedger
     import json
     ctrl, guard = MagicMock(), MagicMock()
     guard.resolve_in_workspace.side_effect = lambda path: path
     ctrl.core.get_position.return_value = 10.
+    ctrl.set_xy.return_value = {}
+    monkeypatch.setattr(tools, "_single_run_timing", lambda **kwargs: {"strategy": "no_time_axis"})
     for method in ("get_image_width", "get_image_height", "get_bytes_per_pixel", "get_exposure"):
         getattr(ctrl.core, method).return_value = 1
     ctrl.core.is_sequence_running.return_value = False
@@ -214,6 +218,7 @@ def test_required_failure_survives_every_acquisition_boundary(name, tmp_path, mo
         return reservation
     monkeypatch.setattr(tools, "_authorize_acquisition", reserve)
     constructed = []
+    exposed = []
     class Backend:
         _exception = None
         _dataset_disk_location = str(tmp_path / "partial")
@@ -224,7 +229,10 @@ def test_required_failure_survives_every_acquisition_boundary(name, tmp_path, mo
         def acquire(self, events):
             self.events = events
         def __exit__(self, *exc):
-            self.kwargs["post_hardware_hook_fn"]({"axes": {"position": "field_B"}})
+            event = {"axes": {"position": "field_B"}}
+            callback = self.kwargs.get("post_hardware_hook_fn")
+            returned = callback(event) if callback is not None else event
+            exposed.append(returned or {})  # pyjavaz turns None into an exposable empty event
             return None
     class Acquisition:
         def __new__(cls, **kwargs):
@@ -242,8 +250,28 @@ def test_required_failure_survives_every_acquisition_boundary(name, tmp_path, mo
             "positions": positions, "z_range_um": 2, "z_step_um": 1},
         "run_adaptive_survey": {**common, **protocol, "positions": positions},
     }
+    if followup:
+        from microclaw.hook_decisions import UntrustedHookAdapter
+        required_focus = hook
+        hook = UntrustedHookAdapter(SimpleNamespace(analyze_frame=lambda image, metadata: None))
+        hook.post_hardware_hook_fn = required_focus.post_hardware_hook_fn
+        inputs[name]["hook_strategy"] = "saved_focus"
+        inputs[name]["protocol_params"]["channel"] = "DAPI"
+        inputs[name]["acquire_on_hit"] = {"channel": "DAPI", "protocol": "timelapse",
+            "protocol_params": {"n_frames": 1, "interval_s": 0}, "max_hits": 1}
+        monkeypatch.setattr(tools, "_check_acquisition_channel", lambda *a, **k: None)
+        monkeypatch.setattr(tools, "_set_channel_for_composite", lambda *a, **k: {})
+        original_survey = tools._acquire_survey_with_detector
+        def survey_with_prior_hit(*args, **kwargs):
+            result = original_survey(*args, **kwargs)
+            # An earlier field's detector hit remains available when a later
+            # required hook fails; drive the real failure and follow-up runner.
+            kwargs["acquire_hits"].append({"name": "earlier", "x_um": 0, "y_um": 0, "z_um": 10})
+            return result
+        monkeypatch.setattr(tools, "_acquire_survey_with_detector", survey_with_prior_hit)
     result = json.loads(tools.execute_tool(name, inputs[name], ctrl, guard))
     assert len(constructed) == 1, result
+    assert exposed == [], "planned image exposed after required autofocus failure"
     assert "error" in result, "autofocus returned an exposable event instead of stopping"
     assert "field_B" in result["error"] and "flat field" in result["error"], result
     assert all(not r.ledger.in_flight for r in reservations)
@@ -275,7 +303,7 @@ def test_supervised_failure_preserves_saved_fields_and_partial_hook_dose(
     result = tools._acquire_positions_with_hook(
         ctrl, engine.guard,
         [{"name": f"field_{i}", "x_um": i * 10, "y_um": 0, "z_um": 3}
-         for i in range(3)], str(tmp_path), "partial", "autofocus_per_position", {},
+         for i in range(3)], str(tmp_path), "partial", "autofocus_per_position", {"strategy": "no_time_axis"},
         hook_params={"z_range_um": 4, "z_step_um": .25, "settle_ms": 0},
         num_time_points=1, time_interval_s=0,
     )
