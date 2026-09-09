@@ -778,7 +778,7 @@ pycro-manager on the same tree reproduces F1's table row for row, including the
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 81a-1 | `design81/81a1-plan-time-refusal` | `f915e5d` | | | |
-| 81a-2 | — | not started; follows 81a-1 | | | |
+| 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
+| 81a-2 | — | not started; D3(a–d), carries the 81a-1 export limb | | | |
 | 81b | — | not started; follows 81a-1 | | | |
 | 81c | — | not started; follows 81a-2 and 81b | | | |

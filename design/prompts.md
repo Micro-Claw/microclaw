@@ -9988,3 +9988,84 @@ nobody**. The launcher now pushes and writes a `HANDOFF.md` on success, with a
 control limb proving a failed turn publishes nothing. But the upstream question
 is whether to schedule at all: when the next step is the coordinator's, "the
 window reopens at HH:MM, ping me" beats building anything.
+
+## design/81 block 81a-1 — the plan refuses what cannot work
+
+**22% of a Codex window is not a turn.** The start turn died six minutes in, mid
+iteration, with 429 uncommitted insertions. A revision after the reset ran 18
+minutes and *did* converge; a second revision died again after six. So the block
+cost four turns across two windows, and the shape of the loss is that a **start
+turn is the expensive one** — it reads the tree from nothing. Price a block by
+whether a *start* turn fits, not an average.
+
+**Preserve a killed turn by measuring it, not by trusting it.** Both dead turns
+had landed real work. Committing it with `UNREVIEWED` in the message is only half
+of what makes it usable: the other half is the coordinator running the tests and
+naming each failure in the commit body, so the next turn is handed a
+*measurement* rather than a diff. `49b1011` names its six failures and says the
+same five files pass 558/558 at the branch point, which is what made "all six are
+yours" true rather than assumed.
+
+**The runner deferred to a wrong enumeration in my prompt, and was right to.** I
+wrote "the two sites are `run_zstack` and `_acquire_positions_with_hook`",
+enumerating from the finding's cited line numbers. D1 item 3 says *the existing
+guard sites*, and `acquire_on_hit` was a third. The runner found it, reported it
+as a scope gap instead of silently fixing or ignoring it, and cited my sentence.
+**A coordinator's enumeration overrides a design doc's general rule in
+practice** — so enumerate only when the list is provably closed, and say
+"including but not limited to" when it is not. The escape was real: measured,
+guarded `[60.0, 60.5]` against visited `[60.0, 61.0]`.
+
+**A review finding can be wrong, and folding is the finding most likely to be.**
+I proposed folding the min/max guard into `_build_acquisition_events` because the
+idiom sat at three call sites. It would have broken `run_adaptive_survey`, which
+feeds *hit-relative offsets* through that function under the absolute key names —
+automatic guarding would refuse a legitimate −2 µm offset against an absolute
+floor of 0. Caught while writing the revision, not after. Before folding a check
+into a shared function, ask what the *units* of its arguments are at every
+caller; identical spellings are not identical quantities.
+
+**The same aliasing was a live product defect one level up.** Because that path
+reuses the absolute spelling, the new equal-endpoint refusal told an offsets
+caller their values were "absolute stage coordinates" and advised `z_start_um` —
+which that tool refuses outright a few lines earlier. **A refusal that
+contradicts the tool that raised it is worse than silence, because the model acts
+on it.** The first fix keyed on `str(exc).startswith("Equal Z endpoints")` and
+covered one of eight refusals; three of the remaining four still named
+`z_start`/`z_end`. Typed exception carrying *which check failed*, one translation
+table, all eight covered.
+
+**I shipped the block-13/41b defect a third time, in the fix for a review
+finding.** `ZSweepShapeError` is raised inside a function five emitters inline
+with `inspect.getsource`, so every exported Z-stack raised
+`NameError: ZSweepShapeError is not defined`. The recurrence guard written for
+exactly this — `test_emitted_inline_defines_every_name_it_uses`, whose docstring
+says *"Add a param here whenever the exporter learns to inline something new"* —
+had no zstack param, because the runner taught the exporter a new inline two
+turns earlier and did not add one. **A guard that must be extended by hand is a
+guard that will be out of date**; when a review finding asks for a new inline,
+the same turn owes the param. Mutation-proved: dropping the class from the
+inlined source fails the three new params and leaves the eleven old ones green.
+
+**My own watch-it-fail was fake once, in the way I had just warned the runner
+about.** My first F-J test failed pre-fix with
+`AttributeError: module has no attribute '_OFFSET_SWEEP_REFUSALS'` — a missing
+symbol, not the behaviour. Rewritten to drive the real refusal through the
+harness the suite already had, it failed 4/4 on the first commit and 3/4 on the
+second, and the difference between those two numbers *is* the evidence that only
+one of eight refusals had been translated. **A test that names the fix cannot
+witness the defect.**
+
+**And `git checkout HEAD -- <file>` discards uncommitted work.** I destroyed my
+own `tools.py` edits collecting that evidence, having written the same
+`git checkout <before> -- microclaw/` recipe into the runner's prompt. For a
+working tree with uncommitted changes, copy the file aside; the recipe in
+`CLAUDE.md` step 3 assumes a clean tree and does not say so.
+
+**Two assertions in this block were too crude in the same way**, mine and the
+runner's: both forbade the substring `absolute stage coordinate`, which a correct
+message is allowed to contain while *denying* it — and the runner's version
+demanded the phrase be absent, which is worse product than stating the
+distinction where F2 says it must be stated. Forbid the *claim*, not the
+vocabulary. Also: a check for `z_start_um` misses the reversed-range message,
+which says `z_start`.
