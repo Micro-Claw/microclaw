@@ -151,7 +151,7 @@ window and stop implementation; record the installed version and evidence.
 
 For matching algorithms, check reachable instance, supported start/status/stop
 API, enforceable property/dose bounds, restoration, storage and standalone export
-before delegation. Their timing on this rig is not measured. The shipped plugin
+before delegation. The shipped plugin
 hooks expose scalar analysis and autofocus, not a general activation controller;
 list_mm_plugins does not establish that the Acquisition Wizard is controllable.
 Use the acquisition tools for contracts those integrations cannot express.

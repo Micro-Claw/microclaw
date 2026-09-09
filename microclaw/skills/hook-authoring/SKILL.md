@@ -455,9 +455,8 @@ The levers that DO work:
     An event that was never submitted needs no skip mechanism — nothing crosses
     the bridge, so stopping is simply NOT SUBMITTING. For time series,
     `adaptive_handoff` makes analysis and guarded actions gate each successor;
-    handoff cost on this rig is not measured. `hooked_fixed_plan` observers
+    `hooked_fixed_plan` observers
     keep the submitted events; their results do not gate the next exposure.
-    Processing/storage throughput is not measured on this rig.
 
 ## Event dict structure
 
@@ -596,7 +595,7 @@ not an invented object centroid.
 
 Two pre-coded strategies delegate hook logic to an installed Micro-Manager
 plugin. Reuse requires matching algorithm, data, stop and export contracts;
-installed does not mean compatible. Timing on this rig is not measured. Call
+installed does not mean compatible. Call
 list_mm_plugins() for classpaths; it does not prove a controllable running instance. These require a Micro-Manager build with
 the unified plugin classloader (PR #2401); on older builds the plugin classes
 are not resolvable over the ZMQ bridge and the hook fails loudly at startup.

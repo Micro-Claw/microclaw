@@ -125,10 +125,46 @@ def test_cli_and_tree():
             assert r.main(['--tree',str(Path(__file__).resolve().parents[1]),'--samples','2','--dry-run','--transcript',str(transcript)])==0
         rows=[json.loads(line) for line in transcript.read_text().splitlines()]
         assert len(rows)==20
+        assert all(row['turns'] == (2 if row['scenario'] in r.SCENARIOS else 1) for row in rows)
         for scenario in [*r.SCENARIOS,*r.attribution.ARMS]:
             assert [v['verdict'] for v in rows if v['scenario']==scenario]==['PASS','FAIL']
         import microclaw
         assert Path(microclaw.__file__).resolve().parents[1]==Path(__file__).resolve().parents[1]
+
+
+def test_sweep_deadline_predicate():
+    for delay, expected in ((.002, 'PASS'), (.02, 'PASS'), (1.0, 'PASS'),
+                            (0, 'FAIL'), (.0001, 'FAIL'), (-1, 'FAIL'),
+                            (float('nan'), 'FAIL'), (True, 'FAIL')):
+        acquisition = copy.deepcopy(r.SCENARIOS['sweep']['passing'])
+        acquisition['input']['interval_s'] = delay
+        assert r.score_call('sweep', acquisition)['verdict'] == expected, delay
+    assert '0.05' not in r.SCENARIOS['sweep']['user']
+    # Predicate depends on the whole frame count, not a fixed cutoff.
+    from microclaw.tools import _refuse_sequenced_time_axis
+    _refuse_sequenced_time_axis(5, .001, hardware_actions=True)
+    try:
+        _refuse_sequenced_time_axis(4008, .001, hardware_actions=True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('long-run deadline collision was accepted')
+
+
+def test_sample_turn_counts():
+    use = dict(type='tool_use', id='probe', name='probe', input={})
+    acquisition = dict(type='tool_use', id='acq', **r.SCENARIOS['native']['passing'])
+    for turns, expected in (([[acquisition]], 1), ([[use], [acquisition]], 2),
+                            ([[dict(type='text', text='No decision')]], 1)):
+        client = r.attribution.ScriptedClient(turns)
+        result = r.run_sample(client, 'unattributed', [], {('probe', '{}'): '{}'},
+                              model='scripted', system='', tools_schema=[],
+                              acquisition_tools={'run_timelapse'})
+        assert result.get('turns') == expected, result
+    client = r.attribution.ScriptedClient([[use], [use]])
+    result = r.run_sample(client, 'unattributed', [], {('probe', '{}'): '{}'},
+                          model='scripted', system='', tools_schema=[], max_turns=2)
+    assert result['verdict'] == 'NO_DECISION' and result.get('turns') == 2
 
 
 if __name__=='__main__':

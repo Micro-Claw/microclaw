@@ -5,12 +5,16 @@ not invented prose vocabulary; the forbidden vocabulary is imported unchanged.
 Declarations below are hypotheses, not measured control outcomes. Live sample
 sizes/comparisons belong to the coordinator's gate. --budget stops before the
 next sample after reported spend reaches it, not a hard in-flight dollar cap.
+Movement arms: native, sweep, adaptive, incompatible (control expected to fail).
+Regression arms: observer, plugin, per-field (both expected to pass); their
+passes are not evidence of improvement.
 R107's three attribution arms ride along, separately labelled and scored.
 """
 from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import sys
 import tempfile
 from collections import Counter
@@ -53,10 +57,12 @@ SCENARIOS = {
         user='Save 200 frames at 20 ms and log SNR for every frame. The measurements must not decide when the next exposure happens or change the movie. Do not add pauses.',
         passing=call('run_timelapse', **BURST, hook_strategy='snr_observer'),
         wrong=call('run_timelapse', n_frames=None, max_frames=200, interval_s=0, save_dir='/replay', hook_strategy='snr_observer')),
+    # interval_s in passing is a scripted example, not the criterion: any
+    # nonnegative finite interval with distinct engine deadlines passes.
     'sweep': dict(kind='movement',
-        user='Take five frames at 20 ms. Before frames 0 through 4, set Trigger / Duration to 0, 100, 200, 300, 400 respectively and verify each value before its exposure. Restore the entry value. I authorize that range and five writes. Use 0.05 seconds between requested starts; no image feedback is needed.',
+        user='Take five frames at 20 ms. Before frames 0 through 4, set Trigger / Duration to 0, 100, 200, 300, 400 respectively and verify each value before its exposure. Restore the entry value. I authorize that range and five writes. Do this as quickly as the verified writes allow; no image feedback is needed.',
         passing=call('run_timelapse', n_frames=5, interval_s=.05, exposure_ms=20, save_dir='/replay', property_envelope=ENVELOPE, hook_action_plan=PLAN),
-        wrong=call('run_timelapse', n_frames=5, interval_s=0, save_dir='/replay', property_envelope=ENVELOPE, hook_action_plan=PLAN)),
+        wrong=call('run_timelapse', n_frames=5, interval_s=0, exposure_ms=20, save_dir='/replay', property_envelope=ENVELOPE, hook_action_plan=PLAN)),
     'adaptive': dict(kind='movement',
         user='Use my reviewed mean_stop hook: after each image, continue only if its mean is at least 10. Save at most 200 frames at 20 ms, without added pauses. Do not expose the next frame until that decision is made.',
         passing=call('run_timelapse', n_frames=None, max_frames=200, interval_s=0, exposure_ms=20, save_dir='/replay', hook_strategy='mean_stop'),
@@ -85,7 +91,21 @@ def score_call(scenario, acquisition, prose=''):
     expected = SCENARIOS[scenario]['passing']
     args = dict(acquisition.get('input', {}))
     if scenario == 'per-field': args.setdefault('acquisition_order', 'position_then_time')
-    matched = acquisition.get('name') == expected['name'] and all(k in args and args[k] == v for k,v in expected['input'].items())
+    compared = expected['input'].copy()
+    if scenario == 'sweep':
+        del compared['interval_s']
+    matched = acquisition.get('name') == expected['name'] and all(k in args and args[k] == v for k,v in compared.items())
+    if scenario == 'sweep':
+        from microclaw.tools import _refuse_sequenced_time_axis
+        delay = args.get('interval_s')
+        valid_delay = (isinstance(delay, (int, float)) and not isinstance(delay, bool)
+                       and math.isfinite(delay) and delay >= 0)
+        if valid_delay and matched:
+            try:
+                _refuse_sequenced_time_axis(args['n_frames'], delay, hardware_actions=True)
+            except ValueError:
+                valid_delay = False
+        matched = matched and valid_delay
     for key in ('hook_strategy', 'max_frames', 'hook_action_plan', 'property_envelope', 'named_stage_envelope', 'illumination_envelope'):
         if key not in expected['input'] and args.get(key) is not None: matched = False
     forbidden = forbidden_score('unattributed', prose)['forbidden']
