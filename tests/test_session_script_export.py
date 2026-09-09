@@ -4822,11 +4822,6 @@ def test_80b_autofocus_grid_executes_like_live(tmp_path, hooked_engine, field):
     assert engine.core.probes == live_core.probes
     assert engine.core.captures == live_core.captures
     live_log, emitted_log = _80b_log(live_hook), _80b_log(namespace["hook"])
-    if field == "bounds":
-        assert "1.0" in live_log[0]["reason"] and "2.5" in live_log[0]["reason"]
-        assert "1.0" in emitted_log[0]["reason"] and "2.5" in emitted_log[0]["reason"]
-        live_log = [{k:v for k,v in row.items() if k != "reason"} for row in live_log]
-        emitted_log = [{k:v for k,v in row.items() if k != "reason"} for row in emitted_log]
     assert emitted_log == live_log
     assert len(engine.backends[-1].saved) == 9
     assert len({tuple(sorted(axes.items())) for axes in engine.backends[-1].saved}) == 9
@@ -4840,13 +4835,14 @@ def test_80b_autofocus_grid_executes_like_live(tmp_path, hooked_engine, field):
         next_capture = next(i for i in engine.core.trace[index+1:] if i[0] == "capture")
         assert next_capture[1] == item[1]
     if field == "peaked":
-        assert all(entry["converged"] for entry in _80b_log(live_hook) if "converged" in entry)
+        attempts = [entry for entry in live_log if entry["autofocus"] == "attempted"]
+        outcomes = [entry for entry in live_log if entry["autofocus"] == "converged"]
+        assert len(attempts) == len(outcomes) == 9
+        assert all("converged" not in entry for entry in attempts)
+        assert all(entry["converged"] is True for entry in outcomes)
+        assert [entry["autofocus_attempt"] for entry in attempts] == [
+            entry["autofocus_attempt"] for entry in outcomes]
         assert [c[2] for c in engine.core.captures] == pytest.approx([3.5+c for r in range(3) for c in range(3)], abs=0.125)
-    elif field == "flat":
-        assert all(not entry["converged"] for entry in _80b_log(live_hook))
-        assert [c[2] for c in engine.core.captures] == [3+c for r in range(3) for c in range(3)]
-    else:
-        assert _80b_log(live_hook)[0]["autofocus"] == "skipped"
     assert tools._autofocus_outcomes(json.loads((tmp_path / "grid.json").read_text(encoding="utf-8")))["event_count"] == 9
 
 

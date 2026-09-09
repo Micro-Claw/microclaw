@@ -48,7 +48,7 @@ def acquisition_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, 'Acquisition', acquisition)
     monkeypatch.setattr(tools, '_configure_hook_capabilities', lambda *a, **k: None)
     monkeypatch.setattr(tools, '_authorize_acquisition', lambda *a, **k: MagicMock(has_overrun=False))
-    monkeypatch.setattr(tools, '_plan_with_hook_dose', lambda plan, hook: plan)
+    monkeypatch.setattr(tools, '_plan_with_hook_dose', lambda plan, hook, **kwargs: plan)
     # Keep actual event deadlines and the real acquisition runner; only rig reads are fake.
     ctrl.core.get_image_width.return_value = 2
     ctrl.core.get_image_height.return_value = 2

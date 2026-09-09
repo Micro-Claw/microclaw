@@ -57,7 +57,8 @@ def test_selected_measured_coordinate_outside_window_is_never_dispatched(monkeyp
     if boundary == "guard":
         def check(z):
             if z > .25:
-                raise SafetyViolation("selected target exceeds guard")
+                raise (namespace["SafetyViolation"] if namespace is not None else SafetyViolation)(
+                    "selected target exceeds guard")
         ctrl._guard = SimpleNamespace(check_z=check, stage_move_tolerance=lambda *a, **k: None)
     patch("read_stage_start_position", lambda *a: 0.)
     patch("settle_stage_move", lambda *a: {
@@ -188,7 +189,8 @@ from microclaw import tools
     for name, fn in tools.TOOL_REGISTRY.items()
     if getattr(fn, "_microclaw_acquisition_entry_point", False) and name != "run_mda"
     for followup in ([False, True] if name == "run_adaptive_survey" else [False])])
-def test_required_failure_survives_every_acquisition_boundary(name, followup, tmp_path, monkeypatch):
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_required_failure_survives_every_acquisition_boundary(name, followup, cleanup_failure, tmp_path, monkeypatch):
     from unittest.mock import MagicMock
     from microclaw.acquisition import AcquisitionLedger
     import json
@@ -217,6 +219,12 @@ def test_required_failure_survives_every_acquisition_boundary(name, followup, tm
         reservations.append(reservation)
         return reservation
     monkeypatch.setattr(tools, "_authorize_acquisition", reserve)
+    typed_failures = []
+    report_failure = tools._hooked_failure_result
+    def report_typed_failure(exc, log_path):
+        typed_failures.append(exc.__cause__)
+        return report_failure(exc, log_path)
+    monkeypatch.setattr(tools, "_hooked_failure_result", report_typed_failure)
     constructed = []
     exposed = []
     class Backend:
@@ -269,11 +277,16 @@ def test_required_failure_survives_every_acquisition_boundary(name, followup, tm
             kwargs["acquire_hits"].append({"name": "earlier", "x_um": 0, "y_um": 0, "z_um": 10})
             return result
         monkeypatch.setattr(tools, "_acquire_survey_with_detector", survey_with_prior_hit)
+    if cleanup_failure:
+        hook.restore_property = MagicMock(side_effect=RuntimeError("cleanup failed"))
     result = json.loads(tools.execute_tool(name, inputs[name], ctrl, guard))
     assert len(constructed) == 1, result
     assert exposed == [], "planned image exposed after required autofocus failure"
+    assert typed_failures and all(isinstance(exc, SafetyViolation) for exc in typed_failures)
     assert "error" in result, "autofocus returned an exposable event instead of stopping"
     assert "field_B" in result["error"] and "flat field" in result["error"], result
+    if cleanup_failure:
+        assert "cleanup failed" in result["error"]
     assert all(not r.ledger.in_flight for r in reservations)
 
 

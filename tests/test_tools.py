@@ -2271,7 +2271,10 @@ class TestRunAutofocus:
         assert set(result["coarse"]) == {
             "z_positions", "measured_z_positions", "metric_curve", "best_z_um",
             "peak_interior", "contrast", "arrival_unverifiable_count",
-            "arrival_unverifiable_planes"
+            "arrival_unverifiable_planes",
+            "selected_commanded_z_um", "selected_measured_z_um",
+            "sweep_window_um", "final_commanded_z_um",
+            "final_readback_z_um", "refusal_reason",
         }
         assert "region" not in result
 

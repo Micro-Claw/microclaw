@@ -5,6 +5,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from microclaw.safety import SafetyViolation
 from microclaw.image_analysis import snap_to_numpy, tenengrad
 from microclaw.controller import (
     STAGE_MOVE_POLL_S, StageMoveError, read_stage_start_position,
@@ -372,9 +373,20 @@ def _selected_target_reason(ctrl, target, lo, hi):
     if guard is not None:
         try:
             guard.check_z(target)
-        except Exception as exc:
+        except SafetyViolation as exc:
             return f"Selected measured Z {target} um is not allowed: {exc}"
     return None
+
+
+def _entry_z(ctrl):
+    try:
+        return float(ctrl.core.get_position())
+    except StageMoveError:
+        raise
+    except Exception as exc:
+        raise stage_move_dispatch_failure(
+            ctrl.core, ctrl.core.get_focus_device(), None, None, "floor", None, exc
+        ) from exc
 
 
 def sweep_autofocus(
@@ -388,7 +400,7 @@ def sweep_autofocus(
     probe: FocusProbe | None = None,
 ) -> SweepResult:
     """Sweep Z and measure the focus metric; move to best Z only if move_to_best."""
-    entry_z = float(ctrl.core.get_position())
+    entry_z = _entry_z(ctrl)
     focus_device = ctrl.core.get_focus_device()
     # linspace, not arange: float arange accumulates error and can drop or
     # duplicate the endpoint.
@@ -410,6 +422,8 @@ def sweep_autofocus(
         )
         try:
             ctrl.core.set_position(z)
+        except StageMoveError:
+            raise
         except Exception as exc:
             raise stage_move_dispatch_failure(
                 ctrl.core, focus_device, z, start_um, "relative", configured, exc
@@ -446,6 +460,8 @@ def sweep_autofocus(
                 ctrl.core, focus_device, best_z, "relative", configured)
             try:
                 ctrl.core.set_position(best_z)
+            except StageMoveError:
+                raise
             except Exception as exc:
                 raise stage_move_dispatch_failure(
                     ctrl.core, focus_device, best_z, start_um, "relative", configured, exc
@@ -489,6 +505,8 @@ def _restore(ctrl, z: float, original_failure: str | None = None) -> dict:
         )
         try:
             ctrl.core.set_position(z)
+        except StageMoveError:
+            raise
         except Exception as exc:
             raise stage_move_dispatch_failure(
                 ctrl.core, focus_device, z, start_um, "floor", configured, exc
@@ -496,6 +514,10 @@ def _restore(ctrl, z: float, original_failure: str | None = None) -> dict:
         return settle_stage_move(
             ctrl.core, focus_device, z, start_um, "floor", configured
         )
+    except (StageMoveError, SafetyViolation) as exc:
+        if original_failure:
+            exc.add_note(f"{original_failure}; autofocus restoration also failed: {exc}")
+        raise
     except Exception as exc:
         if original_failure:
             raise RuntimeError(f"{original_failure}; autofocus restoration also failed: {exc}") from exc
@@ -581,7 +603,7 @@ def coarse_then_fine_autofocus(
     Callers may inject a different callable for controlled experiments;
     autofocus does not guess a metric from one frame.
     """
-    entry_z = float(ctrl.core.get_position())
+    entry_z = _entry_z(ctrl)
     active_probe = probe or image_probe(ctrl, metric_fn, None, min_contrast, exposure_callback)
     lo_bound = entry_z - z_range_um / 2 if z_min_um is None else z_min_um
     hi_bound = entry_z + z_range_um / 2 if z_max_um is None else z_max_um
@@ -591,7 +613,7 @@ def coarse_then_fine_autofocus(
             ctrl, lo_bound, hi_bound, coarse_step_um, settle_ms,
             metric_fn=metric_fn, move_to_best=False, probe=active_probe,
         )
-    except Exception as move_exc:
+    except (StageMoveError, SafetyViolation, RuntimeError) as move_exc:
         try:
             _restore(ctrl, entry_z)
         except Exception as restore_exc:
@@ -635,7 +657,7 @@ def coarse_then_fine_autofocus(
             ctrl, lo, hi, fine_step_um, settle_ms,
             metric_fn=metric_fn, move_to_best=False, probe=active_probe,
         )
-    except Exception as move_exc:
+    except (StageMoveError, SafetyViolation, RuntimeError) as move_exc:
         try:
             _restore(ctrl, entry_z)
         except Exception as restore_exc:
@@ -683,7 +705,7 @@ def coarse_then_fine_autofocus(
 
     try:
         settled = _restore(ctrl, fine.best_z_um)
-    except Exception as move_exc:
+    except (StageMoveError, SafetyViolation, RuntimeError) as move_exc:
         try:
             _restore(ctrl, entry_z)
         except Exception as restore_exc:
@@ -714,7 +736,7 @@ def single_sweep_autofocus(
     Like the two-pass variant it refuses to move on a flat curve OR on a peak
     pinned at a sweep boundary (design/28 F1).
     """
-    entry_z = float(ctrl.core.get_position())
+    entry_z = _entry_z(ctrl)
     active_probe = probe or image_probe(ctrl, metric_fn, None, min_contrast, exposure_callback)
     try:
         sweep = sweep_autofocus(
@@ -725,7 +747,7 @@ def single_sweep_autofocus(
             settle_ms, metric_fn=metric_fn, move_to_best=False,
             probe=active_probe,
         )
-    except Exception as move_exc:
+    except (StageMoveError, SafetyViolation, RuntimeError) as move_exc:
         try:
             _restore(ctrl, entry_z)
         except Exception as restore_exc:
@@ -779,7 +801,7 @@ def single_sweep_autofocus(
         )
     try:
         settled = _restore(ctrl, sweep.best_z_um)
-    except Exception as move_exc:
+    except (StageMoveError, SafetyViolation, RuntimeError) as move_exc:
         try:
             _restore(ctrl, entry_z)
         except Exception as restore_exc:

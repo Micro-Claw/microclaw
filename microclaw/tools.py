@@ -1241,6 +1241,7 @@ def _analysis_source(
             autofocus.curve_contrast, autofocus.contrast_threshold,
             autofocus.sweep_autofocus, autofocus._restore,
             autofocus._selected_target_reason,
+            autofocus._entry_z,
             autofocus._refusal,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,
@@ -2692,7 +2693,7 @@ class _HookedAcquisitionFailure(RuntimeError):
                  last_hardware_state: dict[str, Any] | None = None,
                  cadence: dict[str, Any] | None = None,
                  accounting: dict | None = None) -> None:
-        super().__init__(str(error))
+        super().__init__("; ".join([str(error), *getattr(error, "__notes__", [])]))
         self.accounting = accounting or {}
         self.dataset_path = dataset_path
         self.frames_exposed = frames_exposed
@@ -4918,9 +4919,10 @@ def _acquire_with_hooks(
                     if failures:
                         prior = outcome.get("exc")
                         detail = "; ".join(failures)
-                        outcome["exc"] = RuntimeError(
-                            f"{prior}; {detail}" if prior is not None else detail
-                        )
+                        if prior is not None:
+                            prior.add_note(detail)
+                        else:
+                            outcome["exc"] = RuntimeError(detail)
                     flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
                     if isinstance(flag, dict) and outcome.get("exc") is not None:
                         late = outcome["exc"]
@@ -5022,7 +5024,7 @@ def _acquire_with_hooks(
     except Exception as exc:
         restoration_failures = [] if waiter_started else finish_owned_cleanup()
         if restoration_failures:
-            exc = RuntimeError(f"{exc}; {'; '.join(restoration_failures)}")
+            exc.add_note("; ".join(restoration_failures))
         if hook is not None and dataset_path is not None:
             stage_ctx = getattr(hook, "_named_stage_context", None)
             property_ctx = getattr(hook, "_property_context", None)
@@ -5209,7 +5211,10 @@ def run_zstack(
             dataset_path, log_path, status="Z-stack complete.", hook=hook,
             frames_planned=len(events), frames_acquired=teardown.get("saved_frames", 0),
             hook_exposures_observed=getattr(hook, "observed_exposures", None),
-            hook_extra_exposures_planned=plan.frames - len(events),
+            hook_extra_exposures_planned=(
+                getattr(hook, "planned_extra_exposures", lambda: 0)()
+                + len(events) * getattr(hook, "planned_extra_exposures_per_event", lambda: 0)()
+            ),
             **_reservation_report(reservation),
         ))
         restoration = getattr(hook, "_named_stage_restoration", None)
@@ -5568,7 +5573,10 @@ def run_timelapse(
             dataset_path, log_path, status="Timelapse complete.", hook=hook,
             frames_planned=len(events), frames_acquired=teardown.get("saved_frames", 0),
             hook_exposures_observed=getattr(hook, "observed_exposures", None),
-            hook_extra_exposures_planned=plan.frames - len(events),
+            hook_extra_exposures_planned=(
+                getattr(hook, "planned_extra_exposures", lambda: 0)()
+                + len(events) * getattr(hook, "planned_extra_exposures_per_event", lambda: 0)()
+            ),
             **_reservation_report(reservation),
         ))
         restoration = getattr(hook, "_named_stage_restoration", None)

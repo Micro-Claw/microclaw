@@ -366,8 +366,10 @@ class AutofocusHook(HookBase):
                 best_z_um=round(result.final_z_um, 3), converged=result.converged,
                 reason=result.reason,
                 sweep_window_um=[z_start, z_end],
-                sweeps=[vars(sweep) for sweep in (result.coarse, result.fine)
-                        if sweep is not None],
+                sweeps=[{key: getattr(sweep, key) for key in (
+                    "selected_commanded_z_um", "selected_measured_z_um",
+                    "sweep_window_um", "final_commanded_z_um", "final_readback_z_um",
+                )} for sweep in (result.coarse, result.fine) if sweep is not None],
                 final_commanded_z_um=result.final_commanded_z_um,
                 final_readback_z_um=result.final_z_um,
                 hook_exposures_observed=self.observed_exposures,
