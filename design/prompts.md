@@ -10069,3 +10069,59 @@ demanded the phrase be absent, which is worse product than stating the
 distinction where F2 says it must be stated. Forbid the *claim*, not the
 vocabulary. Also: a check for `z_start_um` misses the reversed-range message,
 which says `z_start`.
+
+## Runner turn cost — measured, 2026-09-09 (design/81 blocks 81a-1 and 81a-2)
+
+Four Codex turns, three of them killed by usage limits. One carried a usage
+record, and it settles what a runner turn actually costs.
+
+| turn | commands | pytest calls | command output | input tokens |
+|---|---|---|---|---|
+| 81a-1 start | 26 | 3 | 0.32 MB | not recorded |
+| 81a-1 rev 1 | 42 | 10 | 0.16 MB | **6,398,393** (6,246,016 cached) |
+| 81a-1 rev 2 | 14 | 3 | 0.05 MB | not recorded |
+| 81a-2 start | 62 | 20 | 0.49 MB | not recorded |
+
+**The content is not the cost; the re-sending is.** That 6.4M-token turn read
+0.16 MB of command output — about 40k tokens — and produced 39k of output. 42
+commands is ~43 model calls, and each call re-sends the whole accumulated
+context: **6.4M ÷ 43 ≈ 150k tokens of context per call.**
+
+**What filled it was the documents the prompt told it to read.** The four
+largest outputs of the 81a-2 start turn:
+
+- **`cat CLAUDE.md` — 70.8 kB, and it ran that twice.** ~18k tokens each.
+- `cat design/81-…md` — 46 kB, ~11k tokens, plus further reads in slices.
+- Then repeated `sed -n` windows into `tools.py`, which is **12,028 lines**.
+
+CLAUDE.md read at the third call and re-sent across ~40 later calls is roughly
+**1.4M input tokens on its own — about a quarter of that turn's entire bill.**
+design/81 adds ~400k. Both reads were instructed by the prompt's first
+paragraph.
+
+**So a runner prompt must not say "read `CLAUDE.md`" or "read the design doc".**
+Inline the eight or ten rules the block actually needs — a prompt already
+paraphrases most of them — and quote the decision text instead of pointing at a
+733-line notebook. Name narrow `sed -n` ranges for source, never a file. A
+revision prompt must say **explicitly** not to re-read what the resumed session
+already holds, because a resumed turn will otherwise read it again.
+
+This is `design/82`'s finding applied to the coordinator's own tooling: the bill
+is the context resent. It is also a *second, larger* version of the failure this
+file already recorded — 79a's 6.2M turn from invoking the full suite 22 times.
+The scoped-test-command fix worked (81a-2's start turn ran 20 targeted
+invocations, 0.49 MB total, no full-suite run) and the bigger leak was upstream
+of it, in the reading. **Fixing the loudest cost is not the same as fixing the
+cost.**
+
+Caching is not the lever. 6,246,016 of the 6,398,393 tokens were cache reads —
+97.6% — so the cache is working and the window still died. The limit meters
+total input regardless, which means cache-friendliness lowers a bill and does
+not buy time.
+
+One corollary for handoffs: **a killed turn's failure attribution must be
+measured, not inferred.** `ab3af26`'s message grouped five of six failures under
+a new refusal because that was the plausible shared cause. Running two of them
+showed five shared a *different* cause — an emitted script calling a helper it
+never defines — and only one was the refusal. Inferring would have sent the next
+turn after the wrong defect with the coordinator's authority behind it.
