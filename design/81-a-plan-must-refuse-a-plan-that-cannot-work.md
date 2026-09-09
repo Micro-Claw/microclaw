@@ -1,6 +1,8 @@
 # A plan must refuse a plan that cannot work
 
-Status: **PROPOSED**, 2026-09-09. Design only; no implementation or gate has run.
+Status: **IN FLIGHT**, 2026-09-09. Findings and decisions reviewed; D3(b)'s
+policy settled by the operator (see D3(b)); 81a split into 81a-1 and 81a-2 (see
+Blocks). Implementation started at 81a-1; no gate has run.
 
 Reviewed against the record on `main` `e03f790`: the session's three JSONL files
 and four analysis manifests in
@@ -370,17 +372,36 @@ at the cost of a dataset with a hole in it that
 the log must name. A single-field autofocused acquisition has nothing to
 continue and the distinction collapses.
 
-The recommendation for ordinary autofocus non-convergence with successful
-restoration is **skip the field, continue the run, and name every skipped
-field in the result and the hook log** — with abort available where the operator
-asks for it, since a survey whose whole purpose is focused frames may prefer to
-stop and be re-planned. Continuation requires verified successful restoration
+**Operator decision, 2026-09-09: stopping is the default, and
+skip-and-continue is a per-experiment argument the caller sets.** The draft
+above recommended the reverse, and the argument that inverted it is one this
+document had not made: the two policies are indistinguishable *at the first
+failing field*, because an autofocus **configuration** error and an isolated
+flat curve look identical there. Under skip-and-continue a misconfigured
+200-tile survey therefore runs to completion and delivers 200 holes, having
+spent the sample and the session on a dataset with nothing in it — whereas
+stopping at the first field costs one field and tells the operator the
+autofocus is wrong while there is still something to re-plan. The nine-position
+case that motivated the draft recommendation is the *small* dataset, where the
+loss from stopping is bounded and the operator is standing there; the large
+dataset is where the choice actually costs, and there stopping is the safe
+default. So:
+
+- **Default: stop the run through the supervised failure path**, reporting the
+  completed fields and naming the field and reason that stopped it.
+- **Opt in to skip-and-continue with one argument**, two values, no more
+  surface than that. It is an honest per-experiment choice rather than a way
+  past a refusal, so it carries no failure-case assertion
+  (`feedback_optout_must_be_truthful` does not bite here); its description must
+  state the 200-hole failure mode so a caller choosing it knows what they are
+  buying.
+
+Continuation requires verified successful restoration
 and a known hardware state; `converged: false` alone is not that evidence.
 Motion errors, failed restoration, unsafe runtime reach or uncertain hardware
-state must stop the run through the supervised failure path, regardless of the
-chosen policy for ordinary non-convergence. Either way
-this is a change that alters what a run does with the operator's sample, so it
-needs their agreement before 81a ships, not after.
+state must stop the run through the supervised failure path **regardless of the
+argument's value** — the argument governs ordinary non-convergence only, and
+must not be reachable as a way to continue through an unknown hardware state.
 
 A skipped field is **unmeasured**, not empty. A flat autofocus curve does not
 establish that no beads are present. Its per-field report must say
@@ -591,15 +612,18 @@ structure or ordering, mutate the one property instead.
    partial sweep exposure accounting, supervised teardown and restoration
    failures without masking the original failure. Unsafe runtime reach, motion
    errors, failed restoration and uncertain hardware state must prevent all
-   subsequent acquisition under either policy. For ordinary non-convergence
-   with verified successful restoration under the recommended skip-and-continue
-   behaviour, assert the **later fields still acquire** and the skipped field
-   is named in both the result and the hook log, with "not acquired / count
-   unavailable" rather than zero in the per-field report and count summaries;
-   under abort,
-   assert no subsequent event is acquired and the completed fields are still
-   reported. Whichever the operator chooses, the other must not be reachable by
-   accident.
+   subsequent acquisition **whatever the argument says**. For ordinary
+   non-convergence with verified successful restoration, test both values of
+   the D3(b) argument: **at its default**, assert no subsequent event is
+   acquired, the completed fields are still reported, and the field and reason
+   that stopped the run are named; **when skip-and-continue is asked for**,
+   assert the later fields still acquire and the skipped field is named in both
+   the result and the hook log, with "not acquired / count unavailable" rather
+   than zero in the per-field report and count summaries. Assert the default
+   with the argument **omitted**, not merely set to its default value — a
+   default that only holds when spelled out is not a default. Neither policy
+   may be reachable by accident, and no value of the argument may continue
+   through an unknown hardware state.
 9. Reporting fixtures cover historical all-skipped logs, current successful
    logs with no `autofocus` key, mixed outcomes, unknown outcomes, repeated
    events per position and incomplete saved-frame delivery. Assert actual saved
@@ -638,18 +662,38 @@ structure or ordering, mutate the one property instead.
 
 ## Blocks
 
-**81a — the plan and runtime refuse what cannot work.** D1, D2, D3.
-`microclaw/tools.py`, `microclaw/tools_schema.py`, `microclaw/hooks.py`,
-`microclaw/autofocus.py`, composite-hook/export support as required, and tests
-1–9. LOCAL tests establish event geometry, preflight ordering, target guards,
-accounting and failure propagation. Run the installed-engine probe as a
-baseline, not as proof of a mirror formula. Draft the R108 knowledge correction.
+**81a is split into two blocks** (coordinator decision, 2026-09-09). As
+specified it changed pure plan-time validation *and* runtime motion and failure
+handling across five modules with nine test groups, in one turn. The seam is
+real rather than administrative: D1/D2 are refusals computed from arguments
+before any hardware is touched, D3 changes what a run does to the sample when
+autofocus fails. 81a-1 is mergeable and gate-able on its own and fixes the
+incident's first failure; 81a-2 builds on its validated event list.
 
-This block now changes runtime motion and failure handling as well as pure
-preflight. Add a focused demo-machine gate for successful autofocus, runtime
-refusal before the planned image, restoration and standalone export. Reconcile
-observed exposure/position logs with the result. Do not claim fake tests prove
-physical arrival or that added logging proves the old incident's mechanism.
+**81a-1 — the plan refuses what cannot work.** D1, D2.
+`microclaw/tools.py`, `microclaw/tools_schema.py` and the standalone emitters,
+tests 1–5. LOCAL tests establish event geometry and preflight ordering: the
+validated event list is the submitted list, the guard sees the actual generated
+extrema, and no earlier position group acquires and no exposure is set when a
+later group is invalid. Run the installed-engine probe as a baseline, not as
+proof of a mirror formula. Draft the R108 knowledge correction. No rig gate:
+every limb is computable locally, and D1 item 4's ordering claim is an
+observable-effects assertion, not a hardware one.
+
+**81a-2 — the run refuses what cannot work.** D3(a–d).
+`microclaw/hooks.py`, `microclaw/autofocus.py`, `microclaw/tools.py`,
+composite-hook and export support as required, and tests 6–9. Consumes 81a-1's
+validated event list for nominal centres. Carries the D3(b) operator decision:
+**stop by default, skip-and-continue as one per-experiment argument**, and the
+argument must not be reachable as a way to continue through an unknown hardware
+state. LOCAL tests establish reach composition, target guards, accounting and
+failure propagation.
+
+This block changes runtime motion and failure handling. Add a focused
+demo-machine gate for successful autofocus, runtime refusal before the planned
+image, restoration and standalone export. Reconcile observed exposure/position
+logs with the result. Do not claim fake tests prove physical arrival or that
+added logging proves the old incident's mechanism.
 
 **81b — the built-in measures per field and shows its detections.** D4(a) and
 D5's artifact support. `microclaw/dataset_mosaic.py`, `microclaw/tools.py`
@@ -723,11 +767,13 @@ Numbered from `R107`, the current highest in `design/70`.
 
 ## Run ledger
 
-Baseline before the block: `main` `e03f790`, coordinator-run suite not yet
-measured for this notebook.
+Baseline before the block: `main` `95cfdfd` (the notebook's own commit;
+`e03f790` was the tree the findings were read against). Coordinator-run suite
+baseline measured at block start and recorded in the 81a-1 row.
 
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
-| 81a | — | not started | | | |
-| 81b | — | not started; follows 81a | | | |
-| 81c | — | not started; follows 81a and 81b | | | |
+| 81a-1 | `design81/81a1-plan-time-refusal` | `95cfdfd` | | | |
+| 81a-2 | — | not started; follows 81a-1 | | | |
+| 81b | — | not started; follows 81a-1 | | | |
+| 81c | — | not started; follows 81a-2 and 81b | | | |
