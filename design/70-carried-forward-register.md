@@ -130,6 +130,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R110` | [A fixed-plan Z sweep leaves the focus axis wherever its last plane put it](#r110) | MEDIUM | SMALL |  |
 | `R111` | [Autofocus re-commands a measured coordinate the guard never checked](#r111) | HIGH | SMALL | **81a-2** |
 | `R112` | [No record exists of an operator having SEEN the evidence behind a count](#r112) | LOW | SMALL |  |
+| `R113` | [Skipping one field and continuing is not expressible in a fixed-plan acquisition](#r113) | MEDIUM | LARGE |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2610,3 +2611,16 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE. Not 81c's subject.
 - **Effort** — SMALL
 - **Provenance** — `design/81` F6 and the rejected-alternatives list, 2026-09-09.
+
+### R113 — Skipping one field and continuing is not expressible in a fixed-plan acquisition
+
+**The operator asked for autofocus failure to stop by default *and* for skip-and-continue as a per-experiment choice. Block 81a-2 ships the stop. The skip cannot be built where the hook lives.**
+
+- **Why** — a fixed multiposition run submits **one** `Acquisition` for every field, and `post_hardware_hook_fn` has no way to suppress an exposure. Returning `None` does not skip: pyjavaz turns it into `{}`, the engine fires the camera at the unfocused plane, and the run continues. That is design/27's ghost exposure, and `hooks.py:613` carries the comment. Raising aborts the whole acquisition, which is the *stop* policy, not the skip.
+- **What it would take** — never submitting the field's event. Two routes exist in the tree. An event stream (`_survey_event_stream`, which `run_adaptive_survey` already drives) or **one `Acquisition` per field**, block 77b's pattern. The second is measured: field B began **0.601 s** after field A's last frame, so a 200-tile autofocused survey would pay ~2 minutes of inter-field overhead — charged to every run, including the ones that never skip a field.
+- **Why the argument was not shipped anyway** — an opt-in whose "skip" silently exposes the field is worse than no argument: `CLAUDE.md`'s block-wearing-an-opt-out's-name with the sign flipped, an *argument wearing a capability's name*. A per-shape argument was also rejected: skip is already free for `interval_s > 0`, which splits per field, and impossible for a zstack, and a caller should not need a paragraph to predict which they have.
+- **What is NOT known** — whether it is wanted enough to pay for. The operator's stated case for skipping was *small* datasets, where stopping is cheap and they are standing at the rig; the 0.601 s per field is charged on *large* ones, where they are not. That may make the whole feature not worth building, and that is the question to answer before any implementation.
+- **Where** — LOCAL to decide and to build; a demo-machine run to confirm the per-field cost on a real autofocused grid.
+- **Block** — NONE. Deferred out of **81a-2** by operator decision, 2026-09-09.
+- **Effort** — LARGE
+- **Provenance** — `design/81` D3(b); coordinator finding while preparing 81a-2's runner prompt, 2026-09-09.

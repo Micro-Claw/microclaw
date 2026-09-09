@@ -387,14 +387,31 @@ loss from stopping is bounded and the operator is standing there; the large
 dataset is where the choice actually costs, and there stopping is the safe
 default. So:
 
-- **Default: stop the run through the supervised failure path**, reporting the
-  completed fields and naming the field and reason that stopped it.
-- **Opt in to skip-and-continue with one argument**, two values, no more
-  surface than that. It is an honest per-experiment choice rather than a way
-  past a refusal, so it carries no failure-case assertion
-  (`feedback_optout_must_be_truthful` does not bite here); its description must
-  state the 200-hole failure mode so a caller choosing it knows what they are
-  buying.
+- **Stop the run through the supervised failure path**, reporting the
+  completed fields and naming the field and reason that stopped it. The pattern
+  exists: `MMAutofocusPluginHook.post_hardware_hook_fn` (`hooks.py:604`) logs,
+  then raises `SafetyViolation`, and pycro-manager's hook thread calls
+  `acquisition.abort(e)` so the error reaches the caller. `AutofocusHook` should
+  follow it rather than inventing a second mechanism.
+- **Skip-and-continue is deferred to `R113`, because it is not implementable
+  in this architecture** (coordinator finding, 2026-09-09, operator decision to
+  defer). A fixed multiposition run submits **one** `Acquisition` for every
+  field, and `post_hardware_hook_fn` cannot suppress an exposure: returning
+  `None` becomes an empty event over the bridge and fires the camera at the
+  unfocused plane anyway, and the acquisition keeps going. That is design/27's
+  ghost exposure, and `hooks.py:613` already says so in a comment. To skip a
+  field you must **never submit its event**, which needs either an event stream
+  (`_survey_event_stream`, which `run_adaptive_survey` uses) or one
+  `Acquisition` per field (block 77b's pattern, measured at a **0.601 s**
+  inter-field gap — a cost every autofocused run would pay, including the ones
+  that never skip).
+
+  So 81a-2 ships **stop only**, and ships **no argument at all**. An opt-in
+  whose "skip" silently exposes the field is `CLAUDE.md`'s block-wearing-an-
+  opt-out's-name with the sign flipped: an *argument wearing a capability's
+  name*. And a per-shape argument — skip works for `interval_s > 0`, which
+  already splits per field, and not for a zstack — was rejected because a
+  caller would need a paragraph to predict it.
 
 Continuation requires verified successful restoration
 and a known hardware state; `converged: false` alone is not that evidence.
@@ -612,18 +629,15 @@ structure or ordering, mutate the one property instead.
    partial sweep exposure accounting, supervised teardown and restoration
    failures without masking the original failure. Unsafe runtime reach, motion
    errors, failed restoration and uncertain hardware state must prevent all
-   subsequent acquisition **whatever the argument says**. For ordinary
-   non-convergence with verified successful restoration, test both values of
-   the D3(b) argument: **at its default**, assert no subsequent event is
-   acquired, the completed fields are still reported, and the field and reason
-   that stopped the run are named; **when skip-and-continue is asked for**,
-   assert the later fields still acquire and the skipped field is named in both
-   the result and the hook log, with "not acquired / count unavailable" rather
-   than zero in the per-field report and count summaries. Assert the default
-   with the argument **omitted**, not merely set to its default value — a
-   default that only holds when spelled out is not a default. Neither policy
-   may be reachable by accident, and no value of the argument may continue
-   through an unknown hardware state.
+   subsequent acquisition. For ordinary non-convergence with verified
+   successful restoration, assert no subsequent event is acquired (count
+   constructed `Acquisition` objects), the completed fields are still reported,
+   and the field and reason that stopped the run are named in both the result
+   and the hook log. Assert that the hook does **not** return `None` and does
+   **not** return the event unmodified on that path — design/27's ghost
+   exposure is the failure being prevented, and a fake that ignores the return
+   value cannot see it. There is no skip-and-continue argument to test
+   (`R113`).
 9. Reporting fixtures cover historical all-skipped logs, current successful
    logs with no `autofocus` key, mixed outcomes, unknown outcomes, repeated
    events per position and incomplete saved-frame delivery. Assert actual saved
@@ -680,13 +694,13 @@ proof of a mirror formula. Draft the R108 knowledge correction. No rig gate:
 every limb is computable locally, and D1 item 4's ordering claim is an
 observable-effects assertion, not a hardware one.
 
-**81a-2 — the run refuses what cannot work.** D3(a–d).
+**81a-2 — the run refuses what cannot work.** D3(a–d). Ships **stop only**;
+the skip path is `R113`. Also carries **81a-1's owed export limb**: one
+demo-machine run of an emitted Z-stack script (operator decision, 2026-09-09).
 `microclaw/hooks.py`, `microclaw/autofocus.py`, `microclaw/tools.py`,
 composite-hook and export support as required, and tests 6–9. Consumes 81a-1's
-validated event list for nominal centres. Carries the D3(b) operator decision:
-**stop by default, skip-and-continue as one per-experiment argument**, and the
-argument must not be reachable as a way to continue through an unknown hardware
-state. LOCAL tests establish reach composition, target guards, accounting and
+validated event list for nominal centres. Carries the D3(b) operator decision: **stop, with no
+skip argument** — see D3(b) for why the alternative is not implementable here. LOCAL tests establish reach composition, target guards, accounting and
 failure propagation.
 
 This block changes runtime motion and failure handling. Add a focused
