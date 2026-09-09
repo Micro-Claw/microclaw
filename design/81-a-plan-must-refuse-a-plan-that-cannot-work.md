@@ -703,6 +703,20 @@ validated event list for nominal centres. Carries the D3(b) operator decision: *
 skip argument** — see D3(b) for why the alternative is not implementable here. LOCAL tests establish reach composition, target guards, accounting and
 failure propagation.
 
+**Sequencing hazard against `design/82` block 82b** (noted 2026-09-09;
+design/82 is a separate coordinator's notebook and this note is only about
+81a-2's side of the overlap). 82b's D3 changes `read_hook_log`'s `entries`
+contract and D2 changes the shape of a recorded tool result that
+`export_session_script` renders from. 81a-2's D3(c) adds hook-log outcome
+fields and its exports render the autofocus hook's source. So the two blocks
+collide on the hook log and on the export tests — `design/82` already names
+`test_emitted_inline_defines_every_name_it_uses` as a thing to watch, which is
+the test 81a-1 had to extend and which 81a-2 touches again. **This is the
+block-13/41b shape**: both branches green alone, and merged, every exported
+script raises at runtime — a failure this notebook already reproduced once on
+2026-09-09. Do not run 81a-2 and 82b against that test concurrently; whichever
+merges second owes a re-run of the other's export and hook-log limbs.
+
 This block changes runtime motion and failure handling. Add a focused
 demo-machine gate for successful autofocus, runtime refusal before the planned
 image, restoration and standalone export. Reconcile observed exposure/position
