@@ -1935,7 +1935,6 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 acquire_shape_lines = [
                     f"    _z_start = hit['z_um'] + {ap['z_offset_start_um']!r}",
                     f"    _z_end = hit['z_um'] + {ap['z_offset_end_um']!r}",
-                    "    guard.check_z(_z_start)", "    guard.check_z(_z_end)",
                     f"    _shape = {{'z_start': _z_start, 'z_end': _z_end, "
                     f"'z_step': {ap['z_step_um']!r}}}",
                 ]
@@ -1954,7 +1953,10 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 *acquire_shape_lines,
                 f"    _events = {'_build_acquisition_events' if acquire_on_hit['protocol'] == 'zstack' else 'multi_d_acquisition_events'}(xy_positions=[(hit['x_um'], hit['y_um'])], position_labels=[hit['name']], **_shape)",
                 *( ["    for _event in _events: _event['z'] = hit['z_um']"]
-                   if acquire_on_hit["protocol"] == "timelapse" else [] ),
+                   if acquire_on_hit["protocol"] == "timelapse" else [
+                       "    guard.check_z(min(event['z'] for event in _events))",
+                       "    guard.check_z(max(event['z'] for event in _events))",
+                   ] ),
                 "    acquire_events.extend(_events)",
                 *( [f"core.set_exposure({ap['exposure_ms']!r})"]
                    if ap.get("exposure_ms") is not None else [] ),
@@ -9661,6 +9663,16 @@ def run_adaptive_survey(
                 ctrl, acquire_protocol, acquire_shape_for_plan, max_hits
             )
         except (SafetyViolation, ValueError, KeyError) as exc:
+            # This caller alone translates hit-relative offsets into the shared
+            # planner's Z spelling. Translate its guidance back at this boundary.
+            if acquire_protocol == "zstack" and str(exc).startswith("Equal Z endpoints"):
+                return {"error":
+                        "Equal z_offset_start_um/z_offset_end_um values are one plane, not a stack. "
+                        "These are offsets from each hit's Z. For one plane per hit, use "
+                        'acquire_on_hit.protocol="timelapse" with '
+                        'acquire_on_hit.protocol_params={"n_frames": 1, "interval_s": 0}; '
+                        "for a stack around each hit, use distinct offsets with "
+                        "z_offset_end_um greater than z_offset_start_um."}
             return {"error": str(exc)}
         channel_effects = {}
     result = _acquire_survey_with_detector(
@@ -9707,8 +9719,6 @@ def run_adaptive_survey(
                     else:
                         z_start = hit["z_um"] + acquire_params["z_offset_start_um"]
                         z_end = hit["z_um"] + acquire_params["z_offset_end_um"]
-                        guard.check_z(z_start)
-                        guard.check_z(z_end)
                         hit_shape = {"z_start": z_start, "z_end": z_end,
                                      "z_step": acquire_params["z_step_um"]}
                     events_for_hit = _build_acquisition_events(
@@ -9719,6 +9729,9 @@ def run_adaptive_survey(
                     if acquire_protocol == "timelapse":
                         for event in events_for_hit:
                             event["z"] = hit["z_um"]
+                    else:
+                        guard.check_z(min(event["z"] for event in events_for_hit))
+                        guard.check_z(max(event["z"] for event in events_for_hit))
                     acquire_events.extend(events_for_hit)
                 acquire_path = _acquire_with_hooks(
                     guard, save_dir, f"{name}_acquire", acquire_events,

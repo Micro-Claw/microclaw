@@ -5475,3 +5475,45 @@ def test_81_emitted_later_group_preflight_precedes_first_acquisition(
         hooked_engine.execute(source, event_builder=engine)
     assert not hooked_engine.backends
     assert hooked_engine.core.trace == []
+
+
+@pytest.mark.parametrize('maximum', [60.5, 61.])
+def test_emitted_acquire_on_hit_guards_generated_extrema(tmp_path, monkeypatch, hooked_engine, maximum):
+    monkeypatch.setattr(hooked_engine.core, 'wait_for_config',
+                        lambda group, preset: hooked_engine.core.trace.append(('wait_config', group, preset)),
+                        raising=False)
+    # Isolate the emitted acquire phase at the completed-search boundary. The
+    # hit is runtime input, not a recorded trace substituted by the emitter.
+    monkeypatch.setattr(tools, '_adaptive_hook_export', lambda _: ('', 'object()', True))
+    params = tools.RecordedParams({
+        'protocol': 'timelapse', 'protocol_params': {'n_frames': 1, 'interval_s': 0, 'channel': 'DAPI'},
+        'positions': [dict(name='seed', x_um=0., y_um=0.)], 'hook_strategy': 'saved',
+        '_export_safety_limits': {'x_um': (-1., 1.), 'y_um': (-1., 1.),
+                                  'z_um': (0., maximum), 'exposure_ms': (0., None)},
+        'acquire_on_hit': {'channel': 'FITC', 'protocol': 'zstack', 'max_hits': 1,
+                           'protocol_params': {'z_offset_start_um': 0., 'z_offset_end_um': .5,
+                                               'z_step_um': 1.}},
+    }, {'channel_effects': {'search': {'config_group': 'Channel'},
+                            'acquire': {'config_group': 'Channel'}}})
+    source = tools._emit_adaptive(params, 'survey')
+    phase = 'if len(hits) >' + source.split('if len(hits) >', 1)[1]
+    runnable = '\n'.join([
+        'import math', 'from pathlib import Path', 'from typing import Any',
+        '_HERE = Path(__file__).parent', 'core = Core()',
+        inspect.getsource(tools._build_acquisition_events),
+        tools._export_guard_source(params['_export_safety_limits']),
+        "hits = [dict(name='hit', x_um=0., y_um=0., z_um=60.)]", phase,
+    ])
+    if maximum == 60.5:
+        with pytest.raises(Exception, match='Z=61.0 exceeds recorded maximum 60.5'):
+            hooked_engine.execute(runnable)
+        assert not hooked_engine.backends
+        assert not hooked_engine.core.captures
+    else:
+        namespace = hooked_engine.execute(runnable)
+        assert len(hooked_engine.backends) == 1
+        assert namespace['acquire_events'] is hooked_engine.backends[0].submitted_events
+        assert hooked_engine.backends[0].events == tools.multi_d_acquisition_events(
+            z_start=60., z_end=60.5, z_step=1.,
+            xy_positions=[(0., 0.)], position_labels=['hit'],
+        )

@@ -487,3 +487,61 @@ def test_injected_z_events_cannot_bypass_shared_refusal(rig, events, reason):
                          rig.params['save_dir'], exposure_ms=7, _events=events)
     assert not rig.acquisitions
     rig.ctrl.core.set_exposure.assert_not_called()
+
+
+@pytest.mark.parametrize('maximum', [60.5, 61.])
+def test_acquire_on_hit_guards_generated_extrema_before_submission(rig, monkeypatch, maximum):
+    from microclaw.hook_decisions import UntrustedHookAdapter
+
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    monkeypatch.setattr(tools, '_resolve_hook', lambda *_a, **_k: UntrustedHookAdapter(object()))
+    monkeypatch.setattr(tools, '_set_channel_for_composite', lambda *_: {})
+    _bound_z(rig, maximum)
+
+    def search(*_args, **kwargs):
+        # Supply the detection phase's runtime output; the acquire phase below
+        # uses the real event builder and the dispatching acquisition backend.
+        kwargs['acquire_hits'].append(dict(name='hit', x_um=0., y_um=0., z_um=60.))
+        reservation = tools._authorize_acquisition(rig.ctrl, rig.guard, kwargs['acquire_plan'])
+        return {'dataset_path': '/survey', '_acquire_reservation': reservation}
+
+    monkeypatch.setattr(tools, '_acquire_survey_with_detector', search)
+    result = json.loads(tools.execute_tool('run_adaptive_survey', {
+        'protocol': 'timelapse', 'protocol_params': {'n_frames': 1, 'interval_s': 0, 'channel': 'DAPI'},
+        'positions': [dict(name='seed', x_um=0., y_um=0.)],
+        'save_dir': rig.params['save_dir'], 'hook_strategy': 'saved',
+        'acquire_on_hit': {'channel': 'FITC', 'protocol': 'zstack', 'max_hits': 1,
+                           'protocol_params': {'z_offset_start_um': 0., 'z_offset_end_um': .5,
+                                               'z_step_um': 1.}},
+    }, rig.ctrl, rig.guard))
+    if maximum == 60.5:
+        assert 'error' in result, result
+        assert 'actual Z 61.0 exceeds bound 60.5' in result['error']
+        assert not rig.acquisitions
+        assert not rig.submitted
+    else:
+        assert 'error' not in result, result
+        assert result['hits_acquired'] == 1
+        assert len(rig.acquisitions) == 1
+        assert rig.acquisitions[0].events == multi_d_acquisition_events(
+            z_start=60., z_end=60.5, z_step=1.,
+            xy_positions=[(0., 0.)], position_labels=['hit'],
+        )
+    assert [call.args[0] for call in rig.guard.check_z.call_args_list] == [60., 61.]
+
+
+def test_equal_offset_refusal_teaches_offsets_while_absolute_refusal_stays_absolute(tmp_path, monkeypatch):
+    result, acquire, _ = _run_acquire_on_hit_zstack(tmp_path, monkeypatch, {
+        'z_offset_start_um': 0., 'z_offset_end_um': 0., 'z_step_um': .5,
+    })
+    message = result['error']
+    assert 'absolute stage coordinates' not in message, message
+    assert 'z_start_um' not in message and 'z_end_um' not in message
+    assert 'z_offset_start_um' in message and 'z_offset_end_um' in message
+    assert 'each hit' in message
+    assert 'acquire_on_hit' in message and 'timelapse' in message
+    acquire.assert_not_called()
+    with pytest.raises(ValueError) as error:
+        tools._build_acquisition_events(z_start=0., z_end=0., z_step=.5)
+    assert 'absolute stage coordinates' in str(error.value)
+    assert 'protocol="timelapse"' in str(error.value)
