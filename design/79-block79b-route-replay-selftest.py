@@ -59,7 +59,7 @@ def test_fixture_discovery_and_boundary_order():
         assert result['verdict']=='PASS',result
         assert result['calls']==['list_devices','list_hooks','run_timelapse']
         assert len(client.requests)==2
-        assert json.loads(client.requests[1]['messages'][-1]['content'][0]['content'])=={'devices':['Camera','Trigger']}
+        assert json.loads(client.requests[1]['messages'][-1]['content'][0]['content'])=={'devices':['Camera','Trigger','Z','XY','Focus']}
         missing=r.attribution.ScriptedClient([[dict(type='tool_use',id='x',name='unavailable',input={})],[dict(type='tool_use',id='a',**r.SCENARIOS['native']['passing'])]])
         assert r.run_route(missing,'native',fixtures,'system',[],'scripted')['verdict']=='NOT_AVAILABLE'
         prose=r.attribution.ScriptedClient([[dict(type='text',text='I will run_timelapse')]])
@@ -165,6 +165,106 @@ def test_sample_turn_counts():
     result = r.run_sample(client, 'unattributed', [], {('probe', '{}'): '{}'},
                           model='scripted', system='', tools_schema=[], max_turns=2)
     assert result['verdict'] == 'NO_DECISION' and result.get('turns') == 2
+
+
+def test_pilot_discovery_premises():
+    with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+        fixtures = r.Fixtures(Path(directory), stack)
+        def answer(name, **args):
+            raw = fixtures.get((name, json.dumps(args)))
+            assert raw is not None, name
+            payload = json.loads(raw)
+            assert 'error' not in payload, payload
+            return payload
+        info = answer('get_device_property_info', device='Trigger', property='Duration')
+        assert (info['lower_limit'], info['upper_limit']) == (0, 400)
+        assert not info['read_only'] and info['authorization']['approved_envelope_admitted']
+        emu = answer('check_emu_installed')
+        assert emu['htsmlm_installed'] and emu['htsmlm_configured']
+        assert 'out_of_bounds' not in answer('get_xy_position')
+        assert answer('get_z_position') == {'z_um': 0.0}
+        assert answer('list_stages')['single_axis_stages'] == ['Z']
+        assert answer('get_current_datetime')['utc_iso']
+        for name, args in [('get_exposure',{}), ('get_pixel_size',{}), ('get_roi',{}),
+                           ('get_stage_position',{'device':'Z'}),
+                           ('get_full_device_state',{'device':'Trigger'}),
+                           ('get_available_channels',{}), ('list_config_groups',{}),
+                           ('get_emu_laser_map',{}), ('get_emu_configuration',{}), ('get_knowledge',{})]:
+            payload = answer(name, **args)
+            assert not payload.get('problems'), payload
+        assert fixtures.get(('get_device_property_info', json.dumps({'device':'Missing','property':'Missing'}))) is None
+        try:
+            list(r.Vector(['Z']))
+        except TypeError:
+            pass
+        else:
+            raise AssertionError('Vector no longer models the bridge')
+
+
+def test_plugin_premise_and_real_hook():
+    from microclaw.hooks import MMAutofocusPluginHook
+    with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+        fixtures = r.Fixtures(Path(directory), stack)
+        state = json.loads(fixtures.get(('get_system_state', '{}')))
+        assert state.get('z_um') == 0.0 and 'out_of_bounds' not in state, state
+        assert state['focus'].get('device') == 'Focus', state['focus']
+        hook = MMAutofocusPluginHook(fixtures.ctrl, fixtures.guard, plugin_name='LabFocus')
+        af = fixtures.ctrl.plugins.get_autofocus_method('LabFocus')
+        for z in (0, 1, 2):
+            fixtures.ctrl.core.set_position(z)
+            event = {'axes':{'z':z}, 'z':z}
+            assert hook.post_hardware_hook_fn(event) == event
+        assert af.calls == 3
+
+
+def test_hardware_write_ends_as_failure():
+    with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+        fixtures = r.Fixtures(Path(directory), stack)
+        for name in ('move_stage_xy','move_stage_z','set_device_property','set_exposure','set_focus_lock'):
+            client = r.attribution.ScriptedClient([[dict(type='tool_use', id='write', name=name, input={})]])
+            result = r.run_route(client, 'per-field', fixtures, '', [], 'scripted', max_turns=1)
+            assert result['verdict'] == 'FAIL', (name, result)
+            assert result['calls'] == [name] and result['turns'] == 1
+            assert not result['not_available']
+
+
+def test_r107_cache_limit_at_request_boundary():
+    from collections import Counter
+    from contextlib import nullcontext
+    payload, _, _ = r.attribution.fixture('attributed-write')
+    messages = r.attribution.messages_for(r.attribution.session_fixture(), payload)
+    # A discovery continuation adds a newer prefix to the two stable R107 ones.
+    messages += [{'role':'assistant','content':[dict(type='tool_use', id='probe', name='list_devices', input={})]},
+                 {'role':'user','content':[dict(type='tool_result',tool_use_id='probe',content='{}')]}]
+    original = copy.deepcopy(messages)
+    sent = []
+    response = SimpleNamespace(content=[],stop_reason='end_turn',usage=SimpleNamespace())
+    live = r.prior.LiveClient.__new__(r.prior.LiveClient)
+    live.usage = Counter()
+    live._max_tokens = 10
+    def stream(**kwargs):
+        sent.append(kwargs)
+        return nullcontext(SimpleNamespace(get_final_message=lambda:response))
+    live._client = SimpleNamespace(messages=SimpleNamespace(stream=stream))
+    r.MeteredClient(live).create(model='scripted', system='system', tools=[{'name':'probe'}], messages=messages)
+    def markers(value):
+        if isinstance(value, dict):
+            return int('cache_control' in value) + sum(markers(v) for v in value.values())
+        if isinstance(value, list): return sum(markers(v) for v in value)
+        return 0
+    def check(request): assert markers(request) <= 4, markers(request)
+    check(sent[-1])
+    assert markers(sent[-1]) == 4  # caching stays, not merely a <= check
+    assert markers(sent[-1]['system']) == markers(sent[-1]['tools']) == 1
+    assert messages == original
+    mutated = copy.deepcopy(sent[-1])
+    mutated['messages'][0]['content'] = [dict(type='text',text='fifth',cache_control={'type':'ephemeral'})]
+    try:
+        check(mutated)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('a fifth cache breakpoint did not fire the control')
 
 
 if __name__=='__main__':

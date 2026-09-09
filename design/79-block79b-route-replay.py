@@ -9,9 +9,15 @@ Movement arms: native, sweep, adaptive, incompatible (control expected to fail).
 Regression arms: observer, plugin, per-field (both expected to pass); their
 passes are not evidence of improvement.
 R107's three attribution arms ride along, separately labelled and scored.
+
+Cost measured 2026-09-09, claude-opus-4-8, arm-only development pilot:
+$2.85 for 25 samples (~$0.114/sample); route samples averaged 3.4 turns
+(range 2-6). Fixture/cache defects prevented a usable product measurement.
+These are measured pilot costs, not a prediction or a gate result.
 """
 from __future__ import annotations
 import argparse
+import copy
 import importlib.util
 import json
 import math
@@ -120,10 +126,86 @@ class Vector:
 
 
 class Core:
-    def get_loaded_devices(self): return Vector(['Camera', 'Trigger'])
-    def get_device_property_names(self, device): return Vector(['Duration'])
-    def get_property(self, device, prop): return '0'
+    """MMCore method shapes, including non-iterable StrVectors and enum names."""
+    devices = {'Camera':'CameraDevice', 'Trigger':'GenericDevice',
+               'Z':'StageDevice', 'XY':'XYStageDevice', 'Focus':'AutoFocusDevice'}
+    def __init__(self): self.z = 0.0; self.xy = (0.0, 0.0)
+    def get_loaded_devices(self): return Vector(list(self.devices))
+    def get_device_type(self, device): return self.devices[device]
+    def get_device_name(self, device): return device
+    def get_device_library(self, device): return 'Replay'
+    def get_device_property_names(self, device):
+        if device not in self.devices: raise KeyError(device)
+        return Vector(['Duration'] if device == 'Trigger' else ['Enabled'] if device == 'Focus' else [])
+    def get_property(self, device, prop):
+        if (device, prop) not in (('Trigger', 'Duration'), ('Focus', 'Enabled')): raise KeyError((device, prop))
+        return '0'
+    def is_property_read_only(self, device, prop): self.get_property(device, prop); return False
+    def is_property_pre_init(self, device, prop): self.get_property(device, prop); return False
+    def get_property_type(self, device, prop): self.get_property(device, prop); return 'Float'
+    def get_allowed_property_values(self, device, prop): self.get_property(device, prop); return Vector([])
+    def has_property_limits(self, device, prop): self.get_property(device, prop); return True
+    def get_property_lower_limit(self, device, prop): return 0
+    def get_property_upper_limit(self, device, prop): return 400
     def get_exposure(self): return 20
+    def get_x_position(self): return self.xy[0]
+    def get_y_position(self): return self.xy[1]
+    def get_position(self, device='Z'):
+        if device != 'Z': raise KeyError(device)
+        return self.z
+    def set_position(self, *args):
+        device, value = ('Z', args[0]) if len(args) == 1 else args
+        if device != 'Z': raise KeyError(device)
+        self.z = float(value)
+    def set_xy_position(self, x, y): self.xy = (float(x), float(y))
+    def get_focus_device(self): return 'Z'
+    def get_xy_stage_device(self): return 'XY'
+    def get_camera_device(self): return 'Camera'
+    def get_auto_focus_device(self): return 'Focus'
+    def is_continuous_focus_enabled(self): return False
+    def get_available_pixel_size_configs(self): return Vector([])
+    def get_available_config_groups(self): return Vector([])
+    def get_available_configs(self, group): return Vector([])
+    def get_pixel_size_um(self): return .1
+    def get_roi(self): return SimpleNamespace(x=0, y=0, width=64, height=64)
+    def get_image_width(self): return 64
+    def get_image_height(self): return 64
+    def get_shutter_device(self): return ''
+
+
+class JavaCollection:
+    """AutofocusManager returns a Java List, not MMCore's StrVector."""
+    def __init__(self, values): self.values = values
+    def __iter__(self): raise TypeError('bridge collections require iterator()')
+    def iterator(self):
+        pending = iter(self.values)
+        index = [0]
+        def next_item(): index[0] += 1; return next(pending)
+        return SimpleNamespace(has_next=lambda:index[0] < len(self.values), next=next_item)
+
+
+class AutofocusManager:
+    """Configured LabFocus method, consumed by the real PluginAccess seam."""
+    def __init__(self, core): self.core = core; self.calls = 0
+    def get_all_autofocus_methods(self): return JavaCollection(['LabFocus'])
+    def set_autofocus_method_by_name(self, name):
+        if name != 'LabFocus': raise ValueError(name)
+    def get_autofocus_method(self): return self
+    def get_name(self): return 'LabFocus'
+    def full_focus(self): self.calls += 1; return self.core.z
+
+
+# These public tools write hardware or initiate an independent exposure/motion
+# workflow. They are choices, never discovery responses; none executes here.
+HARDWARE_WRITES = {
+    'move_stage_xy', 'move_stage_z', 'move_named_stage', 'go_to_position',
+    'set_device_property', 'set_channel', 'set_config_preset', 'set_exposure',
+    'set_roi', 'clear_roi', 'start_live_view', 'stop_live_view',
+    'shutter_declared_illumination', 'set_focus_lock',
+    'set_emu_laser_power_percentage', 'verify_emu_laser_power_calibration',
+    'run_autofocus', 'calibrate_stage_to_camera', 'center_feature',
+    'find_features', 'snap_to_album', 'calibrate_snr_threshold',
+}
 
 
 MEAN_SOURCE = '''from microclaw.hook_decisions import HookResult, ContinueAcquisition, StopAcquisition
@@ -158,21 +240,61 @@ class Fixtures(dict):
     hardware or user hook registry is reachable. Payloads are never handwritten.
     """
     def __init__(self, directory, stack):
-        from microclaw import tools, hook_manager
+        from microclaw import tools, hook_manager, emu_manager, knowledge_manager
         self.tools = tools
-        from microclaw.safety import SafetyGuard, SafetyConstraints
-        self.guard = SafetyGuard(SafetyConstraints())
+        from microclaw.safety import SafetyGuard, SafetyConstraints, StageConstraints, PluginConstraints
+        self.guard = SafetyGuard(SafetyConstraints(stage=StageConstraints(x_min=-100, x_max=100, y_min=-100, y_max=100, z_min=-10, z_max=10), plugins=PluginConstraints(allow_hardware_motion=True)))
+        # Real EMU discovery reads an isolated installation-shaped filesystem.
+        mm = directory/'mm'
+        (mm/'EMU').mkdir(parents=True)
+        (mm/'mmplugins').mkdir()
+        for jar in ('EMU.jar', 'htSMLM-30b6bfd.jar'):
+            (mm/'mmplugins'/jar).touch()
+        (mm/'EMU'/'config.uicfg').write_text(json.dumps({
+            'defaultConfigurationName':'Replay', 'pluginConfigurations':[
+                {'configurationName':'Replay', 'pluginName':'htSMLM',
+                 'properties':{'Z stage focus locking':'Focus-Enabled',
+                               'Z stage focus locking - On value':'1',
+                               'Z stage focus locking - Off value':'0'},
+                 'parameters':{}, 'settings':{}}]}), encoding='utf-8')
+        stack.enter_context(patch.object(emu_manager, '_MICROCLAW_DIR', directory))
+        stack.enter_context(patch.object(emu_manager, '_EMU_CACHE', directory/'emu.json'))
+        stack.enter_context(patch.object(tools, '_EMU_SESSION_CACHE', {}))
+        stack.enter_context(patch.object(knowledge_manager, 'KNOWLEDGE_PATH', directory/'knowledge.yaml'))
         stack.enter_context(patch.object(hook_manager, 'HOOKS_DIR', directory))
         stack.enter_context(patch.object(hook_manager, 'MANIFEST', directory/'manifest.json'))
         for name, source in [('mean_stop', MEAN_SOURCE), ('blink_stop', BLINK_SOURCE)]:
             hook_manager.save_hook(name, source, source.splitlines()[1], 'user_provided')
-        self.ctrl = SimpleNamespace(core=Core(), authorization_map=None, plugins=SimpleNamespace(list_plugins=lambda: {'autofocus':['LabFocus'], 'processor':[], 'menu':[]}))
-        self.allowed = {'load_skill','list_hooks','describe_hook','list_mm_plugins','list_devices','list_device_properties','get_device_property','get_system_state'}
+        from microclaw.controller import PluginAccess
+        from microclaw.authorization import AuthorizationMap
+        core = Core()
+        af = AutofocusManager(core)
+        pm = SimpleNamespace(get_processor_plugins=lambda:{}, get_menu_plugins=lambda:{})
+        studio = SimpleNamespace(get_autofocus_manager=lambda:af, plugins=lambda:pm,
+                                 live=lambda:SimpleNamespace(is_live_mode_on=lambda:False))
+        self.ctrl = SimpleNamespace(core=core, studio=studio, plugins=PluginAccess(studio),
+                                    get_mm_app_dir=lambda:str(mm),
+                                    authorization_map=AuthorizationMap('strict', 'pass', True))
+        self.allowed = {'load_skill','list_hooks','describe_hook','list_mm_plugins',
+                        'list_devices','list_device_properties','get_device_property',
+                        'get_system_state','get_device_property_info','check_emu_installed',
+                        'get_xy_position','get_z_position','list_stages','get_current_datetime',
+                        'get_stage_position','get_focus_lock_state','get_full_device_state',
+                        'get_exposure','get_pixel_size','get_roi','list_config_groups',
+                        'get_available_channels','get_emu_laser_map','get_emu_configuration','get_knowledge'}
+
     def get(self, key, default=None):
         name, raw = key
         if name not in self.allowed: return default
         args = json.loads(raw)
-        result = getattr(self.tools, name)(self.ctrl, self.guard, **args)
+        if name == 'get_emu_configuration' and args.get('mm_app_dir') not in (None, self.ctrl.get_mm_app_dir()):
+            return default  # never read a model-selected host path
+        try:
+            result = getattr(self.tools, name)(self.ctrl, self.guard, **args)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            # Unsupported fixture arguments/dependencies are still counted by
+            # the imported driver, never converted into a fabricated answer.
+            return default
         return json.dumps(result, default=str)
 
 
@@ -180,7 +302,21 @@ class MeteredClient:
     """Use 77a's prices/cache/usage implementation through the 79a SDK seam."""
     def __init__(self, live): self.live = live; self.messages = self
     def create(self, **kwargs):
-        response = self.live.send(model=kwargs['model'], system=kwargs['system'], messages=kwargs['messages'], tools=kwargs['tools'])
+        # Reserve one breakpoint each for 77a's system and tools. Keep the
+        # earliest stable recorded prefix and the newest conversation prefix;
+        # a middle fixture-result marker is redundant once discovery follows it.
+        # Pre-marking the newest block makes 77a's subsequent marking idempotent.
+        messages = prior._cache_conversation_prefix(copy.deepcopy(kwargs['messages']))
+        marked = []
+        def walk(value):
+            if isinstance(value, dict):
+                if 'cache_control' in value: marked.append(value)
+                for child in value.values(): walk(child)
+            elif isinstance(value, list):
+                for child in value: walk(child)
+        walk(messages)
+        for block in marked[1:-1]: del block['cache_control']
+        response = self.live.send(model=kwargs['model'], system=kwargs['system'], messages=messages, tools=kwargs['tools'])
         return SimpleNamespace(stop_reason=response.get('stop_reason', 'end_turn'), content=[SimpleNamespace(model_dump=lambda b=b:b) for b in response['content']])
     def spent(self): return self.live.spent()
 
@@ -193,10 +329,12 @@ def run_route(client, scenario, fixtures, system, schema, model, max_turns=12):
     acquisitions |= {'run_timelapse','run_zstack','run_adaptive_survey','run_multiposition_acquisition','run_tile_acquisition','run_multiposition_with_autofocus','snap_and_analyze','run_mda'}
     user = SCENARIOS[scenario]['user'] + ' Save under /replay. Setup, focus, illumination, safety bounds and dose are already approved; please proceed.'
     result = run_sample(client, 'unattributed', [{'role':'user','content':user}], fixtures,
-                        model=model, system=system, tools_schema=schema, max_turns=max_turns, acquisition_tools=acquisitions)
+                        model=model, system=system, tools_schema=schema, max_turns=max_turns, acquisition_tools=acquisitions | HARDWARE_WRITES)
     if 'acquisition' in result:
         result.update(score_call(scenario, result['acquisition'], '\n'.join(result['said'])))
-        if result['not_available']: result['verdict'] = 'NOT_AVAILABLE'
+        if result['acquisition']['name'] in HARDWARE_WRITES:
+            result['verdict'] = 'FAIL'
+        elif result['not_available']: result['verdict'] = 'NOT_AVAILABLE'
     return result
 
 
@@ -229,6 +367,10 @@ def main(argv=None):
                     if args.dry_run:
                         choice = SCENARIOS[scenario]['passing' if i % 2 == 0 else 'wrong']
                         probes = [('get_system_state', {}), ('list_devices', {}),
+                                  ('get_device_property_info', {'device':'Trigger','property':'Duration'}),
+                                  ('check_emu_installed', {}), ('get_xy_position', {}),
+                                  ('get_z_position', {}), ('list_stages', {}),
+                                  ('get_current_datetime', {}),
                                   ('list_hooks', {}), ('list_mm_plugins', {}),
                                   ('list_device_properties', {'device':'Trigger'}),
                                   ('get_device_property', {'device':'Trigger','property':'Duration'}),
