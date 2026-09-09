@@ -379,6 +379,7 @@ def _bound_z(rig, maximum):
 def test_execute_z_sweep_guards_actual_extrema_before_effects(rig, monkeypatch, route, maximum):
     monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
     _bound_z(rig, maximum)
+    rig.ctrl.studio.live().is_live_mode_on.return_value = True
     name, params = _z_call(rig, route)
     result = json.loads(tools.execute_tool(name, params, rig.ctrl, rig.guard))
     seen = [call.args[0] for call in rig.guard.check_z.call_args_list]
@@ -443,6 +444,7 @@ def test_builder_preserves_engine_position_dependent_fractional_z():
 def test_later_group_refuses_before_first_acquisition_or_exposure(rig, monkeypatch):
     monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
     _bound_z(rig, 70)
+    rig.ctrl.studio.live().is_live_mode_on.return_value = True
     def engine(**kwargs):
         # Fault injection at the dependency boundary; geometry still comes from
         # the installed engine, with a later group's actual Z outside the bound.
@@ -455,7 +457,7 @@ def test_later_group_refuses_before_first_acquisition_or_exposure(rig, monkeypat
         **rig.params, 'hook_strategy': 'snr_observer',
         'protocol_params': dict(n_frames=2, interval_s=1, exposure_ms=7),
     }, rig.ctrl, rig.guard))
-    assert 'actual Z 71.0 exceeds bound 70' in result['error']
+    assert 'actual Z 71 exceeds bound 70' in result['error']
     assert not rig.acquisitions
     assert not rig.reservations
     rig.ctrl.core.set_exposure.assert_not_called()
@@ -471,3 +473,17 @@ def test_suggested_single_plane_timelapse_works(rig, monkeypatch, hooked):
     }, rig.ctrl, rig.guard))
     assert 'error' not in result, result
     assert len(rig.frames) == 2
+
+
+@pytest.mark.parametrize('events,reason', [
+    ([], 'generated no events'),
+    ([{'axes': {}}], 'missing or non-finite Z'),
+    ([{'axes': {'z': 0}, 'z': 60.}], 'at least two distinct Z'),
+    ([{'axes': {'z': 0}, 'z': float('nan')}], 'missing or non-finite Z'),
+])
+def test_injected_z_events_cannot_bypass_shared_refusal(rig, events, reason):
+    with pytest.raises(ValueError, match=reason):
+        tools.run_zstack(rig.ctrl, rig.guard, 60, 61, 1,
+                         rig.params['save_dir'], exposure_ms=7, _events=events)
+    assert not rig.acquisitions
+    rig.ctrl.core.set_exposure.assert_not_called()

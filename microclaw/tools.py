@@ -321,13 +321,16 @@ def _emit_acquisition(
     prefix = ""
     if not channel and exposure is not None:
         prefix = f"core.set_exposure({exposure!r})\n"
+    if "z_start" not in shape:
+        return (prefix + f"events = multi_d_acquisition_events(**{event_args!r})\n"
+                + f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}) as acq:\n"
+                + "    acq.acquire(events)")
     return (
         inspect.getsource(_build_acquisition_events) + "\n"
         + f"events = _build_acquisition_events(**{event_args!r})\n"
-        + (_export_guard_source(params["_export_safety_limits"])
-           + "guard.check_z(min(event['z'] for event in events))\n"
-           + "guard.check_z(max(event['z'] for event in events))\n"
-           if "z_start" in shape else "")
+        + _export_guard_source(params["_export_safety_limits"])
+        + "guard.check_z(min(event['z'] for event in events))\n"
+        + "guard.check_z(max(event['z'] for event in events))\n"
         + prefix
         + f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}) as acq:\n"
         + "    acq.acquire(events)"
@@ -651,6 +654,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
     order = params.get("acquisition_order", signature.parameters["acquisition_order"].default)
     hook = params.get("hook_strategy")
     hook_source = ""
+    source = ""
+    hook_cls = None
     guarded_plan = False
     if hook:
         from microclaw.hooks import PRECODED_HOOK_REGISTRY
@@ -708,12 +713,16 @@ def _emit_multiposition(params: RecordedParams) -> str:
         raise CannotEmit("the record contains a resolved position without a label")
     protocol = params["protocol"]
     protocol_params = dict(params.get("protocol_params") or {})
-    if protocol == "zstack" and not guarded_plan and (hook or order == "time_then_position"):
+    if not guarded_plan and (hook or order == "time_then_position"):
         limits = params.get("_export_safety_limits")
-        if not limits:
-            raise CannotEmit("the record carries no export-time safety limits for the Z sweep")
-        hook_source = _export_guard_source(limits) + hook_source
-        guarded_plan = True
+        if limits:
+            hook_source = source + "\n"
+            guarded_plan = True
+        elif protocol == "zstack" or not getattr(hook_cls, "_observation_only", False):
+            raise CannotEmit(params.get("_export_safety_limits_error")
+                             or "the record carries no export-time safety limits for the position plan")
+        # Preserve design/80's observation-only no-sweep export exemption.
+        # A declared Z sweep always needs its actual planes guarded.
     _protocol_shape_kwargs(protocol, protocol_params, order)
     if hook or order == "time_then_position":
         if protocol == "timelapse":
@@ -745,7 +754,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if hook else ""
         )
         if guarded_plan:
-            required_axes = () if getattr(hook_cls, "_observation_only", False) else ("x", "y")
+            required_axes = ("x", "y") if hook_cls and not getattr(hook_cls, "_observation_only", False) else ()
             # Read the hook's guard use from the same source we inline, rather
             # than maintaining a second list of Z-moving hook names.
             # The registered Z-moving hooks check_z before moving focus, so
@@ -753,7 +762,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if (protocol == "zstack" or any(p.get("z_um") is not None for p in positions)
                     or any(isinstance(node, ast.Attribute) and node.attr == "check_z"
                            for node in ast.walk(ast.parse(source)))):
-                if not getattr(hook_cls, "_observation_only", False):
+                if hook_cls and not getattr(hook_cls, "_observation_only", False):
                     required_axes += ("z",)
             hook_source = (_export_guard_source(limits, required_axes=required_axes)
                            + "mm._guard = guard\n" + hook_source)
@@ -765,9 +774,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
                     prefix += f"guard.check_z({position['z_um']!r})\n"
             if exposure is not None:
                 prefix += f"guard.check_exposure({exposure!r})\n"
-        if exposure is not None and not channel:
-            prefix += f"core.set_exposure({exposure!r})\n"
-        preflight = [inspect.getsource(_build_acquisition_events)]
+        exposure_write = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
+        preflight = [inspect.getsource(_build_acquisition_events)] if protocol == "zstack" else []
         lines = [hook_source + prefix,
                  f"# acquisition_order={order}; timing={params.result.get('timing', {}).get('strategy')!r}; requested_interval_s={protocol_params.get('interval_s')!r}"]
         for index, group in enumerate(groups):
@@ -811,7 +819,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
                           inspect.getsource(_refuse_sequenced_time_axis),
                           f"_refuse_sequenced_time_axis({shape['num_time_points']!r}, "
                           f"{shape['time_interval_s']!r}, hook=hook)"]
-            preflight.append(f"_events_{index} = _build_acquisition_events(**{event_shape!r})")
+            builder = "_build_acquisition_events" if protocol == "zstack" else "multi_d_acquisition_events"
+            preflight.append(f"_events_{index} = {builder}(**{event_shape!r})")
             if guarded_plan:
                 preflight += [f"_zs = [e['z'] for e in _events_{index} if 'z' in e]",
                               "if _zs:", "    guard.check_z(min(_zs))", "    guard.check_z(max(_zs))"]
@@ -845,7 +854,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
             else:
                 lines += acquisition_lines
         # Guard definitions precede preflight; exposure and movement follow it.
-        lines[0] = hook_source + "\n" + "\n".join(preflight) + "\n" + prefix
+        lines[0] = hook_source + prefix + "\n" + "\n".join(preflight) + "\n" + exposure_write
         return "\n".join(lines)
     # Every per-position XY move in the live tile path is settled, so every one
     # here is too. The targets are literals but the START is read per position
@@ -914,15 +923,20 @@ def _emit_multiposition(params: RecordedParams) -> str:
         "name=position['name']) as acq:",
         "        acq.acquire(events)",
     ])
-    preflight = [inspect.getsource(_build_acquisition_events),
-                 f"_planned_events = _build_acquisition_events(**{event_args!r})"]
+    limits = params.get("_export_safety_limits")
+    if not limits:
+        raise CannotEmit("the record carries no export-time safety limits for the position plan")
+    builder = "_build_acquisition_events" if protocol == "zstack" else "multi_d_acquisition_events"
+    preflight = ([inspect.getsource(_build_acquisition_events)] if protocol == "zstack" else [])
+    preflight += [_export_guard_source(limits),
+                  f"_planned_events = {builder}(**{event_args!r})"]
     if protocol == "zstack":
-        limits = params.get("_export_safety_limits")
-        if not limits:
-            raise CannotEmit("the record carries no export-time safety limits for the Z sweep")
-        preflight += [_export_guard_source(limits),
-                      "guard.check_z(min(e['z'] for e in _planned_events))",
+        preflight += ["guard.check_z(min(e['z'] for e in _planned_events))",
                       "guard.check_z(max(e['z'] for e in _planned_events))"]
+    for position in positions:
+        preflight.append(f"guard.check_xy({position['x_um']!r}, {position['y_um']!r})")
+        if position.get("z_um") is not None:
+            preflight.append(f"guard.check_z({position['z_um']!r})")
     lines = preflight + lines
     return "\n".join(lines)
 
@@ -1727,7 +1741,6 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     recorded_log = params.get("log_path") or params.result.get("log_path")
     log_name = Path(recorded_log).name if recorded_log else None
     common = [
-        inspect.getsource(_build_acquisition_events),
         _export_guard_source(limits, required_axes=("x", "y", "z")), "mm._guard = guard", hook_source,
         (f"_log_path = _next_available_log_path(_HERE / {log_name!r})"
          if log_name else "_log_path = None"),
@@ -1842,7 +1855,6 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
             common.extend(
                 f"guard.check_xy({p['x_um']!r}, {p['y_um']!r})" for p in positions
             )
-
         if pp.get("exposure_ms") is not None:
             common.append(f"guard.check_exposure({pp['exposure_ms']!r})")
         if pp.get("channel") and acquire_on_hit is None:
@@ -1873,7 +1885,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         if acquire_on_hit is not None:
             common.append("hits = []")
         common.extend([
-            f"events = _build_acquisition_events(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
+            f"events = {'_build_acquisition_events' if 'z_start' in shape else 'multi_d_acquisition_events'}(**{{k: v for k, v in {shape!r}.items() if v is not None}})",
             *( [
                 "def _successor(index):",
                 "    event = dict(events[0])",
@@ -1940,7 +1952,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 "for hit in hits:",
                 "    guard.check_xy(hit['x_um'], hit['y_um'])",
                 *acquire_shape_lines,
-                "    _events = _build_acquisition_events(xy_positions=[(hit['x_um'], hit['y_um'])], position_labels=[hit['name']], **_shape)",
+                f"    _events = {'_build_acquisition_events' if acquire_on_hit['protocol'] == 'zstack' else 'multi_d_acquisition_events'}(xy_positions=[(hit['x_um'], hit['y_um'])], position_labels=[hit['name']], **_shape)",
                 *( ["    for _event in _events: _event['z'] = hit['z_um']"]
                    if acquire_on_hit["protocol"] == "timelapse" else [] ),
                 "    acquire_events.extend(_events)",
@@ -1950,10 +1962,12 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 f"    with Acquisition(directory=str(_HERE), name={(params.get('name', 'survey') + '_acquire')!r}, show_display=True) as acq:",
                 "        acq.acquire(acquire_events)",
             ])
-        build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
-        build = common.pop(build_index)
-        common.insert(3, build)
+        if "z_start" in shape or (acquire_on_hit and acquire_on_hit["protocol"] == "zstack"):
+            common.insert(0, inspect.getsource(_build_acquisition_events))
         if "z_start" in shape:
+            build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
+            build = common.pop(build_index)
+            common.insert(3, build)
             common.insert(4, "guard.check_z(min(e['z'] for e in events))\nguard.check_z(max(e['z'] for e in events))")
         return "\n\n".join(common)
     exposure_ms = params.get("exposure_ms")
@@ -1968,7 +1982,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     # laser_slot verifies the rig's trigger pre-flight; it is not a hardware
     # action and therefore intentionally emits no standalone script line.
     common.extend([
-        f"events = _build_acquisition_events(**{shape!r})",
+        f"events = {'_build_acquisition_events' if 'z_start' in shape else 'multi_d_acquisition_events'}(**{shape!r})",
         *( [f"_NAMED_STAGE_ENVELOPE = {named_stage_envelope!r}",
             f"hook_action_plan = {hook_action_plan!r}",
             "_axes_plan = {}",
@@ -2014,10 +2028,11 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "print('Dataset:', getattr(acq, '_dataset_disk_location', None) or "
         "'<location not reported by this acquisition>')",
     ])
-    build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
-    build = common.pop(build_index)
-    common.insert(3, build)
     if "z_start" in shape:
+        common.insert(0, inspect.getsource(_build_acquisition_events))
+        build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
+        build = common.pop(build_index)
+        common.insert(3, build)
         common.insert(4, "guard.check_z(min(e['z'] for e in events))\nguard.check_z(max(e['z'] for e in events))")
     return "\n\n".join(common)
 
@@ -4456,6 +4471,7 @@ def _build_acquisition_events(
     *,
     channel: str | None = None,
     exposure_ms: float | None = None,
+    _events: list | None = None,
     **acq_kwargs: Any,
 ) -> list:
     """Build an event list via multi_d_acquisition_events with channel handling.
@@ -4487,7 +4503,7 @@ def _build_acquisition_events(
         acq_kwargs.update(channel_group="Channel", channels=[channel])
         if exposure_ms is not None:
             acq_kwargs["channel_exposures_ms"] = [exposure_ms]
-    events = multi_d_acquisition_events(**acq_kwargs)
+    events = multi_d_acquisition_events(**acq_kwargs) if _events is None else _events
     if sweeps_z:
         if not events:
             raise ValueError("Z sweep generated no events.")
@@ -5040,8 +5056,8 @@ def run_zstack(
     # Event construction is pure, and everything above only reads or validates
     # the rig, so the capability guard below can precede the preamble's one
     # mutation without changing the order of any observable hardware action.
-    events = _events if _events is not None else _build_acquisition_events(
-        channel=channel, exposure_ms=exposure_ms,
+    events = _build_acquisition_events(
+        _events=_events, channel=channel, exposure_ms=exposure_ms,
         z_start=z_start_um, z_end=z_end_um, z_step=z_step_um,
     )
     guard.check_z(min(event["z"] for event in events))
@@ -5305,8 +5321,8 @@ def run_timelapse(
     # Event construction is pure, and everything above only reads or validates
     # the rig, so the capability guard below can precede the preamble's one
     # mutation without changing the order of any observable hardware action.
-    events = _events if _events is not None else _build_acquisition_events(
-        channel=channel, exposure_ms=exposure_ms,
+    events = _build_acquisition_events(
+        _events=_events, channel=channel, exposure_ms=exposure_ms,
         num_time_points=(n_frames if n_frames is not None else 1),
         time_interval_s=interval_s,
     )
@@ -7542,25 +7558,22 @@ def _protocol_shape_kwargs(protocol: str, params: dict,
 
 def _plan_protocol_repetitions(
     ctrl: MicroscopeController, protocol: str, params: dict, repetitions: int
-) -> AcquisitionPlan:
-    """Bound a repeated per-position protocol before the first stage move."""
+) -> tuple[AcquisitionPlan, list]:
+    """Bound a repeated protocol and retain its events before the first move."""
     if repetitions <= 0:
         raise SafetyViolation("Acquisition has no valid positions to acquire.")
     shape = _protocol_shape_kwargs(protocol, params)
     exposure_ms = params.get("exposure_ms")
-    one = plan_events(
-        ctrl,
-        _build_acquisition_events(
-            channel=params.get("channel"), exposure_ms=exposure_ms, **shape
-        ),
-        exposure_ms,
+    events = _build_acquisition_events(
+        channel=params.get("channel"), exposure_ms=exposure_ms, **shape
     )
+    one = plan_events(ctrl, events, exposure_ms)
     return AcquisitionPlan(
         one.frames * repetitions,
         one.exposure_ms_per_frame,
         one.estimated_duration_s * repetitions,
         one.estimated_bytes * repetitions,
-    )
+    ), events
 
 
 def _run_protocol_at(
@@ -7818,30 +7831,50 @@ def run_multiposition_acquisition(
         if results:
             return {"error": "Positions not found in position list: "
                              f"{[r['position'] for r in results]}"}
-        added_labels = []
-        live_state = {}
-        try:
-            hooked = _acquire_positions_with_hook(
-                ctrl, guard,
-                positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
-                           for n, x, y, z in resolved],
-                save_dir=save_dir, name=name, hook_strategy=hook_strategy,
-                hook_params=hook_params, log_path=log_path,
-                channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
-                illumination_envelope=illumination_envelope,
-                artifact_limits=artifact_limits,
-                acquisition_order=acquisition_order, timing=timing,
-                mark_positions=mark_positions, added_labels=added_labels, live_state=live_state,
-                **shape,
-            )
-        except (AcquisitionUnterminated, StageMoveError):
-            raise
-        except SafetyViolation as exc:
-            if not added_labels:
+        event_positions = [{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                           for n, x, y, z in resolved]
+        current_z = (ctrl.core.get_position()
+                     if "z_start" not in shape
+                     and any(p.get("z_um") is not None for p in event_positions)
+                     and any(p.get("z_um") is None for p in event_positions) else None)
+        prepared = _prepare_position_events(
+            guard, event_positions, shape, acquisition_order,
+            params.get("channel"), params.get("exposure_ms"), current_z,
+        )
+        if params.get("channel"):
+            _check_acquisition_channel(ctrl, guard, params["channel"])
+        if params.get("exposure_ms") is not None:
+            guard.check_exposure(params["exposure_ms"])
+        if mark_positions:
+            for pos_label, x_um, y_um, z_um in resolved:
+                ctrl.add_position(pos_label, float(x_um), float(y_um),
+                                  float(z_um) if z_um is not None else None)
+        added_labels = [item[0] for item in resolved] if mark_positions else []
+        with _pause_live(ctrl, restore=False) as live_state:
+            if params.get("exposure_ms") is not None and not params.get("channel"):
+                ctrl.core.set_exposure(params["exposure_ms"])
+            try:
+                hooked = _acquire_positions_with_hook(
+                    ctrl, guard,
+                    positions=[{"name": n, "x_um": x, "y_um": y, "z_um": z}
+                               for n, x, y, z in resolved],
+                    save_dir=save_dir, name=name, hook_strategy=hook_strategy,
+                    hook_params=hook_params, log_path=log_path,
+                    channel=params.get("channel"), exposure_ms=params.get("exposure_ms"),
+                    illumination_envelope=illumination_envelope,
+                    artifact_limits=artifact_limits,
+                    acquisition_order=acquisition_order, timing=timing,
+                    _prepared=prepared,
+                    **shape,
+                )
+            except (AcquisitionUnterminated, StageMoveError):
                 raise
-            hooked = {"error": str(exc)}
-        except Exception as exc:
-            hooked = {"error": str(exc)}
+            except SafetyViolation as exc:
+                if not added_labels:
+                    raise
+                hooked = {"error": str(exc)}
+            except Exception as exc:
+                hooked = {"error": str(exc)}
         restore = _live_restore_report(live_state)
         if "error" in hooked:
             # Transaction boundary: undo only entries written by this call.
@@ -7874,11 +7907,7 @@ def run_multiposition_acquisition(
     events = None
     reservation = None
     if protocol != "snap":
-        if not resolved:
-            raise SafetyViolation("Acquisition has no valid positions to acquire.")
-        events = _build_acquisition_events(
-            channel=params.get("channel"), exposure_ms=params.get("exposure_ms"), **shape
-        )
+        plan, events = _plan_protocol_repetitions(ctrl, protocol, params, len(resolved))
         zs = [event["z"] for event in events if "z" in event]
         if zs:
             guard.check_z(min(zs))
@@ -7887,10 +7916,6 @@ def run_multiposition_acquisition(
             guard.check_xy(x, y)
             if z is not None:
                 guard.check_z(z)
-        one = plan_events(ctrl, events, params.get("exposure_ms"))
-        plan = AcquisitionPlan(one.frames * len(resolved), one.exposure_ms_per_frame,
-                               one.estimated_duration_s * len(resolved),
-                               one.estimated_bytes * len(resolved))
         reservation = _authorize_acquisition(ctrl, guard, plan)
     unterminated = False
     with _pause_live(ctrl, restore=False) as live_state:
@@ -8768,6 +8793,50 @@ def _adaptive_result(
     return result
 
 
+def _prepare_position_events(
+    guard: SafetyGuard, positions: list[dict], shape_kwargs: dict,
+    acquisition_order: str, channel: str | None = None,
+    exposure_ms: float | None = None, current_z: float | None = None,
+) -> tuple[bool, list[tuple[list[dict], list]]]:
+    """Construct and guard every fixed position group without hardware access."""
+    # A Z range makes the event list sweep Z itself, and multi_d_acquisition_events
+    # reads z_start/z_end as ABSOLUTE alongside xy_positions but as offsets
+    # RELATIVE to each point's Z alongside xyz_positions. The per-position z_um is
+    # therefore dropped when a range is present — which loses nothing, because the
+    # unhooked loop's run_zstack sweeps the same absolute range after its move to
+    # z_um. Swapping in xyz_positions here would silently reinterpret z_start_um.
+    sweeps_z = any(key in shape_kwargs for key in ("z_start", "z_end", "z_step"))
+    for p in positions:
+        guard.check_xy(p["x_um"], p["y_um"])
+        if not sweeps_z and p.get("z_um") is not None:
+            guard.check_z(p["z_um"])
+    split = (acquisition_order == "position_then_time"
+             and shape_kwargs.get("time_interval_s", 0) > 0)
+    groups = [[position] for position in positions] if split else [positions]
+    prepared = []
+    for group in groups:
+        event_shape = dict(shape_kwargs)
+        if not sweeps_z and any(p.get("z_um") is not None for p in group):
+            event_shape["xyz_positions"] = [
+                (p["x_um"], p["y_um"], p["z_um"] if p.get("z_um") is not None else current_z)
+                for p in group
+            ]
+        else:
+            event_shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in group]
+        if "num_time_points" in shape_kwargs:
+            event_shape["order"] = ("ptcz" if acquisition_order == "position_then_time" else "tpcz")
+        events = _build_acquisition_events(
+            channel=channel, exposure_ms=exposure_ms,
+            position_labels=[p["name"] for p in group], **event_shape,
+        )
+        zs = [event["z"] for event in events if "z" in event]
+        if zs:
+            guard.check_z(min(zs))
+            guard.check_z(max(zs))
+        prepared.append((group, events))
+    return split, prepared
+
+
 def _acquire_positions_with_hook(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
@@ -8783,9 +8852,7 @@ def _acquire_positions_with_hook(
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
     acquisition_order: str = "position_then_time",
-    mark_positions: bool = False,
-    added_labels: list | None = None,
-    live_state: dict | None = None,
+    _prepared: tuple | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """Run combined events, or separately clocked position-outer movies.
@@ -8803,37 +8870,27 @@ def _acquire_positions_with_hook(
     save_dir = guard.resolve_in_workspace(save_dir)
     log_path = _prepare_log_path(guard, log_path)
 
-    # A Z range makes the event list sweep Z itself, and multi_d_acquisition_events
-    # reads z_start/z_end as ABSOLUTE alongside xy_positions but as offsets
-    # RELATIVE to each point's Z alongside xyz_positions. The per-position z_um is
-    # therefore dropped when a range is present — which loses nothing, because the
-    # unhooked loop's run_zstack sweeps the same absolute range after its move to
-    # z_um. Swapping in xyz_positions here would silently reinterpret z_start_um.
-    sweeps_z = "z_start" in shape_kwargs
-
-    # The stage is driven by the Acquisition, not by us, so there is no
-    # per-move guard call. Check every point up front: the refusal must not
-    # arrive on tile 7 of 9, with the objective already out over the sample.
-    for p in positions:
-        guard.check_xy(p["x_um"], p["y_um"])
-        if not sweeps_z and p.get("z_um") is not None:
-            guard.check_z(p["z_um"])
+    if _prepared is None:
+        current_z = (ctrl.core.get_position()
+                     if "z_start" not in shape_kwargs
+                     and any(p.get("z_um") is not None for p in positions)
+                     and any(p.get("z_um") is None for p in positions) else None)
+        _prepared = _prepare_position_events(
+            guard, positions, shape_kwargs, acquisition_order, channel, exposure_ms, current_z
+        )
+    split, groups = _prepared
     if channel:
         _check_acquisition_channel(ctrl, guard, channel)
     if exposure_ms is not None:
         guard.check_exposure(exposure_ms)
-
-    split = (acquisition_order == "position_then_time"
-             and shape_kwargs.get("time_interval_s", 0) > 0)
     _emit_acquisition_diagnostic({
         "type": "acquisition_plan", "acquisition_order": acquisition_order,
         "timing": timing, "positions": [p["name"] for p in positions],
         "frames_per_position": shape_kwargs.get("num_time_points"),
     })
     results = []
-    groups = [[position] for position in positions] if split else [positions]
     prepared = []
-    for group_index, group in enumerate(groups):
+    for group_index, (group, events) in enumerate(groups):
         movie_name = group[0]["name"] if split else name
         movie_dir = guard.resolve_in_workspace(str(Path(save_dir) / movie_name)) if split else save_dir
         movie_log = (_prepare_log_path(
@@ -8849,109 +8906,80 @@ def _acquire_positions_with_hook(
             shape_kwargs.get("time_interval_s", 0), hook=hook,
             hardware_actions=hook is not None and illumination_envelope is not None,
         )
-        event_shape = dict(shape_kwargs)
-        if not sweeps_z and any(p.get("z_um") is not None for p in group):
-            current_z = ctrl.core.get_position()
-            event_shape["xyz_positions"] = [
-                (p["x_um"], p["y_um"], p["z_um"] if p.get("z_um") is not None else current_z)
-                for p in group
-            ]
-        else:
-            event_shape["xy_positions"] = [(p["x_um"], p["y_um"]) for p in group]
-        if "num_time_points" in shape_kwargs:
-            event_shape["order"] = ("ptcz" if acquisition_order == "position_then_time" else "tpcz")
-        events = _build_acquisition_events(
-            channel=channel, exposure_ms=exposure_ms,
-            position_labels=[p["name"] for p in group], **event_shape,
-        )
         if hook is not None:
             try:
                 _configure_hook_capabilities(hook, ctrl, guard, movie_dir, movie_name,
                                              illumination_envelope, artifact_limits)
             except _HookArtifactBudgetError as exc:
                 return {"error": str(exc), "results": results}
-        zs = [event["z"] for event in events if "z" in event]
-        if zs:
-            guard.check_z(min(zs))
-            guard.check_z(max(zs))
         prepared.append((group, movie_name, movie_dir, movie_log, hook, events))
-    with _pause_live(ctrl, restore=False) as state:
-        if live_state is not None:
-            live_state.update(state)
-        if mark_positions:
-            for p in positions:
-                ctrl.add_position(p["name"], float(p["x_um"]), float(p["y_um"]),
-                                  float(p["z_um"]) if p.get("z_um") is not None else None)
-                added_labels.append(p["name"])
-        if exposure_ms is not None and not channel:
-            ctrl.core.set_exposure(exposure_ms)
-        for group, movie_name, movie_dir, movie_log, hook, events in prepared:
-            plan = plan_events(ctrl, events, exposure_ms)
-            if hook is not None:
-                plan = _plan_with_hook_dose(plan, hook)
-            reservation = _authorize_acquisition(ctrl, guard, plan)
-            started_at = datetime.now(timezone.utc)
-            started = time.monotonic()
-            xy_move = None
-            try:
-                if split:
-                    # Settle BEFORE construction starts this field's acquisition clock.
-                    # Retain coordinates/labels in events for dataset and hook provenance.
-                    p = group[0]
-                    xy_move = ctrl.set_xy(p["x_um"], p["y_um"])
-                    if p.get("z_um") is not None:
-                        ctrl.core.set_position(p["z_um"])
-                        _wait(ctrl, ctrl.core.get_focus_device())
-            except Exception as exc:
-                # No Acquisition exists for this movie yet, so this reservation is
-                # ours to close. Preserve prior movies on the typed stage failure,
-                # just as AcquisitionUnterminated carries completed siblings.
-                if isinstance(exc, StageMoveError):
-                    exc.positions_completed = [
-                        r for r in results if r.get("dataset_path") and "error" not in r
-                    ]
-                reservation.close()
-                raise
-            teardown = {}
-            try:
-                dataset_path = _acquire_with_hooks(
-                    guard, movie_dir, movie_name, events, hook, reservation=reservation,
-                    policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown,
-                )
-            except AcquisitionUnterminated as exc:
-                exc.positions_completed = [r for r in results if r.get("dataset_path") and "error" not in r]
-                raise
-            except _HookedAcquisitionFailure as exc:
-                failed = _hooked_failure_result(exc, movie_log)
-                return {**failed, **({"position": group[0]["name"]} if split else {}),
-                        "results": results, "acquisition_order": acquisition_order,
-                        "timing": timing}
-            # Both layouts report saved-frame callbacks actually accounted after
-            # teardown, not the submitted event count. A mismatch with frames_planned
-            # means frame delivery/accounting was incomplete; it is not evidence of
-            # how many exposures the camera made.
-            result = _adaptive_result(
-                dataset_path, movie_log, hook=hook,
-                status=f"Acquisition complete across {len(group)} position(s).",
-                positions=len(group), positions_planned=len(group), positions_completed=len(group),
-                frames_planned=len(events), frames_acquired=reservation.completed_frames,
-                reservation_frames_planned=plan.frames,
-                hook_extra_exposures_planned=plan.frames - len(events),
-                started_at=started_at.isoformat(), completed_at=datetime.now(timezone.utc).isoformat(),
-                duration_s=round(time.monotonic() - started, 6),
-                **_reservation_report(reservation),
+    for group, movie_name, movie_dir, movie_log, hook, events in prepared:
+        plan = plan_events(ctrl, events, exposure_ms)
+        if hook is not None:
+            plan = _plan_with_hook_dose(plan, hook)
+        reservation = _authorize_acquisition(ctrl, guard, plan)
+        started_at = datetime.now(timezone.utc)
+        started = time.monotonic()
+        xy_move = None
+        try:
+            if split:
+                # Settle BEFORE construction starts this field's acquisition clock.
+                # Retain coordinates/labels in events for dataset and hook provenance.
+                p = group[0]
+                xy_move = ctrl.set_xy(p["x_um"], p["y_um"])
+                if p.get("z_um") is not None:
+                    ctrl.core.set_position(p["z_um"])
+                    _wait(ctrl, ctrl.core.get_focus_device())
+        except Exception as exc:
+            # No Acquisition exists for this movie yet, so this reservation is
+            # ours to close. Preserve prior movies on the typed stage failure,
+            # just as AcquisitionUnterminated carries completed siblings.
+            if isinstance(exc, StageMoveError):
+                exc.positions_completed = [
+                    r for r in results if r.get("dataset_path") and "error" not in r
+                ]
+            reservation.close()
+            raise
+        teardown = {}
+        try:
+            dataset_path = _acquire_with_hooks(
+                guard, movie_dir, movie_name, events, hook, reservation=reservation,
+                policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown,
             )
-            result["duration_breakdown"] = _run_duration_breakdown(hook, teardown, result["duration_s"])
-            if hasattr(hook, "min_snr") and hasattr(hook, "threshold_source"):
-                result["observation_parameters"] = {
-                    "min_snr": hook.min_snr, "min_snr_source": hook.threshold_source,
-                }
-            if not split:
-                _report_frame_spacing(timing, [result])
-                return {**result, "acquisition_order": acquisition_order, "timing": timing}
-            results.append({**result, "position": group[0]["name"],
-                            "x_um": group[0]["x_um"], "y_um": group[0]["y_um"],
-                            "xy_move": xy_move})
+        except AcquisitionUnterminated as exc:
+            exc.positions_completed = [r for r in results if r.get("dataset_path") and "error" not in r]
+            raise
+        except _HookedAcquisitionFailure as exc:
+            failed = _hooked_failure_result(exc, movie_log)
+            return {**failed, **({"position": group[0]["name"]} if split else {}),
+                    "results": results, "acquisition_order": acquisition_order,
+                    "timing": timing}
+        # Both layouts report saved-frame callbacks actually accounted after
+        # teardown, not the submitted event count. A mismatch with frames_planned
+        # means frame delivery/accounting was incomplete; it is not evidence of
+        # how many exposures the camera made.
+        result = _adaptive_result(
+            dataset_path, movie_log, hook=hook,
+            status=f"Acquisition complete across {len(group)} position(s).",
+            positions=len(group), positions_planned=len(group), positions_completed=len(group),
+            frames_planned=len(events), frames_acquired=reservation.completed_frames,
+            reservation_frames_planned=plan.frames,
+            hook_extra_exposures_planned=plan.frames - len(events),
+            started_at=started_at.isoformat(), completed_at=datetime.now(timezone.utc).isoformat(),
+            duration_s=round(time.monotonic() - started, 6),
+            **_reservation_report(reservation),
+        )
+        result["duration_breakdown"] = _run_duration_breakdown(hook, teardown, result["duration_s"])
+        if hasattr(hook, "min_snr") and hasattr(hook, "threshold_source"):
+            result["observation_parameters"] = {
+                "min_snr": hook.min_snr, "min_snr_source": hook.threshold_source,
+            }
+        if not split:
+            _report_frame_spacing(timing, [result])
+            return {**result, "acquisition_order": acquisition_order, "timing": timing}
+        results.append({**result, "position": group[0]["name"],
+                        "x_um": group[0]["x_um"], "y_um": group[0]["y_um"],
+                        "xy_move": xy_move})
     _report_frame_spacing(timing, results)
     return {"status": f"{len(results)}/{len(positions)} positions completed.",
             "results": results, "acquisition_order": acquisition_order, "timing": timing,
@@ -9629,7 +9657,7 @@ def run_adaptive_survey(
         if not search_channel:
             return {"error": "protocol_params.channel is required with acquire_on_hit."}
         try:
-            acquire_plan = _plan_protocol_repetitions(
+            acquire_plan, _ = _plan_protocol_repetitions(
                 ctrl, acquire_protocol, acquire_shape_for_plan, max_hits
             )
         except (SafetyViolation, ValueError, KeyError) as exc:

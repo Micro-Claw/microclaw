@@ -1803,8 +1803,8 @@ def test_all_adaptive_program_shapes_emit_seed_hook_and_runner(
     assert "class SNRObservationHook" in source
     assert "directory=str(_HERE)" in source
     if tool == "run_zstack":
-        assert "guard.check_z(-2)" in source
-        assert "guard.check_z(2)" in source
+        assert "guard.check_z(min(e['z'] for e in events))" in source
+        assert "guard.check_z(max(e['z'] for e in events))" in source
     elif tool == "run_adaptive_survey":
         assert "guard.check_xy(1.25, 2.5)" in source
     assert "# NOT EMITTED:" not in source
@@ -4676,6 +4676,7 @@ def hooked_engine(monkeypatch, tmp_path):
             self.hook = next((cb.__self__ for cb in callbacks if cb is not None), None)
         def __enter__(self): return self
         def acquire(self, events):
+            self.submitted_events = events
             self.events = list(events)
             assert self.saved == []
             state.core.trace.append(("submit", len(self.events)))
@@ -4720,9 +4721,9 @@ def hooked_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "Acquisition", Acquisition)
     state.Acquisition, state.Core = Acquisition, Core
 
-    def execute(source):
+    def execute(source, event_builder=multi_d_acquisition_events):
         namespace = {"__file__": str(tmp_path / "routine.py"), "Core": lambda: state.core,
-                     "Acquisition": Acquisition, "multi_d_acquisition_events": multi_d_acquisition_events}
+                     "Acquisition": Acquisition, "multi_d_acquisition_events": event_builder}
         runnable = re.sub(r"^from pycromanager import .*$", "", source, flags=re.M)
         exec(compile(runnable, "routine.py", "exec"), namespace)
         return namespace
@@ -4895,11 +4896,13 @@ def test_80b_image_hooks_match_live_state_writes_and_logs(tmp_path, hooked_engin
     assert namespace["_saved_frames"].n_done == len(engine.backends[-1].saved)
 
 
-def test_80b_hookless_bytes_stay_identical(tmp_path):
+def test_80b_hookless_bytes_pin_includes_81_whole_plan_preflight(tmp_path):
     import hashlib
     _, _, source = export(tmp_path, [call("run_multiposition_acquisition", _80B_BASE)])
-    assert len(source.splitlines()) == 460
-    assert hashlib.sha256(source.encode()).hexdigest() == "9a56d7a9ca1e93e173cb4358712d94f4b837dfcfe7a933010af9f4df033b0826"
+    # D1 adds the existing portable guard, validates all coordinates, and moves
+    # event construction before the position loop. The acquisition body is unchanged.
+    assert len(source.splitlines()) == 545
+    assert hashlib.sha256(source.encode()).hexdigest() == "7deb9ad0900e2e2fcf0b3d622519e475b600a1cbecb074db06c21ab93e8bee4b"
 
 
 def test_80b_rendered_dependencies_appear_once_and_refusals_add_none(tmp_path):
@@ -5121,7 +5124,8 @@ def test_80b_position_filter_checks_complete_seed_before_hardware(tmp_path, hook
         ("check_xy", 1, 2), ("check_z", 3),
         ("check_xy", 11, 2), ("check_z", 3), ("check_exposure", 20),
     ]
-    assert order[5] == ("write_exposure", 20)
+    assert order[5:7] == [("check_z", 3), ("check_z", 3)]
+    assert order[7] == ("write_exposure", 20)
     assert len(hooked_engine.backends[-1].saved) == 2
     # Plan guarding must not change this hook's signature-driven construction.
     assert not hasattr(namespace["hook"], "ctrl")
@@ -5412,3 +5416,62 @@ def test_emitted_sequencing_refusal_executes_before_acquisition(tmp_path, monkey
     assert acquisition.call_count == 0
     assert isinstance(error, ValueError)
     assert 'truncated millisecond' in str(error)
+
+
+@pytest.mark.parametrize('route', ['plain', 'adaptive', 'hooked', 'unhooked'])
+@pytest.mark.parametrize('shape,maximum,reason', [
+    ((0, 0, 1), 61, 'Equal Z endpoints'),
+    ((65, 65, 0), 70, 'z_step must be positive'),
+    ((60, 60.5, 1), 60.5, 'exceeds recorded maximum'),
+    ((60, 60.5, 1), 61, None),
+])
+def test_81_emitted_sweep_preflight_executes_before_effects(
+    tmp_path, hooked_engine, route, shape, maximum, reason,
+):
+    start, end, step = shape
+    pp = dict(z_start_um=start, z_end_um=end, z_step_um=step, exposure_ms=7)
+    if route in {'plain', 'adaptive'}:
+        tool = 'run_zstack'
+        params = dict(save_dir='session', **pp)
+        if route == 'adaptive':
+            params['hook_strategy'] = 'snr_observer'
+    else:
+        tool = 'run_multiposition_acquisition'
+        params = {**_80B_BASE, 'protocol': 'zstack', 'protocol_params': pp}
+        if route == 'hooked':
+            params['hook_strategy'] = 'snr_observer'
+    guard = Guard(tmp_path)
+    guard._c.stage.z_max = maximum
+    result = tools.export_session_script(None, guard, 'routine.py', [call(tool, params)])
+    assert result['complete'], result
+    source = (tmp_path / 'routine.py').read_text()
+    if reason:
+        with pytest.raises(Exception, match=reason):
+            hooked_engine.execute(source)
+        assert hooked_engine.core.trace == []
+        assert not hooked_engine.backends
+    else:
+        namespace = hooked_engine.execute(source)
+        expected = tools.multi_d_acquisition_events(z_start=start, z_end=end, z_step=step)
+        actual = [e['z'] for b in hooked_engine.backends for e in b.events]
+        assert actual == [e['z'] for e in expected] * (2 if route in {'hooked', 'unhooked'} else 1)
+        assert namespace['events'] is hooked_engine.backends[-1].submitted_events
+
+
+def test_81_emitted_later_group_preflight_precedes_first_acquisition(
+    tmp_path, hooked_engine, monkeypatch,
+):
+    from pycromanager import multi_d_acquisition_events
+    def engine(**kwargs):
+        if kwargs.get('position_labels') == ['b']:
+            kwargs['xyz_positions'] = [(11, 2, 1001.)]
+            kwargs.pop('xy_positions', None)
+        return multi_d_acquisition_events(**kwargs)
+    params = {**_80B_BASE, 'hook_strategy': 'position_filter',
+              'protocol_params': dict(n_frames=2, interval_s=1, exposure_ms=7)}
+    _, result, source = export(tmp_path, [call('run_multiposition_acquisition', params)])
+    assert result['complete'], result
+    with pytest.raises(Exception, match='exceeds recorded maximum'):
+        hooked_engine.execute(source, event_builder=engine)
+    assert not hooked_engine.backends
+    assert hooked_engine.core.trace == []
