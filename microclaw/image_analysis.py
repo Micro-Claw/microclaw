@@ -629,7 +629,7 @@ def _reshape_pixels(pix, w: int, h: int, bpp: int, n_comp: int) -> np.ndarray:
     return arr.reshape(h, w)
 
 
-def snap_to_numpy(ctrl) -> np.ndarray:
+def snap_to_numpy(ctrl, exposure_callback=None) -> np.ndarray:
     """Headless snap via the core's tagged image API — does NOT touch the viewer.
 
     Use this for sweeps (autofocus) where repainting the viewer 20 times is
@@ -638,6 +638,8 @@ def snap_to_numpy(ctrl) -> np.ndarray:
     in tools._pause_live.
     """
     ctrl.core.snap_image()
+    if exposure_callback is not None:
+        exposure_callback()
     tagged = ctrl.core.get_tagged_image()
     w, h = int(tagged.tags["Width"]), int(tagged.tags["Height"])
     bpp = int(ctrl.core.get_bytes_per_pixel())

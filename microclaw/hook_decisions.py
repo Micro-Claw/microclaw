@@ -1447,7 +1447,8 @@ class CompositeHook:
         name, hook = self.named_hooks[index]
         records = self._child_log(hook)
         for record in records[self._seen[index]:]:
-            self._log.append({"hook_strategy": name, **record})
+            self._log.append({**record, "hook_strategy": name,
+                              "hook_identity": f"{index}:{name}"})
         self._seen[index] = len(records)
         if self.log_path:
             Path(self.log_path).write_text(
@@ -1528,6 +1529,11 @@ class CompositeHook:
             getattr(hook, "planned_extra_exposures_per_event", lambda: 0)()
             for _name, hook in self.named_hooks
         )
+
+    @property
+    def observed_exposures(self):
+        return sum(getattr(hook, "observed_exposures", 0) or 0
+                   for _name, hook in self.named_hooks)
 
     @property
     def artifact_emitting_hook_names(self) -> list[str]:

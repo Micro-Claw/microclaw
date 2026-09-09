@@ -77,6 +77,55 @@ def _frame_index(metadata: dict):
     return metadata.get("time")
 
 
+def planned_hook_z_reach(hook, events, entry_z, guard):
+    """Compose declared motion in engine callback order, carrying inherited Z.
+
+    A contract maps callback names to non-negative downward/upward reach.
+    Its output may remain anywhere in that interval. Undeclared hooks retain
+    runtime checks and are explicitly excluded from the validation claim.
+    """
+    children = getattr(hook, "named_hooks", [(type(hook).__name__, hook)])
+    contracts, unchecked = [], []
+    for index, (name, child) in enumerate(children):
+        contract = getattr(child, "planned_z_reach", None)
+        if contract is None:
+            unchecked.append(f"{index}:{name}")
+            continue
+        reach = contract()
+        for callback, offsets in reach.items():
+            if callback not in ("pre_hardware_hook_fn", "post_hardware_hook_fn", "image_process_fn"):
+                raise ValueError(f"Unknown reach callback: {callback}")
+            if len(offsets) != 2 or any(not np.isfinite(v) or v < 0 for v in offsets):
+                raise ValueError("Hook Z reach must be finite and non-negative")
+        contracts.append((f"{index}:{name}", reach))
+    if not contracts:
+        return {"checked_hooks": [], "unchecked_hooks": unchecked}
+    if events and events[0].get("z") is not None and not any(
+            "pre_hardware_hook_fn" in reach for _, reach in contracts):
+        entry_z = float(events[0]["z"])
+    elif callable(entry_z):
+        entry_z = entry_z()
+    lo, hi = entry_z if isinstance(entry_z, tuple) else (entry_z, entry_z)
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        raise ValueError("Hook entry Z must be finite")
+    envelope = []
+    for event in events or [{}]:
+        for callback in ("pre_hardware_hook_fn", "post_hardware_hook_fn", "image_process_fn"):
+            if callback == "post_hardware_hook_fn" and event.get("z") is not None:
+                lo = hi = float(event["z"])
+            for name, reach in contracts:
+                if callback not in reach:
+                    continue
+                down, up = reach[callback]
+                lo, hi = lo - down, hi + up
+                guard.check_z(lo)
+                guard.check_z(hi)
+                envelope.extend((lo, hi))
+    return {"checked_hooks": [name for name, _ in contracts],
+            "unchecked_hooks": unchecked, "z_min_um": min(envelope),
+            "z_max_um": max(envelope), "exit_z_interval_um": (lo, hi)}
+
+
 class HookBase:
     """All hooks write a summary log so Claude can read results afterward."""
 
@@ -87,6 +136,8 @@ class HookBase:
     def __init__(self, log_path: str | None = None):
         self.log_path = log_path
         self._log: list[dict] = []
+        self._reservation = None
+        self.observed_exposures = None
         # Set by the ADAPTIVE survey runner (design/27 Fix 4): the full built
         # tile list, seed at index 0. Only survey_events[0] is pre-dispatched;
         # the hook walks the rest — candidates.put(the next tile) to continue,
@@ -100,6 +151,14 @@ class HookBase:
         # and RAISE (fail loudly), never log a quiet success (design/24).
         self.candidates = None
         self.progress = None
+
+    def bind_reservation(self, reservation):
+        self._reservation = reservation
+
+    def _count_exposure(self):
+        self.observed_exposures = (self.observed_exposures or 0) + 1
+        if self._reservation is not None:
+            self._reservation.commit_frame()
 
     def _write_log(self) -> None:
         """Rewrite the whole file from `self._log`: one hook instance per log_path.
@@ -255,9 +314,7 @@ class AutofocusHook(HookBase):
         self.settle_ms = settle_ms
         self._autofocus_fn = coarse_then_fine_autofocus
         self._reservation = None
-
-    def bind_reservation(self, reservation) -> None:
-        self._reservation = reservation
+        self.observed_exposures = 0
 
     def _coarse_step_um(self) -> float:
         """The coarse step shared by sweep execution and dose planning."""
@@ -279,33 +336,64 @@ class AutofocusHook(HookBase):
             # modification in sequenced batches only.
             event[:] = [self.post_hardware_hook_fn(item) for item in event]
             return event
-        current_z = self.ctrl.core.get_position()
-        z_start = current_z - self.z_range_um / 2
-        z_end = current_z + self.z_range_um / 2
+        self._attempt_count = getattr(self, "_attempt_count", 0) + 1
+        identity = {"autofocus_attempt": self._attempt_count,
+                    "hook_identity": type(self).__name__,
+                    "event_axes": dict(event.get("axes") or {})}
+        self.log_event(event, **identity, autofocus="attempted")
+        sweep_started = False
+        window = None
         try:
+            current_z = float(self.ctrl.core.get_position())
+            if not np.isfinite(current_z):
+                raise SafetyViolation("Measured autofocus entry Z is not finite")
+            z_start = current_z - self.z_range_um / 2
+            z_end = current_z + self.z_range_um / 2
+            self.planned_z_reach()
             self.guard.check_z(z_start)
             self.guard.check_z(z_end)
-        except Exception as e:
-            self.log_event(event, autofocus="skipped", reason=str(e))
-            return event
-
-        coarse_step = self._coarse_step_um()
-        result = self._autofocus_fn(
-            self.ctrl, self.z_range_um, coarse_step, self.z_step_um, self.settle_ms
-        )
-        if self._reservation is not None:
-            actual_sweeps = len(result.coarse.z_positions)
-            if result.fine is not None:
-                actual_sweeps += len(result.fine.z_positions)
-            for _ in range(actual_sweeps):
-                self._reservation.commit_frame()
-        self.log_event(
-            event,
-            best_z_um=round(result.final_z_um, 3),
-            converged=result.converged,
-            **({"warning": result.reason} if not result.converged else {}),
-        )
+            window = [z_start, z_end]
+            sweep_started = True
+            result = self._autofocus_fn(
+                self.ctrl, self.z_range_um, self._coarse_step_um(),
+                self.z_step_um, self.settle_ms,
+                z_min_um=z_start, z_max_um=z_end,
+                exposure_callback=self._count_exposure,
+            )
+            self.log_event(
+                event, **identity,
+                autofocus="converged" if result.converged else "non_converged",
+                best_z_um=round(result.final_z_um, 3), converged=result.converged,
+                reason=result.reason,
+                sweep_window_um=[z_start, z_end],
+                sweeps=[vars(sweep) for sweep in (result.coarse, result.fine)
+                        if sweep is not None],
+                final_commanded_z_um=result.final_commanded_z_um,
+                final_readback_z_um=result.final_z_um,
+                hook_exposures_observed=self.observed_exposures,
+            )
+            if not result.converged:
+                raise SafetyViolation(result.reason or "Autofocus did not converge")
+        except Exception as exc:
+            reason = str(exc)
+            notes = getattr(exc, "__notes__", [])
+            if notes:
+                reason += "; " + "; ".join(notes)
+            self.log_event(event, **identity,
+                           autofocus="failed" if sweep_started else "skipped",
+                           reason=reason, sweep_window_um=window,
+                           hook_exposures_observed=self.observed_exposures)
+            # None becomes {} over pyjavaz and exposes the field. Raising is
+            # the engine's abort lever; see MMAutofocusPluginHook below.
+            raise SafetyViolation(
+                f"Required autofocus stopped at field {event.get('axes', {}).get('position')!r}: {reason}"
+            ) from exc
         return event
+
+    def planned_z_reach(self):
+        if any(not np.isfinite(v) or v < 0 for v in (self.z_range_um, self.z_step_um)) or self.z_step_um == 0:
+            raise ValueError("Autofocus reach must be finite and non-negative; step must be positive")
+        return {"post_hardware_hook_fn": (self.z_range_um / 2, self.z_range_um / 2)}
 
 
 class FocusFeedbackHook(HookBase):
@@ -359,8 +447,19 @@ class FocusFeedbackHook(HookBase):
         self.threshold = threshold_fraction
         self.z_step = z_step_um
         self.max_jogs = max_jogs
+        self._reservation = None
+        self.observed_exposures = 0
         self.reference_metric: float | None = None
         self.background_offset: float | None = None
+
+    def planned_extra_exposures_per_event(self):
+        self.planned_z_reach()
+        return self.max_jogs
+
+    def planned_z_reach(self):
+        if any(not np.isfinite(v) or v < 0 for v in (self.z_step, self.max_jogs)):
+            raise ValueError("Feedback reach must be finite and non-negative")
+        return {"image_process_fn": (0, self.z_step * self.max_jogs)}
 
     def _bleach_corrected_metric(self, image: np.ndarray) -> float:
         """Tenengrad per unit flux², against the offset fixed by frame 1."""
@@ -392,7 +491,7 @@ class FocusFeedbackHook(HookBase):
                     self.ctrl.core.set_position(current_z + self.z_step)
                     self.ctrl.core.wait_for_device(focus_device)
                     jogs += 1
-                    new_metric = self._bleach_corrected_metric(snap_to_numpy(self.ctrl))
+                    new_metric = self._bleach_corrected_metric(snap_to_numpy(self.ctrl, exposure_callback=self._count_exposure))
                     if new_metric >= self.reference_metric * self.threshold:
                         self.reference_metric = new_metric
                         corrected, outcome = True, "recovered"

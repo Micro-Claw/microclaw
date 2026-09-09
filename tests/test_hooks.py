@@ -62,7 +62,7 @@ class TestFocusFeedbackHook:
         ctrl.core.set_position.assert_not_called()
 
     def test_hardware_error_distinct_from_guard(self, monkeypatch):
-        monkeypatch.setattr("microclaw.hooks.snap_to_numpy", lambda c: _BLURRY)
+        monkeypatch.setattr("microclaw.hooks.snap_to_numpy", lambda c, **kwargs: _BLURRY)
         ctrl = self._ctrl()
         ctrl.core.get_position.return_value = 50.0            # well within bounds
         ctrl.core.set_position.side_effect = RuntimeError("stage stalled")
@@ -75,7 +75,7 @@ class TestFocusFeedbackHook:
         assert entry["focus_correction"] is False
 
     def test_one_log_entry_per_triggering_frame(self, monkeypatch):
-        monkeypatch.setattr("microclaw.hooks.snap_to_numpy", lambda c: _BLURRY)
+        monkeypatch.setattr("microclaw.hooks.snap_to_numpy", lambda c, **kwargs: _BLURRY)
         ctrl = self._ctrl()
         ctrl.core.get_position.return_value = 50.0
         hook = FocusFeedbackHook(ctrl, _guard(), z_step_um=1.0, max_jogs=3)

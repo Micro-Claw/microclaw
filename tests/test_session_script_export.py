@@ -2656,6 +2656,11 @@ def test_emitted_adaptive_seed_check_refuses_out_of_bounds_before_acquisition(
         "positions": [{"name": "p0", "x_um": 0, "y_um": 0}],
         "protocol_params": {"z_start_um": 60, "z_end_um": 62, "z_step_um": 1},
     })], id="zstack-events-inline-multiposition"),
+    pytest.param([call("run_zstack", {
+        "z_start_um": 60, "z_end_um": 62, "z_step_um": 1, "save_dir": "session",
+        "hook_strategy": "autofocus_per_position",
+        "hook_params": {"z_range_um": 4, "z_step_um": .5},
+    })], id="autofocus-hook-reach-and-target-inline"),
 ])
 def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
@@ -3226,8 +3231,7 @@ def test_emitted_autofocus_probe_moves_use_the_recorded_focus_band(
          "settle_ms": 0, "probe": spec},
         {"converged": False, "moved": False, "coarse": coarse, "fine": None},
     ))
-    assert (f"mm._guard = SimpleNamespace(stage_move_tolerance="
-            f"lambda device, core_focus=False: {declared!r})") in source
+    assert f"guard.stage_move_tolerance = lambda device, core_focus=False: {declared!r}" in source
 
     class FakeCore:
         last = None
@@ -3282,7 +3286,7 @@ def test_emitted_autofocus_band_ignores_configuration_edited_after_the_run(tmp_p
                     "arrival_unverifiable_planes": []}},
     ))
     source = (tmp_path / "routine.py").read_text(encoding="utf-8")
-    assert "lambda device, core_focus=False: None)" in source
+    assert "lambda device, core_focus=False: None" in source
     assert "7.531" not in source
 
 
@@ -4605,7 +4609,7 @@ def test_80b_wrapper_gets_hook_runtime_and_limits_without_recorded_strategy(tmp_
     namespace = hooked_engine.execute(source)
     assert namespace["hook"]._reservation is namespace["_reservation"]
     assert namespace["_saved_frames"].n_done == 1
-    assert len(namespace["hook"].get_summary()) == 1
+    assert tools._autofocus_outcomes(namespace["hook"].get_summary())["event_count"] == 1
 
 
 _80B_BASE = {
@@ -4800,6 +4804,17 @@ def test_80b_autofocus_grid_executes_like_live(tmp_path, hooked_engine, field):
         assert engine.core.probes == live_probes == []
         assert engine.core.captures == []
         return
+    if field in {"flat", "bounds"}:
+        with pytest.raises(Exception, match="flat|minimum"):
+            _80b_live(engine, "autofocus_per_position", hp, events, tmp_path / "live.json")
+        assert engine.core.captures == []
+        live_probes = engine.core.probes[:]
+        engine.core = engine.Core(field)
+        with pytest.raises(Exception, match="flat|minimum"):
+            engine.execute(source)
+        assert engine.core.captures == []
+        assert engine.core.probes == live_probes
+        return
     live_hook, reservation = _80b_live(engine, "autofocus_per_position", hp, events, tmp_path / "live.json")
     live_core = engine.core
     engine.core = engine.Core(field)
@@ -4815,7 +4830,7 @@ def test_80b_autofocus_grid_executes_like_live(tmp_path, hooked_engine, field):
     assert emitted_log == live_log
     assert len(engine.backends[-1].saved) == 9
     assert len({tuple(sorted(axes.items())) for axes in engine.backends[-1].saved}) == 9
-    assert len(namespace["hook"].get_summary()) == 9
+    assert tools._autofocus_outcomes(namespace["hook"].get_summary())["counts"]["converged"] == 9
     assert namespace["_saved_frames"].n_done == 9
     assert namespace["_hook_exposures"].n_done + 9 == reservation.completed_frames
     assert len([item for item in engine.core.trace if item[0] == "post"]) == 9
@@ -4825,14 +4840,14 @@ def test_80b_autofocus_grid_executes_like_live(tmp_path, hooked_engine, field):
         next_capture = next(i for i in engine.core.trace[index+1:] if i[0] == "capture")
         assert next_capture[1] == item[1]
     if field == "peaked":
-        assert all(entry["converged"] for entry in _80b_log(live_hook))
+        assert all(entry["converged"] for entry in _80b_log(live_hook) if "converged" in entry)
         assert [c[2] for c in engine.core.captures] == pytest.approx([3.5+c for r in range(3) for c in range(3)], abs=0.125)
     elif field == "flat":
         assert all(not entry["converged"] for entry in _80b_log(live_hook))
         assert [c[2] for c in engine.core.captures] == [3+c for r in range(3) for c in range(3)]
     else:
         assert _80b_log(live_hook)[0]["autofocus"] == "skipped"
-    assert len(json.loads((tmp_path / "grid.json").read_text(encoding="utf-8"))) == 9
+    assert tools._autofocus_outcomes(json.loads((tmp_path / "grid.json").read_text(encoding="utf-8")))["event_count"] == 9
 
 
 @pytest.mark.parametrize("strategy,mode", [
@@ -4885,6 +4900,11 @@ def test_80b_image_hooks_match_live_state_writes_and_logs(tmp_path, hooked_engin
             engine.core.snap_image = lambda: (_ for _ in ()).throw(RuntimeError("snap failed"))
         else:
             engine.core.set_exposure = lambda value: (_ for _ in ()).throw(RuntimeError("exposure write failed"))
+    if strategy == "focus_feedback" and mode == "bounds":
+        with pytest.raises(Exception, match="maximum"):
+            engine.execute(source)
+        assert engine.core.captures == []
+        return
     namespace = engine.execute(source)
     emitted_hook = namespace["hook"]
     assert engine.core.trace == live_core.trace
