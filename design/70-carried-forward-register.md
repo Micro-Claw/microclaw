@@ -2546,6 +2546,6 @@ visible; do not put one of these on a checklist.
 - **What is NOT known** — the rate. It was 1 of 3 samples in an arm sized at 3, which cannot distinguish a blip from a habit. Do not quote 1/3 as a frequency.
 - **How to settle it** — 79b re-runs `design/79-block79a-replay.py` against its own guidance change; these three arms ride along at near-zero marginal cost, and the scorer already flags the phrase (`_FORBIDDEN`, retraction- and hedge-guarded, with `test_naming_the_phase_then_blaming_hardware_still_fails` pinning this exact case).
 - **Where** — LOCAL, API credit only. No hardware, no dose.
-- **Block** — **79b**.
+- **Block** — NONE. **79b did not settle it** (2026-09-09): its two-tree gate was not run, because the trees differed by relocation rather than information, so the ride-along had nothing to ride on. 79b's arm-tree pilot did add **3 further `attributed-write` samples, all PASS with no forbidden phrase**, which is corroboration and not a rate — the total is now 1 speculation in 6 observed samples, and that is still not a frequency.
 - **Effort** — SMALL
-- **Provenance** — `design/79` block 79a's third pilot, 2026-09-08.
+- **Provenance** — `design/79` block 79a's third pilot, 2026-09-08; re-routed after 79b's close, 2026-09-09.
