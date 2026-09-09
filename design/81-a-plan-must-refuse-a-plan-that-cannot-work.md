@@ -796,7 +796,9 @@ Numbered from `R107`, the current highest in `design/70`.
 Baseline before the block: `main` `f915e5d`; `95cfdfd` is the notebook's own
 commit and `e03f790` was the tree the findings were read against.
 Coordinator-run suite on the 81a-1 worktree at that commit: **3086 passed, 99
-skipped, 4 warnings** in 267 s (`.venv/bin/python -m pytest -q`, uv + Python
+skipped, 4 warnings** in 267 s. 81a-2 starts at `da67cbd`, baseline **3167
+passed, 99 skipped** measured four times — with one pre-existing intermittent,
+`R114`, seen in one of five runs and in the path 81a-2 changes (`.venv/bin/python -m pytest -q`, uv + Python
 3.12.14). `design/81-degenerate-z-scan.py` run against the installed
 pycro-manager on the same tree reproduces F1's table row for row, including the
 `(0, 0, 0)` single event with no `z` key and the `(60, 60.5, 1)` overshoot to
@@ -805,6 +807,6 @@ pycro-manager on the same tree reproduces F1's table row for row, including the
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
-| 81a-2 | — | not started; D3(a–d), carries the 81a-1 export limb | | | |
+| 81a-2 | `design81/81a2-runtime-refusal` | `da67cbd` | | | |
 | 81b | — | not started; follows 81a-1 | | | |
 | 81c | — | not started; follows 81a-2 and 81b | | | |
