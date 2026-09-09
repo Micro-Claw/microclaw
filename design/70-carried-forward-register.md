@@ -125,6 +125,11 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R105` | [The residual per-frame dispatch cost is still unmeasured on M2](#r105) | MEDIUM | SMALL |  |
 | `R106` | [DEFAULT_MODEL is claude-opus-4-8, and every measurement of the runtime inherits it](#r106) | MEDIUM | SMALL |  |
 | `R107` | [The agent attributes from spans correctly and then speculates about hardware anyway](#r107) | MEDIUM | SMALL | **79b** |
+| `R108` | [A knowledge entry teaches the workaround for the defect 81a-1 fixed](#r108) | MEDIUM | SMALL | **81a-1** drafted |
+| `R109` | [Every custom-adapter observation records an empty parameters block](#r109) | LOW | SMALL |  |
+| `R110` | [A fixed-plan Z sweep leaves the focus axis wherever its last plane put it](#r110) | MEDIUM | SMALL |  |
+| `R111` | [Autofocus re-commands a measured coordinate the guard never checked](#r111) | HIGH | SMALL | **81a-2** |
+| `R112` | [No record exists of an operator having SEEN the evidence behind a count](#r112) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2549,3 +2554,59 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE. **79b did not settle it** (2026-09-09): its two-tree gate was not run, because the trees differed by relocation rather than information, so the ride-along had nothing to ride on. 79b's arm-tree pilot did add **3 further `attributed-write` samples, all PASS with no forbidden phrase**, which is corroboration and not a rate — the total is now 1 speculation in 6 observed samples, and that is still not a frequency.
 - **Effort** — SMALL
 - **Provenance** — `design/79` block 79a's third pilot, 2026-09-08; re-routed after 79b's close, 2026-09-09.
+
+### R108 — A knowledge entry teaches the workaround for the defect 81a-1 fixed
+
+**The 2026-09-09 bead session saved `strategies/bead_counting_offline` carrying *"set the zstack z_start_um/z_end_um to the ACTUAL focus plane, NOT 0"*. That is a workaround for the defect block 81a-1 has now fixed, stored where the next session reads it back as instruction.**
+
+- **Why it matters** — `R100`'s family, second instance: a store that maintains a competing capability declaration overrides the installed tool contract in practice. The tool now *refuses* equal endpoints outright and says why, so the entry's advice is not merely stale, it is a weaker version of a rule the code enforces — and it still implies that equal endpoints at the focus plane would be fine.
+- **Drafted replacement**, from block 81a-1 and not written to the store: *"For one saved plane, move to the chosen absolute stage Z and use `protocol="timelapse"` with `{"n_frames": 1, "interval_s": 0}`. Do not use equal Z-stack endpoints, even at the actual focus plane: Microclaw now refuses that shape. For a stack around focus, read the current Z and choose distinct absolute endpoints around it. Supply all three finite Z values, with `z_end_um > z_start_um` and positive `z_step_um`. The final generated plane can overshoot the requested endpoint; the actual generated extrema must fit the stage bounds. Zero is an absolute coordinate, not 'current focus.' Plan validity does not establish autofocus success."*
+- **Why it is not closed** — the entry is the operator's file and theirs to correct. Microclaw does not rewrite a user's knowledge store on its own, and `delete_knowledge`/`save_knowledge` both carry a confirmation for that reason.
+- **Where** — LOCAL, operator action.
+- **Block** — drafted by **81a-1**; the write is the operator's.
+- **Effort** — SMALL
+- **Provenance** — `design/81` F1/D1 and block 81a-1, 2026-09-09.
+
+### R109 — Every custom-adapter observation records an empty parameters block
+
+**Both bead-counter manifests record `parameters: {}` on every observation while the manifest's top-level `parameters` is correct.**
+
+- **Why it matters** — cosmetic, and it invites a reader to conclude the parameters were not recorded when they were. Provenance is not the gap here: `analyzer.source_sha256` and the top-level block are both right.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — `design/81` F6, 2026-09-09.
+
+### R110 — A fixed-plan Z sweep leaves the focus axis wherever its last plane put it
+
+**Run 1 of the 2026-09-09 bead session parked the focus axis at Z ≈ 0.002, about 65 µm from where the operator had set it, and nothing restored it.**
+
+- **Why it matters** — design/52c's restoration block covers *declared envelopes*, not the plan's own axis. Block 81a-1 removes this particular trigger, because a `0, 0, 1` sweep is now refused before it moves anything; it does not answer the question, which is whether a fixed Z sweep should return the axis to its entry position.
+- **What is NOT known** — whether restoring is even wanted. A microscopist who asked for a stack may want to stay on the last plane, and design/37 F4's live-restore history says the answer is not obvious. This needs a decision before an implementation.
+- **Where** — LOCAL to decide; a demo-machine run to confirm the behaviour either way.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — `design/81` F1 and the run-1 record, 2026-09-09.
+
+### R111 — Autofocus re-commands a measured coordinate the guard never checked
+
+**`sweep_autofocus` sets `best_z = measured_z_positions[best_idx]` (`autofocus.py:415`) — a reading — and `coarse_then_fine_autofocus` then commands it with `_restore(ctrl, fine.best_z_um)` (`autofocus.py:623`). Under design/66's `max(2.0, 0.1 × displacement)` arrival band the value commanded can sit ~2 µm outside the window `check_z` validated.**
+
+- **Mechanism verified in the tree; not proved by the artifact.** The swept planes come from `linspace` and do not overshoot, and `peak_interior` is computed on the commanded index, so those are correct. The escape is that the value reported and re-commanded is a measurement.
+- **The one artifact is consistent and is not proof** — `r1_c0` reports `best_z_um: 76.226` where the sweep window's upper bound was 75.183, 1.043 µm beyond it, with `converged: true` and no warning. It cannot be settled from the record: the hook log stores only `best_z_um` and `converged`, never the swept window or the chosen plane's commanded value.
+- **How to settle it** — block **81a-2** D3(d): validate a selected target against both the allowed Z bounds and the declared sweep window before dispatching it, refuse rather than clamp, and retain commanded/measured/window provenance. New records settle future cases; they cannot recover the missing values from `r1_c0`, which stays inconclusive.
+- **Where** — LOCAL for the target check; the demo-machine autofocus limb for the provenance.
+- **Block** — **81a-2**.
+- **Effort** — SMALL
+- **Provenance** — `design/81` F9, 2026-09-09.
+
+### R112 — No record exists of an operator having SEEN the evidence behind a count
+
+**`emit_observation` defaults to `status="unverified"` and `completed_dataset.py:403` permanently restricts a saved adapter to `{"unverified", "provisional"}`. That is right. What is missing is any record that the operator looked at the pixels.**
+
+- **Why it surfaced** — the 2026-09-09 session's operator confirmed six tiles they had never been shown, and the agent then skipped the labeled map *because* the confirmation had arrived. design/81 D5 makes the showing happen; recording that it happened is separate.
+- **What it would be** — a note against `run_id` + `content_sha256` that the evidence was rendered and opened. Explicitly **not** a promotion to `observed`: design/81 rejects that by name, and an operator's agreement is not measurement.
+- **Where** — LOCAL.
+- **Block** — NONE. Not 81c's subject.
+- **Effort** — SMALL
+- **Provenance** — `design/81` F6 and the rejected-alternatives list, 2026-09-09.
