@@ -297,3 +297,177 @@ def test_shared_schema_publishes_snap_as_parameterless():
     assert "snap takes no protocol_params" in tools_schema._PROTOCOL_PARAMS_SCHEMA[
         "description"
     ]
+
+
+# Reuse the engine-dispatching backend: frames are delivered at teardown.
+from tests.test_acquisition_order import rig
+from pycromanager import multi_d_acquisition_events
+import math
+
+
+@pytest.mark.parametrize('shape, reason', [
+    ({'z_start': 0, 'z_end': 0, 'z_step': 1}, 'Equal Z endpoints'),
+    ({'z_start': 65.183, 'z_end': 65.183, 'z_step': 1}, 'Equal Z endpoints'),
+    ({'z_start': 0, 'z_end': 0, 'z_step': 0}, 'z_step must be positive'),
+    ({'z_start': 65, 'z_end': 65, 'z_step': 0}, 'z_step must be positive'),
+    ({'z_start': 60, 'z_end': 70, 'z_step': 0}, 'z_step must be positive'),
+    ({'z_start': 70, 'z_end': 60, 'z_step': 1}, 'z_end must be greater'),
+    ({'z_start': 60, 'z_end': 70, 'z_step': -1}, 'z_step must be positive'),
+    ({'z_start': 70, 'z_end': 60, 'z_step': -2.5}, 'z_step must be positive'),
+    ({'z_start': 0, 'z_end': 1}, 'complete z_start, z_end, z_step triple'),
+    ({'z_step': 1}, 'complete z_start, z_end, z_step triple'),
+    *[({'z_start': 0, 'z_end': 1, 'z_step': 1, key: value}, f'{key} must be finite')
+      for key in ('z_start', 'z_end', 'z_step')
+      for value in (float('nan'), float('inf'), -float('inf'), None)],
+])
+def test_z_sweep_input_refusal_precedes_dependency(shape, reason, monkeypatch):
+    engine = MagicMock(wraps=multi_d_acquisition_events)
+    monkeypatch.setattr(tools, 'multi_d_acquisition_events', engine)
+    with pytest.raises(ValueError, match=reason) as error:
+        tools._build_acquisition_events(**shape)
+    engine.assert_not_called()
+    if reason == 'Equal Z endpoints':
+        assert 'absolute stage coordinates' in str(error.value)
+        assert 'protocol="timelapse"' in str(error.value)
+        assert '{"n_frames": 1, "interval_s": 0}' in str(error.value)
+        assert 'distinct endpoints around the current Z' in str(error.value)
+
+
+@pytest.mark.parametrize('damage,reason', [
+    ('empty', 'generated no events'),
+    ('missing', 'missing or non-finite Z'),
+    ('nan', 'missing or non-finite Z'),
+    ('one', 'at least two distinct Z'),
+])
+def test_z_sweep_generated_output_refusal(damage, reason, monkeypatch):
+    def damaged_engine(**kwargs):
+        events = multi_d_acquisition_events(**kwargs)
+        if damage == 'empty':
+            return events[:0]
+        if damage == 'one':
+            for event in events:
+                event['z'] = events[0]['z']
+        elif damage == 'missing':
+            events[-1].pop('z')
+        else:
+            events[-1]['z'] = float('nan')
+        return events
+    monkeypatch.setattr(tools, 'multi_d_acquisition_events', damaged_engine)
+    with pytest.raises(ValueError, match=reason):
+        tools._build_acquisition_events(z_start=60, z_end=61, z_step=1)
+
+
+def _z_call(rig, route, start=60, end=60.5, step=1):
+    shape = dict(z_start_um=start, z_end_um=end, z_step_um=step, exposure_ms=7)
+    if route == 'zstack':
+        return 'run_zstack', dict(save_dir=rig.params['save_dir'], **shape)
+    params = {**rig.params, 'protocol': 'zstack', 'protocol_params': shape}
+    if route == 'hooked':
+        params['hook_strategy'] = 'snr_observer'
+    return 'run_multiposition_acquisition', params
+
+
+def _bound_z(rig, maximum):
+    def check(z):
+        if not math.isfinite(z) or z > maximum:
+            raise ValueError(f'actual Z {z} exceeds bound {maximum}')
+    rig.guard.check_z.side_effect = check
+
+
+@pytest.mark.parametrize('route', ['zstack', 'hooked', 'unhooked'])
+@pytest.mark.parametrize('maximum', [60.5, 61])
+def test_execute_z_sweep_guards_actual_extrema_before_effects(rig, monkeypatch, route, maximum):
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    _bound_z(rig, maximum)
+    name, params = _z_call(rig, route)
+    result = json.loads(tools.execute_tool(name, params, rig.ctrl, rig.guard))
+    seen = [call.args[0] for call in rig.guard.check_z.call_args_list]
+    assert seen[:2] == [60., 61.], result
+    if maximum == 60.5:
+        assert 'actual Z 61.0 exceeds bound 60.5' in result['error']
+        assert not rig.acquisitions
+        assert not rig.reservations
+        rig.ctrl.core.set_exposure.assert_not_called()
+        rig.ctrl.core.set_xy_position.assert_not_called()
+        rig.ctrl.studio.live().set_live_mode_on.assert_not_called()
+    else:
+        assert 'error' not in result, result
+        assert rig.acquisitions
+
+
+@pytest.mark.parametrize('route', ['zstack', 'hooked', 'unhooked'])
+def test_execute_equal_endpoints_refuse_before_effects(rig, monkeypatch, route):
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    name, params = _z_call(rig, route, 0, 0)
+    result = json.loads(tools.execute_tool(name, params, rig.ctrl, rig.guard))
+    assert 'Equal Z endpoints' in result['error']
+    assert not rig.acquisitions
+    assert not rig.reservations
+    rig.ctrl.core.set_exposure.assert_not_called()
+    rig.ctrl.core.set_xy_position.assert_not_called()
+    rig.ctrl.studio.live().set_live_mode_on.assert_not_called()
+
+
+@pytest.mark.parametrize('route', ['zstack', 'hooked', 'unhooked'])
+def test_validated_engine_list_is_submitted_without_rebuilding(rig, monkeypatch, route):
+    from tests.test_acquisition_order import RecordingBackend
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    built, submitted = [], []
+    def engine(**kwargs):
+        events = multi_d_acquisition_events(**kwargs)
+        built.append(events)
+        return events
+    acquire = RecordingBackend.acquire
+    def submit(self, events):
+        submitted.append(events)
+        return acquire(self, events)
+    monkeypatch.setattr(tools, 'multi_d_acquisition_events', engine)
+    monkeypatch.setattr(RecordingBackend, 'acquire', submit)
+    name, params = _z_call(rig, route, 60, 61, .3)
+    result = json.loads(tools.execute_tool(name, params, rig.ctrl, rig.guard))
+    assert 'error' not in result, result
+    assert len(built) == 1
+    assert submitted and all(events is built[0] for events in submitted)
+    expected_shape = dict(z_start=60, z_end=61, z_step=.3)
+    if route == 'hooked':
+        expected_shape.update(xy_positions=[(0., 0.), (10., 0.)], position_labels=['A', 'B'])
+    assert built[0] == multi_d_acquisition_events(**expected_shape)
+
+
+def test_builder_preserves_engine_position_dependent_fractional_z():
+    shape = dict(z_start=1, z_end=2, z_step=.3,
+                 xyz_positions=[(0, 0, 60), (10, 0, 65)], position_labels=['A', 'B'])
+    assert tools._build_acquisition_events(**shape) == multi_d_acquisition_events(**shape)
+
+
+def test_later_group_refuses_before_first_acquisition_or_exposure(rig, monkeypatch):
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    _bound_z(rig, 70)
+    def engine(**kwargs):
+        # Fault injection at the dependency boundary; geometry still comes from
+        # the installed engine, with a later group's actual Z outside the bound.
+        if kwargs.get('position_labels') == ['B']:
+            kwargs['xyz_positions'] = [(10, 0, 71)]
+            kwargs.pop('xy_positions', None)
+        return multi_d_acquisition_events(**kwargs)
+    monkeypatch.setattr(tools, 'multi_d_acquisition_events', engine)
+    result = json.loads(tools.execute_tool('run_multiposition_acquisition', {
+        **rig.params, 'hook_strategy': 'snr_observer',
+        'protocol_params': dict(n_frames=2, interval_s=1, exposure_ms=7),
+    }, rig.ctrl, rig.guard))
+    assert 'actual Z 71.0 exceeds bound 70' in result['error']
+    assert not rig.acquisitions
+    assert not rig.reservations
+    rig.ctrl.core.set_exposure.assert_not_called()
+    rig.ctrl.studio.live().set_live_mode_on.assert_not_called()
+
+
+@pytest.mark.parametrize('hooked', [False, True])
+def test_suggested_single_plane_timelapse_works(rig, monkeypatch, hooked):
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    result = json.loads(tools.execute_tool('run_multiposition_acquisition', {
+        **rig.params, 'protocol_params': dict(n_frames=1, interval_s=0),
+        **({'hook_strategy': 'snr_observer'} if hooked else {}),
+    }, rig.ctrl, rig.guard))
+    assert 'error' not in result, result
+    assert len(rig.frames) == 2
