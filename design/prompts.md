@@ -9927,3 +9927,64 @@ discoverable invited a `dominant_phase` field. It would have turned the arm from
 "does the model compare spans and attribute the cost" into "can the model read a
 label". The decision to report numbers and nothing else went into the design doc
 *before* the block was handed over, and a test now asserts no such field appears.
+
+## Block 79b — performance-aware planning, 2026-09-09
+
+**The block that ended by not spending.** 79b's acceptance was a seven-scenario
+two-tree replay with predefined sample sizes and effect sizes. It was resized to
+three arms at ~$3 after the pilot, and then not run at all after one `grep` of
+the control tree. That `grep` is the whole lesson and it cost nothing: **a
+two-tree replay can only move if the trees differ in what they say, not in where
+they say it.** The control already carried `interval_s`'s full deadline predicate
+on its own parameter, and both moved rules in its prompt. Every arm I had chosen
+was a relocation. I proposed $18, then $36, then $3 for a foregone conclusion,
+and the check that would have prevented all three took a minute.
+
+**Establish the informational delta before proposing a sample size.** Not after
+the pilot, not after the instrument is built — before the number is quoted.
+
+**The spend record, because it is the argument.** ~$24 across 77a ($12.13), 79a
+(~$9) and 79b's pilot ($2.85) bought **one** product discovery, one regression
+confirmation, and about **eight instrument defects**. The one discovery — 79a's
+teardown span, present and correct and unit-tested and unread — is worth the
+capability existing: no local test catches text that exists and is ignored. But
+the money goes to the harness, and the harness fails the same four ways every
+time. **API credit may not be spent debugging an instrument.** All three of
+79b's pilot defects were reproducible offline for $0 once known: render the
+fixture's own payloads and read them, replay a recorded session's tool calls
+through the allowlist, count the `cache_control` blocks.
+
+**Size for the question, not for a rate.** design/59b's 5/8-then-15/16 is about
+estimating a rate, which needs n≈16. Every finding these replays have produced
+was a gross failure — 0/3, ignored in 2 of 3, refused 3 of 3 — and that needs 3.
+Sizing a gross-failure question as a rate question is a 10x cost error.
+
+**Score the artifacts, including a void sample's.** `sweep` returned
+`NOT_AVAILABLE` in all three samples because the fixture could not answer a
+discovery call. The verdicts were void; the **calls** were in the transcript, and
+all three had derived their own `interval_s` — 0.001, 0.05, 0.1 — satisfying the
+deadline predicate over five frames, with no interval named in the prompt. The
+instrument threw away the block's best evidence and the transcript kept it.
+
+**The pilot answered the real question with one tree.** 79b's risk was that rules
+moved out of the prompt stop being honoured. The pilot ran on the shipping text,
+where they live only on parameters: `native` 3/3, `observer` 3/3. The control arm
+would only have established whether the *control* also passes, which bears on an
+improvement claim nobody was making. When the claim is "this still works", one
+tree is the experiment.
+
+**A scoped runner command has a cost, and it is the repo's own conventions.** I
+gave the runner five test files; `tests/test_suite_integrity.py` was not among
+them, so four missing `encoding=` arguments survived to my full-suite run. When a
+block adds a *new test file*, the runner's targeted command must include the
+suite-integrity test.
+
+**A timed start is not a deliverable.** The 02:16 launcher fired, worked,
+committed and exited 0 — and the operator learned of it at 08:14, because nothing
+pushed the branch, nothing notified, and review needs a session. Fourth failure
+of this mechanism here, each earlier fix exposing the next link: died with the
+session → fired against a late window → could not be stopped → **reported to
+nobody**. The launcher now pushes and writes a `HANDOFF.md` on success, with a
+control limb proving a failed turn publishes nothing. But the upstream question
+is whether to schedule at all: when the next step is the coordinator's, "the
+window reopens at HH:MM, ping me" beats building anything.
