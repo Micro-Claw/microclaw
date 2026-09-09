@@ -2639,6 +2639,23 @@ def test_emitted_adaptive_seed_check_refuses_out_of_bounds_before_acquisition(
         ),
         id="adaptive-runner-plan-only",
     ),
+    # Block 81a-1 taught the exporter to inline _build_acquisition_events, and
+    # this guard had no zstack param, so it could not see it. The coordinator's
+    # ZSweepShapeError then shipped a NameError into every exported zstack --
+    # the block-13/41b shape a third time. One param per emitter route that
+    # reaches the inline: plain, hooked and the multiposition pair.
+    pytest.param([call("run_zstack", {
+        "z_start_um": 60, "z_end_um": 62, "z_step_um": 1, "save_dir": "session",
+    })], id="zstack-events-inline-plain"),
+    pytest.param([call("run_zstack", {
+        "z_start_um": 60, "z_end_um": 62, "z_step_um": 1, "save_dir": "session",
+        "hook_strategy": "snr_observer", "hook_params": {},
+    })], id="zstack-events-inline-hooked"),
+    pytest.param([call("run_multiposition_acquisition", {
+        "protocol": "zstack", "save_dir": "session",
+        "positions": [{"name": "p0", "x_um": 0, "y_um": 0}],
+        "protocol_params": {"z_start_um": 60, "z_end_um": 62, "z_step_um": 1},
+    })], id="zstack-events-inline-multiposition"),
 ])
 def test_emitted_inline_defines_every_name_it_uses(tmp_path, records):
     """Recurrence guard for the block-13/41b integration defect (2026-08-06).
@@ -5444,7 +5461,7 @@ def test_81_emitted_sweep_preflight_executes_before_effects(
     guard._c.stage.z_max = maximum
     result = tools.export_session_script(None, guard, 'routine.py', [call(tool, params)])
     assert result['complete'], result
-    source = (tmp_path / 'routine.py').read_text()
+    source = (tmp_path / 'routine.py').read_text(encoding='utf-8')
     if reason:
         with pytest.raises(Exception, match=reason):
             hooked_engine.execute(source)

@@ -326,7 +326,7 @@ def _emit_acquisition(
                 + f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}) as acq:\n"
                 + "    acq.acquire(events)")
     return (
-        inspect.getsource(_build_acquisition_events) + "\n"
+        _acquisition_events_source() + "\n"
         + f"events = _build_acquisition_events(**{event_args!r})\n"
         + _export_guard_source(params["_export_safety_limits"])
         + "guard.check_z(min(event['z'] for event in events))\n"
@@ -775,7 +775,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if exposure is not None:
                 prefix += f"guard.check_exposure({exposure!r})\n"
         exposure_write = f"core.set_exposure({exposure!r})\n" if exposure is not None and not channel else ""
-        preflight = [inspect.getsource(_build_acquisition_events)] if protocol == "zstack" else []
+        preflight = [_acquisition_events_source()] if protocol == "zstack" else []
         lines = [hook_source + prefix,
                  f"# acquisition_order={order}; timing={params.result.get('timing', {}).get('strategy')!r}; requested_interval_s={protocol_params.get('interval_s')!r}"]
         for index, group in enumerate(groups):
@@ -927,7 +927,7 @@ def _emit_multiposition(params: RecordedParams) -> str:
     if not limits:
         raise CannotEmit("the record carries no export-time safety limits for the position plan")
     builder = "_build_acquisition_events" if protocol == "zstack" else "multi_d_acquisition_events"
-    preflight = ([inspect.getsource(_build_acquisition_events)] if protocol == "zstack" else [])
+    preflight = ([_acquisition_events_source()] if protocol == "zstack" else [])
     preflight += [_export_guard_source(limits),
                   f"_planned_events = {builder}(**{event_args!r})"]
     if protocol == "zstack":
@@ -1965,7 +1965,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
                 "        acq.acquire(acquire_events)",
             ])
         if "z_start" in shape or (acquire_on_hit and acquire_on_hit["protocol"] == "zstack"):
-            common.insert(0, inspect.getsource(_build_acquisition_events))
+            common.insert(0, _acquisition_events_source())
         if "z_start" in shape:
             build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
             build = common.pop(build_index)
@@ -2031,7 +2031,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "'<location not reported by this acquisition>')",
     ])
     if "z_start" in shape:
-        common.insert(0, inspect.getsource(_build_acquisition_events))
+        common.insert(0, _acquisition_events_source())
         build_index = next(i for i, line in enumerate(common) if line.startswith("events = "))
         build = common.pop(build_index)
         common.insert(3, build)
@@ -4469,6 +4469,22 @@ def get_system_state(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 # --- Acquisitions ---
 
+class ZSweepShapeError(ValueError):
+    """A refused Z sweep shape, carrying WHICH check failed.
+
+    run_adaptive_survey feeds hit-relative OFFSETS through this validator under
+    the absolute spelling, so it alone has to restate these refusals in its own
+    vocabulary. It does that off `check`: matching on message text silently
+    stops translating the day a message is reworded, and CLAUDE.md's rule is to
+    raise a typed exception for a case you mean to special-case rather than
+    infer it from shared state.
+    """
+
+    def __init__(self, check: str, message: str):
+        super().__init__(message)
+        self.check = check
+
+
 def _build_acquisition_events(
     *,
     channel: str | None = None,
@@ -4486,21 +4502,28 @@ def _build_acquisition_events(
     sweeps_z = any(key in acq_kwargs for key in sweep_keys)
     if sweeps_z:
         if any(key not in acq_kwargs for key in sweep_keys):
-            raise ValueError("Z sweep requires the complete z_start, z_end, z_step triple.")
+            raise ZSweepShapeError(
+                "incomplete_triple",
+                "Z sweep requires the complete z_start, z_end, z_step triple.")
         for key in sweep_keys:
             if acq_kwargs[key] is None or not math.isfinite(acq_kwargs[key]):
-                raise ValueError(f"Z sweep {key} must be finite.")
+                raise ZSweepShapeError("nonfinite", f"Z sweep {key} must be finite.")
         if acq_kwargs["z_step"] <= 0:
-            raise ValueError("Z sweep z_step must be positive; Microclaw supports ascending sweeps only.")
+            raise ZSweepShapeError(
+                "nonpositive_step",
+                "Z sweep z_step must be positive; Microclaw supports ascending sweeps only.")
         if acq_kwargs["z_end"] == acq_kwargs["z_start"]:
-            raise ValueError(
+            raise ZSweepShapeError(
+                "equal_endpoints",
                 'Equal Z endpoints are one plane, not a stack. Z values are absolute stage coordinates. '
                 'For one plane at a known Z, move there and use protocol="timelapse" with '
                 '{"n_frames": 1, "interval_s": 0}; for a stack around focus, use distinct '
                 'endpoints around the current Z.'
             )
         if acq_kwargs["z_end"] < acq_kwargs["z_start"]:
-            raise ValueError("Z sweep z_end must be greater than z_start; Microclaw supports ascending sweeps only.")
+            raise ZSweepShapeError(
+                "reversed_range",
+                "Z sweep z_end must be greater than z_start; Microclaw supports ascending sweeps only.")
     if channel:
         acq_kwargs.update(channel_group="Channel", channels=[channel])
         if exposure_ms is not None:
@@ -4508,14 +4531,30 @@ def _build_acquisition_events(
     events = multi_d_acquisition_events(**acq_kwargs) if _events is None else _events
     if sweeps_z:
         if not events:
-            raise ValueError("Z sweep generated no events.")
+            raise ZSweepShapeError("no_events", "Z sweep generated no events.")
         if any("z" not in event or event["z"] is None or not math.isfinite(event["z"])
                for event in events):
-            raise ValueError("Z sweep generated missing or non-finite Z coordinates.")
+            raise ZSweepShapeError(
+                "generated_nonfinite",
+                "Z sweep generated missing or non-finite Z coordinates.")
         if len({event["z"] for event in events}) < 2:
-            raise ValueError("Z sweep must generate at least two distinct Z coordinates.")
+            raise ZSweepShapeError(
+                "single_plane",
+                "Z sweep must generate at least two distinct Z coordinates.")
     return events
 
+
+def _acquisition_events_source() -> str:
+    """The inlined validator AND the exception it raises.
+
+    _build_acquisition_events raises ZSweepShapeError, so a script that inlines
+    the function without the class NameErrors at runtime while every export
+    test that only compiles the source stays green -- the block-13/41b defect
+    exactly (see CLAUDE.md). Five emitters inline this; they all go through
+    here so there is one place to keep in step.
+    """
+    return (inspect.getsource(ZSweepShapeError) + "\n\n"
+            + inspect.getsource(_build_acquisition_events))
 
 _RUNTIME_FROM_ACCOUNTING_PLAN = object()
 _GAP_HISTOGRAM_UPPER_S = (
@@ -9504,6 +9543,43 @@ def _acquire_survey_with_detector(
     )
 
 
+# Every sweep refusal restated in the offsets vocabulary. This caller alone
+# feeds hit-relative offsets through the shared validator under the absolute
+# spelling, so a message naming z_start/z_end names keys it refuses outright a
+# few lines above -- the refusal would contradict the tool that raised it.
+# Keyed on ZSweepShapeError.check, so a reworded message cannot silently stop
+# being translated; a check with no entry falls back to the shared wording
+# rather than inventing one.
+_OFFSET_SWEEP_REFUSALS = {
+    "incomplete_triple":
+        "A zstack acquire_on_hit needs the complete z_offset_start_um, "
+        "z_offset_end_um, z_step_um triple.",
+    "nonfinite":
+        "z_offset_start_um, z_offset_end_um and z_step_um must all be finite.",
+    "nonpositive_step":
+        "z_step_um must be positive; Microclaw acquires ascending sweeps only.",
+    "equal_endpoints":
+        "Equal z_offset_start_um/z_offset_end_um values are one plane, not a "
+        "stack. These are offsets from each hit's own Z, not absolute stage "
+        'coordinates. For one plane per hit, use acquire_on_hit.protocol='
+        '"timelapse" with acquire_on_hit.protocol_params={"n_frames": 1, '
+        '"interval_s": 0}; for a stack around each hit, use distinct offsets '
+        "with z_offset_end_um greater than z_offset_start_um.",
+    "reversed_range":
+        "z_offset_end_um must be greater than z_offset_start_um; Microclaw "
+        "acquires ascending sweeps only. Offsets may be negative -- "
+        "-2 to 2 sweeps around each hit.",
+    "no_events":
+        "The z_offset_start_um/z_offset_end_um/z_step_um combination generates "
+        "no planes.",
+    "generated_nonfinite":
+        "The requested offsets generate missing or non-finite Z coordinates.",
+    "single_plane":
+        "The requested offsets generate one plane, not a stack. Widen the "
+        "offset range or reduce z_step_um.",
+}
+
+
 @emits(_emit_adaptive_survey)
 @_acquisition_entry_point
 def run_adaptive_survey(
@@ -9662,17 +9738,11 @@ def run_adaptive_survey(
             acquire_plan, _ = _plan_protocol_repetitions(
                 ctrl, acquire_protocol, acquire_shape_for_plan, max_hits
             )
+        except ZSweepShapeError as exc:
+            if acquire_protocol == "zstack":
+                return {"error": _OFFSET_SWEEP_REFUSALS.get(exc.check, str(exc))}
+            return {"error": str(exc)}
         except (SafetyViolation, ValueError, KeyError) as exc:
-            # This caller alone translates hit-relative offsets into the shared
-            # planner's Z spelling. Translate its guidance back at this boundary.
-            if acquire_protocol == "zstack" and str(exc).startswith("Equal Z endpoints"):
-                return {"error":
-                        "Equal z_offset_start_um/z_offset_end_um values are one plane, not a stack. "
-                        "These are offsets from each hit's Z. For one plane per hit, use "
-                        'acquire_on_hit.protocol="timelapse" with '
-                        'acquire_on_hit.protocol_params={"n_frames": 1, "interval_s": 0}; '
-                        "for a stack around each hit, use distinct offsets with "
-                        "z_offset_end_um greater than z_offset_start_um."}
             return {"error": str(exc)}
         channel_effects = {}
     result = _acquire_survey_with_detector(

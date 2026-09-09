@@ -530,18 +530,79 @@ def test_acquire_on_hit_guards_generated_extrema_before_submission(rig, monkeypa
     assert [call.args[0] for call in rig.guard.check_z.call_args_list] == [60., 61.]
 
 
-def test_equal_offset_refusal_teaches_offsets_while_absolute_refusal_stays_absolute(tmp_path, monkeypatch):
-    result, acquire, _ = _run_acquire_on_hit_zstack(tmp_path, monkeypatch, {
-        'z_offset_start_um': 0., 'z_offset_end_um': 0., 'z_step_um': .5,
-    })
-    message = result['error']
-    assert 'absolute stage coordinates' not in message, message
-    assert 'z_start_um' not in message and 'z_end_um' not in message
-    assert 'z_offset_start_um' in message and 'z_offset_end_um' in message
-    assert 'each hit' in message
-    assert 'acquire_on_hit' in message and 'timelapse' in message
+# --- F-J: the offsets path must not quote the absolute spelling back ----------
+
+_OFFSET_SWEEP_CASES = [
+    ("equal_endpoints", {"z_offset_start_um": 0.0, "z_offset_end_um": 0.0,
+                         "z_step_um": 0.5}),
+    ("reversed_range", {"z_offset_start_um": 2.0, "z_offset_end_um": -2.0,
+                        "z_step_um": 0.5}),
+    ("nonpositive_step", {"z_offset_start_um": -2.0, "z_offset_end_um": 2.0,
+                          "z_step_um": 0.0}),
+    ("nonfinite", {"z_offset_start_um": -2.0, "z_offset_end_um": float("nan"),
+                   "z_step_um": 0.5}),
+]
+
+
+@pytest.mark.parametrize("check,offsets", _OFFSET_SWEEP_CASES,
+                         ids=[case[0] for case in _OFFSET_SWEEP_CASES])
+def test_offset_sweep_refusal_never_quotes_the_absolute_spelling(
+    check, offsets, tmp_path, monkeypatch
+):
+    """run_adaptive_survey refuses absolute Z keys, so its refusals must not name them.
+
+    The shared validator sees hit-relative offsets under the absolute spelling,
+    so an untranslated message tells the caller their offsets are "absolute
+    stage coordinates" and advises z_start_um -- which this very tool rejects a
+    few lines earlier, so the refusal contradicts the tool that raised it.
+    Drives the real refusal rather than reading the table, because the table is
+    the fix and the message is the behaviour.
+    """
+    result, acquire, _seen = _run_acquire_on_hit_zstack(
+        tmp_path, monkeypatch, {**offsets, "exposure_ms": 5}
+    )
+
+    error = result["error"]
+    # The bare tokens, not the _um spellings: the untranslated reversed-range
+    # message reads "z_end must be greater than z_start" and would slip past a
+    # check for "z_start_um". And the claim, not the phrase -- a correct
+    # message is allowed to say these are NOT absolute stage coordinates.
+    assert "z_start" not in error and "z_end" not in error, error
+    assert "are absolute stage coordinates" not in error, error
+    assert "z_offset" in error or "z_step_um" in error, error
+    if check == "equal_endpoints":
+        # Folded in from the single-case version of this test: the equal-endpoint
+        # refusal is the one that has to offer a route, and the route it offers
+        # must be the one THIS tool accepts.
+        assert "z_offset_start_um" in error and "z_offset_end_um" in error, error
+        assert "each hit" in error, error
+        assert "acquire_on_hit" in error and "timelapse" in error, error
     acquire.assert_not_called()
-    with pytest.raises(ValueError) as error:
-        tools._build_acquisition_events(z_start=0., z_end=0., z_step=.5)
-    assert 'absolute stage coordinates' in str(error.value)
-    assert 'protocol="timelapse"' in str(error.value)
+
+
+@pytest.mark.parametrize("check,offsets", _OFFSET_SWEEP_CASES,
+                         ids=[case[0] for case in _OFFSET_SWEEP_CASES])
+def test_offset_sweep_shape_raises_the_matching_typed_check(check, offsets):
+    """Structural pin, not behavioural evidence: the translation keys off .check.
+
+    Matching on message text would stop translating silently the day a message
+    is reworded, so each shape the offsets path can produce must carry the
+    check its entry is filed under.
+    """
+    with pytest.raises(tools.ZSweepShapeError) as caught:
+        tools._build_acquisition_events(
+            z_start=offsets["z_offset_start_um"],
+            z_end=offsets["z_offset_end_um"],
+            z_step=offsets["z_step_um"],
+        )
+    assert caught.value.check == check
+    assert check in tools._OFFSET_SWEEP_REFUSALS
+
+
+def test_absolute_sweep_refusal_still_teaches_the_absolute_rule():
+    """D1 requires the absolute wording where the keys really are absolute."""
+    with pytest.raises(tools.ZSweepShapeError) as caught:
+        tools._build_acquisition_events(z_start=0.0, z_end=0.0, z_step=1.0)
+    assert caught.value.check == "equal_endpoints"
+    assert "absolute stage coordinates" in str(caught.value)
+    assert 'protocol="timelapse"' in str(caught.value)
