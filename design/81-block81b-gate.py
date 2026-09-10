@@ -188,6 +188,99 @@ def limb_e(archive, out):
     return "PASS", f"all {len(payload['observations'])} observations link to a written artifact"
 
 
+@limb("G. the evidence image shows the sample, not only the tool's own marks")
+def limb_g(archive, out):
+    """Score the RENDERED artifact, not the TIFF and not the recorded ink value.
+
+    An annotation whose ink sits at the dtype's maximum survives every check on
+    its own numbers and still renders as glyphs on a black field, because
+    open_artifact's percentile stretch then spans the annotation's range rather
+    than the data's. Measured before the fix: the returned thumbnail held three
+    distinct grey levels, 0, 1 and 255. So this limb reads the artifact back
+    through the same call the agent makes and asks whether anything of the
+    sample survived.
+    """
+    import base64
+    import io
+
+    import numpy as np
+    import tifffile
+    from PIL import Image
+    from microclaw.image_analysis import image_content
+
+    def readability(directory):
+        worst = None
+        paths = sorted(Path(directory).glob("components-*.tiff"))
+        for path in paths:
+            plane = tifffile.imread(path)
+            blocks = image_content({}, plane, max_size=512, mask=plane != 0)
+            rendered = np.asarray(Image.open(io.BytesIO(
+                base64.b64decode(blocks[1]["source"]["data"]))).convert("L"))
+            interior = float(np.count_nonzero((rendered > 0) & (rendered < 255)) / rendered.size)
+            if worst is None or interior < worst[1]:
+                worst = (path.name, interior, int(np.unique(rendered).size))
+        return len(paths), worst
+
+    # Score the arm where the picture is MEANT to be usable. Limb A runs at the
+    # default filter, where the field genuinely is mostly ink -- scoring that
+    # arm would measure the sample's noise level rather than the ink rule, and
+    # would sit one noisy dataset away from a false verdict. Limb H is what
+    # covers the default arm, by requiring it to disclose what it is.
+    result = analyse(archive, out, BEADS, "connected_components", "frames", "g-readable",
+                     axis_selection={"z": 0}, parameters={"min_area_um2": 0.2})
+    if result["status"] != "completed":
+        return "FAIL", f"status {result['status']}: {result['failure']}"
+    count, worst = readability(Path(out) / "g-readable" / "artifacts")
+    if worst is None:
+        raise NotExercised("no annotation artifacts were written")
+    name, interior, levels = worst
+    _, unfiltered = readability(Path(out) / "a-beads" / "artifacts")
+    # Two-valued is the failure the fix exists for: every real pixel crushed to
+    # black because the stretch spans the ink's range rather than the data's.
+    if levels <= 3 or interior < 0.5:
+        return "FAIL", (f"{name} renders with {levels} distinct grey levels and only "
+                        f"{interior:.1%} of pixels strictly between black and white: "
+                        "the evidence image shows the annotation, not the sample")
+    return "PASS", (
+        f"worst of {count} filtered fields is {name}: {levels} distinct grey levels, "
+        f"{interior:.1%} of pixels between black and white. For context the same "
+        f"fields at the default filter render at {unfiltered[1]:.1%} interior, which "
+        "is limb H's subject, not this one's")
+
+
+@limb("H. an unfiltered count discloses that it is made of single pixels")
+def limb_h(archive, out):
+    manifest = Path(out) / "a-beads" / "analysis-manifest.json"
+    if not manifest.exists():
+        raise NotExercised("limb A did not produce a manifest")
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    if payload["parameters"].get("min_area_um2"):
+        raise NotExercised("limb A did not run with the default area filter")
+    silent = []
+    for observation in payload["observations"]:
+        result = observation["result"]
+        distribution = result.get("component_size_distribution") or {}
+        singles = distribution.get("single_pixel_components", 0)
+        total = distribution.get("n_components", 0)
+        notes = result.get("review_notes") or []
+        if total and singles * 2 > total and not any("min_area_um2" in n for n in notes):
+            silent.append(observation.get("position"))
+        if observation.get("status") != "observed":
+            return "FAIL", f"{observation.get('position')} changed status to {observation.get('status')!r}"
+    if silent:
+        return "FAIL", f"singleton-dominated counts with no review note naming the remedy: {silent}"
+    worst = max(payload["observations"],
+                key=lambda o: (o["result"]["component_size_distribution"] or {}).get(
+                    "single_pixel_fraction", 0))
+    distribution = worst["result"]["component_size_distribution"]
+    return "PASS", (
+        f"every singleton-dominated field carries a note naming min_area_um2 and stays "
+        f"'observed'; worst is {worst.get('position')} at "
+        f"{distribution['single_pixel_components']}/{distribution['n_components']} "
+        f"({distribution['single_pixel_fraction']:.0%}) single pixels, largest component "
+        f"{distribution['n_pixels']['max']} px")
+
+
 @limb("F. tile placements carry saved identity, from the dataset not a position list")
 def limb_f(archive, out):
     from microclaw.tools import build_stage_coordinate_mosaic
@@ -221,7 +314,7 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    for run in (limb_a, limb_b, limb_c, limb_d, limb_e, limb_f):
+    for run in (limb_a, limb_b, limb_c, limb_d, limb_e, limb_f, limb_g, limb_h):
         run(args.archive, out)
 
     print("\n--- summary ---", flush=True)
