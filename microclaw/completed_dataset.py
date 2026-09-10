@@ -158,7 +158,20 @@ class ConnectedComponents:
             annotation.update({"reason": self._annotation_limit_reason,
                                "failure_kind": "limit_exhausted_upstream"})
             return
-        foreground = int(np.iinfo(image.dtype if source_dtype is None else source_dtype).max)
+        # Ink has to land inside the display window the data itself produces.
+        # open_artifact stretches between the 2nd and 99.8th percentile of the
+        # nonzero pixels, so ink at the dtype's ceiling sets the white point
+        # far above anything real: a 16-bit frame spanning 154-402 rendered as
+        # 22,088 pixels at 0 and 412 at 255, every real pixel crushed to black.
+        # The evidence image then shows only where the tool says it found
+        # something, never what is there, which is the one thing D5 needs it
+        # for. So scale the ink to the frame's own bright end, with 5% headroom
+        # so it is never dimmer than the data it sits on, never 0 (which means
+        # uncovered), never the outline value of 1 (which would fill a glyph
+        # solid), and never above what the source dtype can hold.
+        ceiling = int(np.iinfo(image.dtype if source_dtype is None else source_dtype).max)
+        data_max = int(np.max(image)) if image.size else 0
+        foreground = min(ceiling, max(2, data_max + max(1, data_max // 20)))
         height, width = image.shape[:2]
         scale = min(8, max(1, min(height, width) // 70))
         annotation.update({"foreground": foreground, "glyph_scale": scale})

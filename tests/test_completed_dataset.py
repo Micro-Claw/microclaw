@@ -816,7 +816,10 @@ def test_original_frames_count_geometry_where_and_evidence(component_frames, mon
         artifact = next(a for a in result['artifacts'] if a['sha256'] == observation['artifact_sha256'])
         rendered = tifffile.imread(artifact['path'])
         assert rendered.dtype == images[index].dtype
-        assert rendered.max() == 65535
+        # Ink sits just above this frame's own bright end, not at the dtype's
+        # ceiling, so the data survives open_artifact's percentile stretch.
+        assert rendered.max() == measured['annotation']['foreground']
+        assert int(images[index].max()) < rendered.max() < 65535
         assert np.any(rendered == 1)
         assert not np.array_equal(rendered, images[index])
         np.testing.assert_array_equal(images[index], originals[index])
@@ -907,7 +910,9 @@ def test_annotation_opt_out_gray8_determinism_and_partial_identity(component_fra
     assert first['status'] == second['status'] == 'completed'
     assert [a['sha256'] for a in first['artifacts']] == [a['sha256'] for a in second['artifacts']]
     for artifact in first['artifacts']:
-        assert tifffile.imread(artifact['path']).max() == 255  # dtype, not mosaic uint16
+        rendered = tifffile.imread(artifact['path'])
+        assert rendered.dtype == np.uint8  # dtype, not mosaic uint16
+        assert rendered.max() <= 255  # and the ink stays inside the source's range
     by_position = {o['position']: o for o in first['observations']}
     assert 'PositionName' not in by_position['left']
     assert by_position['left']['result']['annotation']['position_labels_partial'] is False
@@ -916,7 +921,10 @@ def test_annotation_opt_out_gray8_determinism_and_partial_identity(component_fra
     assert empty['result']['n_components'] == 0
     assert empty['result']['annotation']['field_label'] == 'T1'
     evidence = next(a for a in first['artifacts'] if a['sha256'] == empty['artifact_sha256'])
-    assert set(np.unique(tifffile.imread(evidence['path']))) == {0, 1, 255}
+    # An all-zero field has no bright end to scale to: ink falls back to the
+    # lowest value that is neither uncovered (0) nor the outline (1).
+    assert empty['result']['annotation']['foreground'] == 2
+    assert set(np.unique(tifffile.imread(evidence['path']))) == {0, 1, 2}
     assert not images[2].any()  # The empty source stayed empty; the T1 label is evidence ink.
     assert first['position_labels'] == [
         {'label': 'T1', 'position': 'empty', 'PositionName': 'field-2'},
@@ -1092,7 +1100,8 @@ def test_no_position_axis_keeps_visible_partial_evidence(component_frames):
     assert annotation['position_labels_partial'] is True
     assert annotation['position_label_reason'] == 'selection has no position axis'
     assert annotation['field_label'] is None and annotation['position_labels'] == []
-    assert tifffile.imread(result['artifacts'][0]['path']).max() == 65535
+    assert tifffile.imread(result['artifacts'][0]['path']).max() == annotation['foreground']
+    assert int(images[0].max()) < annotation['foreground'] < 65535
     assert result['observations'][0]['result']['n_components'] == 2
 
 
@@ -1113,7 +1122,8 @@ def test_mosaic_evidence_honors_option_and_source_dtype(component_frames, enable
     source = tifffile.imread(result['mosaic']['artifact']['path'])
     if enabled:
         overlay = tifffile.imread(overlays[0]['path'])
-        assert overlay.max() == 255
+        # The source dtype is now the ink's ceiling, not the ink's value.
+        assert overlay.max() == result['observations'][0]['result']['annotation']['foreground'] <= 255
         assert np.any(overlay == 1)
         assert not np.array_equal(source, overlay)
         assert result['observations'][0]['artifact_sha256'] == overlays[0]['sha256']
@@ -1263,3 +1273,83 @@ def test_mosaic_path_gains_no_size_disclosure(component_frames):
     assert set(measured) <= {'threshold', 'background_level', 'noise_mad_sigma',
                              'n_components', 'objects', 'annotation'}
     assert 'component_size_distribution' not in measured and 'review_notes' not in measured
+
+
+def _rendered_thumbnail(plane):
+    """Exactly what open_artifact(analyze=True) shows an operator."""
+    import base64, io
+    from PIL import Image
+    from microclaw.image_analysis import image_content
+    content = image_content({}, plane, mask=plane != 0)
+    data = base64.standard_b64decode(content[1]['source']['data'])
+    return np.array(Image.open(io.BytesIO(data)))
+
+
+def _bead_frame(seed=3):
+    """A 16-bit frame with a real camera's range, not a dtype's.
+
+    The archived bead field this is modelled on spans 154-402 in a uint16
+    container: three orders of magnitude below 65535, which is the whole
+    finding.
+    """
+    rng = np.random.default_rng(seed)
+    image = np.clip(rng.normal(200, 15, (32, 32)), 154, None).astype(np.uint16)
+    image[8:11, 8:11] = 402
+    image[22:24, 20:22] = 380
+    return image
+
+
+def test_annotated_evidence_keeps_the_sample_visible_under_the_stretch(component_frames):
+    import tifffile
+    analyze, images, *_ = component_frames
+    images[0] = _bead_frame()
+    result = analyze(parameters={'min_area_um2': .05})
+    assert result['status'] == 'completed', result['failure']
+    observation = result['observations'][0]
+    artifact = next(a for a in result['artifacts'] if a['sha256'] == observation['artifact_sha256'])
+    annotated = tifffile.imread(artifact['path'])
+    assert not np.array_equal(annotated, images[0])  # it really is annotated
+
+    thumbnail = _rendered_thumbnail(annotated)
+    values, counts = np.unique(thumbnail, return_counts=True)
+    interior = float(counts[(values > 0) & (values < 255)].sum()) / thumbnail.size
+    # The defect this replaces rendered 22,088 pixels at 0 and 412 at 255 and
+    # nothing between: outlines and numbers on a black field, so an operator
+    # could see where the tool claimed a detection and never what was there.
+    assert len(values) > 20
+    assert interior > .8
+    # The sample is not merely present, it is distinguishable: the beads read
+    # brighter than the background they sit in.
+    assert int(thumbnail[9, 9]) > int(thumbnail[2, 2]) + 40
+
+    # And the untouched frame renders the same way, so the annotation is not
+    # what makes the picture readable.
+    plain = _rendered_thumbnail(images[0])
+    assert len(np.unique(plain)) > 20
+
+
+@pytest.mark.parametrize('fill, expected_foreground', [(0, 2), (201, 211)])
+def test_degenerate_fields_still_get_ink_that_is_neither_uncovered_nor_outline(
+    component_frames, fill, expected_foreground,
+):
+    import tifffile
+    analyze, images, *_ = component_frames
+    images[0] = np.full((32, 32), fill, np.uint16)
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    observation = result['observations'][0]
+    assert observation['result']['n_components'] == 0  # nothing to count, and that is a result
+    annotation = observation['result']['annotation']
+    assert annotation['foreground'] == expected_foreground
+    assert annotation['foreground'] > 1  # never uncovered (0), never the outline (1)
+    assert annotation['foreground'] > fill  # never dimmer than the data it sits on
+    annotated = tifffile.imread(artifact_path(result, observation))
+    assert annotated.max() == expected_foreground
+    thumbnail = _rendered_thumbnail(annotated)
+    # The count handle is legible against the field rather than lost in it.
+    assert thumbnail.max() == 255 and thumbnail.min() == 0
+
+
+def artifact_path(result, observation):
+    return next(a['path'] for a in result['artifacts']
+                if a['sha256'] == observation['artifact_sha256'])
