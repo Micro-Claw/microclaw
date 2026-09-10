@@ -1241,6 +1241,12 @@ def test_connected_components_prompt_names_original_frame_route():
     assert "input_kind='frames'" in components, "connected_components needs its own frames route"
     assert "each original saved frame separately" in components
     assert "per-position" in components
+    assert '"count what is in each field"' in components
+    assert "reported as a component count" in components
+    assert "answer rests on a measurement rather than on your reading of a picture" in components
+    assert "opening the mosaic so the user can see it" in bullet
+    assert "as well, not instead" in bullet
+    assert "never present that plain mosaic as evidence of what was counted" in bullet
     assert "input_kind='stage_coordinate_mosaic'" in components
     assert "resampled" in components and "overwrite" in components and "not a per-field count" in components
     assert "input_kind='frames'" in statistics
@@ -1267,6 +1273,7 @@ def test_count_disclosure_names_resolve_against_the_adapter_result():
     # Every emitted review/statistics/refusal disclosure must also be relayed.
     emitted = {key for key in result if key.endswith(("_distribution", "_notes", "_statistics", "_refusal"))}
     assert emitted <= set(fields)
+    assert "`stage_geometry_refusal` when it is not null" in frame_clause
 
 
 def test_numeric_reporting_does_not_invent_detection_evidence_or_reject_empty_fields():
