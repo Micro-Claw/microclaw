@@ -1208,3 +1208,110 @@ def test_the_lock_state_payload_is_enough_to_build_the_probe():
     assert "readable status" in SYSTEM_PROMPT
     assert "do " in SYSTEM_PROMPT and "not go exploring with list_device_properties" in SYSTEM_PROMPT
     assert "a bitfield or a number is not it" in SYSTEM_PROMPT
+
+
+def test_deliverable_routes_are_an_acquisition_planning_rule():
+    """81 F4: ordinary quantities must trigger routing outside the code-writing ladder."""
+    sections = SYSTEM_PROMPT.split("\n\n")
+    planning = next(section for section in sections if "list every deliverable" in section)
+    writing = next(section for section in sections if section.startswith("Writing code"))
+    assert planning is not writing and planning.startswith("Deliverables and routes"), (
+        "Deliverable routing must be its own top-level planning section, outside Writing code"
+    )
+    assert SYSTEM_PROMPT.index("Guidelines:") < SYSTEM_PROMPT.index(planning) < SYSTEM_PROMPT.index("Reporting —")
+    assert "deliverable" not in writing
+    for anchor in ("first exposure", "every deliverable", "tool or adapter", "count the beads",
+                   "how many cells", "which fields have X", "list_hooks()",
+                   "run_analysis_on_saved_dataset", "contract and dependencies",
+                   "same message as the acquisition plan", "no named route",
+                   "live observer's accumulated verdict", "retrospectively annotated",
+                   "Do not re-expose"):
+        assert anchor in planning
+    assert "script merely written to disk is not executed analysis" in writing
+
+
+def test_connected_components_prompt_names_original_frame_route():
+    """81 F10: the prompt must not hide the per-frame capability shipped in 81b."""
+    bullet = next(line for line in SYSTEM_PROMPT.splitlines() if line.startswith("- Standard measurements"))
+    assert "'connected_components' (input_kind='stage_coordinate_mosaic')" not in bullet, (
+        "Stale mosaic-only connected_components parenthetical hides the original-frame route"
+    )
+    components, statistics = bullet.split("'frame_statistics'", 1)
+    assert "connected_components" in components
+    assert "input_kind='frames'" in components, "connected_components needs its own frames route"
+    assert "each original saved frame separately" in components
+    assert "per-position" in components
+    assert "input_kind='stage_coordinate_mosaic'" in components
+    assert "resampled" in components and "overwrite" in components and "not a per-field count" in components
+    assert "input_kind='frames'" in statistics
+
+
+def test_count_disclosure_names_resolve_against_the_adapter_result():
+    """81 D5: prompt field names must survive adapter changes on independently green branches."""
+    import re
+    import numpy as np
+    from microclaw.calibration import StageCameraAffine
+    from microclaw.completed_dataset import ConnectedComponents
+
+    adapter = ConnectedComponents(min_snr=3, min_snr_source="test")
+    adapter.affine = StageCameraAffine(1, 0, 0, 1, "objective", 1, 1)
+    result = adapter._analyze_source_frame(np.zeros((16, 16)), {}, None)["result"]
+    disclosure = next(line for line in SYSTEM_PROMPT.splitlines() if "relay the adapter's disclosure" in line)
+    frame_clause, manifest_clause = disclosure.split("and follow its", 1)
+    fields = re.findall(r"`([a-z_]+)`", frame_clause)
+    assert fields, "The reporting rule must name the frame disclosure fields"
+    assert set(fields) <= result.keys(), f"Prompt names absent frame disclosure fields: {set(fields) - result.keys()}"
+    reference, target = re.findall(r"`([a-z_]+)`", manifest_clause)
+    assert result[reference] == target
+    assert getattr(adapter, target), "The frame's semantics reference must resolve to adapter disclosure"
+    # Every emitted review/statistics/refusal disclosure must also be relayed.
+    emitted = {key for key in result if key.endswith(("_distribution", "_notes", "_statistics", "_refusal"))}
+    assert emitted <= set(fields)
+
+
+def test_numeric_reporting_does_not_invent_detection_evidence_or_reject_empty_fields():
+    """81 D5: unseen numbers are not validated; absent rendering and weak signal cannot become gates."""
+    import re
+
+    reporting = SYSTEM_PROMPT.split("Reporting —", 1)[1].split("\n\n", 1)[0]
+    for anchor in ("per-field numbers", "not validation", "early confirmation",
+                   "skip a report", "component counts, never bead, cell or object counts",
+                   "including for the built-in", "brighter spot", "segmentation cannot separate",
+                   "review information, not a rejection rule", "valid zero count",
+                   "no built-in detection-evidence image exists", "plain mosaic or thumbnail",
+                   "custom adapter", "open_artifact"):
+        assert anchor in reporting
+    # 81b removed the renderer; R121 makes even the raw sparse-field thumbnail
+    # unreadable. Guard likely replacement wording, not just the deleted sentence.
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", SYSTEM_PROMPT.lower()):
+        if re.search(r"\b(show|render|display|open|present|draw)\b", sentence):
+            assert not re.search(
+                r"detected[- ]object (?:overlay|annotation|evidence)|component outlines|"
+                r"numbered detections|detection[- ]evidence (?:image|artifact)|"
+                r"(?:detection|component) (?:overlay|annotation)", sentence
+            ) or re.search(r"\b(no|not|never|unavailable)\b", sentence), sentence
+        if re.search(r"\b(reject|invalidate|refuse|discard)\b", sentence) and "count" in sentence:
+            assert not re.search(r"intensity|low.signal|focus.metric", sentence) or re.search(
+                r"\b(no|not|never|neither)\b", sentence
+            ), sentence
+
+
+def test_hook_save_prompt_distinguishes_model_duty_from_conditional_code_gate():
+    """81 F7: a lint-clean save has no blocking code prompt to substitute for source review."""
+    import re
+
+    assert not re.search(r"Confirmation for save_knowledge and hook saves is .*enforced in code", SYSTEM_PROMPT)
+    rule = next(line for line in SYSTEM_PROMPT.splitlines() if line.startswith("- Never save or run a hook"))
+    assert "full source" in rule and "explicit confirmation" in rule and "every hook save" in rule
+    assert "only when advisory lint has findings" in rule
+    assert "lint-clean hook saves without that prompt" in rule
+    assert "save_knowledge always asks for confirmation in code before writing" in rule
+
+
+def test_offers_require_tools_and_cleanup_stays_with_the_operator():
+    """81 D6(b): missing deletion capability must not become an offer to add it."""
+    reporting = SYSTEM_PROMPT.split("Reporting —", 1)[1].split("\n\n", 1)[0]
+    for anchor in ("Offer only what a tool can do", "name the tool", "do not offer it",
+                   "remove, overwrite or move", "inspect_artifacts", "removal is theirs",
+                   "deletes data and will not get one", "do not propose adding one"):
+        assert anchor in reporting
