@@ -773,10 +773,10 @@ TOOLS: list[dict[str, Any]] = [
             "saved pixels and exposes nothing. Two general adapters are BUILT IN and need "
             "no review, hash pin or confirmation — reach for them before writing "
             "anything and before reasoning from a picture. 'connected_components' "
-            "(input_kind='stage_coordinate_mosaic') labels contiguous signal and "
-            "reports each object's area in um^2, centroid in STAGE coordinates and "
-            "bounding box: this is how you answer whether two positions sit on the "
-            "same object. 'frame_statistics' (input_kind='frames') scores every "
+            "reports component counts, calibrated area and geometry, per original "
+            "saved frame or over a stage-coordinate mosaic. A component is contiguous "
+            "thresholded signal, not an object identification. "
+            "'frame_statistics' (input_kind='frames') scores every "
             "saved frame with the same statistics as a live snap: this is how you "
             "say whether anything is in an acquisition you already ran. "
             "'ilastik_pixel_classification' is the completed-survey batch boundary "
@@ -790,13 +790,46 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "dataset_path": {"type": "string"},
                 "adapter": {"type": "string"},
-                "axis_selection": {"type": "object"},
-                "input_kind": {"type": "string", "enum": ["frames", "stage_coordinate_mosaic"]},
+                "axis_selection": {
+                    "type": "object",
+                    "description": (
+                        "Saved axes to select, e.g. time, channel and z. Frames measures "
+                        "each matching coordinate separately, including position; omitted "
+                        "axes are enumerated, never pooled into one count. Select explicit "
+                        "time/channel/Z planes for a per-position report. Mosaic requires "
+                        "every ambiguous non-position axis fixed and selects all positions."
+                    ),
+                },
+                "input_kind": {
+                    "type": "string", "enum": ["frames", "stage_coordinate_mosaic"],
+                    "description": (
+                        "For connected_components, 'frames' measures original saved frames "
+                        "per coordinate with real zero-valued pixels included. Overlapping "
+                        "fields can count the same signal twice; their sum is not a unique "
+                        "object total. 'stage_coordinate_mosaic' measures resampled, "
+                        "later-tile-overwritten mosaic signal, not per-field counts. Both "
+                        "require resolvable recorded calibration or calibration_ref; "
+                        "confirmed_current is unavailable offline. Source stage geometry "
+                        "requires saved XPosition_um_Intended/YPosition_um_Intended; "
+                        "missing XY is disclosed with pixel geometry only."
+                    ),
+                },
                 "parameters": {
                     "type": "object",
                     "description": (
                         "Constructor arguments for the adapter itself — this is where "
                         "every adapter-specific value goes, NOT model_project_config. "
+                        "connected_components accepts min_snr (otherwise configured/default), "
+                        "min_area_um2 — the smallest component area counted, and the one "
+                        "parameter that decides whether a count answers the question. Its "
+                        "default of 0 admits single pixels, so on a real frame every noise "
+                        "excursion above the threshold is counted: measured on a bead field, "
+                        "two orders of magnitude more components than objects, and a "
+                        "comparable count on a field that was empty. Set it to the smallest "
+                        "object area you mean to count; the result's "
+                        "component_size_distribution and review_notes say whether the count "
+                        "you got is mostly minimum-size detections. "
+                        "and max_area_um2 (default no upper bound). "
                         "'ilastik_pixel_classification' needs only four: project_path "
                         "and the three label roles background_label, numerator_label "
                         "and denominator_label, whose names must be the project's own "

@@ -362,23 +362,38 @@ def compute_stats(
 
 def connected_components(
     image: np.ndarray,
-    pixel_size_um: float,
-    origin_um: tuple[float, float] | list[float],
+    pixel_size_um: float | None = None,
+    origin_um: tuple[float, float] | list[float] | None = None,
     min_area_um2: float = 0.0,
     max_area_um2: float | None = None,
     min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK,
+    *, basis_um=None, covered_mask=None,
 ) -> dict:
     """Measure contiguous signal above the robust SNR floor in stage space.
 
     This deliberately stops at geometry: a component is contiguous thresholded
     signal, not a cell or any other biological classification.  Mosaic pixels
-    equal to zero are uncovered canvas and are excluded from the noise-floor
-    estimate; the mosaic writer uses zero for precisely that purpose.
+    equal to zero are uncovered canvas by default. Pass an explicit boolean
+    covered_mask to select the observed population (all True for source frames).
+    basis_um maps (column, row) to stage displacement; pixel_size_um preserves
+    the scalar square-basis contract. A missing origin with a general basis
+    reports pixel geometry and calibrated area without inventing stage XY.
+    The result (including the scalar mosaic path) is otherwise unchanged.
     """
     from scipy import ndimage
 
-    if not np.isfinite(pixel_size_um) or pixel_size_um <= 0:
-        raise ValueError("pixel_size_um must be finite and positive")
+    if basis_um is not None and pixel_size_um is not None:
+        raise ValueError("Supply either basis_um or pixel_size_um, not both")
+    if basis_um is None:
+        if pixel_size_um is None or not np.isfinite(pixel_size_um) or pixel_size_um <= 0:
+            raise ValueError("pixel_size_um must be finite and positive")
+    else:
+        basis_um = np.asarray(basis_um, dtype=float)
+        if basis_um.shape != (2, 2) or not np.all(np.isfinite(basis_um)):
+            raise ValueError("basis_um must be a finite 2x2 stage basis")
+        determinant = basis_um[0, 0] * basis_um[1, 1] - basis_um[0, 1] * basis_um[1, 0]
+        if not np.isfinite(determinant) or determinant == 0:
+            raise ValueError("basis_um must be nonsingular")
     if not np.isfinite(min_snr) or min_snr < 0:
         raise ValueError("min_snr must be finite and non-negative")
     if min_area_um2 < 0 or not np.isfinite(min_area_um2):
@@ -393,7 +408,9 @@ def connected_components(
         img = img.mean(axis=-1)
     if img.ndim != 2:
         raise ValueError("connected_components requires a 2-D image")
-    covered = img != 0
+    covered = img != 0 if covered_mask is None else np.asarray(covered_mask)
+    if covered.shape != img.shape or covered.dtype != np.dtype(bool):
+        raise ValueError("covered_mask must be a boolean array matching the image")
     values = img[covered]
     if values.size == 0:
         return {"threshold": 0.0, "n_components": 0, "objects": []}
@@ -405,10 +422,13 @@ def connected_components(
     threshold = background + float(min_snr) * noise
     labels, _ = ndimage.label(covered & (img > threshold))
 
-    pixel_area = float(pixel_size_um) ** 2
-    if len(origin_um) != 2 or not all(np.isfinite(value) for value in origin_um):
+    pixel_area = float(pixel_size_um) ** 2 if basis_um is None else abs(float(determinant))
+    if origin_um is not None:
+        if len(origin_um) != 2 or not all(np.isfinite(value) for value in origin_um):
+            raise ValueError("origin_um must contain two finite stage coordinates")
+        origin_x, origin_y = (float(origin_um[0]), float(origin_um[1]))
+    elif basis_um is None:
         raise ValueError("origin_um must contain two finite stage coordinates")
-    origin_x, origin_y = (float(origin_um[0]), float(origin_um[1]))
     objects = []
     for label_id, bounds in enumerate(ndimage.find_objects(labels), start=1):
         if bounds is None:
@@ -422,6 +442,26 @@ def connected_components(
         row_min, row_max = int(rows.min()), int(rows.max()) + 1
         col_min, col_max = int(cols.min()), int(cols.max()) + 1
         centroid_row, centroid_col = ndimage.center_of_mass(labels == label_id)
+        if basis_um is not None:
+            component = {
+                "label": int(label_id), "n_pixels": int(rows.size),
+                "area_um2": area_um2,
+                "centroid_px": [float(centroid_col), float(centroid_row)],
+                "bounding_box_px": [col_min, row_min, col_max, row_max],
+            }
+            if origin_um is not None:
+                stage_x = origin_x + basis_um[0, 0] * cols + basis_um[0, 1] * rows
+                stage_y = origin_y + basis_um[1, 0] * cols + basis_um[1, 1] * rows
+                component["centroid_stage_um"] = [
+                    origin_x + basis_um[0, 0] * float(centroid_col) + basis_um[0, 1] * float(centroid_row),
+                    origin_y + basis_um[1, 0] * float(centroid_col) + basis_um[1, 1] * float(centroid_row),
+                ]
+                component["bounding_box_stage_hull_um"] = {
+                    "x_min": float(stage_x.min()), "x_max": float(stage_x.max()),
+                    "y_min": float(stage_y.min()), "y_max": float(stage_y.max()),
+                }
+            objects.append(component)
+            continue
         objects.append({
             "label": int(label_id),
             "area_um2": area_um2,
@@ -446,6 +486,54 @@ def connected_components(
         "n_components": len(objects),
         "objects": objects,
     }
+
+
+def component_size_review(
+    objects,
+    pixel_area_um2: float,
+    min_area_um2: float,
+) -> tuple[dict, list[str]]:
+    """Disclose the size spread of a component count, and flag a count of noise.
+
+    connected_components is geometrically right and, with no area filter, every
+    noise excursion above the robust threshold is a component: measured on a
+    real bead field, 224 components of which 204 were single pixels, against
+    four objects.  The number is honest and useless as an answer, so the size
+    distribution travels with it and a review note names the parameter that
+    fixes it.  Information, never a refusal and never a status change -- small
+    components can be real, and a zero count on an empty field is a result.
+    """
+    sizes = sorted(int(component["n_pixels"]) for component in objects)
+    total = len(sizes)
+    singles = sum(1 for size in sizes if size == 1)
+    fraction = round(singles / total, 4) if total else 0.0
+    distribution = {
+        "n_components": total,
+        "single_pixel_components": singles,
+        "single_pixel_fraction": fraction,
+        # Every component area is n_pixels x pixel_area_um2, so the spread is
+        # reported once in pixels rather than repeated per component (R115).
+        "n_pixels": {
+            "min": sizes[0] if total else None,
+            "median": float(np.median(sizes)) if total else None,
+            "max": sizes[-1] if total else None,
+        },
+        "pixel_area_um2": float(pixel_area_um2),
+    }
+    notes: list[str] = []
+    if total and singles * 2 > total:
+        note = (
+            f"{singles} of {total} counted components ({fraction:.0%}) are one pixel, the "
+            "smallest a component can be: an area filter that admits single pixels counts "
+            "every noise excursion above the threshold, so this number measures the noise "
+            "floor as much as it measures objects. min_area_um2 is the smallest component "
+            f"area counted; it is {min_area_um2:g} µm² here, which admits single pixels "
+            f"({pixel_area_um2:.6g} µm² each). Set it to the smallest object area you mean "
+            "to count and measure again. This is a review note about what the number "
+            "counts, not an invalid count: small components can be real."
+        )
+        notes.append(note)
+    return distribution, notes
 
 
 def image_content(

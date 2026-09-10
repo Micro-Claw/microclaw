@@ -33,7 +33,7 @@ from microclaw.hook_manager import (
 )
 from microclaw.hooks import write_analysis_observation
 from microclaw.image_analysis import (
-    compute_stats, connected_components, resolve_min_snr,
+    component_size_review, compute_stats, connected_components, resolve_min_snr,
 )
 from microclaw.ilastik_adapter import IlastikCompletedDatasetAdapter
 from microclaw.safety import SafetyViolation
@@ -47,10 +47,31 @@ _ALLOWED_CAPABILITIES = frozenset(
 
 
 class ConnectedComponents:
-    """Built-in geometric measurement over a stage-coordinate mosaic."""
+    """Component counts over original saved frames or a stage-coordinate mosaic."""
 
     def __init__(self, min_snr: float, min_snr_source: str,
                  min_area_um2: float = 0.0, max_area_um2: float | None = None):
+        self.affine = None  # resolved and injected only by the trusted runner
+        # The optical clause is the load-bearing one and it is not a hedge:
+        # an operator scoring this block's own verification image, 2026-09-10.
+        # Objects below the diffraction limit do not image larger when they
+        # cluster, they image BRIGHTER at the same size -- so no threshold,
+        # area filter or watershed can separate them, and a count of spots is
+        # not a count of objects however good the segmentation gets. The
+        # quantity that would separate them is integrated intensity, which
+        # this measurement does not report (design/81 F5, R120).
+        self.count_semantics = (
+            "Component count: contiguous thresholded signal, not object identification. "
+            "Objects below the diffraction limit image as one spot when they cluster - "
+            "brighter, not larger - so segmentation cannot separate them even in principle, "
+            "and this count counts spots, not objects. Distinguishing them needs integrated "
+            "intensity, which this measurement does not report. "
+            "Touching objects can merge; noise, fragmentation and threshold choice affect counts. "
+            "Signal visible in overlapping acquired fields appears in both per-field counts; "
+            "their sum is not a unique object total. Mosaic counts measure resampled signal "
+            "with later tiles overwriting earlier tiles, not original-field counts."
+        )
+
         self.parameters = {
             "min_area_um2": min_area_um2, "max_area_um2": max_area_um2,
             "min_snr": min_snr, "min_snr_source": min_snr_source,
@@ -58,7 +79,7 @@ class ConnectedComponents:
 
     def analyze_saved_frame(self, image, metadata, context):
         if metadata.get("input_kind") != "stage_coordinate_mosaic":
-            raise ValueError("connected_components requires input_kind='stage_coordinate_mosaic'")
+            return self._analyze_source_frame(image, metadata, context)
         mosaic = metadata["mosaic_manifest"]
         basis = mosaic["output_basis_um"]
         if basis[0][1] != 0 or basis[1][0] != 0 or basis[0][0] != basis[1][1]:
@@ -69,6 +90,45 @@ class ConnectedComponents:
             max_area_um2=self.parameters["max_area_um2"],
             min_snr=self.parameters["min_snr"],
         ), "status": "observed", "parameters": self.parameters}
+
+    def _analyze_source_frame(self, image, metadata, context):
+        affine = self.affine
+        if affine is None:
+            raise ValueError("Source-frame calibration must be resolved by the trusted runner")
+        height, width = image.shape[:2]
+        absent = [key for key in ("XPosition_um_Intended", "YPosition_um_Intended")
+                  if metadata.get(key) in (None, "")]
+        origin = None
+        geometry_refusal = None
+        if absent:
+            geometry_refusal = "Stage coordinates refused: missing " + ", ".join(absent)
+        else:
+            dx, dy = affine.px_to_um(-(width - 1) / 2, -(height - 1) / 2)
+            origin = [float(metadata["XPosition_um_Intended"]) + dx,
+                      float(metadata["YPosition_um_Intended"]) + dy]
+        measured = connected_components(
+            image, basis_um=[[affine.a, affine.b], [affine.c, affine.d]],
+            origin_um=origin, covered_mask=np.ones((height, width), dtype=bool),
+            min_area_um2=self.parameters["min_area_um2"],
+            max_area_um2=self.parameters["max_area_um2"],
+            min_snr=self.parameters["min_snr"],
+        )
+        measured.update({
+            "min_area_um2": self.parameters["min_area_um2"],
+            "max_area_um2": self.parameters["max_area_um2"],
+            "stage_geometry_refusal": geometry_refusal,
+            "count_semantics_ref": "count_semantics",
+            "frame_statistics": dict(compute_stats(image, min_snr=self.parameters["min_snr"])._asdict()),
+        })
+        # The geometry is unchanged and the status stays `observed`: this
+        # discloses what the count is made of, it does not judge it.
+        distribution, notes = component_size_review(
+            measured["objects"], abs(affine.a * affine.d - affine.b * affine.c),
+            self.parameters["min_area_um2"],
+        )
+        measured["component_size_distribution"] = distribution
+        measured["review_notes"] = notes
+        return {"result": measured, "status": "observed", "parameters": self.parameters}
 
 
 class FrameStatistics:
@@ -328,12 +388,11 @@ def run_analysis_on_saved_dataset(
         raise FileExistsError(
             f"Cannot create a file when that file already exists: {output_dir!r}"
         )
-    if input_kind == "stage_coordinate_mosaic":
-        if calibration_ref is not None and calibration_ref.get("kind") == "confirmed_current":
-            raise ValueError(
-                "confirmed_current calibration requires a live microscope core and is "
-                "not available to completed-dataset replay; use artifact or knowledge_version"
-            )
+    if calibration_ref is not None and calibration_ref.get("kind") == "confirmed_current":
+        raise ValueError(
+            "confirmed_current calibration requires a live microscope core and is "
+            "not available to completed-dataset replay; use artifact or knowledge_version"
+        )
 
     builtin = BUILTIN_ADAPTERS.get(adapter)
     if builtin is not None:
@@ -374,7 +433,7 @@ def run_analysis_on_saved_dataset(
     selection = {"axis_selection": {k: axis_selection[k] for k in sorted(axis_selection)},
                  "coordinates": [{k: item[k] for k in sorted(item)} for item in coordinates]}
     dataset_hash, content_hash, content_manifest = _dataset_content(dataset_path)
-    dataset_identity = {"dataset_sha256": dataset_hash,
+    content_identity = {"dataset_sha256": dataset_hash,
                         "selection_sha256": _sha(_canonical_bytes(selection)),
                         "content_sha256": content_hash,
                         "selected_coordinates": selection["coordinates"]}
@@ -397,7 +456,7 @@ def run_analysis_on_saved_dataset(
         return info
 
     def emit(result, *, status, analyzer=None, analyzer_version=None, parameters=None,
-             artifact_sha256=None):
+             artifact_sha256=None, where=None):
         # Built-ins are reviewed package measurements and may assert `observed`;
         # saved adapters remain untrusted, exactly like saved live hooks.
         allowed_statuses = ({"unverified", "provisional", "observed"}
@@ -410,15 +469,16 @@ def run_analysis_on_saved_dataset(
                 f"{status!r} is not allowed for this adapter{reason}."
             )
         return write_analysis_observation(
-            observations, analyzer=analyzer or adapter,
+            observations, where=where, analyzer=analyzer or adapter,
             analyzer_version=analyzer_version or entry.get("version"), result=result,
             parameters=parameters, artifact_sha256=artifact_sha256, status=status,
         )
 
-    context = AnalysisContext(dataset_identity, ArtifactDirectory(write_artifact),
+    context = AnalysisContext(content_identity, ArtifactDirectory(write_artifact),
                               emit, cancelled.is_set)
     view = DatasetView(dataset, coordinates, max_array_bytes=max_array_bytes)
     calibration_identity = None
+    saved_calibration_details = {}
     failure = None
     status = "completed"
     mosaic_result = None
@@ -443,12 +503,27 @@ def run_analysis_on_saved_dataset(
             else:
                 raw_results = instance.analyze_completed_dataset(view, _immutable(selection), context)
         elif verb == "analyze_saved_frame":
+            if builtin is ConnectedComponents:
+                from microclaw.tools import _resolve_saved_dataset_calibration
+                affine, calibration_identity, camera_identity, roi_difference = (
+                    _resolve_saved_dataset_calibration(
+                        dataset, [(item, dataset.read_metadata(**item)) for item in coordinates],
+                        axis_selection, calibration_ref, guard=guard,
+                    )
+                )
+                instance.affine = affine
+                saved_calibration_details = {"dataset_identity": camera_identity,
+                                             "calibration_roi_difference": roi_difference}
             raw_results = []
             for item in coordinates:
                 context.raise_if_cancelled()
-                raw_results.append(instance.analyze_saved_frame(
-                    view.read_image(**item), view.read_metadata(**item), context
-                ))
+                metadata = view.read_metadata(**item)
+                where = dict(item)
+                if "PositionName" in metadata:
+                    where["PositionName"] = metadata["PositionName"]
+                raw_results.append((where, instance.analyze_saved_frame(
+                    view.read_image(**item), metadata, context
+                )))
         else:
             raw_results = instance.analyze_completed_dataset(
                 view, _immutable(selection), context
@@ -456,9 +531,12 @@ def run_analysis_on_saved_dataset(
         if raw_results is not None:
             for raw in raw_results:
                 context.raise_if_cancelled()
+                where = None
+                if input_kind == "frames" and verb == "analyze_saved_frame":
+                    where, raw = raw
                 normalized = _normalized_result(raw)
                 if normalized:
-                    emit(**normalized)
+                    emit(**normalized, where=where)
     except AnalysisCancelled as error:
         status = "cancelled"
         failure = {"type": type(error).__name__, "message": str(error)}
@@ -472,7 +550,7 @@ def run_analysis_on_saved_dataset(
         "run_id": str(uuid.uuid4()), "status": status,
         "started_at": started.isoformat(), "finished_at": finished.isoformat(),
         "latency_s": time.monotonic() - clock, "dataset_path": dataset_path,
-        **dataset_identity, "dataset_content_manifest": content_manifest,
+        **content_identity, "dataset_content_manifest": content_manifest,
         "selection": selection, "input_kind": input_kind,
         "analyzer": {"name": adapter, "source": entry.get("source"),
                      "source_sha256": _sha(source), "version": entry.get("version"),
@@ -480,8 +558,11 @@ def run_analysis_on_saved_dataset(
                                      "platform": platform.platform()}},
         "parameters": _json_value(parameters),
         "calibration_used": calibration_identity is not None,
+        **saved_calibration_details,
         "cancelled": status == "cancelled", "failure": failure,
     }
+    if builtin is ConnectedComponents:
+        manifest_base["count_semantics"] = instance.count_semantics
     if calibration_identity is not None:
         manifest_base["calibration_identity"] = calibration_identity
     try:

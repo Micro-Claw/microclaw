@@ -58,6 +58,11 @@ def assemble_stage_coordinate_mosaic(
     and again for rasterization, allowing dataset-backed callers to avoid holding
     source tiles in memory. The output image and coverage/count arrays are the
     large allocations. All frames must have the same two-dimensional dtype.
+
+    tile_placements records source_shape as [height, width] and output_window_px
+    as [first_row, stop_row, first_col, stop_col], with exclusive stops. Stage
+    bounds enclose transformed pixel centres, not exact tile footprints; the
+    shared source_basis_um and tile_bounds_convention describe every placement.
     """
     frame_descriptors: list[tuple[tuple[int, int], float, float]] = []
     bounds: list[tuple[float, float, float, float]] = []
@@ -112,6 +117,7 @@ def assemble_stage_coordinate_mosaic(
         dtype=np.float64,
     ) / determinant
 
+    tile_placements = []
     rasterized = 0
     rasterized_output_samples = 0
     for frame_index, (pixels, centre_x, centre_y) in enumerate(frames):
@@ -144,6 +150,19 @@ def assemble_stage_coordinate_mosaic(
         first_row = max(0, math.floor((tile_min_y - origin_y) / sample + 0.5))
         last_row = min(height - 1, math.floor((tile_max_y - origin_y) / sample + 0.5))
 
+        # These are bounds over transformed pixel centres, not exact tile
+        # footprints. Under rotation/shear they cannot establish membership.
+        tile_placements.append({
+            "index": frame_index,
+            "centre_stage_um": [expected_x, expected_y],
+            "source_shape": list(expected_shape),
+            "source_basis_ref": "source_basis_um",
+            "bounds_stage_um": {"x_min": tile_min_x, "x_max": tile_max_x,
+                                "y_min": tile_min_y, "y_max": tile_max_y},
+            "output_window_px": [first_row, last_row + 1, first_col, last_col + 1],
+            "bounds_convention_ref": "tile_bounds_convention",
+        })
+
         output_rows, output_cols = np.meshgrid(
             np.arange(first_row, last_row + 1),
             np.arange(first_col, last_col + 1),
@@ -173,6 +192,10 @@ def assemble_stage_coordinate_mosaic(
     overlap_pixels = int(np.count_nonzero(coverage_count > 1))
     return {
         "mosaic": mosaic,
+        "tile_placements": tile_placements,
+        "source_basis_um": [[geometry.affine.a, geometry.affine.b],
+                            [geometry.affine.c, geometry.affine.d]],
+        "tile_bounds_convention": "bounds over transformed pixel centres, not exact tile footprints",
         "origin_um": [origin_x, origin_y],
         "extent_um": [max_x - origin_x, max_y - origin_y],
         "output_basis_um": [[sample, 0.0], [0.0, sample]],
