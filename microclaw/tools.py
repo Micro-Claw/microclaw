@@ -4648,7 +4648,6 @@ def _acquire_with_hooks(
     hook: Any | None = None,
     reservation: Reservation | None = None,
     close_reservation: bool = True,
-    defer_refresh_gui: bool = False,
     *,
     ctrl: MicroscopeController,
     policy: AcquisitionSupervisionPolicy,
@@ -4845,24 +4844,13 @@ def _acquire_with_hooks(
             failures = restore_hardware()
         finally:
             teardown_timing["restoration"]["end_s"] = time.monotonic()
-        # The frame lock already synchronizes foreground supervision with the
-        # waiter; use it for every read/write of teardown ownership as well.
-        with frame_lock:
-            must_close = close_reservation or waiter_must_close_reservation
-        if reservation is not None and must_close:
+        if reservation is not None and (
+            close_reservation or waiter_must_close_reservation
+        ):
             reservation.close()
         # One synchronous repaint, last: listeners may perform slow device
         # reads. Neither their failure nor a controller fake may change cleanup.
-        repaint_owed = any(restoration_attempted.values()) or teardown_timing.get("refresh_gui_owed", False)
-        # Pair this decision with foreground expiry under the existing lock.
-        # Expiry can also arrive AFTER cleanup, while completion is published;
-        # that repaint has already been handed back to the composite.
-        with frame_lock:
-            deferred = repaint_owed and defer_refresh_gui and not waiter_must_close_reservation
-            if deferred:
-                teardown_timing["refresh_gui_owed"] = True
-                teardown_timing["refresh_gui_deferred"] = True
-        if repaint_owed and not deferred:
+        if any(restoration_attempted.values()):
             teardown_timing["refresh_gui"] = {"start_s": time.monotonic()}
             try:
                 ctrl.refresh_gui()
@@ -4989,8 +4977,7 @@ def _acquire_with_hooks(
                 # A composite caller normally owns a shared reservation across
                 # positions. Expiry ends that composite immediately, so the
                 # still-live waiter inherits final closure after its callbacks.
-                with frame_lock:
-                    waiter_must_close_reservation = True
+                waiter_must_close_reservation = True
                 expired_bound = "error_grace" if error_expired else policy.bound_name
                 bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
                 pending = {
@@ -8908,10 +8895,10 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float | None, *,
             duration = end - start
             if record is not cleanup_record:
                 for enclosing in nested_write_s:
-                    span = teardown.get(enclosing, {})
-                    if "end_s" in span:
+                    outer = teardown.get(enclosing, {})
+                    if "end_s" in outer:
                         nested_write_s[enclosing] += max(
-                            0.0, min(end, span["end_s"]) - max(start, span["start_s"]))
+                            0.0, min(end, outer["end_s"]) - max(start, outer["start_s"]))
             elif phase in nested_write_s:
                 duration -= nested_write_s[phase]
             durations[phase] = {"duration_s": duration}
@@ -9079,7 +9066,6 @@ def _acquire_positions_with_hook(
     """
     composite_started = time.monotonic() if _started is None else _started
     duration_accumulator = {}
-    composite_teardown = {"clock": "time.monotonic"}
     payload = {}
     save_dir = guard.resolve_in_workspace(save_dir)
     log_path = _prepare_log_path(guard, log_path)
@@ -9162,20 +9148,18 @@ def _acquire_positions_with_hook(
                     ]
                 reservation.close()
                 raise
-            # Carry prior fields' debt into the active waiter. On expiry it
-            # owns the final repaint too, after its late restoration.
-            teardown = {"refresh_gui_owed": composite_teardown.pop("refresh_gui_owed", False)}
+            teardown = {}
             unterminated = False
             try:
                 dataset_path = _acquire_with_hooks(
                     guard, movie_dir, movie_name, events, hook, reservation=reservation,
                     policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan,
-                    teardown_timing=teardown, defer_refresh_gui=True,
+                    teardown_timing=teardown,
                 )
             except AcquisitionUnterminated as exc:
+                # The still-live daemon waiter owns teardown and may write its
+                # restoration span after this frame unwinds, so do not read it.
                 unterminated = True
-                if teardown.get("refresh_gui_deferred"):
-                    composite_teardown["refresh_gui_owed"] = True
                 exc.positions_completed = [r for r in results if r.get("dataset_path") and "error" not in r]
                 raise
             except _HookedAcquisitionFailure as exc:
@@ -9191,8 +9175,6 @@ def _acquire_positions_with_hook(
                 return payload
             finally:
                 if not unterminated:
-                    if teardown.get("refresh_gui_owed"):
-                        composite_teardown["refresh_gui_owed"] = True
                     _run_duration_breakdown(hook, teardown, None, accumulator=duration_accumulator)
             # Both layouts report saved-frame callbacks actually accounted after
             # teardown, not the submitted event count. A mismatch with frames_planned
@@ -9236,18 +9218,10 @@ def _acquire_positions_with_hook(
                 "hook_log_note": "Read each results entry's log_path separately; no shared log is overwritten."})
         return payload
     finally:
-        if composite_teardown.get("refresh_gui_owed"):
-            composite_teardown["refresh_gui"] = {"start_s": time.monotonic()}
-            try:
-                ctrl.refresh_gui()
-            except Exception:
-                pass
-            finally:
-                composite_teardown["refresh_gui"]["end_s"] = time.monotonic()
         duration_s = round(time.monotonic() - composite_started, 6)
         payload["duration_s"] = duration_s
         payload["duration_breakdown"] = _run_duration_breakdown(
-            None, composite_teardown, duration_s, accumulator=duration_accumulator)
+            None, {}, duration_s, accumulator=duration_accumulator)
 
 
 class SurveyProgress:
