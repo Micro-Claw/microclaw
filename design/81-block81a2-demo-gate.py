@@ -392,22 +392,29 @@ def main():
             ctrl, start, end, span / 20.0, settle_ms=0, move_to_best=False)
         planes, metrics = swept.z_positions, swept.metric_values
         if not planes or len(set(metrics)) < 2:
-            raise NotExercised(
-                "the focus metric is constant across a "
-                f"{span:.1f} um sweep centred at {centre:.2f} um, so this "
-                "camera has no focus response at all. R101 needs a rig.")
+            loaded["a_unobservable"] = (
+                f"the focus metric is constant across a {span:.1f} um sweep "
+                f"centred at {centre:.2f} um: this camera has no focus "
+                "response at all. R101 needs a rig.")
+            return loaded["entry_z"]
         best = planes[metrics.index(max(metrics))]
         observe("A - wide focus probe",
                 f"{len(planes)} planes over {span:.1f} um, argmax at "
                 f"{best:.2f} um, metric range "
                 f"{min(metrics):.4g}..{max(metrics):.4g}")
         if best <= planes[0] or best >= planes[-1]:
-            raise NotExercised(
+            # NOT a stand-down. Round 5 raised here, and C and D -- which
+            # only need a sweep to have RUN -- went NOT EXERCISED with it.
+            # CLAUDE.md: a stand-down must not take another limb's evidence
+            # with it. Record why convergence is unobservable, keep the entry
+            # centre, and let the acquisition run so the sweep still happens.
+            loaded["a_unobservable"] = (
                 f"even a {span:.1f} um sweep puts the argmax at {best:.2f} um, "
-                f"on its own boundary ({planes[0]:.2f}..{planes[-1]:.2f}). "
-                "This camera has no interior focus maximum in the allowed Z "
-                "range, so convergence cannot be observed here and R101 "
-                "stays open for a rig with a real sample.")
+                f"on its own boundary ({planes[0]:.2f}..{planes[-1]:.2f}), so "
+                "this camera's focus plane is outside the allowed Z range. "
+                "Convergence cannot be observed here; R101 stays open for a "
+                "rig with a real sample.")
+            return loaded["entry_z"]
         return best
 
     @limb("A - a real focus curve converges through the new path and records its provenance",
@@ -455,10 +462,9 @@ def main():
             # therefore needs a rig with a real sample, not this machine.
             if "edge of the searched Z range" in str(result["error"]):
                 raise NotExercised(
-                    "this camera has no interior focus maximum within the "
-                    "sweep: the argmax sat on the boundary. Convergence "
-                    "cannot be observed here, and R101 stays open for a real "
-                    f"rig. The refusal itself was correct: {result['error'][:150]}")
+                    (loaded.get("a_unobservable")
+                     or "the argmax sat on the sweep boundary")
+                    + f" The refusal itself was correct: {result['error'][:130]}")
             raise AssertionError(f"the run failed: {result['error']}")
         records = read_log(Path(params["log_path"]))
         counts = outcomes(records)

@@ -290,6 +290,28 @@ def main():
             return f"HEAD carries 81a-2 (uncommitted microclaw changes: {dirty[:80]})"
         return "HEAD carries 81a-2 in both hooks.py and tools.py"
 
+    @check("limb A's stand-down does not take limbs C and D with it (round 5)")
+    def standdown_is_contained():
+        """Round 5: limb A raised before acquiring, so C and D lost their
+        evidence too -- three NOT EXERCISED where round 4 had two passes.
+        A stand-down must not take another limb's evidence with it."""
+        import ast
+        src = gate_path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        locate = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == "locate_focus")
+        raises = [n for n in ast.walk(locate)
+                  if isinstance(n, ast.Raise)
+                  and "NotExercised" in ast.unparse(n)]
+        assert not raises, (
+            "locate_focus still raises NotExercised. It runs BEFORE the "
+            "acquisition, so raising there costs limbs C and D the sweep "
+            "they need -- exactly round 5's regression. Record the reason "
+            "in loaded['a_unobservable'] and return a centre instead.")
+        assert "a_unobservable" in src, (
+            "the unobservable reason must be recorded, not raised")
+        return f"locate_focus raises nothing; {src.count('a_unobservable')} uses"
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} SELFTEST FAILURE(S) -- do not ship this gate:")
