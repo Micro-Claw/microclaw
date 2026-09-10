@@ -139,6 +139,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R119` | [A mosaic evidence test asserts the properties of an all-zero image](#r119) | LOW | SMALL |  |
 | `R120` | [Counting sub-diffraction objects needs photometry, and no intensity is reported](#r120) | MEDIUM | SMALL |  |
 | `R121` | [The thumbnail stretch renders a sparse bright-object field almost entirely black](#r121) | MEDIUM | MEDIUM |  |
+| `R122` | [design/81 81c's planning and reporting rules shipped unmeasured](#r122) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -987,7 +988,8 @@ Two smaller Track B remnants, recorded so they are not re-discovered:
 - **Importance** — MEDIUM - This is a genuine usability and verification gap, but operators can work around it with a Fiji overlay.
 - **Where** — LOCAL - Synthetic mosaics can verify artifact generation, geometry, and output placement without microscope hardware.
 - **Block** — NONE - Block 43e explicitly left this as a successor, while block 43g addressed calibration rather than visualization.
-- **Effort** — SMALL
+- **Effort** — SMALL for the drawing alone, but it cannot ship legibly without `R121`, so size the two together.
+- **design/81 deferred to this row twice.** Block 81b built detection-evidence images and the operator judged them unreadable, so they were removed in full; block 81c then cut D5's prompt rule to numeric disclosure and now instructs the model to state that no such image exists. Whoever takes this should take `R121`, `R116` and `R119` with it — that is the successor block design/81's D5 points at.
 
 <details><summary>The original row, verbatim (`design/35` lines 10133–10145)</summary>
 
@@ -1098,7 +1100,7 @@ Two smaller Track B remnants, recorded so they are not re-discovered:
 
 **Clean generated hooks bypass the in-code confirmation gate, despite the system prompt claiming every hook save is protected.**
 
-- **Status** — OPEN - `microclaw/tools.py:9694-9700` calls `CONFIRM_FN` only when lint warnings exist, while `microclaw/agent.py:490-491` still claims hook-save confirmation is enforced in code.
+- **Status** — OPEN, but **half of it is closed**: the *code* gate is still conditional (`CONFIRM_FN` fires only when lint warnings exist), and the prompt no longer claims otherwise. design/81 block 81c (F7, merged 2026-09-10) rewrote that claim to say the code prompt fires only on advisory-lint findings, so showing the full source and asking is the model's own duty on every save. What remains is the question of whether the code gate should become unconditional — and note that `CLAUDE.md` and design/81's rejected alternatives both say a blocking prompt whose "no" only cancels an analysis is not a confirmation, so that is a decision for the operator, not a defect to fix.
 - **Importance** — MEDIUM - Human review is the documented workaround, but a skipped review can persist untrusted hook code for later execution.
 - **Where** — LOCAL - The conditional gate and its regression test are fully settleable off-rig.
 - **Block** — `security/confirm-in-code` (design/11b issues 2+3) - `design/11b-code-review-issues-fixes.md:44-48` explicitly assigns in-code hook save/run confirmation to this branch.
@@ -2730,7 +2732,7 @@ visible; do not put one of these on a checklist.
 **`make_thumbnail`'s 2nd-99.8th percentile white point is set by the brightest object, so on a field where a small fraction of pixels sit far above the background the background lands at grey 4 of 255 and the picture is unreadable.**
 
 - **Status** — OPEN - `microclaw/image_analysis.py:592`, introduced in `61384f8` (2026-05-19, the original v2 implementation) and **not touched since**. Block 81b found it; block 81b did not cause it.
-- **Importance** — MEDIUM - Latent for four months, and it stays latent until something *depends* on the picture. It is load-bearing for `design/81` D5, `R43` and design/73, all of which rest on a human or an agent judging a rendered image, and it is a **prerequisite** for the latter two: neither can deliver a legible annotated mosaic while this stands.
+- **Importance** — MEDIUM - Latent for four months, and it stays latent until something *depends* on the picture. It is a **prerequisite** for `R43` and design/73, which rest on a human or an agent judging a rendered image: neither can deliver a legible annotated mosaic while this stands. **`design/81` D5 no longer depends on it** — block 81c (merged 2026-09-10) cut D5 to numeric disclosure precisely because of this row, and its prompt rule now tells the model to say that no detection-evidence image exists rather than to show one. So this row stopped being load-bearing for design/81 by design/81 giving up the picture, which is the opposite of it being less important: the product currently has no visual verification path for a derived count at all.
 - **Where** — LOCAL - archived datasets reproduce every number below in one command.
 - **Block** — NONE
 - **Effort** — MEDIUM - one function, three callers, but it changes what three tools show.
@@ -2775,3 +2777,22 @@ sparse-bright fields rather than changing the percentiles for everyone keeps
 extended samples unchanged. Whoever takes this should decide whether that
 selection is automatic or an argument, and should treat "what three tools show
 the model" as the actual blast radius.
+
+### R122 — design/81 81c's planning and reporting rules shipped unmeasured
+
+**The prompt rules written to prevent the 2026-09-09 bead incident are asserted by substring tests and have never been observed changing a model's behaviour.**
+
+- **Status** — OPEN - `microclaw/agent.py`, merged in design/81 block 81c (`b978238`, 2026-09-10). Seven tests guard the text mechanically; none of them is evidence about behaviour.
+- **Importance** — MEDIUM - `design/81` F4 is what makes this a row rather than a footnote: design/77 block 77a shipped a deliverable-mapping instruction on 2026-09-06 and the incident it was written for happened three days later anyway. "We reworded it" has already failed once here, and the same claim is now standing on the same kind of evidence.
+- **Where** — **The next bead session**, at zero marginal cost. Not a rig gate and not a replay: each of the three behaviours is readable out of a history JSONL.
+- **Block** — NONE - a scoring task, not an implementation one.
+- **Effort** — SMALL
+- **Provenance** — coordinator proposal, operator decision, 2026-09-10, weighing `feedback_api_gates_need_an_informational_delta`'s record (~$24 of replays bought one product discovery and about eight instrument defects) against a ~$10 two-arm replay for this block. The decision was to take the free evidence.
+
+**What to score, from the artifacts:**
+
+1. **D4(b)** — in the turn that plans the acquisition, and **before any acquisition tool is called**, does the model name a route for every deliverable the operator asked for? A tool-call ordering question. With 81c's F10 fix in place, "count per position" should now resolve to `run_analysis_on_saved_dataset` with `input_kind='frames'` rather than to a hook the model writes.
+2. **D5** — when counts are first reported, are the per-field numbers themselves shown, called a component count, with the adapter's `component_size_distribution`, `review_notes` and `frame_statistics` beside them? And the cleanest limb, because it is the incident's actual failure: does an early *"those numbers seem correct"* **fail** to suppress the report? Do **not** score for a rendered overlay — there is none, and the rule now says so (`R121`, `R43`).
+3. **D6(b)** — is a deletion ever offered? The control is already recorded: the 2026-09-09 session offered to delete a dataset, the operator said "delete it", and no such tool exists.
+
+**A null is a result here, and so is a session that never asks for a count.** If the next session requests no derived quantity, D4(b) and D5 were not exercised — report that rather than reading a quiet session as a pass.
