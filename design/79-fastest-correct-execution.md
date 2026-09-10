@@ -1,13 +1,11 @@
 # Choose the fastest correct execution path
 
-Status: **PROPOSED**, 2026-09-06; reconciled against `design/78`'s merged blocks
-2026-09-08. The policy text is in `agent.py`'s system prompt and `CLAUDE.md`,
-and **both are now committed on `main`** — the original note that they were
-uncommitted is stale. Neither has been measured: no block of *this* notebook has
-run. What has changed is that design/78 shipped, and two of the premises below
-moved with it — see "What design/78 already did" immediately after this.
-
-**Superseded 2026-09-08: block 79a has run and merged** (`fc8e2b7`). The sentence above — "no block of *this* notebook has run" — is stale, and so is 79a's entry in that list. See "Block 79a, closed" before the run ledger. **79b is assigned 2026-09-08** on `design79/performance-aware-planning` and merged 2026-09-09. **79c-1 is assigned 2026-09-10** on `design79/the-per-field-multiplier` — see "Block 79c-1 as assigned" before the run ledger.
+Status: **CLOSED 2026-09-10.** All four blocks merged — 79a (`fc8e2b7`), 79b
+(`031259c`), 79c-1 and 79c-2 — plus an M2 close-out measurement run. The policy
+text lives in `agent.py`'s system prompt and `CLAUDE.md`. **Read "What this
+notebook did and did not do" immediately before the run ledger before quoting
+anything here**: one measurement in it is withdrawn in place, and the notebook's
+own headline goal was not achieved.
 
 `CLAUDE.md`'s paragraph is the rule of record; this notebook owns the detail and
 the evidence. Keep them from drifting: a change here that alters the rule must
@@ -1249,6 +1247,66 @@ directory creations, the per-position protocol setup and the preflight, and bloc
 about half of it. Attributing the rest needs the residual broken out per field,
 which `R125` already asks for.
 
+## What this notebook did and did not do — closure, 2026-09-10
+
+**It built an instrument and it measured. It optimized nothing.** That is the
+honest summary, and four merged blocks should not be read as implying otherwise.
+
+- **79a — make the time visible.** Delivered: quantile bounds clamp, the 0.5–5 s
+  range resolves, spans reached the named-stage write and the teardown, the route
+  a run took is reported in 77b's vocabulary, and the two timing shapes became one
+  `duration_breakdown` with `accounted_s` and the residual named. Its replay ran
+  at 3 samples per arm and its ledger says plainly that this is corroboration.
+- **79b — performance-aware planning.** Delivered as text on the parameters it
+  constrains. **Its two-tree gate was never run**, because the control tree
+  already carried every rule the arms tested: a relocation is invisible to a
+  replay by construction. No improvement claim is made anywhere.
+- **79c-1 — the per-field multiplier.** Delivered a composite `duration_breakdown`
+  on both multi-field tools, where neither previously reported any timing at all.
+  **Its assigned optimization was deleted**: no grid tool can authorize a hook
+  restoration, so the per-field GUI repaint `R103` projected at ~2.4 s never fired
+  (`R123`).
+- **79c-2 — one clock for the timing domain.** Delivered `time.perf_counter()`
+  across the domain after `R128` showed `time.monotonic()` on Windows is
+  `GetTickCount64`, quantizing every runtime span to a ~15.6 ms tick while looking
+  millisecond-precise. Confirmed on two machines. This is the block that made 79a's
+  instrument able to resolve what it claims to measure.
+
+**The optimization mandate produced two numbers and no change.** Per-acquisition
+overhead is stable and real — **0.26 s on M2, 0.28 s on the demo machine** — and
+the shared-dataset route avoids it. But taking it means giving up per-field
+arrival verification, which is `R126`, measured here for the first time at roughly
+**4× per field** on M2. That is an arrival-contract question in design/68's family,
+not a performance one, and it is the successor this notebook points at rather than
+answers.
+
+**And `R105`, the residual this notebook chased from design/78 onward, is not a
+property.** Measured twice on M2 minutes apart with identical arguments: a
+requested 0.06 s interval achieved a **0.2169 s** mean and then a **0.0710 s**
+mean, while the interval-limited control reproduced to 0.4 ms. A no-hook control
+excluded the hook. The cause of the excursion is unattributed. **The most useful
+thing this notebook produced about R105 is that the residual everyone assumed was
+there is not reliably there** — and that only became visible because a second run
+was taken. One run of it is committed above and marked withdrawn in place.
+
+**What the notebook's own rules cost it, recorded because it kept paying:** the
+policy text remains an unmeasured hypothesis (79b), a projection was turned into a
+block assignment without checking reachability (`R123`), an acceptance criterion
+demanding an exact float identity produced a `nextafter` fudge that fails 3.2% of
+the time, an inference from artifact precision was mistaken for a clock
+measurement (`R128`), and two gates were written from a machine whose stage sits
+at the origin (`R130`). Every one of those was caught, and none of them by the
+suite.
+
+**Nothing here authorises a rig exposure, and nothing here is a rate.** Every
+number in this notebook is n=1 or n=2 and labelled.
+
+### Where the remaining work lives
+
+`design/70` rows `R103` (annotated), `R105`, `R123`, `R125`, `R126`, `R127`,
+`R129`, `R130`. None is owned. `R126` is the one that would change a microscopist's
+day; `R105` is the one that needs a quiet rig and half an hour.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
@@ -1260,3 +1318,9 @@ which `R125` already asks for.
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
 prompt paragraph is a hypothesis. Nothing here authorises a rig exposure.
+
+| — | `design79/m2-close-out` | `5d30365` | coordinator | M2 rounds 1 and 2, 2026-09-10 | merged 2026-09-10 |
+
+**Closed 2026-09-10.** Policy changes alone are not evidence of faster execution,
+and an unmeasured prompt paragraph is a hypothesis — both sentences were in this
+ledger from the start and both still apply to 79b.
