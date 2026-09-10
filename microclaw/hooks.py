@@ -118,8 +118,22 @@ def planned_hook_z_reach(hook, events, entry_z, guard):
                     continue
                 down, up = reach[callback]
                 lo, hi = lo - down, hi + up
-                guard.check_z(lo)
-                guard.check_z(hi)
+                # Name the hook and the callback. The bare guard message says
+                # only "Z=4.0 um is below the minimum allowed (5.0 um)", and
+                # the demo gate's round 3 showed an operator cannot tell from
+                # that which of their arguments caused it -- the reach is the
+                # HOOK's planned sweep, not a coordinate they asked for.
+                for edge in (lo, hi):
+                    try:
+                        guard.check_z(edge)
+                    except Exception as exc:
+                        index_text, _, cls = name.partition(":")
+                        where = (f"{cls}" if len(contracts) == 1
+                                 else f"{cls} at index {index_text}")
+                        raise type(exc)(
+                            f"The {where}'s planned {callback} sweep would "
+                            f"reach Z={edge:.3f} um: {exc}"
+                        ) from exc
                 envelope.extend((lo, hi))
     return {"checked_hooks": [name for name, _ in contracts],
             "unchecked_hooks": unchecked, "z_min_um": min(envelope),

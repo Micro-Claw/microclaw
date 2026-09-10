@@ -225,25 +225,39 @@ def main():
         spec = importlib.util.spec_from_file_location("gate81a2", gate_path)
         gate = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(gate)
-        assert gate.is_the_safety_refusal(
-            "Required autofocus stopped at field 'f1': flat field"), (
-            "the gate does not recognise its own refusal")
+        # Both refusals protect the sample and both are correct answers.
+        # These are the operator's ACTUAL messages from rounds 1 and 3.
+        assert gate.refusal_kind(
+            "Required autofocus stopped at field 'f1': flat field"
+        ) == "runtime required-autofocus"
+        assert gate.refusal_kind(
+            "The AutofocusHook's planned post_hardware_hook_fn sweep would "
+            "reach Z=4.000 um: Z=4.0 \u00b5m is below the minimum allowed "
+            "(5.0 \u00b5m)."
+        ) == "plan-time reach", (
+            "round 3's real refusal must be recognised: the plan-time reach "
+            "check fires before the run and limb B scored it NOT EXERCISED")
         for unrelated in (
                 "cannot import name 'planned_hook_z_reach' from "
                 "'microclaw.hooks'",
-                "Safety constraint prevented this action: Z out of bounds",
-                "java.lang.Exception: Serial command failed"):
-            assert not gate.is_the_safety_refusal(unrelated), (
+                "java.lang.Exception: Serial command failed",
+                "Acquisition complete across 9 position(s)."):
+            assert gate.refusal_kind(unrelated) is None, (
                 f"limb B would PASS on {unrelated[:60]!r} -- round 1's false "
                 "pass, which scored an ImportError as a safety refusal")
-        assert "is_the_safety_refusal" in body and "NotExercised" in body, (
+        assert "refusal_kind" in body and "NotExercised" in body, (
             "limb B must route an unrelated failure to NOT EXERCISED")
         limb_c = next(n for n in ast.walk(tree)
                       if isinstance(n, ast.FunctionDef) and n.name == "limb_c")
-        assert "b_swept" in ast.unparse(limb_c), (
-            "limb C must require that B actually reached the refusal; an "
-            "unchanged axis proves nothing if nothing ever moved")
-        return "B names the refusal; C requires B to have swept"
+        # Restoration is evidenced by limb A's SWEEP, not by limb B. Round 3
+        # showed B's refusal is the plan-time one, which fires before any
+        # motion -- so an unchanged axis after B proves nothing at all.
+        assert "a_swept" in ast.unparse(limb_c), (
+            "limb C must require that a sweep actually moved the axis; "
+            "B's plan-time refusal never moves it")
+        assert "b_swept" not in ast.unparse(limb_c), (
+            "limb C keyed off B, whose refusal fires before any motion")
+        return "B names both refusals; C requires a sweep to have moved Z"
 
     @check("the COMMITTED tree carries 81a-2, not just the working tree")
     def committed_tree_is_the_one():
