@@ -595,7 +595,8 @@ def test_composite_nested_write_reconciles_once(restoring_grid):
     result = r.grid(4)
     assert 'duration_breakdown' in result, 'composite has no duration_breakdown'
     b = result['duration_breakdown']
-    assert b['accounted_s'] + b['unaccounted_s'] == result['duration_s'] == b['duration_s']
+    assert b['accounted_s'] + b['unaccounted_s'] == pytest.approx(result['duration_s'])
+    assert result['duration_s'] == b['duration_s'] == round(r.now, 6)
     assert b['phases']['write']['total_s'] == pytest.approx(8)
     assert b['phases']['acquisition']['total_s'] == pytest.approx(4 * (.17 + .01))
     assert b['phases']['restoration']['total_s'] == 4
@@ -603,6 +604,9 @@ def test_composite_nested_write_reconciles_once(restoring_grid):
     assert b['unaccounted_s'] == pytest.approx(21)  # Three settled between-field moves.
     assert 'acquisition and restoration exclude nested write spans' in b['phase_meaning']
     assert 'XY moves, settling, preflight, mkdir' in b['phase_meaning']
+    assert 'failed hookless fields whose breakdown was not returned' in b['phase_meaning']
+    assert 'per-field breakdowns are folded into this composite and omitted from child results' in b['phase_meaning']
+    assert b['unaccounted_s'] == b['duration_s'] - b['accounted_s']
     assert all('duration_breakdown' not in child for child in result['results'])
     assert len(b['slowest_records']) == 3
 
@@ -657,7 +661,7 @@ def test_composite_payload_bounded_from_two_to_500_fields(restoring_grid):
         assert set(b['phases']) == {'write', 'acquisition', 'restoration', 'refresh_gui'}
         assert 'dominant_phase' not in b
         assert all('duration_breakdown' not in child for child in result['results'])
-        assert b['accounted_s'] + b['unaccounted_s'] == result['duration_s']
+        assert b['accounted_s'] + b['unaccounted_s'] == pytest.approx(result['duration_s'])
     print(f'79c composite breakdown bytes: 2 fields={sizes[0]}, 500 fields={sizes[1]}')
     assert max(sizes) < 2500
     assert max(sizes) - min(sizes) < 500
@@ -676,8 +680,9 @@ def test_composite_breakdown_exports_compile_and_execute(rig, tmp_path, monkeypa
         kw.update(rows=1, cols=2, step_um=10, center_x_um=5, center_y_um=0)
     result = getattr(tools, tool)(rig.ctrl, rig.guard, **kw)
     assert 'error' not in result, result
+    assert result['duration_s'] == round(result['duration_s'], 6)
     assert result['duration_breakdown']['phases']['acquisition']['count'] == 2
-    assert result['duration_breakdown']['accounted_s'] + result['duration_breakdown']['unaccounted_s'] == result['duration_s']
+    assert result['duration_breakdown']['accounted_s'] + result['duration_breakdown']['unaccounted_s'] == pytest.approx(result['duration_s'])
     result['duration_breakdown']['measurement_sentinel'] = 'duration-must-not-be-emitted'
     _, report, source = export(tmp_path, completed_call(tool, kw, result))
     assert report['emitted_calls'] == 1

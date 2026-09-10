@@ -4845,9 +4845,11 @@ def _acquire_with_hooks(
             failures = restore_hardware()
         finally:
             teardown_timing["restoration"]["end_s"] = time.monotonic()
-        if reservation is not None and (
-            close_reservation or waiter_must_close_reservation
-        ):
+        # The frame lock already synchronizes foreground supervision with the
+        # waiter; use it for every read/write of teardown ownership as well.
+        with frame_lock:
+            must_close = close_reservation or waiter_must_close_reservation
+        if reservation is not None and must_close:
             reservation.close()
         # One synchronous repaint, last: listeners may perform slow device
         # reads. Neither their failure nor a controller fake may change cleanup.
@@ -8073,7 +8075,7 @@ def run_multiposition_acquisition(
                     )
                     _run_duration_breakdown(None, {
                         "duration_breakdown": result.pop("duration_breakdown", {}),
-                    }, 0, accumulator=duration_accumulator)
+                    }, None, accumulator=duration_accumulator)
                     results.append({**where, **result})
                 except AcquisitionUnterminated as exc:
                     # Positions 1..n-1 have finished datasets on disk and this
@@ -8121,7 +8123,7 @@ def run_multiposition_acquisition(
         "acquisition_order": acquisition_order,
         "timing": timing,
     }
-    payload["duration_s"] = time.monotonic() - composite_started
+    payload["duration_s"] = round(time.monotonic() - composite_started, 6)
     payload["duration_breakdown"] = _run_duration_breakdown(
         None, {}, payload["duration_s"], accumulator=duration_accumulator)
     restore = _live_restore_report(live_state)
@@ -8858,14 +8860,15 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         )
 
 
-def _run_duration_breakdown(hook, teardown: dict, duration_s: float, *,
-                            accumulator: dict | None = None) -> dict:
+def _run_duration_breakdown(hook, teardown: dict, duration_s: float | None, *,
+                            accumulator: dict | None = None) -> dict | None:
     """Summarize one run in seconds, with constant additional storage.
 
     Acquisition and restoration enclose their own write spans.
     A composite folds each completed field into accumulator, retaining only
     fixed phase aggregates and three ranked records. Hookless children already
-    have a breakdown; their phase aggregates can be folded through teardown.
+    have a breakdown; only their phase aggregates are folded through teardown.
+    duration_s=None folds into the accumulator without building a result.
 
     Subtract nested intersections so summing the phases counts each measured
     interval once.
@@ -8887,8 +8890,6 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float, *,
             aggregate["total_s"] += measured["total_s"]
             aggregate["min_s"] = min(aggregate["min_s"], measured["min_s"])
             aggregate["max_s"] = max(aggregate["max_s"], measured["max_s"])
-    # This route consumes hookless protocol children, which have no write log.
-    assert not child.get("record_count")
     cleanup_record = {"timing": teardown}
     for record in itertools.chain(getattr(hook, "_log", ()), (cleanup_record,)):
         timing = record.get("timing", {})
@@ -8930,19 +8931,18 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float, *,
     accumulator["record_count"] = record_count
     for aggregate in phases.values():
         aggregate["mean_s"] = aggregate["total_s"] / aggregate["count"]
+    if duration_s is None:
+        return None
     accounted_s = sum(phase["total_s"] for phase in phases.values())
     unaccounted_s = duration_s - accounted_s
-    # Avoid an ulp-sized reconciliation error when subtraction rounds. Keep the
-    # measured phase totals intact; the residual owns floating-point rounding.
-    if accounted_s + unaccounted_s != duration_s:
-        unaccounted_s = math.nextafter(
-            unaccounted_s, math.inf if accounted_s + unaccounted_s < duration_s else -math.inf)
     return {
         "clock": "time.monotonic", "duration_s": duration_s,
         "record_count": record_count, "phases": phases,
         "accounted_s": accounted_s, "unaccounted_s": unaccounted_s,
         "phase_meaning": "completed spans including failed actions; acquisition and restoration exclude nested write spans; "
-                         + ("unaccounted_s is between-field work (XY moves, settling, preflight, mkdir) and other elapsed time outside these spans"
+                         + ("unaccounted_s includes between-field work (XY moves, settling, preflight, mkdir), "
+                            "failed hookless fields whose breakdown was not returned, and other elapsed time outside these spans; "
+                            "per-field breakdowns are folded into this composite and omitted from child results to keep timing detail bounded"
                             if composite else "unaccounted_s is elapsed time outside these spans"),
         "slowest_records": [record for _, record in slowest],
         "slowest_meaning": "up to three write records by first span start to last completed span end; earliest wins ties",
@@ -9193,7 +9193,7 @@ def _acquire_positions_with_hook(
                 if not unterminated:
                     if teardown.get("refresh_gui_owed"):
                         composite_teardown["refresh_gui_owed"] = True
-                    _run_duration_breakdown(hook, teardown, 0, accumulator=duration_accumulator)
+                    _run_duration_breakdown(hook, teardown, None, accumulator=duration_accumulator)
             # Both layouts report saved-frame callbacks actually accounted after
             # teardown, not the submitted event count. A mismatch with frames_planned
             # means frame delivery/accounting was incomplete; it is not evidence of
@@ -9244,7 +9244,7 @@ def _acquire_positions_with_hook(
                 pass
             finally:
                 composite_teardown["refresh_gui"]["end_s"] = time.monotonic()
-        duration_s = time.monotonic() - composite_started
+        duration_s = round(time.monotonic() - composite_started, 6)
         payload["duration_s"] = duration_s
         payload["duration_breakdown"] = _run_duration_breakdown(
             None, composite_teardown, duration_s, accumulator=duration_accumulator)

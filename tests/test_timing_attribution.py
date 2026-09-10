@@ -307,3 +307,25 @@ def test_restoration_write_spans_are_not_counted_twice():
     assert result['accounted_s'] + result['unaccounted_s'] == result['duration_s']
     assert result['slowest_records'][0]['timing']['write'] == {'duration_s': 2}
     assert record['timing']['write'] == {'start_s': 102, 'end_s': 104}
+
+
+def test_duration_breakdown_accumulate_only_then_report():
+    accumulator = {}
+    teardown = {'clock': 'time.monotonic',
+                'acquisition': {'start_s': 10, 'end_s': 12}}
+    assert tools._run_duration_breakdown(
+        None, teardown, None, accumulator=accumulator) is None
+    result = tools._run_duration_breakdown(None, {}, 3, accumulator=accumulator)
+    assert result['phases']['acquisition']['count'] == 1
+    assert result['accounted_s'] == 2
+    assert result['unaccounted_s'] == 1
+
+
+def test_duration_breakdown_preserves_float_subtraction():
+    duration = 23.61496476639424
+    acquired = 2.554806101834151
+    teardown = {'clock': 'time.monotonic',
+                'acquisition': {'start_s': 0., 'end_s': acquired}}
+    result = tools._run_duration_breakdown(None, teardown, duration)
+    assert result['unaccounted_s'] == duration - acquired
+    assert result['accounted_s'] + result['unaccounted_s'] == pytest.approx(duration)
