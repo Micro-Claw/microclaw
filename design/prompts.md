@@ -10196,3 +10196,79 @@ and note that a killed turn is still recoverable either way, from
 at 93 commands, with its work staged and no report. The recovery is the same:
 commit it marked unreviewed, measure it yourself, and reconstruct the report
 from the diff — which step 3 requires regardless.
+
+## Block 81b — the built-in measures per field (merged 2026-09-10)
+
+**Survey the evidence archive before you book a rig.** 81b's entry asked for a
+demo-machine overlapping grid. Twenty minutes of reading the archive found
+every property it wanted already there: the incident's own 3×3 bead grid, a
+5-field set with **35.9 % real overlap and a sheared Hamamatsu affine**, and an
+81-position set. The gate ended up needing no microscope at all. This is
+`project_rig_evidence_archive` applied at planning time rather than after a
+failed trip, and it is worth doing every block, because operator time is the
+budget that actually binds.
+
+**A rule's happy path can be unreachable on real data, and only the data says
+so.** The runner prompt said to label a field when its saved `position`
+coordinate is an integer. Codex stopped and asked about negative integers; the
+archive gave the real answer — **every** saved position coordinate in three
+datasets is a *string* (`r0_c0`, `center`, `mt150_r0_c0`), so the rule would
+have labelled nothing, ever. The runner was right to stop, and the coordinator
+was wrong to have written it. Same family as the `github:` prefix in 58a: when
+a rule branches on the *shape* of real input, go and look at real input.
+
+**Four defects, and the runners' own tests found none of them.** One:
+`test_suite_integrity`'s encoding rule, missed because the runner's
+compatibility run was cut off by a usage limit — the coordinator's own full
+suite is what caught it. Two: the count itself. Three: the evidence images.
+Four: the process fault below.
+
+**Score a passing gate from its artifacts — it found the block's worst
+defect.** The gate went 6/6 and then the numbers said the built-in reports
+**224 components where the operator's eye counted 4**, and **221 on the tile
+that is empty**, because `min_area_um2` defaults to 0 and 204 of the 224 are
+single pixels. That is the notebook's own incident one layer along: the
+2026-09-09 hook reported 52 on that tile and the operator caught it; 221 with
+`status: "observed"` and full provenance would be harder to catch. Fixed as
+disclosure — a size distribution and a review note naming the parameter —
+never as a guessed default, because the right filter is a property of the
+sample.
+
+**A metric can pass a picture that is black.** The evidence images rendered as
+glyphs on black. The first fix scaled the ink to the data, and the gate limb
+written to check it asked whether pixels were "strictly between 0 and 255" —
+which grey 2 and grey 3 satisfy. It passed. The operator looked and said *"this
+is truly horrible."* The coordinator had told the runner "assert the property,
+not the constant" and then written a limb that asserted a different constant.
+**When the deliverable is something a human sees, the limb must be a rendering
+a human looks at, and everything numeric is a proxy that will eventually pass
+the wrong thing.** The gate now renders the figure and reports NOT EXERCISED
+for it, permanently: it is a deliverable, not a verdict.
+
+**The real cause was underneath both blocks.** A *raw, unannotated* bead field
+renders **98.9 % at grey ≤ 32** through `open_artifact(analyze=True)`, because
+`make_thumbnail`'s 2nd–99.8th percentile stretch is set by the brightest bead
+and puts a 202-count background at grey 4. No annotation design fixes that, and
+it is shared with `snap_and_analyze` and `run_autofocus`. Diagnosing the
+annotation three times before measuring the *unannotated* control was the
+avoidable cost; the control took one command.
+
+**Folding another document's row into your block through a revision prompt is
+how you skip its design.** `R43` says "size it as a block"; design/73 §3 owns
+the annotation renderer and has a mandatory pre-implementation probe. Both were
+pulled into 81b in single sentences of review feedback, so neither got its
+probe, its gate or its design pass — and the half that failed was exactly that
+half. **The operator caught this, not the coordinator.** The whole annotation
+feature was removed, `R43` stays OPEN, and 73a inherits measurements rather
+than a helper shaped by another block's needs. Before citing a register row or
+another notebook's section in a runner prompt, read what it says about how it
+wants to be done.
+
+**Ask the operator about the science, not just the verdict.** Scoring the
+verification figure, the operator volunteered that the beads are
+sub-diffraction, so a cluster images as one *brighter* spot rather than a
+larger one. That turns "a component is not a bead" from a hedge into a physical
+limit no segmenter can cross, and it names the missing quantity — integrated
+intensity, which the built-in does not report (`R120`). It is now the first
+clause of the product's `count_semantics`. One sentence of domain knowledge,
+worth more than the three rounds of code before it.
