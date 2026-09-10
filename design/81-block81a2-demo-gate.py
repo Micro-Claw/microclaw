@@ -371,13 +371,52 @@ def main():
 
     live = {}
 
+    def locate_focus(ctrl, guard, config):
+        """Find this camera's focus plane before demanding convergence near it.
+
+        Round 3 and 4 both stood limb A down because the sweep's argmax sat on
+        the boundary: the peak is not within 2 um of wherever the stage happens
+        to rest. That is a fact about where the stage was parked, not
+        necessarily about the camera -- so look first, with ONE wide coarse
+        sweep, and centre the real test on what it finds. If the wide sweep's
+        argmax is also on ITS boundary, this camera really has no interior
+        maximum in the allowed range and limb A stands down honestly.
+        """
+        from microclaw.autofocus import sweep_autofocus
+        stage = config.constraints.stage
+        lo, hi = float(stage.z_min), float(stage.z_max)
+        span = min(hi - lo, 40.0)
+        centre = min(max(loaded["entry_z"], lo + span / 2), hi - span / 2)
+        start, end = centre - span / 2, centre + span / 2
+        swept = sweep_autofocus(
+            ctrl, start, end, span / 20.0, settle_ms=0, move_to_best=False)
+        planes, metrics = swept.z_positions, swept.metric_values
+        if not planes or len(set(metrics)) < 2:
+            raise NotExercised(
+                "the focus metric is constant across a "
+                f"{span:.1f} um sweep centred at {centre:.2f} um, so this "
+                "camera has no focus response at all. R101 needs a rig.")
+        best = planes[metrics.index(max(metrics))]
+        observe("A - wide focus probe",
+                f"{len(planes)} planes over {span:.1f} um, argmax at "
+                f"{best:.2f} um, metric range "
+                f"{min(metrics):.4g}..{max(metrics):.4g}")
+        if best <= planes[0] or best >= planes[-1]:
+            raise NotExercised(
+                f"even a {span:.1f} um sweep puts the argmax at {best:.2f} um, "
+                f"on its own boundary ({planes[0]:.2f}..{planes[-1]:.2f}). "
+                "This camera has no interior focus maximum in the allowed Z "
+                "range, so convergence cannot be observed here and R101 "
+                "stays open for a rig with a real sample.")
+        return best
+
     @limb("A - a real focus curve converges through the new path and records its provenance",
           "autofocus not converging on a machine that HAS a focus response, "
           "or a log whose numbers disagree")
     def limb_a():
         needs_tree()
         ctrl, guard, config = rig()
-        z = loaded["entry_z"]
+        z = locate_focus(ctrl, guard, config)
         x, y = ctrl.core.get_x_position(), ctrl.core.get_y_position()
         params = {
             "protocol": "timelapse",
@@ -569,7 +608,18 @@ def main():
                 raise AssertionError(
                     f"live refused with the {live_kind} refusal; the emitted "
                     f"script did not. stderr tail: {proc.stderr[-300:]!r}")
-        emitted = read_log(Path(params["log_path"]))
+        # The emitted script anchors beside ITSELF -- `_HERE =
+        # Path(__file__).resolve().parent`, pinned by
+        # test_every_acquisition_emitter_anchors_beside_script -- so it
+        # ignores the absolute save_dir in the record and writes next to the
+        # script. Round 4 scored this limb NOT EXERCISED for looking at
+        # save_dir while the log sat in --out all along.
+        beside = sorted(args.out.glob("hook*.json"))
+        if not beside:
+            raise NotExercised(
+                f"the emitted script wrote no hook log beside itself in "
+                f"{args.out}; it anchors at _HERE, not at save_dir")
+        emitted = json.loads(beside[0].read_text(encoding="utf-8"))
         want = outcomes(read_log(Path(live["params"]["log_path"])))
         got = outcomes(emitted)
         if got != want:

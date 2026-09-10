@@ -113,6 +113,10 @@ def main():
         assert "constraints" in inspect.signature(SafetyGuard.__init__).parameters
         assert "port" in inspect.signature(MicroscopeController.__init__).parameters
         assert callable(load_safety_config_or_exit)
+        from microclaw.autofocus import sweep_autofocus
+        sw = list(inspect.signature(sweep_autofocus).parameters)
+        assert sw[:4] == ["ctrl", "z_start_um", "z_end_um", "z_step_um"], (
+            f"the gate's wide focus probe passes start/end/step positionally: {sw[:4]}")
         assert callable(tools._iter_present_coords), (
             "the gate counts saved frames with tools._iter_present_coords")
         return "execute_tool, AutofocusHook, SafetyGuard, controller, config, coords"
