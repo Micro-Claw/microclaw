@@ -10358,3 +10358,90 @@ idle. And the targeted-command rule paid off exactly as
 `feedback_runner_tests_only_what_it_changed` says: two turns, no unscoped suite
 run, `265 → 272` on the two files under change, with the coordinator's own
 full-suite runs (3250 baseline → 3257) as the actual regression evidence.
+
+## design/79 block 79c-1 — the per-field multiplier (merged 2026-09-10)
+
+Branch `design79/the-per-field-multiplier`, start `f9af854`. Two runners: Codex
+for the implementation and round 1, then a Claude runner for round 2 after Codex
+hit its usage limit mid-turn. Shipped: one composite `duration_breakdown` with a
+per-field acquisition span. Did **not** ship: the repaint coalescing the block
+was assigned to build.
+
+**The block was assigned on a projection nobody had checked.** `R103` predicted
+that design/77b's one-acquisition-per-position made a spaced grid pay its ~2.4 s
+teardown repaint per field — "four minutes on a 100-field grid". The repaint is
+gated on `any(restoration_attempted.values())`, and **no grid tool can authorize
+the capability that produces a restoration**: the two composites accept only
+`illumination_envelope`/`artifact_limits` (and `run_tile_acquisition` neither),
+`protocol_params` refuses all five, and `configure_illumination` sets a context
+no restoration reads. Enumerating the five `_acquire_with_hooks` call sites shows
+the shape of it: four call it once per tool call and can carry a hardware
+envelope; the fifth calls it N times and cannot. **Every path that can repaint
+already repaints exactly once; the only path that repeats cannot repaint at all.**
+
+The rule that would have caught it is `CLAUDE.md`'s own — *a guard is only as
+reachable as the object it lives on*. I applied it to the guard's **location**
+when writing the assignment and not to its **reachability**, which is the half
+that matters. Cost: a full implementation and two review rounds of correct code
+that was then deleted. Before assigning a block to optimize a cost, construct the
+call that pays it.
+
+**The fixture told the same lie one level over.** The implementation's tests
+monkeypatched `_resolve_hooks` to return a hook with `restore_property`, so they
+were green against a configuration production cannot produce — and they were
+still green after the coalescing came out, because they also carried the
+breakdown assertions. Round 2 had to rewrite them to reachable shapes. *A fixture
+that cannot reach the code is not coverage of it* applies to a **capability
+surface**, not only to a guard's input shape.
+
+**An acceptance criterion asked for the number to be adjusted.** I wrote that
+`accounted_s + unaccounted_s == duration_s` must reconcile **exactly**, quoting
+79a — where it holds only because that block's fixtures use integer-valued
+clocks. The implementer met it with `math.nextafter` on the measured residual,
+which over 2,000,000 random `(duration, accounted)` pairs **still leaves the
+identity broken in 3.2%**. Removed. A float identity in an acceptance criterion
+is a request to fudge a measurement; ask for a tolerance or for the subtraction.
+
+**The runner corrected the coordinator, twice, and was right both times.** My
+revision spec said a reachable grid's breakdown contains "`acquisition` and
+nothing else"; it contains `acquisition` **and** `restoration`, because
+`finish_owned_cleanup` opens that span unconditionally before `restore_hardware()`
+runs. `R124`'s first draft carried the same slip. And the spec's "`count == N`
+for at least two field counts" is false for the shared-dataset shape, which
+constructs one acquisition for any N — the tests assert against
+`len(rig.acquisitions)` instead and pin that per shape. Both were caught against
+the code, not against the prose.
+
+**I built a gate whose criteria were already green locally.** Five of its six
+criteria duplicate local tests, and in two cases the local tests are *stronger*
+(2→500 fields versus 2→24; route-awareness asserted on the acquisition list
+itself). What actually needed a real engine was the **measurement**, which is one
+limb and is excluded from the score. I said so before it ran and recommended
+demoting it; the operator ran it anyway and it paid for itself — see below — but
+the sizing lesson stands, and it is `design/59b`'s: *the instrument was built to
+match the workflow's shape rather than the question's size.*
+
+**What the gate bought, which local work could not.** The per-acquisition cost
+multiplies: eight acquisitions cost **7.9×** the wall clock of one carrying the
+same eight frames, and **1.9%** of a 4.219 s eight-field grid was exposure. That
+answers the question 79c's brief opened with and could not measure. It also
+produced two findings from the artifacts that no limb asked for — every phase
+span is an exact integer millisecond, so `time.monotonic()` floors the instrument
+at 1 ms on Windows and design/79's own opening 39 µs write reads as `0.0`
+(`R128`); and every dataset landed at `<name>_1` on a clean directory (`R129`).
+**Both came from asking why a number was too clean** — the reconciliation drift
+was exactly 0.0 in all six runs, which is not what float subtraction does.
+
+**Runner notes.** Codex CLI **0.154.0**, five versions past the `codex-runner`
+skill's documented 0.149.1; `--strict-config` accepted this machine's config on
+the revise path, and the start turn's automatic reviewer was present. Still no
+observation of a *revision* requesting an escalation. The usage-limit failure
+died early and left the worktree clean, so nothing needed committing as
+unreviewed — and the operator's answer to a blocked runner was to switch runners
+rather than to wait for the window, which the workflow does not currently
+mention and should.
+
+**Process note that repeated.** As in 81c: the primary checkout cannot hold the
+block's branch while a worktree does, so the coordinator commits its decisions,
+pushes, returns the primary checkout to `main`, and adds the worktree — then
+makes its own doc edits in the worktree once the runner is idle.
