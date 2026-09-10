@@ -1136,6 +1136,11 @@ half-second interval and the cadence column reports the request. design/79 item 
 warned that a cadence equal to the requested interval is reporting the request;
 here is the same rig reporting both.
 
+**WITHDRAWN by round 2, 2026-09-10: the 0.19 s did not reproduce.** The same arm
+came back at a 0.0710 s mean against this round's 0.2169 s — 3× apart, same rig,
+same arguments. Read the next section before quoting anything in this one; the
+paragraph below stands as what was thought at the time.
+
 **The ~0.19 s is NOT attributed, and that is a gate omission rather than a
 finding.** All three arms carried `snr_observer`, so the cost is dispatch **plus
 the hook's own per-frame analysis** plus notification, and nothing here separates
@@ -1169,6 +1174,80 @@ whose stage sits at the origin. The fields are now offsets from
 defaulted its centre, pinned by a selftest that uses M2's real coordinates as its
 fixture. **Block 79c-1's gate carries the same latent defect** and has only ever
 run on the demo machine; anyone reusing it on a rig should take this fix with it.
+
+### Round 2 on M2, 2026-09-10 — the round-1 residual did not reproduce
+
+**Read the means, not the `_le_` bounds.** `median_le_s` and `p95_le_s` are
+histogram bin edges clamped into `[min_s, max_s]`; block 79a kept the `_le_`
+suffix because it is load-bearing. The M2 gate's first version printed one as
+"median" and cost the coordinator a wrong first reading of this very round.
+`mean_s` is exact.
+
+| arm | requested | hook | min | **mean** | max |
+|---|---|---|---|---|---|
+| zero-interval | 0 s | `snr_observer` | 0.0064 | **0.0595** | 0.0830 |
+| short-60ms | 0.06 s | `snr_observer` | 0.0633 | **0.0710** | 0.1327 |
+| short-60ms-no-hook | 0.06 s | **none** | 0.0657 | **0.0711** | 0.1363 |
+| control-500ms | 0.5 s | `snr_observer` | 0.4856 | **0.5027** | 0.5455 |
+
+**The hook is ruled out, cleanly.** 0.0710 s hooked against 0.0711 s hookless, at
+the same requested interval and exposure — identical to four significant figures.
+Whatever the software-paced per-frame cost is, `snr_observer`'s per-frame
+analysis is not a measurable part of it. That is what the no-hook control was
+added for and it did its job.
+
+**And the round-1 residual did not reproduce.** Same rig, same arguments, minutes
+apart:
+
+| arm | round 1 mean | round 2 mean |
+|---|---|---|
+| zero-interval | 0.0284 | 0.0595 |
+| short-60ms | **0.2169** | **0.0710** |
+| control-500ms | 0.5031 | 0.5027 |
+
+**The interval-limited arm is reproducible to 0.4 ms and the short arm is 3×
+apart.** So `R105` is *not* a stable per-frame floor, and the round-1 write-up in
+this notebook — which read 0.2407 s against a 0.050 s exposure as "~0.19 s of
+software-paced dispatch" — **is withdrawn as a property**. It was one run. This is
+`feedback_one_measurement_is_not_a_property` committed to a design document by
+the coordinator who quotes it, and the correction is the entry, not a footnote.
+
+**What `R105` honestly is now.** The 2026-09-04 band of ~0.20–0.35 s was
+reproduced once (round 1, mean 0.217, whole distribution inside it) and not
+reproduced on the next run (round 2, mean 0.071, which nearly meets a 60 ms
+request). The hook is excluded. The cause of the round-1 excursion is **not
+attributed**: round 1 followed a failed 4.4 mm stage move that had just reported
+idle after 10.28 s, which is a plausible and entirely unverified explanation, and
+naming it as the cause would be the misattribution design/79 exists to forbid.
+**The variance is the finding**, and the measurement that would settle it is
+several short-interval runs on M2 in one sitting with the rig otherwise quiet —
+cheap, and a natural passenger. `R105` stays open with two numbers instead of
+none.
+
+### The multiplier on a real stage: 3.5×, and it is not what it was on the demo machine
+
+| | acquisitions | inside acquisitions | residual | total |
+|---|---|---|---|---|
+| per-field | 6 | 1.564 s | **9.736 s** | 11.300 s |
+| shared-dataset | 1 | 3.134 s | 0.068 s | 3.202 s |
+
+**3.5×**, against 6.5–7.9× on the demo machine — and the decomposition says the
+ratio is not measuring what its name suggests. Per-acquisition overhead is
+1.564/6 = **0.26 s**, which agrees with the demo machine's ~0.28 s. What differs
+is where the *stage motion* is accounted: in the per-field route the five 20 µm
+moves are microclaw's, settled and verified, and land in the **residual** —
+9.736 s of an 11.300 s run. In the shared-dataset route the engine moves the
+stage inside its own acquisition span, and the whole six-field movie costs
+3.134 s.
+
+So the honest statement is that a **settled, arrival-verified** field step and an
+**engine-moved, unverified** one differ by roughly 4× per field on M2, and that
+is `R126`'s trade with numbers on both sides for the first time. It is **not**
+attributed to the moves alone: the 9.736 s residual also carries six per-position
+directory creations, the per-position protocol setup and the preflight, and block
+64d measured an ordinary settled 20 µm move on M2 at 0.984 s, which accounts for
+about half of it. Attributing the rest needs the residual broken out per field,
+which `R125` already asks for.
 
 ## Run ledger
 

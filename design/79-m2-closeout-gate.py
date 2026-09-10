@@ -196,9 +196,16 @@ def main() -> int:
             raise NotExercised("no gap summary in any arm")
         (out / "cadence.json").write_text(json.dumps(rows, indent=2),
                                           encoding="utf-8")
+        # Report the MEAN, which is exact. `median_le_s` and `p95_le_s` are
+        # histogram bin edges clamped into [min_s, max_s] -- block 79a kept the
+        # `_le_` suffix because it is load-bearing, and the first version of
+        # this line printed one as "median", which is exactly the misreading
+        # that suffix exists to prevent. It cost the coordinator a wrong first
+        # reading of round 2 before the numbers were checked against min/max.
         detail = "; ".join(
             f"{k}: requested {v['requested_interval_s']:g}s -> "
-            f"median {v['median_le_s']}s over {v['n_gaps']} gaps"
+            f"mean {v['mean_s']:.4f}s (min {v['min_s']:.4f}, max {v['max_s']:.4f}) "
+            f"over {v['n_gaps']} gaps"
             for k, v in rows.items())
         return "MEASURED", detail, rows
 

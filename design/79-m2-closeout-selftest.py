@@ -148,6 +148,23 @@ def test_a_healthy_rig_measures_both_and_scores_only_the_guard(monkeypatch, tmp_
     assert (out / "payload-zero-interval.json").exists()
 
 
+def test_the_cadence_detail_reports_the_exact_mean_not_a_bin_edge(monkeypatch, tmp_path):
+    """`median_le_s` is a clamped bin edge; printing it as "median" misleads.
+
+    Block 79a kept the `_le_` suffix deliberately. A fixture whose mean and
+    bound differ is the only way to catch a line that prints the wrong one.
+    """
+    def timelapse(ctrl, guard, n, interval_s, save_dir, **kw):
+        payload = timelapse_payload(interval_s=interval_s)
+        payload["inter_frame_gap_summary"].update(
+            mean_s=0.0710, median_le_s=0.1000, min_s=0.0633, max_s=0.1327)
+        return payload
+    _, report, _ = score(monkeypatch, tmp_path, timelapse=timelapse)
+    detail = next(l["detail"] for l in report["limbs"] if l["limb"].startswith("1 -"))
+    assert "mean 0.0710s" in detail
+    assert "0.1000" not in detail, "a clamped bound must not be printed as a median"
+
+
 def test_no_bridge_is_not_exercised_and_fails(monkeypatch, tmp_path):
     status, report, _ = score(monkeypatch, tmp_path, bridge=False)
     assert status != 0
