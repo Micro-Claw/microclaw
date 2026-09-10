@@ -168,6 +168,21 @@ signal. A robust background-relative threshold avoids max-normalisation's
 failure, but does not establish that one component equals one bead: touching
 beads, noise, fragmentation and threshold choice still matter.
 
+**And the gap is optical, not just morphological** (operator, 2026-09-10, while
+scoring 81b's verification image). These beads are **sub-diffraction-limit in
+size**, so a cluster of them does not image as a larger object — it images as
+*one* diffraction-limited spot that is **brighter**, not bigger. Segmentation
+therefore cannot separate them even in principle: no threshold, no area filter
+and no watershed recovers a count that the optics did not resolve. The
+information that distinguishes one bead from three is **integrated intensity**,
+which `connected_components` does not report at all.
+
+This is the strongest reason the number must be called a *component count* and
+never a bead count, and it is stronger than the pixel-level reasons above,
+which a better segmenter could in principle improve on. It also bounds what any
+future block can promise here: counting sub-diffraction objects is a photometry
+problem, not a geometry one. See `R120`.
+
 The agent's turn-25 objection — "the per-object aggregate over the mosaic won't
 cleanly split by tile" — identifies a real distinction. A mosaic is resampled,
 and later tiles overwrite earlier pixels in overlaps. Assigning each mosaic
@@ -804,6 +819,19 @@ Numbered from `R107`, the current highest in `design/70`.
   provenance. Logging alone does not fix motion enforcement. New records can
   settle future cases; they cannot recover missing values from `r1_c0`. The
   historical artifact remains inconclusive unless independent evidence exists.
+- **`R120`** — counting sub-diffraction objects needs photometry, and the
+  built-in reports no intensity at all. A cluster of sub-diffraction beads
+  images as one brighter diffraction-limited spot, so `n_components` counts
+  *spots*, not objects, and no segmentation improvement changes that
+  (operator, 2026-09-10). `connected_components` returns area, centroid and
+  bounding box and **no integrated intensity**, so a caller cannot even
+  post-hoc estimate multiplicity from what it hands back. Adding integrated
+  and peak intensity per component is small, does not change any existing
+  number, and is the prerequisite for anything that wants to count rather than
+  locate. Whether Microclaw should then *do* quantal brightness analysis is a
+  separate and much larger question. **MEDIUM / SMALL** for the reporting half,
+  LOCAL.
+
 - **`R116`** — a small component is entirely consumed by its own annotation. A
   3×3 component's boundary is its whole ring, its halo covers the centre, and
   the number glyph's box covers what is left, so none of the object's own
