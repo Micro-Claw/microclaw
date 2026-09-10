@@ -138,7 +138,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R118` | [min_area_um2 is not checked against the pixel area, so an inert filter is silent](#r118) | LOW | SMALL |  |
 | `R119` | [A mosaic evidence test asserts the properties of an all-zero image](#r119) | LOW | SMALL |  |
 | `R120` | [Counting sub-diffraction objects needs photometry, and no intensity is reported](#r120) | MEDIUM | SMALL |  |
-| `R121` | [open_artifact renders a sparse bright-object field 98.9% black](#r121) | HIGH | MEDIUM |  |
+| `R121` | [The thumbnail stretch renders a sparse bright-object field almost entirely black](#r121) | MEDIUM | MEDIUM |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2725,13 +2725,53 @@ visible; do not put one of these on a checklist.
 - **Effort** — SMALL (reporting half only)
 - **Provenance** — operator, 2026-09-10, scoring block 81b's own verification figure. Now the first clause of the product's `count_semantics`; `design/81` F5 carries the reasoning.
 
-### R121 — open_artifact renders a sparse bright-object field 98.9% black
+### R121 — The thumbnail stretch renders a sparse bright-object field almost entirely black
 
-**`make_thumbnail`'s 2nd-99.8th percentile stretch is set by the brightest object, so a bead field's background lands at grey 4 of 255 and nothing is visible.**
+**`make_thumbnail`'s 2nd-99.8th percentile white point is set by the brightest object, so on a field where a small fraction of pixels sit far above the background the background lands at grey 4 of 255 and the picture is unreadable.**
 
-- **Status** — OPEN - measured on a real Andor bead field, 2026-09-10: data spans 153-16085, rendered percentiles [5th, 50th, 95th] = [0, 4, 11], **98.9% of pixels at grey <= 32**. The frame is unannotated; this is the display path alone.
-- **Importance** — HIGH - It defeats every workflow that asks an agent or an operator to look at pixels before believing a number, which is `design/81` D5's whole subject. It is also why 81b shipped no evidence images.
-- **Where** — LOCAL - archived datasets reproduce it in one command.
-- **Block** — NONE - and it is a prerequisite for `R43` and design/73, neither of which can deliver a legible picture without it.
-- **Effort** — MEDIUM - `make_thumbnail` is shared by `open_artifact`, `snap_and_analyze` and `run_autofocus`, so changing the stretch changes what three tools show. An additive path (an explicit stretch mode, or a background-weighted default for sparse fields) is likelier right than changing the percentiles for everyone.
-- **Provenance** — `design/81` block 81b, 2026-09-10, found only after three attempts to fix the annotation; the unannotated control took one command and should have been the first measurement.
+- **Status** — OPEN - `microclaw/image_analysis.py:592`, introduced in `61384f8` (2026-05-19, the original v2 implementation) and **not touched since**. Block 81b found it; block 81b did not cause it.
+- **Importance** — MEDIUM - Latent for four months, and it stays latent until something *depends* on the picture. It is load-bearing for `design/81` D5, `R43` and design/73, all of which rest on a human or an agent judging a rendered image, and it is a **prerequisite** for the latter two: neither can deliver a legible annotated mosaic while this stands.
+- **Where** — LOCAL - archived datasets reproduce every number below in one command.
+- **Block** — NONE
+- **Effort** — MEDIUM - one function, three callers, but it changes what three tools show.
+- **Provenance** — `design/81` block 81b, 2026-09-10, after three failed attempts to make an annotation legible; measuring the *unannotated* control took one command and should have come first.
+
+**Measured, 2026-09-10, on real archived acquisitions through `image_content`:**
+
+| sample | background | max | peak/bg | % of thumbnail at grey <= 32 | median grey |
+|---|---|---|---|---|---|
+| beads, sparse and bright (Andor) | 202 | 16085 | 79.6 | **98.9 %** | 4 |
+| composite-hook field (Hamamatsu) | 190 | 65535 | 344.9 | **98.8 %** | 0 |
+| microtubules, extended structure | 744 | 1380 | 1.9 | 17.7 % | 62 |
+
+**`peak/bg` predicts it** across all three: the failure is not "the display is
+broken", it is one image class — beads, puncta, SMLM, or any field carrying a
+saturated speck. Extended or confluent samples render correctly today and must
+keep doing so.
+
+**Why nothing noticed for four months.** The two live callers do not depend on
+the picture. `snap_and_analyze` (`tools.py:6266`) computes `ImageStats` on the
+full-resolution array and appends a thumbnail only `if return_thumbnail`, which
+defaults **False** and whose schema tells the model to leave it off.
+`run_autofocus` (`tools.py:7285`) computes `tenengrad` on the full-resolution
+crop and returns `focus_metric_at_final`; it renders unconditionally, so the
+agent *has* been shown black autofocus images on bead samples, and it never
+mattered because convergence is judged on the metric curve. `open_artifact`
+(`tools.py:10318`) is the third caller. **No decision anywhere reads the
+thumbnail** — which is exactly why the first feature to make the picture a
+deliverable is the one that found this.
+
+**The existing `mask` argument does not help.** It was added for the opposite
+problem — mosaic canvas zeros dragging the *black* point down — and both call
+paths measure identically here: 98.9 % at grey <= 32 with `mask=None` (the snap
+path) and with `mask=plane != 0` (the artifact path). The white point is the
+defect.
+
+**Direction, not a decision.** A background-relative stretch keyed off the
+median and MAD, which this module already computes, renders these fields
+correctly: `[bg - 3σ, bg + ~20σ]` is what block 81b's gate figure uses, and the
+operator confirmed that rendering shows real beads. Selecting it for
+sparse-bright fields rather than changing the percentiles for everyone keeps
+extended samples unchanged. Whoever takes this should decide whether that
+selection is automatic or an argument, and should treat "what three tools show
+the model" as the actual blast radius.

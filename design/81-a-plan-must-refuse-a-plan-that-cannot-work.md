@@ -849,11 +849,14 @@ authoritative register; the summaries here are pointers.
   provenance. Logging alone does not fix motion enforcement. New records can
   settle future cases; they cannot recover missing values from `r1_c0`. The
   historical artifact remains inconclusive unless independent evidence exists.
-- **`R121`** — `open_artifact` renders a sparse bright-object field **98.9 %
-  black**, unannotated, because `make_thumbnail`'s percentile stretch is set by
-  the brightest object. **HIGH**, and a prerequisite for `R43` and design/73:
-  neither can deliver a legible picture without it. Shared with
-  `snap_and_analyze` and `run_autofocus`.
+- **`R121`** — `make_thumbnail`'s percentile white point is set by the
+  brightest object, so a sparse bright field renders **98.9 % at grey ≤ 32**
+  unannotated. **MEDIUM**, and a prerequisite for `R43` and design/73: neither
+  can deliver a legible picture without it. Pre-existing since `61384f8`
+  (2026-05-19) and untouched by this block — 81b found it, and only because it
+  was the first feature to make the picture a deliverable rather than a
+  garnish. It is one image class, not the display generally: `peak/bg` of 80
+  and 345 fail, 1.9 renders correctly. design/70 carries the measurements.
 - **`R120`** — counting sub-diffraction objects needs photometry, and the
   built-in reports no intensity at all. A cluster of sub-diffraction beads
   images as one brighter diffraction-limited spot, so `n_components` counts
