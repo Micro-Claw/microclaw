@@ -234,15 +234,27 @@ the sample was invisible and only the annotation survived. The dtype maximum is
 an order of magnitude above anything a real camera writes.
 
 So the authority is **the image's own bright end**, clamped by the source
-dtype. 81b's `_annotate` uses `min(dtype_max, max(2, data_max + 5% headroom))`:
+dtype. Block 81b tried `min(dtype_max, max(2, data_max + 5% headroom))`:
 above the data so the ink is never dimmer than what it sits on, never 0 (which
 means uncovered) and never 1 (the outline value — at 1 the halo merges with the
 glyph and a digit renders as a blob), and capped so a GRAY8 source still cannot
 exceed 255. Measured after the change on the same fields: 54 distinct grey
 levels and 71% of pixels strictly between black and white.
 
-Writing 65535 over an 8-bit mosaic remains wrong; it is now the *clamp* that
-prevents it rather than the rule.
+Writing 65535 over an 8-bit mosaic remains wrong; under that shape it is the
+*clamp* that prevents it rather than the rule.
+
+**None of that code survives, and the numbers above are the point.** 81b's
+annotation work was removed in full after the operator judged its output —
+*"I can only see numbers and circles on a dark background... this is truly
+horrible."* What 73a inherits from it is evidence, not an implementation: the
+dtype rule renders black, the fix direction is the data's own bright end, and
+**the display path itself is the larger problem**. A raw, unannotated bead
+field renders **98.9 % at grey ≤ 32** through `open_artifact(analyze=True)`,
+because `make_thumbnail`'s 2nd–99.8th percentile stretch is set by the
+brightest bead and puts a 202-count background at grey 4. No ink rule fixes
+that. 73a cannot deliver a legible labelled mosaic without confronting it, and
+it is shared with `snap_and_analyze` and `run_autofocus`.
 
 **The outline value is 1, not 0.** Zero means "uncovered" to
 `open_artifact(analyze=True)` and to R40's statistics, so the renderer must not
@@ -595,7 +607,10 @@ dataset and changes nothing about how an acquisition runs.
 
 It does not close R43, which asks for a segmentation overlay from
 `connected_components` — a different writer, a different artifact channel, and
-boundaries rather than glyphs — but it leaves `draw_text_labels` in place for
-whoever takes that row. A later feature may accept a mosaic manifest plus a label
+boundaries rather than glyphs. **73a writes the renderer; nothing exists for it
+to inherit.** Block 81b built a `draw_text_labels` to this section's contract
+and it was deleted with the rest of its annotation work — see the note under §3
+— precisely so that 73a designs it against its own probe rather than inheriting
+a helper shaped by another block's needs. A later feature may accept a mosaic manifest plus a label
 as a navigation input; until then the agent resolves the recorded mapping and
 uses the existing guarded position tools.

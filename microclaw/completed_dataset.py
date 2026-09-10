@@ -52,8 +52,20 @@ class ConnectedComponents:
     def __init__(self, min_snr: float, min_snr_source: str,
                  min_area_um2: float = 0.0, max_area_um2: float | None = None):
         self.affine = None  # resolved and injected only by the trusted runner
+        # The optical clause is the load-bearing one and it is not a hedge:
+        # an operator scoring this block's own verification image, 2026-09-10.
+        # Objects below the diffraction limit do not image larger when they
+        # cluster, they image BRIGHTER at the same size -- so no threshold,
+        # area filter or watershed can separate them, and a count of spots is
+        # not a count of objects however good the segmentation gets. The
+        # quantity that would separate them is integrated intensity, which
+        # this measurement does not report (design/81 F5, R120).
         self.count_semantics = (
             "Component count: contiguous thresholded signal, not object identification. "
+            "Objects below the diffraction limit image as one spot when they cluster - "
+            "brighter, not larger - so segmentation cannot separate them even in principle, "
+            "and this count counts spots, not objects. Distinguishing them needs integrated "
+            "intensity, which this measurement does not report. "
             "Touching objects can merge; noise, fragmentation and threshold choice affect counts. "
             "Signal visible in overlapping acquired fields appears in both per-field counts; "
             "their sum is not a unique object total. Mosaic counts measure resampled signal "

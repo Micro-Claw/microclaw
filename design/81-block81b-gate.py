@@ -3,8 +3,14 @@
 
 This gate is a program, not a runbook: every limb computes, so each reports
 independently, one failure never hides the limbs behind it, and the script owns
-its own log and exits nonzero. The only human step is separate and comes after
-it -- looking at the annotated fields it writes.
+its own log and exits nonzero. It also renders one figure for a human to judge
+-- the raw field with the reported bounding boxes drawn beside the objects,
+which is the only way to check that a count corresponds to what is in the
+image.
+
+The product writes no annotation artifacts. It did, they were unreadable, and
+they were removed (see design/81 and register row R43). The figure below is
+the GATE's own rendering, for scoring, and is not something Microclaw ships.
 
 It needs **no microscope**. Every limb runs over real saved acquisitions
 already in the evidence archive, which between them supply the three things
@@ -140,116 +146,8 @@ def limb_b(archive, out):
             f"(a shared object counted in both fields is the expected finding)")
 
 
-@limb("C. 81 positions exhaust the artifact budget, disclose it, and still count")
-def limb_c(archive, out):
-    result = analyse(archive, out, MANY, "connected_components", "frames", "c-many",
-                     axis_selection={"time": 0})
-    if result["status"] != "completed":
-        return "FAIL", f"a limit must not fail the measurement; status {result['status']}: {result['failure']}"
-    annotations = result.get("annotations") or {}
-    counted = len(result["observations"])
-    if counted != 81:
-        return "FAIL", f"expected 81 per-field observations, got {counted}"
-    if annotations.get("written", 0) >= counted:
-        return ("NOT EXERCISED",
-                f"all {annotations.get('written')} annotations fit; the default budget "
-                "did not bind, so the degrade path never ran")
-    if not annotations.get("reason"):
-        return "FAIL", f"annotations stopped at {annotations.get('written')} with no disclosed reason"
-    return "PASS", (f"{counted} fields counted, {annotations['written']} annotated, "
-                    f"disclosed reason: {annotations['reason']!r}")
-
-
-@limb("D. the mosaic path now writes a detection overlay too (R43)")
-def limb_d(archive, out):
-    result = analyse(archive, out, BEADS, "connected_components", "stage_coordinate_mosaic",
-                     "d-mosaic", axis_selection={"z": 0})
-    if result["status"] != "completed":
-        return "FAIL", f"status {result['status']}: {result['failure']}"
-    overlays = [a for a in result["artifacts"]
-                if Path(a["relative_path"]).name.startswith("components-")]
-    if not overlays:
-        return "FAIL", "no detection overlay artifact was written beside the mosaic"
-    return "PASS", f"{len(overlays)} overlay artifact(s): {[a['relative_path'] for a in overlays]}"
-
-
-@limb("E. every count is linked to the pixels it came from")
-def limb_e(archive, out):
-    """The evidence must be reachable *from the number*, not merely present."""
-    manifest = Path(out) / "a-beads" / "analysis-manifest.json"
-    if not manifest.exists():
-        raise NotExercised("limb A did not produce a manifest")
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    digests = {a["sha256"] for a in payload["artifacts"]}
-    unlinked = [o.get("position") for o in payload["observations"]
-                if o.get("artifact_sha256") not in digests]
-    if unlinked:
-        return "FAIL", f"observations whose artifact_sha256 names no written artifact: {unlinked}"
-    return "PASS", f"all {len(payload['observations'])} observations link to a written artifact"
-
-
-@limb("G. the evidence image shows the sample, not only the tool's own marks")
+@limb("G. an unfiltered count discloses that it is made of single pixels")
 def limb_g(archive, out):
-    """Score the RENDERED artifact, not the TIFF and not the recorded ink value.
-
-    An annotation whose ink sits at the dtype's maximum survives every check on
-    its own numbers and still renders as glyphs on a black field, because
-    open_artifact's percentile stretch then spans the annotation's range rather
-    than the data's. Measured before the fix: the returned thumbnail held three
-    distinct grey levels, 0, 1 and 255. So this limb reads the artifact back
-    through the same call the agent makes and asks whether anything of the
-    sample survived.
-    """
-    import base64
-    import io
-
-    import numpy as np
-    import tifffile
-    from PIL import Image
-    from microclaw.image_analysis import image_content
-
-    def readability(directory):
-        worst = None
-        paths = sorted(Path(directory).glob("components-*.tiff"))
-        for path in paths:
-            plane = tifffile.imread(path)
-            blocks = image_content({}, plane, max_size=512, mask=plane != 0)
-            rendered = np.asarray(Image.open(io.BytesIO(
-                base64.b64decode(blocks[1]["source"]["data"]))).convert("L"))
-            interior = float(np.count_nonzero((rendered > 0) & (rendered < 255)) / rendered.size)
-            if worst is None or interior < worst[1]:
-                worst = (path.name, interior, int(np.unique(rendered).size))
-        return len(paths), worst
-
-    # Score the arm where the picture is MEANT to be usable. Limb A runs at the
-    # default filter, where the field genuinely is mostly ink -- scoring that
-    # arm would measure the sample's noise level rather than the ink rule, and
-    # would sit one noisy dataset away from a false verdict. Limb H is what
-    # covers the default arm, by requiring it to disclose what it is.
-    result = analyse(archive, out, BEADS, "connected_components", "frames", "g-readable",
-                     axis_selection={"z": 0}, parameters={"min_area_um2": 0.2})
-    if result["status"] != "completed":
-        return "FAIL", f"status {result['status']}: {result['failure']}"
-    count, worst = readability(Path(out) / "g-readable" / "artifacts")
-    if worst is None:
-        raise NotExercised("no annotation artifacts were written")
-    name, interior, levels = worst
-    _, unfiltered = readability(Path(out) / "a-beads" / "artifacts")
-    # Two-valued is the failure the fix exists for: every real pixel crushed to
-    # black because the stretch spans the ink's range rather than the data's.
-    if levels <= 3 or interior < 0.5:
-        return "FAIL", (f"{name} renders with {levels} distinct grey levels and only "
-                        f"{interior:.1%} of pixels strictly between black and white: "
-                        "the evidence image shows the annotation, not the sample")
-    return "PASS", (
-        f"worst of {count} filtered fields is {name}: {levels} distinct grey levels, "
-        f"{interior:.1%} of pixels between black and white. For context the same "
-        f"fields at the default filter render at {unfiltered[1]:.1%} interior, which "
-        "is limb H's subject, not this one's")
-
-
-@limb("H. an unfiltered count discloses that it is made of single pixels")
-def limb_h(archive, out):
     manifest = Path(out) / "a-beads" / "analysis-manifest.json"
     if not manifest.exists():
         raise NotExercised("limb A did not produce a manifest")
@@ -279,6 +177,124 @@ def limb_h(archive, out):
         f"{distribution['single_pixel_components']}/{distribution['n_components']} "
         f"({distribution['single_pixel_fraction']:.0%}) single pixels, largest component "
         f"{distribution['n_pixels']['max']} px")
+
+
+@limb("C. every selected field is counted, at 81 positions as well as 9")
+def limb_c(archive, out):
+    """Scale, without the artifact budget that used to be this limb's subject."""
+    result = analyse(archive, out, MANY, "connected_components", "frames", "c-many",
+                     axis_selection={"time": 0})
+    if result["status"] != "completed":
+        return "FAIL", f"status {result['status']}: {result['failure']}"
+    counted = len(result["observations"])
+    if counted != 81:
+        return "FAIL", f"expected 81 per-field observations, got {counted}"
+    if result.get("artifacts"):
+        return "FAIL", ("a frames run wrote artifacts; the annotation feature was "
+                        f"removed and should write none: {result['artifacts']}")
+    positions = {o.get("position") for o in result["observations"]}
+    return "PASS", (f"{counted} fields counted across {len(positions)} saved positions, "
+                    "no artifacts written")
+
+
+@limb("D. the same physical object gets the same stage coordinate from two fields")
+def limb_d(archive, out):
+    """The real test of D4(a)'s geometry, and the one a count alone cannot give.
+
+    If the recorded affine, the frame-centre convention and the intended stage
+    coordinates compose correctly, one bead seen from two overlapping fields
+    must land at one stage position. This is measured on a SHEARED calibration,
+    where a sign or a transpose would show up immediately.
+    """
+    import numpy as np
+
+    result = analyse(archive, out, OVERLAP, "connected_components", "frames", "d-agree",
+                     axis_selection={"time": 0}, parameters={"min_area_um2": 0.5})
+    if result["status"] != "completed":
+        return "FAIL", f"status {result['status']}: {result['failure']}"
+    by_field = {o.get("position"): np.array(
+        [c["centroid_stage_um"] for c in o["result"]["objects"]] or [[np.nan, np.nan]])
+        for o in result["observations"]}
+    separations = []
+    names = sorted(by_field)
+    for i, left in enumerate(names):
+        for right in names[i + 1:]:
+            P, Q = by_field[left], by_field[right]
+            if np.isnan(P).any() or np.isnan(Q).any():
+                continue
+            distance = np.linalg.norm(P[:, None, :] - Q[None, :, :], axis=2)
+            separations += [d for d in distance.min(axis=1) if d < 1.0]
+    if len(separations) < 3:
+        return ("NOT EXERCISED",
+                f"only {len(separations)} cross-field object match(es) under 1 um; "
+                "this dataset's overlap did not put enough objects in two fields")
+    separations = np.array(separations)
+    pixel_um = 0.10557372682605012      # this dataset's recorded calibration
+    median_px = float(np.median(separations) / pixel_um)
+    # A transpose or a sign error puts this in the tens of pixels or worse.
+    # Anything at or below a few pixels says the geometry composes; it does not
+    # certify the stage's own positioning accuracy, which is not ours.
+    if median_px > 10:
+        return "FAIL", (f"{len(separations)} matched pairs disagree by a median of "
+                        f"{np.median(separations) * 1000:.0f} nm ({median_px:.1f} px): "
+                        "the stage geometry does not compose")
+    return "PASS", (
+        f"{len(separations)} matched pairs, median {np.median(separations) * 1000:.0f} nm "
+        f"({median_px:.2f} px), max {separations.max() * 1000:.0f} nm. Note the residual "
+        "is NOT attributed: stage positioning against the recorded intended position, "
+        "a calibration error and drift all look like this from one dataset")
+
+
+@limb("E. render the field and its detections for a human to judge")
+def limb_e(archive, out):
+    """Not scoreable by this program. It writes the figure and says where it is.
+
+    A count that agrees with itself is not a count that found the objects. The
+    only check for that is an eye on the pixels, so this limb always reports
+    NOT EXERCISED -- it is a deliverable, not a verdict, and the run is not
+    complete until a person has answered the question in the runbook.
+    """
+    import numpy as np
+    from PIL import Image
+    from ndstorage import Dataset
+
+    source = Path(archive) / BEADS
+    if not source.exists():
+        raise NotExercised(f"archive has no {BEADS}")
+    result = analyse(archive, out, BEADS, "connected_components", "frames", "e-figure",
+                     axis_selection={"z": 0}, parameters={"min_area_um2": 0.2})
+    if result["status"] != "completed":
+        return "FAIL", f"status {result['status']}: {result['failure']}"
+    dataset = Dataset(str(source))
+    written = []
+    for observation in result["observations"]:
+        position = observation.get("position")
+        raw = np.asarray(dataset.read_image(position=position, z=0)).astype(float)
+        # Stretch for the BACKGROUND, not the peak. open_artifact's percentile
+        # stretch is set by the brightest bead and renders this field 98.9%
+        # black; that is a real defect in a shared display path and it is why
+        # this figure is built here rather than read back from an artifact.
+        background = float(np.median(raw))
+        noise = 1.4826 * float(np.median(np.abs(raw - background)))
+        span = np.clip((raw - (background - 3 * noise)) / max(23 * noise, 1e-9), 0, 1)
+        rgb = np.dstack([span, span, span])
+        for component in observation["result"]["objects"]:
+            x0, y0, x1, y1 = component["bounding_box_px"]
+            x0, y0 = max(0, x0 - 3), max(0, y0 - 3)
+            x1 = min(raw.shape[1] - 1, x1 + 2)
+            y1 = min(raw.shape[0] - 1, y1 + 2)
+            for rows, cols in ((slice(y0, y1 + 1), [x0, x1]), ([y0, y1], slice(x0, x1 + 1))):
+                rgb[rows, cols, 0] = 1.0
+                rgb[rows, cols, 1] = 0.15
+                rgb[rows, cols, 2] = 0.15
+        path = Path(out) / f"figure-{position}.png"
+        Image.fromarray((rgb * 255).astype(np.uint8)).resize(
+            (raw.shape[1] * 5, raw.shape[0] * 5), Image.NEAREST).save(path)
+        written.append((position, len(observation["result"]["objects"])))
+    return ("NOT EXERCISED",
+            f"wrote {len(written)} figures to {out} as figure-<position>.png "
+            f"(counts {written}). A person must answer the runbook's question about "
+            "these; this program cannot.")
 
 
 @limb("F. tile placements carry saved identity, from the dataset not a position list")
@@ -314,14 +330,17 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    for run in (limb_a, limb_b, limb_c, limb_d, limb_e, limb_f, limb_g, limb_h):
+    for run in (limb_a, limb_b, limb_c, limb_d, limb_e, limb_f, limb_g):
         run(args.archive, out)
 
     print("\n--- summary ---", flush=True)
     for name, verdict, _ in RESULTS:
         print(f"{verdict:>13}  {name}", flush=True)
     failed = [n for n, v, _ in RESULTS if v == "FAIL"]
-    unexercised = [n for n, v, _ in RESULTS if v == "NOT EXERCISED"]
+    # Limb E always reports NOT EXERCISED by design -- it writes a figure for a
+    # person and cannot score it. Every other NOT EXERCISED is a limb that could
+    # not run its mechanism, and that is never a pass.
+    unexercised = [n for n, v, _ in RESULTS if v == "NOT EXERCISED" and not n.startswith("E.")]
     verdict = "BLOCK 81b GATE PASSED" if not failed and not unexercised else "BLOCK 81b GATE INCOMPLETE"
     if failed:
         verdict = "BLOCK 81b GATE FAILED"
