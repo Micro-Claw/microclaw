@@ -193,6 +193,58 @@ def main():
         assert any("1 if bad else 0" in r for r in returns), returns
         return f"finish() compares != 'PASS' and returns {returns[-1]}"
 
+    @check("round 1's false pass cannot recur: every rig limb is gated on TREE")
+    def rig_limbs_gated():
+        import ast
+        tree = ast.parse(gate_path.read_text(encoding="utf-8"))
+        funcs = {n.name: n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef)}
+        assert "limb_tree" in funcs, "the gate has no TREE limb"
+        for name in ("limb_0", "limb_a", "limb_b", "limb_c", "limb_d"):
+            assert name in funcs, f"the gate has no {name}"
+            calls = {ast.unparse(n.func) for n in ast.walk(funcs[name])
+                     if isinstance(n, ast.Call)}
+            assert "needs_tree" in calls, (
+                f"{name} does not call needs_tree(), so on a mixed tree it "
+                "would score an unrelated failure as evidence -- which is "
+                "exactly what limbs B and C did on 2026-09-10")
+        return "TREE + 5 limbs gated on it"
+
+    @check("limb B cannot pass on an unrelated error (2026-09-10 round 1)")
+    def b_requires_the_real_refusal():
+        import ast
+        tree = ast.parse(gate_path.read_text(encoding="utf-8"))
+        limb_b = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == "limb_b")
+        body = ast.unparse(limb_b)
+        # CALL the decision, do not grep for it. A source-text check passes
+        # whenever the right string appears anywhere -- including inside a
+        # disabled branch, which is how this very check first failed to fire
+        # under mutation.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gate81a2", gate_path)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        assert gate.is_the_safety_refusal(
+            "Required autofocus stopped at field 'f1': flat field"), (
+            "the gate does not recognise its own refusal")
+        for unrelated in (
+                "cannot import name 'planned_hook_z_reach' from "
+                "'microclaw.hooks'",
+                "Safety constraint prevented this action: Z out of bounds",
+                "java.lang.Exception: Serial command failed"):
+            assert not gate.is_the_safety_refusal(unrelated), (
+                f"limb B would PASS on {unrelated[:60]!r} -- round 1's false "
+                "pass, which scored an ImportError as a safety refusal")
+        assert "is_the_safety_refusal" in body and "NotExercised" in body, (
+            "limb B must route an unrelated failure to NOT EXERCISED")
+        limb_c = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == "limb_c")
+        assert "b_swept" in ast.unparse(limb_c), (
+            "limb C must require that B actually reached the refusal; an "
+            "unchanged axis proves nothing if nothing ever moved")
+        return "B names the refusal; C requires B to have swept"
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} SELFTEST FAILURE(S) -- do not ship this gate:")

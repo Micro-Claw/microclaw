@@ -55,12 +55,30 @@ which, which is a real answer and **not a pass**.
 The gate changes no durable state: it narrows a **copy** of the constraints for
 limb B, never your config, and writes only under `--out`.
 
-## 1. Run it
+## 1. Get on the right tree, and prove it BEFORE running anything
+
+Round 1 (2026-09-10) ran against a **mixed** tree — `tools.py` carried 81a-2
+and `hooks.py` did not, because local edits to `microclaw/` survive a branch
+checkout — and every acquisition died on
+`cannot import name 'planned_hook_z_reach'`. This runbook did carry the
+ancestor check, *after* the run command, and it was not run. So it comes first
+now, and the gate itself refuses to score anything without it.
 
 ```powershell
 cd <your microclaw checkout>
+git status                     # any modified file under microclaw/ will survive the checkout
 git fetch origin
 git checkout design81/81a2-runtime-refusal
+git log --oneline -1
+git merge-base --is-ancestor 8608dd4 HEAD; if ($LASTEXITCODE -eq 0) { "IMPLEMENTATION PRESENT" } else { "WRONG TREE - STOP" }
+```
+
+If `git status` lists anything under `microclaw/`, stash or discard it first —
+that is exactly what produced round 1's mixed tree.
+
+## 2. Run it
+
+```powershell
 uv run python -c "print('uv warm')"
 uv run python design\81-block81a2-demo-gate.py --out block81a2-evidence
 ```
@@ -69,14 +87,12 @@ The warm-up line is there because `uv run` prints resolution output on its
 first call, and mixing that into the gate's own log has confused two earlier
 rounds. Expect the run to print each limb as it completes.
 
-**Confirm this branch contains the implementation** (an ancestor check, not an
-exact tip, so amending this runbook cannot invalidate it):
+The gate's **first** limb now verifies that `hooks.py` and `tools.py` both
+carry 81a-2, and every later limb stands down as NOT EXERCISED if it does not
+— so a mixed tree can no longer produce a mix of PASS and FAIL that reads
+like a result.
 
-```powershell
-git merge-base --is-ancestor 8608dd4 HEAD; if ($LASTEXITCODE -eq 0) { "IMPLEMENTATION PRESENT" } else { "WRONG TREE - STOP" }
-```
-
-## 2. Send back
+## 3. Send back
 
 The **whole `block81a2-evidence` directory**, not the summary line. It holds
 `gate.txt` (the full log), `score.json`, both result payloads, the emitted
@@ -90,6 +106,7 @@ value.
 
 | limb | fails if |
 |---|---|
+| **TREE** | this checkout does not contain 81a-2, or contains it only partly |
 | **CONTROL** | a pre-81a-2 tree, where the hook logs `skipped` and returns the event. Off-bridge and deliberately first, so a bridge or config problem cannot take the block's central claim with it. |
 | **0** | camera, XY stage, focus device, or finite Z bounds missing |
 | **A** | autofocus not converging on this machine, or a log whose numbers disagree |

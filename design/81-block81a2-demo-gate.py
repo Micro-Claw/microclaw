@@ -135,6 +135,21 @@ def dataset_frames(tools, path: Path) -> int:
         raise NotExercised(f"could not read dataset {path}: {exc}")
 
 
+REQUIRED_AUTOFOCUS_REFUSAL = "Required autofocus stopped"
+
+
+def is_the_safety_refusal(message: str) -> bool:
+    """Did the run fail through the mechanism this gate exists to observe?
+
+    Module level so the selftest can CALL it rather than grep for it. Round 1
+    (2026-09-10) passed limb B on `cannot import name planned_hook_z_reach`,
+    because "an error came back and no frames were written" is satisfied by
+    any failure at all -- and a source-text check for the right string is
+    fooled by the string merely being present.
+    """
+    return REQUIRED_AUTOFOCUS_REFUSAL in str(message)
+
+
 def grid(z_um, step_um, x_um, y_um, n=2):
     return [{"name": f"f{i}", "x_um": x_um + i * step_um, "y_um": y_um,
              "z_um": z_um} for i in range(n)]
@@ -207,6 +222,48 @@ def main():
     from microclaw.safety import SafetyGuard, SafetyViolation
     from microclaw.config import load_safety_config_or_exit
 
+    coherent = {}
+
+    # ---- TREE, first of all, because a mixed tree makes every later limb a
+    # lie. Round 1 (2026-09-10) ran against a checkout whose tools.py carried
+    # 81a-2 and whose hooks.py did not -- local edits survive `git checkout
+    # <branch>` -- and limbs B and C reported PASS on an ImportError. The
+    # runbook did carry a merge-base check; it sat AFTER the run command, and
+    # a step written beside the command instead of inside it is a step that
+    # does not run.
+    @limb("TREE - this checkout actually contains block 81a-2, coherently",
+          "a tree without 81a-2, or a MIXED tree with some files updated")
+    def limb_tree():
+        try:
+            from microclaw.hooks import planned_hook_z_reach  # noqa: F401
+        except ImportError as exc:
+            raise NotExercised(
+                f"this checkout does not contain block 81a-2: {exc}. "
+                "Nothing below this line tested the product. Run "
+                "`git status` (local edits to microclaw/ survive a branch "
+                "checkout and produce exactly this mixed tree) and "
+                "`git log --oneline -1`, then check out "
+                "design81/81a2-runtime-refusal and re-run.")
+        import inspect
+        from microclaw import tools
+        from microclaw.hooks import AutofocusHook
+        if "planned_z_reach" not in dir(AutofocusHook):
+            raise NotExercised(
+                "microclaw.hooks imports but AutofocusHook has no reach "
+                "contract: this tree is mixed. See `git status`.")
+        if "planned_hook_z_reach" not in inspect.getsource(tools._plan_with_hook_dose):
+            raise NotExercised(
+                "hooks.py carries 81a-2 but tools.py does not call its reach "
+                "check: this tree is mixed. See `git status`.")
+        coherent["ok"] = True
+        return "hooks.py and tools.py both carry 81a-2"
+
+    def needs_tree():
+        if not coherent.get("ok"):
+            raise NotExercised(
+                "the TREE limb did not pass, so this limb would score an "
+                "unrelated failure as evidence. Not a pass.")
+
     # ---- CONTROL, off-bridge, and it FIRES on a pre-81a-2 tree -------------
     # 58a: a limb that cannot fail is not a criterion. Before this block the
     # hook logged `skipped` and RETURNED THE EVENT, so this raises only with
@@ -263,6 +320,7 @@ def main():
     @limb("0 - bridge, camera, XY stage, focus device, and finite Z bounds",
           "any of them missing on this machine")
     def limb_0():
+        needs_tree()
         ctrl, guard, config = rig()
         missing = []
         if not ctrl.core.get_camera_device():
@@ -297,6 +355,7 @@ def main():
     @limb("A - a real focus curve converges through the new path and records its provenance",
           "autofocus not converging on this machine, or a log whose numbers disagree")
     def limb_a():
+        needs_tree()
         ctrl, guard, config = rig()
         z = loaded["entry_z"]
         x, y = ctrl.core.get_x_position(), ctrl.core.get_y_position()
@@ -355,6 +414,7 @@ def main():
     @limb("B - an unsafe runtime window stops the run BEFORE the field is exposed",
           "a frame written for the refused field, or the run reporting success")
     def limb_b():
+        needs_tree()
         ctrl, guard, config = rig()
         z = loaded["entry_z"]
         x, y = ctrl.core.get_x_position(), ctrl.core.get_y_position()
@@ -393,6 +453,15 @@ def main():
             raise AssertionError(
                 "the run reported SUCCESS with a sweep window outside the "
                 f"guard. That is the 2026-09-09 incident: {result!r:.300}")
+        # WHICH error. Round 1 passed this limb on an ImportError, because
+        # "an error came back and no frames were written" is satisfied by any
+        # failure at all. A limb that passes when its mechanism never ran
+        # manufactures evidence, which is worse than one that cannot fail.
+        message = str(result["error"])
+        if not is_the_safety_refusal(message):
+            raise NotExercised(
+                "the run failed, but NOT through the required-autofocus "
+                f"refusal this limb exists to observe: {message[:200]}")
         # The dose is the criterion, not the message. Score it from the disk.
         written = sorted(p.name for p in save.rglob("*.tif")) if save.exists() else []
         ndtiff = sorted(p.name for p in save.rglob("*NDTiff*")) if save.exists() else []
@@ -400,16 +469,22 @@ def main():
             raise AssertionError(
                 f"the refusal fired but frames were written anyway: "
                 f"{written[:4]} {ndtiff[:4]}")
+        loaded["b_swept"] = True
         return (f"refused before any exposure: {str(result['error'])[:130]}"
                 f" (nothing under {save.name})")
 
     @limb("C - the focus axis is back where it started after the refusal",
           "the axis left parked where the refused sweep put it")
     def limb_c():
+        needs_tree()
         ctrl, _guard, config = rig()
         entry = loaded.get("entry_z")
         if entry is None:
             raise NotExercised("limb 0 did not record an entry Z")
+        if not loaded.get("b_swept"):
+            raise NotExercised(
+                "limb B did not reach the refusal, so the axis was never "
+                "moved and an unchanged Z proves nothing.")
         now = float(ctrl.core.get_position())
         band = max(2.0, 0.1 * args.z_range_um)
         if abs(now - entry) > band:
@@ -421,6 +496,7 @@ def main():
     @limb("D - the EXPORTED script runs standalone and agrees with the live run",
           "an emitted script that compiles and then dies, or disagrees")
     def limb_d():
+        needs_tree()
         ctrl, guard, _config = rig()
         if not live.get("params"):
             raise NotExercised("limb A did not complete, so there is nothing to export")
