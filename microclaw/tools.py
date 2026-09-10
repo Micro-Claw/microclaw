@@ -5959,6 +5959,7 @@ def build_stage_coordinate_mosaic(
         "dataset_identity": dataset_identity,
         "calibration_roi_difference": roi_difference,
         "shape": list(pixels16.shape),
+        "source_dtype": str(pixels.dtype),
         **assembled,
         "coverage_fraction": float(np.count_nonzero(coverage) / coverage.size),
         "overwrite_convention": "later source tiles overwrite earlier source tiles for display",

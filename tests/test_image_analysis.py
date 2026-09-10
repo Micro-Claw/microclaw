@@ -838,3 +838,21 @@ def test_component_general_basis_geometry(basis, area, centroid):
     assert component['bounding_box_px'] == [2, 2, 4, 3]
     assert 'bounding_box_stage_um' not in component
     assert 'bounding_box_stage_hull_um' in component
+
+
+def test_source_zero_population_changes_component_count():
+    from microclaw.image_analysis import connected_components
+    image = np.zeros((16, 16), np.uint16)
+    image[8, 8] = 100
+    source = connected_components(image, basis_um=[[0, .127], [-.127, 0]],
+                                  origin_um=[0, 0], covered_mask=np.ones(image.shape, bool))
+    mosaic = connected_components(image, .127, [0, 0])
+    assert source['n_components'] == 1 and mosaic['n_components'] == 0
+    assert source['background_level'] == source['threshold'] == 0
+    assert mosaic['background_level'] == mosaic['threshold'] == 100
+
+
+def test_component_refuses_two_bases():
+    from microclaw.image_analysis import connected_components
+    with pytest.raises(ValueError, match='Supply either basis_um or pixel_size_um, not both'):
+        connected_components(np.ones((3, 3)), 1., [0, 0], basis_um=[[1., 0], [0, 1.]])

@@ -89,7 +89,8 @@ class ConnectedComponents:
         )
         envelope = {"result": measured, "status": "observed", "parameters": self.parameters}
         if self.write_annotations:
-            self._annotate(image, measured, labels, context, envelope, mosaic=True)
+            self._annotate(image, measured, labels, context, envelope, mosaic=True,
+                           source_dtype=mosaic.get("source_dtype", image.dtype))
         return envelope
 
     def _analyze_source_frame(self, image, metadata, context):
@@ -126,7 +127,8 @@ class ConnectedComponents:
             self._annotate(image, measured, labels, context, envelope)
         return envelope
 
-    def _annotate(self, image, measured, labels, context, envelope, *, mosaic=False):
+    def _annotate(self, image, measured, labels, context, envelope, *, mosaic=False,
+                  source_dtype=None):
         from scipy import ndimage
         from microclaw.dataset_mosaic import draw_text_labels
 
@@ -146,7 +148,7 @@ class ConnectedComponents:
             annotation.update({"reason": self._annotation_limit_reason,
                                "failure_kind": "limit_exhausted_upstream"})
             return
-        foreground = int(np.iinfo(image.dtype).max)
+        foreground = int(np.iinfo(image.dtype if source_dtype is None else source_dtype).max)
         height, width = image.shape[:2]
         scale = min(8, max(1, min(height, width) // 70))
         annotation.update({"foreground": foreground, "glyph_scale": scale})

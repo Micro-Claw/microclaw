@@ -744,12 +744,14 @@ def component_frames(tmp_path, monkeypatch):
         def has_image(self, **coords):
             return all(coords.get(k) in values for k, values in self.axes.items())
 
+        read_coordinates = []
+
         def read_image(self, **coords):
-            assert {k: coords[k] for k in ('time', 'channel', 'z')} == {'time': 1, 'channel': 'B', 'z': 1}
-            return images[self.axes['position'].index(coords['position'])]
+            self.read_coordinates.append(dict(coords))
+            return images[self.axes['position'].index(coords['position']) if 'position' in coords else 0]
 
         def read_metadata(self, **coords):
-            return metadata[self.axes['position'].index(coords['position'])]
+            return metadata[self.axes['position'].index(coords['position']) if 'position' in coords else 0]
 
     dataset = SourceDataset()
     monkeypatch.setattr(completed_dataset, 'Dataset', lambda path: dataset)
@@ -769,15 +771,16 @@ def component_frames(tmp_path, monkeypatch):
         options = {'calibration_ref': {'kind': 'artifact', 'path': str(calibration)}}
         options.update(kwargs)
         return completed_dataset.run_analysis_on_saved_dataset(
-            guard, str(path), 'connected_components', {'time': 1, 'channel': 'B', 'z': 1},
-            'frames', parameters or {}, str(tmp_path / name), **options,
+            guard, str(path), 'connected_components',
+            options.pop('axis_selection', {'time': 1, 'channel': 'B', 'z': 1}),
+            options.pop('input_kind', 'frames'), parameters or {}, str(tmp_path / name), **options,
         )
     return analyze, images, metadata, dataset, calibration
 
 
 def test_original_frames_count_geometry_where_and_evidence(component_frames, monkeypatch):
     import tifffile
-    analyze, images, metadata, _, _ = component_frames
+    analyze, images, metadata, dataset, _ = component_frames
     originals = [image.copy() for image in images]
     measured_pixels = []
     original = completed_dataset.connected_components
@@ -791,6 +794,9 @@ def test_original_frames_count_geometry_where_and_evidence(component_frames, mon
     assert result['calibration_used'] is True
     assert result['calibration_identity']['camera_model'] == 'model'
     observations = result['observations']
+    assert dataset.read_coordinates == [
+        {'position': p, 'time': 1, 'channel': 'B', 'z': 1} for p in range(3)
+    ]
     assert [o['result']['n_components'] for o in observations] == [2, 1, 0]
     for index, observation in enumerate(observations):
         assert {k: observation[k] for k in ('position', 'time', 'channel', 'z', 'PositionName')} == {
@@ -958,3 +964,189 @@ def test_old_mosaic_manifest_still_drives_original_adapter(tmp_path):
                      'bounding_box_px': [2, 2, 4, 4]}],
     }
     assert 'tile_placements' not in old
+
+
+def test_real_sheared_calibration_counts_both_overlapping_fields(component_frames):
+    from microclaw.calibration import StageCameraAffine, canonical_affine_payload, affine_payload_hash
+    analyze, _, metadata, _, calibration = component_frames
+    a, b, c, d = (.004927971153294251, -.10452770834076626,
+                  -.10638852331845677, -.00512650316309355)
+    transform = StageCameraAffine(a, b, c, d, 'obj', 1, np.sqrt(abs(a*d-b*c)))
+    record = json.loads(calibration.read_text())
+    record.update(payload=canonical_affine_payload(transform), payload_sha256=affine_payload_hash(transform))
+    calibration.write_text(json.dumps(record))
+    # The shared signal moves four source columns between fields; move the
+    # intended centre by those same four columns through the recorded affine.
+    metadata[1]['XPosition_um_Intended'] = 10 + 4*a
+    metadata[1]['YPosition_um_Intended'] = 20 + 4*c
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    observations = result['observations']
+    assert [o['result']['n_components'] for o in observations] == [2, 1, 0]
+    assert sum(o['result']['n_components'] for o in observations) == 3  # no deduplication
+    assert 'not a unique object total' in result['count_semantics']
+    assert 'not object identification' in result['count_semantics']
+    for observation in observations[:2]:
+        shared = observation['result']['objects'][0]
+        np.testing.assert_allclose(shared['centroid_stage_um'],
+                                   [10 + 4.5*a + .5*b, 20 + 4.5*c + .5*d], rtol=0, atol=1e-12)
+        assert shared['area_um2'] == abs(a*d-b*c)
+    touching = observations[0]['result']['objects'][1]
+    assert touching['n_pixels'] == 8  # two adjacent 2x2 supports, one component
+    assert touching['area_um2'] == 8 * abs(a*d-b*c)
+
+
+def test_omitted_axes_enumerate_frames_without_pooling(component_frames):
+    analyze, _, _, dataset, _ = component_frames
+    result = analyze(axis_selection={}, parameters={'write_annotations': False})
+    assert result['status'] == 'completed', result['failure']
+    observations = result['observations']
+    assert len(observations) == 3 * 2 * 2 * 2
+    assert len(dataset.read_coordinates) == len(observations)
+    assert {(o['time'], o['channel'], o['z']) for o in observations} == {
+        (t, c, z) for t in (0, 1) for c in ('A', 'B') for z in (0, 1)
+    }
+    assert all(o['result']['n_components'] == {0: 2, 1: 1, 2: 0}[o['position']] for o in observations)
+
+
+def test_outlines_use_exact_counted_support_once(component_frames, monkeypatch):
+    from scipy import ndimage
+    analyze, images, *_ = component_frames
+    images[0][4, 20] = 1  # a changed drawing threshold would silently omit this support
+    measured_supports, outlined_supports, calls = [], [], []
+    measure = completed_dataset.connected_components
+    label = ndimage.label
+    erosion = ndimage.binary_erosion
+    def measure_spy(*args, **kwargs):
+        result, labels = measure(*args, **kwargs)
+        measured_supports.extend(labels == c['label'] for c in result['objects'])
+        return result, labels
+    def label_spy(*args, **kwargs):
+        calls.append(1)
+        return label(*args, **kwargs)
+    def erosion_spy(support, *args, **kwargs):
+        outlined_supports.append(support.copy())
+        return erosion(support, *args, **kwargs)
+    monkeypatch.setattr(completed_dataset, 'connected_components', measure_spy)
+    monkeypatch.setattr(ndimage, 'label', label_spy)
+    monkeypatch.setattr(ndimage, 'binary_erosion', erosion_spy)
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    assert len(outlined_supports) == len(measured_supports) == 4
+    for outlined, counted in zip(outlined_supports, measured_supports):
+        np.testing.assert_array_equal(outlined, counted)
+    assert len(calls) == 3  # exactly one segmentation per measured frame
+
+
+@pytest.mark.parametrize('fault, status', [
+    (OSError('one frame unavailable'), 'completed'),
+    (ValueError('programming defect'), 'failed'),
+    (completed_dataset.AnalysisCancelled('cancel during annotation'), 'cancelled'),
+])
+def test_annotation_failure_scope(component_frames, monkeypatch, fault, status):
+    analyze, *_ = component_frames
+    writer = completed_dataset.write_hook_artifact
+    calls = []
+    def flaky_writer(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise fault
+        return writer(*args, **kwargs)
+    monkeypatch.setattr(completed_dataset, 'write_hook_artifact', flaky_writer)
+    result = analyze()
+    assert result['status'] == status, result['failure']
+    if status == 'completed':
+        assert len(calls) == 3
+        assert result['annotations']['written'] == 2
+        assert result['observations'][0]['result']['annotation']['failure_kind'] == 'io_error'
+        assert result['observations'][1]['result']['annotation']['written'] is True
+        assert [Path(a['path']).name for a in result['artifacts']] == ['components-0002.tiff', 'components-0003.tiff']
+    else:
+        assert len(calls) == 1
+        assert result['failure']['message'] == str(fault)
+
+
+def test_no_position_axis_keeps_visible_partial_evidence(component_frames):
+    import tifffile
+    analyze, images, _, dataset, _ = component_frames
+    del dataset.axes['position']
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    annotation = result['observations'][0]['result']['annotation']
+    assert annotation['position_labels_partial'] is True
+    assert annotation['position_label_reason'] == 'selection has no position axis'
+    assert annotation['field_label'] is None and annotation['position_labels'] == []
+    assert tifffile.imread(result['artifacts'][0]['path']).max() == 65535
+    assert result['observations'][0]['result']['n_components'] == 2
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_mosaic_evidence_honors_option_and_source_dtype(component_frames, enabled):
+    import tifffile
+    analyze, images, metadata, _, _ = component_frames
+    for i in range(3):
+        images[i] = images[i].astype(np.uint8)
+        metadata[i]['PixelType'] = 'GRAY8'
+    result = analyze(input_kind='stage_coordinate_mosaic', parameters={'write_annotations': enabled})
+    assert result['status'] == 'completed', result['failure']
+    overlays = [a for a in result['artifacts'] if Path(a['path']).parent.name == 'artifacts']
+    assert len(overlays) == int(enabled)
+    assert result['annotations']['written'] == int(enabled)
+    assert result['observations'][0]['parameters']['write_annotations'] is enabled
+    source = tifffile.imread(result['mosaic']['artifact']['path'])
+    if enabled:
+        overlay = tifffile.imread(overlays[0]['path'])
+        assert overlay.max() == 255
+        assert np.any(overlay == 1)
+        assert not np.array_equal(source, overlay)
+        assert result['observations'][0]['artifact_sha256'] == overlays[0]['sha256']
+    assert hashlib.sha256(source.tobytes()).hexdigest() == result['mosaic']['pixel_sha256']
+    assert not list(Path(result['mosaic']['artifact']['path']).parent.glob('*.labeled.tiff'))
+    placements = result['mosaic']['tile_placements']
+    assert len(placements) == 3
+    for index, placement in enumerate(placements):
+        assert placement['coordinate'] == {'position': index, 'time': 1, 'channel': 'B', 'z': 1}
+        assert placement['position_name'] == f'field-{index}'
+        assert placement['intended_xy_um'] == [metadata[index]['XPosition_um_Intended'], metadata[index]['YPosition_um_Intended']]
+        assert 'source_basis_um' not in placement and 'bounds_convention' not in placement
+
+
+def test_saved_adapter_keeps_one_context_and_only_paired_results_get_where(offline_home):
+    save, *_ = offline_home
+    save('context_identity', '''
+class ContextIdentity:
+ def analyze_saved_frame(self, image, metadata, context):
+  assert "input_kind" not in metadata
+  if hasattr(self, "context"):
+   assert context is self.context
+  self.context = context
+  context.emit_observation({"own": True})
+  if metadata["Axes"]["position"] == "p0": return None
+  return {"paired": True}
+''')
+    result = run(offline_home, 'context_identity')
+    assert result['status'] == 'completed', result['failure']
+    own = [o for o in result['observations'] if o['result'].get('own')]
+    assert len(own) == 2 and all('position' not in o and 'time' not in o for o in own)
+    paired = [o for o in result['observations'] if o['result'].get('paired')]
+    assert len(paired) == 1
+    assert paired[0]['position'] == 'p1' and paired[0]['time'] == 0
+
+
+def test_confirmed_current_refused_for_statistics_too(offline_home):
+    with pytest.raises(ValueError, match='confirmed_current calibration requires a live microscope core'):
+        run(offline_home, 'frame_statistics', calibration_ref={'kind': 'confirmed_current'})
+
+
+def test_mosaic_placement_identity_length_mismatch_refuses(component_frames, monkeypatch):
+    from microclaw import tools
+    analyze, *_ = component_frames
+    assembler = tools.assemble_stage_coordinate_mosaic
+    def missing_placement(*args, **kwargs):
+        result = assembler(*args, **kwargs)
+        result['tile_placements'].pop()
+        return result
+    monkeypatch.setattr(tools, 'assemble_stage_coordinate_mosaic', missing_placement)
+    result = analyze(input_kind='stage_coordinate_mosaic')
+    assert result['status'] == 'failed'
+    assert result['failure']['message'] == 'Mosaic tile placements and saved metadata must have equal lengths'
