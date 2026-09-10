@@ -891,9 +891,9 @@ unverified stage arrival on the other. That is a design tension for a successor
 block to resolve, not a defect to fix by deleting a wait.
 
 **Two findings the score did not carry**, both from the artifacts: every phase
-span is an exact integer millisecond, so `time.monotonic()` on Windows floors this
-instrument at 1 ms and the 39 µs write design/79 opens with would read as `0.0`
-(`R128`); and every dataset landed at `<name>_1` on a clean directory, with
+span is an exact integer millisecond — which was first read as a 1 ms floor and
+is in fact **~15.6 ms**, since `GetTickCount64`'s unit is the millisecond while
+its update period is not, measured directly afterwards (`R128`); and every dataset landed at `<name>_1` on a clean directory, with
 microclaw correctly reporting the suffixed path (`R129`).
 
 **One runbook error, no product error**: the runbook predicted "5/5 PASS" and the

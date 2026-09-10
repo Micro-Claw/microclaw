@@ -147,7 +147,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R125` | [The composite breakdown says a grid was stage-bound but not which field was worst](#r125) | MEDIUM | SMALL |  |
 | `R126` | [A zero-interval hooked grid moves the stage through engine events with no arrival verification](#r126) | MEDIUM | LARGE |  |
 | `R127` | [Expiry landing inside cleanup can leave a reservation closed by nobody](#r127) | LOW | SMALL |  |
-| `R128` | [Every timing span microclaw measures is quantized to 1 millisecond on Windows](#r128) | MEDIUM | SMALL |  |
+| `R128` | [Every runtime timing span microclaw measures is quantized to ~15.6 ms on Windows](#r128) | HIGH | SMALL |  |
 | `R129` | [Every dataset on the demo machine was written to `<name>_1` on a clean directory](#r129) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
@@ -2877,20 +2877,20 @@ the model" as the actual blast radius.
 - **Effort** — SMALL
 - **Provenance** — coordinator review of block 79c-1, 2026-09-10.
 
-### R128 — Every timing span microclaw measures is quantized to 1 millisecond on Windows
+### R128 — Every runtime timing span microclaw measures is quantized to ~15.6 ms on Windows
 
-**Block 79c-1's demo gate measured it accidentally and unambiguously: 16 of the 18 nonzero phase spans across six runs are exact integer milliseconds, and the two exceptions are sums of eight spans where float addition accumulates. `time.monotonic()` on the demo machine resolves to 1 ms.**
+**Measured directly on the demo machine, 2026-09-10, twice — once with Micro-Manager running and once with it closed, identical both times. `time.monotonic()` is `GetTickCount64()`: it claims 15625 µs, steps by 16000 µs, and measures a 40 µs busy-wait as 16000 µs. `time.perf_counter()` on the same machine is `QueryPerformanceCounter()` at 0.1 µs and measures that gap as 40.0 µs.**
 
-- **The evidence** (2026-09-10, demo machine, `block79c1-evidence`): individual `min_s`/`max_s` values land on 0.109, 0.110, 0.125, 0.141, 0.156, 0.157, 0.172, 0.250, 0.328, 0.391, 0.516, 0.797 — every one an integer number of milliseconds. Derived values (`mean_s`, `accounted_s`, a multi-span `total_s`) are not, which is exactly what arithmetic over ms-exact inputs produces. This was not what the gate set out to measure; it fell out of checking why the reconciliation drift was exactly 0.0 in all six runs.
-- **Why it matters, and it is narrow** — it is irrelevant to anything measured in seconds, which is most of design/78 and all of 79c-1 (spans of 0.14–4.2 s). It bites the *sub-millisecond* spans, and those are the ones design/79 exists for: the opening incident's misattributed cost was a property write measured at **39 µs**, which this instrument reports as `0.0` on Windows. So the instrument can say "the write is not the cost" but cannot distinguish 39 µs from zero from not-measured. 78a's write→exposure span of 18–44 ms is 18–44 counts, which is fine.
-- **Visible in this block's own output** — `restoration` reports `count: 8, total_s: 0.0, max_s: 0.0` in all six runs. That is honest (it is the no-op sweep `finish_owned_cleanup` measures unconditionally, 1.6 µs on macOS) and it reads like a phase that was skipped. Nothing in `phase_meaning` states the floor.
-- **How to close it** — `time.perf_counter()` is monotonic and nanosecond-resolution on every platform, and is the documented choice for measuring short durations. The change is mechanical at each span site, but the `"clock": "time.monotonic"` field ships in every `duration_breakdown` and hook record and must change with it — which is the point of having it there. Then state the floor, or stop needing to.
-- **What is NOT known** — whether M2, M5 and the Nikon show the same 1 ms floor. It is a property of the interpreter and OS, not the rig, so it very likely holds on all of them; nobody has checked, and one line of output would.
-- **Where** — LOCAL to implement; LOCAL to confirm on any Windows machine (`time.get_clock_info('monotonic')`).
-- **Block** — NONE.
-- **Importance** — MEDIUM. It bounds every per-write timing claim design/78 and design/79 make on the platform microclaw actually runs on.
+- **The probe** — `design/79-clock-resolution-probe.py`, which reads what CPython claims *and* measures the granularity empirically, because the two differ. Windows 11, Python 3.12.13. Both runs agreed, so **Micro-Manager is not implicated**; the coordinator's `timeBeginPeriod` hypothesis is refuted.
+- **This row first said 1 ms, and that was wrong.** The mistake is worth keeping because it is the trap: `GetTickCount64`'s **unit** is the millisecond while its **update period** is ~15.6 ms, so every value it returns is an exact integer millisecond and every difference *looks* millisecond-precise. All 18 nonzero phase spans in block 79c-1's demo artifacts are integer milliseconds — 62, 94, 109, 125, 172, 187, 250, 281, 312, 328, 391, 797 ms — which was read as 1 ms resolution and is in fact 4–51 ticks of 15 or 16 ms. **A value's unit is not its resolution**, and the numbers are most misleading precisely because the unit is fine.
+- **What survives, checked** — design/78's measured numbers came from Micro-Manager's **CoreLog**, not from these spans, and the CoreLog timestamps to microseconds: `Will set property` → `Did set property` brackets a `Duration0 (us)` write at 34 µs in the committed excerpt, and 78a reports the setter at 41–97 µs. A 15.6 ms clock cannot produce those, which is the proof of provenance. So design/78's write→exposure span of 18–44 ms and its 2.26–2.43 s → 0.018–0.044 s improvement stand unaffected. Block 79c-1's 7.9× is 143 ticks against 25 and survives easily; its per-acquisition mean of 0.279 s is 17.9 ticks, so ±1 tick is ±6% and it was already reported as n=1.
+- **What is blind is the product's own runtime attribution.** The spans 78a added and 79a generalized — `validation`, `write`, `read_back`, `read_stage_start_position` — are exactly the sub-tick ones, and they are what a user's agent reads *during a session* to answer "was the write the cost?". A 41–97 µs setter reports `0.0`; a 20 ms wait reports 16 or 31 ms. So the gate could resolve offline what the product cannot resolve live, which inverts the point of having the spans at all. That is design/79's whole premise.
+- **How to close it** — `time.perf_counter()`: monotonic, `QueryPerformanceCounter()` on Windows, `mach_absolute_time()` on macOS where it is byte-identical to `monotonic` (41 ns, measured). The substitution is mechanical, but `"clock": "time.monotonic"` ships in every `duration_breakdown` and every hook timing record and must change with it — which is what that field is for. Do it **before** `R124` adds new spans, so the new ones are not written against the old clock.
+- **Where** — LOCAL to implement. Already measured; nothing further is owed.
+- **Block** — NONE yet; it and `R124` are one small block.
+- **Importance** — HIGH. It bounds every timing number the runtime agent reads, on the platform every rig runs.
 - **Effort** — SMALL
-- **Provenance** — coordinator scoring of block 79c-1's demo-gate artifacts, 2026-09-10.
+- **Provenance** — inferred (wrongly, as 1 ms) from block 79c-1's demo artifacts 2026-09-10; measured correctly the same day with `design/79-clock-resolution-probe.py` after the operator asked what would actually need sub-millisecond resolution.
 
 ### R129 — Every dataset on the demo machine was written to `<name>_1` on a clean directory
 

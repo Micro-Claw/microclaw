@@ -10426,9 +10426,12 @@ multiplies: eight acquisitions cost **7.9×** the wall clock of one carrying the
 same eight frames, and **1.9%** of a 4.219 s eight-field grid was exposure. That
 answers the question 79c's brief opened with and could not measure. It also
 produced two findings from the artifacts that no limb asked for — every phase
-span is an exact integer millisecond, so `time.monotonic()` floors the instrument
-at 1 ms on Windows and design/79's own opening 39 µs write reads as `0.0`
-(`R128`); and every dataset landed at `<name>_1` on a clean directory (`R129`).
+span is an exact integer millisecond (`R128`) — read at the time as a 1 ms floor
+and **measured the same day as ~15.6 ms**, because `GetTickCount64`'s unit is the
+millisecond while its update period is not. *A value's unit is not its
+resolution*, and an inference from artifact precision is not a measurement of a
+clock: the probe took one command and settled what two rounds of arithmetic over
+the artifacts had got wrong; and every dataset landed at `<name>_1` on a clean directory (`R129`).
 **Both came from asking why a number was too clean** — the reconciliation drift
 was exactly 0.0 in all six runs, which is not what float subtraction does.
 
