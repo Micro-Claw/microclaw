@@ -1294,8 +1294,10 @@ def _bead_frame(seed=3):
     """
     rng = np.random.default_rng(seed)
     image = np.clip(rng.normal(200, 15, (32, 32)), 154, None).astype(np.uint16)
-    image[8:11, 8:11] = 402
-    image[22:24, 20:22] = 380
+    # Wide enough that the outline does not consume the whole object: a bead
+    # whose every pixel is ink cannot show an operator what was counted.
+    image[4:16, 4:16] = 402
+    image[20:28, 18:26] = 380
     return image
 
 
@@ -1317,10 +1319,15 @@ def test_annotated_evidence_keeps_the_sample_visible_under_the_stretch(component
     # nothing between: outlines and numbers on a black field, so an operator
     # could see where the tool claimed a detection and never what was there.
     assert len(values) > 20
-    assert interior > .8
-    # The sample is not merely present, it is distinguishable: the beads read
-    # brighter than the background they sit in.
-    assert int(thumbnail[9, 9]) > int(thumbnail[2, 2]) + 40
+    assert interior > .5
+    # The sample is not merely present, it is distinguishable. Measured over
+    # the pixels the annotation never touched, so this is the data speaking:
+    # they spread across the ramp, and brighter data renders brighter.
+    untouched = annotated == images[0]
+    assert untouched.sum() > .7 * untouched.size
+    data, shown = images[0][untouched], thumbnail[untouched]
+    assert int(shown.max()) - int(shown.min()) > 100
+    assert int(shown[data.argmax()]) > int(shown[data.argmin()]) + 100
 
     # And the untouched frame renders the same way, so the annotation is not
     # what makes the picture readable.
@@ -1340,9 +1347,9 @@ def test_degenerate_fields_still_get_ink_that_is_neither_uncovered_nor_outline(
     observation = result['observations'][0]
     assert observation['result']['n_components'] == 0  # nothing to count, and that is a result
     annotation = observation['result']['annotation']
-    assert annotation['foreground'] == expected_foreground
     assert annotation['foreground'] > 1  # never uncovered (0), never the outline (1)
     assert annotation['foreground'] > fill  # never dimmer than the data it sits on
+    assert annotation['foreground'] == expected_foreground
     annotated = tifffile.imread(artifact_path(result, observation))
     assert annotated.max() == expected_foreground
     thumbnail = _rendered_thumbnail(annotated)
