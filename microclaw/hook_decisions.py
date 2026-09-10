@@ -21,7 +21,7 @@ import numpy as np
 
 from microclaw.controller import (
     StageMoveError, read_stage_start_position, settle_stage_move,
-    stage_move_dispatch_failure,
+    stage_move_dispatch_failure, timing_clock, timing_clock_name,
 )
 
 #: Payload for a run whose hardware program is fully specified by
@@ -468,13 +468,12 @@ class UntrustedHookAdapter:
         """
         from microclaw.authorization import authorize_property_write
         from microclaw.safety import _finite_number_text
-        import time
         ctx = self._property_context
-        # Absolute seconds from one monotonic clock; only attempted phases are
-        # present. This travels with the budget-bounded write, never per frame.
-        timing = {"clock": "time.monotonic", "validation": {"start_s": time.monotonic()}}
+        # Absolute seconds from the one timing clock; only attempted phases
+        # are present. Travels with the budget-bounded write, never per frame.
+        timing = {"clock": timing_clock_name(), "validation": {"start_s": timing_clock()}}
         def refuse(reason):
-            timing["validation"]["end_s"] = time.monotonic()
+            timing["validation"]["end_s"] = timing_clock()
             self._record_event(
                 event, event="hook_action", action=self._action_record(action),
                 decision="refused", reason=reason, timing=timing,
@@ -520,22 +519,22 @@ class UntrustedHookAdapter:
         except Exception as exc:
             refuse(f"property write refused: {exc}")
             raise RuntimeError(f"property action refused: {exc}") from exc
-        timing["validation"]["end_s"] = time.monotonic()
+        timing["validation"]["end_s"] = timing_clock()
         # max_writes caps hook proposals. Restoration is the envelope's own
         # teardown promise, not another proposal and never consumes that cap.
         if not restoration:
             ctx["remaining"] -= 1
         try:
-            timing["write"] = {"start_s": time.monotonic()}
+            timing["write"] = {"start_s": timing_clock()}
             try:
                 ctx["core"].set_property(ctx["device"], ctx["property"], value)
             finally:
-                timing["write"]["end_s"] = time.monotonic()
-            timing["wait"] = {"start_s": time.monotonic()}
+                timing["write"]["end_s"] = timing_clock()
+            timing["wait"] = {"start_s": timing_clock()}
             try:
                 ctx["core"].wait_for_device(ctx["device"])
             finally:
-                timing["wait"]["end_s"] = time.monotonic()
+                timing["wait"]["end_s"] = timing_clock()
         except Exception as exc:
             self._record_event(event, event="property_write_failure",
                                hook_event_index=hook_event_index,
@@ -554,19 +553,18 @@ class UntrustedHookAdapter:
         # Without it every accepted property write logged hook_event_index null
         # while its named-stage twin logged 0..N, so the property audit carried
         # no frame identity at all. Measured on M5, 2026-08-17.
-        import time
         from microclaw.authorization import _verify_property
         ctx = self._property_context
         assert ctx is not None
         for action, event, hook_event_index, timing in applied:
-            timing["read_back"] = {"start_s": time.monotonic()}
+            timing["read_back"] = {"start_s": timing_clock()}
             try:
                 try:
                     observed = _verify_property(
                         ctx["core"], ctx["device"], ctx["property"], action.value
                     )
                 finally:
-                    timing["read_back"]["end_s"] = time.monotonic()
+                    timing["read_back"]["end_s"] = timing_clock()
             except Exception as exc:
                 self._record_event(event, event="property_verification_failure",
                                    hook_event_index=hook_event_index,
@@ -591,10 +589,9 @@ class UntrustedHookAdapter:
     def _apply_named_stage(self, action: MoveNamedStage, event: dict,
                            *, restoration: bool = False,
                            hook_event_index: int | None = None) -> None:
-        import time
-        timing = {"clock": "time.monotonic", "validation": {"start_s": time.monotonic()}}
+        timing = {"clock": timing_clock_name(), "validation": {"start_s": timing_clock()}}
         def refuse(reason):
-            timing["validation"]["end_s"] = time.monotonic()
+            timing["validation"]["end_s"] = timing_clock()
             self._record_event(
                 event, event="hook_action", action=self._action_record(action),
                 decision="refused", reason=reason, timing=timing,
@@ -623,7 +620,7 @@ class UntrustedHookAdapter:
         except Exception as exc:
             refuse(f"SafetyGuard refused named-stage motion: {exc}")
             raise RuntimeError(f"named-stage action refused: {exc}") from exc
-        timing["validation"]["end_s"] = time.monotonic()
+        timing["validation"]["end_s"] = timing_clock()
         # The budget counts attempted dispatches, including writes that raise.
         if not restoration:
             ctx["remaining"] -= 1
@@ -631,32 +628,32 @@ class UntrustedHookAdapter:
         tolerance_lookup = getattr(ctx["guard"], "stage_move_tolerance", None)
         configured = tolerance_lookup(ctx["device"]) if tolerance_lookup else None
         try:
-            timing["read_stage_start_position"] = {"start_s": time.monotonic()}
+            timing["read_stage_start_position"] = {"start_s": timing_clock()}
             try:
                 start_um = read_stage_start_position(
                     ctx["core"], ctx["device"], target, band_policy, configured
                 )
             finally:
-                timing["read_stage_start_position"]["end_s"] = time.monotonic()
+                timing["read_stage_start_position"]["end_s"] = timing_clock()
             try:
-                timing["write"] = {"start_s": time.monotonic()}
+                timing["write"] = {"start_s": timing_clock()}
                 try:
                     ctx["core"].set_position(ctx["device"], target)
                 finally:
-                    timing["write"]["end_s"] = time.monotonic()
+                    timing["write"]["end_s"] = timing_clock()
             except Exception as exc:
                 raise stage_move_dispatch_failure(
                     ctx["core"], ctx["device"], target, start_um,
                     band_policy, configured, exc,
                 ) from exc
-            timing["settle_stage_move"] = {"start_s": time.monotonic()}
+            timing["settle_stage_move"] = {"start_s": timing_clock()}
             try:
                 result = settle_stage_move(
                     ctx["core"], ctx["device"], target, start_um,
                     band_policy, configured,
                 )
             finally:
-                timing["settle_stage_move"]["end_s"] = time.monotonic()
+                timing["settle_stage_move"]["end_s"] = timing_clock()
             achieved = result["measured_um"]
         except Exception as exc:
             failure_result = exc.result if isinstance(exc, StageMoveError) else {}
@@ -897,9 +894,10 @@ class UntrustedHookAdapter:
                     "payload_type": type(action.payload).__name__}
         return asdict(action)
 
-    def _refuse(self, metadata: dict, action: HookAction, reason: str) -> None:
+    def _refuse(self, metadata: dict, action: HookAction, reason: str,
+                **fields: Any) -> None:
         self._record(metadata, event="hook_action", action=self._action_record(action),
-                     decision="refused", reason=reason)
+                     decision="refused", reason=reason, **fields)
 
     def _refuse_selector(self, metadata: dict, action: HookAction, reason: str) -> None:
         if self._context is not None:
@@ -976,19 +974,40 @@ class UntrustedHookAdapter:
             if ctx is None:
                 self._refuse(metadata, action, "no illumination envelope was authorized for this run")
                 return None
+            # `_apply_property`'s shape and units: absolute seconds from the
+            # one timing clock, only attempted phases present, and no bridge
+            # call added -- each span wraps a call that was already here. This
+            # is the only hardware write a multi-field grid can authorize
+            # (design/70 `R123`), so without it the one grid shape that writes
+            # hardware attributes nothing (`R124`).
+            #
+            # The whole set is attached to exactly ONE record per action.
+            # `_run_duration_breakdown` sums every phase of every record it
+            # walks, so repeating a span on the intermediate baseline re-read
+            # record below would count it twice and inflate `accounted_s`.
+            timing = {"clock": timing_clock_name()}
             new = float(action.value_percent)
             if ctx["baseline_stale"]:
+                # This route's only read, and it is a read-back: the baseline
+                # is stale precisely because an earlier `set_property` raised,
+                # so this asks the device what that write actually left behind.
+                # A healthy write has nothing to read back and records none.
                 try:
-                    raw = ctx["core"].get_property(ctx["device"], ctx["property"])
-                    current = ctx["guard"].illumination_to_percent(
-                        ctx["device"], ctx["property"], raw
-                    )
-                    if not math.isfinite(current):
-                        raise ValueError(f"non-finite value {raw!r}")
+                    timing["read_back"] = {"start_s": timing_clock()}
+                    try:
+                        raw = ctx["core"].get_property(ctx["device"], ctx["property"])
+                        current = ctx["guard"].illumination_to_percent(
+                            ctx["device"], ctx["property"], raw
+                        )
+                        if not math.isfinite(current):
+                            raise ValueError(f"non-finite value {raw!r}")
+                    finally:
+                        timing["read_back"]["end_s"] = timing_clock()
                 except Exception as exc:
                     self._refuse(
                         metadata, action,
                         f"illumination baseline could not be re-established: {exc}",
+                        timing=timing,
                     )
                     return None
                 ctx["last_written"] = current
@@ -998,13 +1017,17 @@ class UntrustedHookAdapter:
                     decision="succeeded", value_percent=current,
                     baseline_stale=False,
                 )
+            timing["validation"] = {"start_s": timing_clock()}
+            def refuse(reason):
+                timing["validation"]["end_s"] = timing_clock()
+                self._refuse(metadata, action, reason, timing=timing)
             if new > ctx["ceiling"]:
-                self._refuse(metadata, action, "proposal exceeds authorized envelope ceiling")
+                refuse("proposal exceeds authorized envelope ceiling")
                 return None
             old = ctx["last_written"]
             increasing = new > old
             if increasing and ctx["remaining"] <= 0:
-                self._refuse(metadata, action, "authorized illumination write budget exhausted")
+                refuse("authorized illumination write budget exhausted")
                 return None
             try:
                 raw_new = ctx["guard"].illumination_from_percent(
@@ -1015,23 +1038,29 @@ class UntrustedHookAdapter:
                     confirm_fn=None, previous_percent=old,
                 )
             except Exception as exc:
-                self._refuse(metadata, action, f"SafetyGuard refused illumination: {exc}")
+                refuse(f"SafetyGuard refused illumination: {exc}")
                 return None
+            timing["validation"]["end_s"] = timing_clock()
             try:
-                ctx["core"].set_property(ctx["device"], ctx["property"], str(raw_new))
+                timing["write"] = {"start_s": timing_clock()}
+                try:
+                    ctx["core"].set_property(ctx["device"], ctx["property"], str(raw_new))
+                finally:
+                    timing["write"]["end_s"] = timing_clock()
             except Exception as exc:
                 ctx["baseline_stale"] = True
                 self._record(
                     metadata, event="illumination_write_failure",
                     action=self._action_record(action), decision="failed",
                     reason=f"parent device write failed: {exc}",
-                    baseline_stale=True,
+                    baseline_stale=True, timing=timing,
                 )
                 return None
             ctx["last_written"] = new
             if increasing:
                 ctx["remaining"] -= 1
-            self._accept(metadata, action, "power write passed envelope and SafetyGuard")
+            self._accept(metadata, action, "power write passed envelope and SafetyGuard",
+                         timing=timing)
             return None
         if isinstance(action, (MoveNamedStage, SetDeviceProperty)):
             self._refuse(

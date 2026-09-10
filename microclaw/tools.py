@@ -99,6 +99,8 @@ from microclaw.controller import (
     settle_stage_move,
     settle_xy_move,
     stage_move_dispatch_failure,
+    timing_clock,
+    timing_clock_name,
     xy_stage_move_dispatch_failure,
 )
 from microclaw import controller as move_controller
@@ -195,8 +197,15 @@ _ACQUISITION_EVENT_CONTEXT = threading.local()
 
 
 def _acquisition_monotonic() -> float:
-    """Clock seam for deterministic acquisition-supervisor tests."""
-    return time.monotonic()
+    """Clock seam for deterministic acquisition-supervisor tests.
+
+    Reads `controller.timing_clock` -- the domain's one clock -- rather than a
+    clock of its own, so a supervisor deadline, a saved-frame cadence gap and a
+    `duration_breakdown` span cannot come from two different clocks. This keeps
+    a separate name only because tests substitute a scripted clock for the
+    supervisor's deadlines; it is not a second clock and cannot choose one.
+    """
+    return timing_clock()
 
 
 def _join_acquisition_waiter(waiter: threading.Thread, timeout_s: float) -> None:
@@ -3512,7 +3521,12 @@ def _emit_stage_dispatch(set_line: str, device_expr: str, target: float,
 
 
 def _stage_move_contract_source() -> str:
+    # `settle_stage_move`, `settle_xy_move` and the inlined
+    # `UntrustedHookAdapter` all read the clock through `timing_clock`, so the
+    # seam travels with them or an exported script raises NameError on its
+    # first span. Rendered from the live constant, never spelled again here.
     constants = "\n".join([
+        f"_TIMING_CLOCK = {move_controller._TIMING_CLOCK!r}",
         f"STAGE_MOVE_RESPONSE_BAND_UM = {move_controller.STAGE_MOVE_RESPONSE_BAND_UM!r}",
         f"STAGE_MOVE_RESPONSE_FRACTION = {move_controller.STAGE_MOVE_RESPONSE_FRACTION!r}",
         f"STAGE_MOVE_TIMEOUT_S = {move_controller.STAGE_MOVE_TIMEOUT_S!r}",
@@ -3522,6 +3536,8 @@ def _stage_move_contract_source() -> str:
     ])
     return "\n".join([
         constants,
+        inspect.getsource(move_controller.timing_clock),
+        inspect.getsource(move_controller.timing_clock_name),
         inspect.getsource(move_controller.StageMoveError),
         inspect.getsource(move_controller._stage_move_band),
         inspect.getsource(move_controller.stage_move_dispatch_failure),
@@ -4833,17 +4849,17 @@ def _acquire_with_hooks(
         plan if runtime_plan is _RUNTIME_FROM_ACCOUNTING_PLAN else runtime_plan
     )
     teardown_timing = teardown_timing if teardown_timing is not None else {}
-    teardown_timing["clock"] = "time.monotonic"
+    teardown_timing["clock"] = timing_clock_name()
     def finish_owned_cleanup() -> list[str]:
         nonlocal cleanup_done
         if cleanup_done:
             return []
         cleanup_done = True
-        teardown_timing["restoration"] = {"start_s": time.monotonic()}
+        teardown_timing["restoration"] = {"start_s": timing_clock()}
         try:
             failures = restore_hardware()
         finally:
-            teardown_timing["restoration"]["end_s"] = time.monotonic()
+            teardown_timing["restoration"]["end_s"] = timing_clock()
         if reservation is not None and (
             close_reservation or waiter_must_close_reservation
         ):
@@ -4851,19 +4867,19 @@ def _acquire_with_hooks(
         # One synchronous repaint, last: listeners may perform slow device
         # reads. Neither their failure nor a controller fake may change cleanup.
         if any(restoration_attempted.values()):
-            teardown_timing["refresh_gui"] = {"start_s": time.monotonic()}
+            teardown_timing["refresh_gui"] = {"start_s": timing_clock()}
             try:
                 ctrl.refresh_gui()
             except Exception:
                 pass
             finally:
-                teardown_timing["refresh_gui"]["end_s"] = time.monotonic()
+                teardown_timing["refresh_gui"]["end_s"] = timing_clock()
         return failures
 
     try:
         runtime_bound, fallback, runtime_term = _runtime_ceiling_s(runtime_input, policy)
         runtime_deadline = started + runtime_bound
-        teardown_timing["acquisition"] = {"start_s": time.monotonic()}
+        teardown_timing["acquisition"] = {"start_s": timing_clock()}
         acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
         # Resolve collision suffixes before dispatching the first event: a
         # first-frame hook failure must still report the data already owned
@@ -4917,7 +4933,7 @@ def _acquire_with_hooks(
                     except BaseException as exc:
                         outcome["exc"] = exc
                     finally:
-                        teardown_timing["acquisition"]["end_s"] = time.monotonic()
+                        teardown_timing["acquisition"]["end_s"] = timing_clock()
                     failures = finish_owned_cleanup()
                     if failures:
                         prior = outcome.get("exc")
@@ -5182,7 +5198,7 @@ def run_zstack(
         ctrl.core.set_exposure(exposure_ms)
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
-    started = time.monotonic()
+    started = timing_clock()
     cadence = _new_gap_summary()
     teardown = {}
     timing = _single_run_timing(
@@ -5196,7 +5212,7 @@ def run_zstack(
             ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
-        duration_s = time.monotonic() - started
+        duration_s = timing_clock() - started
         return {**_hooked_failure_result(exc, log_path), "timing": timing,
                 "duration_s": duration_s,
                 "duration_breakdown": _run_duration_breakdown(hook, teardown, duration_s)}
@@ -5206,7 +5222,7 @@ def run_zstack(
         "timing": timing,
         "started_at": started_at.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
-        "duration_s": round(time.monotonic() - started, 6),
+        "duration_s": round(timing_clock() - started, 6),
         **_reservation_report(reservation),
     }
     if hook is not None:
@@ -5318,7 +5334,7 @@ def _single_run_timing(*, n_frames: int | None, interval_s: float | None,
                 for i in range((n_frames or 1) - 1))
         ),
         "sequencing_meaning": "equal engine deadlines permit batching; device sequencing support is not measured",
-        "gap_clock": "time.monotonic",
+        "gap_clock": timing_clock_name(),
         "gap_meaning": "saved-frame callback arrival spacing, not exposure timestamps",
     }
 
@@ -5481,7 +5497,7 @@ def run_timelapse(
         progress = SurveyProgress(max_frames)
         candidates: queue.Queue = queue.Queue()
         started_at = datetime.now(timezone.utc)
-        started = time.monotonic()
+        started = timing_clock()
         try:
             result = _acquire_survey_with_detector(
                 ctrl, guard, [], save_dir, name, hook, progress, candidates,
@@ -5501,7 +5517,7 @@ def run_timelapse(
                                       hook=hook, adaptive=True),
             started_at=started_at.isoformat(),
             completed_at=datetime.now(timezone.utc).isoformat(),
-            duration_s=round(time.monotonic() - started, 6),
+            duration_s=round(timing_clock() - started, 6),
             runtime_bound_plan={
                 "frames": runtime_bound_plan.frames,
                 "estimated_duration_s": runtime_bound_plan.estimated_duration_s,
@@ -5534,7 +5550,7 @@ def run_timelapse(
         ctrl.core.set_exposure(exposure_ms)
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
-    started = time.monotonic()
+    started = timing_clock()
     cadence = _new_gap_summary()
     # Composite children have no inter-frame work inside this window, but their
     # reservation and restoration are shared. The measured latency is for a
@@ -5553,7 +5569,7 @@ def run_timelapse(
             ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown, cadence_summary=cadence,
         )
     except _HookedAcquisitionFailure as exc:
-        duration_s = time.monotonic() - started
+        duration_s = timing_clock() - started
         return {**_hooked_failure_result(exc, log_path), "timing": timing,
                 "duration_s": duration_s,
                 "duration_breakdown": _run_duration_breakdown(hook, teardown, duration_s)}
@@ -5563,7 +5579,7 @@ def run_timelapse(
         "timing": timing,
         "started_at": started_at.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
-        "duration_s": round(time.monotonic() - started, 6),
+        "duration_s": round(timing_clock() - started, 6),
         **_reservation_report(reservation),
     }
     if trigger_preflight is not None:
@@ -7874,7 +7890,7 @@ def run_multiposition_acquisition(
     callback arrival times, not exposure timestamps. Hooks require acquisition
     images and cannot be attached to snap.
     """
-    composite_started = time.monotonic()
+    composite_started = timing_clock()
     duration_accumulator = {}
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
@@ -8110,7 +8126,7 @@ def run_multiposition_acquisition(
         "acquisition_order": acquisition_order,
         "timing": timing,
     }
-    payload["duration_s"] = round(time.monotonic() - composite_started, 6)
+    payload["duration_s"] = round(timing_clock() - composite_started, 6)
     payload["duration_breakdown"] = _run_duration_breakdown(
         None, {}, payload["duration_s"], accumulator=duration_accumulator)
     restore = _live_restore_report(live_state)
@@ -8205,7 +8221,7 @@ def run_tile_acquisition(
         # is where the stage already sat (default). Re-checking could only refuse
         # the move *home*, stranding the objective out over the sample on the
         # last tile — the opposite of what the guard is for.
-        return_started = time.monotonic()
+        return_started = timing_clock()
         # set_xy now settles and reports; the read-back that used to sit here
         # was the premature one block 56 replaced, and re-reading after the
         # seam has already measured would only report a second, later position.
@@ -8213,7 +8229,7 @@ def run_tile_acquisition(
         return_result = {
             **(settled if isinstance(settled, dict) else
                {"requested_um": [center_x, center_y], "achieved_um": None}),
-            "duration_s": round(time.monotonic() - return_started, 6),
+            "duration_s": round(timing_clock() - return_started, 6),
         }
     # Report where the grid actually sat, so a caller comparing two runs can see
     # they measured the same ground rather than assuming it.
@@ -8880,12 +8896,12 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float | None, *,
     cleanup_record = {"timing": teardown}
     for record in itertools.chain(getattr(hook, "_log", ()), (cleanup_record,)):
         timing = record.get("timing", {})
-        if timing.get("clock") != "time.monotonic":
+        if timing.get("clock") != timing_clock_name():
             continue
         if record is not cleanup_record:
             record_count += 1
         first, last = None, None
-        durations = {"clock": "time.monotonic"}
+        durations = {"clock": timing_clock_name()}
         for phase in ("validation", "read_stage_start_position", "write",
                       "wait", "read_back", "settle_stage_move", "acquisition", "restoration", "refresh_gui"):
             span = timing.get(phase)
@@ -8923,7 +8939,7 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float | None, *,
     accounted_s = sum(phase["total_s"] for phase in phases.values())
     unaccounted_s = duration_s - accounted_s
     return {
-        "clock": "time.monotonic", "duration_s": duration_s,
+        "clock": timing_clock_name(), "duration_s": duration_s,
         "record_count": record_count, "phases": phases,
         "accounted_s": accounted_s, "unaccounted_s": unaccounted_s,
         "phase_meaning": "completed spans including failed actions; acquisition and restoration exclude nested write spans; "
@@ -9064,7 +9080,7 @@ def _acquire_positions_with_hook(
     fresh hooks and collision-free per-movie logs: sharing a log would truncate
     earlier movies (HookBase._write_log). Results index their paths.
     """
-    composite_started = time.monotonic() if _started is None else _started
+    composite_started = timing_clock() if _started is None else _started
     duration_accumulator = {}
     payload = {}
     save_dir = guard.resolve_in_workspace(save_dir)
@@ -9127,7 +9143,7 @@ def _acquire_positions_with_hook(
                 plan = _plan_with_hook_dose(plan, hook)
             reservation = _authorize_acquisition(ctrl, guard, plan)
             started_at = datetime.now(timezone.utc)
-            started = time.monotonic()
+            started = timing_clock()
             xy_move = None
             try:
                 if split:
@@ -9197,7 +9213,7 @@ def _acquire_positions_with_hook(
                 reservation_frames_planned=plan.frames,
                 hook_extra_exposures_planned=plan.frames - len(events),
                 started_at=started_at.isoformat(), completed_at=datetime.now(timezone.utc).isoformat(),
-                duration_s=round(time.monotonic() - started, 6),
+                duration_s=round(timing_clock() - started, 6),
                 **_reservation_report(reservation),
             )
             if hasattr(hook, "min_snr") and hasattr(hook, "threshold_source"):
@@ -9218,7 +9234,7 @@ def _acquire_positions_with_hook(
                 "hook_log_note": "Read each results entry's log_path separately; no shared log is overwritten."})
         return payload
     finally:
-        duration_s = round(time.monotonic() - composite_started, 6)
+        duration_s = round(timing_clock() - composite_started, 6)
         payload["duration_s"] = duration_s
         payload["duration_breakdown"] = _run_duration_breakdown(
             None, {}, duration_s, accumulator=duration_accumulator)
@@ -9653,7 +9669,7 @@ def _acquire_survey_with_detector(
     acquire_reservation = None
     search_channel_effects = None
     planned_acquire_effects = None
-    started = time.monotonic()
+    started = timing_clock()
     cadence = _new_gap_summary()
     teardown = {}
     try:
@@ -9685,7 +9701,7 @@ def _acquire_survey_with_detector(
             acquire_reservation.close()
         if reservation is not None:
             reservation.close()
-        duration_s = time.monotonic() - started
+        duration_s = timing_clock() - started
         return {**_hooked_failure_result(exc, getattr(hook, "log_path", None)),
                 "duration_s": duration_s,
                 "duration_breakdown": _run_duration_breakdown(hook, teardown, duration_s)}
@@ -9721,7 +9737,7 @@ def _acquire_survey_with_detector(
             "status": f"Survey acquisition complete across {len(positions)} position(s).",
             "positions": len(positions),
         }
-    duration_s = time.monotonic() - started
+    duration_s = timing_clock() - started
     return _adaptive_result(
         dataset_path, hook.log_path, hook=hook,
         **route_result, duration_s=duration_s,
@@ -10411,7 +10427,7 @@ def rank_hook_log(
     Equal metric values are ordered by position label, so replay is independent
     of JSON record order and model arithmetic.
     """
-    started = time.monotonic()
+    started = timing_clock()
     log_path = guard.resolve_readable_path(log_path)
     path = Path(log_path)
     if not path.exists():
@@ -10561,7 +10577,7 @@ def rank_hook_log(
             "projection_issues": projection.issues,
             "expected": expected, "actual": actual,
         }
-    result["duration_s"] = round(time.monotonic() - started, 6)
+    result["duration_s"] = round(timing_clock() - started, 6)
     return result
 
 

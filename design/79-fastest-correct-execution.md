@@ -902,6 +902,214 @@ PowerShell renders the acquisition event sink's stderr as an error record inside
 the redirected log (`At line:1 char:1 + uv run python ...`), which is the known
 native-stdout family and is not a failure; the runbook should have said so.
 
+## Block 79c-2 as assigned, 2026-09-10
+
+Start commit `5d30365`, branch `design79/one-clock-for-the-timing-domain`. Closes
+`R128` and `R124` together, because the first decides the clock the second's new
+spans are written against. Six decisions the coordinator made before handover.
+
+- **One clock for the whole acquisition timing domain, chosen at one site.** The
+  hazard is not resolution, it is **mixing**: `_run_duration_breakdown` compares
+  `accounted_s`, summed from span records, against `duration_s`, computed from a
+  `started = time.monotonic()` in the calling tool. Move one and not the other
+  and `unaccounted_s` becomes noise rather than a residual — the field whose
+  whole purpose is to be the honest remainder. `CLAUDE.md` already forbids mixing
+  clock domains; this is that rule with a name attached.
+
+  The domain is **anything whose value reaches a `duration_breakdown`, a hook
+  timing record, or a stage-move report**: the 24 span sites (6 in `tools.py`,
+  18 in `hook_decisions.py`), the nine `started` / `composite_started` sites that
+  feed `duration_s`, and `_acquisition_monotonic`. Establish the membership by
+  following the values, not by grepping for the call — 85 `time.monotonic()`
+  uses exist across nine modules and most are deadlines, polls and unrelated
+  bookkeeping.
+
+- **Extend the seam that exists; do not add one.** `_acquisition_monotonic()`
+  (`tools.py:197`) is already "a clock seam for deterministic
+  acquisition-supervisor tests". That is the shape — one function, substituted
+  once. `hook_decisions.py` cannot import `tools` at module scope (the dependency
+  runs the other way, through deferred imports), so the seam may need a neutral
+  home; that placement is the implementer's call, but **two independent seams are
+  not acceptable** unless a test proves they cannot disagree.
+
+- **The `"clock"` string is derived, never written twice.** It ships today as the
+  literal `"clock": "time.monotonic"` in `duration_breakdown` and in every hook
+  timing record. Two spellings of one fact is the defect this repository keeps
+  finding one surface over; derive the string from the clock actually used, so a
+  future substitution cannot leave the record lying about which clock produced
+  the numbers. **A test must assert the recorded string matches the function.**
+
+- **Out of scope, deliberately, and not by sweep.** `conversation.py`,
+  `webserve.py`, `knowledge_manager.py`, `updates.py`, `completed_dataset.py`,
+  `image_analysis.py` and `controller.py` keep `time.monotonic()` **unless a
+  value of theirs reaches a timing record** — check, do not assume, and report
+  which you checked. A wall-clock timeout in a web handler is not part of this
+  domain and changing it buys nothing.
+
+- **`R124`: the illumination write gets the same spans as the property write.**
+  `SetIllumination` performs a bare `ctx["core"].set_property(...)` followed by
+  `self._accept(...)`, with no timing at all — and it is the **only** hardware
+  write a multi-field grid can authorize (`R123`), so today the one grid shape
+  that writes hardware attributes nothing. Add `validation` / `write` /
+  `read_back` in `_apply_property`'s shape and units. Two `perf_counter` reads
+  per phase and **no bridge call added**, asserted through the recorded call list
+  the way `test_property_write_spans_attribute_delay_without_extra_bridge_calls`
+  already does. The write is budget-bounded, so the payload bound holds.
+
+- **Do not restate old measurements as if they were taken on the new clock.**
+  design/78's numbers came from Micro-Manager's CoreLog at microsecond resolution
+  and are unaffected; block 79c-1's came from `GetTickCount64` and are quantized
+  to a ~15.6 ms tick. `R128` records both. This block changes what future
+  measurements can resolve and **re-measures nothing** — no number already in a
+  design document may be edited to look sharper than the clock that produced it.
+
+### Acceptance evidence
+
+Local; no rig. `R128` is already measured, so nothing here is owed a machine.
+
+1. Every span site and every `duration_s` source in the domain uses the one
+   clock, asserted by a test that inspects the modules' source rather than by
+   review — the shape of `test_emitted_inline_defines_every_name_it_uses`.
+2. The recorded `"clock"` value equals the name of the function actually called,
+   asserted for both `duration_breakdown` and a hook timing record.
+3. `accounted_s + unaccounted_s == duration_s` still reconciles, and a test
+   proves the domain is unmixed by driving a run and asserting the residual is
+   bounded by the run's real duration rather than by a clock offset.
+4. The illumination write reports `validation` / `write` / `read_back` spans,
+   watched failing on the pre-fix tree, with **no added bridge call**.
+5. `design/79-clock-resolution-probe.py` still runs and its two clocks now agree
+   with what the product uses — the probe is the instrument that measured `R128`
+   and it should keep working.
+6. Full suite by the coordinator on return.
+
+## Block 79c-2, closed 2026-09-10 — and three things the assignment got wrong
+
+**Shipped.** One clock for the acquisition timing domain, `time.perf_counter()`,
+reached through a seam in `controller.py` — the bottom of the import graph, which
+both `tools` and `hook_decisions` already import at module scope and which is
+itself a domain member. `_TIMING_CLOCK` is a **string** resolved with `getattr`
+per call, deliberately: one substitution then reaches all three modules, where a
+from-imported function alias would have forced every clock test to patch two or
+three module bindings. `_acquisition_monotonic` survives — four supervisor tests
+substitute it with scripted finite clocks — but now delegates, so it cannot
+choose a clock. The `"clock"` string is derived from the same constant, so a
+record cannot disagree with the clock that produced it. `R124`'s spans reached
+the illumination write. `R128` and `R124` both close.
+
+**The assignment's inventory was incomplete, and the omission that mattered was
+not a clock call at all.** `_run_duration_breakdown` selected records **by clock
+name** — `if timing.get("clock") != "time.monotonic": continue`. Rename the
+records and leave that behind and every span is silently skipped: `accounted_s`
+goes to zero, `unaccounted_s` takes the whole run, no exception is raised, and
+the suite stays green for anything not asserting `record_count`. Two more string
+sites (`slowest_records`' per-record projection, and `gap_clock` in
+`_single_run_timing`, which names the clock `_record_gap` measures with) were the
+same shape. **A domain built by grepping for a clock call misses the code that
+reasons about the clock's name** — and this one would have inverted the
+instrument while looking healthy.
+
+**Three specification errors, all found by the implementer against the code.**
+
+- **`controller.py` was listed as out of scope while the domain definition
+  included "a stage-move report", which is exactly what `settle_stage_move` and
+  `settle_xy_move` produce.** The two statements contradicted each other. The
+  definition wins, and it is demonstrably right: `run_tile_acquisition`'s
+  return-to-centre merges a settle report carrying `elapsed_s` with a
+  `duration_s` measured in `tools` into **one dict**, so the old scope would have
+  put two clocks side by side describing one interval.
+- **`read_back` on the illumination write is not achievable as specified.** The
+  assignment asked for `validation` / `write` / `read_back` "with no bridge call
+  added"; that route makes two bridge calls and neither is a post-write
+  verification. The only reading consistent with the constraint is that
+  `read_back` wraps the conditional baseline re-read — which is honest, because
+  `baseline_stale` is set *precisely* when an earlier `set_property` raised, so
+  that read asks the device what the failed write left behind (design/72's "a
+  raised write leaves state unknown"). The consequence, stated because it is
+  visible in the record: **a healthy illumination write records `validation` and
+  `write` only.** A read-back on every write would be a new bridge call and a new
+  decision, and was not taken.
+- **The stated mixing mechanism was wrong, though its conclusion was right.**
+  The assignment said a partial migration makes `unaccounted_s` "a clock
+  offset". It does not: both `duration_s` and each span are *differences*, and a
+  constant offset cancels inside a difference. The real defect is a **split
+  pair** — one end of one span on each clock. That is why the guard has to be a
+  source-inspection test and not a numeric one, and it is why this change is
+  **unobservable locally**: on macOS `monotonic` and `perf_counter` are the same
+  `mach_absolute_time()` counter to 41 ns, measured.
+
+### Verified by the coordinator, by mutation rather than by reading
+
+Both guards were mutated against the case each exists for, because a test whose
+subject is *structure* never reaches its assertion on a pre-fix tree
+(`feedback_mutate_dont_watch_it_fail`):
+
+- **split pair** (span start moved back, end left): `test_no_domain_site_still_
+  reads_the_old_clock` fails, and its assertion shows the injected 1000 s offset
+  leaking into the arithmetic — `assert (-999.945 + 1000.000) == 0.055`.
+- **whole pair** (both ends moved back): numerically invisible, as predicted, and
+  caught by `test_one_clock_reads_the_whole_timing_domain` naming the exact site
+  — `tools.py:4882 _acquire_with_hooks reads time.monotonic`.
+
+The exported script was diffed across the change rather than trusted to its byte
+pin: the delta is **exactly** the seam's constant and two functions plus four
+substitutions inside the two inlined settle functions, 546 → 563 lines, nothing
+else. The emitted script parses and defines `timing_clock` before its first use.
+The eight clock reads kept on `monotonic` are listed per **function** with a
+reason each, across all eight clock spellings, and an unused entry fails the
+test — so the list cannot rot into a blanket exemption. Suite **3289 passed, 99
+skipped**, run by the coordinator. The seam's `getattr` indirection was priced
+because it sits on a per-saved-frame path: **42 ns**, against block 75a's
+measured 158.8 ms one-frame window, 0.000026%.
+
+### What is still owed, and why it is not local
+
+Nothing in the acceptance list. But **the benefit of this block cannot be
+observed on the machine it was written on**, by construction: the two clocks are
+one counter on macOS. The cheap confirmation reuses an instrument that already
+exists — block 79c-1's demo gate — and asks one arithmetic question of its
+artifacts: are the phase spans still exact integer milliseconds? Before this
+block every one of eighteen was, because `GetTickCount64`'s unit is the
+millisecond. After it they should not be. That is one command and no setup, and
+it is the only place the fix is visible.
+
+### The demo confirmation, run 2026-09-10 — the fix is visible only here
+
+Same instrument as block 79c-1's gate, same six criteria, **6/6** again. The one
+question it was re-run to answer:
+
+| | before (79c-1) | after (79c-2) |
+|---|---|---|
+| `clock` reported | `time.monotonic` | **`time.perf_counter`**, all six payloads |
+| nonzero span values that are exact integer milliseconds | **16 of 18** | **0 of 36** |
+| `restoration`, the no-op sweep | exactly `0.0`, six runs | **0.70–1.10 µs** |
+
+Individual spans now read `0.1015593996271491`, `0.07394189946353436`,
+`7.003545761108398e-07` — where every one of them previously landed on a whole
+millisecond because `GetTickCount64` counts in milliseconds and updates every
+~15.6 ms. **The instrument gained roughly four orders of magnitude on the
+platform every rig runs**, and the count of nonzero span values going 18 → 36 is
+itself the proof: it doubled because `restoration` stopped being zero, which is
+exactly the six runs × one phase × three keys that were previously below the
+floor.
+
+This is the whole of what could not be seen locally: on macOS both clocks are the
+same 41 ns counter, so every local test passes identically before and after.
+
+**And the per-acquisition multiplier replicated.** 79c-1's measurement was n=1
+per arm and recorded as a gross effect rather than a rate; this run is a second
+independent sample of the same four shapes:
+
+| | 8 acquisitions | 1 acquisition | ratio | exposure share of the grid |
+|---|---|---|---|---|
+| 79c-1 | 4.219 s | 0.531 s | **7.9×** | 1.9% |
+| 79c-2 | 3.947 s | 0.605 s | **6.5×** | 2.0% |
+
+So **n=2, 6.5× and 7.9×**, with per-shape in-acquisition totals differing 5–17%
+between runs — ordinary variation, and the ratio survives it. The exposure share
+is the stable one: 1.9% and 2.0% of an eight-field grid spent exposing. Neither
+number is a rate and neither licenses collapsing the grid into one acquisition,
+for the reason `R126` gives.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
@@ -909,6 +1117,7 @@ native-stdout family and is not a failure; the runbook should have said so.
 | 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
 | 79b | `design79/performance-aware-planning` | `4baa9b1` | codex | pilot only, $2.85, arm tree; two-tree gate **not run** (relocation, not information) | `031259c` 2026-09-09 |
 | 79c-1 | `design79/the-per-field-multiplier` | `f9af854` | codex, then claude (Codex usage limit mid-round-2) | demo 6/6 + measurement, 2026-09-10 | merged 2026-09-10 |
+| 79c-2 | `design79/one-clock-for-the-timing-domain` | `5d30365` | claude | local by mutation + demo 6/6, spans no longer ms-quantized | merged 2026-09-10 |
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
 prompt paragraph is a hypothesis. Nothing here authorises a rig exposure.

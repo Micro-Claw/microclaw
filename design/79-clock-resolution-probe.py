@@ -19,6 +19,12 @@ observed monotonic granularity changes between those two runs, microclaw's
 timing floor depends on what else is on the machine.
 
     uv run python design\79-clock-resolution-probe.py
+
+Block 79c-2 moved the product's timing domain to `time.perf_counter` on the
+strength of what this probe measured; the paragraphs above are kept as written
+because they are the record of why it was run. Nothing here is re-measured, and
+the probe still reports both clocks, so it still measures the one the product
+reads -- `microclaw.controller.timing_clock_name()` names it.
 """
 from __future__ import annotations
 

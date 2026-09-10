@@ -559,7 +559,7 @@ REACHABLE_GRIDS = [(None, 0., True), (None, .5, True),
 def test_composite_breakdown_measures_every_reachable_field(
         rig, monkeypatch, hook, interval, per_field, n):
     """One composite breakdown per grid, and its residual is the stage motion."""
-    monkeypatch.setattr(tools.time, 'monotonic', lambda: rig.now)
+    monkeypatch.setattr(tools.time, 'perf_counter', lambda: rig.now)
     kw = {'positions': [dict(name=f'P{i}', x_um=i * 10., y_um=0.) for i in range(n)],
           'protocol_params': dict(n_frames=2, interval_s=interval)}
     if hook:
@@ -580,7 +580,7 @@ def test_composite_breakdown_measures_every_reachable_field(
         # One window over the whole grid, with the settles inside it.
         assert b['phases']['acquisition']['max_s'] == pytest.approx(b['duration_s'])
     assert 'dominant_phase' not in b
-    assert b['clock'] == 'time.monotonic'
+    assert b['clock'] == tools.timing_clock_name()
     assert b['duration_s'] == result['duration_s'] == round(rig.now, 6)
     assert b['accounted_s'] + b['unaccounted_s'] == pytest.approx(result['duration_s'])
     assert b['unaccounted_s'] == b['duration_s'] - b['accounted_s']

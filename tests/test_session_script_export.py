@@ -4934,8 +4934,10 @@ def test_80b_hookless_bytes_pin_includes_81_whole_plan_preflight(tmp_path):
     _, _, source = export(tmp_path, [call("run_multiposition_acquisition", _80B_BASE)])
     # D1 adds the existing portable guard, validates all coordinates, and moves
     # event construction before the position loop. The acquisition body is unchanged.
-    assert len(source.splitlines()) == 545
-    assert hashlib.sha256(source.encode()).hexdigest() == "7deb9ad0900e2e2fcf0b3d622519e475b600a1cbecb074db06c21ab93e8bee4b"
+    # 79c-2 added 18 lines: the timing-clock seam `settle_stage_move` and
+    # `settle_xy_move` now read, inlined so a standalone span cannot NameError.
+    assert len(source.splitlines()) == 563
+    assert hashlib.sha256(source.encode()).hexdigest() == "44fe91d34f0bac17b9b75ead224d383f1f69f70dbf7187200a4412c21b3805ac"
 
 
 def test_80b_rendered_dependencies_appear_once_and_refusals_add_none(tmp_path):

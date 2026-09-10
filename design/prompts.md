@@ -10448,3 +10448,72 @@ mention and should.
 block's branch while a worktree does, so the coordinator commits its decisions,
 pushes, returns the primary checkout to `main`, and adds the worktree — then
 makes its own doc edits in the worktree once the runner is idle.
+
+## design/79 block 79c-2 — one clock for the timing domain (merged 2026-09-10)
+
+Branch `design79/one-clock-for-the-timing-domain`, start `5d30365`. Claude runner
+(Codex was inside its usage window). Closed `R128` and `R124`. The domain moved
+to `time.perf_counter()` through a seam in `controller.py`, the shipped `"clock"`
+string is derived from it, and the illumination write got spans.
+
+**The block existed because an inference got mistaken for a measurement.** `R128`
+was opened off block 79c-1's artifacts, where every phase span was an exact
+integer millisecond — read as a 1 ms clock floor. It is ~15.6 ms:
+`GetTickCount64` counts in **milliseconds** and updates every **15.6 ms**, so its
+values look millisecond-precise and are good to a tick. *A value's unit is not
+its resolution.* Two rounds of arithmetic over the artifacts got it wrong and one
+command got it right — `design/79-clock-resolution-probe.py`, which reads
+`get_clock_info` **and** measures the granularity, because the two differ. **When
+a question is about an instrument, probe the instrument; do not infer it from the
+numbers it produced.**
+
+**The site inventory I handed over was incomplete, and the miss was not a clock
+call.** `_run_duration_breakdown` selected records **by clock name**
+(`if timing.get("clock") != "time.monotonic": continue`). Rename the records and
+leave that behind and every span is skipped — `accounted_s` to zero,
+`unaccounted_s` swallowing the run, no exception, and a green suite for anything
+not asserting `record_count`. Two more string sites were the same shape.
+**A domain built by grepping for a call misses the code that reasons about the
+call's name.** Hand a runner the inventory *and* tell it the inventory is the
+thing most likely to be wrong; this one did check and did find it.
+
+**Three specification errors, all caught against the code, none by review.**
+`controller.py` was listed out of scope while my own domain definition included
+the stage-move report it produces — a flat contradiction, and `run_tile_acquisition`
+merges a settle report's `elapsed_s` and a `tools`-measured `duration_s` into one
+dict, so the old scope would have put two clocks side by side describing one
+interval. `read_back` on the illumination write was unachievable as specified,
+because that route has no post-write read; the honest result is that a healthy
+illumination write records `validation` and `write` only. And my stated mixing
+mechanism was wrong: a constant offset **cancels** inside a difference, so the
+defect a partial migration leaves is a *split pair*, which is why the guard has
+to be structural. Say what the hazard is precisely, or the implementer builds the
+wrong guard.
+
+**Verification was by mutation, because watch-it-fail cannot reach a structural
+test.** Split pair → the numeric guard fails showing the injected 1000 s leak;
+whole pair → numerically invisible on macOS (one 41 ns counter for both clocks)
+and caught by the source guard naming `tools.py:4882`. The byte-pinned export was
+**diffed** across the change rather than trusted: exactly the seam plus four
+substitutions, 546 → 563 lines. And the seam's `getattr` was priced because it
+sits on a per-saved-frame path — 42 ns, 0.000026% of block 75a's one-frame
+window. *Price an indirection you put on an acquisition path, even when the
+answer is obviously negligible; "obviously" is what design/79 exists to stop.*
+
+**The demo confirmation was worth running and I nearly argued it away.** Local
+tests pass identically before and after, by construction, so the change is
+unobservable on the machine it was written on. One re-run of 79c-1's existing
+gate showed `clock: time.perf_counter`, **0 of 36** span values on a whole
+millisecond where **16 of 18** had been, and the no-op `restoration` sweep at
+**0.70 µs** where it read `0.0`. The nonzero span count doubling 18 → 36 is the
+proof, not a coincidence — it is exactly the phase that had been under the floor.
+**Reuse a merged block's gate for the next block's confirmation**: no build cost,
+and it gave a second independent sample of 79c-1's n=1 measurement for free
+(6.5× against 7.9×, exposure share 2.0% against 1.9%).
+
+**Two runner turns died to usage limits on one day, on two different runners** —
+Codex mid-round-2 of 79c-1, Claude mid-investigation here. Both died *early* and
+left clean trees, so nothing needed committing as unreviewed; I verified each
+worktree myself rather than believing the notification. The operator's answer to
+a blocked runner was to switch runners rather than wait for the window, which the
+workflow does not mention and should.
