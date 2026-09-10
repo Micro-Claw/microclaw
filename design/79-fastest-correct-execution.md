@@ -902,6 +902,86 @@ PowerShell renders the acquisition event sink's stderr as an error record inside
 the redirected log (`At line:1 char:1 + uv run python ...`), which is the known
 native-stdout family and is not a failure; the runbook should have said so.
 
+## Block 79c-2 as assigned, 2026-09-10
+
+Start commit `5d30365`, branch `design79/one-clock-for-the-timing-domain`. Closes
+`R128` and `R124` together, because the first decides the clock the second's new
+spans are written against. Six decisions the coordinator made before handover.
+
+- **One clock for the whole acquisition timing domain, chosen at one site.** The
+  hazard is not resolution, it is **mixing**: `_run_duration_breakdown` compares
+  `accounted_s`, summed from span records, against `duration_s`, computed from a
+  `started = time.monotonic()` in the calling tool. Move one and not the other
+  and `unaccounted_s` becomes noise rather than a residual — the field whose
+  whole purpose is to be the honest remainder. `CLAUDE.md` already forbids mixing
+  clock domains; this is that rule with a name attached.
+
+  The domain is **anything whose value reaches a `duration_breakdown`, a hook
+  timing record, or a stage-move report**: the 24 span sites (6 in `tools.py`,
+  18 in `hook_decisions.py`), the nine `started` / `composite_started` sites that
+  feed `duration_s`, and `_acquisition_monotonic`. Establish the membership by
+  following the values, not by grepping for the call — 85 `time.monotonic()`
+  uses exist across nine modules and most are deadlines, polls and unrelated
+  bookkeeping.
+
+- **Extend the seam that exists; do not add one.** `_acquisition_monotonic()`
+  (`tools.py:197`) is already "a clock seam for deterministic
+  acquisition-supervisor tests". That is the shape — one function, substituted
+  once. `hook_decisions.py` cannot import `tools` at module scope (the dependency
+  runs the other way, through deferred imports), so the seam may need a neutral
+  home; that placement is the implementer's call, but **two independent seams are
+  not acceptable** unless a test proves they cannot disagree.
+
+- **The `"clock"` string is derived, never written twice.** It ships today as the
+  literal `"clock": "time.monotonic"` in `duration_breakdown` and in every hook
+  timing record. Two spellings of one fact is the defect this repository keeps
+  finding one surface over; derive the string from the clock actually used, so a
+  future substitution cannot leave the record lying about which clock produced
+  the numbers. **A test must assert the recorded string matches the function.**
+
+- **Out of scope, deliberately, and not by sweep.** `conversation.py`,
+  `webserve.py`, `knowledge_manager.py`, `updates.py`, `completed_dataset.py`,
+  `image_analysis.py` and `controller.py` keep `time.monotonic()` **unless a
+  value of theirs reaches a timing record** — check, do not assume, and report
+  which you checked. A wall-clock timeout in a web handler is not part of this
+  domain and changing it buys nothing.
+
+- **`R124`: the illumination write gets the same spans as the property write.**
+  `SetIllumination` performs a bare `ctx["core"].set_property(...)` followed by
+  `self._accept(...)`, with no timing at all — and it is the **only** hardware
+  write a multi-field grid can authorize (`R123`), so today the one grid shape
+  that writes hardware attributes nothing. Add `validation` / `write` /
+  `read_back` in `_apply_property`'s shape and units. Two `perf_counter` reads
+  per phase and **no bridge call added**, asserted through the recorded call list
+  the way `test_property_write_spans_attribute_delay_without_extra_bridge_calls`
+  already does. The write is budget-bounded, so the payload bound holds.
+
+- **Do not restate old measurements as if they were taken on the new clock.**
+  design/78's numbers came from Micro-Manager's CoreLog at microsecond resolution
+  and are unaffected; block 79c-1's came from `GetTickCount64` and are quantized
+  to a ~15.6 ms tick. `R128` records both. This block changes what future
+  measurements can resolve and **re-measures nothing** — no number already in a
+  design document may be edited to look sharper than the clock that produced it.
+
+### Acceptance evidence
+
+Local; no rig. `R128` is already measured, so nothing here is owed a machine.
+
+1. Every span site and every `duration_s` source in the domain uses the one
+   clock, asserted by a test that inspects the modules' source rather than by
+   review — the shape of `test_emitted_inline_defines_every_name_it_uses`.
+2. The recorded `"clock"` value equals the name of the function actually called,
+   asserted for both `duration_breakdown` and a hook timing record.
+3. `accounted_s + unaccounted_s == duration_s` still reconciles, and a test
+   proves the domain is unmixed by driving a run and asserting the residual is
+   bounded by the run's real duration rather than by a clock offset.
+4. The illumination write reports `validation` / `write` / `read_back` spans,
+   watched failing on the pre-fix tree, with **no added bridge call**.
+5. `design/79-clock-resolution-probe.py` still runs and its two clocks now agree
+   with what the product uses — the probe is the instrument that measured `R128`
+   and it should keep working.
+6. Full suite by the coordinator on return.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
@@ -909,6 +989,7 @@ native-stdout family and is not a failure; the runbook should have said so.
 | 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
 | 79b | `design79/performance-aware-planning` | `4baa9b1` | codex | pilot only, $2.85, arm tree; two-tree gate **not run** (relocation, not information) | `031259c` 2026-09-09 |
 | 79c-1 | `design79/the-per-field-multiplier` | `f9af854` | codex, then claude (Codex usage limit mid-round-2) | demo 6/6 + measurement, 2026-09-10 | merged 2026-09-10 |
+| 79c-2 | `design79/one-clock-for-the-timing-domain` | `5d30365` | claude | local; `R128` already measured | — |
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
 prompt paragraph is a hypothesis. Nothing here authorises a rig exposure.
