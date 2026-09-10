@@ -1110,6 +1110,66 @@ is the stable one: 1.9% and 2.0% of an eight-field grid spent exposing. Neither
 number is a rate and neither licenses collapsing the grid into one acquisition,
 for the reason `R126` gives.
 
+### The M2 close-out, run 2026-09-10 — R105 measured at last
+
+**`R105` is measured, it lands in the band the row predicted, and its own control
+demonstrates why block 78a could not see it.** Three 20-frame hooked timelapses
+at 50 ms on M2's Andor, all n=1:
+
+| arm | requested | min | median | mean | max | route |
+|---|---|---|---|---|---|---|
+| zero-interval | 0 s | 0.0023 | **0.0500** | 0.0284 | 0.0587 | `no_requested_delay` |
+| short-60ms | 0.06 s | 0.2003 | **0.2407** | 0.2169 | 0.2407 | `shared_timepoint_clock` |
+| control-500ms | 0.5 s | 0.4693 | **0.5527** | 0.5031 | 0.5527 | `shared_timepoint_clock` |
+
+`R105` predicted "~0.20–0.35 s at 50 ms exposure", from the 2026-09-04 session.
+The short arm's whole distribution — min 0.200, max 0.241 — sits inside it.
+
+**The decomposition is the result, and it is three numbers.** A
+hardware-sequenced burst runs at **the exposure**: 0.050 s median at a zero
+requested interval, where the engine emits no `min_start_time` and every pair is
+sequencable. Software-paced dispatch costs **~0.19 s more per frame**: asked for
+0.06 s, the run achieved 0.241 s, so it could not meet the request by a factor of
+four. And the 0.5 s arm came back at 0.553 s — **the request plus one exposure** —
+which is exactly how 78a's gate was blind: 0.19 s of per-frame cost fits inside a
+half-second interval and the cadence column reports the request. design/79 item 1
+warned that a cadence equal to the requested interval is reporting the request;
+here is the same rig reporting both.
+
+**The ~0.19 s is NOT attributed, and that is a gate omission rather than a
+finding.** All three arms carried `snr_observer`, so the cost is dispatch **plus
+the hook's own per-frame analysis** plus notification, and nothing here separates
+them. design/79 item 4 asks for a no-hook control and this run had none. The
+instrument now carries a `short-60ms-no-hook` arm; until it runs, the honest
+statement is a measured 0.19 s of software-paced per-frame cost with its cause
+unattributed.
+
+**`R128` confirmed on a second machine.** M2 is Windows-11-10.0.22631 with Python
+3.12.14, against the demo machine's 26200 and 3.12.13: `time.monotonic()` is
+`GetTickCount64()` claiming 15625 µs and observed stepping **15000 µs** (16000 µs
+there — GetTickCount64 alternates 15/16), and it measures a 40 µs busy-wait as
+16000 µs. `perf_counter()` is `QueryPerformanceCounter()` at 0.1 µs and measures
+that gap as **40.2 µs**. Two machines, two Windows builds, two Python patch
+versions, same conclusion.
+
+**The multiplier limb measured nothing, because the gate was written from the
+demo machine.** It asked for absolute positions 0, 20, 40… µm; M2's stage was at
+(4392.6, −5082.4), so field P0 was a 4.4 mm move to the origin. The stage
+travelled 971 µm in X and 63 µm in Y, reported idle after **10.28 s**, and
+`settle_xy_move` refused to claim arrival — `measured_um` 3421.6 against
+`requested_um` 0.0, band 439.26 µm from the relative policy. No frames, no dose,
+and the stage left ~971 µm from where it started.
+
+**The product was right and the instrument was wrong**, which is the useful half:
+block 56 and block 64d's arrival contract met a real incomplete motion on a real
+rig and reported measured-not-requested instead of success. `CLAUDE.md`'s "never
+anchor on one microscope" as a *gate* defect — invisible on the demo machine,
+whose stage sits at the origin. The fields are now offsets from
+`get_x_position()`/`get_y_position()`, the way `run_tile_acquisition` has always
+defaulted its centre, pinned by a selftest that uses M2's real coordinates as its
+fixture. **Block 79c-1's gate carries the same latent defect** and has only ever
+run on the demo machine; anyone reusing it on a rig should take this fix with it.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |

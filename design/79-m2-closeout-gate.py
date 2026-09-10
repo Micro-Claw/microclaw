@@ -73,9 +73,13 @@ class Report:
 # engine is not simply honouring min_start_time. 0.5 s is 78a's blind arm and is
 # carried as the control that reproduces its result.
 CADENCE_ARMS = [
-    ("zero-interval", 0.0),
-    ("short-60ms", 0.06),
-    ("control-500ms", 0.5),
+    ("zero-interval", 0.0, "snr_observer"),
+    ("short-60ms", 0.06, "snr_observer"),
+    ("control-500ms", 0.5, "snr_observer"),
+    # design/79 item 4 asks for a no-hook control and the first M2 run had
+    # none, so its ~0.19 s software-paced per-frame cost could not be
+    # attributed between dispatch and the hook's own analysis.
+    ("short-60ms-no-hook", 0.06, None),
 ]
 FRAMES = 20
 EXPOSURE_MS = 50.0
@@ -89,6 +93,8 @@ def main() -> int:
     ap.add_argument("--exposure-ms", type=float, default=EXPOSURE_MS)
     ap.add_argument("--fields", type=int, default=6,
                     help="fields for the per-acquisition multiplier limb")
+    ap.add_argument("--step-um", type=float, default=20.0,
+                    help="field spacing, as an offset from the current position")
     ap.add_argument("--skip-multiplier", action="store_true",
                     help="run the R105 cadence arms only")
     args = ap.parse_args()
@@ -145,11 +151,11 @@ def main() -> int:
         save_dir = out / "data"
         save_dir.mkdir(parents=True, exist_ok=True)
         guard.resolve_in_workspace(str(save_dir))
-        for label, interval_s in CADENCE_ARMS:
+        for label, interval_s, hook in CADENCE_ARMS:
             result = tools.run_timelapse(
                 ctrl, guard, args.frames, interval_s,
                 str(save_dir / label), exposure_ms=args.exposure_ms,
-                name=label, hook_strategy="snr_observer",
+                name=label, **({"hook_strategy": hook} if hook else {}),
             )
             (out / f"payload-{label}.json").write_text(
                 json.dumps(result, indent=2, default=str), encoding="utf-8")
@@ -169,7 +175,7 @@ def main() -> int:
         if not cadence:
             raise NotExercised("limb 0 produced no runs")
         rows = {}
-        for label, interval_s in CADENCE_ARMS:
+        for label, interval_s, hook in CADENCE_ARMS:
             r = cadence.get(label)
             if not r:
                 continue
@@ -177,6 +183,7 @@ def main() -> int:
             b = r.get("duration_breakdown") or {}
             rows[label] = {
                 "requested_interval_s": interval_s,
+                "hook": hook,
                 "n_gaps": gaps.get("count"),
                 "min_s": gaps.get("min_s"), "median_le_s": gaps.get("median_le_s"),
                 "mean_s": gaps.get("mean_s"), "p95_le_s": gaps.get("p95_le_s"),
@@ -204,12 +211,23 @@ def main() -> int:
         ctrl, guard = rig()
         save_dir = out / "data"
         rows = {}
+        # Fields are offsets from WHERE THE STAGE IS, never absolute microns.
+        # The first version hardcoded 0, 20, 40... which is harmless on the demo
+        # machine, whose stage sits at the origin, and on M2 asked for a 4.4 mm
+        # move to absolute (0, 0): the stage travelled 971 um, went idle, and
+        # `settle_xy_move` correctly refused to claim arrival -- so the limb
+        # measured nothing and left the stage displaced. `run_tile_acquisition`
+        # has always defaulted its centre to the current position; do the same.
+        home_x = ctrl.core.get_x_position()
+        home_y = ctrl.core.get_y_position()
         for label, hook, interval_s, expected in (
                 ("per-field", None, 0.0, args.fields),
                 ("shared-dataset", "snr_observer", 0.0, 1)):
             result = tools.run_multiposition_acquisition(
                 ctrl, guard, protocol="timelapse",
-                positions=[{"name": f"P{i}", "x_um": float(i * 20), "y_um": 0.0}
+                positions=[{"name": f"P{i}",
+                            "x_um": home_x + float(i * args.step_um),
+                            "y_um": home_y}
                            for i in range(args.fields)],
                 save_dir=str(save_dir / label), name=label,
                 protocol_params={"n_frames": 1, "interval_s": interval_s,

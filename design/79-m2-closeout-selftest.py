@@ -74,6 +74,12 @@ def install(monkeypatch, *, bridge=True, timelapse=None, grid=None):
         def get_camera_device(self):
             return "Andor"
 
+        def get_x_position(self):
+            return 4392.6      # M2's real position when the first run went out
+
+        def get_y_position(self):
+            return -5082.4
+
     class Ctrl:
         core = Core()
 
@@ -129,7 +135,11 @@ def test_a_healthy_rig_measures_both_and_scores_only_the_guard(monkeypatch, tmp_
     # One criterion, two measurements: the measurements must not be scored.
     assert report["total"] == 1 and report["passed"] == 1
     cadence = json.loads((out / "cadence.json").read_text())
-    assert set(cadence) == {"zero-interval", "short-60ms", "control-500ms"}
+    assert set(cadence) == {"zero-interval", "short-60ms", "control-500ms",
+                            "short-60ms-no-hook"}
+    # The no-hook control is what makes the software-paced cost attributable.
+    assert cadence["short-60ms-no-hook"]["hook"] is None
+    assert cadence["short-60ms"]["hook"] == "snr_observer"
     assert all(row["n_gaps"] == 19 for row in cadence.values())
     mult = json.loads((out / "multiplier.json").read_text())
     assert mult["per-field"]["acquisitions"] == 6
@@ -184,11 +194,37 @@ def test_skip_multiplier_reports_not_exercised_not_a_pass(monkeypatch, tmp_path)
     assert status == 0 and seen["0"] == "PASS"
 
 
+def test_the_grid_is_offset_from_the_stage_not_absolute(monkeypatch, tmp_path):
+    """The first M2 run asked for absolute (0,0) from 4.4 mm away and failed.
+
+    The demo machine's stage sits at the origin, so absolute coordinates are
+    invisible there — this is CLAUDE.md's "never anchor on one microscope" as a
+    gate defect, and only a real rig could show it.
+    """
+    seen = []
+
+    def grid(ctrl, guard, **kw):
+        seen.append([(p["x_um"], p["y_um"]) for p in kw["positions"]])
+        return grid_payload(
+            acquisitions=len(kw["positions"]) if not kw.get("hook_strategy") else 1,
+            duration_s=3.0 if not kw.get("hook_strategy") else 0.6)
+
+    status, report, _ = score(monkeypatch, tmp_path, grid=grid,
+                             argv=["--fields", "3", "--step-um", "20"])
+    assert status == 0
+    assert seen, "the grid limb did not run"
+    for positions in seen:
+        assert positions == [(4392.6, -5082.4), (4412.6, -5082.4),
+                             (4432.6, -5082.4)], positions
+
+
 def test_the_arms_are_r105_shaped(monkeypatch, tmp_path):
     """R105 needs a short interval and 50 ms; 0.5 s is 78a's blind control."""
     assert gate.EXPOSURE_MS == 50.0
-    intervals = dict(gate.CADENCE_ARMS)
+    intervals = {label: interval for label, interval, _ in gate.CADENCE_ARMS}
     assert intervals["control-500ms"] == 0.5, "78a's blind arm must be carried"
     assert min(intervals.values()) == 0.0
     assert any(0 < v < 0.1 for v in intervals.values()), \
         "a short nonzero interval is the arm 78a lacked"
+    assert any(h is None for _, _, h in gate.CADENCE_ARMS), \
+        "design/79 item 4 asks for a no-hook control"
