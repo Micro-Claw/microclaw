@@ -844,13 +844,71 @@ Round 2 was the narrowing. The Codex runner hit its usage limit mid-turn before
 making any edit, and the round was completed by a Claude runner in the same
 worktree — operator decision, rather than waiting for the 19:00 window.
 
+### The demo gate, run 2026-09-10 — 6/6 criteria, and the measurement 79c asked for
+
+Scored from `block79c1-evidence`, not from the exit status. Every criterion
+independently corroborated: `acquisition.count` equals the number of NDTiff
+datasets actually on disk for each shape (8/8/8/1, and 2/24 for the bound limb),
+reconciliation drift is exactly 0.0 in all six runs, the payload grew **926 → 941
+bytes from 2 to 24 fields**, and the shared-dataset route delivered 8/8 frames in
+one acquisition.
+
+**The measurement.** Eight frames at 10 ms exposure in every arm; the arms differ
+in how many `Acquisition` objects they construct.
+
+| shape | acquisitions | in-acquisition | residual | total |
+|---|---|---|---|---|
+| `hookless-zero` | 8 | 2.234 s | 1.985 s | 4.219 s |
+| `hookless-spaced` | 8 | 1.516 s | 1.781 s | 3.297 s |
+| `hooked-spaced` | 8 | 2.016 s | 1.890 s | 3.906 s |
+| `hooked-zero` | **1** | 0.391 s | 0.140 s | **0.531 s** |
+
+**The per-acquisition cost multiplies.** Eight acquisitions cost **7.9× the wall
+clock** of one acquisition carrying the same eight frames. Per-acquisition mean is
+0.19–0.28 s, and the process's *first* acquisition costs 0.859 s against 0.156–0.313
+for the seven after it. That corroborates block 75a's shape on this machine —
+158.8 ms p50 for `mark_finished` → first frame accounted, 96.7% of a one-frame
+window — and answers the question 79c's brief could not: yes, it multiplies, and
+this is what `R105`'s family looks like one level up.
+
+**80 ms of the 4.219 s was exposure — 1.9%.** Against 15.1% for the shared route.
+A small multi-field grid spends 98% of its time not exposing, split roughly half
+in per-acquisition overhead and half in between-field work. The residual is the
+stage: seven settled moves on a *demo* stage, which is nearly free, so this
+understates a real rig rather than overstating it.
+
+**n = 1 per arm.** The `hookless-zero` / `hookless-spaced` gap (2.234 s vs 1.516 s)
+is mostly the first-acquisition cost landing in the first arm, and one run cannot
+separate that from variation. Quote the 7.9× as a gross effect, never the
+per-acquisition figure as a rate — `design/59b`'s 5/8-then-15/16 lesson applies to
+timing as much as to prompts.
+
+**What this does not license.** The obvious reading — collapse the grid into one
+acquisition — is the change 79c-1 refused, because `_run_protocol_at` settles XY
+per field and an engine-moved `position` axis has no arrival verification at all
+(`R126`). There is now a measured 7.9× on one side of that trade and an
+unverified stage arrival on the other. That is a design tension for a successor
+block to resolve, not a defect to fix by deleting a wait.
+
+**Two findings the score did not carry**, both from the artifacts: every phase
+span is an exact integer millisecond, so `time.monotonic()` on Windows floors this
+instrument at 1 ms and the 39 µs write design/79 opens with would read as `0.0`
+(`R128`); and every dataset landed at `<name>_1` on a clean directory, with
+microclaw correctly reporting the suffixed path (`R129`).
+
+**One runbook error, no product error**: the runbook predicted "5/5 PASS" and the
+gate reports 6/6 — limb 0 was not counted when the expectation was written. And
+PowerShell renders the acquisition event sink's stderr as an error record inside
+the redirected log (`At line:1 char:1 + uv run python ...`), which is the known
+native-stdout family and is not a failure; the runbook should have said so.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
 | 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
 | 79b | `design79/performance-aware-planning` | `4baa9b1` | codex | pilot only, $2.85, arm tree; two-tree gate **not run** (relocation, not information) | `031259c` 2026-09-09 |
-| 79c-1 | `design79/the-per-field-multiplier` | `f9af854` | codex, then claude (Codex usage limit mid-round-2) | local structural; demo-machine breakdown owed | — |
+| 79c-1 | `design79/the-per-field-multiplier` | `f9af854` | codex, then claude (Codex usage limit mid-round-2) | demo 6/6 + measurement, 2026-09-10 | pending |
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
 prompt paragraph is a hypothesis. Nothing here authorises a rig exposure.

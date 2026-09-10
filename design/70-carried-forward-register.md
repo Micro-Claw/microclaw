@@ -99,6 +99,7 @@ Rows added since the triage:
 | `R106` | `design/79` block 79a, found while pricing its replay gate 2026-09-08 |
 | `R107` | `design/79` block 79a's replay, 2026-09-08; owned by 79b |
 | `R123`–`R127` | `design/79` block 79c-1's coordinator review, 2026-09-10 |
+| `R128`–`R129` | `design/79` block 79c-1's demo gate, scored from artifacts 2026-09-10 |
 
 
 ## The work queue
@@ -146,6 +147,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R125` | [The composite breakdown says a grid was stage-bound but not which field was worst](#r125) | MEDIUM | SMALL |  |
 | `R126` | [A zero-interval hooked grid moves the stage through engine events with no arrival verification](#r126) | MEDIUM | LARGE |  |
 | `R127` | [Expiry landing inside cleanup can leave a reservation closed by nobody](#r127) | LOW | SMALL |  |
+| `R128` | [Every timing span microclaw measures is quantized to 1 millisecond on Windows](#r128) | MEDIUM | SMALL |  |
+| `R129` | [Every dataset on the demo machine was written to `<name>_1` on a clean directory](#r129) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2873,3 +2876,32 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — SMALL
 - **Provenance** — coordinator review of block 79c-1, 2026-09-10.
+
+### R128 — Every timing span microclaw measures is quantized to 1 millisecond on Windows
+
+**Block 79c-1's demo gate measured it accidentally and unambiguously: 16 of the 18 nonzero phase spans across six runs are exact integer milliseconds, and the two exceptions are sums of eight spans where float addition accumulates. `time.monotonic()` on the demo machine resolves to 1 ms.**
+
+- **The evidence** (2026-09-10, demo machine, `block79c1-evidence`): individual `min_s`/`max_s` values land on 0.109, 0.110, 0.125, 0.141, 0.156, 0.157, 0.172, 0.250, 0.328, 0.391, 0.516, 0.797 — every one an integer number of milliseconds. Derived values (`mean_s`, `accounted_s`, a multi-span `total_s`) are not, which is exactly what arithmetic over ms-exact inputs produces. This was not what the gate set out to measure; it fell out of checking why the reconciliation drift was exactly 0.0 in all six runs.
+- **Why it matters, and it is narrow** — it is irrelevant to anything measured in seconds, which is most of design/78 and all of 79c-1 (spans of 0.14–4.2 s). It bites the *sub-millisecond* spans, and those are the ones design/79 exists for: the opening incident's misattributed cost was a property write measured at **39 µs**, which this instrument reports as `0.0` on Windows. So the instrument can say "the write is not the cost" but cannot distinguish 39 µs from zero from not-measured. 78a's write→exposure span of 18–44 ms is 18–44 counts, which is fine.
+- **Visible in this block's own output** — `restoration` reports `count: 8, total_s: 0.0, max_s: 0.0` in all six runs. That is honest (it is the no-op sweep `finish_owned_cleanup` measures unconditionally, 1.6 µs on macOS) and it reads like a phase that was skipped. Nothing in `phase_meaning` states the floor.
+- **How to close it** — `time.perf_counter()` is monotonic and nanosecond-resolution on every platform, and is the documented choice for measuring short durations. The change is mechanical at each span site, but the `"clock": "time.monotonic"` field ships in every `duration_breakdown` and hook record and must change with it — which is the point of having it there. Then state the floor, or stop needing to.
+- **What is NOT known** — whether M2, M5 and the Nikon show the same 1 ms floor. It is a property of the interpreter and OS, not the rig, so it very likely holds on all of them; nobody has checked, and one line of output would.
+- **Where** — LOCAL to implement; LOCAL to confirm on any Windows machine (`time.get_clock_info('monotonic')`).
+- **Block** — NONE.
+- **Importance** — MEDIUM. It bounds every per-write timing claim design/78 and design/79 make on the platform microclaw actually runs on.
+- **Effort** — SMALL
+- **Provenance** — coordinator scoring of block 79c-1's demo-gate artifacts, 2026-09-10.
+
+### R129 — Every dataset on the demo machine was written to `<name>_1` on a clean directory
+
+**Not a defect in anything, and worth one line so the next person does not re-derive it: on a first, clean run, every one of 51 datasets across six shapes landed at `<name>_1`, with no unsuffixed sibling anywhere.**
+
+- **What was observed** — `data/hookless-zero-n8/P0/P0_1`, `.../P1/P1_1`, and so on for every field of every shape, plus `hooked-zero_1` and `bound_1`. One run only (the gate prints limb 0 once, and it appears once). No bare `P0` exists on disk.
+- **Why it is not a defect** — microclaw reported the suffixed path, and it is the path that exists: `_acq_dataset_path` reads pycro-manager's `_dataset_disk_location` rather than guessing `<save_dir>/<name>`, which is design/38 F7's fix working exactly as intended. Every reported `dataset_path` in the payloads resolves on disk.
+- **What is NOT known** — whether the suffix is pycro-manager's normal uniquifier behaviour for a first dataset, or a collision microclaw creates by `mkdir`-ing the per-position directory before constructing the Acquisition into it. One run against an empty tree with a print of `_dataset_disk_location` would settle it.
+- **Why it is worth knowing at all** — `CLAUDE.md` already warns that the unsuffixed fallback "is precisely the wrong guess design/38 F7 is about". If the suffix is unconditional, that fallback is *always* wrong when it fires, which changes how urgently the pycro-manager-upgrade check in that comment needs doing.
+- **Where** — LOCAL or the demo machine. No dose.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — coordinator scoring of block 79c-1's demo-gate artifacts, 2026-09-10.
