@@ -143,11 +143,11 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R121` | [The thumbnail stretch renders a sparse bright-object field almost entirely black](#r121) | MEDIUM | MEDIUM |  |
 | `R122` | [design/81 81c's planning and reporting rules shipped unmeasured](#r122) | MEDIUM | SMALL |  |
 | `R123` | [A multi-field grid cannot carry a hardware envelope, so its teardown repaint never fires](#r123) | LOW | SMALL |  |
-| `R124` | [The one hardware write a grid can authorize is the one write with no timing spans](#r124) | MEDIUM | SMALL |  |
+| ~~`R124`~~ | [The one hardware write a grid can authorize is the one write with no timing spans](#r124) | MEDIUM | SMALL | **79c-2** |
 | `R125` | [The composite breakdown says a grid was stage-bound but not which field was worst](#r125) | MEDIUM | SMALL |  |
 | `R126` | [A zero-interval hooked grid moves the stage through engine events with no arrival verification](#r126) | MEDIUM | LARGE |  |
 | `R127` | [Expiry landing inside cleanup can leave a reservation closed by nobody](#r127) | LOW | SMALL |  |
-| `R128` | [Every runtime timing span microclaw measures is quantized to ~15.6 ms on Windows](#r128) | HIGH | SMALL |  |
+| ~~`R128`~~ | [Every runtime timing span microclaw measures is quantized to ~15.6 ms on Windows](#r128) | HIGH | SMALL | **79c-2** |
 | `R129` | [Every dataset on the demo machine was written to `<name>_1` on a clean directory](#r129) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
@@ -2831,7 +2831,8 @@ the model" as the actual blast radius.
 - **Why it is not a 79c-1 change** — the block was narrowed to the breakdown by operator decision on the same day, and this is a third write path rather than a fix to the two it touched. Recorded rather than swept.
 - **How to close it** — two `time.monotonic()` reads in the same shape as `_apply_property`, no bridge call added, asserted through the recorded call list the way `test_property_write_spans_attribute_delay_without_extra_bridge_calls` does. The write is budget-bounded, so the payload bound holds unchanged.
 - **Where** — LOCAL to implement. Measurable as a passenger on any hooked illumination run.
-- **Block** — NONE.
+- **CLOSED by block 79c-2, merged 2026-09-10**, with one correction the row did not anticipate: the illumination route has **no post-write read**, so `read_back` there wraps the conditional baseline re-read — honest, because `baseline_stale` is set precisely when an earlier write raised — and **a healthy illumination write records `validation` and `write` only**. A read-back on every write would be a new bridge call and was not taken.
+- **Block** — **79c-2**.
 - **Importance** — MEDIUM
 - **Effort** — SMALL
 - **Provenance** — coordinator verification during block 79c-1's review, 2026-09-10, while establishing what a reachable grid's breakdown can contain.
@@ -2887,7 +2888,8 @@ the model" as the actual blast radius.
 - **What is blind is the product's own runtime attribution.** The spans 78a added and 79a generalized — `validation`, `write`, `read_back`, `read_stage_start_position` — are exactly the sub-tick ones, and they are what a user's agent reads *during a session* to answer "was the write the cost?". A 41–97 µs setter reports `0.0`; a 20 ms wait reports 16 or 31 ms. So the gate could resolve offline what the product cannot resolve live, which inverts the point of having the spans at all. That is design/79's whole premise.
 - **How to close it** — `time.perf_counter()`: monotonic, `QueryPerformanceCounter()` on Windows, `mach_absolute_time()` on macOS where it is byte-identical to `monotonic` (41 ns, measured). The substitution is mechanical, but `"clock": "time.monotonic"` ships in every `duration_breakdown` and every hook timing record and must change with it — which is what that field is for. Do it **before** `R124` adds new spans, so the new ones are not written against the old clock.
 - **Where** — LOCAL to implement. Already measured; nothing further is owed.
-- **Block** — NONE yet; it and `R124` are one small block.
+- **CLOSED by block 79c-2, merged 2026-09-10.** The domain moved to `time.perf_counter()` through a seam in `controller.py`, with the shipped `"clock"` string derived from it. Two guards, each mutation-verified: a split pair trips a numeric test, a whole pair — numerically invisible, since macOS resolves both clocks to one 41 ns counter — trips a source-inspection test naming the site. **The assignment's site inventory was incomplete in the way that mattered**: `_run_duration_breakdown` selected records *by clock name*, so a rename without it would have zeroed `accounted_s` in silence. A domain built by grepping for a clock call misses the code that reasons about the clock's name.
+- **Block** — **79c-2**.
 - **Importance** — HIGH. It bounds every timing number the runtime agent reads, on the platform every rig runs.
 - **Effort** — SMALL
 - **Provenance** — inferred (wrongly, as 1 ms) from block 79c-1's demo artifacts 2026-09-10; measured correctly the same day with `design/79-clock-resolution-probe.py` after the operator asked what would actually need sub-millisecond resolution.

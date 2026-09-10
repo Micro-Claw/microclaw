@@ -51,7 +51,7 @@ def breakdown(*, acquisitions, duration_s=1.0, accounted_s=0.6,
         meaning += ("; per-field breakdowns are folded into this composite and "
                     "omitted from child results to keep timing detail bounded")
     b = {
-        "clock": "time.monotonic", "duration_s": duration_s,
+        "clock": "time.perf_counter", "duration_s": duration_s,
         "record_count": 0, "phases": phases,
         "accounted_s": accounted_s,
         "unaccounted_s": duration_s - accounted_s + drift,

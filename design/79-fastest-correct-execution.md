@@ -982,6 +982,96 @@ Local; no rig. `R128` is already measured, so nothing here is owed a machine.
    and it should keep working.
 6. Full suite by the coordinator on return.
 
+## Block 79c-2, closed 2026-09-10 — and three things the assignment got wrong
+
+**Shipped.** One clock for the acquisition timing domain, `time.perf_counter()`,
+reached through a seam in `controller.py` — the bottom of the import graph, which
+both `tools` and `hook_decisions` already import at module scope and which is
+itself a domain member. `_TIMING_CLOCK` is a **string** resolved with `getattr`
+per call, deliberately: one substitution then reaches all three modules, where a
+from-imported function alias would have forced every clock test to patch two or
+three module bindings. `_acquisition_monotonic` survives — four supervisor tests
+substitute it with scripted finite clocks — but now delegates, so it cannot
+choose a clock. The `"clock"` string is derived from the same constant, so a
+record cannot disagree with the clock that produced it. `R124`'s spans reached
+the illumination write. `R128` and `R124` both close.
+
+**The assignment's inventory was incomplete, and the omission that mattered was
+not a clock call at all.** `_run_duration_breakdown` selected records **by clock
+name** — `if timing.get("clock") != "time.monotonic": continue`. Rename the
+records and leave that behind and every span is silently skipped: `accounted_s`
+goes to zero, `unaccounted_s` takes the whole run, no exception is raised, and
+the suite stays green for anything not asserting `record_count`. Two more string
+sites (`slowest_records`' per-record projection, and `gap_clock` in
+`_single_run_timing`, which names the clock `_record_gap` measures with) were the
+same shape. **A domain built by grepping for a clock call misses the code that
+reasons about the clock's name** — and this one would have inverted the
+instrument while looking healthy.
+
+**Three specification errors, all found by the implementer against the code.**
+
+- **`controller.py` was listed as out of scope while the domain definition
+  included "a stage-move report", which is exactly what `settle_stage_move` and
+  `settle_xy_move` produce.** The two statements contradicted each other. The
+  definition wins, and it is demonstrably right: `run_tile_acquisition`'s
+  return-to-centre merges a settle report carrying `elapsed_s` with a
+  `duration_s` measured in `tools` into **one dict**, so the old scope would have
+  put two clocks side by side describing one interval.
+- **`read_back` on the illumination write is not achievable as specified.** The
+  assignment asked for `validation` / `write` / `read_back` "with no bridge call
+  added"; that route makes two bridge calls and neither is a post-write
+  verification. The only reading consistent with the constraint is that
+  `read_back` wraps the conditional baseline re-read — which is honest, because
+  `baseline_stale` is set *precisely* when an earlier `set_property` raised, so
+  that read asks the device what the failed write left behind (design/72's "a
+  raised write leaves state unknown"). The consequence, stated because it is
+  visible in the record: **a healthy illumination write records `validation` and
+  `write` only.** A read-back on every write would be a new bridge call and a new
+  decision, and was not taken.
+- **The stated mixing mechanism was wrong, though its conclusion was right.**
+  The assignment said a partial migration makes `unaccounted_s` "a clock
+  offset". It does not: both `duration_s` and each span are *differences*, and a
+  constant offset cancels inside a difference. The real defect is a **split
+  pair** — one end of one span on each clock. That is why the guard has to be a
+  source-inspection test and not a numeric one, and it is why this change is
+  **unobservable locally**: on macOS `monotonic` and `perf_counter` are the same
+  `mach_absolute_time()` counter to 41 ns, measured.
+
+### Verified by the coordinator, by mutation rather than by reading
+
+Both guards were mutated against the case each exists for, because a test whose
+subject is *structure* never reaches its assertion on a pre-fix tree
+(`feedback_mutate_dont_watch_it_fail`):
+
+- **split pair** (span start moved back, end left): `test_no_domain_site_still_
+  reads_the_old_clock` fails, and its assertion shows the injected 1000 s offset
+  leaking into the arithmetic — `assert (-999.945 + 1000.000) == 0.055`.
+- **whole pair** (both ends moved back): numerically invisible, as predicted, and
+  caught by `test_one_clock_reads_the_whole_timing_domain` naming the exact site
+  — `tools.py:4882 _acquire_with_hooks reads time.monotonic`.
+
+The exported script was diffed across the change rather than trusted to its byte
+pin: the delta is **exactly** the seam's constant and two functions plus four
+substitutions inside the two inlined settle functions, 546 → 563 lines, nothing
+else. The emitted script parses and defines `timing_clock` before its first use.
+The eight clock reads kept on `monotonic` are listed per **function** with a
+reason each, across all eight clock spellings, and an unused entry fails the
+test — so the list cannot rot into a blanket exemption. Suite **3289 passed, 99
+skipped**, run by the coordinator. The seam's `getattr` indirection was priced
+because it sits on a per-saved-frame path: **42 ns**, against block 75a's
+measured 158.8 ms one-frame window, 0.000026%.
+
+### What is still owed, and why it is not local
+
+Nothing in the acceptance list. But **the benefit of this block cannot be
+observed on the machine it was written on**, by construction: the two clocks are
+one counter on macOS. The cheap confirmation reuses an instrument that already
+exists — block 79c-1's demo gate — and asks one arithmetic question of its
+artifacts: are the phase spans still exact integer milliseconds? Before this
+block every one of eighteen was, because `GetTickCount64`'s unit is the
+millisecond. After it they should not be. That is one command and no setup, and
+it is the only place the fix is visible.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
@@ -989,7 +1079,7 @@ Local; no rig. `R128` is already measured, so nothing here is owed a machine.
 | 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
 | 79b | `design79/performance-aware-planning` | `4baa9b1` | codex | pilot only, $2.85, arm tree; two-tree gate **not run** (relocation, not information) | `031259c` 2026-09-09 |
 | 79c-1 | `design79/the-per-field-multiplier` | `f9af854` | codex, then claude (Codex usage limit mid-round-2) | demo 6/6 + measurement, 2026-09-10 | merged 2026-09-10 |
-| 79c-2 | `design79/one-clock-for-the-timing-domain` | `5d30365` | claude | local; `R128` already measured | — |
+| 79c-2 | `design79/one-clock-for-the-timing-domain` | `5d30365` | claude | local, verified by mutation; demo confirmation offered | pending |
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
 prompt paragraph is a hypothesis. Nothing here authorises a rig exposure.
