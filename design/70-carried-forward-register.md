@@ -98,6 +98,7 @@ Rows added since the triage:
 | `R104`–`R105` | `design/78`'s own carried-forward list, routed at close-out 2026-09-08 |
 | `R106` | `design/79` block 79a, found while pricing its replay gate 2026-09-08 |
 | `R107` | `design/79` block 79a's replay, 2026-09-08; owned by 79b |
+| `R123`–`R127` | `design/79` block 79c-1's coordinator review, 2026-09-10 |
 
 
 ## The work queue
@@ -140,6 +141,11 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R120` | [Counting sub-diffraction objects needs photometry, and no intensity is reported](#r120) | MEDIUM | SMALL |  |
 | `R121` | [The thumbnail stretch renders a sparse bright-object field almost entirely black](#r121) | MEDIUM | MEDIUM |  |
 | `R122` | [design/81 81c's planning and reporting rules shipped unmeasured](#r122) | MEDIUM | SMALL |  |
+| `R123` | [A multi-field grid cannot carry a hardware envelope, so its teardown repaint never fires](#r123) | LOW | SMALL |  |
+| `R124` | [The one hardware write a grid can authorize is the one write with no timing spans](#r124) | MEDIUM | SMALL |  |
+| `R125` | [The composite breakdown says a grid was stage-bound but not which field was worst](#r125) | MEDIUM | SMALL |  |
+| `R126` | [A zero-interval hooked grid moves the stage through engine events with no arrival verification](#r126) | MEDIUM | LARGE |  |
+| `R127` | [Expiry landing inside cleanup can leave a reservation closed by nobody](#r127) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2509,7 +2515,8 @@ visible; do not put one of these on a checklist.
 
 - **What was measured** (2026-09-08, M2): in the without-refresh arm there is exactly one GUI repaint, at 15:17:25.201, after the last exposure ends at 15:17:24.895, and all 49 calling-thread EMU retrievals follow it, finishing at 15:17:27.643 — **~2.4 s**. That accounts for essentially the whole 2.5 s gap between the 7.69 s run and the 5.19 s no-write baseline.
 - **Why it is not a defect** — it is the design. One repaint per run instead of one per frame is the trade the operator approved, and paying it after the last exposure costs no acquisition time and no dose. A ten-frame run went from 29.19 s to 7.69 s carrying it.
-- **What is worth watching** — it is a per-*run* cost, so a workflow that runs many short acquisitions pays it many times. design/77b takes one acquisition per position when `interval_s > 0`, so a spaced multiposition grid pays ~2.4 s per field on an EMU rig. Nobody has measured that shape, and on a 100-field grid it would be four minutes of teardown repaints.
+- **What is worth watching** — it is a per-*run* cost, so a workflow that runs many short acquisitions pays it many times.
+- **REFUTED for the grid, 2026-09-10 (`R123`).** This row used to continue: "design/77b takes one acquisition per position when `interval_s > 0`, so a spaced multiposition grid pays ~2.4 s per field on an EMU rig... on a 100-field grid it would be four minutes of teardown repaints." That is wrong, and block 79c-1 was assigned on it before anyone checked. The repaint is gated on a restoration having been attempted, and **no grid tool can authorize the capability that produces one** — `run_multiposition_acquisition` accepts only `illumination_envelope`/`artifact_limits`, `run_tile_acquisition` accepts none, and `configure_illumination` sets a context no restoration reads. Every path that *can* repaint calls `_acquire_with_hooks` exactly once; the only path that repeats cannot repaint at all. The four minutes were never being spent.
 - **Where** — RIG:M2 or RIG:M5. Measurable as a passenger on any spaced hooked grid already being run.
 - **Block** — NONE. If it turns out to matter, the fix is a scoped question for design/79c — whether the refresh belongs once per *composite* rather than once per acquisition — not a reopening of 78a.
 - **Importance** — LOW until someone runs a many-field hooked grid on an EMU rig.
@@ -2520,7 +2527,8 @@ visible; do not put one of these on a checklist.
 
 **Block 78a removed the per-frame `refresh_gui` and measured what it cost. The same call still runs at composite channel-phase boundaries and has never been measured.**
 
-- **Why it is worth more now than when it was written** — design/78 listed this as a carried item on the *suspicion* that an EMU rig might pay the same listener fan-out per phase. 78a turned that suspicion into a number: on M2 a single `refresh_gui` dragged **~2.3 s** of EMU device reads onto the calling thread, and the teardown one still does (`R103`). A composite with several channel phases per position would pay that per phase.
+- **Why it is worth more now than when it was written** — design/78 listed this as a carried item on the *suspicion* that an EMU rig might pay the same listener fan-out per phase. 78a turned that suspicion into a number: on M2 a single `refresh_gui` dragged **~2.3 s** of EMU device reads onto the calling thread, and the teardown one still does (`R103`).
+- **Corrected 2026-09-10: "every phase boundary" is at most twice per run, not a per-position multiplier.** This row's title reads as a loop and the sentence it replaces said "a composite with several channel phases per position would pay that per phase". `_set_channel_for_composite` has three callers: the `set_channel` tool (once per tool call), the adaptive survey's `search_phase_channel` (once per run), and its acquire phase — which sits behind `if hits:` **outside** the per-hit loop, so it fires once per run too. "Composite" here means a channel-phase composite, not the multi-field grid; the grid never calls it, because an acquisition `channel` is an engine axis and the engine switches it. So the cost is ~2.3 s twice per adaptive survey run, once, and it is still unmeasured.
 - **What is NOT known** — whether `_set_channel_for_composite`'s refresh actually triggers the same fan-out. It is a different call site and possibly a different listener set. design/78 was explicit that M5's ~2.9 s write-path figure must not simply be assigned to it, and that remains right.
 - **Why it was deliberately out of 78a's scope** — per-phase, not per-frame. `CLAUDE.md`'s "scope it, do not sweep it" applies: 78a touched one call site and left the other nine, of which this is one.
 - **How to measure it** — `design/78-block78a-m5-gate.py` already counts GUI repaint windows and EMU retrievals per thread in any debug-level CoreLog. Point it at a composite channel run on an EMU rig with an arm window covering it; no new instrument is needed.
@@ -2796,3 +2804,72 @@ the model" as the actual blast radius.
 3. **D6(b)** — is a deletion ever offered? The control is already recorded: the 2026-09-09 session offered to delete a dataset, the operator said "delete it", and no such tool exists.
 
 **A null is a result here, and so is a session that never asks for a count.** If the next session requests no derived quantity, D4(b) and D5 were not exercised — report that rather than reading a quiet session as a pass.
+
+### R123 — A multi-field grid cannot carry a hardware envelope, so its teardown repaint never fires
+
+**`R103` projected that a spaced multiposition grid pays its ~2.4 s teardown repaint once per field on an EMU rig. That projection is refuted: the grid tools cannot authorize the capability that produces a restoration, so they never repaint at all.**
+
+- **What was verified** (2026-09-10, block 79c-1, local, no rig): every `_acquire_with_hooks` call site was enumerated. `run_timelapse`, `run_zstack`, the adaptive survey and the acquire-on-hit phase each call it **once** per tool call and each *can* carry `property_envelope` / `named_stage_envelope`; the 77b split loop calls it **N** times and **cannot**. So every path that can repaint already repaints exactly once, and the only path that repeats cannot repaint at all.
+- **The mechanism** — `run_multiposition_acquisition` accepts only `illumination_envelope` and `artifact_limits`; `run_tile_acquisition` accepts no capability argument; `_protocol_shape_kwargs` refuses all five in `protocol_params`; and the split loop passes `named_stage_envelope`/`property_envelope` as `None` positionally. Driving that exact `_configure_hook_capabilities` call with a real `UntrustedHookAdapter` and a valid illumination envelope leaves `property_context` and `named_stage_context` both unset, so `restore_property()` and `restore_named_stage()` both return `None` and `any(restoration_attempted.values())` is `False`. `configure_illumination` sets `_illumination_context`, which no restoration reads.
+- **Why this is a row and not a fix** — block 79c-1 implemented the coalescing, reviewed it green, and then **removed it by operator decision, 2026-09-10**, rather than ship deferral machinery plus cross-field debt carrying and lock coordination into the teardown path — the function block 60a found four defects in — for a branch that cannot execute. The design is recorded in `design/79`'s 79c-1 section so the answer exists in writing without the code existing in the path.
+- **What would make it live** — giving a grid tool `property_envelope` or `named_stage_envelope`. That is an authorization question (hardware-write authority spanning a whole grid, with one confirmation), not a performance one, and it is the block that would reopen this.
+- **Where** — LOCAL. No hardware, no rig, no dose.
+- **Block** — NONE.
+- **Importance** — LOW while no grid can restore. It becomes the *first* thing to fix if one ever can.
+- **Effort** — SMALL
+- **Provenance** — coordinator verification during block 79c-1's review, 2026-09-10, after the block had been assigned on `R103`'s projection. The reachability of the guard was not checked when the block was written; the rule that would have caught it is `CLAUDE.md`'s own — a guard is only as reachable as the object it lives on.
+
+### R124 — The one hardware write a grid can authorize is the one write with no timing spans
+
+**78a instrumented `_apply_property`, 79c-1 instrumented `_apply_named_stage`, and the illumination route still has none — so on the only multi-field shape that can write hardware, `duration_breakdown` attributes nothing.**
+
+- **What is missing** — a `SetIllumination` action performs a bare `ctx["core"].set_property(ctx["device"], ctx["property"], str(raw_new))` followed by `self._accept(...)`, with no `time.monotonic()` spans on the record. The `validation` / `write` / `wait` / `read_back` phases that 78a added exist only on the `property_envelope` route.
+- **Why it matters here** — `illumination_envelope` is one of exactly two capability arguments a grid accepts (`R123`), so it is the only hardware write a grid can make. A reachable composite `duration_breakdown` therefore contains `acquisition` and nothing else, and an illumination write's cost lands silently in the residual alongside stage motion.
+- **Why it is not a 79c-1 change** — the block was narrowed to the breakdown by operator decision on the same day, and this is a third write path rather than a fix to the two it touched. Recorded rather than swept.
+- **How to close it** — two `time.monotonic()` reads in the same shape as `_apply_property`, no bridge call added, asserted through the recorded call list the way `test_property_write_spans_attribute_delay_without_extra_bridge_calls` does. The write is budget-bounded, so the payload bound holds unchanged.
+- **Where** — LOCAL to implement. Measurable as a passenger on any hooked illumination run.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — SMALL
+- **Provenance** — coordinator verification during block 79c-1's review, 2026-09-10, while establishing what a reachable grid's breakdown can contain.
+
+### R125 — The composite breakdown says a grid was stage-bound but not which field was worst
+
+**Block 79c-1 folds every field's phases into one composite `duration_breakdown` and omits the per-field breakdowns from the child rows, disclosing the omission in `phase_meaning`. That is bounded and honest, and it cannot answer "which field?".**
+
+- **Why the omission** — retaining a child breakdown per field is unbounded in the field count: at 500 fields it is ~500 × 1 KB in a tool result. The block's measured composite payload is flat instead, 1,100 bytes at 2 fields to 1,280 at 500.
+- **What is lost** — 79a's per-field detail on the 77b split path, and the ability to identify the slow field on either composite. A grid that spent 21 s of a 36 s run on stage motion is now visible; a grid where *one* field cost 20 s is not distinguishable from one where four cost 5 s each.
+- **The bounded answer that was offered and not taken** — retain the breakdown for at most the **three slowest fields**, the same bound `slowest_records` already applies to write records. The coordinator offered this or the disclosure; the implementer chose the disclosure and the coordinator accepted it, so this is a deliberate deferral, not an oversight.
+- **Where** — LOCAL. No rig.
+- **Block** — NONE.
+- **Importance** — MEDIUM once anyone reads a composite breakdown in anger.
+- **Effort** — SMALL
+- **Provenance** — block 79c-1 review, 2026-09-10; the coordinator's F3 finding and its accepted answer.
+
+### R126 — A zero-interval hooked grid moves the stage through engine events with no arrival verification
+
+**Block 64d gave XY an arrival contract at three sites, the tile path's per-position XY included. The shared-dataset multiposition route has no site to give it: the engine moves the stage itself from each event's `x`/`y`.**
+
+- **The asymmetry** — the 77b split path (`interval_s > 0`) calls `ctrl.set_xy(...)` per field and so takes `settle_xy_move`'s per-axis band. The zero-interval path builds one event list with a `position` axis and hands it to AcqEngJ, which moves between exposures with nothing of microclaw's in between. The hookless per-position route settles every field via `_run_protocol_at`. So the same tool, at two intervals, has two different arrival guarantees.
+- **Why block 79c-1 did not touch it** — it is why that block **refused** to merge the hookless zero-interval grid into one acquisition, which would have extended this asymmetry to the route that currently settles. Recorded there as a deliberate non-change: *removing a required wait is not an optimization.*
+- **What is NOT known** — whether it has ever mattered. A stage that has not arrived exposes the wrong field, which on a uniform sample or the demo camera is invisible; design/28 F4's family. No incident is attributed to it.
+- **Where a check could live** — `post_hardware_hook_fn` is the only microclaw code that runs between the engine's move and its exposure, and it receives a batch when the engine sequences (the first engine contract), so a per-event arrival check is not expressible there for a hardware-sequenced batch. That is the design problem, and it is design/68's shape rather than design/79's.
+- **Where** — RIG, to demonstrate; LOCAL to reason about.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — LARGE — there is no obvious site, which is the finding.
+- **Provenance** — coordinator code reading while assigning block 79c-1, 2026-09-10.
+
+### R127 — Expiry landing inside cleanup can leave a reservation closed by nobody
+
+**Pre-existing, narrow, and found while reviewing block 79c-1's teardown changes. `finish_owned_cleanup` decides reservation closure from `waiter_must_close_reservation`; the foreground sets that flag on expiry. If it is set after cleanup has read it, neither side closes.**
+
+- **The window** — the waiter runs restoration, then evaluates `close_reservation or waiter_must_close_reservation`. A composite passes `close_reservation=False` because it owns the shared reservation across fields. If the foreground's expiry check fires after that read, it sets the flag to hand closure to the waiter — which has already passed the point. The composite then raises `AcquisitionUnterminated`, and `_acquire_positions_with_hook`'s handler does not close it either.
+- **Why it is not 79c-1's** — the read was unlocked before that block and is unlocked after it. Block 79c-1 briefly locked it as part of the repaint deferral and the lock was removed with the deferral, so the code is back to its pre-block form. No regression; the row exists because the review found it.
+- **Consequence** — a reservation left open in the `AcquisitionLedger` after a run that has already failed as unterminated. Not a dose and not a hardware state; a bookkeeping leak on an error path.
+- **How to close it** — read and write the flag under one lock, or have the `AcquisitionUnterminated` handler close a reservation the waiter demonstrably did not. The second needs a way to observe which happened, which the first makes unnecessary.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — coordinator review of block 79c-1, 2026-09-10.
