@@ -128,10 +128,11 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R108` | [A knowledge entry teaches the workaround for the defect 81a-1 fixed](#r108) | MEDIUM | SMALL | **81a-1** drafted |
 | `R109` | [Every custom-adapter observation records an empty parameters block](#r109) | LOW | SMALL |  |
 | `R110` | [A fixed-plan Z sweep leaves the focus axis wherever its last plane put it](#r110) | MEDIUM | SMALL |  |
-| `R111` | [Autofocus re-commands a measured coordinate the guard never checked](#r111) | HIGH | SMALL | **81a-2** |
+| ~~`R111`~~ | [Autofocus re-commands a measured coordinate the guard never checked](#r111) | HIGH | SMALL | **81a-2** |
 | `R112` | [No record exists of an operator having SEEN the evidence behind a count](#r112) | LOW | SMALL |  |
 | `R113` | [Skipping one field and continuing is not expressible in a fixed-plan acquisition](#r113) | MEDIUM | LARGE |  |
 | `R114` | [An export-equivalence test of the non-response refusal fails intermittently](#r114) | MEDIUM | SMALL |  |
+| `R115` | [The hook log rewrites the whole file per entry, and 81a-2 made each entry ten times bigger](#r115) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -1368,7 +1369,7 @@ One driven session or one standalone script run on the Windows demo machine. Che
 
 - **What was measured** (2026-09-07, demo machine, round 2, 8/8): two live hooked autofocus sweeps and two standalone ones; `hook_exposures = 14` real snaps in the child process; live and standalone hook logs **identical field by field**, warning text and computed argmax included; four real NDTiff datasets with 2 uniquely indexed frames each and live/standalone axes equal. The mechanism is established.
 - **What was not** — convergence and restoration-after-a-real-peak. Every sweep hit `Fine focus peak is at the edge of the searched Z range … Z was NOT moved (restored to 2.400 µm)`, which is the correct answer for a contrast-free field. So `best_z_um` was the **restored entry Z** in both arms: strong agreement, but agreement on a number neither run chose. design/80's validation item 4 asked for a **peaked** field and a flat one; only the flat-equivalent was reachable.
-- **Why the demo machine cannot close it** — DemoCamera synthesises frames with no Z dependence, so no `--z-range-um` will produce an interior maximum. This is a property of the camera, not a limitation of the gate; re-running it there would reproduce the same null.
+- **Why the demo machine cannot close it** — ~~DemoCamera synthesises frames with no Z dependence~~. **That reason was wrong, and 81a-2's round 5 measured the right one** (2026-09-10): a wide probe over 40 µm returned a metric range of **140.2..2001**, a 14× span, so the camera *does* respond to Z. What it does not do is put the peak anywhere reachable — the argmax sits at **0.00 µm, on the boundary**, i.e. at or below the guard's hard floor. So no `--z-range-um` produces an interior maximum, but the cause is the peak's *location*, not an absent response. Re-running there reproduces the same null.
 - **How it gets closed for free** — `design/80-block80b-demo-gate.py` runs unchanged against a rig with real optics. On **M2 or the Nikon**, with beads or any structured field, limbs A and C would additionally report `converged: true` and a `best_z_um` that differs from the entry Z, and limb C's field-by-field comparison then agrees on a value both arms actually computed. Do not book a session for it: run it as a passenger on the next trip booked for something else.
 - **Importance** — MEDIUM. The export contract is established; what is unproven is that the inlined `coarse_then_fine_autofocus` picks the *same peak* as the live one when there is a peak to pick. design/36 spent a rig gate establishing that this algorithm's **normaliser** was what made the metric minimise at focus, so agreement on a real curve is worth having.
 - **Where** — RIG:M2 or RIG:nikon, as a passenger.
@@ -1376,6 +1377,8 @@ One driven session or one standalone script run on the Windows demo machine. Che
 - **Effort** — SMALL
 - **Also true of the plugin hook, measured 2026-09-07 (block 80c).** `autofocus_mm_plugin` now emits too, and its demo gate reproduced the same null one layer out: OughtaFocus searched its own 10 µm range at each of four positions and both arms returned **exactly the entry Z, 6.0 µm**, because DemoCamera gives Brent nothing to optimise. So the row covers both emitted autofocus hooks and closes for both on the same passenger trip — on a structured field, limb C's field-by-field comparison would then agree on a Z the plugin actually chose. `design/80-block80c-demo-gate.py` runs unchanged there. One extra thing that trip would settle for free: whether `FocusDrive` is non-empty on a rig where OughtaFocus has been configured against a real focus drive (empty on M2 **and** the demo machine, n=2, and the empty value means it falls back to Core's current focus device).
 - **Provenance** — coordinator scoring of block 80b's round-2 artifacts, 2026-09-07, extended by block 80c's gate the same day. Both gates reported the mechanism working; this row is what the artifacts said that the verdicts did not.
+
+- **What 81a-2 evidenced there**, so this row is narrower than it was (2026-09-10, gate rounds 3–5): the sweep runs, its exposures are counted (20 across two fields), its window and commanded/measured/read-back Z are recorded, non-convergence is correctly refused, Z is restored, and the exported standalone script reproduces every one of those **exactly**. What is missing is only the **converged** branch on a real curve.
 
 ### R27 — The agent started live view unprompted on a laser-dose rig
 
@@ -2598,7 +2601,7 @@ visible; do not put one of these on a checklist.
 - **The one artifact is consistent and is not proof** — `r1_c0` reports `best_z_um: 76.226` where the sweep window's upper bound was 75.183, 1.043 µm beyond it, with `converged: true` and no warning. It cannot be settled from the record: the hook log stores only `best_z_um` and `converged`, never the swept window or the chosen plane's commanded value.
 - **How to settle it** — block **81a-2** D3(d): validate a selected target against both the allowed Z bounds and the declared sweep window before dispatching it, refuse rather than clamp, and retain commanded/measured/window provenance. New records settle future cases; they cannot recover the missing values from `r1_c0`, which stays inconclusive.
 - **Where** — LOCAL for the target check; the demo-machine autofocus limb for the provenance.
-- **Block** — **81a-2**.
+- **Block** — **81a-2, CLOSED 2026-09-10** (`b6ca3ec`). A selected target is now validated against both the sweep window and the guard before dispatch, refused rather than clamped, and commanded/measured/window provenance is retained — round 4's hook log carries `sweep_window_um`, `final_commanded_z_um` and `final_readback_z_um` on every record. The historical `r1_c0` artifact remains inconclusive and always will: its log never stored the window.
 - **Effort** — SMALL
 - **Provenance** — `design/81` F9, 2026-09-09.
 
@@ -2639,3 +2642,23 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE. **Explicitly out of scope for 81a-2**, which modifies this very path; the runner is told to report a recurrence and not to quiet the fake.
 - **Effort** — SMALL
 - **Provenance** — coordinator's pre-launch baseline runs for `design/81` block 81a-2, 2026-09-09.
+
+### R115 — The hook log rewrites the whole file per entry, and 81a-2 made each entry ten times bigger
+
+**`HookBase._write_log` (`microclaw/hooks.py`) rewrites the entire log file on every entry, so its cost is quadratic in entry count. Block 81a-2 doubled the entries per event and grew each one about tenfold, which multiplies that constant.**
+
+- **Measured**, three trees, `design/81-block81a2-log-cost.py`, 200 events, no hardware:
+
+  | tree | entries | bytes | ms/event |
+  |---|---|---|---|
+  | `b1c6d54` baseline | 200 | 25,182 | **0.369** |
+  | `73f87b9` full `vars(sweep)` dump | 400 | 569,926 | **11.078** |
+  | merged `8608dd4` | 400 | 233,726 | **4.803** |
+
+- **Accepted at 200 positions and why** — 4.8 ms/event is ~0.9 s added across a run whose autofocus sweeps take seconds each. The trim from 11.1 to 4.8 came from keeping D3(d)'s named provenance fields and dropping the rest of `SweepResult`'s per-plane arrays.
+- **Why it is still a row** — the cost is quadratic, not linear: the whole file is rewritten per entry, so at 1000 events it is roughly **24 ms/event** and tens of seconds per run, and it is synchronous work on the acquisition path. The pre-existing behaviour is the rewrite; what 81a-2 changed is the constant.
+- **How to settle it** — append-only writes, or a periodic flush, measured with the same script. `CLAUDE.md` requires a change affecting repeated operations to state its timing contract; this row is that contract left open.
+- **Where** — LOCAL. The measurement script needs no hardware.
+- **Block** — NONE.
+- **Effort** — SMALL
+- **Provenance** — `design/81` block 81a-2 review, 2026-09-09; measured by the coordinator, trimmed by the runner, accepted at 200 events.

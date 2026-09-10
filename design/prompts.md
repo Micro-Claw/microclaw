@@ -10125,3 +10125,74 @@ a new refusal because that was the plausible shared cause. Running two of them
 showed five shared a *different* cause — an emitted script calling a helper it
 never defines — and only one was the refusal. Inferring would have sent the next
 turn after the wrong defect with the coordinator's authority behind it.
+
+## design/81 block 81a-2 — the run refuses what cannot work
+
+**Five gate rounds. Four failed on the instrument; one product defect came out
+of the whole series.** That ratio is this repo's known pattern (design/75's two
+rounds both failed on the gate), but five rounds of an operator's time for one
+finding is worse than the pattern, and the causes were mostly avoidable.
+
+**What the gate defects were, in order, because the shape repeats.** A mixed
+tree the coordinator created by committing a staged revert. An `ImportError`
+scored as a safety refusal. A limb expecting the runtime refusal when the
+plan-time one — the better mechanism — fires first. A log read from the
+absolute `save_dir` when the emitted script anchors beside *itself*. And a
+stand-down that took two other limbs' evidence with it. Every one is a case of
+the instrument encoding an assumption the product does not share.
+
+**`git checkout <commit> -- <path>` writes the index, and that shipped a
+silent revert.** The two-tree selftest recipe was `cp` the file aside,
+`git checkout <old> -- file`, run, `cp` back. The copy restores the working
+tree and leaves the *old* version staged, and the next `git add design/… &&
+git commit` swept it into a commit whose message said it touched design only.
+The branch an operator cloned then had 81a-2's central change reverted, while
+every local check kept passing because they all read the working tree. Use
+`git show <commit>:<path> > <path>`, which never touches the index, and read
+`git show --stat` before every push — one line named `microclaw/hooks.py | 155
++++--------` in a design-only commit.
+
+**A selftest that reads the working tree cannot see a bad commit.** Every check
+in the gate's selftest passed while the branch was broken. It now also runs
+`git show HEAD:…`. Verified by evaluating its assertion against each commit —
+`git show` only, no checkout, twice bitten.
+
+**A limb that passes when its mechanism never ran is worse than one that cannot
+fail.** 58a's rule is about limbs that cannot fail; this is the mirror. Limb B
+asserted "an error came back and no frames were written", which an
+`ImportError` satisfies perfectly, and limb C passed because an axis nothing
+had moved was where it started. Assert *which* failure, and gate a
+consequence-limb on the mechanism having actually run.
+
+**Score the whole limb set from artifacts, not just the failures.** Limb D
+reported NOT EXERCISED in round 4 and its evidence was in the output directory
+all along: the emitted script had run, printed `saved_frames= 0
+hook_exposures= 20`, and raised the identical `SafetyViolation` naming the same
+field. That is 81a-1's owed export limb, satisfied by a limb that scored
+itself a non-result.
+
+**"The machine cannot do it" deserves the same scepticism as a green pass.**
+Limb A stood down three times on an argmax at the sweep boundary, and
+`CLAUDE.md` already says a NOT EXERCISED blamed on a machine limitation is a
+place to suspect the product. Adding a wide probe turned an inference into a
+measurement — and corrected a **standing register claim**: `R101` said
+DemoCamera "synthesises frames with no Z dependence", and the probe measured a
+metric range of 140.2..2001 over 40 µm. The camera responds to Z fine; its peak
+sits at or below the guard's floor, so no legal sweep can bracket it. Same
+conclusion, different reason, and the wrong reason had been in the register
+for three days.
+
+**A resumed Codex session inherits the dead turn's context, and that dominates
+the bill.** Measured: a revision turn with 22 commands, 0.05 MB of command
+output and no re-read of `CLAUDE.md` cost **11.5M input tokens** — nearly
+double a previous turn with 42 commands. 6.4M ÷ 43 calls ≈ 150k per call;
+11.5M ÷ 23 ≈ **498k**. The lean prompt shrank the increment; the inherited
+half-million-token baseline was the cost. So after a turn dies, prefer a
+**fresh** session with a self-contained prompt over resuming the bloated one —
+and note that a killed turn is still recoverable either way, from
+`thread.started` in the events file when no `session-id` was written.
+
+**A turn can die of system memory pressure, not only a usage limit.** One did,
+at 93 commands, with its work staged and no report. The recovery is the same:
+commit it marked unreviewed, measure it yourself, and reconstruct the report
+from the diff — which step 3 requires regardless.
