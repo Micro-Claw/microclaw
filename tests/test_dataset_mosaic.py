@@ -380,7 +380,7 @@ def test_placements_preserve_pre81b_mosaic_golden(transform, expected, monkeypat
     calibration.write_text(json.dumps({
         'payload': canonical_affine_payload(transform), 'payload_sha256': affine_payload_hash(transform),
         'camera_device': 'Andor', 'camera_model': 'model', 'roi': [0, 0, 4, 3],
-    }))
+    }), encoding='utf-8')
     monkeypatch.setattr(tools, 'Dataset', FakeDataset)
     guard = MagicMock()
     guard.resolve_readable_path.side_effect = lambda path: path
