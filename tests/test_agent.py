@@ -1468,3 +1468,32 @@ def test_usage_cli_sidecar(save, mock_ctrl, guard, monkeypatch, tmp_path):
             "model": "served-model", "estimated_tokens": 12345, "compaction_count": 3}
     else:
         assert not list(tmp_path.glob("*_usage.jsonl"))
+
+
+def test_usage_record_building_cannot_lose_the_turn(mock_ctrl, guard, capsys):
+    """An unexpected response shape is a diagnostic problem, not an acquisition
+    one. Reading the response for the record happens inside the same guard as
+    the sink call, so a turn that may already have moved the stage still ends
+    normally."""
+    class Unreadable:
+        stop_reason = "end_turn"
+        usage = sdk_usage()
+
+        def __init__(self):
+            block = MagicMock()
+            block.type, block.text = "text", "done"
+            self.content = [block]
+
+        @property
+        def model(self):
+            raise RuntimeError("no model on this response")
+
+    client = MagicMock()
+    client.messages.stream.side_effect = lambda **kw: FakeStream(Unreadable())
+    records = []
+    with patch("microclaw.agent._get_client", return_value=client):
+        reply, history = run_agent("go", mock_ctrl, guard, usage_sink=records.append)
+    assert reply == "done"
+    assert len(history) == 2
+    assert records == []
+    assert "Could not record usage: no model on this response" in capsys.readouterr().err

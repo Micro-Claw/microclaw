@@ -745,27 +745,31 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
                         yield {"type": "text_delta", "text": event.delta.text}
                 response = stream.get_final_message()
                 if usage_sink is not None:
-                    usage = getattr(response, "usage", None)
-                    creation = getattr(usage, "cache_creation", None)
-                    record = {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "model": response.model,
-                        "iteration": iteration,
-                        "stop_reason": response.stop_reason,
-                        **{field: getattr(usage, field, None) for field in (
-                            "input_tokens", "output_tokens", "cache_read_input_tokens",
-                            "cache_creation_input_tokens",
-                        )},
-                        "cache_creation_5m_input_tokens": getattr(
-                            creation, "ephemeral_5m_input_tokens", None),
-                        "cache_creation_1h_input_tokens": getattr(
-                            creation, "ephemeral_1h_input_tokens", None),
-                    }
+                    # Deliberately broad, and confined to building and delivering
+                    # one diagnostic record: this runs after a call that may
+                    # already have moved the stage, so a usage failure must not
+                    # lose the turn. Reading the response is inside the guard for
+                    # the same reason the sink call is — an unexpected response
+                    # shape is a diagnostic problem, not an acquisition one. The
+                    # API call and the tool dispatch stay outside it.
                     try:
-                        usage_sink(record)
+                        usage = getattr(response, "usage", None)
+                        creation = getattr(usage, "cache_creation", None)
+                        usage_sink({
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "model": response.model,
+                            "iteration": iteration,
+                            "stop_reason": response.stop_reason,
+                            **{field: getattr(usage, field, None) for field in (
+                                "input_tokens", "output_tokens", "cache_read_input_tokens",
+                                "cache_creation_input_tokens",
+                            )},
+                            "cache_creation_5m_input_tokens": getattr(
+                                creation, "ephemeral_5m_input_tokens", None),
+                            "cache_creation_1h_input_tokens": getattr(
+                                creation, "ephemeral_1h_input_tokens", None),
+                        })
                     except Exception as exc:
-                        # Deliberately broad and confined to the sink call:
-                        # diagnostic failure must not lose a completed acquisition.
                         print(f"[microclaw] Could not record usage: {exc}", file=sys.stderr)
                 return response
         except anthropic.NotFoundError as e:
