@@ -370,6 +370,8 @@ class Session:
         self.audit_records: list[dict] = []
         confirmation_path = self.history_fn.replace("_history.jsonl", "_confirmations.jsonl")
         self.confirmation_audit = AuditLog(confirmation_path, enabled=self.save)
+        usage_path = self.history_fn.replace("_history.jsonl", "_usage.jsonl")
+        self.usage_audit = AuditLog(usage_path, enabled=self.save)
         acquisition_path = self.history_fn.replace("_history.jsonl", "_acquisitions.jsonl")
         self.acquisition_diagnostic_writer = AcquisitionDiagnosticWriter(
             AuditLog(acquisition_path, enabled=self.save)
@@ -988,6 +990,15 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             session._emit = emit
             session.current_identity = turn_identity
             acquisition_event_sink = Session.emit_acquisition_event.__get__(session)
+            def usage_sink(record):
+                store = getattr(session, "store", None)
+                session.usage_audit.append({
+                    **record,
+                    "estimated_tokens": getattr(store, "last_estimated_tokens", None),
+                    "compaction_count": getattr(store, "compaction_count", None),
+                    "turn_id": session.current_turn_id,
+                })
+
             try:
                 for event in run_agent_iter(
                     msg, session.ctrl, session.guard, session.history, session.model,
@@ -1005,6 +1016,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                     on_message=(session.store.append
                                 if hasattr(session, "store") else None),
                     confirmation_records=session.audit_records,
+                    usage_sink=usage_sink,
                     acquisition_event_sink=acquisition_event_sink,
                     acquisition_diagnostic_writer=getattr(
                         session, "acquisition_diagnostic_writer", None

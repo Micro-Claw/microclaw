@@ -190,6 +190,16 @@ def run_session(args):
     store = ConversationStore(AuditLog(history_fn_name, enabled=args.save_history))
     confirmation_fn_name = history_fn_name.replace("_history.jsonl", "_confirmations.jsonl")
     confirmation_audit = AuditLog(confirmation_fn_name, enabled=args.save_history)
+    usage_fn_name = history_fn_name.replace("_history.jsonl", "_usage.jsonl")
+    usage_audit = AuditLog(usage_fn_name, enabled=args.save_history)
+
+    def usage_sink(record):
+        usage_audit.append({
+            **record,
+            "estimated_tokens": getattr(store, "last_estimated_tokens", None),
+            "compaction_count": getattr(store, "compaction_count", None),
+        })
+
     acquisition_fn_name = history_fn_name.replace("_history.jsonl", "_acquisitions.jsonl")
     acquisition_writer = AcquisitionDiagnosticWriter(
         AuditLog(acquisition_fn_name, enabled=args.save_history, secrets=(key,))
@@ -204,7 +214,7 @@ def run_session(args):
             args, ctrl, guard, history, store, acquisition_writer,
             # The unique history stem is the session correlation id, so the
             # diagnostic and transcript can be joined without another UUID.
-            Path(history_fn_name).stem,
+            Path(history_fn_name).stem, usage_sink=usage_sink,
         )
     finally:
         tools.CONFIRM_AUDIT_FN = None
@@ -247,7 +257,7 @@ def report_declared_illumination_on_exit(guard, core, *, flush=False):
 
 
 def _repl(args, ctrl, guard, history, store, diagnostic_writer=None,
-          acquisition_session_id=None):
+          acquisition_session_id=None, usage_sink=None):
     global run_agent
     if run_agent is None:
         # Kept lazy so restricted commands such as first-launch setup never
@@ -303,6 +313,7 @@ def _repl(args, ctrl, guard, history, store, diagnostic_writer=None,
             reply, new_history = run_agent(
                 user_input, ctrl, guard, history, model=args.model,
                 context_provider=store.model_messages, on_message=store.append,
+                usage_sink=usage_sink,
                 acquisition_diagnostic_writer=diagnostic_writer,
                 acquisition_session_id=acquisition_session_id,
             )
@@ -319,6 +330,7 @@ def _repl(args, ctrl, guard, history, store, diagnostic_writer=None,
             reply, new_history = run_agent(
                 user_input, ctrl, guard, history, model=args.model,
                 context_provider=store.model_messages, on_message=store.append,
+                usage_sink=usage_sink,
                 acquisition_diagnostic_writer=diagnostic_writer,
                 acquisition_session_id=acquisition_session_id,
             )

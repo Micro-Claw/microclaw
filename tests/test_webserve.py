@@ -2411,3 +2411,32 @@ def test_missing_safety_config_says_so_instead_of_silently_opening_setup(
     out = capsys.readouterr().out
     assert str(absent) in out
     assert "--safety-config" in out
+
+
+@pytest.mark.parametrize("with_store", [False, True])
+@pytest.mark.parametrize("save", [False, True])
+def test_usage_browser_sidecar(session, client, monkeypatch, tmp_path, with_store, save):
+    monkeypatch.chdir(tmp_path)
+    args = types.SimpleNamespace(model=None, save_history=save, host="127.0.0.1")
+    webserve.Session._initialize(session, args)
+    if with_store:
+        session.store.last_estimated_tokens = 161234
+        session.store.compaction_count = 4
+    else:
+        del session.store
+    expected_path = Path(session.history_fn.replace("_history.jsonl", "_usage.jsonl"))
+    assert session.usage_audit.path == expected_path
+    def fake(*args, **kwargs):
+        kwargs["usage_sink"]({"input_tokens": 12})
+        yield {"type": "done", "reply": "done"}
+    monkeypatch.setattr(webserve, "run_agent_iter", fake)
+    response = client.post("/api/prompt", json={"message": "go"})
+    assert _settle(session)
+    assert [e["type"] for e in _events(response)] == ["done"]
+    record, = session.usage_audit.records
+    assert record["estimated_tokens"] == (161234 if with_store else None)
+    assert record["compaction_count"] == (4 if with_store else None)
+    assert record["turn_id"]
+    assert expected_path.exists() is save
+    if save:
+        assert json.loads(expected_path.read_text(encoding="utf-8")) == record
