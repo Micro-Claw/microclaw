@@ -1072,6 +1072,44 @@ block every one of eighteen was, because `GetTickCount64`'s unit is the
 millisecond. After it they should not be. That is one command and no setup, and
 it is the only place the fix is visible.
 
+### The demo confirmation, run 2026-09-10 — the fix is visible only here
+
+Same instrument as block 79c-1's gate, same six criteria, **6/6** again. The one
+question it was re-run to answer:
+
+| | before (79c-1) | after (79c-2) |
+|---|---|---|
+| `clock` reported | `time.monotonic` | **`time.perf_counter`**, all six payloads |
+| nonzero span values that are exact integer milliseconds | **16 of 18** | **0 of 36** |
+| `restoration`, the no-op sweep | exactly `0.0`, six runs | **0.70–1.10 µs** |
+
+Individual spans now read `0.1015593996271491`, `0.07394189946353436`,
+`7.003545761108398e-07` — where every one of them previously landed on a whole
+millisecond because `GetTickCount64` counts in milliseconds and updates every
+~15.6 ms. **The instrument gained roughly four orders of magnitude on the
+platform every rig runs**, and the count of nonzero span values going 18 → 36 is
+itself the proof: it doubled because `restoration` stopped being zero, which is
+exactly the six runs × one phase × three keys that were previously below the
+floor.
+
+This is the whole of what could not be seen locally: on macOS both clocks are the
+same 41 ns counter, so every local test passes identically before and after.
+
+**And the per-acquisition multiplier replicated.** 79c-1's measurement was n=1
+per arm and recorded as a gross effect rather than a rate; this run is a second
+independent sample of the same four shapes:
+
+| | 8 acquisitions | 1 acquisition | ratio | exposure share of the grid |
+|---|---|---|---|---|
+| 79c-1 | 4.219 s | 0.531 s | **7.9×** | 1.9% |
+| 79c-2 | 3.947 s | 0.605 s | **6.5×** | 2.0% |
+
+So **n=2, 6.5× and 7.9×**, with per-shape in-acquisition totals differing 5–17%
+between runs — ordinary variation, and the ratio survives it. The exposure share
+is the stable one: 1.9% and 2.0% of an eight-field grid spent exposing. Neither
+number is a rate and neither licenses collapsing the grid into one acquisition,
+for the reason `R126` gives.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
@@ -1079,7 +1117,7 @@ it is the only place the fix is visible.
 | 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
 | 79b | `design79/performance-aware-planning` | `4baa9b1` | codex | pilot only, $2.85, arm tree; two-tree gate **not run** (relocation, not information) | `031259c` 2026-09-09 |
 | 79c-1 | `design79/the-per-field-multiplier` | `f9af854` | codex, then claude (Codex usage limit mid-round-2) | demo 6/6 + measurement, 2026-09-10 | merged 2026-09-10 |
-| 79c-2 | `design79/one-clock-for-the-timing-domain` | `5d30365` | claude | local, verified by mutation; demo confirmation offered | pending |
+| 79c-2 | `design79/one-clock-for-the-timing-domain` | `5d30365` | claude | local by mutation + demo 6/6, spans no longer ms-quantized | merged 2026-09-10 |
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
 prompt paragraph is a hypothesis. Nothing here authorises a rig exposure.
