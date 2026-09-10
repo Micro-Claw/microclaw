@@ -336,7 +336,7 @@ def test_singleton_non_position_axes_default_without_selection(monkeypatch, tmp_
         'coverage_mask_sha256': 'aead848e8438df808d8796d56645888bfc1abad6bd0d5e7f7cb574c4410e89ed',
     }),
 ])
-def test_placements_preserve_pre81b_mosaic_golden(transform, expected):
+def test_placements_preserve_pre81b_mosaic_golden(transform, expected, monkeypatch, tmp_path):
     frames = [(np.arange(12, dtype=np.uint16).reshape(3, 4) + 1, 10, 20),
               (np.full((3, 4), 99, np.uint16), 10.3, 20.1)]
     result = assemble(frames, transform, sample=.127)
@@ -366,6 +366,35 @@ def test_placements_preserve_pre81b_mosaic_golden(transform, expected):
             math.floor((bounds['y_min']-oy)/.127+.5), math.floor((bounds['y_max']-oy)/.127+.5)+1,
             math.floor((bounds['x_min']-ox)/.127+.5), math.floor((bounds['x_max']-ox)/.127+.5)+1,
         ]
+
+
+    # Exercise the manifest boundary too: its TIFF hash and coverage fraction
+    # must retain the pre-change raster, not merely agree with this build.
+    from microclaw import tools
+    FakeDataset.images = {(f"p{i}", 0): frame[0] for i, frame in enumerate(frames)}
+    FakeDataset.metadata = {
+        (f"p{i}", 0): {**metadata(x, y, roi="0-0-4-3"), "Width": 4}
+        for i, (_, x, y) in enumerate(frames)
+    }
+    calibration = tmp_path / 'golden-calibration.json'
+    calibration.write_text(json.dumps({
+        'payload': canonical_affine_payload(transform), 'payload_sha256': affine_payload_hash(transform),
+        'camera_device': 'Andor', 'camera_model': 'model', 'roi': [0, 0, 4, 3],
+    }))
+    monkeypatch.setattr(tools, 'Dataset', FakeDataset)
+    guard = MagicMock()
+    guard.resolve_readable_path.side_effect = lambda path: path
+    guard.resolve_in_workspace.side_effect = lambda path: path
+    manifest = tools.build_stage_coordinate_mosaic(
+        None, guard, 'dataset', str(tmp_path / 'golden.tiff'), {'time': 0},
+        {'kind': 'artifact', 'path': str(calibration)}, .127,
+    )
+    assert manifest['pixel_sha256'] == expected['mosaic_sha256']
+    for key in ('origin_um', 'extent_um', 'output_basis_um', 'overlap_statistics'):
+        assert manifest[key] == expected[key]
+    stats = expected['overlap_statistics']
+    assert manifest['coverage_fraction'] == stats['covered_pixels'] / (stats['covered_pixels'] + stats['uncovered_pixels'])
+    assert manifest['overwrite_convention'] == 'later source tiles overwrite earlier source tiles for display'
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])

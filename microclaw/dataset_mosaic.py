@@ -58,6 +58,11 @@ def assemble_stage_coordinate_mosaic(
     and again for rasterization, allowing dataset-backed callers to avoid holding
     source tiles in memory. The output image and coverage/count arrays are the
     large allocations. All frames must have the same two-dimensional dtype.
+
+    tile_placements records source_shape as [height, width] and output_window_px
+    as [first_row, stop_row, first_col, stop_col], with exclusive stops. Stage
+    bounds enclose transformed pixel centres, not exact tile footprints; the
+    shared source_basis_um and tile_bounds_convention describe every placement.
     """
     frame_descriptors: list[tuple[tuple[int, int], float, float]] = []
     bounds: list[tuple[float, float, float, float]] = []
