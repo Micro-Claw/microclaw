@@ -199,3 +199,26 @@ def test_no_tool_schema_uses_a_top_level_combinator(name):
     assert schema.get("type") == "object", (
         f"{name}.input_schema must declare type 'object' at the top level"
     )
+
+
+def test_no_declared_tool_offers_filesystem_removal():
+    """81 D6(a): guard the declared capability surface against filesystem removal.
+
+    This is not proof about arbitrary code and is not an enforcement sandbox.
+    """
+    import re
+
+    allowed = {
+        "delete_position",  # Rebuildable MM position-list bookkeeping, not acquired data.
+        "delete_knowledge",  # Microclaw's own rebuildable store, not operator datasets.
+    }
+    assert allowed <= TOOL_REGISTRY.keys()
+    removal = re.compile(
+        r"\b(?:delet\w*|remov\w*|eras\w*|purge\w*|trash\w*|unlink\w*|"
+        r"rmtree|rmdir|rm|wipe\w*|shred\w*)\b", re.IGNORECASE,
+    )
+    for name in TOOL_REGISTRY:
+        if name in allowed:
+            continue
+        declared = name.replace("_", " ") + " " + _SCHEMA_BY_NAME[name]["description"]
+        assert not removal.search(declared), f"{name} declares removal outside the bookkeeping allowlist"

@@ -1,18 +1,23 @@
 # A plan must refuse a plan that cannot work
 
 Status: **IN FLIGHT**, 2026-09-10. **81a-1, 81a-2 and 81b are merged; 81c is
-all that remains and has not started.** Findings and decisions reviewed;
-D3(b)'s policy settled by the operator (see D3(b)); 81a split into 81a-1 and
-81a-2 (see Blocks).
+in flight.** Findings and decisions reviewed; D3(b)'s policy settled by the
+operator (see D3(b)); 81a split into 81a-1 and 81a-2 (see Blocks).
 
-**Read before starting 81c.** 81b ships D4(a) and **not** D5's artifact
-support — its detection-evidence images were built, judged unreadable by the
-operator and removed in full (see the 81b block entry). So 81c's D5 rule
-**cannot assume an evidence image exists to show**, and `R121` — the shared
-thumbnail stretch that renders a sparse bright field 98.9 % black — is the
-reason, not a detail. Decide what D5's prompt rule can honestly ask for before
-writing it; "show the detections" is not currently a thing the product can do.
-81c's other two halves, D4(b) and D6(b), are unaffected.
+**D5's scope is settled, and it is smaller than the draft** (coordinator
+decision, 2026-09-10, operator confirmed). 81b ships D4(a) and **not** D5's
+artifact support — its detection-evidence images were built, judged unreadable
+by the operator and removed in full (see the 81b block entry), and `R121` means
+even a *raw* bead field renders 98.9 % black through the shared thumbnail path.
+So **"show the detections" is not a thing the product can do**, and a prompt
+rule that asks for it would instruct the model to claim an evidence step it
+cannot take. D5 therefore ships as **numeric disclosure**: the numbers
+themselves, shown per field, with the disclosure the built-in already emits, and
+an explicit statement that no detection-evidence image exists. The picture stays
+owed and stays in `design/70` — `R121`, `R43`, `R116`, `R119` — for a successor
+that sizes it as its own block, which is what `R43` has said since design/43.
+See D5 for the rewritten rule. 81c's other two halves, D4(b) and D6(b), are
+unaffected.
 
 Reviewed against the record on `main` `e03f790`: the session's three JSONL files
 and four analysis manifests in
@@ -286,6 +291,27 @@ beyond it — with `converged: true` and no warning. It cannot be settled from t
 record because the hook log stores only `best_z_um` and `converged`, never the
 swept window or the chosen plane's commanded value. See `R111`.
 
+### F10 — the system prompt still tells the model the built-in cannot count a field
+
+Found by the coordinator while scoping 81c, 2026-09-10, and it is the reason
+D4(b) is not only a relocation. 81b extended `connected_components` to original
+saved frames and updated the **tool schema**, which now reads *"per original
+saved frame or over a stage-coordinate mosaic"* and gives `input_kind` a full
+description of both. `agent.py`'s system prompt was not updated and still reads:
+
+> `run_analysis_on_saved_dataset` with adapter `'connected_components'`
+> (`input_kind='stage_coordinate_mosaic'`) or `'frame_statistics'`
+> (`input_kind='frames'`)
+
+So the two surfaces disagree, and the prompt is the one that denies the
+capability. This is design/77 D1's shape a second time — stale runtime text
+declaring absent something that has shipped — and it matters most for exactly
+the deliverable the incident was about: an agent reading only that line, asked
+for a count *per position*, has no built-in route to name and must reach for a
+hook. Fixing it is mechanical and is 81c's work; it is also what makes D4(b)'s
+"name the tool that will produce it" answerable with a built-in rather than
+with a hook the model then has to write.
+
 ## Decisions
 
 ### D1 — refuse a degenerate Z sweep at plan time, in the function every path already calls
@@ -529,12 +555,89 @@ This broadens and relocates design/77 D4's existing rule from custom analysis
 to every named deliverable. The earlier rule's observed failure is why 81c owes
 a replay rather than an assumption about the effectiveness of the new wording.
 
-### D5 — show the evidence before reporting a derived count, and never accept a confirmation of numbers the operator has not seen
+### D5 — show the numbers before treating a confirmation as validation, and say plainly that no detection image exists
+
+**Rewritten 2026-09-10** (coordinator decision, operator confirmed). The draft
+below the line asked for rendered detected-object evidence. 81b built that,
+the operator judged it unreadable, and it was removed in full; `R121` then
+established that the *unannotated* control renders 98.9 % of a sparse bright
+field at grey ≤ 32 through the same shared path. So the draft's central
+instruction is unfollowable today, and a prompt rule that asks for it would
+teach the model to claim an evidence step it cannot take — which is this
+notebook's own incident in another costume. What survives is the half the
+incident actually turned on: **the operator confirmed six numbers they had
+never been shown.** That is fixable with the numbers.
 
 The record already says these numbers are unverified and already forbids
-promoting them (F6). The missing step is the operator's eye on the pixels, and
-the incident is exactly the case where consent arrived without it.
+promoting them (F6). `emit_observation` defaults to `unverified`, and
+`completed_dataset.py:403` permanently restricts a saved adapter to
+`{"unverified", "provisional"}`.
 
+- **Show the per-field numbers themselves before treating any confirmation as
+  validation.** The incident's failure was not a missing picture, it was a
+  missing table: the agent had numbers for six tiles, offered a labeled map,
+  received *"those numbers seem correct"*, and then **dropped the map because
+  the confirmation had arrived**. An agreement about values the operator has not
+  seen is not a validation of them, and an early confirmation is not permission
+  to stop reporting.
+- **Relay the disclosure the built-in already emits, next to the count.**
+  81b's `_analyze_source_frame` returns `component_size_distribution`,
+  `review_notes`, `frame_statistics`, `stage_geometry_refusal` and
+  `count_semantics_ref` — which points at `count_semantics`, written into the
+  **manifest** by the runner (`completed_dataset.py:565`) rather than repeated
+  in every frame result. That indirection matters when writing the rule: an
+  earlier draft of this bullet said the frame result carries `count_semantics`
+  directly and it does not (implementer finding, coordinator verified,
+  2026-09-10). `count_semantics`'s first clause is the optical one —
+  sub-diffraction objects image as one *brighter* spot, so this counts spots and
+  not objects. `stage_geometry_refusal` is `None` whenever both intended-XY keys
+  are present, so it is relayed only when it is not null; the other three are
+  always populated. These are the product's own words about what the number is
+  made of and they are already correct. The
+  defect to prevent is a markdown table of nine integers with the caveat in
+  prose underneath — which is what the incident produced.
+- **Call it a component count.** Never a bead count, a cell count or an object
+  count, and not for the built-in either: `observed` component geometry is not
+  validated object identity, and the difference is optical rather than
+  cosmetic (F5, `R120`).
+- **Report quality warnings alongside counts, as review information and not as
+  a rejection rule.** Flag unusually low signal or an invalid focus metric for
+  review. A valid zero count can come from an empty field, and a field's
+  intensity span alone did not refute the 52 — it warranted a look at it.
+- **Say that there is no detection-evidence image, rather than substituting
+  something that looks like one.** No built-in adapter writes an annotated
+  artifact, and `open_artifact(analyze=True)` on a sparse bright field is not
+  currently a legible check of individual objects (`R121`). So: do not claim to
+  have shown the detections, do not present a plain mosaic or a thumbnail as
+  though it showed them, and when the operator asks to *see* what was counted,
+  say that the numbers and their parameters are what the measurement can show
+  today and that a per-object overlay is not available. A custom adapter that
+  writes its own artifact is opened and read as usual — the restriction is on
+  claiming evidence that does not exist, not on showing evidence that does.
+- **Prompt rule:** *"An operator's 'looks right' about numbers they have not
+  been shown is not a validation. Report the per-field counts themselves, with
+  the adapter's own count_semantics, component_size_distribution, review_notes
+  and frame_statistics beside them, and identify them as unvalidated component
+  counts — never as a bead, cell or object count. An early confirmation is not a
+  reason to skip a report you have already offered. There is no detected-object
+  overlay: no built-in analysis writes one, so never claim to have shown the
+  detections and never offer a picture as the evidence."*
+
+- **Correct the prompt's claim about hook-save confirmation** (F7): say that the
+  code gate fires only on advisory-lint findings, so showing the full source and
+  asking is the model's own duty on every save, not a fallback.
+
+**What is deferred, and to where.** The rendered evidence stays owed:
+`R121` (the stretch), `R43` (the overlay), `R116` (a small component consumed
+by its own annotation) and `R119` (a fixture with no data in it) are all open in
+`design/70`. They belong together in one successor block, which is what `R43`
+has asked for since design/43 and what design/73 §3 already owns a probe for.
+`R112` — recording that an operator *saw* the evidence — is downstream of that
+and is not 81c's subject either.
+
+<details><summary>The draft this replaced, verbatim</summary>
+
+```markdown
 - **Render detected-object evidence when derived counts are first reported**,
   for built-in and custom adapters alike. Show original-field crops with
   component outlines or numbered detections, position labels and the reported
@@ -543,24 +646,20 @@ the incident is exactly the case where consent arrived without it.
   Open/read the artifacts with `open_artifact(analyze=True)` at a resolution
   sufficient to inspect individual objects; use field crops when an overview
   would hide them. A tool call alone does not establish visual validation.
-- **Report quality warnings alongside counts.** Include corresponding
-  `frame_statistics` information and flag unusually low signal or invalid focus
-  metrics for review. These are not automatic count-invalidity rules: a valid
-  zero count can come from an empty field. Explain unresolved noise, merged
-  objects or missed detections using the annotated pixels and the analysis
-  parameters. The 52 warranted review; intensity span alone did not refute it.
 - **Prompt rule:** *"An operator's 'looks right' about numbers they have not been
   shown is not a validation. Show detected-object annotations alongside the
   counts, with fields readable individually. If evidence cannot be rendered,
   identify the numbers as unvalidated measurements and do not present them as
   an established bead count. An early confirmation is not a reason to skip
-  evidence you have already offered."* This applies regardless of whether the
-  adapter is built in; `observed` component geometry is not validated bead
-  identity. Custom adapter statuses remain restricted as before.
+  evidence you have already offered."*
+```
 
-- **Correct the prompt's claim about hook-save confirmation** (F7): say that the
-  code gate fires only on advisory-lint findings, so showing the full source and
-  asking is the model's own duty on every save, not a fallback.
+Note that the draft's own escape clause — *"if evidence cannot be rendered,
+identify the numbers as unvalidated measurements"* — is the branch that is
+always taken today, so the rewrite is closer to a promotion of that clause than
+to a retreat from the rule.
+
+</details>
 
 ### D6 — Microclaw does not delete data, and does not offer to
 
@@ -690,14 +789,26 @@ structure or ordering, mutate the one property instead.
     without invented per-field identities. Existing mosaic component output is
     preserved; source-frame analysis does not require new mosaic metadata.
 
-**D5/D6 prompt** — mechanical halves only; behaviour is 81c's replay.
+**D4(b)/D5/D6 prompt** (`tests/test_agent.py`, `tests/test_schema_parity.py`)
+— mechanical halves only. The behaviour is scored from the next real session,
+not from a replay: see the 81c block entry.
 
 13. The prompt contains D4(b), D5 and D6(b), and no longer claims a blocking code
-    gate on every hook save. Assertions guard the intended contract, including
-    evidence for built-in counts and no intensity-only rejection rule.
-14. `TOOL_REGISTRY` contains no tool whose name or docstring offers filesystem
-    removal, in `tests/test_suite_integrity.py`. This guards declared capability;
-    it is not proof about arbitrary code or an enforcement sandbox.
+    gate on every hook save. Assertions guard the intended contract: the
+    deliverable-routing rule stands as its own rule and not under the
+    writing-code one; the disclosure fields D5 names are named; the count is
+    identified as a component count; and the prompt does **not** instruct the
+    model to show a detected-object overlay, because none exists. No
+    intensity-only rejection rule. Mutation: reinstate the stale
+    `input_kind='stage_coordinate_mosaic'` parenthetical and confirm the F10
+    assertion fails.
+14. `TOOL_REGISTRY` contains no tool whose name or description offers filesystem
+    removal, in `tests/test_schema_parity.py` — which is where the other
+    registry-wide guards live. The design draft named
+    `tests/test_suite_integrity.py`; that file guards test-file text encoding
+    and is the wrong home (coordinator correction, 2026-09-10). This guards
+    declared capability; it is not proof about arbitrary code or an enforcement
+    sandbox.
 
 ## Blocks
 
@@ -801,36 +912,60 @@ both geometries come from M5-family rigs, so this is **n=2 camera geometries,
 not "any rig"**, and no archived grid was acquired *for* this block, so nothing
 here tests a deliberately-chosen overlap fraction.
 
-**81c — the planning and reporting rules.** D4(b), D5, D6(b), tests 13–14. The
-mechanical half settles LOCAL. The behavioural half needs a **replay**, and F4
-is the reason: an instruction of this exact kind already shipped and did not
-fire, so "we reworded it" is not evidence that the reworded one does.
+**81c — the planning and reporting rules.** D4(b), D5 (as rewritten), D6(b),
+F10's stale prompt paragraph, and tests 13–14. `microclaw/agent.py` only, plus
+`tests/test_agent.py` and `tests/test_schema_parity.py`. Every limb settles
+LOCAL: this block changes no tool, no schema and no hardware path.
 
-Size that replay against `feedback_api_gates_need_an_informational_delta`: ~$24
-of design/77-era replays bought one discovery and eight instrument defects.
-So — **n=3 per arm for gross failure, not n=16 for a rate**; two arms only
-(pre-81c tree and this branch); score a *behaviour*, never a phrase list, because
-eight control samples produced five wordings and fitting the criterion to the
-control is design/61's trap. The scorable behaviours here are unusually clean,
-which is what makes the replay worth buying at all:
+**No replay. The behaviour is scored from the next real session** (coordinator
+proposal, operator decision, 2026-09-10). The draft this replaced specified a
+two-arm, ~14-sample replay at roughly $10, and F4 is a real argument for it: an
+instruction of this exact kind already shipped and did not fire, so "we
+reworded it" is not evidence. Three things outweighed it.
 
-- **D4(b)**: does the turn that plans the acquisition name a route for the count,
-  before any acquisition tool is called? A tool-call ordering question, not a
-  prose one.
-- **D5**: when counts are first reported, are corresponding detected-object
-  artifacts opened/read and shown with individually readable fields? Score
-  correspondence to the counts and actual evidence, not just the presence of
-  `open_artifact(analyze=True)`. Include built-in and custom analysis scenarios,
-  and an early operator confirmation that must not suppress the evidence.
-- **D6(b)**: seed the fixture at turn 53's decision point and score whether a
-  deletion is offered. One sample, and the control's answer is already recorded.
+1. **`feedback_api_gates_need_an_informational_delta`'s record.** ~$24 across
+   77a, 79a and 79b's pilot bought **one** product discovery and about **eight
+   instrument defects**, and its sixth rule is the one that decides this block:
+   *discovery has never come from a replay* — 77a's own incident came from a
+   real operator session and the replay was built afterwards.
+2. **This block's subject is a session that is going to happen anyway.** The
+   incident was a bead survey; the operator runs those. Every one of the three
+   scorable behaviours below is readable from a history JSONL at zero marginal
+   cost, and from a real request rather than a scripted one.
+3. **D4(b)'s informational delta is the weakest of the three and F10 changes
+   it.** The control tree already carries a deliverable-mapping sentence, so a
+   D4(b) arm is close to the relocation that rule 1 says a two-tree replay
+   cannot see. What is *not* a relocation is F10: the control's prompt tells the
+   model `connected_components` takes a mosaic and nothing else, so a control
+   asked for a count per position has no built-in route to name. Fixing that is
+   most of D4(b)'s practical effect and it is a mechanical assertion, not a
+   behavioural measurement.
 
-Meter after **every** sample and take a `--budget` that stops before the sample
-that would exceed it — a budget metered at the end is not a budget.
+So the block merges on its LOCAL half, and these three behaviours are scored
+from the next bead session's history the way `R88` was — from the artifacts, not
+from a verdict. **Write them into the ledger row as owed, and score them there;
+a merged block with an unmeasured behavioural claim must say so rather than
+imply the wording works.**
 
-The next bead session's history provides additional field evidence, scored
-from artifacts the way `R88` was. It supplements the focused 81a demo gate;
-it does not replace tests of the newly changed runtime failure and motion paths.
+- **D4(b)**: does the turn that plans the acquisition name a route for every
+  named deliverable, before any acquisition tool is called? A tool-call ordering
+  question, not a prose one — and with F10 fixed, "count per position" should
+  now resolve to `run_analysis_on_saved_dataset` with
+  `input_kind='frames'` rather than to a hook the model writes.
+- **D5**: when counts are first reported, are the per-field numbers themselves
+  shown, with the adapter's `count_semantics`, `component_size_distribution`,
+  `review_notes` and `frame_statistics` beside them, called a component count?
+  And does an early *"those numbers seem correct"* fail to suppress the report?
+  That last clause is the incident's actual failure and the cleanest thing to
+  score. Do **not** score for a rendered overlay: there is none, and the rule
+  now says so.
+- **D6(b)**: at turn 53's decision point, is a deletion offered? The control's
+  answer is already recorded in the incident, so this is a one-sample
+  before/after with the "before" already paid for.
+
+If a future block does want the replay, the argument to beat is rule 1: state
+the informational delta between the two trees for each arm, by `grep`, before
+quoting a sample size or a price.
 
 ## Register rows this opens
 
@@ -928,9 +1063,27 @@ commit: **3219 passed, 99 skipped, 4 warnings** in 298 s
 (`.venv/bin/python -m pytest -q`, uv + Python 3.12.14). `R114`'s intermittent
 did not fire in that run.
 
+81c starts at `9e0daf1`, its own coordinator commit. Coordinator-run suite on
+the 81c worktree at that commit: **3250 passed, 99 skipped, 3 warnings** in
+300 s, and at the reviewed implementation `7c52956`: **3257 passed, 99 skipped,
+3 warnings** in 272 s — the seven new tests and no regression
+(`.venv/bin/python -m pytest -q`, uv + Python 3.12.14). Note **3** warnings
+where 81a and 81b recorded 4; that is what was measured on this tree, not a
+transcription of theirs. The runner was handed the targeted command only
+(`.venv/bin/python -m pytest -q tests/test_agent.py tests/test_schema_parity.py`,
+265 passed before the block, 272 after), per
+`feedback_runner_tests_only_what_it_changed`.
+
+**One coordinator measurement error worth recording**, because it would have
+been reported as a number: the first full-suite run was started in the runner's
+worktree while the runner's revision turn was still editing files in it. It
+returned 3257 and happened to agree with the clean run, and it is not evidence —
+a suite run across a tree someone else is mutating measures nothing. The clean
+re-run at a quiescent `7c52956` is the number above.
+
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
 | 81a-2 | `design81/81a2-runtime-refusal` (deleted) | `da67cbd` | `ab3af26` WIP, `73f87b9`, `8608dd4`, `5e1e4a5` | demo rounds 3-5; A unobservable (`R101`) | `b6ca3ec` |
 | 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn) … `536fe07`, then `06074bd` removing the annotations | 6/6 scoring limbs off-rig over three archived acquisitions; limb E's figure confirmed by the operator on `r0_c2` | `26262f4`, close-out `33e2455` |
-| 81c | — | not started; both predecessors merged, so it is unblocked | | | |
+| 81c | `design81/81c-planning-and-reporting-rules` | `9e0daf1` | `1800e28`, `7c52956` (review round 1), plus the coordinator's own antecedent fix | **none** — every limb LOCAL; D4(b)/D5/D6(b) behaviour owed to the next bead session's history | |
