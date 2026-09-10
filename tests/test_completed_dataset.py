@@ -718,3 +718,234 @@ def test_offline_save_rejects_missing_context(tmp_path, monkeypatch, verb):
     assert any(f"Short.{verb} must accept" in error
                for error in result["contract_errors"]), result
     assert not hook_manager.MANIFEST.exists()
+
+
+@pytest.fixture
+def component_frames(tmp_path, monkeypatch):
+    from microclaw import tools
+    from microclaw.calibration import StageCameraAffine, canonical_affine_payload, affine_payload_hash
+    images = [np.zeros((32, 32), np.uint16) for _ in range(3)]
+    # One shared signal: frame 1 is displaced by four columns under the
+    # incident's rotated affine. Both images must retain this component.
+    images[0][16, 20] = images[1][16, 16] = 100
+    # Two touching objects form one connected region, not two identifications.
+    images[0][24:26, 24:26] = 80
+    images[0][24:26, 26:28] = 80
+    metadata = [{
+        'XPosition_um_Intended': 10., 'YPosition_um_Intended': 20. - index * .508,
+        'Core-Camera': 'Camera', 'Camera-Camera': 'model',
+        'ROI': '0-0-32-32', 'Binning': '1x1', 'Height': 32, 'Width': 32,
+        'PixelType': 'GRAY16', 'PositionName': f'field-{index}',
+    } for index in range(3)]
+
+    class SourceDataset:
+        axes = {'position': [0, 1, 2], 'time': [0, 1], 'channel': ['A', 'B'], 'z': [0, 1]}
+
+        def has_image(self, **coords):
+            return all(coords.get(k) in values for k, values in self.axes.items())
+
+        def read_image(self, **coords):
+            assert {k: coords[k] for k in ('time', 'channel', 'z')} == {'time': 1, 'channel': 'B', 'z': 1}
+            return images[self.axes['position'].index(coords['position'])]
+
+        def read_metadata(self, **coords):
+            return metadata[self.axes['position'].index(coords['position'])]
+
+    dataset = SourceDataset()
+    monkeypatch.setattr(completed_dataset, 'Dataset', lambda path: dataset)
+    monkeypatch.setattr(tools, 'Dataset', lambda path: dataset)
+    path = tmp_path / 'dataset'
+    path.mkdir()
+    (path / 'NDTiff.index').write_bytes(b'component frames')
+    transform = StageCameraAffine(-0., .127, -.127, 0., 'obj', 1, .127)
+    calibration = tmp_path / 'calibration.json'
+    calibration.write_text(json.dumps({
+        'payload': canonical_affine_payload(transform),
+        'payload_sha256': affine_payload_hash(transform),
+        'camera_device': 'Camera', 'camera_model': 'model', 'roi': [0, 0, 32, 32],
+    }))
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+    def analyze(name='out', parameters=None, **kwargs):
+        options = {'calibration_ref': {'kind': 'artifact', 'path': str(calibration)}}
+        options.update(kwargs)
+        return completed_dataset.run_analysis_on_saved_dataset(
+            guard, str(path), 'connected_components', {'time': 1, 'channel': 'B', 'z': 1},
+            'frames', parameters or {}, str(tmp_path / name), **options,
+        )
+    return analyze, images, metadata, dataset, calibration
+
+
+def test_original_frames_count_geometry_where_and_evidence(component_frames, monkeypatch):
+    import tifffile
+    analyze, images, metadata, _, _ = component_frames
+    originals = [image.copy() for image in images]
+    measured_pixels = []
+    original = completed_dataset.connected_components
+    def measure(image, **kwargs):
+        assert not image.flags.writeable
+        measured_pixels.append((image, image.copy()))
+        return original(image, **kwargs)
+    monkeypatch.setattr(completed_dataset, 'connected_components', measure)
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    assert result['calibration_used'] is True
+    assert result['calibration_identity']['camera_model'] == 'model'
+    observations = result['observations']
+    assert [o['result']['n_components'] for o in observations] == [2, 1, 0]
+    for index, observation in enumerate(observations):
+        assert {k: observation[k] for k in ('position', 'time', 'channel', 'z', 'PositionName')} == {
+            'position': index, 'time': 1, 'channel': 'B', 'z': 1, 'PositionName': f'field-{index}',
+        }
+        measured = observation['result']
+        assert measured['threshold'] == measured['background_level'] == measured['noise_mad_sigma'] == 0
+        assert measured['min_area_um2'] == 0 and measured['max_area_um2'] is None
+        assert 'not a unique object total' in result['count_semantics']
+        assert measured['count_semantics_ref'] == 'count_semantics'
+        assert 'not object identification' in result['count_semantics']
+        assert 'frame_statistics' in measured
+        assert measured['annotation']['field_label'] == f'T{index + 1}'
+        assert measured['annotation']['order'] == 'none; T numbers saved position identity, not capture order'
+        assert measured['annotation']['written'] is True
+        artifact = next(a for a in result['artifacts'] if a['sha256'] == observation['artifact_sha256'])
+        rendered = tifffile.imread(artifact['path'])
+        assert rendered.dtype == images[index].dtype
+        assert rendered.max() == 65535
+        assert np.any(rendered == 1)
+        assert not np.array_equal(rendered, images[index])
+        np.testing.assert_array_equal(images[index], originals[index])
+    for pixels, before in measured_pixels:
+        assert not pixels.flags.writeable
+        np.testing.assert_array_equal(pixels, before)
+    shared = [o['result']['objects'][0] for o in observations[:2]]
+    for component in shared:
+        np.testing.assert_allclose(component['centroid_stage_um'], [10.0635, 19.4285])
+        assert component['area_um2'] == .016129
+        assert 'bounding_box_stage_um' not in component
+    assert observations[0]['result']['objects'][1]['n_pixels'] == 8
+    assert observations[0]['result']['objects'][1]['area_um2'] == .129032
+    assert result['annotations'] == {'requested': 3, 'written': 3, 'reason': None}
+
+
+def test_source_missing_calibration_uses_resolver_refusal(component_frames):
+    analyze, *_ = component_frames
+    result = analyze(calibration_ref=None)
+    assert result['status'] == 'failed'
+    assert result['failure']['type'] == 'CalibrationResolutionError'
+    assert result['failure']['message'].startswith('Dataset does not record a usable calibration (')
+    assert result['observations'] == []
+
+
+def test_source_confirmed_current_refused_offline(component_frames):
+    analyze, *_ = component_frames
+    with pytest.raises(ValueError, match='confirmed_current calibration requires a live microscope core'):
+        analyze(calibration_ref={'kind': 'confirmed_current'})
+
+
+def test_source_missing_intended_xy_refuses_stage_geometry(component_frames):
+    analyze, _, metadata, *_ = component_frames
+    del metadata[0]['XPosition_um_Intended']
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    measured = result['observations'][0]['result']
+    assert measured['stage_geometry_refusal'] == 'Stage coordinates refused: missing XPosition_um_Intended'
+    assert measured['n_components'] == 2
+    assert measured['objects'][0]['centroid_px'] == [20., 16.]
+    assert 'centroid_stage_um' not in measured['objects'][0]
+    assert 'bounding_box_stage_hull_um' not in measured['objects'][0]
+
+
+@pytest.mark.parametrize('value', [0, 1, 'false', None])
+def test_write_annotations_requires_boolean(component_frames, value):
+    analyze, *_ = component_frames
+    with pytest.raises(ValueError, match='write_annotations must be a boolean'):
+        analyze(parameters={'write_annotations': value})
+
+
+@pytest.mark.parametrize('limits, reason', [
+    ({'max_count': 1, 'max_artifact_bytes': 10000, 'max_total_bytes': 30000}, 'count limit'),
+    ({'max_count': 10, 'max_artifact_bytes': 10, 'max_total_bytes': 30000}, 'per-artifact size limit'),
+    ({'max_count': 10, 'max_artifact_bytes': 10000, 'max_total_bytes': 10}, 'total-bytes limit'),
+])
+def test_annotations_degrade_at_artifact_limits(component_frames, limits, reason):
+    analyze, *_ = component_frames
+    result = analyze(artifact_limits=limits)
+    assert result['status'] == 'completed', result['failure']
+    assert [o['result']['n_components'] for o in result['observations']] == [2, 1, 0]
+    assert result['annotations']['requested'] == 3
+    assert result['annotations']['written'] == len(result['artifacts'])
+    assert reason in result['annotations']['reason']
+    for observation in result['observations'][len(result['artifacts']):]:
+        assert 'artifact_sha256' not in observation or observation['artifact_sha256'] is None
+        assert reason in observation['result']['annotation']['reason']
+
+
+def test_annotation_opt_out_gray8_determinism_and_partial_identity(component_frames):
+    import tifffile
+    analyze, images, metadata, dataset, _ = component_frames
+    for i in range(3):
+        images[i] = images[i].astype(np.uint8)
+        metadata[i]['PixelType'] = 'GRAY8'
+    dataset.axes['position'] = ['left', 'right', 'empty']
+    del metadata[0]['PositionName']
+    first = analyze('first')
+    second = analyze('second')
+    assert first['status'] == second['status'] == 'completed'
+    assert [a['sha256'] for a in first['artifacts']] == [a['sha256'] for a in second['artifacts']]
+    for artifact in first['artifacts']:
+        assert tifffile.imread(artifact['path']).max() == 255  # dtype, not mosaic uint16
+    assert 'PositionName' not in first['observations'][0]
+    assert first['observations'][0]['result']['annotation']['position_labels_partial'] is False
+    assert first['observations'][0]['result']['annotation']['field_label'] == 'T2'
+    assert first['position_labels'] == [
+        {'label': 'T1', 'position': 'empty', 'PositionName': 'field-2'},
+        {'label': 'T2', 'position': 'left'},
+        {'label': 'T3', 'position': 'right', 'PositionName': 'field-1'},
+    ]
+    for observation in first['observations']:
+        assert observation['result']['annotation']['position_labels'] == first['position_labels']
+    off = analyze('off', parameters={'write_annotations': False})
+    assert off['status'] == 'completed' and off['artifacts'] == []
+    assert [o['result']['n_components'] for o in off['observations']] == [2, 1, 0]
+
+
+@pytest.mark.parametrize('key,value', [('Core-Camera', 'other'), ('Camera-Camera', 'other'), ('Binning', '2x2')])
+def test_source_calibration_identity_refuses_mismatch(component_frames, key, value):
+    analyze, _, metadata, *_ = component_frames
+    for item in metadata:
+        item[key] = value
+        if key == 'Core-Camera':
+            item['other-Camera'] = 'model'
+    result = analyze()
+    assert result['status'] == 'failed'
+    assert 'Calibration identity contradicts dataset metadata' in result['failure']['message']
+
+
+def test_source_calibration_records_roi_difference_and_refuses_inconsistency(component_frames):
+    analyze, _, metadata, *_ = component_frames
+    for item in metadata:
+        item['ROI'] = '1-2-32-32'
+    result = analyze()
+    assert result['status'] == 'completed'
+    assert result['calibration_roi_difference']['dataset'] == [1, 2, 32, 32]
+    metadata[0]['Binning'] = '2x2'
+    refused = analyze('inconsistent')
+    assert refused['status'] == 'failed'
+    assert 'changes within the selected plane' in refused['failure']['message']
+
+
+def test_old_mosaic_manifest_still_drives_original_adapter(tmp_path):
+    # Pre-81b manifest shape: no tile placements or source identities required.
+    path = tmp_path / 'old.tiff.json'
+    path.write_text(json.dumps({'output_basis_um': [[1., 0.], [0., 1.]], 'origin_um': [10., 20.]}))
+    old = json.loads(path.read_text())
+    image = np.ones((8, 8), np.uint16)
+    image[2:4, 2:4] = 100
+    adapter = completed_dataset.ConnectedComponents(min_snr=3, min_snr_source='explicit', write_annotations=False)
+    result = adapter.analyze_saved_frame(image, {'input_kind': 'stage_coordinate_mosaic', 'mosaic_manifest': old}, None)
+    assert result['result'] == {
+        'threshold': 1., 'background_level': 1., 'noise_mad_sigma': 0., 'n_components': 1,
+        'objects': [{'label': 1, 'area_um2': 4., 'centroid_stage_um': [12.5, 22.5],
+                     'bounding_box_stage_um': {'x_min': 11.5, 'y_min': 21.5, 'x_max': 13.5, 'y_max': 23.5},
+                     'bounding_box_px': [2, 2, 4, 4]}],
+    }
+    assert 'tile_placements' not in old

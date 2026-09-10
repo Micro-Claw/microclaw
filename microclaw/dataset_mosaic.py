@@ -112,6 +112,7 @@ def assemble_stage_coordinate_mosaic(
         dtype=np.float64,
     ) / determinant
 
+    tile_placements = []
     rasterized = 0
     rasterized_output_samples = 0
     for frame_index, (pixels, centre_x, centre_y) in enumerate(frames):
@@ -144,6 +145,19 @@ def assemble_stage_coordinate_mosaic(
         first_row = max(0, math.floor((tile_min_y - origin_y) / sample + 0.5))
         last_row = min(height - 1, math.floor((tile_max_y - origin_y) / sample + 0.5))
 
+        # These are bounds over transformed pixel centres, not exact tile
+        # footprints. Under rotation/shear they cannot establish membership.
+        tile_placements.append({
+            "index": frame_index,
+            "centre_stage_um": [expected_x, expected_y],
+            "source_shape": list(expected_shape),
+            "source_basis_ref": "source_basis_um",
+            "bounds_stage_um": {"x_min": tile_min_x, "x_max": tile_max_x,
+                                "y_min": tile_min_y, "y_max": tile_max_y},
+            "output_window_px": [first_row, last_row + 1, first_col, last_col + 1],
+            "bounds_convention_ref": "tile_bounds_convention",
+        })
+
         output_rows, output_cols = np.meshgrid(
             np.arange(first_row, last_row + 1),
             np.arange(first_col, last_col + 1),
@@ -173,6 +187,10 @@ def assemble_stage_coordinate_mosaic(
     overlap_pixels = int(np.count_nonzero(coverage_count > 1))
     return {
         "mosaic": mosaic,
+        "tile_placements": tile_placements,
+        "source_basis_um": [[geometry.affine.a, geometry.affine.b],
+                            [geometry.affine.c, geometry.affine.d]],
+        "tile_bounds_convention": "bounds over transformed pixel centres, not exact tile footprints",
         "origin_um": [origin_x, origin_y],
         "extent_um": [max_x - origin_x, max_y - origin_y],
         "output_basis_um": [[sample, 0.0], [0.0, sample]],
@@ -185,3 +203,64 @@ def assemble_stage_coordinate_mosaic(
             "rasterized_output_sample_count": rasterized_output_samples,
         },
     }
+
+
+# One platform-independent 5x7 bitmap font; P is reserved for design/73.
+_LABEL_FONT = {
+    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+}
+
+
+def draw_text_labels(canvas, labels, *, foreground, outline, scale):
+    """Centre each text box on its (row, col, text) anchor, clipping at edges.
+
+    Pure raster operation: no metadata, IO, platform fonts or antialiasing.
+    Each 5x7 glyph and its one-cell outline use integer nearest-neighbour
+    magnification; glyphs have a one-cell gap. Later labels draw last.
+    The caller owns the canvas and must pass a copy of measurement pixels.
+    """
+    if isinstance(scale, bool) or not isinstance(scale, int) or scale < 1:
+        raise ValueError("scale must be a positive integer")
+    for row, col, text in labels:
+        if not text:
+            continue
+        mask = np.zeros((9, 6 * len(text) + 1), dtype=bool)
+        for index, character in enumerate(text):
+            if character not in _LABEL_FONT:
+                raise ValueError(f"Unsupported glyph {character!r}; glyph set is P, T and digits 0-9")
+            glyph = _LABEL_FONT[character]
+            mask[1:8, 1 + 6 * index:6 + 6 * index] = [
+                [pixel == "1" for pixel in line] for line in glyph
+            ]
+        # The one-cell zero border on all four sides prevents np.roll's
+        # wraparound from introducing ink across the opposite edge.
+        halo = mask.copy()
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                halo |= np.roll(np.roll(mask, dr, axis=0), dc, axis=1)
+        mask = mask.repeat(scale, axis=0).repeat(scale, axis=1)
+        halo = halo.repeat(scale, axis=0).repeat(scale, axis=1)
+        # Floor a half-pixel tie toward the upper/left pixel, deterministically.
+        top = int(np.floor(float(row) - (mask.shape[0] - 1) / 2))
+        left = int(np.floor(float(col) - (mask.shape[1] - 1) / 2))
+        bottom, right = top + mask.shape[0], left + mask.shape[1]
+        r0, c0 = max(0, top), max(0, left)
+        r1, c1 = min(canvas.shape[0], bottom), min(canvas.shape[1], right)
+        if r0 >= r1 or c0 >= c1:
+            continue
+        region = canvas[r0:r1, c0:c1]
+        clip = (slice(r0 - top, r1 - top), slice(c0 - left, c1 - left))
+        region[halo[clip]] = outline
+        region[mask[clip]] = foreground
+    return canvas

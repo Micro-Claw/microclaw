@@ -362,23 +362,42 @@ def compute_stats(
 
 def connected_components(
     image: np.ndarray,
-    pixel_size_um: float,
-    origin_um: tuple[float, float] | list[float],
+    pixel_size_um: float | None = None,
+    origin_um: tuple[float, float] | list[float] | None = None,
     min_area_um2: float = 0.0,
     max_area_um2: float | None = None,
     min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK,
-) -> dict:
+    *, basis_um=None, covered_mask=None, return_labels: bool = False,
+) -> dict | tuple[dict, np.ndarray]:
     """Measure contiguous signal above the robust SNR floor in stage space.
 
     This deliberately stops at geometry: a component is contiguous thresholded
     signal, not a cell or any other biological classification.  Mosaic pixels
-    equal to zero are uncovered canvas and are excluded from the noise-floor
-    estimate; the mosaic writer uses zero for precisely that purpose.
+    equal to zero are uncovered canvas by default. Pass an explicit boolean
+    covered_mask to select the observed population (all True for source frames).
+    basis_um maps (column, row) to stage displacement; pixel_size_um preserves
+    the scalar square-basis contract. A missing origin with a general basis
+    reports pixel geometry and calibrated area without inventing stage XY.
+    return_labels additionally returns the exact segmentation used for counting;
+    callers select retained component ids from objects after area filtering.
+    The ordinary dictionary result (including the scalar mosaic path) is unchanged.
     """
     from scipy import ndimage
 
-    if not np.isfinite(pixel_size_um) or pixel_size_um <= 0:
-        raise ValueError("pixel_size_um must be finite and positive")
+    if basis_um is not None and pixel_size_um is not None:
+        raise ValueError("Supply either basis_um or pixel_size_um, not both")
+    if not isinstance(return_labels, bool):
+        raise ValueError("return_labels must be a boolean")
+    if basis_um is None:
+        if pixel_size_um is None or not np.isfinite(pixel_size_um) or pixel_size_um <= 0:
+            raise ValueError("pixel_size_um must be finite and positive")
+    else:
+        basis_um = np.asarray(basis_um, dtype=float)
+        if basis_um.shape != (2, 2) or not np.all(np.isfinite(basis_um)):
+            raise ValueError("basis_um must be a finite 2x2 stage basis")
+        determinant = basis_um[0, 0] * basis_um[1, 1] - basis_um[0, 1] * basis_um[1, 0]
+        if not np.isfinite(determinant) or determinant == 0:
+            raise ValueError("basis_um must be nonsingular")
     if not np.isfinite(min_snr) or min_snr < 0:
         raise ValueError("min_snr must be finite and non-negative")
     if min_area_um2 < 0 or not np.isfinite(min_area_um2):
@@ -393,10 +412,13 @@ def connected_components(
         img = img.mean(axis=-1)
     if img.ndim != 2:
         raise ValueError("connected_components requires a 2-D image")
-    covered = img != 0
+    covered = img != 0 if covered_mask is None else np.asarray(covered_mask)
+    if covered.shape != img.shape or covered.dtype != np.dtype(bool):
+        raise ValueError("covered_mask must be a boolean array matching the image")
     values = img[covered]
     if values.size == 0:
-        return {"threshold": 0.0, "n_components": 0, "objects": []}
+        result = {"threshold": 0.0, "n_components": 0, "objects": []}
+        return (result, np.zeros(img.shape, dtype=np.int32)) if return_labels else result
     background = float(np.median(values))
     # This cannot reuse snr()/snr_validity(): they intentionally measure the
     # full frame, while mosaic canvas zeros are not observations and must be
@@ -405,10 +427,13 @@ def connected_components(
     threshold = background + float(min_snr) * noise
     labels, _ = ndimage.label(covered & (img > threshold))
 
-    pixel_area = float(pixel_size_um) ** 2
-    if len(origin_um) != 2 or not all(np.isfinite(value) for value in origin_um):
+    pixel_area = float(pixel_size_um) ** 2 if basis_um is None else abs(float(determinant))
+    if origin_um is not None:
+        if len(origin_um) != 2 or not all(np.isfinite(value) for value in origin_um):
+            raise ValueError("origin_um must contain two finite stage coordinates")
+        origin_x, origin_y = (float(origin_um[0]), float(origin_um[1]))
+    elif basis_um is None:
         raise ValueError("origin_um must contain two finite stage coordinates")
-    origin_x, origin_y = (float(origin_um[0]), float(origin_um[1]))
     objects = []
     for label_id, bounds in enumerate(ndimage.find_objects(labels), start=1):
         if bounds is None:
@@ -422,6 +447,26 @@ def connected_components(
         row_min, row_max = int(rows.min()), int(rows.max()) + 1
         col_min, col_max = int(cols.min()), int(cols.max()) + 1
         centroid_row, centroid_col = ndimage.center_of_mass(labels == label_id)
+        if basis_um is not None:
+            component = {
+                "label": int(label_id), "n_pixels": int(rows.size),
+                "area_um2": area_um2,
+                "centroid_px": [float(centroid_col), float(centroid_row)],
+                "bounding_box_px": [col_min, row_min, col_max, row_max],
+            }
+            if origin_um is not None:
+                stage_x = origin_x + basis_um[0, 0] * cols + basis_um[0, 1] * rows
+                stage_y = origin_y + basis_um[1, 0] * cols + basis_um[1, 1] * rows
+                component["centroid_stage_um"] = [
+                    origin_x + basis_um[0, 0] * float(centroid_col) + basis_um[0, 1] * float(centroid_row),
+                    origin_y + basis_um[1, 0] * float(centroid_col) + basis_um[1, 1] * float(centroid_row),
+                ]
+                component["bounding_box_stage_hull_um"] = {
+                    "x_min": float(stage_x.min()), "x_max": float(stage_x.max()),
+                    "y_min": float(stage_y.min()), "y_max": float(stage_y.max()),
+                }
+            objects.append(component)
+            continue
         objects.append({
             "label": int(label_id),
             "area_um2": area_um2,
@@ -439,13 +484,15 @@ def connected_components(
             },
             "bounding_box_px": [col_min, row_min, col_max, row_max],
         })
-    return {
+    result = {
         "threshold": threshold,
         "background_level": background,
         "noise_mad_sigma": noise,
         "n_components": len(objects),
         "objects": objects,
     }
+
+    return (result, labels) if return_labels else result
 
 
 def image_content(

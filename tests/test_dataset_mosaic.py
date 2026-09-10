@@ -318,3 +318,68 @@ def test_singleton_non_position_axes_default_without_selection(monkeypatch, tmp_
         assert result["selection"] == {"time": 0, "z": 0}
     finally:
         FakeDataset.axes = {"position": ["p0", "p1"], "time": [0, 1]}
+
+
+@pytest.mark.parametrize('transform,expected', [
+    (affine(0, .127, -.127, 0), {
+        'origin_um': [9.873, 19.8095], 'extent_um': [0.554000000000002, 0.48100000000000165],
+        'output_basis_um': [[.127, 0.], [0., .127]],
+        'overlap_statistics': {'covered_pixels': 21, 'uncovered_pixels': 9, 'overlap_pixels': 3, 'maximum_coverage': 2, 'rasterized_output_sample_count': 24},
+        'mosaic_sha256': 'd3f2f91b2ad4a24cd9cc9b15a632ffbeb5f616a6a16fc821e687ce20d5bc29f2',
+        'coverage_mask_sha256': 'df9fddce92d8dfe9d70624d59c9f6090631a89d581893a93a269cfb8793e3f1f',
+    }),
+    (affine(1, .3, .2, 1), {
+        'origin_um': [8.2, 18.7], 'extent_um': [3.900000000000002, 2.700000000000003],
+        'output_basis_um': [[.127, 0.], [0., .127]],
+        'overlap_statistics': {'covered_pixels': 637, 'uncovered_pixels': 99, 'overlap_pixels': 507, 'maximum_coverage': 2, 'rasterized_output_sample_count': 1144},
+        'mosaic_sha256': '28c3e19a721d855bbcffec59d0be50552f657691d876f4c8a88a29ff5b4fdf0d',
+        'coverage_mask_sha256': 'aead848e8438df808d8796d56645888bfc1abad6bd0d5e7f7cb574c4410e89ed',
+    }),
+])
+def test_placements_preserve_pre81b_mosaic_golden(transform, expected):
+    frames = [(np.arange(12, dtype=np.uint16).reshape(3, 4) + 1, 10, 20),
+              (np.full((3, 4), 99, np.uint16), 10.3, 20.1)]
+    result = assemble(frames, transform, sample=.127)
+    placements = result.pop('tile_placements')
+    source_basis = result.pop('source_basis_um')
+    convention = result.pop('tile_bounds_convention')
+    for key in ('mosaic', 'coverage_mask'):
+        result[key + '_sha256'] = hashlib.sha256(result.pop(key).tobytes()).hexdigest()
+    # Captured from 57652fd before adding placements: byte hashes + exact values.
+    assert result == expected
+    for index, placement in enumerate(placements):
+        _, x, y = frames[index]
+        assert placement['index'] == index
+        assert placement['centre_stage_um'] == [x, y]
+        assert placement['source_shape'] == [3, 4]
+        assert placement['source_basis_ref'] == 'source_basis_um'
+        assert source_basis == [[transform.a, transform.b], [transform.c, transform.d]]
+        corners = [(x + transform.a*dx + transform.b*dy, y + transform.c*dx + transform.d*dy)
+                   for dx in (-1.5, 1.5) for dy in (-1, 1)]
+        bounds = placement['bounds_stage_um']
+        assert bounds == {'x_min': min(v[0] for v in corners), 'x_max': max(v[0] for v in corners),
+                          'y_min': min(v[1] for v in corners), 'y_max': max(v[1] for v in corners)}
+        assert placement['bounds_convention_ref'] == 'tile_bounds_convention'
+        assert 'not exact tile footprints' in convention
+        ox, oy = result['origin_um']
+        assert placement['output_window_px'] == [
+            math.floor((bounds['y_min']-oy)/.127+.5), math.floor((bounds['y_max']-oy)/.127+.5)+1,
+            math.floor((bounds['x_min']-ox)/.127+.5), math.floor((bounds['x_max']-ox)/.127+.5)+1,
+        ]
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_bitmap_renderer_contract(dtype):
+    from microclaw.dataset_mosaic import draw_text_labels, _LABEL_FONT
+    assert set(_LABEL_FONT) == set('PT0123456789')
+    canvas = np.full((12, 15), 17, dtype=dtype)
+    maximum = np.iinfo(dtype).max
+    rendered = draw_text_labels(canvas.copy(), [(5, 7, 'T1')], foreground=maximum, outline=1, scale=1)
+    assert set(np.unique(rendered)) == {1, 17, maximum}
+    assert np.all(rendered[2, 2:7] == maximum)  # T's complete five-cell top
+    assert np.all(rendered[1, 1:8] == 1)  # nonzero halo
+    assert np.all(canvas == 17)
+    double = draw_text_labels(canvas.repeat(2,0).repeat(2,1), [(10.5, 14.5, 'T1')], foreground=maximum, outline=1, scale=2)
+    np.testing.assert_array_equal(double, rendered.repeat(2,0).repeat(2,1))
+    clipped = draw_text_labels(np.zeros((2, 2), dtype=dtype), [(-1, -1, 'T')], foreground=maximum, outline=1, scale=1)
+    assert clipped.shape == (2, 2)

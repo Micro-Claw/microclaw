@@ -47,28 +47,160 @@ _ALLOWED_CAPABILITIES = frozenset(
 
 
 class ConnectedComponents:
-    """Built-in geometric measurement over a stage-coordinate mosaic."""
+    """Component counts over original saved frames or a stage-coordinate mosaic."""
 
     def __init__(self, min_snr: float, min_snr_source: str,
-                 min_area_um2: float = 0.0, max_area_um2: float | None = None):
+                 min_area_um2: float = 0.0, max_area_um2: float | None = None,
+                 write_annotations: bool = True):
+        if not isinstance(write_annotations, bool):
+            raise ValueError("write_annotations must be a boolean")
+        self.write_annotations = write_annotations
+        self.affine = None  # resolved and injected only by the trusted runner
+        self.annotations = {"requested": 0, "written": 0, "reason": None}
+        self._annotation_limit_reason = None
+        self.position_labels = []  # saved identity mapping injected by the runner
+        self.field_label = None
+        self.count_semantics = (
+            "Component count: contiguous thresholded signal, not object identification. "
+            "Touching objects can merge; noise, fragmentation and threshold choice affect counts. "
+            "Signal visible in overlapping acquired fields appears in both per-field counts; "
+            "their sum is not a unique object total. Mosaic counts measure resampled signal "
+            "with later tiles overwriting earlier tiles, not original-field counts."
+        )
+
         self.parameters = {
             "min_area_um2": min_area_um2, "max_area_um2": max_area_um2,
+            "write_annotations": write_annotations,
             "min_snr": min_snr, "min_snr_source": min_snr_source,
         }
 
     def analyze_saved_frame(self, image, metadata, context):
         if metadata.get("input_kind") != "stage_coordinate_mosaic":
-            raise ValueError("connected_components requires input_kind='stage_coordinate_mosaic'")
+            return self._analyze_source_frame(image, metadata, context)
         mosaic = metadata["mosaic_manifest"]
         basis = mosaic["output_basis_um"]
         if basis[0][1] != 0 or basis[1][0] != 0 or basis[0][0] != basis[1][1]:
             raise ValueError("connected_components requires a square axis-aligned mosaic basis")
-        return {"result": connected_components(
+        measured, labels = connected_components(
             image, pixel_size_um=float(basis[0][0]), origin_um=mosaic["origin_um"],
             min_area_um2=self.parameters["min_area_um2"],
             max_area_um2=self.parameters["max_area_um2"],
-            min_snr=self.parameters["min_snr"],
-        ), "status": "observed", "parameters": self.parameters}
+            min_snr=self.parameters["min_snr"], return_labels=True,
+        )
+        envelope = {"result": measured, "status": "observed", "parameters": self.parameters}
+        if self.write_annotations:
+            self._annotate(image, measured, labels, context, envelope, mosaic=True)
+        return envelope
+
+    def _analyze_source_frame(self, image, metadata, context):
+        affine = self.affine
+        if affine is None:
+            raise ValueError("Source-frame calibration must be resolved by the trusted runner")
+        height, width = image.shape[:2]
+        absent = [key for key in ("XPosition_um_Intended", "YPosition_um_Intended")
+                  if metadata.get(key) in (None, "")]
+        origin = None
+        geometry_refusal = None
+        if absent:
+            geometry_refusal = "Stage coordinates refused: missing " + ", ".join(absent)
+        else:
+            dx, dy = affine.px_to_um(-(width - 1) / 2, -(height - 1) / 2)
+            origin = [float(metadata["XPosition_um_Intended"]) + dx,
+                      float(metadata["YPosition_um_Intended"]) + dy]
+        measured, labels = connected_components(
+            image, basis_um=[[affine.a, affine.b], [affine.c, affine.d]],
+            origin_um=origin, covered_mask=np.ones((height, width), dtype=bool),
+            min_area_um2=self.parameters["min_area_um2"],
+            max_area_um2=self.parameters["max_area_um2"],
+            min_snr=self.parameters["min_snr"], return_labels=True,
+        )
+        measured.update({
+            "min_area_um2": self.parameters["min_area_um2"],
+            "max_area_um2": self.parameters["max_area_um2"],
+            "stage_geometry_refusal": geometry_refusal,
+            "count_semantics_ref": "count_semantics",
+            "frame_statistics": dict(compute_stats(image, min_snr=self.parameters["min_snr"])._asdict()),
+        })
+        envelope = {"result": measured, "status": "observed", "parameters": self.parameters}
+        if self.write_annotations:
+            self._annotate(image, measured, labels, context, envelope)
+        return envelope
+
+    def _annotate(self, image, measured, labels, context, envelope, *, mosaic=False):
+        from scipy import ndimage
+        from microclaw.dataset_mosaic import draw_text_labels
+
+        context.raise_if_cancelled()
+        self.annotations["requested"] += 1
+        annotation = {
+            "field_label": None if mosaic else self.field_label,
+            "position_labels": self.position_labels,
+            "position_labels_partial": not self.position_labels,
+            "position_label_reason": (None if self.position_labels else "selection has no position axis"),
+            "order": "none; T numbers saved position identity, not capture order",
+            "outline": 1,
+            "written": False,
+        }
+        measured["annotation"] = annotation
+        if self._annotation_limit_reason is not None:
+            annotation.update({"reason": self._annotation_limit_reason,
+                               "failure_kind": "limit_exhausted_upstream"})
+            return
+        foreground = int(np.iinfo(image.dtype).max)
+        height, width = image.shape[:2]
+        scale = min(8, max(1, min(height, width) // 70))
+        annotation.update({"foreground": foreground, "glyph_scale": scale})
+        canvas = image.copy()
+        text_labels = []
+        for number, component in enumerate(measured["objects"], 1):
+            # This is the segmentation returned by the measurement, never a
+            # second threshold/label pass that could diverge from its count.
+            support = labels == component["label"]
+            boundary = support & ~ndimage.binary_erosion(support)
+            halo = ndimage.binary_dilation(boundary) & ~boundary
+            canvas[halo] = 1
+            canvas[boundary] = foreground
+            rows, cols = np.nonzero(support)
+            text_labels.append((float(rows.mean()), float(cols.mean()), str(number)))
+        if not mosaic and self.field_label is not None:
+            text_labels.append((4.5 * scale, (6 * len(self.field_label) + 1) * scale / 2,
+                                self.field_label))
+        # No position axis and an empty field still has visible evidence: 0 is
+        # a count handle, not an invented position identity.
+        if not text_labels:
+            text_labels.append(((height - 1) / 2, (width - 1) / 2, "0"))
+        clamped = []
+        for row, col, text in text_labels:
+            half_h = (9 * scale - 1) / 2
+            half_w = ((6 * len(text) + 1) * scale - 1) / 2
+            clamped.append((max(half_h, min(row, height - 1 - half_h)),
+                            max(half_w, min(col, width - 1 - half_w)), text))
+        draw_text_labels(canvas, clamped, foreground=foreground, outline=1, scale=scale)
+        filename = f"components-{self.annotations['requested']:04d}.tiff"
+        try:
+            artifact = context.artifacts.emit(filename, canvas)
+        except AnalysisCancelled:
+            raise
+        except ValueError as error:
+            # The existing bounded writer uses ValueError for these three
+            # limit cases. Other ValueErrors are programming/input defects.
+            reason = str(error)
+            if not (reason == "artifact count limit exhausted"
+                    or reason == "artifact exceeds per-run total-bytes limit"
+                    or (reason.startswith("artifact size ")
+                        and " exceeds per-artifact size limit " in reason)):
+                raise
+            self._annotation_limit_reason = reason
+            self.annotations["reason"] = reason
+            annotation.update({"reason": reason, "failure_kind": "limit_exhausted"})
+        except OSError as error:
+            reason = f"{type(error).__name__}: {error}"
+            self.annotations["reason"] = reason
+            annotation.update({"reason": reason, "failure_kind": "io_error"})
+        else:
+            envelope["artifact_sha256"] = artifact["sha256"]
+            annotation["written"] = True
+            self.annotations["written"] += 1
 
 
 class FrameStatistics:
@@ -328,12 +460,11 @@ def run_analysis_on_saved_dataset(
         raise FileExistsError(
             f"Cannot create a file when that file already exists: {output_dir!r}"
         )
-    if input_kind == "stage_coordinate_mosaic":
-        if calibration_ref is not None and calibration_ref.get("kind") == "confirmed_current":
-            raise ValueError(
-                "confirmed_current calibration requires a live microscope core and is "
-                "not available to completed-dataset replay; use artifact or knowledge_version"
-            )
+    if calibration_ref is not None and calibration_ref.get("kind") == "confirmed_current":
+        raise ValueError(
+            "confirmed_current calibration requires a live microscope core and is "
+            "not available to completed-dataset replay; use artifact or knowledge_version"
+        )
 
     builtin = BUILTIN_ADAPTERS.get(adapter)
     if builtin is not None:
@@ -374,7 +505,7 @@ def run_analysis_on_saved_dataset(
     selection = {"axis_selection": {k: axis_selection[k] for k in sorted(axis_selection)},
                  "coordinates": [{k: item[k] for k in sorted(item)} for item in coordinates]}
     dataset_hash, content_hash, content_manifest = _dataset_content(dataset_path)
-    dataset_identity = {"dataset_sha256": dataset_hash,
+    content_identity = {"dataset_sha256": dataset_hash,
                         "selection_sha256": _sha(_canonical_bytes(selection)),
                         "content_sha256": content_hash,
                         "selected_coordinates": selection["coordinates"]}
@@ -397,7 +528,7 @@ def run_analysis_on_saved_dataset(
         return info
 
     def emit(result, *, status, analyzer=None, analyzer_version=None, parameters=None,
-             artifact_sha256=None):
+             artifact_sha256=None, where=None):
         # Built-ins are reviewed package measurements and may assert `observed`;
         # saved adapters remain untrusted, exactly like saved live hooks.
         allowed_statuses = ({"unverified", "provisional", "observed"}
@@ -410,20 +541,38 @@ def run_analysis_on_saved_dataset(
                 f"{status!r} is not allowed for this adapter{reason}."
             )
         return write_analysis_observation(
-            observations, analyzer=analyzer or adapter,
+            observations, where=where, analyzer=analyzer or adapter,
             analyzer_version=analyzer_version or entry.get("version"), result=result,
             parameters=parameters, artifact_sha256=artifact_sha256, status=status,
         )
 
-    context = AnalysisContext(dataset_identity, ArtifactDirectory(write_artifact),
+    context = AnalysisContext(content_identity, ArtifactDirectory(write_artifact),
                               emit, cancelled.is_set)
     view = DatasetView(dataset, coordinates, max_array_bytes=max_array_bytes)
     calibration_identity = None
+    saved_calibration_details = {}
     failure = None
     status = "completed"
     mosaic_result = None
     try:
         context.raise_if_cancelled()
+        if builtin is ConnectedComponents:
+            metadata_items = [(item, dataset.read_metadata(**item)) for item in coordinates]
+            if "position" in dataset.axes:
+                # Lexical order numbers saved identity, never capture order.
+                # design/73's warning about lexical P10/P2 applies to P, not T.
+                for number, position in enumerate(sorted({item["position"] for item in coordinates}), 1):
+                    label = {"label": f"T{number}", "position": position}
+                    names = []
+                    for item, metadata in metadata_items:
+                        if item["position"] == position and "PositionName" in metadata:
+                            if metadata["PositionName"] not in names:
+                                names.append(metadata["PositionName"])
+                    if len(names) == 1:
+                        label["PositionName"] = names[0]
+                    elif names:
+                        label["PositionNames"] = names
+                    instance.position_labels.append(label)
         if input_kind == "stage_coordinate_mosaic":
             from microclaw.tools import build_stage_coordinate_mosaic
             mosaic_path = str(Path(output_dir) / "stage_coordinate_mosaic.tiff")
@@ -443,12 +592,30 @@ def run_analysis_on_saved_dataset(
             else:
                 raw_results = instance.analyze_completed_dataset(view, _immutable(selection), context)
         elif verb == "analyze_saved_frame":
+            if builtin is ConnectedComponents:
+                from microclaw.tools import _resolve_saved_dataset_calibration
+                affine, calibration_identity, camera_identity, roi_difference = (
+                    _resolve_saved_dataset_calibration(
+                        dataset, metadata_items,
+                        axis_selection, calibration_ref, guard=guard,
+                    )
+                )
+                instance.affine = affine
+                saved_calibration_details = {"dataset_identity": camera_identity,
+                                             "calibration_roi_difference": roi_difference}
             raw_results = []
             for item in coordinates:
                 context.raise_if_cancelled()
-                raw_results.append(instance.analyze_saved_frame(
-                    view.read_image(**item), view.read_metadata(**item), context
-                ))
+                metadata = view.read_metadata(**item)
+                where = dict(item)
+                if "PositionName" in metadata:
+                    where["PositionName"] = metadata["PositionName"]
+                if builtin is ConnectedComponents:
+                    instance.field_label = next((entry["label"] for entry in instance.position_labels
+                                                 if entry["position"] == item.get("position")), None)
+                raw_results.append((where, instance.analyze_saved_frame(
+                    view.read_image(**item), metadata, context
+                )))
         else:
             raw_results = instance.analyze_completed_dataset(
                 view, _immutable(selection), context
@@ -456,9 +623,12 @@ def run_analysis_on_saved_dataset(
         if raw_results is not None:
             for raw in raw_results:
                 context.raise_if_cancelled()
+                where = None
+                if input_kind == "frames" and verb == "analyze_saved_frame":
+                    where, raw = raw
                 normalized = _normalized_result(raw)
                 if normalized:
-                    emit(**normalized)
+                    emit(**normalized, where=where)
     except AnalysisCancelled as error:
         status = "cancelled"
         failure = {"type": type(error).__name__, "message": str(error)}
@@ -472,7 +642,7 @@ def run_analysis_on_saved_dataset(
         "run_id": str(uuid.uuid4()), "status": status,
         "started_at": started.isoformat(), "finished_at": finished.isoformat(),
         "latency_s": time.monotonic() - clock, "dataset_path": dataset_path,
-        **dataset_identity, "dataset_content_manifest": content_manifest,
+        **content_identity, "dataset_content_manifest": content_manifest,
         "selection": selection, "input_kind": input_kind,
         "analyzer": {"name": adapter, "source": entry.get("source"),
                      "source_sha256": _sha(source), "version": entry.get("version"),
@@ -480,8 +650,13 @@ def run_analysis_on_saved_dataset(
                                      "platform": platform.platform()}},
         "parameters": _json_value(parameters),
         "calibration_used": calibration_identity is not None,
+        **saved_calibration_details,
         "cancelled": status == "cancelled", "failure": failure,
     }
+    if builtin is ConnectedComponents:
+        manifest_base["annotations"] = instance.annotations
+        manifest_base["position_labels"] = instance.position_labels
+        manifest_base["count_semantics"] = instance.count_semantics
     if calibration_identity is not None:
         manifest_base["calibration_identity"] = calibration_identity
     try:
