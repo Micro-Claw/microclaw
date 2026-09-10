@@ -1,8 +1,18 @@
 # A plan must refuse a plan that cannot work
 
-Status: **IN FLIGHT**, 2026-09-10. 81a-1 and 81a-2 merged; **81b in flight**; 81c open. Findings and decisions reviewed; D3(b)'s
-policy settled by the operator (see D3(b)); 81a split into 81a-1 and 81a-2 (see
-Blocks). Implementation started at 81a-1; no gate has run.
+Status: **IN FLIGHT**, 2026-09-10. **81a-1, 81a-2 and 81b are merged; 81c is
+all that remains and has not started.** Findings and decisions reviewed;
+D3(b)'s policy settled by the operator (see D3(b)); 81a split into 81a-1 and
+81a-2 (see Blocks).
+
+**Read before starting 81c.** 81b ships D4(a) and **not** D5's artifact
+support — its detection-evidence images were built, judged unreadable by the
+operator and removed in full (see the 81b block entry). So 81c's D5 rule
+**cannot assume an evidence image exists to show**, and `R121` — the shared
+thumbnail stretch that renders a sparse bright field 98.9 % black — is the
+reason, not a detail. Decide what D5's prompt rule can honestly ask for before
+writing it; "show the detections" is not currently a thing the product can do.
+81c's other two halves, D4(b) and D6(b), are unaffected.
 
 Reviewed against the record on `main` `e03f790`: the session's three JSONL files
 and four analysis manifests in
@@ -922,5 +932,5 @@ did not fire in that run.
 |---|---|---|---|---|---|
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
 | 81a-2 | `design81/81a2-runtime-refusal` (deleted) | `da67cbd` | `ab3af26` WIP, `73f87b9`, `8608dd4`, `5e1e4a5` | demo rounds 3-5; A unobservable (`R101`) | `b6ca3ec` |
-| 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn) … `536fe07`, then `06074bd` removing the annotations | 6/6 scoring limbs off-rig over three archived acquisitions; limb E's figure confirmed by the operator on `r0_c2` | |
-| 81c | — | not started; follows 81a-2 and 81b | | | |
+| 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn) … `536fe07`, then `06074bd` removing the annotations | 6/6 scoring limbs off-rig over three archived acquisitions; limb E's figure confirmed by the operator on `r0_c2` | `26262f4`, close-out `33e2455` |
+| 81c | — | not started; both predecessors merged, so it is unblocked | | | |
