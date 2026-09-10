@@ -100,7 +100,7 @@ def test_named_stage_failure_retains_attempted_spans(monkeypatch, failure):
         assert timing[p]['end_s'] >= timing[p]['start_s']
 
 
-@pytest.mark.parametrize('delayed', ['restoration', 'refresh_gui', 'write'])
+@pytest.mark.parametrize('delayed', ['restoration', 'refresh_gui', 'write', 'construction'])
 def test_teardown_and_property_delay_are_distinguishable(monkeypatch, delayed):
     now = [100.0]
     calls = []
@@ -127,6 +127,7 @@ def test_teardown_and_property_delay_are_distinguishable(monkeypatch, delayed):
     class Backend:
         _exception = None
         _dataset_disk_location = '/data/run'
+        def __init__(self): operation('construction')
         def acquire(self, events):
             applied = hook._apply_property(hd.SetDeviceProperty('B'), {})
             hook._verify_property_actions([applied])
@@ -139,13 +140,18 @@ def test_teardown_and_property_delay_are_distinguishable(monkeypatch, delayed):
                              policy=tools.DEFAULT, teardown_timing=teardown)
     breakdown = tools._run_duration_breakdown(hook, teardown, now[0] - 100)
     durations = {p: v['total_s'] for p, v in breakdown['phases'].items()}
-    assert durations[delayed] == 3
-    assert max(durations, key=durations.get) == delayed
+    phase = 'acquisition' if delayed == 'construction' else delayed
+    assert durations[phase] == 3
+    assert max(durations, key=durations.get) == phase
     assert breakdown['accounted_s'] == 3
     assert breakdown['unaccounted_s'] == 0
-    assert calls == ['validation', 'write', 'wait', 'read_back', 'type',
+    assert calls == ['construction', 'validation', 'write', 'wait', 'read_back', 'type',
                      'exit', 'restoration', 'refresh_gui']
     assert teardown['clock'] == 'time.monotonic'
+    assert teardown['acquisition'] == {
+        'start_s': 100., 'end_s': 103. if delayed in ('write', 'construction') else 100.}
+    # The acquisition includes construction, but the nested write owns its delay.
+    assert durations['acquisition'] == (3 if delayed == 'construction' else 0)
 
 
 @pytest.mark.parametrize('n,interval,adaptive,expected', [
@@ -194,8 +200,9 @@ def test_run_result_surfaces_route_and_cleanup_without_gui_calls(
         'count': 1, 'min_s': 0, 'mean_s': 0, 'max_s': 0, 'total_s': 0,
     }
     assert breakdown['duration_s'] == result['duration_s'] == 8
-    assert breakdown['accounted_s'] == 0
-    assert breakdown['unaccounted_s'] == 8
+    assert breakdown['phases']['acquisition']['total_s'] == 8
+    assert breakdown['accounted_s'] == 8
+    assert breakdown['unaccounted_s'] == 0
     assert set(breakdown) == {'clock', 'duration_s', 'record_count', 'phases',
         'phase_meaning', 'slowest_records', 'slowest_meaning', 'accounted_s', 'unaccounted_s'}
     assert result['inter_frame_gap_summary']['count'] == 0

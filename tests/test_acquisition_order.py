@@ -508,3 +508,219 @@ def test_spacing_meaning_follows_resolved_order(rig, monkeypatch, order, meaning
     timing = result['timing']
     assert timing['observed_per_field_spacing'] == {'A': [gap, gap], 'B': [gap, gap]}
     assert timing['observed_per_field_spacing_meaning'] == meaning
+
+
+@pytest.fixture
+def restoring_grid(rig, monkeypatch):
+    """Count real controller calls; retain the engine-dispatching rig backend."""
+    import threading
+    calls = []
+    class Controller:
+        core = rig.ctrl.core
+        studio = rig.ctrl.studio
+        authorization_map = None
+        def set_xy(self, x, y):
+            calls.append(('move', x, y))
+            if len([c for c in calls if c[0] == 'move']) == rig.fail_move:
+                raise tools.StageMoveError({'start_um': 0, 'requested_um': x,
+                    'measured_um': 0, 'elapsed_s': 1, 'tolerance_um': 2,
+                    'band_source': 'relative', 'last_device_status': 'busy'})
+            return rig.move(x, y)
+        def refresh_gui(self):
+            calls.append(('refresh', threading.current_thread().name))
+            rig.now += 3
+    class RestoringHook(HookBase):
+        def image_process_fn(self, image, metadata, queue):
+            start = rig.now
+            calls.append(('write', metadata['PositionName']))
+            rig.now += 2
+            self._log.append({'event': 'property_write', 'timing': {
+                'clock': 'time.monotonic', 'write': {'start_s': start, 'end_s': rig.now}}})
+            if metadata['PositionName'] == rig.fail_hook:
+                raise RuntimeError('injected hook failure')
+            return image, metadata
+        def restore_property(self):
+            calls.append(('restore', threading.current_thread().name))
+            rig.now += 1
+            if rig.restore_outcome == 'failed':
+                raise RuntimeError('injected restoration failure')
+            return {'restored': rig.restore_outcome != 'declined'}
+    rig.ctrl = Controller()
+    rig.fail_move = None
+    rig.fail_hook = None
+    rig.restore_outcome = 'restored'
+    rig.calls = calls
+    monkeypatch.setattr(tools, '_resolve_hooks', lambda *_: RestoringHook())
+    monkeypatch.setattr(tools.time, 'monotonic', lambda: rig.now)
+    rig.grid = lambda n: rig.run(hook_strategy='restoring',
+        positions=[dict(name=f'P{i}', x_um=i * 10., y_um=0.) for i in range(n)],
+        protocol_params=dict(n_frames=1, interval_s=.5))
+    return rig
+
+
+@pytest.mark.parametrize('n', [4, 8])
+def test_composite_repaint_once_after_all_fields(restoring_grid, n):
+    r = restoring_grid
+    result = r.grid(n)
+    assert 'error' not in result, result
+    repaints = [c for c in r.calls if c[0] == 'refresh']
+    assert len(repaints) == 1, f'{n} fields produced {len(repaints)} repaints'
+    assert r.calls[-1][0] == 'refresh'
+    assert len(r.acquisitions) == n
+    assert len([c for c in r.calls if c[0] == 'restore']) == n
+
+
+@pytest.mark.parametrize('failure', ['stage', 'hook', 'declined', 'failed'])
+def test_composite_repaint_survives_failures(restoring_grid, failure):
+    r = restoring_grid
+    if failure == 'stage':
+        r.fail_move = 2
+        with pytest.raises(tools.StageMoveError):
+            r.grid(4)
+    else:
+        if failure == 'hook':
+            r.fail_hook = 'P1'
+        else:
+            r.restore_outcome = failure
+        result = r.grid(4)
+        assert ('error' in result) == (failure in ('hook', 'failed')), result
+    repaints = [c for c in r.calls if c[0] == 'refresh']
+    assert len(repaints) == 1, f'{failure} path produced {len(repaints)} repaints'
+    assert r.calls[-1][0] == 'refresh'
+    assert all(res._closed for res in r.reservations)
+
+
+def test_composite_nested_write_reconciles_once(restoring_grid):
+    r = restoring_grid
+    result = r.grid(4)
+    assert 'duration_breakdown' in result, 'composite has no duration_breakdown'
+    b = result['duration_breakdown']
+    assert b['accounted_s'] + b['unaccounted_s'] == result['duration_s'] == b['duration_s']
+    assert b['phases']['write']['total_s'] == pytest.approx(8)
+    assert b['phases']['acquisition']['total_s'] == pytest.approx(4 * (.17 + .01))
+    assert b['phases']['restoration']['total_s'] == 4
+    assert b['phases']['refresh_gui']['total_s'] == 3
+    assert b['unaccounted_s'] == pytest.approx(21)  # Three settled between-field moves.
+    assert 'acquisition and restoration exclude nested write spans' in b['phase_meaning']
+    assert 'XY moves, settling, preflight, mkdir' in b['phase_meaning']
+    assert all('duration_breakdown' not in child for child in result['results'])
+    assert len(b['slowest_records']) == 3
+
+
+@pytest.mark.parametrize('n', [1, 2])
+def test_composite_expiry_transfers_repaint_to_late_waiter(restoring_grid, monkeypatch, n):
+    import threading
+    r = restoring_grid
+    release = threading.Event()
+    original = RecordingBackend.__exit__
+    def exit_late(self, *args):
+        if len(r.acquisitions) == n:
+            release.wait(5)
+        return original(self, *args)
+    original_acquire = RecordingBackend.acquire
+    def acquire(self, events):
+        original_acquire(self, events)
+        if len(r.acquisitions) == n:
+            self._exception = RuntimeError('injected engine failure')
+    monkeypatch.setattr(RecordingBackend, '__exit__', exit_late)
+    monkeypatch.setattr(RecordingBackend, 'acquire', acquire)
+    def join(waiter, timeout):
+        waiter.join(.001)
+        r.now += 1
+    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    monkeypatch.setattr(tools, 'ERROR_TEARDOWN_GRACE_S', .01)
+    try:
+        with pytest.raises(tools.AcquisitionUnterminated):
+            r.grid(4)
+        assert not [c for c in r.calls if c[0] == 'refresh']
+        assert len(r.acquisitions) == n
+        assert not r.reservations[-1]._closed
+    finally:
+        release.set()
+        pending = getattr(r.ctrl, '_microclaw_unterminated_acquisition', None)
+        if pending:
+            pending['waiter'].join(2)
+    assert [c for c in r.calls if c[0] == 'refresh'] == [('refresh', 'microclaw-acq-teardown')]
+    assert r.calls[-2:] == [('restore', 'microclaw-acq-teardown'), ('refresh', 'microclaw-acq-teardown')]
+    assert all(res._closed for res in r.reservations)
+
+
+def test_composite_payload_bounded_from_two_to_500_fields(restoring_grid):
+    import json
+    r = restoring_grid
+    sizes = []
+    for n in (2, 500):
+        result = r.grid(n)
+        b = result['duration_breakdown']
+        sizes.append(len(json.dumps(b)))
+        assert len(b['slowest_records']) <= 3
+        assert set(b['phases']) == {'write', 'acquisition', 'restoration', 'refresh_gui'}
+        assert 'dominant_phase' not in b
+        assert all('duration_breakdown' not in child for child in result['results'])
+        assert b['accounted_s'] + b['unaccounted_s'] == result['duration_s']
+    print(f'79c composite breakdown bytes: 2 fields={sizes[0]}, 500 fields={sizes[1]}')
+    assert max(sizes) < 2500
+    assert max(sizes) - min(sizes) < 500
+
+
+@pytest.mark.parametrize('hook', [None, 'snr_observer'])
+@pytest.mark.parametrize('tile', [False, True])
+def test_composite_breakdown_exports_compile_and_execute(rig, tmp_path, monkeypatch, hook, tile):
+    from tests.test_session_script_export import export, completed_call
+    kw = {**rig.params, 'hook_strategy': hook,
+          'protocol_params': dict(n_frames=1, interval_s=.5)}
+    tool = 'run_multiposition_acquisition'
+    if tile:
+        tool = 'run_tile_acquisition'
+        kw.pop('positions')
+        kw.update(rows=1, cols=2, step_um=10, center_x_um=5, center_y_um=0)
+    result = getattr(tools, tool)(rig.ctrl, rig.guard, **kw)
+    assert 'error' not in result, result
+    assert result['duration_breakdown']['phases']['acquisition']['count'] == 2
+    assert result['duration_breakdown']['accounted_s'] + result['duration_breakdown']['unaccounted_s'] == result['duration_s']
+    result['duration_breakdown']['measurement_sentinel'] = 'duration-must-not-be-emitted'
+    _, report, source = export(tmp_path, completed_call(tool, kw, result))
+    assert report['emitted_calls'] == 1
+    assert 'duration-must-not-be-emitted' not in source
+    ast.parse(source)
+    live = list(rig.frames)
+    rig.now = 0.; rig.xy = (0., 0.); rig.frames = []; rig.acquisitions = []
+    import pycromanager
+    monkeypatch.setattr(pycromanager, 'Acquisition', tools.Acquisition)
+    monkeypatch.setattr(pycromanager, 'Core', lambda: rig.ctrl.core)
+    exec(source, {'__file__': str(tmp_path / 'routine.py')})
+    assert rig.frames == live
+    assert len(rig.acquisitions) == 2
+
+
+def test_composite_expiry_after_cleanup_keeps_already_deferred_repaint(restoring_grid, monkeypatch):
+    """Expiry can occur while the waiter publishes completion, after restoration."""
+    import threading
+    r = restoring_grid
+    release = threading.Event()
+    original = tools._emit_acquisition_diagnostic
+    def diagnostic(event, **kwargs):
+        if event['type'] == 'acquisition_teardown_completion':
+            release.wait(5)
+        return original(event, **kwargs)
+    monkeypatch.setattr(tools, '_emit_acquisition_diagnostic', diagnostic)
+    original_acquire = RecordingBackend.acquire
+    def acquire(self, events):
+        original_acquire(self, events)
+        self._exception = RuntimeError('injected engine failure')
+    monkeypatch.setattr(RecordingBackend, 'acquire', acquire)
+    def join(waiter, timeout):
+        waiter.join(.001)
+        r.now += 1
+    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    monkeypatch.setattr(tools, 'ERROR_TEARDOWN_GRACE_S', .01)
+    try:
+        with pytest.raises(tools.AcquisitionUnterminated):
+            r.grid(4)
+    finally:
+        release.set()
+        pending = getattr(r.ctrl, '_microclaw_unterminated_acquisition', None)
+        if pending:
+            pending['waiter'].join(2)
+    assert [c for c in r.calls if c[0] == 'refresh'] == [('refresh', 'MainThread')]
+    assert [c[0] for c in r.calls][-2:] == ['restore', 'refresh']

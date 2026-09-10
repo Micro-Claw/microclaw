@@ -4648,6 +4648,7 @@ def _acquire_with_hooks(
     hook: Any | None = None,
     reservation: Reservation | None = None,
     close_reservation: bool = True,
+    defer_refresh_gui: bool = False,
     *,
     ctrl: MicroscopeController,
     policy: AcquisitionSupervisionPolicy,
@@ -4850,7 +4851,16 @@ def _acquire_with_hooks(
             reservation.close()
         # One synchronous repaint, last: listeners may perform slow device
         # reads. Neither their failure nor a controller fake may change cleanup.
-        if any(restoration_attempted.values()):
+        repaint_owed = any(restoration_attempted.values()) or teardown_timing.get("refresh_gui_owed", False)
+        # Pair this decision with foreground expiry under the existing lock.
+        # Expiry can also arrive AFTER cleanup, while completion is published;
+        # that repaint has already been handed back to the composite.
+        with frame_lock:
+            deferred = repaint_owed and defer_refresh_gui and not waiter_must_close_reservation
+            if deferred:
+                teardown_timing["refresh_gui_owed"] = True
+                teardown_timing["refresh_gui_deferred"] = True
+        if repaint_owed and not deferred:
             teardown_timing["refresh_gui"] = {"start_s": time.monotonic()}
             try:
                 ctrl.refresh_gui()
@@ -4863,6 +4873,7 @@ def _acquire_with_hooks(
     try:
         runtime_bound, fallback, runtime_term = _runtime_ceiling_s(runtime_input, policy)
         runtime_deadline = started + runtime_bound
+        teardown_timing["acquisition"] = {"start_s": time.monotonic()}
         acq = Acquisition(directory=save_dir, name=name, show_display=True, **hook_fn_kwargs)
         # Resolve collision suffixes before dispatching the first event: a
         # first-frame hook failure must still report the data already owned
@@ -4915,6 +4926,8 @@ def _acquire_with_hooks(
                         acq.__exit__(None, None, None)
                     except BaseException as exc:
                         outcome["exc"] = exc
+                    finally:
+                        teardown_timing["acquisition"]["end_s"] = time.monotonic()
                     failures = finish_owned_cleanup()
                     if failures:
                         prior = outcome.get("exc")
@@ -4974,7 +4987,8 @@ def _acquire_with_hooks(
                 # A composite caller normally owns a shared reservation across
                 # positions. Expiry ends that composite immediately, so the
                 # still-live waiter inherits final closure after its callbacks.
-                waiter_must_close_reservation = True
+                with frame_lock:
+                    waiter_must_close_reservation = True
                 expired_bound = "error_grace" if error_expired else policy.bound_name
                 bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
                 pending = {
@@ -7871,6 +7885,8 @@ def run_multiposition_acquisition(
     callback arrival times, not exposure timestamps. Hooks require acquisition
     images and cannot be attached to snap.
     """
+    composite_started = time.monotonic()
+    duration_accumulator = {}
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
     if position_names is None and positions is None:
@@ -7985,7 +8001,7 @@ def run_multiposition_acquisition(
                     illumination_envelope=illumination_envelope,
                     artifact_limits=artifact_limits,
                     acquisition_order=acquisition_order, timing=timing,
-                    _prepared=prepared,
+                    _prepared=prepared, _started=composite_started,
                     **shape,
                 )
             except (AcquisitionUnterminated, StageMoveError):
@@ -8055,6 +8071,9 @@ def run_multiposition_acquisition(
                         params, mark_position_in_list=mark_positions,
                         reservation=reservation, events=events,
                     )
+                    _run_duration_breakdown(None, {
+                        "duration_breakdown": result.pop("duration_breakdown", {}),
+                    }, 0, accumulator=duration_accumulator)
                     results.append({**where, **result})
                 except AcquisitionUnterminated as exc:
                     # Positions 1..n-1 have finished datasets on disk and this
@@ -8102,6 +8121,9 @@ def run_multiposition_acquisition(
         "acquisition_order": acquisition_order,
         "timing": timing,
     }
+    payload["duration_s"] = time.monotonic() - composite_started
+    payload["duration_breakdown"] = _run_duration_breakdown(
+        None, {}, payload["duration_s"], accumulator=duration_accumulator)
     restore = _live_restore_report(live_state)
     if restore:
         payload["live_view_restore"] = restore
@@ -8836,18 +8858,37 @@ def _configure_hook_capabilities(hook: Any, ctrl: MicroscopeController,
         )
 
 
-def _run_duration_breakdown(hook, teardown: dict, duration_s: float) -> dict:
+def _run_duration_breakdown(hook, teardown: dict, duration_s: float, *,
+                            accumulator: dict | None = None) -> dict:
     """Summarize one run in seconds, with constant additional storage.
 
-    Restoration encloses its own write spans. Subtract those intersections from
-    restoration so summing the phases counts each measured interval once.
+    Acquisition and restoration enclose their own write spans.
+    A composite folds each completed field into accumulator, retaining only
+    fixed phase aggregates and three ranked records. Hookless children already
+    have a breakdown; their phase aggregates can be folded through teardown.
+
+    Subtract nested intersections so summing the phases counts each measured
+    interval once.
     Full absolute timestamps stay in the audit log, not the tool result.
     """
-    phases = {}
-    slowest = []
-    record_count = 0
-    restoration_write_s = 0.0
-    restoration = teardown.get("restoration", {})
+    composite = accumulator is not None
+    accumulator = accumulator if composite else {}
+    phases = accumulator.setdefault("phases", {})
+    slowest = accumulator.setdefault("slowest", [])
+    record_count = accumulator.get("record_count", 0)
+    nested_write_s = {phase: 0.0 for phase in ("acquisition", "restoration")}
+    child = teardown.get("duration_breakdown", {})
+    for phase, measured in child.get("phases", {}).items():
+        if phase not in phases:
+            phases[phase] = dict(measured)
+        else:
+            aggregate = phases[phase]
+            aggregate["count"] += measured["count"]
+            aggregate["total_s"] += measured["total_s"]
+            aggregate["min_s"] = min(aggregate["min_s"], measured["min_s"])
+            aggregate["max_s"] = max(aggregate["max_s"], measured["max_s"])
+    # This route consumes hookless protocol children, which have no write log.
+    assert not child.get("record_count")
     cleanup_record = {"timing": teardown}
     for record in itertools.chain(getattr(hook, "_log", ()), (cleanup_record,)):
         timing = record.get("timing", {})
@@ -8858,17 +8899,20 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float) -> dict:
         first, last = None, None
         durations = {"clock": "time.monotonic"}
         for phase in ("validation", "read_stage_start_position", "write",
-                      "wait", "read_back", "settle_stage_move", "restoration", "refresh_gui"):
+                      "wait", "read_back", "settle_stage_move", "acquisition", "restoration", "refresh_gui"):
             span = timing.get(phase)
             if span is None or "end_s" not in span:
                 continue
             start, end = span["start_s"], span["end_s"]
             duration = end - start
-            if record is not cleanup_record and "end_s" in restoration:
-                restoration_write_s += max(0.0, min(end, restoration["end_s"])
-                                            - max(start, restoration["start_s"]))
-            if record is cleanup_record and phase == "restoration":
-                duration -= restoration_write_s
+            if record is not cleanup_record:
+                for enclosing in nested_write_s:
+                    span = teardown.get(enclosing, {})
+                    if "end_s" in span:
+                        nested_write_s[enclosing] += max(
+                            0.0, min(end, span["end_s"]) - max(start, span["start_s"]))
+            elif phase in nested_write_s:
+                duration -= nested_write_s[phase]
             durations[phase] = {"duration_s": duration}
             first = start if first is None else min(first, start)
             last = end if last is None else max(last, end)
@@ -8883,14 +8927,23 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float) -> dict:
             slowest.append((last - first, {**record, "timing": durations}))
             slowest.sort(key=lambda item: item[0], reverse=True)
             del slowest[3:]
+    accumulator["record_count"] = record_count
     for aggregate in phases.values():
         aggregate["mean_s"] = aggregate["total_s"] / aggregate["count"]
     accounted_s = sum(phase["total_s"] for phase in phases.values())
+    unaccounted_s = duration_s - accounted_s
+    # Avoid an ulp-sized reconciliation error when subtraction rounds. Keep the
+    # measured phase totals intact; the residual owns floating-point rounding.
+    if accounted_s + unaccounted_s != duration_s:
+        unaccounted_s = math.nextafter(
+            unaccounted_s, math.inf if accounted_s + unaccounted_s < duration_s else -math.inf)
     return {
         "clock": "time.monotonic", "duration_s": duration_s,
         "record_count": record_count, "phases": phases,
-        "accounted_s": accounted_s, "unaccounted_s": duration_s - accounted_s,
-        "phase_meaning": "completed spans including failed actions; restoration excludes nested write spans; unaccounted_s is elapsed time outside these spans",
+        "accounted_s": accounted_s, "unaccounted_s": unaccounted_s,
+        "phase_meaning": "completed spans including failed actions; acquisition and restoration exclude nested write spans; "
+                         + ("unaccounted_s is between-field work (XY moves, settling, preflight, mkdir) and other elapsed time outside these spans"
+                            if composite else "unaccounted_s is elapsed time outside these spans"),
         "slowest_records": [record for _, record in slowest],
         "slowest_meaning": "up to three write records by first span start to last completed span end; earliest wins ties",
     }
@@ -9009,6 +9062,7 @@ def _acquire_positions_with_hook(
     artifact_limits: dict | None = None,
     acquisition_order: str = "position_then_time",
     _prepared: tuple | None = None,
+    _started: float | None = None,
     **shape_kwargs: Any,
 ) -> dict:
     """Run combined events, or separately clocked position-outer movies.
@@ -9023,6 +9077,10 @@ def _acquire_positions_with_hook(
     fresh hooks and collision-free per-movie logs: sharing a log would truncate
     earlier movies (HookBase._write_log). Results index their paths.
     """
+    composite_started = time.monotonic() if _started is None else _started
+    duration_accumulator = {}
+    composite_teardown = {"clock": "time.monotonic"}
+    payload = {}
     save_dir = guard.resolve_in_workspace(save_dir)
     log_path = _prepare_log_path(guard, log_path)
 
@@ -9076,92 +9134,120 @@ def _acquire_positions_with_hook(
             planned_hook.planned_reach = planned_hook_z_reach(
                 planned_hook, planned_events, entry_z, guard)
             entry_z = planned_hook.planned_reach.get("exit_z_interval_um", entry_z)
-    for group, movie_name, movie_dir, movie_log, hook, events in prepared:
-        plan = plan_events(ctrl, events, exposure_ms)
-        if hook is not None:
-            plan = _plan_with_hook_dose(plan, hook)
-        reservation = _authorize_acquisition(ctrl, guard, plan)
-        started_at = datetime.now(timezone.utc)
-        started = time.monotonic()
-        xy_move = None
-        try:
-            if split:
-                # Settle BEFORE construction starts this field's acquisition clock.
-                # Retain coordinates/labels in events for dataset and hook provenance.
-                p = group[0]
-                xy_move = ctrl.set_xy(p["x_um"], p["y_um"])
-                if p.get("z_um") is not None:
-                    ctrl.core.set_position(p["z_um"])
-                    _wait(ctrl, ctrl.core.get_focus_device())
-        except Exception as exc:
-            # No Acquisition exists for this movie yet, so this reservation is
-            # ours to close. Preserve prior movies on the typed stage failure,
-            # just as AcquisitionUnterminated carries completed siblings.
-            if isinstance(exc, StageMoveError):
-                exc.positions_completed = [
-                    r for r in results if r.get("dataset_path") and "error" not in r
-                ]
-            reservation.close()
-            raise
-        teardown = {}
-        try:
-            dataset_path = _acquire_with_hooks(
-                guard, movie_dir, movie_name, events, hook, reservation=reservation,
-                policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan, teardown_timing=teardown,
-            )
-        except AcquisitionUnterminated as exc:
-            exc.positions_completed = [r for r in results if r.get("dataset_path") and "error" not in r]
-            raise
-        except _HookedAcquisitionFailure as exc:
-            failed = _hooked_failure_result(exc, movie_log)
+    try:
+        for group, movie_name, movie_dir, movie_log, hook, events in prepared:
+            plan = plan_events(ctrl, events, exposure_ms)
+            if hook is not None:
+                plan = _plan_with_hook_dose(plan, hook)
+            reservation = _authorize_acquisition(ctrl, guard, plan)
+            started_at = datetime.now(timezone.utc)
+            started = time.monotonic()
+            xy_move = None
+            try:
+                if split:
+                    # Settle BEFORE construction starts this field's acquisition clock.
+                    # Retain coordinates/labels in events for dataset and hook provenance.
+                    p = group[0]
+                    xy_move = ctrl.set_xy(p["x_um"], p["y_um"])
+                    if p.get("z_um") is not None:
+                        ctrl.core.set_position(p["z_um"])
+                        _wait(ctrl, ctrl.core.get_focus_device())
+            except Exception as exc:
+                # No Acquisition exists for this movie yet, so this reservation is
+                # ours to close. Preserve prior movies on the typed stage failure,
+                # just as AcquisitionUnterminated carries completed siblings.
+                if isinstance(exc, StageMoveError):
+                    exc.positions_completed = [
+                        r for r in results if r.get("dataset_path") and "error" not in r
+                    ]
+                reservation.close()
+                raise
+            # Carry prior fields' debt into the active waiter. On expiry it
+            # owns the final repaint too, after its late restoration.
+            teardown = {"refresh_gui_owed": composite_teardown.pop("refresh_gui_owed", False)}
+            unterminated = False
+            try:
+                dataset_path = _acquire_with_hooks(
+                    guard, movie_dir, movie_name, events, hook, reservation=reservation,
+                    policy=DEFAULT, ctrl=ctrl, plan=plan, runtime_plan=plan,
+                    teardown_timing=teardown, defer_refresh_gui=True,
+                )
+            except AcquisitionUnterminated as exc:
+                unterminated = True
+                if teardown.get("refresh_gui_deferred"):
+                    composite_teardown["refresh_gui_owed"] = True
+                exc.positions_completed = [r for r in results if r.get("dataset_path") and "error" not in r]
+                raise
+            except _HookedAcquisitionFailure as exc:
+                failed = _hooked_failure_result(exc, movie_log)
+                expected = Counter(event.get("axes", {}).get("position") for event in events)
+                saved = failed.get("saved_frames_by_position", {})
+                failed["completed_fields"] = [p["name"] for p in group
+                    if expected[p["name"]] and saved.get(p["name"], 0) >= expected[p["name"]]]
+                failed["hook_extra_exposures_planned"] = plan.frames - len(events)
+                payload.update({**failed, **({"position": group[0]["name"]} if split else {}),
+                        "results": results, "acquisition_order": acquisition_order,
+                        "timing": timing})
+                return payload
+            finally:
+                if not unterminated:
+                    if teardown.get("refresh_gui_owed"):
+                        composite_teardown["refresh_gui_owed"] = True
+                    _run_duration_breakdown(hook, teardown, 0, accumulator=duration_accumulator)
+            # Both layouts report saved-frame callbacks actually accounted after
+            # teardown, not the submitted event count. A mismatch with frames_planned
+            # means frame delivery/accounting was incomplete; it is not evidence of
+            # how many exposures the camera made.
             expected = Counter(event.get("axes", {}).get("position") for event in events)
-            saved = failed.get("saved_frames_by_position", {})
-            failed["completed_fields"] = [p["name"] for p in group
-                if expected[p["name"]] and saved.get(p["name"], 0) >= expected[p["name"]]]
-            failed["hook_extra_exposures_planned"] = plan.frames - len(events)
-            return {**failed, **({"position": group[0]["name"]} if split else {}),
-                    "results": results, "acquisition_order": acquisition_order,
-                    "timing": timing}
-        # Both layouts report saved-frame callbacks actually accounted after
-        # teardown, not the submitted event count. A mismatch with frames_planned
-        # means frame delivery/accounting was incomplete; it is not evidence of
-        # how many exposures the camera made.
-        expected = Counter(event.get("axes", {}).get("position") for event in events)
-        saved = teardown.get("saved_frames_by_position", {})
-        completed_fields = [p["name"] for p in group
-                            if expected[p["name"]] and saved.get(p["name"], 0) >= expected[p["name"]]]
-        result = _adaptive_result(
-            dataset_path, movie_log, hook=hook,
-            status=(f"Acquisition complete across {len(group)} position(s)."
-                    if len(completed_fields) == len(group) else
-                    f"Saved-frame delivery complete for {len(completed_fields)}/{len(group)} position(s)."),
-            positions=len(group), positions_planned=len(group), positions_completed=len(completed_fields),
-            completed_fields=completed_fields,
-            saved_frames_by_position=saved,
-            frames_planned=len(events), frames_acquired=teardown.get("saved_frames", 0),
-            hook_exposures_observed=getattr(hook, "observed_exposures", None),
-            reservation_frames_planned=plan.frames,
-            hook_extra_exposures_planned=plan.frames - len(events),
-            started_at=started_at.isoformat(), completed_at=datetime.now(timezone.utc).isoformat(),
-            duration_s=round(time.monotonic() - started, 6),
-            **_reservation_report(reservation),
-        )
-        result["duration_breakdown"] = _run_duration_breakdown(hook, teardown, result["duration_s"])
-        if hasattr(hook, "min_snr") and hasattr(hook, "threshold_source"):
-            result["observation_parameters"] = {
-                "min_snr": hook.min_snr, "min_snr_source": hook.threshold_source,
-            }
-        if not split:
-            _report_frame_spacing(timing, [result])
-            return {**result, "acquisition_order": acquisition_order, "timing": timing}
-        results.append({**result, "position": group[0]["name"],
-                        "x_um": group[0]["x_um"], "y_um": group[0]["y_um"],
-                        "xy_move": xy_move})
-    _report_frame_spacing(timing, results)
-    return {"status": f"{len(results)}/{len(positions)} positions completed.",
-            "results": results, "acquisition_order": acquisition_order, "timing": timing,
-            "dataset_layout": "one dataset and fresh hook per position; results index datasets and logs",
-            "hook_log_note": "Read each results entry's log_path separately; no shared log is overwritten."}
+            saved = teardown.get("saved_frames_by_position", {})
+            completed_fields = [p["name"] for p in group
+                                if expected[p["name"]] and saved.get(p["name"], 0) >= expected[p["name"]]]
+            result = _adaptive_result(
+                dataset_path, movie_log, hook=hook,
+                status=(f"Acquisition complete across {len(group)} position(s)."
+                        if len(completed_fields) == len(group) else
+                        f"Saved-frame delivery complete for {len(completed_fields)}/{len(group)} position(s)."),
+                positions=len(group), positions_planned=len(group), positions_completed=len(completed_fields),
+                completed_fields=completed_fields,
+                saved_frames_by_position=saved,
+                frames_planned=len(events), frames_acquired=teardown.get("saved_frames", 0),
+                hook_exposures_observed=getattr(hook, "observed_exposures", None),
+                reservation_frames_planned=plan.frames,
+                hook_extra_exposures_planned=plan.frames - len(events),
+                started_at=started_at.isoformat(), completed_at=datetime.now(timezone.utc).isoformat(),
+                duration_s=round(time.monotonic() - started, 6),
+                **_reservation_report(reservation),
+            )
+            if hasattr(hook, "min_snr") and hasattr(hook, "threshold_source"):
+                result["observation_parameters"] = {
+                    "min_snr": hook.min_snr, "min_snr_source": hook.threshold_source,
+                }
+            if not split:
+                _report_frame_spacing(timing, [result])
+                payload.update({**result, "acquisition_order": acquisition_order, "timing": timing})
+                return payload
+            results.append({**result, "position": group[0]["name"],
+                            "x_um": group[0]["x_um"], "y_um": group[0]["y_um"],
+                            "xy_move": xy_move})
+        _report_frame_spacing(timing, results)
+        payload.update({"status": f"{len(results)}/{len(positions)} positions completed.",
+                "results": results, "acquisition_order": acquisition_order, "timing": timing,
+                "dataset_layout": "one dataset and fresh hook per position; results index datasets and logs",
+                "hook_log_note": "Read each results entry's log_path separately; no shared log is overwritten."})
+        return payload
+    finally:
+        if composite_teardown.get("refresh_gui_owed"):
+            composite_teardown["refresh_gui"] = {"start_s": time.monotonic()}
+            try:
+                ctrl.refresh_gui()
+            except Exception:
+                pass
+            finally:
+                composite_teardown["refresh_gui"]["end_s"] = time.monotonic()
+        duration_s = time.monotonic() - composite_started
+        payload["duration_s"] = duration_s
+        payload["duration_breakdown"] = _run_duration_breakdown(
+            None, composite_teardown, duration_s, accumulator=duration_accumulator)
 
 
 class SurveyProgress:
