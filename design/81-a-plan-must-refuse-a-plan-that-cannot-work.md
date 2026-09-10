@@ -1083,8 +1083,12 @@ the 81c worktree at that commit: **3250 passed, 99 skipped, 3 warnings** in
 300 s, and at the reviewed implementation `7c52956`: **3257 passed, 99 skipped,
 3 warnings** in 272 s — the seven new tests and no regression
 (`.venv/bin/python -m pytest -q`, uv + Python 3.12.14). Note **3** warnings
-where 81a and 81b recorded 4; that is what was measured on this tree, not a
-transcription of theirs. The runner was handed the targeted command only
+where 81a and 81b recorded 4, and **2** on the primary checkout after the merge:
+the varying one is a dependency's `SyntaxWarning`, which fires or not depending
+on each venv's bytecode cache. It is an environment artifact, the pass counts
+agree exactly, and the warning count is therefore **not** a number to compare
+across trees. Recorded because a reader who compares 3 with 2 deserves the
+reason rather than the discrepancy. The runner was handed the targeted command only
 (`.venv/bin/python -m pytest -q tests/test_agent.py tests/test_schema_parity.py`,
 265 passed before the block, 272 after), per
 `feedback_runner_tests_only_what_it_changed`.
