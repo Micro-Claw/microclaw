@@ -10272,3 +10272,89 @@ limit no segmenter can cross, and it names the missing quantity — integrated
 intensity, which the built-in does not report (`R120`). It is now the first
 clause of the product's `count_semantics`. One sentence of domain knowledge,
 worth more than the three rounds of code before it.
+
+## design/81 block 81c — the planning and reporting rules (merged 2026-09-10, `b978238`)
+
+**The block's central decision was taken before any code, and it was to make
+the block smaller.** design/81's header handed 81c an instruction to decide what
+D5's prompt rule could honestly ask for, because 81b had built detection-evidence
+images, had them judged unreadable, and removed them. Reading `R121` settled it:
+the *unannotated* control renders a sparse bright field 98.9 % at grey ≤ 32
+through the same shared path, so "show the detections" is not a thing the
+product can do. A prompt rule asking for it would have taught the model to claim
+an evidence step it cannot take — **this notebook's own incident in another
+costume**, which is how the D5 rewrite justifies itself. D5 shipped as numeric
+disclosure and the picture stayed owed in four register rows.
+
+The draft's own escape clause is worth noting, because it made the rewrite
+easier than it looked: D5 already said *"if evidence cannot be rendered,
+identify the numbers as unvalidated measurements"*. That branch is the one always
+taken today. The rewrite promoted the escape clause to the rule rather than
+retreating from it.
+
+**Scoping the block found a defect the design had not.** 81b extended
+`connected_components` to original saved frames and updated the **tool schema**;
+`agent.py`'s system prompt still said `'connected_components'
+(input_kind='stage_coordinate_mosaic')`. Two surfaces disagreed and the prompt
+was the one denying the capability — design/77 D1's shape a second time, on
+exactly the deliverable the incident was about. It became **F10**, and it also
+changed the replay argument: most of D4(b)'s practical effect turned out to be a
+mechanical assertion rather than a behavioural measurement.
+
+**The replay was declined, and pricing it was the useful half.** The block entry
+specified two arms, ~14 samples, ~$10. Against
+`feedback_api_gates_need_an_informational_delta` — ~$24 bought one product
+discovery and about eight instrument defects, and *discovery has never come from
+a replay* — the three scorable behaviours are all readable from the next bead
+session's history at zero cost. Operator's call, and the block merges with the
+claim **named as unmeasured** in `R122` rather than implied to work. The
+alternative was buying a control arm for D4(b) whose delta was close to the
+relocation rule 1 says a two-tree replay cannot see.
+
+**The finding that justified the review round was a deletion, not an addition.**
+The runner's F10 rewrite silently dropped three clauses that had nothing to do
+with `input_kind`: *"opening the mosaic so the user can see it is worth doing as
+well, not instead"*, *"so the answer rests on a measurement rather than on your
+reading of a picture"*, and the bullet's only question-shaped trigger. The first
+is the one that mattered — deleted in the same change that added *"never present
+a plain mosaic as though it showed what was counted"*, so the unfixed net effect
+would have been a prompt that discourages showing pictures at all. **That is not
+what D5 says**: the evidence *claim* is unavailable, not the operator's view of
+their own mosaic.
+
+Two general points from it. **A deleted clause is the easiest thing in a prompt
+block to lose, because the diff reads as an improvement** — the runner had
+written a careful disposition list for the one sentence the prompt asked about
+and said nothing about these three. Requiring a disposition line for *every*
+removed clause is what produced the complete accounting on the revision, and it
+correctly marked two of its own deletions as errors. And **the runner was right
+about the third**: "do these positions belong to the same object?" really does
+overclaim, because F5 and `R120` say a component is not an object. The fix was
+not to restore it but to replace it with an honest trigger — *"count what is in
+each field"* → `input_kind='frames'`, reported as a component count — because
+D4(b)'s thesis is that routing fires on the shape of the request, and removing
+the only question-shaped trigger quietly weakens it.
+
+**The coordinator's mutation was the one the runner did not run.** Two mutations
+were specified and delivered. The block's most load-bearing assertion is the
+*negative* one — the guard against a future author reintroducing "show the
+detections" after 81b removed the renderer — and nobody had tested it. Planting
+`"- Show detected-object annotations alongside the counts…"` failed it as
+intended. **Verify the negative assertion yourself; it is the one whose subject
+does not exist yet, so no test run in the ordinary course ever touches it.**
+
+**One coordinator measurement error, recorded in the ledger because it would
+otherwise have been reported as a number.** The first full-suite run was started
+in the runner's worktree while its revision turn was still editing files there.
+It returned 3257 and happened to agree with the clean re-run at a quiescent
+tree — and it is not evidence. A suite run across a tree someone else is
+mutating measures nothing, and the agreement is luck, not confirmation.
+
+**Process notes.** The primary checkout cannot hold the block's branch while the
+runner's worktree does, so the sequence that works is: coordinator commits the
+design decisions, pushes, returns the primary checkout to `main`, then adds the
+worktree. Coordinator edits to the doc and ledger then wait for the runner to go
+idle. And the targeted-command rule paid off exactly as
+`feedback_runner_tests_only_what_it_changed` says: two turns, no unscoped suite
+run, `265 → 272` on the two files under change, with the coordinator's own
+full-suite runs (3250 baseline → 3257) as the actual regression evidence.

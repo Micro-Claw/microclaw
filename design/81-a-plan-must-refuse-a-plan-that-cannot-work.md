@@ -1,8 +1,23 @@
 # A plan must refuse a plan that cannot work
 
-Status: **IN FLIGHT**, 2026-09-10. **81a-1, 81a-2 and 81b are merged; 81c is
-in flight.** Findings and decisions reviewed; D3(b)'s policy settled by the
-operator (see D3(b)); 81a split into 81a-1 and 81a-2 (see Blocks).
+Status: **CLOSED, 2026-09-10, with one behavioural claim owed and named.**
+All four blocks are merged — 81a-1, 81a-2, 81b and 81c. D3(b)'s policy was
+settled by the operator (see D3(b)); 81a was split into 81a-1 and 81a-2 (see
+Blocks); D5's scope was cut to what the product can honestly ask for (see
+below and D5).
+
+**What is still owed, and it is not a gate.** 81c ships the planning and
+reporting rules and no replay was bought for them, so the three behaviours in
+its block entry — D4(b)'s route-before-exposure, D5's report surviving an early
+confirmation, D6(b)'s absent deletion offer — are **unmeasured**. They are
+scored from the next bead session's history, from the artifacts the way `R88`
+was. A merged block whose behavioural claim is unmeasured says so; it does not
+imply the wording works. `R122` carries the row.
+
+**What this notebook did not fix.** The rendered evidence: `R121` (the
+thumbnail stretch), `R43` (the overlay), `R116` (a component consumed by its own
+annotation) and `R119` (a fixture with no data in it). They belong together in
+one successor block, which is what `R43` has asked for since design/43.
 
 **D5's scope is settled, and it is smaller than the draft** (coordinator
 decision, 2026-09-10, operator confirmed). 81b ships D4(a) and **not** D5's
@@ -1086,4 +1101,4 @@ re-run at a quiescent `7c52956` is the number above.
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
 | 81a-2 | `design81/81a2-runtime-refusal` (deleted) | `da67cbd` | `ab3af26` WIP, `73f87b9`, `8608dd4`, `5e1e4a5` | demo rounds 3-5; A unobservable (`R101`) | `b6ca3ec` |
 | 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn) … `536fe07`, then `06074bd` removing the annotations | 6/6 scoring limbs off-rig over three archived acquisitions; limb E's figure confirmed by the operator on `r0_c2` | `26262f4`, close-out `33e2455` |
-| 81c | `design81/81c-planning-and-reporting-rules` | `9e0daf1` | `1800e28`, `7c52956` (review round 1), plus the coordinator's own antecedent fix | **none** — every limb LOCAL; D4(b)/D5/D6(b) behaviour owed to the next bead session's history | |
+| 81c | `design81/81c-planning-and-reporting-rules` | `9e0daf1` | `1800e28`, `7c52956` (review round 1), `9370f9b` (coordinator) | **none** — every limb LOCAL; D4(b)/D5/D6(b) behaviour owed to the next bead session's history (`R122`) | `b978238`, close-out on `design81/close-81c` |
