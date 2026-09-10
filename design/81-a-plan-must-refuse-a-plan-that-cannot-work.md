@@ -581,11 +581,19 @@ promoting them (F6). `emit_observation` defaults to `unverified`, and
   seen is not a validation of them, and an early confirmation is not permission
   to stop reporting.
 - **Relay the disclosure the built-in already emits, next to the count.**
-  81b's `_analyze_source_frame` returns `count_semantics` (whose first clause is
-  the optical one: sub-diffraction objects image as one *brighter* spot, so this
-  counts spots and not objects), `component_size_distribution`, `review_notes`,
-  `frame_statistics` and `stage_geometry_refusal`. These are the product's own
-  words about what the number is made of and they are already correct. The
+  81b's `_analyze_source_frame` returns `component_size_distribution`,
+  `review_notes`, `frame_statistics`, `stage_geometry_refusal` and
+  `count_semantics_ref` — which points at `count_semantics`, written into the
+  **manifest** by the runner (`completed_dataset.py:565`) rather than repeated
+  in every frame result. That indirection matters when writing the rule: an
+  earlier draft of this bullet said the frame result carries `count_semantics`
+  directly and it does not (implementer finding, coordinator verified,
+  2026-09-10). `count_semantics`'s first clause is the optical one —
+  sub-diffraction objects image as one *brighter* spot, so this counts spots and
+  not objects. `stage_geometry_refusal` is `None` whenever both intended-XY keys
+  are present, so it is relayed only when it is not null; the other three are
+  always populated. These are the product's own words about what the number is
+  made of and they are already correct. The
   defect to prevent is a markdown table of nine integers with the caveat in
   prose underneath — which is what the incident produced.
 - **Call it a component count.** Never a bead count, a cell count or an object
@@ -1055,9 +1063,27 @@ commit: **3219 passed, 99 skipped, 4 warnings** in 298 s
 (`.venv/bin/python -m pytest -q`, uv + Python 3.12.14). `R114`'s intermittent
 did not fire in that run.
 
+81c starts at `9e0daf1`, its own coordinator commit. Coordinator-run suite on
+the 81c worktree at that commit: **3250 passed, 99 skipped, 3 warnings** in
+300 s, and at the reviewed implementation `7c52956`: **3257 passed, 99 skipped,
+3 warnings** in 272 s — the seven new tests and no regression
+(`.venv/bin/python -m pytest -q`, uv + Python 3.12.14). Note **3** warnings
+where 81a and 81b recorded 4; that is what was measured on this tree, not a
+transcription of theirs. The runner was handed the targeted command only
+(`.venv/bin/python -m pytest -q tests/test_agent.py tests/test_schema_parity.py`,
+265 passed before the block, 272 after), per
+`feedback_runner_tests_only_what_it_changed`.
+
+**One coordinator measurement error worth recording**, because it would have
+been reported as a number: the first full-suite run was started in the runner's
+worktree while the runner's revision turn was still editing files in it. It
+returned 3257 and happened to agree with the clean run, and it is not evidence —
+a suite run across a tree someone else is mutating measures nothing. The clean
+re-run at a quiescent `7c52956` is the number above.
+
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
 | 81a-2 | `design81/81a2-runtime-refusal` (deleted) | `da67cbd` | `ab3af26` WIP, `73f87b9`, `8608dd4`, `5e1e4a5` | demo rounds 3-5; A unobservable (`R101`) | `b6ca3ec` |
 | 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn) … `536fe07`, then `06074bd` removing the annotations | 6/6 scoring limbs off-rig over three archived acquisitions; limb E's figure confirmed by the operator on `r0_c2` | `26262f4`, close-out `33e2455` |
-| 81c | — | not started; both predecessors merged, so it is unblocked | | | |
+| 81c | `design81/81c-planning-and-reporting-rules` | `9e0daf1` | `1800e28`, `7c52956` (review round 1), plus the coordinator's own antecedent fix | **none** — every limb LOCAL; D4(b)/D5/D6(b) behaviour owed to the next bead session's history | |
