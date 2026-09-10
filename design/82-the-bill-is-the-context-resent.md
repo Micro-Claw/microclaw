@@ -412,10 +412,36 @@ above stands as the only estimate of it. That trade is worth naming: paying
 $16–26 a session to narrow a number we do not need is the wrong way round.
 Acceptance: a driven session on
 the demo machine produces a `_usage.jsonl` whose `cache_read_input_tokens` is
-non-zero on ordinary rounds and **zero on the round after a compaction**; a
-`cache_creation_input_tokens` on that round within 10% of the store's own
-context estimate; and the sum of `output_tokens` agreeing with the history's
-assistant content to within the tokenizer's margin.
+non-zero on ordinary rounds and **zero on the round after a compaction**, whose
+every write is `ephemeral_1h_input_tokens` with nothing at 5m, which carries one
+record per API call (checked against the history's assistant messages), and in
+which **no cache miss the session start or a compaction cannot explain** — that
+last one is D5's payoff and the only direct measurement of the cold-boundary
+term. `design/82-block82a-gate.py` scores it; `design/82-block82a-gate.md` is
+the runbook.
+
+**Two of this block's originally stated criteria were withdrawn before the gate
+shipped, and one of them was arithmetically impossible.** "A
+`cache_creation_input_tokens` on the post-compaction round within 10% of the
+store's own context estimate" cannot hold: `estimate_tokens` meters the
+**history alone**, while the rewritten prefix is history *plus* the fixed
+tools+system block — measured at **49,901 tokens** by the API's own tokenizer
+(`design/82-block82a-ttl-probe.py`, 2026-09-10, 137,312 chars at 2.75
+chars/token). Add F4's ~1.4× undercount of the history and the ratio lands near
+20, not 1.1. A limb written that way would have failed the gate for the
+product's correct behaviour, which is design/69a's mistake with a different
+subject. It is now a **reported** number, not a graded one, alongside the
+output-token rate — both are what D1 exists to measure and neither has a
+defensible threshold yet. The same measurement corrects F7's parenthetical that
+"the tool schemas and prose do sit at 4.2–4.8": by Claude's tokenizer the static
+prefix sits at **2.75**, so D4's divisor of 3 is a floor rather than a margin,
+and the 120k high-water admits ~50k more per call than it says. That is 82c's
+lever, measured early.
+
+D5 needed no gate trip of its own: the four-breakpoint 1h request was measured
+live off-rig before the runbook shipped — 49,901 tokens written at
+`ephemeral_1h_input_tokens`, 0 at 5m, all read back seconds later, no beta
+header.
 
 **82b — the three payload fixes.** D2, D3, D4. Acceptance is a **replay** of
 the five archived histories, not a rig trip:
@@ -457,7 +483,7 @@ an answer from the operator.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 82a | `design82/82a-instrument` | `afa15eb` | codex runner | — | — |
+| 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | `design/82-block82a-gate.md`, pinned at `d2d8217` | — |
 | 82b | — | — | — | — | — |
 | 82c | — | — | — | — | — |
 
