@@ -495,6 +495,61 @@ def connected_components(
     return (result, labels) if return_labels else result
 
 
+def component_size_review(
+    objects,
+    pixel_area_um2: float,
+    min_area_um2: float,
+    *,
+    annotation_ink_fraction: float | None = None,
+) -> tuple[dict, list[str]]:
+    """Disclose the size spread of a component count, and flag a count of noise.
+
+    connected_components is geometrically right and, with no area filter, every
+    noise excursion above the robust threshold is a component: measured on a
+    real bead field, 224 components of which 204 were single pixels, against
+    four objects.  The number is honest and useless as an answer, so the size
+    distribution travels with it and a review note names the parameter that
+    fixes it.  Information, never a refusal and never a status change -- small
+    components can be real, and a zero count on an empty field is a result.
+    """
+    sizes = sorted(int(component["n_pixels"]) for component in objects)
+    total = len(sizes)
+    singles = sum(1 for size in sizes if size == 1)
+    fraction = round(singles / total, 4) if total else 0.0
+    distribution = {
+        "n_components": total,
+        "single_pixel_components": singles,
+        "single_pixel_fraction": fraction,
+        # Every component area is n_pixels x pixel_area_um2, so the spread is
+        # reported once in pixels rather than repeated per component (R115).
+        "n_pixels": {
+            "min": sizes[0] if total else None,
+            "median": float(np.median(sizes)) if total else None,
+            "max": sizes[-1] if total else None,
+        },
+        "pixel_area_um2": float(pixel_area_um2),
+    }
+    notes: list[str] = []
+    if total and singles * 2 > total:
+        note = (
+            f"{singles} of {total} counted components ({fraction:.0%}) are one pixel, the "
+            "smallest a component can be: an area filter that admits single pixels counts "
+            "every noise excursion above the threshold, so this number measures the noise "
+            "floor as much as it measures objects. min_area_um2 is the smallest component "
+            f"area counted; it is {min_area_um2:g} µm² here, which admits single pixels "
+            f"({pixel_area_um2:.6g} µm² each). Set it to the smallest object area you mean "
+            "to count and measure again. This is a review note about what the number "
+            "counts, not an invalid count: small components can be real."
+        )
+        if annotation_ink_fraction is not None:
+            note += (
+                f" The annotation for this field marks {annotation_ink_fraction:.0%} of its "
+                "pixels, so individual objects may not be separable in that evidence image."
+            )
+        notes.append(note)
+    return distribution, notes
+
+
 def image_content(
     payload: dict,
     image: np.ndarray,

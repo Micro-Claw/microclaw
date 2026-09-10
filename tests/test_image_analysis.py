@@ -856,3 +856,100 @@ def test_component_refuses_two_bases():
     from microclaw.image_analysis import connected_components
     with pytest.raises(ValueError, match='Supply either basis_um or pixel_size_um, not both'):
         connected_components(np.ones((3, 3)), 1., [0, 0], basis_um=[[1., 0], [0, 1.]])
+
+
+def _speckled_field(seed=7, beads=True):
+    """A background-plus-noise field with, optionally, four real objects.
+
+    Shaped after the incident's own bead field: background ~201, noise sigma
+    ~13.3, and four beads an operator's eye counts.
+    """
+    rng = np.random.default_rng(seed)
+    image = np.clip(rng.normal(201, 13.3, (512, 512)), 0, None).astype(np.uint16)
+    if beads:
+        rows, cols = np.ogrid[:512, :512]
+        for (row, col), radius, amplitude in [((100, 120), 3, 2000), ((300, 80), 3.5, 2500),
+                                              ((200, 400), 4.5, 3000), ((420, 300), 6, 4000)]:
+            image += (amplitude * np.exp(
+                -(((rows - row) ** 2 + (cols - col) ** 2) / (2 * radius ** 2)))).astype(np.uint16)
+    return image
+
+
+@pytest.mark.parametrize('min_area_um2, expect_note', [(0.0, True), (0.2, False)])
+def test_component_size_review_flags_a_count_made_of_single_pixels(min_area_um2, expect_note):
+    from microclaw.image_analysis import component_size_review, connected_components
+    image = _speckled_field()
+    measured = connected_components(
+        image, basis_um=[[0, .127], [-.127, 0]], origin_um=[0, 0],
+        covered_mask=np.ones(image.shape, bool), min_snr=3.1, min_area_um2=min_area_um2,
+    )
+    distribution, notes = component_size_review(
+        measured['objects'], .127 ** 2, min_area_um2)
+    assert distribution['n_components'] == measured['n_components']
+    if expect_note:
+        # The unfiltered count is two orders of magnitude above the four objects.
+        assert measured['n_components'] > 100
+        assert distribution['single_pixel_components'] > 100
+        assert distribution['single_pixel_fraction'] > .9
+        assert distribution['n_pixels']['min'] == 1 == distribution['n_pixels']['median']
+        assert distribution['n_pixels']['max'] > 100
+        assert len(notes) == 1
+        # It names the remedy, not merely the observation.
+        assert 'min_area_um2' in notes[0]
+        assert 'smallest object area you mean to count' in notes[0]
+        assert f"{distribution['single_pixel_components']} of {measured['n_components']}" in notes[0]
+        assert '0.016129' in notes[0]
+    else:
+        # Filtering the noise leaves the objects, and takes the note with it.
+        assert measured['n_components'] == 4
+        assert distribution['single_pixel_components'] == 0
+        assert distribution['n_pixels']['min'] > 100
+        assert notes == []
+
+
+def test_component_size_review_does_not_fire_on_a_large_count_of_real_objects():
+    from microclaw.image_analysis import component_size_review, connected_components
+    image = np.zeros((128, 128), np.uint16)
+    for index in range(40):  # 40 well-separated 2x2 objects: a big, honest count
+        row, col = 3 * (index // 8) * 5, 3 * (index % 8) * 5
+        image[row:row + 2, col:col + 2] = 500
+    measured = connected_components(
+        image, basis_um=[[0, .127], [-.127, 0]], origin_um=[0, 0],
+        covered_mask=np.ones(image.shape, bool))
+    distribution, notes = component_size_review(measured['objects'], .127 ** 2, 0.0)
+    assert measured['n_components'] == 40 and distribution['single_pixel_components'] == 0
+    assert notes == []
+
+
+def test_component_size_review_on_an_empty_field_is_a_result_not_a_warning():
+    from microclaw.image_analysis import component_size_review, connected_components
+    image = np.full((64, 64), 201, np.uint16)  # a flat, empty field
+    measured = connected_components(
+        image, basis_um=[[0, .127], [-.127, 0]], origin_um=[0, 0],
+        covered_mask=np.ones(image.shape, bool), min_snr=3.1)
+    distribution, notes = component_size_review(measured['objects'], .127 ** 2, 0.0)
+    assert measured['n_components'] == 0
+    assert notes == []
+    assert distribution == {
+        'n_components': 0, 'single_pixel_components': 0, 'single_pixel_fraction': 0.0,
+        'n_pixels': {'min': None, 'median': None, 'max': None},
+        'pixel_area_um2': .127 ** 2,
+    }
+
+
+def test_component_size_review_quotes_the_reader_s_own_evidence_image():
+    from microclaw.image_analysis import component_size_review
+    objects = [{'n_pixels': 1}, {'n_pixels': 1}, {'n_pixels': 9}]
+    _, plain = component_size_review(objects, .016129, 0.0)
+    _, inked = component_size_review(objects, .016129, 0.0, annotation_ink_fraction=.88)
+    assert 'of its pixels' not in plain[0]  # no evidence claim without a measured fraction
+    assert inked[0].startswith(plain[0])
+    assert '88% of its pixels' in inked[0]
+
+
+def test_component_size_review_is_absent_from_the_scalar_mosaic_path():
+    from microclaw.image_analysis import connected_components
+    image = _speckled_field()
+    measured = connected_components(image, .127, [0, 0], min_snr=3.1)
+    assert set(measured) == {'threshold', 'background_level', 'noise_mad_sigma',
+                             'n_components', 'objects'}

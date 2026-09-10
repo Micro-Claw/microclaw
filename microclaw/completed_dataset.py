@@ -33,7 +33,7 @@ from microclaw.hook_manager import (
 )
 from microclaw.hooks import write_analysis_observation
 from microclaw.image_analysis import (
-    compute_stats, connected_components, resolve_min_snr,
+    component_size_review, compute_stats, connected_components, resolve_min_snr,
 )
 from microclaw.ilastik_adapter import IlastikCompletedDatasetAdapter
 from microclaw.safety import SafetyViolation
@@ -125,6 +125,16 @@ class ConnectedComponents:
         envelope = {"result": measured, "status": "observed", "parameters": self.parameters}
         if self.write_annotations:
             self._annotate(image, measured, labels, context, envelope)
+        # After the annotation, so the note can quote the reader's own evidence
+        # image. The geometry is unchanged and the status stays `observed`: this
+        # discloses what the count is made of, it does not judge it.
+        distribution, notes = component_size_review(
+            measured["objects"], abs(affine.a * affine.d - affine.b * affine.c),
+            self.parameters["min_area_um2"],
+            annotation_ink_fraction=measured.get("annotation", {}).get("annotation_ink_fraction"),
+        )
+        measured["component_size_distribution"] = distribution
+        measured["review_notes"] = notes
         return envelope
 
     def _annotate(self, image, measured, labels, context, envelope, *, mosaic=False,
@@ -178,6 +188,10 @@ class ConnectedComponents:
             clamped.append((max(half_h, min(row, height - 1 - half_h)),
                             max(half_w, min(col, width - 1 - half_w)), text))
         draw_text_labels(canvas, clamped, foreground=foreground, outline=1, scale=scale)
+        # One comparison against the frame the measurement read, so a count made
+        # of noise discloses that its evidence image is mostly ink.
+        annotation["annotation_ink_fraction"] = round(
+            float(np.count_nonzero(canvas != image)) / canvas.size, 4)
         filename = f"components-{self.annotations['requested']:04d}.tiff"
         try:
             artifact = context.artifacts.emit(filename, canvas)

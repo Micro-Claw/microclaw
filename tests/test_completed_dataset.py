@@ -1198,3 +1198,68 @@ def test_default_annotation_limit_preserves_200_field_counts(component_frames):
     assert result['annotations'] == {'requested': 200, 'written': 64, 'reason': 'artifact count limit exhausted'}
     assert result['observations'][64]['result']['annotation']['failure_kind'] == 'limit_exhausted'
     assert result['observations'][65]['result']['annotation']['failure_kind'] == 'limit_exhausted_upstream'
+
+
+def test_singleton_dominance_is_disclosed_per_field_and_stays_observed(component_frames):
+    analyze, images, *_ = component_frames
+    # field 0: three real 2x2 objects, no minimum-size detections.
+    images[0][:] = 0
+    for row, col in ((4, 4), (4, 20), (20, 4)):
+        images[0][row:row + 2, col:col + 2] = 500
+    # field 1: five single-pixel excursions around one real object — the
+    # incident's shape, where the count answers the noise floor.
+    images[1][:] = 0
+    images[1][10:12, 10:12] = 500
+    for row, col in ((2, 2), (2, 28), (28, 2), (28, 28), (16, 25)):
+        images[1][row, col] = 400
+    images[2][:] = 0  # field 2: empty. A valid zero is a result.
+
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    measured = [o['result'] for o in result['observations']]
+    assert [o['status'] for o in result['observations']] == ['observed'] * 3
+    assert [m['n_components'] for m in measured] == [3, 6, 0]
+
+    assert measured[0]['component_size_distribution'] == {
+        'n_components': 3, 'single_pixel_components': 0, 'single_pixel_fraction': 0.0,
+        'n_pixels': {'min': 4, 'median': 4.0, 'max': 4}, 'pixel_area_um2': .016129,
+    }
+    assert measured[0]['review_notes'] == []
+
+    assert measured[1]['component_size_distribution'] == {
+        'n_components': 6, 'single_pixel_components': 5, 'single_pixel_fraction': .8333,
+        'n_pixels': {'min': 1, 'median': 1.0, 'max': 4}, 'pixel_area_um2': .016129,
+    }
+    note, = measured[1]['review_notes']
+    assert note.startswith('5 of 6 counted components (83%) are one pixel')
+    assert 'min_area_um2 is the smallest component area counted; it is 0 µm² here' in note
+    # It quotes the reader's own evidence image, which is mostly ink at this count.
+    ink = measured[1]['annotation']['annotation_ink_fraction']
+    assert 0 < ink <= 1 and f'marks {ink:.0%} of its pixels' in note
+
+    # An empty field reports the zero and says nothing that reads as a failure.
+    assert measured[2]['component_size_distribution'] == {
+        'n_components': 0, 'single_pixel_components': 0, 'single_pixel_fraction': 0.0,
+        'n_pixels': {'min': None, 'median': None, 'max': None}, 'pixel_area_um2': .016129,
+    }
+    assert measured[2]['review_notes'] == []
+
+    # Above the single-pixel area the singletons and the note both go, and the
+    # count changes to the objects that are left.
+    filtered = analyze('filtered', parameters={'min_area_um2': .05})
+    assert filtered['status'] == 'completed', filtered['failure']
+    assert [o['status'] for o in filtered['observations']] == ['observed'] * 3
+    assert [o['result']['n_components'] for o in filtered['observations']] == [3, 1, 0]
+    for observation in filtered['observations']:
+        assert observation['result']['review_notes'] == []
+        assert observation['result']['component_size_distribution']['single_pixel_components'] == 0
+
+
+def test_mosaic_path_gains_no_size_disclosure(component_frames):
+    analyze, *_ = component_frames
+    result = analyze(input_kind='stage_coordinate_mosaic')
+    assert result['status'] == 'completed', result['failure']
+    measured = result['observations'][0]['result']
+    assert set(measured) <= {'threshold', 'background_level', 'noise_mad_sigma',
+                             'n_components', 'objects', 'annotation'}
+    assert 'component_size_distribution' not in measured and 'review_notes' not in measured
