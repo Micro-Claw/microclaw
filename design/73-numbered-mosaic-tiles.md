@@ -40,10 +40,26 @@ A hooked multiposition acquisition supplies positions to
 `multi_d_acquisition_events` with `position_labels` (`tools.py:7971`,
 `tools.py:8344`). Each saved image is expected to carry a `position` axis
 coordinate, may carry `PositionName`, and carries the `XPosition_um_Intended` /
-`YPosition_um_Intended` the stitcher already uses. **`PositionName`'s presence
-in a *saved* dataset is not evidenced in this repo** — every recorded
-observation is of live hook metadata (design/23), and `HookBase.where()` falls
-back to `Axes.position`, which implies it is not always there. The saved
+`YPosition_um_Intended` the stitcher already uses.
+
+**`PositionName`'s presence in a saved dataset is now evidenced, n=3**
+(measured 2026-09-10 during block 81b, from the evidence archive). Three
+multiposition NDTiff datasets — `20260909_ZM_beads/beads_af_run2_1` (9
+positions, Andor/EMU), `38-composite-hooks-m5/gate_h1/gate_h1_1` (5,
+Hamamatsu) and `nestor-…/mt_scan_150um/mt150_1` (81, Hamamatsu) — all return
+`PositionName` from `Dataset.read_metadata()` for every image, and in all three
+it equals the saved `position` coordinate exactly. `PositionIndex` is present
+too, as an integer from 0. This paragraph previously said that presence was
+unevidenced here.
+
+**And every one of those `position` coordinates is a string** — `r0_c0`,
+`center`, `mt150_r0_c0` — never an integer. A rule of the form "label it when
+the coordinate is a number" is therefore unreachable on real data: 81b shipped
+one, and it labelled nothing at all until it was replaced by `T<n>` over the
+sorted distinct saved coordinates.
+
+This settles the *identity* half of the probe below and none of its *ordering*
+half. The saved
 position coordinate may itself be a supplied label rather than an ordinal, so
 sorting it is not evidence of visit order: lexical order can put `P10` before
 `P2`, and arbitrary names can reorder in any way. See "Before implementation".
@@ -206,10 +222,27 @@ screen direction changes with the affine. Text is upright in output-image
 coordinates. Centre the text box on the anchor, clipping to the canvas only when
 a very small tile or an edge makes that necessary.
 
-**Ink comes from the data, not from the container.** The stitcher's pre-cast
-dtype is the authority: foreground is that dtype's maximum (255 for a GRAY8
-acquisition, 65535 for GRAY16). Writing 65535 over an 8-bit mosaic renders the
-whole sample black in any auto-scaling viewer.
+**Ink comes from the data, not from the container — and a dtype is a
+container.** This paragraph used to say the pre-cast dtype was the authority
+and that foreground is that dtype's maximum. **Block 81b measured that rule
+producing the very failure it was written to prevent** (2026-09-10). On a real
+16-bit Andor field spanning 154-402 counts, ink at 65535 makes
+`open_artifact(analyze=True)`'s 2nd-99.8th percentile stretch span the *ink's*
+range instead of the data's: the returned thumbnail came back with **three
+distinct grey levels — 0, 1 and 255 — 22,088 pixels black and 412 white**, so
+the sample was invisible and only the annotation survived. The dtype maximum is
+an order of magnitude above anything a real camera writes.
+
+So the authority is **the image's own bright end**, clamped by the source
+dtype. 81b's `_annotate` uses `min(dtype_max, max(2, data_max + 5% headroom))`:
+above the data so the ink is never dimmer than what it sits on, never 0 (which
+means uncovered) and never 1 (the outline value — at 1 the halo merges with the
+glyph and a digit renders as a blob), and capped so a GRAY8 source still cannot
+exceed 255. Measured after the change on the same fields: 54 distinct grey
+levels and 71% of pixels strictly between black and white.
+
+Writing 65535 over an 8-bit mosaic remains wrong; it is now the *clamp* that
+prevents it rather than the rule.
 
 **The outline value is 1, not 0.** Zero means "uncovered" to
 `open_artifact(analyze=True)` and to R40's statistics, so the renderer must not
@@ -473,7 +506,14 @@ because the allowlist reads one key. The base mosaic is reachable through
    Overlap statistics and coverage are identical in both.
 5. Omitting the argument behaves exactly as `show_position_labels=true`.
 6. Two annotated builds of one input are byte-identical. No host qualifier.
-7. A GRAY8 source produces a labeled copy whose maximum is 255, not 65535.
+7. A GRAY8 source produces a labeled copy whose maximum is at most 255 —
+   **and, more importantly, whose rendered thumbnail still shows the sample.**
+   Score the picture through `image_content` with `open_artifact`'s own
+   `mask=plane != 0`, not the TIFF's maximum: block 81b's four predecessors
+   asserted `rendered.max() == 65535` or `== 255` and every one of them passed
+   while the image was black. An assertion on the ink constant cannot see this
+   defect; an assertion that the thumbnail carries real intermediate values
+   can.
 8. Outline pixels are nonzero, and the test makes no claim that annotation
    preserves the labeled copy's zero count or any other image statistic.
 9. One position missing both `PositionName` and a usable saved position label
