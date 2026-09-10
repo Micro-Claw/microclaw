@@ -7,7 +7,7 @@ uncommitted is stale. Neither has been measured: no block of *this* notebook has
 run. What has changed is that design/78 shipped, and two of the premises below
 moved with it — see "What design/78 already did" immediately after this.
 
-**Superseded 2026-09-08: block 79a has run and merged** (`fc8e2b7`). The sentence above — "no block of *this* notebook has run" — is stale, and so is 79a's entry in that list. See "Block 79a, closed" before the run ledger. **79b is assigned 2026-09-08** on `design79/performance-aware-planning`; 79c is unstarted.
+**Superseded 2026-09-08: block 79a has run and merged** (`fc8e2b7`). The sentence above — "no block of *this* notebook has run" — is stale, and so is 79a's entry in that list. See "Block 79a, closed" before the run ledger. **79b is assigned 2026-09-08** on `design79/performance-aware-planning` and merged 2026-09-09. **79c-1 is assigned 2026-09-10** on `design79/the-per-field-multiplier` — see "Block 79c-1 as assigned" before the run ledger.
 
 `CLAUDE.md`'s paragraph is the rule of record; this notebook owns the detail and
 the evidence. Keep them from drifting: a change here that alters the rule must
@@ -599,13 +599,316 @@ Its measured cost, `claude-opus-4-8`, 2026-09-09: **$0.114/sample, 3.4 turns**.
 **R107 does not ride along and stays open in `design/70`**, with the pilot's
 three additional clean `attributed-write` samples recorded there as corroboration.
 
+## Block 79c-1 as assigned, 2026-09-10
+
+Start commit `f9af854`, branch `design79/the-per-field-multiplier`. 79c's brief
+is "optimize measured residuals, ranked by total operator time, acquisition
+impact and ease of correction". Ranking them first found that **the two measured
+residuals are both per-*acquisition* costs, and a multi-field run pays each one
+per field.** That is where 79c starts, and eight decisions the coordinator made
+before handing the block over.
+
+### What was measured locally before the block was written
+
+Two rig-free probes over the engine-shaped dispatching fake in
+`tests/test_acquisition_order.py` (its `Acquisition` constructor dispatches to a
+backend, as pycro-manager's `__new__` does — the ninth engine contract), counting
+constructions, `refresh_gui` calls and core reads per field:
+
+| Run shape | 4 fields | 8 fields |
+|---|---|---|
+| hookless `position_then_time`, `interval_s=0` | 4 acquisitions | 8 |
+| hookless `position_then_time`, `interval_s=0.5` | 4 | 8 |
+| hooked spaced (77b split), `interval_s=0.5` | 4 | 8 |
+| hooked, `interval_s=0` (shared dataset, position axis) | **1** | **1** |
+
+- **The teardown `refresh_gui` runs once per `_acquire_with_hooks`, and it is
+  gated on `any(restoration_attempted.values())`** — so a hookless grid refreshes
+  **zero** times (measured: 0 in every hookless arm) and R103's ~2.4 s lands only
+  where a hook restored hardware. On the 77b split path that is once per field.
+- **It is serialized into the grid's wall clock.** `finish_owned_cleanup` runs on
+  the daemon waiter, but the foreground blocks in `while waiter.is_alive()` until
+  it returns, so field *k+1*'s stage move does not begin until field *k*'s
+  repaint finishes. On a 100-field spaced hooked EMU grid that is ~4 minutes of
+  repaints between exposures — R103's own "nobody has measured that shape".
+- **Neither composite reports any timing at all.** `run_multiposition_acquisition`
+  returns `status`/`results`/`acquisition_order`/`timing`, and the 77b split
+  return adds `dataset_layout`/`hook_log_note`. **No `duration_s` and no
+  `duration_breakdown`** on either. 79a's rule — one breakdown, every phase as a
+  duration, `accounted_s`, residual named — does not hold one level up, at exactly
+  the shape where multi-field time goes.
+
+### The decisions
+
+- **The instrument ships with the fix, and the instrument is the composite
+  breakdown.** 79a's order (`D4` before the bound, "because it is the instrument")
+  applies again. `run_multiposition_acquisition`, `run_tile_acquisition` and the
+  77b split return report one composite `duration_breakdown` in **79a's existing
+  shape and units** — never a second vocabulary. Extend `_run_duration_breakdown`;
+  do not write a second summariser.
+- **The composite breakdown must not double count, and says so.** Two new spans
+  are needed: the per-field acquisition window (construction → `acq.__exit__`
+  returning) and the composite's own coalesced repaint. The acquisition window
+  *contains* the hook write spans, exactly the nesting 79a already solved by
+  subtracting intersections from `restoration`. Reuse that mechanism and state the
+  exclusion in `phase_meaning`, as `restoration` does. `accounted_s +
+  unaccounted_s == duration_s` must reconcile exactly, and the residual is the
+  between-field work (XY moves, settling, preflight, `mkdir`).
+- **No `dominant_phase`, and no per-field array.** 79a's trap, restated one level
+  up, where it is more tempting because there are now N fields to rank. The bounds
+  hold unchanged: a fixed set of phase names, at most three retained records,
+  constant additional storage independent of field count.
+- **The teardown repaint coalesces to once per composite — and a failure path that
+  skips it is a regression, not an optimization.** This is R103's own question
+  ("whether the refresh belongs once per *composite* rather than once per
+  acquisition") answered yes. `_acquire_with_hooks` takes a deferral argument in
+  the shape of the `close_reservation` argument beside it, not a new layer; when it
+  defers it records that a repaint is **owed** in `teardown_timing`. The composite
+  performs exactly one repaint after its loop, **on success and on every failure
+  path** — `_HookedAcquisitionFailure` returns from inside the loop, `StageMoveError`
+  and `AcquisitionUnterminated` propagate, and each must still leave the GUI
+  showing restored state. Same shape as block 52c's exported script, which restored
+  only on success.
+- **Deferral applies only to a repaint the composite will certainly perform.** On
+  expiry the foreground raises `AcquisitionUnterminated` and the daemon waiter
+  keeps ownership of restoration; a composite `finally` would then repaint *before*
+  the late restoration, which is worse than not repainting. `finish_owned_cleanup`
+  already reads `waiter_must_close_reservation` from the waiter thread to decide
+  reservation closure — decide the repaint on the same signal, in the same place.
+  A test that expires one field asserts the **waiter** repainted.
+- **Do not merge the hookless zero-interval grid into one acquisition.** It is the
+  obvious reading of "avoid repeated acquisition startup" and it is wrong here:
+  `_run_protocol_at` calls `settle_xy_move` per field, and an engine-moved
+  `position` axis has no arrival verification at all, so the trade is a measured
+  per-acquisition span against an unverified stage arrival per field. *Removing a
+  required wait is not an optimization*, and a device that is not busy is not a
+  device that arrived. The pre-existing asymmetry it exposes — the hooked
+  zero-interval path already moves the stage through engine events with no arrival
+  check — is a register row, not this block's scope.
+- **Do not hoist the repeated position-independent reads, because they were
+  measured and they are not where the time is.** The hookless path re-reads
+  `get_exposure`, `get_image_width`, `get_image_height` and `get_bytes_per_pixel`
+  per field (`plan_events`, N+1 times, whose per-field result is consumed only as
+  `runtime_plan`), plus `get_xy_stage_device` per field and `get_available_configs`
+  per field when a channel is named — 6 reads per field, 4 of them on the split
+  path. design/24 measured per-poll bridge cost **under 0.1 ms** (not remeasured
+  here), which puts 6 reads at well under a millisecond against a per-field
+  repaint measured at ~2.4 s on M2. It is recorded as measured-and-negligible; a
+  change here would be work with no attributable effect, which is what item 3's
+  "optimize critical spans first" is for.
+- **75a's per-acquisition span is not multiplied by hand.** Block 75a measured
+  `mark_finished → first frame accounted` at 158.8 ms (demo) / 275.3 ms (M2) p50,
+  96.7% / 99.1% of a **one-frame** acquisition's window, and design/79 already says
+  those describe those experiments and not a universal floor. So this block does
+  **not** claim N × 275 ms for an N-field grid. Whether the per-acquisition
+  teardown multiplies is unmeasured, and the composite breakdown is precisely the
+  thing that would measure it — on the demo machine, for free, with no dose.
+
+### Acceptance evidence
+
+Structural and local, per item 4's "test structural regressions locally (extra
+reads, refreshes or engine restarts), not brittle wall-clock limits against
+mocks":
+
+1. N fields with a restoring hook produce **exactly one** `refresh_gui`, counted,
+   for N in at least two values — and the pre-fix tree produces N.
+2. One repaint still happens when field 2 of 4 raises `StageMoveError`, when a
+   field returns `_HookedAcquisitionFailure`, and after a declined/failed
+   restoration; and the **waiter** repaints on the expiry path.
+3. `accounted_s + unaccounted_s == duration_s` on the composite, with a nested
+   write span inside a field's acquisition window counted once.
+4. Payload size is constant in field count (assert flat from 2 to 500 fields, as
+   79a asserted 2303 → 2359 bytes from 5 to 100,000 writes).
+5. **No bridge call added**, asserted through the recorded call list the way 78a's
+   `test_property_write_spans_attribute_delay_without_extra_bridge_calls` does.
+6. Export equivalence: `_emit_multiposition` and `_emit_tile` still emit a script
+   that compiles **and execs against fakes**. A `duration_breakdown` is a result
+   field and emits nothing, but a coalesced repaint is a change to what runs.
+
+Each of 1–3 needs watched-it-fail evidence on the pre-fix tree, and 1 and 2 are
+*counting* tests, so the fake must not encode the assumption: count on a real
+`ctrl` double whose `refresh_gui` is recorded, never on a `MagicMock` asserted
+with `assert_called_once`.
+
+### Gate
+
+Rig-free. The structural half is local; the measurement half — does the composite
+breakdown make the per-field multiplier visible? — is a demo-machine run of a
+spaced hooked multi-field grid, scored from the returned `duration_breakdown` and
+the acquisition event sink, not from a verdict. No dose beyond the demo camera.
+
+## Block 79c-1, closed 2026-09-10 — what shipped, and the premise that did not survive
+
+**Shipped.** Both composites — `run_multiposition_acquisition`, `run_tile_acquisition`
+and the 77b split return — now report one `duration_breakdown` in 79a's shape and
+units, with `accounted_s` and the residual named. `_acquire_with_hooks` records an
+`acquisition` span (construction → `acq.__exit__` returning) alongside the
+`restoration` and `refresh_gui` spans it already had, and the nested-span
+subtraction 79a built for `restoration` now also excludes a hook's write spans
+from the enclosing acquisition window, so summing the phases counts each measured
+interval once.
+
+**Not shipped: the repaint coalescing.** It was implemented, reviewed green over
+two rounds, and then removed by operator decision on the day, because the cost it
+removes is currently **zero**. The gate on the teardown repaint is
+`any(restoration_attempted.values())`, and no multi-field tool can authorize the
+capability that produces a restoration:
+
+| `_acquire_with_hooks` call site | Calls per tool call | Can carry `property_envelope` / `named_stage_envelope`? |
+|---|---|---|
+| `run_timelapse` | 1 | yes |
+| `run_zstack` | 1 | yes |
+| adaptive survey | 1 | yes |
+| acquire-on-hit phase | 1 — extends every hit's events, then one acquisition | yes |
+| 77b split loop | **N** | **no** |
+
+Every path that can repaint already repaints exactly once; the only path that
+repeats cannot repaint at all. `run_multiposition_acquisition` accepts only
+`illumination_envelope` and `artifact_limits`, `run_tile_acquisition` accepts no
+capability argument, `_protocol_shape_kwargs` refuses all five in
+`protocol_params`, and `configure_illumination` sets `_illumination_context` —
+which no restoration reads. Driven directly, an adapter configured exactly as the
+split loop configures it returns `None` from both `restore_property()` and
+`restore_named_stage()`.
+
+**This block was assigned on that projection without checking it.** `R103`
+predicted "~2.4 s per field... four minutes of teardown repaints" on a 100-field
+grid; `CLAUDE.md`'s own rule — *a guard is only as reachable as the object it
+lives on* — is what would have caught it, and it was applied to the guard's
+location and not to its reachability. `R123` records the enumeration so nobody
+redoes it; `R103`'s row now carries the refutation. The coalescing design is
+written down there rather than living as code in the teardown path, which is the
+function block 60a found four defects in.
+
+**Two deliberate non-changes, both recorded rather than swept.** The hookless
+zero-interval grid still runs one acquisition per field: merging it would trade a
+measured per-acquisition span for an unverified stage arrival per field, because
+`_run_protocol_at` calls `settle_xy_move` and an engine-moved `position` axis has
+no arrival check at all (`R126`). And the six position-independent reads repeated
+per field stay: design/24 measured per-poll bridge cost under 0.1 ms, which puts
+them under a millisecond against the spans that dominate.
+
+### What a reachable grid now reports, measured
+
+An 8-field spaced hooked grid (`snr_observer`, `n_frames=3`, `interval_s=0.05`),
+real wall clock:
+
+```json
+"phases": {
+  "acquisition": {"count": 8, "total_s": 0.045183, "max_s": 0.036991},
+  "restoration": {"count": 8, "total_s": 0.0000126, "mean_s": 0.0000016}
+},
+"accounted_s": 0.045196, "unaccounted_s": 0.008877
+```
+
+Two things that shape are good for and one it cannot do. It separates time inside
+acquisitions from time between them — the tests pin the residual to exactly
+`(n-1) × settle` on the per-field shapes and to zero on the shared-dataset shape,
+which is the per-field multiplier made visible. It also shows that a grid's
+`restoration` phase is a **no-op sweep measured unconditionally** —
+`finish_owned_cleanup` opens and closes that span before `restore_hardware()` is
+called — so `{acquisition, restoration}` is the reachable phase set, not
+`{acquisition}`. The coordinator's revision spec and `R124`'s first draft both got
+that wrong and the implementer caught it against the code.
+
+What it cannot do is name the slow field: per-field breakdowns are folded in and
+omitted from the child rows, disclosed in `phase_meaning`, because retaining one
+per field is unbounded in the field count. The bounded alternative — keep the
+three slowest fields, the bound `slowest_records` already uses — was offered and
+deferred to `R125`. Measured payload: **1037 bytes at 2 fields, 1033 at 500.**
+
+### The nested-span subtraction has no reachable coverage
+
+Worth stating plainly, because it is the one mechanism here that a real call
+cannot exercise: no reachable grid hook times a write, since `property_envelope`
+cannot reach a grid (`R123`) and the illumination route records no spans
+(`R124`). So the subtraction's only coverage is the synthetic-teardown tests in
+`tests/test_timing_attribution.py`. That is the right place for them — they test
+the function, not a tool — but it is unreachable-by-construction rather than
+merely untested, and it will stay that way until `R123` or `R124` closes.
+
+### Review record
+
+Three rounds. Round 1 returned seven findings, of which one was a defect in the
+*coordinator's* acceptance criterion: it demanded that `accounted_s +
+unaccounted_s == duration_s` hold **exactly**, quoting 79a — where it holds only
+because that block's fixtures use integer-valued clocks. The implementer met the
+criterion with a `math.nextafter` adjustment to the measured residual, which over
+2,000,000 random `(duration, accounted)` pairs **still leaves the identity broken
+in 3.2% of them**. The adjustment was removed, the assertions moved to
+`pytest.approx`, and a regression test pins that the residual is now the raw
+subtraction. *An acceptance criterion that asks for a float identity is asking for
+the number to be adjusted.*
+
+Round 2 was the narrowing. The Codex runner hit its usage limit mid-turn before
+making any edit, and the round was completed by a Claude runner in the same
+worktree — operator decision, rather than waiting for the 19:00 window.
+
+### The demo gate, run 2026-09-10 — 6/6 criteria, and the measurement 79c asked for
+
+Scored from `block79c1-evidence`, not from the exit status. Every criterion
+independently corroborated: `acquisition.count` equals the number of NDTiff
+datasets actually on disk for each shape (8/8/8/1, and 2/24 for the bound limb),
+reconciliation drift is exactly 0.0 in all six runs, the payload grew **926 → 941
+bytes from 2 to 24 fields**, and the shared-dataset route delivered 8/8 frames in
+one acquisition.
+
+**The measurement.** Eight frames at 10 ms exposure in every arm; the arms differ
+in how many `Acquisition` objects they construct.
+
+| shape | acquisitions | in-acquisition | residual | total |
+|---|---|---|---|---|
+| `hookless-zero` | 8 | 2.234 s | 1.985 s | 4.219 s |
+| `hookless-spaced` | 8 | 1.516 s | 1.781 s | 3.297 s |
+| `hooked-spaced` | 8 | 2.016 s | 1.890 s | 3.906 s |
+| `hooked-zero` | **1** | 0.391 s | 0.140 s | **0.531 s** |
+
+**The per-acquisition cost multiplies.** Eight acquisitions cost **7.9× the wall
+clock** of one acquisition carrying the same eight frames. Per-acquisition mean is
+0.19–0.28 s, and the process's *first* acquisition costs 0.859 s against 0.156–0.313
+for the seven after it. That corroborates block 75a's shape on this machine —
+158.8 ms p50 for `mark_finished` → first frame accounted, 96.7% of a one-frame
+window — and answers the question 79c's brief could not: yes, it multiplies, and
+this is what `R105`'s family looks like one level up.
+
+**80 ms of the 4.219 s was exposure — 1.9%.** Against 15.1% for the shared route.
+A small multi-field grid spends 98% of its time not exposing, split roughly half
+in per-acquisition overhead and half in between-field work. The residual is the
+stage: seven settled moves on a *demo* stage, which is nearly free, so this
+understates a real rig rather than overstating it.
+
+**n = 1 per arm.** The `hookless-zero` / `hookless-spaced` gap (2.234 s vs 1.516 s)
+is mostly the first-acquisition cost landing in the first arm, and one run cannot
+separate that from variation. Quote the 7.9× as a gross effect, never the
+per-acquisition figure as a rate — `design/59b`'s 5/8-then-15/16 lesson applies to
+timing as much as to prompts.
+
+**What this does not license.** The obvious reading — collapse the grid into one
+acquisition — is the change 79c-1 refused, because `_run_protocol_at` settles XY
+per field and an engine-moved `position` axis has no arrival verification at all
+(`R126`). There is now a measured 7.9× on one side of that trade and an
+unverified stage arrival on the other. That is a design tension for a successor
+block to resolve, not a defect to fix by deleting a wait.
+
+**Two findings the score did not carry**, both from the artifacts: every phase
+span is an exact integer millisecond, so `time.monotonic()` on Windows floors this
+instrument at 1 ms and the 39 µs write design/79 opens with would read as `0.0`
+(`R128`); and every dataset landed at `<name>_1` on a clean directory, with
+microclaw correctly reporting the suffixed path (`R129`).
+
+**One runbook error, no product error**: the runbook predicted "5/5 PASS" and the
+gate reports 6/6 — limb 0 was not counted when the expectation was written. And
+PowerShell renders the acquisition event sink's stderr as an error record inside
+the redirected log (`At line:1 char:1 + uv run python ...`), which is the known
+native-stdout family and is not a failure; the runbook should have said so.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
 | 79a | `design79/make-the-time-visible` | `aa8e666` | codex | replay, 3/arm (underpowered, see below) | `fc8e2b7` 2026-09-08 |
 | 79b | `design79/performance-aware-planning` | `4baa9b1` | codex | pilot only, $2.85, arm tree; two-tree gate **not run** (relocation, not information) | `031259c` 2026-09-09 |
-| 79c | — | — | — | — | — |
+| 79c-1 | `design79/the-per-field-multiplier` | `f9af854` | codex, then claude (Codex usage limit mid-round-2) | demo 6/6 + measurement, 2026-09-10 | pending |
 
 Policy changes alone are not evidence of faster execution, and an unmeasured
 prompt paragraph is a hypothesis. Nothing here authorises a rig exposure.

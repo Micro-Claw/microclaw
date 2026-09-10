@@ -508,3 +508,133 @@ def test_spacing_meaning_follows_resolved_order(rig, monkeypatch, order, meaning
     timing = result['timing']
     assert timing['observed_per_field_spacing'] == {'A': [gap, gap], 'B': [gap, gap]}
     assert timing['observed_per_field_spacing_meaning'] == meaning
+
+
+@pytest.mark.parametrize('hook', [None, 'snr_observer'])
+@pytest.mark.parametrize('tile', [False, True])
+def test_composite_breakdown_exports_compile_and_execute(rig, tmp_path, monkeypatch, hook, tile):
+    from tests.test_session_script_export import export, completed_call
+    kw = {**rig.params, 'hook_strategy': hook,
+          'protocol_params': dict(n_frames=1, interval_s=.5)}
+    tool = 'run_multiposition_acquisition'
+    if tile:
+        tool = 'run_tile_acquisition'
+        kw.pop('positions')
+        kw.update(rows=1, cols=2, step_um=10, center_x_um=5, center_y_um=0)
+    result = getattr(tools, tool)(rig.ctrl, rig.guard, **kw)
+    assert 'error' not in result, result
+    assert 'duration_breakdown' in result, 'composite has no duration_breakdown'
+    assert result['duration_s'] == round(result['duration_s'], 6)
+    assert result['duration_breakdown']['phases']['acquisition']['count'] == 2
+    assert result['duration_breakdown']['accounted_s'] + result['duration_breakdown']['unaccounted_s'] == pytest.approx(result['duration_s'])
+    result['duration_breakdown']['measurement_sentinel'] = 'duration-must-not-be-emitted'
+    _, report, source = export(tmp_path, completed_call(tool, kw, result))
+    assert report['emitted_calls'] == 1
+    assert 'duration-must-not-be-emitted' not in source
+    ast.parse(source)
+    live = list(rig.frames)
+    rig.now = 0.; rig.xy = (0., 0.); rig.frames = []; rig.acquisitions = []
+    import pycromanager
+    monkeypatch.setattr(pycromanager, 'Acquisition', tools.Acquisition)
+    monkeypatch.setattr(pycromanager, 'Core', lambda: rig.ctrl.core)
+    exec(source, {'__file__': str(tmp_path / 'routine.py')})
+    assert rig.frames == live
+    assert len(rig.acquisitions) == 2
+
+
+# Every grid shape a real caller of run_multiposition_acquisition can produce,
+# with whether each field gets its own acquisition. None of them can authorize
+# property_envelope or named_stage_envelope — run_multiposition_acquisition
+# accepts neither, _protocol_shape_kwargs refuses both inside protocol_params,
+# and the 77b split loop passes neither to _configure_hook_capabilities. So a
+# reachable grid never restores hook-held hardware, never repaints and never
+# times a write: its restoration span is the no-op sweep finish_owned_cleanup
+# always measures, and acquisition and restoration are its only phases.
+REACHABLE_GRIDS = [(None, 0., True), (None, .5, True),
+                   ('snr_observer', .5, True), ('snr_observer', 0., False)]
+
+
+@pytest.mark.parametrize('hook,interval,per_field', REACHABLE_GRIDS)
+@pytest.mark.parametrize('n', [4, 8])
+def test_composite_breakdown_measures_every_reachable_field(
+        rig, monkeypatch, hook, interval, per_field, n):
+    """One composite breakdown per grid, and its residual is the stage motion."""
+    monkeypatch.setattr(tools.time, 'monotonic', lambda: rig.now)
+    kw = {'positions': [dict(name=f'P{i}', x_um=i * 10., y_um=0.) for i in range(n)],
+          'protocol_params': dict(n_frames=2, interval_s=interval)}
+    if hook:
+        kw['hook_strategy'] = hook
+    result = rig.run(**kw)
+    assert 'error' not in result, result
+    assert 'duration_breakdown' in result, 'composite has no duration_breakdown'
+    b = result['duration_breakdown']
+    assert len(rig.acquisitions) == (n if per_field else 1)
+    assert set(b['phases']) == {'acquisition', 'restoration'}
+    for phase in b['phases'].values():
+        assert phase['count'] == len(rig.acquisitions)
+    if per_field:
+        # N short windows with the settles between them, which is the per-field
+        # multiplier the composite exists to make visible.
+        assert b['phases']['acquisition']['max_s'] < rig.settle
+    else:
+        # One window over the whole grid, with the settles inside it.
+        assert b['phases']['acquisition']['max_s'] == pytest.approx(b['duration_s'])
+    assert 'dominant_phase' not in b
+    assert b['clock'] == 'time.monotonic'
+    assert b['duration_s'] == result['duration_s'] == round(rig.now, 6)
+    assert b['accounted_s'] + b['unaccounted_s'] == pytest.approx(result['duration_s'])
+    assert b['unaccounted_s'] == b['duration_s'] - b['accounted_s']
+    # The residual is the between-field work the composite owns: one settled
+    # move per field boundary when each field is its own acquisition, and none
+    # when the engine moves the stage inside a single acquisition window.
+    assert b['unaccounted_s'] == pytest.approx((n - 1) * rig.settle if per_field else 0.)
+    assert 'unaccounted_s includes between-field work (XY moves, settling, preflight, mkdir)' \
+        in b['phase_meaning']
+    assert 'per-field breakdowns are folded into this composite and omitted from child results' \
+        in b['phase_meaning']
+    assert all('duration_breakdown' not in child for child in result.get('results', ()))
+
+
+def test_composite_breakdown_payload_is_bounded_in_field_count(rig):
+    """Constant additional storage: fixed phase names, at most three records."""
+    import json
+    sizes = []
+    for n in (2, 500):
+        result = rig.run(positions=[dict(name=f'P{i}', x_um=i * 10., y_um=0.)
+                                    for i in range(n)],
+                         protocol_params=dict(n_frames=1, interval_s=0))
+        assert 'error' not in result, result
+        assert 'duration_breakdown' in result, 'composite has no duration_breakdown'
+        b = result['duration_breakdown']
+        assert set(b['phases']) == {'acquisition', 'restoration'}
+        assert b['phases']['acquisition']['count'] == n
+        assert b['slowest_records'] == []
+        assert 'dominant_phase' not in b
+        assert all('duration_breakdown' not in child for child in result['results'])
+        assert b['accounted_s'] + b['unaccounted_s'] == pytest.approx(result['duration_s'])
+        sizes.append(len(json.dumps(b)))
+    print(f'79c composite breakdown bytes: 2 fields={sizes[0]}, 500 fields={sizes[1]}')
+    assert max(sizes) < 1500
+    assert max(sizes) - min(sizes) < 100
+
+
+def test_composite_breakdown_survives_a_hook_failure_return(rig, monkeypatch):
+    """The split loop's early error return still carries the composite's timing."""
+    from microclaw import hooks as hooks_module
+    real = hooks_module.compute_stats
+    def failing_analysis(image, **kwargs):
+        if len(rig.frames) >= 3:
+            raise RuntimeError('injected analysis failure')
+        return real(image, **kwargs)
+    monkeypatch.setattr(hooks_module, 'compute_stats', failing_analysis)
+    result = rig.run(hook_strategy='snr_observer',
+                     positions=[dict(name=f'P{i}', x_um=i * 10., y_um=0.) for i in range(4)],
+                     protocol_params=dict(n_frames=2, interval_s=.5))
+    assert result['error'] == 'injected analysis failure'
+    assert len(rig.acquisitions) == 2
+    assert 'duration_breakdown' in result, 'composite has no duration_breakdown'
+    b = result['duration_breakdown']
+    # The field that failed is folded too: its acquisition window is real time.
+    assert b['phases']['acquisition']['count'] == 2
+    assert b['accounted_s'] + b['unaccounted_s'] == pytest.approx(result['duration_s'])
+    assert 'dominant_phase' not in b
