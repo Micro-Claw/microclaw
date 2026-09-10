@@ -23,6 +23,47 @@ STAGE_MOVE_POLL_S = 0.05
 STAGE_MOVE_REQUIRED_SAMPLES = 3
 STAGE_MOVE_STABILITY_WINDOW_S = 0.1
 
+# The one clock for microclaw's whole acquisition timing domain: every span in
+# a `duration_breakdown`, every hook timing record, and every stage-move
+# report. Named once, here, and read through `timing_clock`. The hazard this
+# guards is not resolution but MIXING, because `_run_duration_breakdown`
+# subtracts `accounted_s` (summed from spans) from `duration_s` (measured by
+# the calling tool), and two clocks turn that residual into an offset.
+#
+# NOT `monotonic`: on Windows that is `GetTickCount64()`, whose UNIT is the
+# millisecond but whose UPDATE PERIOD was measured on the demo machine at
+# ~15.6 ms (design/70 `R128`, twice, Micro-Manager open and closed). It reports
+# a 40 us busy-wait as 16000 us, so the 41-97 us property write design/78
+# measured in Micro-Manager's own CoreLog reports here as `0.0`. `perf_counter`
+# is `QueryPerformanceCounter()` there at 0.1 us, and `mach_absolute_time()` on
+# macOS where it is byte-identical to `monotonic`.
+#
+# This module is the seam's home because it is the bottom of the package import
+# graph -- `tools` and `hook_decisions` both import it at module scope while it
+# imports nothing from `microclaw` -- because it produces stage-move reports
+# itself, and because `tools._stage_move_contract_source` already inlines it
+# into every exported standalone script.
+_TIMING_CLOCK = "perf_counter"
+
+
+def timing_clock() -> float:
+    """Read the one clock. Every span in every timing record comes from here.
+
+    The attribute is resolved on `time` per call, so a test that substitutes
+    `time.perf_counter` reaches every module in the domain at once rather than
+    each module's own binding: one clock, one place to replace it.
+    """
+    return getattr(time, _TIMING_CLOCK)()
+
+
+def timing_clock_name() -> str:
+    """Name the clock from the attribute `timing_clock` actually reads.
+
+    Derived, never written twice: a record whose `clock` field says which clock
+    produced its numbers must not be able to disagree with the clock that did.
+    """
+    return f"time.{_TIMING_CLOCK}"
+
 
 class StageMoveError(RuntimeError):
     """A stage failed to demonstrate that it reached and settled at its target."""
@@ -148,12 +189,12 @@ def settle_stage_move(core, device: str, target_um: float,
     band, source, kind, unverifiable = _stage_move_band(
         target_um, start_um, band_policy, configured_band_um
     )
-    started = time.monotonic()
+    started = timing_clock()
     in_tolerance: list[tuple[float, float]] = []
     measured: float | None = None
     status = "unknown"
     while True:
-        now = time.monotonic()
+        now = timing_clock()
         try:
             status = "busy" if bool(core.device_busy(device)) else "idle"
         except Exception as exc:  # status is evidence, never the success gate
@@ -413,12 +454,12 @@ def settle_xy_move(core, device: str, target_x: float, target_y: float,
                          band_policy, configured)[0]
         for index, configured in ((0, configured_x), (1, configured_y))
     ]
-    started = time.monotonic()
+    started = timing_clock()
     in_tolerance: list[float] = []
     measured: list[float] | None = None
     status = "unknown"
     while True:
-        now = time.monotonic()
+        now = timing_clock()
         try:
             status = "busy" if bool(core.device_busy(device)) else "idle"
         except Exception as exc:  # status is evidence, never the success gate

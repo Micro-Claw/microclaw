@@ -11,7 +11,7 @@ from microclaw.hook_decisions import (
     AcquireAt, ContinueAcquisition, DiscardFrame, EmitArtifact, HookResult,
     MoveNamedStage, MoveStage, SetDeviceProperty,
     RequestAutofocus, SetExposure, SetIlluminationPower, StopAcquisition,
-    CompositeHook, UntrustedHookAdapter, parse_action,
+    CompositeHook, UntrustedHookAdapter, parse_action, timing_clock_name,
 )
 from microclaw.hooks import HookBase
 from microclaw.safety import SafetyViolation
@@ -1897,7 +1897,7 @@ def test_property_write_spans_attribute_delay_without_extra_bridge_calls(delayed
     adapter, ctrl, calls, event = _property_write_probe(delayed=delayed)
     adapter.pre_hardware_hook_fn(event)
     timing = adapter._log[-1]["timing"]
-    assert timing["clock"] == "time.monotonic"
+    assert timing["clock"] == timing_clock_name()
     previous = 0
     for phase in ("validation", "write", "wait", "read_back"):
         span = timing[phase]
@@ -1911,7 +1911,7 @@ def test_property_write_spans_attribute_delay_without_extra_bridge_calls(delayed
 
 
 @pytest.mark.parametrize("failure", ["validation", "write", "wait", "read_back"])
-def test_property_write_failure_retains_completed_monotonic_spans(failure):
+def test_property_write_failure_retains_completed_spans(failure):
     adapter, ctrl, calls, event = _property_write_probe(failure=failure)
     with pytest.raises(RuntimeError, match=failure + " failed"):
         adapter.pre_hardware_hook_fn(event)
