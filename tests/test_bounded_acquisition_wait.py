@@ -192,7 +192,7 @@ def test_survey_handler_does_not_close_waiter_owned_reservations(monkeypatch):
     monkeypatch.setattr(tools, "_authorize_acquisition", lambda *_: next(reservations))
     monkeypatch.setattr(tools, "_build_acquisition_events", lambda **_: [{"axes": {"position": 0}}])
     monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
-    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook: plan)
+    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook, **kwargs: plan)
     monkeypatch.setattr(
         tools, "_acquire_with_hooks",
         lambda *a, **k: (_ for _ in ()).throw(tools.AcquisitionUnterminated(
@@ -317,7 +317,7 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
     monkeypatch.setattr(tools, "_ACQUISITION_POLL_S", 0.001)
     monkeypatch.setattr("microclaw.authorization.authorize_path", lambda *_: None)
     monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
-    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook: plan)
+    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook, **kwargs: plan)
     hook = SimpleNamespace()
     monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: hook)
     monkeypatch.setattr(tools, "_resolve_hooks", lambda *a, **k: hook)
@@ -983,7 +983,7 @@ def test_callers_select_policy_after_event_and_hook_construction(monkeypatch, sh
     monkeypatch.setattr(tools, "_resolve_hook", lambda *a, **k: MagicMock())
     monkeypatch.setattr(tools, "_prepare_log_path", lambda *a, **k: None)
     monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
-    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda p, h: p)
+    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda p, h, **kwargs: p)
     selected = []
     class ReachedSupervisor(Exception): pass
     def acquire(*a, **k):

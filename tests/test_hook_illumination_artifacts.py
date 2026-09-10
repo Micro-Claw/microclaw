@@ -548,6 +548,7 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
                     {"Axes": dict(event.get("axes", {}))}, None,
                 )
                 self.retained.append(returned)
+                self.callbacks["image_saved_fn"](dict(event.get("axes", {})), None)
             return False
 
     monkeypatch.setattr(tools, "Acquisition", DrivingAcquisition)
@@ -581,7 +582,7 @@ def test_plan_only_run_dispatches_three_writes_restores_and_logs(
         ("TITIRF", 6000.0), ("TITIRF", 500.0),
     ]
     assert result["named_stage_restoration"]["restored"] is True
-    assert result["frames_exposed"] == 3
+    assert result["frames_acquired"] == 3
     assert len(DrivingAcquisition.instance.retained) == 3
     assert all(returned is not None for returned in DrivingAcquisition.instance.retained)
     log_path = Path(result["log_path"])
@@ -719,7 +720,7 @@ def test_colliding_timelapse_refuses_every_hardware_capability_before_acquisitio
     # Isolate sequencing from envelope validation and authorization. Keep the
     # real event builder and acquisition runner, including constructor dispatch.
     monkeypatch.setattr(tools, "_configure_hook_capabilities", lambda *a, **k: None)
-    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook: plan)
+    monkeypatch.setattr(tools, "_plan_with_hook_dose", lambda plan, hook, **kwargs: plan)
     monkeypatch.setattr(tools, "_authorize_acquisition", lambda *a: MagicMock())
     acquisition = MagicMock(side_effect=RuntimeError("Acquisition constructed"))
     monkeypatch.setattr(tools, "Acquisition", acquisition)

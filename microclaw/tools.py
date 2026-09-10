@@ -1,5 +1,6 @@
 from __future__ import annotations
 import ast
+from collections import Counter
 import fnmatch
 import inspect
 import hashlib
@@ -550,16 +551,17 @@ def _emit_autofocus(params: RecordedParams) -> str:
     # emits None -- the package rule, which is what such a run used.
     coarse = params.result.get("coarse") or {}
     configured = coarse.get("z_move_tolerance_um")
-    policy_line = (
-        "mm._guard = SimpleNamespace(stage_move_tolerance="
-        f"lambda device, core_focus=False: {configured!r})"
-    )
     if region == "drawn":
         region = params.result.get("region")
         if region is None:
             raise CannotEmit(
                 "the recorded drawn-region call has no resolved region"
             )
+    policy_line = (
+        _export_guard_source(params.get("_export_safety_limits") or {}, required_axes=("z",))
+        + "\nmm._guard = guard\n"
+        + f"guard.stage_move_tolerance = lambda device, core_focus=False: {configured!r}"
+    )
     z_range = params.get("z_range_um")
     z_step = params["z_step_um"]
     if z_min is None:
@@ -811,7 +813,8 @@ def _emit_multiposition(params: RecordedParams) -> str:
                 log = params.get("log_path") or params.result.get("log_path")
                 log_name = (f"{Path(log).stem}_{index}{Path(log).suffix}" if split else Path(log).name) if log else None
                 lines += [f"_log_path = _next_available_log_path(_HERE / {log_name!r})" if log_name else "_log_path = None",
-                          f"hook = {constructor}"]
+                          f"hook = _reach_hook_{index}" if "def planned_z_reach(" in hook_source else f"hook = {constructor}",
+                          "hook.log_path = _log_path"]
                 if observation:
                     lines.append(f"hook.threshold_source = {observation['min_snr_source']!r}")
             if hook and protocol == "timelapse":
@@ -824,6 +827,16 @@ def _emit_multiposition(params: RecordedParams) -> str:
             if guarded_plan:
                 preflight += [f"_zs = [e['z'] for e in _events_{index} if 'z' in e]",
                               "if _zs:", "    guard.check_z(min(_zs))", "    guard.check_z(max(_zs))"]
+            if hook and "def planned_z_reach(" in hook_source:
+                if index == 0:
+                    preflight += ["_reach_entry = lambda: core.get_position()"]
+                preflight += ["_log_path = None", f"_reach_hook_{index} = {constructor}"]
+                if protocol == "timelapse":
+                    preflight += [inspect.getsource(_sequenced_ms),
+                                  inspect.getsource(_refuse_sequenced_time_axis),
+                                  f"_refuse_sequenced_time_axis({shape['num_time_points']!r}, {shape['time_interval_s']!r}, hook=_reach_hook_{index})"]
+                preflight += [f"_reach = planned_hook_z_reach(_reach_hook_{index}, _events_{index}, _reach_entry, guard)",
+                              "_reach_entry = _reach['exit_z_interval_um']"]
             lines.append(f"events = _events_{index}")
             if hook:
                 # The live runner binds before selecting this same callback triple.
@@ -1227,6 +1240,8 @@ def _analysis_source(
             autofocus.sweep_plane_count, autofocus.coarse_then_fine_plane_count,
             autofocus.curve_contrast, autofocus.contrast_threshold,
             autofocus.sweep_autofocus, autofocus._restore,
+            autofocus._selected_target_reason,
+            autofocus._entry_z,
             autofocus._refusal,
             autofocus._flat_reason, autofocus._edge_reason,
             autofocus.coarse_then_fine_autofocus,
@@ -1385,6 +1400,7 @@ def _adaptive_runner_source() -> str:
         inspect.getsource(hooks.write_analysis_observation),
         inspect.getsource(hooks._frame_index),
         inspect.getsource(hooks.HookBase),
+        inspect.getsource(hooks.planned_hook_z_reach),
         inspect.getsource(SurveyProgress),
         f"_CANDIDATE_POLL_S = {_CANDIDATE_POLL_S!r}\n",
         inspect.getsource(_note_budget_exhausted),
@@ -1985,6 +2001,7 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
     # action and therefore intentionally emits no standalone script line.
     common.extend([
         f"events = {'_build_acquisition_events' if 'z_start' in shape else 'multi_d_acquisition_events'}(**{shape!r})",
+        "planned_hook_z_reach(hook, events, lambda: core.get_position(), guard)",
         *( [f"_NAMED_STAGE_ENVELOPE = {named_stage_envelope!r}",
             f"hook_action_plan = {hook_action_plan!r}",
             "_axes_plan = {}",
@@ -2017,9 +2034,17 @@ def _emit_adaptive(params: RecordedParams, kind: str, default_name: str = "adapt
         "'pre_hardware_hook_fn': getattr(hook, 'pre_hardware_hook_fn', None), "
         "'post_hardware_hook_fn': getattr(hook, 'post_hardware_hook_fn', None)"
         "}.items() if callback is not None}",
+        "_saved_frames = SurveyProgress(len(events))",
+        "_hook_exposures = SurveyProgress(0)",
+        "_reservation = SimpleNamespace(commit_frame=_hook_exposures.image_done)",
+        "if hasattr(hook, 'bind_reservation'): hook.bind_reservation(_reservation)",
+        "def _saved_callback(axes, dataset): _saved_frames.image_done()",
         *_emitted_acquisition_with_restoration([
-            f"with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, **_hook_callbacks) as acq:",
-            "    acq.acquire(events)",
+            "try:",
+            f"    with Acquisition(directory=str(_HERE), name={params.get('name', default_name)!r}, show_display=True, image_saved_fn=_saved_callback, **_hook_callbacks) as acq:",
+            "        acq.acquire(events)",
+            "finally:",
+            "    print('HOOK ACQUISITION COUNTS saved_frames=', _saved_frames.n_done, 'hook_exposures=', _hook_exposures.n_done, 'no dose budget')",
         ], restore_hardware=(named_stage_envelope is not None or
                              property_envelope is not None)),
         # Print what the acquisition reports, or say it is unknown. The obvious
@@ -2177,7 +2202,7 @@ def export_session_script(
         ))
     ]
     safety_limits = safety_limits_error = None
-    if any(name in {"run_zstack", "run_multiposition_acquisition", "run_tile_acquisition"}
+    if any(name in {"run_autofocus", "run_zstack", "run_multiposition_acquisition", "run_tile_acquisition"}
            for name, _ in included) or hook_runtime_calls:
         # Read strictly: a renamed field must not degrade to "no limits", which
         # would emit a script whose header claims recorded bounds while its seed
@@ -2666,8 +2691,10 @@ class _HookedAcquisitionFailure(RuntimeError):
     def __init__(self, error: Exception, dataset_path: str,
                  *, frames_exposed: int | None = None,
                  last_hardware_state: dict[str, Any] | None = None,
-                 cadence: dict[str, Any] | None = None) -> None:
-        super().__init__(str(error))
+                 cadence: dict[str, Any] | None = None,
+                 accounting: dict | None = None) -> None:
+        super().__init__("; ".join([str(error), *getattr(error, "__notes__", [])]))
+        self.accounting = accounting or {}
         self.dataset_path = dataset_path
         self.frames_exposed = frames_exposed
         self.last_hardware_state = last_hardware_state
@@ -2900,6 +2927,7 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
     """
     result = {
         "error": str(exc),
+        **exc.accounting,
         "dataset_path": exc.dataset_path,
         "artifact": {"kind": "dataset", "path": exc.dataset_path},
         "hint": (
@@ -2909,6 +2937,8 @@ def _hooked_failure_result(exc: _HookedAcquisitionFailure, log_path: str | None)
             "untouched."
         ),
     }
+    result["autofocus_outcomes"] = _autofocus_outcomes(exc.accounting.get("hook_outcomes", []))
+    result["fields_with_saved_frames"] = list(exc.accounting.get("saved_frames_by_position", {}))
     if log_path:
         result["log_path"] = log_path
     if exc.frames_exposed is not None:
@@ -4703,6 +4733,12 @@ def _acquire_with_hooks(
                     frame_state["largest_gap"], saved_at - previous
                 )
             frame_state["count"] += 1
+            if teardown_timing is not None:
+                teardown_timing["saved_frames"] = frame_state["count"]
+                saved_positions = teardown_timing.setdefault("saved_frames_by_position", {})
+                if "position" in axes:
+                    position = axes["position"]
+                    saved_positions[position] = saved_positions.get(position, 0) + 1
             frame_state["last_saved"] = saved_at
             frame_state["previous_saved"] = saved_at
             count = frame_state["count"]
@@ -4883,9 +4919,10 @@ def _acquire_with_hooks(
                     if failures:
                         prior = outcome.get("exc")
                         detail = "; ".join(failures)
-                        outcome["exc"] = RuntimeError(
-                            f"{prior}; {detail}" if prior is not None else detail
-                        )
+                        if prior is not None:
+                            prior.add_note(detail)
+                        else:
+                            outcome["exc"] = RuntimeError(detail)
                     flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
                     if isinstance(flag, dict) and outcome.get("exc") is not None:
                         late = outcome["exc"]
@@ -4987,7 +5024,7 @@ def _acquire_with_hooks(
     except Exception as exc:
         restoration_failures = [] if waiter_started else finish_owned_cleanup()
         if restoration_failures:
-            exc = RuntimeError(f"{exc}; {'; '.join(restoration_failures)}")
+            exc.add_note("; ".join(restoration_failures))
         if hook is not None and dataset_path is not None:
             stage_ctx = getattr(hook, "_named_stage_context", None)
             property_ctx = getattr(hook, "_property_context", None)
@@ -5018,6 +5055,12 @@ def _acquire_with_hooks(
                 last_state = None
             raise _HookedAcquisitionFailure(
                 exc, dataset_path,
+                accounting={
+                    "frames_acquired": frame_state["count"],
+                    "saved_frames_by_position": (teardown_timing or {}).get("saved_frames_by_position", {}),
+                    "hook_exposures_observed": getattr(hook, "observed_exposures", None),
+                    "hook_outcomes": hook.get_summary() if hasattr(hook, "get_summary") else [],
+                },
                 # A hooked run with no reservation is real, not hypothetical:
                 # the survey runner passes a hook with reservation=None
                 # whenever `adaptive` is false. So this is optional, not
@@ -5129,11 +5172,11 @@ def run_zstack(
         )
     except _HookArtifactBudgetError as exc:
         return {"error": str(exc)}
-    if not channel and exposure_ms is not None:
-        ctrl.core.set_exposure(exposure_ms)
     plan = plan_events(ctrl, events, exposure_ms)
     if hook is not None:
-        plan = _plan_with_hook_dose(plan, hook)
+        plan = _plan_with_hook_dose(plan, hook, events=events, ctrl=ctrl, guard=guard)
+    if not channel and exposure_ms is not None:
+        ctrl.core.set_exposure(exposure_ms)
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
@@ -5166,8 +5209,12 @@ def run_zstack(
     if hook is not None:
         result.update(_adaptive_result(
             dataset_path, log_path, status="Z-stack complete.", hook=hook,
-            frames_planned=len(events), frames_acquired=len(events),
-            frames_exposed=len(events),
+            frames_planned=len(events), frames_acquired=teardown.get("saved_frames", 0),
+            hook_exposures_observed=getattr(hook, "observed_exposures", None),
+            hook_extra_exposures_planned=(
+                getattr(hook, "planned_extra_exposures", lambda: 0)()
+                + len(events) * getattr(hook, "planned_extra_exposures_per_event", lambda: 0)()
+            ),
             **_reservation_report(reservation),
         ))
         restoration = getattr(hook, "_named_stage_restoration", None)
@@ -5474,14 +5521,14 @@ def run_timelapse(
         return result
     # Without a channel, events carry no exposure, so set it directly. This is
     # the preamble's only mutation and therefore stays below the guard.
-    if not channel and exposure_ms is not None:
-        ctrl.core.set_exposure(exposure_ms)
     plan = plan_events(
         ctrl, events, exposure_ms,
         hardware_sequenced_burst=(interval_s == 0 and n_frames > 1),
     )
     if hook is not None:
-        plan = _plan_with_hook_dose(plan, hook)
+        plan = _plan_with_hook_dose(plan, hook, events=events, ctrl=ctrl, guard=guard)
+    if not channel and exposure_ms is not None:
+        ctrl.core.set_exposure(exposure_ms)
     reservation = _reservation or _authorize_acquisition(ctrl, guard, plan)
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
@@ -5524,8 +5571,12 @@ def run_timelapse(
     if hook is not None:
         result.update(_adaptive_result(
             dataset_path, log_path, status="Timelapse complete.", hook=hook,
-            frames_planned=len(events), frames_acquired=len(events),
-            frames_exposed=len(events),
+            frames_planned=len(events), frames_acquired=teardown.get("saved_frames", 0),
+            hook_exposures_observed=getattr(hook, "observed_exposures", None),
+            hook_extra_exposures_planned=(
+                getattr(hook, "planned_extra_exposures", lambda: 0)()
+                + len(events) * getattr(hook, "planned_extra_exposures_per_event", lambda: 0)()
+            ),
             **_reservation_report(reservation),
         ))
         restoration = getattr(hook, "_named_stage_restoration", None)
@@ -6867,6 +6918,12 @@ def _sweep_payload(sweep, min_contrast: float | None = None,
             round(z, 3) for z in sweep.measured_z_positions
         ],
         "best_z_um": round(sweep.best_z_um, 3),
+        "selected_commanded_z_um": sweep.selected_commanded_z_um,
+        "selected_measured_z_um": sweep.selected_measured_z_um,
+        "sweep_window_um": sweep.sweep_window_um,
+        "final_commanded_z_um": sweep.final_commanded_z_um,
+        "final_readback_z_um": sweep.final_readback_z_um,
+        "refusal_reason": sweep.refusal_reason,
         "arrival_unverifiable_count": len(sweep.arrival_unverifiable_indices),
         "arrival_unverifiable_planes": list(sweep.arrival_unverifiable_indices),
     }
@@ -7127,6 +7184,7 @@ def run_autofocus(
         "reason": result.reason,
         "entry_z_um": round(result.entry_z_um, 3),
         "final_z_um": round(result.final_z_um, 3),
+        "final_commanded_z_um": result.final_commanded_z_um,
         "z_range_um": z_range_um,
         # BOTH passes — the caller can see which one chose the plane.
         "coarse": _sweep_payload(result.coarse, applied_min_contrast, active_probe),
@@ -8381,8 +8439,11 @@ def _resolve_hooks(
     return CompositeHook(hooks, log_path)
 
 
-def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any) -> AcquisitionPlan:
+def _plan_with_hook_dose(plan: AcquisitionPlan, hook: Any, *, events=None, ctrl=None, guard=None) -> AcquisitionPlan:
     """Add worst-case hook-fired exposures to an event-plan reservation."""
+    if events is not None:
+        from microclaw.hooks import planned_hook_z_reach
+        hook.planned_reach = planned_hook_z_reach(hook, events, lambda: ctrl.core.get_position(), guard)
     extra_absolute = getattr(hook, "planned_extra_exposures", lambda: 0)()
     extra_per_event = getattr(
         hook, "planned_extra_exposures_per_event", lambda: 0
@@ -8813,6 +8874,34 @@ def _run_duration_breakdown(hook, teardown: dict, duration_s: float) -> dict:
     }
 
 
+def _autofocus_outcomes(entries):
+    """Summarize explicit and historical autofocus records without inventing failures."""
+    attempts = {}
+    for index, row in enumerate(entries):
+        if not any(key in row for key in ("autofocus", "converged", "best_z_um")):
+            continue
+        identity = row.get("hook_identity", row.get("hook_strategy", "unknown"))
+        key = (identity, row.get("autofocus_attempt", index))
+        outcome = row.get("autofocus")
+        if outcome not in {"attempted", "converged", "non_converged", "skipped", "failed"}:
+            outcome = ("converged" if row.get("converged") is True else
+                       "non_converged" if row.get("converged") is False else "unknown")
+        if outcome == "failed" and attempts.get(key, {}).get("outcome") == "non_converged":
+            outcome = "non_converged"
+        attempts[key] = {"hook_identity": identity, "position": row.get("position"),
+                         "event_axes": row.get("event_axes"), "outcome": outcome,
+                         "reason": row.get("reason", row.get("warning"))}
+    outcomes = list(attempts.values())
+    counts = {name: sum(row["outcome"] == name for row in outcomes)
+              for name in ("attempted", "converged", "non_converged", "skipped", "failed", "unknown")}
+    result = {"event_count": len(outcomes),
+              "unique_position_count": len({row["position"] for row in outcomes if row["position"] is not None}),
+              "counts": counts, "outcomes": outcomes}
+    if outcomes and counts["skipped"] == len(outcomes):
+        result["status"] = "Requested autofocus was not performed. These logs do not establish image focus."
+    return result
+
+
 def _adaptive_result(
     dataset_path: str,
     log_path: str | None,
@@ -8826,6 +8915,10 @@ def _adaptive_result(
         "artifact": {"kind": "dataset", "path": dataset_path},
         **extra,
     }
+    if hook is not None and hasattr(hook, "get_summary"):
+        result["autofocus_outcomes"] = _autofocus_outcomes(hook.get_summary())
+    if hook is not None and hasattr(hook, "planned_reach"):
+        result["hook_z_reach"] = hook.planned_reach
     if hook is not None and hasattr(hook, "autofocus_settings_snapshot"):
         result["autofocus_settings_snapshot"] = hook.autofocus_settings_snapshot
     if log_path:
@@ -8954,6 +9047,13 @@ def _acquire_positions_with_hook(
             except _HookArtifactBudgetError as exc:
                 return {"error": str(exc), "results": results}
         prepared.append((group, movie_name, movie_dir, movie_log, hook, events))
+    from microclaw.hooks import planned_hook_z_reach
+    entry_z = lambda: ctrl.core.get_position()
+    for _group, _name, _dir, _log, planned_hook, planned_events in prepared:
+        if planned_hook is not None:
+            planned_hook.planned_reach = planned_hook_z_reach(
+                planned_hook, planned_events, entry_z, guard)
+            entry_z = planned_hook.planned_reach.get("exit_z_interval_um", entry_z)
     for group, movie_name, movie_dir, movie_log, hook, events in prepared:
         plan = plan_events(ctrl, events, exposure_ms)
         if hook is not None:
@@ -8992,6 +9092,11 @@ def _acquire_positions_with_hook(
             raise
         except _HookedAcquisitionFailure as exc:
             failed = _hooked_failure_result(exc, movie_log)
+            expected = Counter(event.get("axes", {}).get("position") for event in events)
+            saved = failed.get("saved_frames_by_position", {})
+            failed["completed_fields"] = [p["name"] for p in group
+                if expected[p["name"]] and saved.get(p["name"], 0) >= expected[p["name"]]]
+            failed["hook_extra_exposures_planned"] = plan.frames - len(events)
             return {**failed, **({"position": group[0]["name"]} if split else {}),
                     "results": results, "acquisition_order": acquisition_order,
                     "timing": timing}
@@ -8999,11 +9104,20 @@ def _acquire_positions_with_hook(
         # teardown, not the submitted event count. A mismatch with frames_planned
         # means frame delivery/accounting was incomplete; it is not evidence of
         # how many exposures the camera made.
+        expected = Counter(event.get("axes", {}).get("position") for event in events)
+        saved = teardown.get("saved_frames_by_position", {})
+        completed_fields = [p["name"] for p in group
+                            if expected[p["name"]] and saved.get(p["name"], 0) >= expected[p["name"]]]
         result = _adaptive_result(
             dataset_path, movie_log, hook=hook,
-            status=f"Acquisition complete across {len(group)} position(s).",
-            positions=len(group), positions_planned=len(group), positions_completed=len(group),
-            frames_planned=len(events), frames_acquired=reservation.completed_frames,
+            status=(f"Acquisition complete across {len(group)} position(s)."
+                    if len(completed_fields) == len(group) else
+                    f"Saved-frame delivery complete for {len(completed_fields)}/{len(group)} position(s)."),
+            positions=len(group), positions_planned=len(group), positions_completed=len(completed_fields),
+            completed_fields=completed_fields,
+            saved_frames_by_position=saved,
+            frames_planned=len(events), frames_acquired=teardown.get("saved_frames", 0),
+            hook_exposures_observed=getattr(hook, "observed_exposures", None),
             reservation_frames_planned=plan.frames,
             hook_extra_exposures_planned=plan.frames - len(events),
             started_at=started_at.isoformat(), completed_at=datetime.now(timezone.utc).isoformat(),
@@ -9445,7 +9559,8 @@ def _acquire_survey_with_detector(
                                   max_events=((adaptive_max_events or len(survey_events)) + autofocus_reexposures)
                                   if adaptive else None)
     survey_plan = _plan_with_hook_dose(
-        accounting_plan or plan_events(ctrl, survey_events, exposure_ms), hook
+        accounting_plan or plan_events(ctrl, survey_events, exposure_ms), hook,
+        events=survey_events, ctrl=ctrl, guard=guard
     )
     reservation = (
         _authorize_acquisition(
@@ -9765,6 +9880,12 @@ def run_adaptive_survey(
     acquire_reservation = result.pop("_acquire_reservation", None)
     search_effects = result.pop("_search_channel_effects", None)
     planned_acquire_effects = result.pop("_planned_acquire_effects", None)
+    if "error" in result:
+        # An aborted run keeps its failure report verbatim — dataset path,
+        # frames exposed, last known hardware state, and design/38 F7's "do not
+        # treat the run as untouched" hint. The rewrites below would dress it as
+        # a completed survey and replace exactly that warning.
+        return result
     if acquire_on_hit is not None:
         channel_effects["search"] = search_effects
         channel_effects["acquire"] = planned_acquire_effects
@@ -9835,12 +9956,6 @@ def run_adaptive_survey(
     # (20260716_140329). Say what actually ran, from the counter the hook
     # itself drove — and attach the planned coordinates so the hook log
     # joins on `position` without re-imaging (design/23 Episode A).
-    if "error" in result:
-        # An aborted run keeps its failure report verbatim — dataset path,
-        # frames exposed, last known hardware state, and design/38 F7's "do not
-        # treat the run as untouched" hint. The rewrites below would dress it as
-        # a completed survey and replace exactly that warning.
-        return result
     stopped = progress.stopped_early
     result.pop("positions", None)   # "positions: 9" is the ambiguity this tool retires
     # "acquired of N planned tile(s)" read as coverage, and a hook may revisit a
@@ -10190,6 +10305,7 @@ def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str)
         return {"error": f"Log file not found: {log_path}"}
     entries = json.loads(path.read_text(encoding="utf-8"))
     return {"log_path": log_path, "entry_count": len(entries), "entries": entries,
+            "autofocus_outcomes": _autofocus_outcomes(entries),
             "artifact": {"kind": "hook_log", "path": log_path}}
 
 
