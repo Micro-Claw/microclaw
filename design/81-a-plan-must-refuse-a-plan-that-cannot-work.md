@@ -1,6 +1,6 @@
 # A plan must refuse a plan that cannot work
 
-Status: **IN FLIGHT**, 2026-09-10. 81a-1 and 81a-2 merged; 81b and 81c open. Findings and decisions reviewed; D3(b)'s
+Status: **IN FLIGHT**, 2026-09-10. 81a-1 and 81a-2 merged; **81b in flight**; 81c open. Findings and decisions reviewed; D3(b)'s
 policy settled by the operator (see D3(b)); 81a split into 81a-1 and 81a-2 (see
 Blocks). Implementation started at 81a-1; no gate has run.
 
@@ -804,9 +804,14 @@ pycro-manager on the same tree reproduces F1's table row for row, including the
 `(0, 0, 0)` single event with no `z` key and the `(60, 60.5, 1)` overshoot to
 61.0.
 
+81b starts at `fb0a3ec`. Coordinator-run suite on the 81b worktree at that
+commit: **3219 passed, 99 skipped, 4 warnings** in 298 s
+(`.venv/bin/python -m pytest -q`, uv + Python 3.12.14). `R114`'s intermittent
+did not fire in that run.
+
 | block | branch | start | implementation | gate | merge |
 |---|---|---|---|---|---|
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
 | 81a-2 | `design81/81a2-runtime-refusal` (deleted) | `da67cbd` | `ab3af26` WIP, `73f87b9`, `8608dd4`, `5e1e4a5` | demo rounds 3-5; A unobservable (`R101`) | `b6ca3ec` |
-| 81b | — | not started; follows 81a-1 | | | |
+| 81b | `design81/81b-per-field-counts` | `fb0a3ec` | | | |
 | 81c | — | not started; follows 81a-2 and 81b | | | |
