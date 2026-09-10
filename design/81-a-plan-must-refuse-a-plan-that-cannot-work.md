@@ -726,9 +726,27 @@ D5's artifact support. `microclaw/dataset_mosaic.py`, `microclaw/tools.py`
 (manifest), `microclaw/completed_dataset.py`, `microclaw/image_analysis.py`
 and export inlining as required; tests 10–12. Follow design/73's saved identity
 and separate-annotation rules. LOCAL tests establish geometry and count
-semantics; one demo-machine overlapping grid checks real saved coordinates,
-per-field artifacts and readable object annotations. This does not by itself
-validate bead detection across samples.
+semantics. This does not by itself validate bead detection across samples.
+
+**The demo-machine acquisition this block asked for was not needed.** The
+entry called for "one demo-machine overlapping grid" to check real saved
+coordinates, per-field artifacts and readable annotations. Surveying the
+evidence archive first (2026-09-10) found all three already there, in
+acquisitions this project made months ago:
+
+| dataset | what it supplies |
+|---|---|
+| `20260909_ZM_beads/beads_af_run2_1` | the incident's own 3×3, 9 positions, a 90° rotated Andor affine |
+| `38-composite-hooks-m5/gate_h1/gate_h1_1` | **35.9 % genuine field overlap**, 5 positions, a real *sheared* Hamamatsu affine |
+| `nestor-…/mt_scan_150um/mt150_1` | **81 positions**, which binds the default 64-artifact budget |
+
+`design/81-block81b-gate.py` runs eight limbs over those three and needs no
+microscope. This is `project_rig_evidence_archive`'s standing point — most
+"rig gates" are computations over data already in the archive — and it is worth
+the survey every time, because operator time is the real budget. Two caveats:
+both geometries come from M5-family rigs, so this is **n=2 camera geometries,
+not "any rig"**, and no archived grid was acquired *for* this block, so nothing
+here tests a deliberately-chosen overlap fraction.
 
 **81c — the planning and reporting rules.** D4(b), D5, D6(b), tests 13–14. The
 mechanical half settles LOCAL. The behavioural half needs a **replay**, and F4
@@ -786,6 +804,31 @@ Numbered from `R107`, the current highest in `design/70`.
   provenance. Logging alone does not fix motion enforcement. New records can
   settle future cases; they cannot recover missing values from `r1_c0`. The
   historical artifact remains inconclusive unless independent evidence exists.
+- **`R116`** — a small component is entirely consumed by its own annotation. A
+  3×3 component's boundary is its whole ring, its halo covers the centre, and
+  the number glyph's box covers what is left, so none of the object's own
+  pixels survive in the evidence image. 81b's ink fix makes the *field* visible
+  and does not fix this; it is a drawing question — outline width and glyph
+  placement — and it bites exactly the detections a reader most needs to judge.
+  Found by the 81b implementer while building a fixture, 2026-09-10.
+  **MEDIUM / SMALL**, LOCAL.
+- **`R117`** — the mosaic path has the same unfiltered-count defect as the
+  frame path and now has *less* disclosure than it.
+  `input_kind="stage_coordinate_mosaic"` at the default still returns a bare
+  noise-dominated `n_components` with no size distribution and no review note,
+  because 81b's disclosure was scoped to `_analyze_source_frame`. The asymmetry
+  is visible in the product. **MEDIUM / SMALL**, LOCAL.
+- **`R118`** — `min_area_um2` is not checked against the pixel area, so a
+  caller can set a filter smaller than one pixel and change nothing. The review
+  note still fires and is still correct, but nothing says the filter was inert.
+  Not fixed in 81b because both available fixes — a refusal or a default — were
+  excluded. **LOW / SMALL**, LOCAL.
+- **`R119`** — `test_mosaic_evidence_honors_option_and_source_dtype` builds a
+  mosaic that is **entirely zero**, so it has been asserting the properties of
+  an evidence image with no data in it. The old `overlay.max() == 255`
+  assertion hid that completely; 81b's property assertion exposed it but did
+  not fix the fixture. Pre-existing. **LOW / SMALL**, LOCAL.
+
 - **`R112`** — no record exists of an operator having *seen* the evidence behind
   an unverified adapter's numbers. D5 makes the showing happen; recording it
   against `run_id` + `content_sha256` is separate and is not 81c's subject.
@@ -813,5 +856,5 @@ did not fire in that run.
 |---|---|---|---|---|---|
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
 | 81a-2 | `design81/81a2-runtime-refusal` (deleted) | `da67cbd` | `ab3af26` WIP, `73f87b9`, `8608dd4`, `5e1e4a5` | demo rounds 3-5; A unobservable (`R101`) | `b6ca3ec` |
-| 81b | `design81/81b-per-field-counts` | `fb0a3ec` | | | |
+| 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn), `5bcbe80`, `735cda1`, `7d24e9e`, `04b9a69`, `e091590`, `9bcc0f5`, `536fe07` | 8/8 off-rig over three archived acquisitions | |
 | 81c | — | not started; follows 81a-2 and 81b | | | |
