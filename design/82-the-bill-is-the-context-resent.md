@@ -457,7 +457,7 @@ an answer from the operator.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 82a | — | — | — | — | — |
+| 82a | `design82/82a-instrument` | `afa15eb` | codex runner | — | — |
 | 82b | — | — | — | — | — |
 | 82c | — | — | — | — | — |
 
