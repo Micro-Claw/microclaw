@@ -824,7 +824,9 @@ it does not replace tests of the newly changed runtime failure and motion paths.
 
 ## Register rows this opens
 
-Numbered from `R107`, the current highest in `design/70`.
+Numbered from `R107`, the current highest in `design/70` when this
+notebook opened. All of them are carried in `design/70`, which is the
+authoritative register; the summaries here are pointers.
 
 - **`R108`** — the session saved `strategies/bead_counting_offline` carrying
   *"set the zstack z_start_um/z_end_um to the ACTUAL focus plane, NOT 0"*: a
@@ -847,6 +849,11 @@ Numbered from `R107`, the current highest in `design/70`.
   provenance. Logging alone does not fix motion enforcement. New records can
   settle future cases; they cannot recover missing values from `r1_c0`. The
   historical artifact remains inconclusive unless independent evidence exists.
+- **`R121`** — `open_artifact` renders a sparse bright-object field **98.9 %
+  black**, unannotated, because `make_thumbnail`'s percentile stretch is set by
+  the brightest object. **HIGH**, and a prerequisite for `R43` and design/73:
+  neither can deliver a legible picture without it. Shared with
+  `snap_and_analyze` and `run_autofocus`.
 - **`R120`** — counting sub-diffraction objects needs photometry, and the
   built-in reports no intensity at all. A cluster of sub-diffraction beads
   images as one brighter diffraction-limited spot, so `n_components` counts
