@@ -743,6 +743,34 @@ and export inlining as required; tests 10–12. Follow design/73's saved identit
 and separate-annotation rules. LOCAL tests establish geometry and count
 semantics. This does not by itself validate bead detection across samples.
 
+**81b delivers D4(a) and NOT D5's artifact support** (operator decision,
+2026-09-10). The block shipped detection-evidence images, the operator looked
+at them — *"I can only see numbers and circles on a dark background... all
+three pictures have little to no meaning... This is truly horrible"* — and they
+were removed in full: the drawing, the glyph renderer, the `T<n>` labelling,
+the schema promises and the annotation-only tests.
+
+Three things that decided it, in order of weight:
+
+1. **The measurement said the same as the eye.** A rendered annotation was 94 %
+   at grey 2–3 of 255 with 1.6 % at 255. The only field the operator could see
+   was the one with **no detections**, because nothing had been drawn on it.
+2. **The problem is bigger than the annotation and sits in a shared display
+   path.** A *raw, unannotated* bead field renders **98.9 % at grey ≤ 32**
+   through `open_artifact(analyze=True)`, because `make_thumbnail`'s
+   2nd–99.8th percentile stretch is set by the brightest bead and puts a
+   202-count background at grey 4. No annotation design fixes that, and it is
+   shared with `snap_and_analyze` and `run_autofocus`.
+3. **It was never this block's work to begin with.** `R43` says "size it as a
+   block"; design/73 §3 owns the renderer and has a mandatory pre-implementation
+   probe that was never run. Both were folded in through revision prompts rather
+   than read as design. `R43` stays **OPEN**.
+
+The consequence is recorded rather than papered over: **D5's artifact support
+is unmet**, and 81c must not assume evidence images exist. Shipping a picture
+that looks like evidence and is not is this notebook's own incident in another
+costume.
+
 **The demo-machine acquisition this block asked for was not needed.** The
 entry called for "one demo-machine overlapping grid" to check real saved
 coordinates, per-field artifacts and readable annotations. Surveying the
@@ -884,5 +912,5 @@ did not fire in that run.
 |---|---|---|---|---|---|
 | 81a-1 | `design81/81a1-plan-time-refusal` (deleted) | `f915e5d` | `49b1011` WIP, `4589007`, `0f2a95e`, `bd5c83c` | none on rig; export limb owed by 81a-2 | `d2bc31c` |
 | 81a-2 | `design81/81a2-runtime-refusal` (deleted) | `da67cbd` | `ab3af26` WIP, `73f87b9`, `8608dd4`, `5e1e4a5` | demo rounds 3-5; A unobservable (`R101`) | `b6ca3ec` |
-| 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn), `5bcbe80`, `735cda1`, `7d24e9e`, `04b9a69`, `e091590`, `9bcc0f5`, `536fe07` | 8/8 off-rig over three archived acquisitions | |
+| 81b | `design81/81b-per-field-counts` | `fb0a3ec` | `aa28568` WIP (unreviewed, killed turn) … `536fe07`, then `06074bd` removing the annotations | 6/6 scoring limbs off-rig over three archived acquisitions; limb E's figure confirmed by the operator on `r0_c2` | |
 | 81c | — | not started; follows 81a-2 and 81b | | | |

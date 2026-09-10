@@ -1,23 +1,29 @@
-# Block 81b gate — per-field component counts and their detection evidence
+# Block 81b gate — per-field component counts
 
-**No microscope, no rig booking.** Every computing limb runs over real saved
-acquisitions already in the evidence archive. Your part is one command and then
-looking at two pictures.
+**No microscope, no rig booking.** Every scoring limb runs over real saved
+acquisitions already in the evidence archive. The coordinator has already run
+it; what is left for you is one question about one picture.
 
 ## Pin
 
-The gate scores this implementation:
-
 ```
-git merge-base --is-ancestor 536fe07 HEAD && echo PINNED
+git merge-base --is-ancestor 06074bd HEAD && echo PINNED
 ```
 
-If that does not print `PINNED`, you are on the wrong tree; stop.
+## What the block delivers, after the annotations were cut
 
-## Step 1 — run the program (about 3 minutes)
+`connected_components` measures **each original saved frame** rather than only
+a resampled mosaic: real recorded calibration including rotation and shear,
+real zero-valued camera pixels counted as observations, one observation per
+saved coordinate, tile placement identity in the mosaic manifest, and a
+disclosure of what an unfiltered count is made of.
 
-One command. It reports each of eight limbs independently, owns its own log,
-and exits nonzero if any limb fails **or** reports NOT EXERCISED.
+It **does not** write detection-evidence images. It did; they were unreadable
+and were removed in full. That work returns to register row `R43` and
+design/73 §3, together with the larger problem underneath it — see "What is
+not settled".
+
+## The program
 
 ```
 cd <your microclaw checkout>
@@ -26,72 +32,61 @@ cd <your microclaw checkout>
     --out /tmp/81b-gate
 ```
 
-It prints a `BLOCK 81b GATE PASSED` / `FAILED` / `INCOMPLETE` line and writes
-`/tmp/81b-gate/gate-log.txt` and `gate-results.json`. Send those two files back
-whatever the verdict.
+Seven limbs, each reported independently; it owns its log
+(`/tmp/81b-gate/gate-log.txt`) and exits nonzero on any FAIL or on any
+NOT EXERCISED other than limb E, which is a deliverable rather than a verdict.
 
-The eight limbs, and what each is actually asking:
+| | asks | last measured |
+|---|---|---|
+| A | is each original saved field counted separately, keyed by its saved position? | 9 fields |
+| B | is signal in two overlapping fields counted in **both**, with no deduplication? | 5 fields, 164 shared centroids |
+| C | does it scale, and does a frames run write no artifacts? | 81 fields, 0 artifacts |
+| D | does one object seen from two fields get **one** stage coordinate? | 15 pairs, median 750 nm |
+| E | writes the figure a person has to judge | 9 figures, always NOT EXERCISED |
+| F | do tile placements carry identity read from the dataset, not the live list? | 9 placements, 9 named |
+| G | does an unfiltered count disclose it is mostly single pixels? | worst 170/180 (94 %) |
 
-| | asks |
-|---|---|
-| A | does the built-in count each original saved field separately, keyed by its saved position? |
-| B | is signal in two overlapping fields counted in **both**, with no deduplication? |
-| C | do 81 positions against a 64-artifact budget still get 81 counts, with the shortfall disclosed? |
-| D | does the mosaic path write a detection overlay (register row `R43`)? |
-| E | does every count link to the artifact showing the pixels it came from? |
-| F | do tile placements carry identity read from the dataset, not the live position list? |
-| G | does the evidence image show the **sample**, not only the tool's own marks? |
-| H | does an unfiltered count disclose that it is mostly single pixels? |
+Limb D is the one that would catch a sign error, a transpose, or a wrong
+frame-centre convention, and it runs on a **sheared** calibration where those
+cannot hide.
 
-Expected numbers on the current archive, so a silent change is visible: A gives
-9 fields; B gives 5 fields and 164 shared centroids; C gives 81 counted and 64
-annotated; F gives 9 placements all carrying a `PositionName`; G's worst
-filtered field renders ~93 % interior; H's worst field is 170/180 (94 %) single
-pixels.
+## The one thing that needs your eye
 
-## Step 2 — look at two pictures (this is the part only you can do)
+The program writes `/tmp/81b-gate/figure-<position>.png` — nine fields, the
+real data on a background-weighted stretch, with the reported bounding boxes
+in red drawn *outside* each object so they cover nothing.
 
-The gate wrote annotated fields under `/tmp/81b-gate`. Open these two sets in
-whatever you normally use:
+**Question: do the red boxes sit on real objects, and is anything obviously
+missed?**
 
-- `/tmp/81b-gate/g-readable/artifacts/components-*.tiff` — nine fields measured
-  with `min_area_um2 = 0.2`.
-- `/tmp/81b-gate/a-beads/artifacts/components-*.tiff` — the same nine fields at
-  the **default** filter.
+You have already answered this once, on the same rendering, for `r0_c2`:
+*"the red boxes are around real beads (or clusters of beads, which will show
+up as a single, brighter spot than individual beads since they are
+sub-diffraction limit in size). The image looks like a real image."* Re-running
+it is only worth your time if you want to check a field other than that one.
+`figure-r1_c0.png` is the useful second look: it is the field the 2026-09-09
+session's hook reported **52 beads** on, and it should show noise and no boxes
+at all.
 
-Three questions, and the answers matter more than the gate's verdict:
-
-1. In the `g-readable` set, **can you see the beads themselves**, not just the
-   outlines and numbers drawn on them? The whole point of the block is that you
-   can check a number against the pixels. If the field is black, the block has
-   failed even though limb G passed, and I want to know.
-2. Do the outlines land on things you would call beads, and does the field
-   labelled `T4` look empty to you? `T4` is `r1_c0` — the tile the 2026-09-09
-   session's hand-written hook reported **52 beads** on. It should show noise
-   and no detections at all.
-3. In the `a-beads` set, is it obvious at a glance that the numbers there are
-   nonsense? They are: those fields report 150–224 components where your eye
-   counted 3–5. It should be visibly a wall of ink, and the result carries a
-   note saying so.
-
-Question 1 is the one to answer carefully. The block already shipped one
-version where every evidence image rendered as glyphs on a black field, and
-four tests passed while it did, because they asserted the ink's value instead
-of looking at the picture.
-
-## What a FAIL or NOT EXERCISED means
-
-A limb that could not run its mechanism prints **NOT EXERCISED**, and that is
-never a pass — it means the gate learned nothing about that limb. Send the log
-either way; do not re-run to try to get a green line.
+A count that agrees with itself is not a count that found the objects. This
+figure is the only check for that, and no program can make it.
 
 ## What this gate does not establish
 
-- **Not a validated bead counter.** A component is contiguous thresholded
-  signal. Touching beads merge, noise fragments, and the threshold matters. The
-  block calls the number a *component count* everywhere for that reason.
-- **n=2 camera geometries**, both M5-family — a 90° rotated Andor and a sheared
-  Hamamatsu. It says nothing about a rig whose optical path differs from both.
-- **No grid was acquired for this block**, so no deliberately-chosen overlap
-  fraction was tested; limb B uses whatever overlap that 2026-08 acquisition
-  happened to have.
+- **It is not a bead counter, and cannot become one by improving segmentation.**
+  Your own point, and it is now the first clause of the product's
+  `count_semantics`: sub-diffraction objects that cluster image as one
+  *brighter* spot, not a larger one, so a count of spots is not a count of
+  objects at any threshold. The quantity that separates them is integrated
+  intensity, which this measurement does not report — register row `R120`.
+- **Limb D's residual is not attributed.** 750 nm median, ~7 px, and X-neighbour
+  pairs do far better than Y-neighbour pairs. Stage positioning against the
+  recorded intended coordinate, a calibration error and drift all look like
+  this from one dataset on one rig. It is inherited from the same affine and
+  intended coordinates the mosaic path already uses, not introduced here.
+- **n = 2 camera geometries**, both M5-family: a 90°-rotated Andor and a
+  sheared Hamamatsu.
+- **No dataset here was acquired by the current tree.** All three predate
+  81a-1 and 81a-2. Worth ticking opportunistically on the next multiposition
+  run anywhere; not worth a booking, because the failure mode is a loud typed
+  refusal rather than a wrong number.
