@@ -245,6 +245,33 @@ def main():
             "unchanged axis proves nothing if nothing ever moved")
         return "B names the refusal; C requires B to have swept"
 
+    @check("the COMMITTED tree carries 81a-2, not just the working tree")
+    def committed_tree_is_the_one():
+        """Round 2's defect: the gate stood down on a checkout git said was right.
+
+        The working tree was correct and the COMMIT was not -- 14acd2f swept a
+        staged revert of hooks.py into a design-only commit. Every other check
+        here reads the working tree, so every one of them passed while the
+        branch an operator clones was broken. This reads what is committed.
+        """
+        import subprocess
+        for path, needle in (("microclaw/hooks.py", "planned_hook_z_reach"),
+                             ("microclaw/hooks.py", "def planned_z_reach"),
+                             ("microclaw/tools.py", "planned_hook_z_reach")):
+            blob = subprocess.check_output(
+                ["git", "show", f"HEAD:{path}"], cwd=ROOT, text=True)
+            assert needle in blob, (
+                f"HEAD's {path} does not contain {needle!r}. The working tree "
+                "may be fine and the branch still broken -- run "
+                "`git show --stat HEAD` and look for files the commit message "
+                "does not mention.")
+        dirty = subprocess.check_output(
+            ["git", "status", "--porcelain", "--", "microclaw"],
+            cwd=ROOT, text=True).strip()
+        if dirty:
+            return f"HEAD carries 81a-2 (uncommitted microclaw changes: {dirty[:80]})"
+        return "HEAD carries 81a-2 in both hooks.py and tools.py"
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} SELFTEST FAILURE(S) -- do not ship this gate:")
