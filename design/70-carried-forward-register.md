@@ -133,6 +133,12 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R113` | [Skipping one field and continuing is not expressible in a fixed-plan acquisition](#r113) | MEDIUM | LARGE |  |
 | `R114` | [An export-equivalence test of the non-response refusal fails intermittently](#r114) | MEDIUM | SMALL |  |
 | `R115` | [The hook log rewrites the whole file per entry, and 81a-2 made each entry ten times bigger](#r115) | MEDIUM | SMALL |  |
+| `R116` | [A small component is entirely consumed by its own annotation](#r116) | MEDIUM | SMALL |  |
+| `R117` | [The mosaic path's unfiltered count carries no size disclosure](#r117) | MEDIUM | SMALL |  |
+| `R118` | [min_area_um2 is not checked against the pixel area, so an inert filter is silent](#r118) | LOW | SMALL |  |
+| `R119` | [A mosaic evidence test asserts the properties of an all-zero image](#r119) | LOW | SMALL |  |
+| `R120` | [Counting sub-diffraction objects needs photometry, and no intensity is reported](#r120) | MEDIUM | SMALL |  |
+| `R121` | [open_artifact renders a sparse bright-object field 98.9% black](#r121) | HIGH | MEDIUM |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2662,3 +2668,70 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE.
 - **Effort** — SMALL
 - **Provenance** — `design/81` block 81a-2 review, 2026-09-09; measured by the coordinator, trimmed by the runner, accepted at 200 events.
+
+
+### R116 — A small component is entirely consumed by its own annotation
+
+**Drawing a boundary, a halo and a number over a small detection leaves none of the object's own pixels visible.**
+
+- **Status** — OPEN - 81b's annotation code was removed entirely, so nothing exhibits this today; it is recorded for whoever implements `R43` or design/73 §3, because it is a property of the drawing convention, not of that code.
+- **Importance** — MEDIUM - It bites exactly the detections a reader most needs to judge.
+- **Where** — LOCAL
+- **Block** — NONE - belongs with `R43` / design/73 §3.
+- **Effort** — SMALL
+- **Provenance** — found by the 81b implementer while building a fixture, 2026-09-10: a 3x3 component's boundary is its whole ring, its halo covers the centre, and the glyph box covers the rest.
+
+### R117 — The mosaic path's unfiltered count carries no size disclosure
+
+**`input_kind="stage_coordinate_mosaic"` returns a bare noise-dominated `n_components` while the frames path now discloses what its count is made of.**
+
+- **Status** — OPEN - 81b scoped `component_size_distribution` and `review_notes` to `_analyze_source_frame`; the asymmetry is visible in the product.
+- **Importance** — MEDIUM - The mosaic path has the same defect the frames path was fixed for.
+- **Where** — LOCAL
+- **Block** — NONE
+- **Effort** — SMALL
+- **Provenance** — `design/81` block 81b, 2026-09-10, flagged by the implementer as out of scope.
+
+### R118 — min_area_um2 is not checked against the pixel area, so an inert filter is silent
+
+**A caller can set an area filter smaller than one pixel; nothing changes and nothing says so.**
+
+- **Status** — OPEN
+- **Importance** — LOW - The review note still fires and is still correct; the caller is merely not told their filter did nothing.
+- **Where** — LOCAL
+- **Block** — NONE
+- **Effort** — SMALL
+- **Provenance** — `design/81` block 81b, 2026-09-10. Not fixed there because both available fixes, a refusal and a default, were excluded by the block's constraints.
+
+### R119 — A mosaic evidence test asserts the properties of an all-zero image
+
+**`test_mosaic_manifest_records_a_placement_per_saved_tile`'s mosaic contains no data, so its assertions cannot fail for the reason they name.**
+
+- **Status** — OPEN - Pre-existing; 81b's property assertions exposed it and did not fix it.
+- **Importance** — LOW
+- **Where** — LOCAL
+- **Block** — NONE
+- **Effort** — SMALL
+- **Provenance** — `design/81` block 81b, 2026-09-10.
+
+### R120 — Counting sub-diffraction objects needs photometry, and no intensity is reported
+
+**`connected_components` returns area, centroid and bounding box and no integrated intensity, so a caller cannot estimate multiplicity even after the fact.**
+
+- **Status** — OPEN
+- **Importance** — MEDIUM - It bounds what any counting feature can honestly promise. Objects below the diffraction limit image as one *brighter* spot when they cluster, not a larger one, so `n_components` counts spots and no segmentation improvement changes that.
+- **Where** — LOCAL - synthetic frames with known integrated intensity settle the reporting half.
+- **Block** — NONE - the reporting half is small and changes no existing number. Whether Microclaw should then perform quantal brightness analysis is a separate and much larger question.
+- **Effort** — SMALL (reporting half only)
+- **Provenance** — operator, 2026-09-10, scoring block 81b's own verification figure. Now the first clause of the product's `count_semantics`; `design/81` F5 carries the reasoning.
+
+### R121 — open_artifact renders a sparse bright-object field 98.9% black
+
+**`make_thumbnail`'s 2nd-99.8th percentile stretch is set by the brightest object, so a bead field's background lands at grey 4 of 255 and nothing is visible.**
+
+- **Status** — OPEN - measured on a real Andor bead field, 2026-09-10: data spans 153-16085, rendered percentiles [5th, 50th, 95th] = [0, 4, 11], **98.9% of pixels at grey <= 32**. The frame is unannotated; this is the display path alone.
+- **Importance** — HIGH - It defeats every workflow that asks an agent or an operator to look at pixels before believing a number, which is `design/81` D5's whole subject. It is also why 81b shipped no evidence images.
+- **Where** — LOCAL - archived datasets reproduce it in one command.
+- **Block** — NONE - and it is a prerequisite for `R43` and design/73, neither of which can deliver a legible picture without it.
+- **Effort** — MEDIUM - `make_thumbnail` is shared by `open_artifact`, `snap_and_analyze` and `run_autofocus`, so changing the stretch changes what three tools show. An additive path (an explicit stretch mode, or a background-weighted default for sparse fields) is likelier right than changing the percentiles for everyone.
+- **Provenance** — `design/81` block 81b, 2026-09-10, found only after three attempts to fix the annotation; the unannotated control took one command and should have been the first measurement.
