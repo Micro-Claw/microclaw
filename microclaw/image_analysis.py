@@ -367,8 +367,8 @@ def connected_components(
     min_area_um2: float = 0.0,
     max_area_um2: float | None = None,
     min_snr: float = UNCALIBRATED_MIN_SNR_FALLBACK,
-    *, basis_um=None, covered_mask=None, return_labels: bool = False,
-) -> dict | tuple[dict, np.ndarray]:
+    *, basis_um=None, covered_mask=None,
+) -> dict:
     """Measure contiguous signal above the robust SNR floor in stage space.
 
     This deliberately stops at geometry: a component is contiguous thresholded
@@ -378,16 +378,12 @@ def connected_components(
     basis_um maps (column, row) to stage displacement; pixel_size_um preserves
     the scalar square-basis contract. A missing origin with a general basis
     reports pixel geometry and calibrated area without inventing stage XY.
-    return_labels additionally returns the exact segmentation used for counting;
-    callers select retained component ids from objects after area filtering.
-    The ordinary dictionary result (including the scalar mosaic path) is unchanged.
+    The result (including the scalar mosaic path) is otherwise unchanged.
     """
     from scipy import ndimage
 
     if basis_um is not None and pixel_size_um is not None:
         raise ValueError("Supply either basis_um or pixel_size_um, not both")
-    if not isinstance(return_labels, bool):
-        raise ValueError("return_labels must be a boolean")
     if basis_um is None:
         if pixel_size_um is None or not np.isfinite(pixel_size_um) or pixel_size_um <= 0:
             raise ValueError("pixel_size_um must be finite and positive")
@@ -417,8 +413,7 @@ def connected_components(
         raise ValueError("covered_mask must be a boolean array matching the image")
     values = img[covered]
     if values.size == 0:
-        result = {"threshold": 0.0, "n_components": 0, "objects": []}
-        return (result, np.zeros(img.shape, dtype=np.int32)) if return_labels else result
+        return {"threshold": 0.0, "n_components": 0, "objects": []}
     background = float(np.median(values))
     # This cannot reuse snr()/snr_validity(): they intentionally measure the
     # full frame, while mosaic canvas zeros are not observations and must be
@@ -484,7 +479,7 @@ def connected_components(
             },
             "bounding_box_px": [col_min, row_min, col_max, row_max],
         })
-    result = {
+    return {
         "threshold": threshold,
         "background_level": background,
         "noise_mad_sigma": noise,
@@ -492,15 +487,11 @@ def connected_components(
         "objects": objects,
     }
 
-    return (result, labels) if return_labels else result
-
 
 def component_size_review(
     objects,
     pixel_area_um2: float,
     min_area_um2: float,
-    *,
-    annotation_ink_fraction: float | None = None,
 ) -> tuple[dict, list[str]]:
     """Disclose the size spread of a component count, and flag a count of noise.
 
@@ -541,11 +532,6 @@ def component_size_review(
             "to count and measure again. This is a review note about what the number "
             "counts, not an invalid count: small components can be real."
         )
-        if annotation_ink_fraction is not None:
-            note += (
-                f" The annotation for this field marks {annotation_ink_fraction:.0%} of its "
-                "pixels, so individual objects may not be separable in that evidence image."
-            )
         notes.append(note)
     return distribution, notes
 

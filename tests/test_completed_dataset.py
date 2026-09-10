@@ -778,8 +778,7 @@ def component_frames(tmp_path, monkeypatch):
     return analyze, images, metadata, dataset, calibration
 
 
-def test_original_frames_count_geometry_where_and_evidence(component_frames, monkeypatch):
-    import tifffile
+def test_original_frames_count_geometry_and_where(component_frames, monkeypatch):
     analyze, images, metadata, dataset, _ = component_frames
     originals = [image.copy() for image in images]
     measured_pixels = []
@@ -810,18 +809,7 @@ def test_original_frames_count_geometry_where_and_evidence(component_frames, mon
         assert 'count_semantics' not in measured
         assert 'not object identification' in result['count_semantics']
         assert 'frame_statistics' in measured
-        assert measured['annotation']['field_label'] == f'T{index + 1}'
-        assert measured['annotation']['order'] == 'none; T numbers saved position identity, not capture order'
-        assert measured['annotation']['written'] is True
-        artifact = next(a for a in result['artifacts'] if a['sha256'] == observation['artifact_sha256'])
-        rendered = tifffile.imread(artifact['path'])
-        assert rendered.dtype == images[index].dtype
-        # Ink sits just above this frame's own bright end, not at the dtype's
-        # ceiling, so the data survives open_artifact's percentile stretch.
-        assert rendered.max() == measured['annotation']['foreground']
-        assert int(images[index].max()) < rendered.max() < 65535
-        assert np.any(rendered == 1)
-        assert not np.array_equal(rendered, images[index])
+        # Measurement is read-only: the saved pixels are handed back untouched.
         np.testing.assert_array_equal(images[index], originals[index])
     for pixels, before in measured_pixels:
         assert not pixels.flags.writeable
@@ -833,7 +821,10 @@ def test_original_frames_count_geometry_where_and_evidence(component_frames, mon
         assert 'bounding_box_stage_um' not in component
     assert observations[0]['result']['objects'][1]['n_pixels'] == 8
     assert observations[0]['result']['objects'][1]['area_um2'] == .129032
-    assert result['annotations'] == {'requested': 3, 'written': 3, 'reason': None}
+    # A frames run writes no artifacts at all, and nothing claims one.
+    assert result['artifacts'] == []
+    assert all('artifact_sha256' not in o or o['artifact_sha256'] is None
+               for o in observations)
 
 
 def test_source_missing_calibration_uses_resolver_refusal(component_frames):
@@ -864,80 +855,24 @@ def test_source_missing_intended_xy_refuses_stage_geometry(component_frames):
     assert 'bounding_box_stage_hull_um' not in measured['objects'][0]
 
 
-@pytest.mark.parametrize('value', [0, 1, 'false', None])
-def test_write_annotations_requires_boolean(component_frames, value):
-    analyze, *_ = component_frames
-    with pytest.raises(ValueError, match='write_annotations must be a boolean'):
-        analyze(parameters={'write_annotations': value})
-
-
-@pytest.mark.parametrize('limits, reason', [
-    ({'max_count': 1, 'max_artifact_bytes': 10000, 'max_total_bytes': 30000}, 'count limit'),
-    ({'max_count': 10, 'max_artifact_bytes': 10, 'max_total_bytes': 30000}, 'per-artifact size limit'),
-    ({'max_count': 10, 'max_artifact_bytes': 10000, 'max_total_bytes': 10}, 'total-bytes limit'),
-])
-def test_annotations_degrade_at_artifact_limits(component_frames, limits, reason, monkeypatch):
-    analyze, *_ = component_frames
-    calls = []
-    writer = completed_dataset.write_hook_artifact
-    def capture(*args, **kwargs):
-        calls.append(1)
-        return writer(*args, **kwargs)
-    monkeypatch.setattr(completed_dataset, 'write_hook_artifact', capture)
-    result = analyze(artifact_limits=limits)
-    assert result['status'] == 'completed', result['failure']
-    assert [o['result']['n_components'] for o in result['observations']] == [2, 1, 0]
-    assert result['annotations']['requested'] == 3
-    assert result['annotations']['written'] == len(result['artifacts'])
-    assert reason in result['annotations']['reason']
-    assert len(calls) == len(result['artifacts']) + 1
-    assert result['observations'][-1]['result']['annotation']['failure_kind'] == 'limit_exhausted_upstream'
-    for observation in result['observations'][len(result['artifacts']):]:
-        assert 'artifact_sha256' not in observation or observation['artifact_sha256'] is None
-        assert reason in observation['result']['annotation']['reason']
-
-
-def test_annotation_opt_out_gray8_determinism_and_partial_identity(component_frames):
-    import tifffile
+def test_named_position_axis_counts_per_field_and_omits_absent_names(component_frames):
     analyze, images, metadata, dataset, _ = component_frames
     for i in range(3):
-        images[i] = images[i].astype(np.uint8)
+        images[i] = images[i].astype(np.uint8)  # GRAY8 frames count the same way
         metadata[i]['PixelType'] = 'GRAY8'
     dataset.axes['position'] = ['left', 'right', 'empty']
     del metadata[0]['PositionName']
-    first = analyze('first')
-    second = analyze('second')
-    assert first['status'] == second['status'] == 'completed'
-    assert [a['sha256'] for a in first['artifacts']] == [a['sha256'] for a in second['artifacts']]
-    for artifact in first['artifacts']:
-        rendered = tifffile.imread(artifact['path'])
-        assert rendered.dtype == np.uint8  # dtype, not mosaic uint16
-        assert rendered.max() <= 255  # and the ink stays inside the source's range
-    by_position = {o['position']: o for o in first['observations']}
+    result = analyze()
+    assert result['status'] == 'completed', result['failure']
+    by_position = {o['position']: o for o in result['observations']}
+    # `where` carries the saved name when there is one, and invents none when
+    # there is not: a position with no PositionName simply has no key.
     assert 'PositionName' not in by_position['left']
-    assert by_position['left']['result']['annotation']['position_labels_partial'] is False
-    assert by_position['left']['result']['annotation']['field_label'] == 'T2'
-    empty = by_position['empty']
-    assert empty['result']['n_components'] == 0
-    assert empty['result']['annotation']['field_label'] == 'T1'
-    evidence = next(a for a in first['artifacts'] if a['sha256'] == empty['artifact_sha256'])
-    # An all-zero field has no bright end to scale to: ink falls back to the
-    # lowest value that is neither uncovered (0) nor the outline (1).
-    assert empty['result']['annotation']['foreground'] == 2
-    assert set(np.unique(tifffile.imread(evidence['path']))) == {0, 1, 2}
-    assert not images[2].any()  # The empty source stayed empty; the T1 label is evidence ink.
-    assert first['position_labels'] == [
-        {'label': 'T1', 'position': 'empty', 'PositionName': 'field-2'},
-        {'label': 'T2', 'position': 'left'},
-        {'label': 'T3', 'position': 'right', 'PositionName': 'field-1'},
-    ]
-    for observation in first['observations']:
-        assert observation['result']['annotation']['position_labels'] == first['position_labels']
-    off = analyze('off', parameters={'write_annotations': False})
-    assert off['status'] == 'completed' and off['artifacts'] == []
-    assert {o['position']: o['result']['n_components'] for o in off['observations']} == {
+    assert by_position['right']['PositionName'] == 'field-1'
+    assert {p: o['result']['n_components'] for p, o in by_position.items()} == {
         'left': 2, 'right': 1, 'empty': 0,
     }
+    assert not images[2].any()  # the empty field stayed empty, and its zero is a result
 
 
 @pytest.mark.parametrize('key,value', [('Core-Camera', 'other'), ('Camera-Camera', 'other'), ('Binning', '2x2')])
@@ -979,7 +914,7 @@ def test_old_mosaic_manifest_still_drives_original_adapter(tmp_path):
     verification = _verify_against_manifest(manifest, path)
     assert verification['manifest_payload_sha256_matches'] is True
     assert verification['pixel_sha256_matches'] is True
-    adapter = completed_dataset.ConnectedComponents(min_snr=3, min_snr_source='explicit', write_annotations=False)
+    adapter = completed_dataset.ConnectedComponents(min_snr=3, min_snr_source='explicit')
     result = adapter.analyze_saved_frame(image, {'input_kind': 'stage_coordinate_mosaic', 'mosaic_manifest': old}, None)
     assert result['result'] == {
         'threshold': 1., 'background_level': 1., 'noise_mad_sigma': 0., 'n_components': 1,
@@ -1022,7 +957,7 @@ def test_real_sheared_calibration_counts_both_overlapping_fields(component_frame
 
 def test_omitted_axes_enumerate_frames_without_pooling(component_frames):
     analyze, _, _, dataset, _ = component_frames
-    result = analyze(axis_selection={}, parameters={'write_annotations': False})
+    result = analyze(axis_selection={})
     assert result['status'] == 'completed', result['failure']
     observations = result['observations']
     assert len(observations) == 3 * 2 * 2 * 2
@@ -1033,102 +968,27 @@ def test_omitted_axes_enumerate_frames_without_pooling(component_frames):
     assert all(o['result']['n_components'] == {0: 2, 1: 1, 2: 0}[o['position']] for o in observations)
 
 
-def test_outlines_use_exact_counted_support_once(component_frames, monkeypatch):
-    from scipy import ndimage
-    analyze, images, *_ = component_frames
-    images[0][4, 20] = 1  # a changed drawing threshold would silently omit this support
-    measured_supports, outlined_supports, calls = [], [], []
-    measure = completed_dataset.connected_components
-    label = ndimage.label
-    erosion = ndimage.binary_erosion
-    def measure_spy(*args, **kwargs):
-        result, labels = measure(*args, **kwargs)
-        measured_supports.extend(labels == c['label'] for c in result['objects'])
-        return result, labels
-    def label_spy(*args, **kwargs):
-        calls.append(1)
-        return label(*args, **kwargs)
-    def erosion_spy(support, *args, **kwargs):
-        outlined_supports.append(support.copy())
-        return erosion(support, *args, **kwargs)
-    monkeypatch.setattr(completed_dataset, 'connected_components', measure_spy)
-    monkeypatch.setattr(ndimage, 'label', label_spy)
-    monkeypatch.setattr(ndimage, 'binary_erosion', erosion_spy)
-    result = analyze()
-    assert result['status'] == 'completed', result['failure']
-    assert len(outlined_supports) == len(measured_supports) == 4
-    for outlined, counted in zip(outlined_supports, measured_supports):
-        np.testing.assert_array_equal(outlined, counted)
-    assert len(calls) == 3  # exactly one segmentation per measured frame
-
-
-@pytest.mark.parametrize('fault, status', [
-    (OSError('one frame unavailable'), 'completed'),
-    (ValueError('programming defect'), 'failed'),
-    (completed_dataset.AnalysisCancelled('cancel during annotation'), 'cancelled'),
-])
-def test_annotation_failure_scope(component_frames, monkeypatch, fault, status):
-    analyze, *_ = component_frames
-    writer = completed_dataset.write_hook_artifact
-    calls = []
-    def flaky_writer(*args, **kwargs):
-        calls.append(1)
-        if len(calls) == 1:
-            raise fault
-        return writer(*args, **kwargs)
-    monkeypatch.setattr(completed_dataset, 'write_hook_artifact', flaky_writer)
-    result = analyze()
-    assert result['status'] == status, result['failure']
-    if status == 'completed':
-        assert len(calls) == 3
-        assert result['annotations']['written'] == 2
-        assert result['observations'][0]['result']['annotation']['failure_kind'] == 'io_error'
-        assert result['observations'][1]['result']['annotation']['written'] is True
-        assert [Path(a['path']).name for a in result['artifacts']] == ['components-0002.tiff', 'components-0003.tiff']
-    else:
-        assert len(calls) == 1
-        assert result['failure']['message'] == str(fault)
-
-
-def test_no_position_axis_keeps_visible_partial_evidence(component_frames):
-    import tifffile
-    analyze, images, _, dataset, _ = component_frames
+def test_no_position_axis_still_counts_every_selected_frame(component_frames):
+    analyze, _, _, dataset, _ = component_frames
     del dataset.axes['position']
     result = analyze()
     assert result['status'] == 'completed', result['failure']
-    annotation = result['observations'][0]['result']['annotation']
-    assert annotation['position_labels_partial'] is True
-    assert annotation['position_label_reason'] == 'selection has no position axis'
-    assert annotation['field_label'] is None and annotation['position_labels'] == []
-    assert tifffile.imread(result['artifacts'][0]['path']).max() == annotation['foreground']
-    assert int(images[0].max()) < annotation['foreground'] < 65535
-    assert result['observations'][0]['result']['n_components'] == 2
+    assert [o['result']['n_components'] for o in result['observations']] == [2]
+    assert 'position' not in result['observations'][0]
+    assert result['artifacts'] == []
 
 
-@pytest.mark.parametrize('enabled', [True, False])
-def test_mosaic_evidence_honors_option_and_source_dtype(component_frames, enabled):
+def test_mosaic_manifest_records_a_placement_per_saved_tile(component_frames):
     import tifffile
-    analyze, images, metadata, _, _ = component_frames
-    for i in range(3):
-        images[i] = images[i].astype(np.uint8)
-        metadata[i]['PixelType'] = 'GRAY8'
+    analyze, _, metadata, _, _ = component_frames
     del metadata[2]['PositionName']
-    result = analyze(input_kind='stage_coordinate_mosaic', parameters={'write_annotations': enabled})
+    result = analyze(input_kind='stage_coordinate_mosaic')
     assert result['status'] == 'completed', result['failure']
-    overlays = [a for a in result['artifacts'] if Path(a['path']).parent.name == 'artifacts']
-    assert len(overlays) == int(enabled)
-    assert result['annotations']['written'] == int(enabled)
-    assert result['observations'][0]['parameters']['write_annotations'] is enabled
+    # The mosaic and its manifest are the only artifacts a mosaic run writes.
+    assert [Path(a['path']).name for a in result['artifacts']] == [
+        'stage_coordinate_mosaic.tiff', 'stage_coordinate_mosaic.tiff.json']
     source = tifffile.imread(result['mosaic']['artifact']['path'])
-    if enabled:
-        overlay = tifffile.imread(overlays[0]['path'])
-        # The source dtype is now the ink's ceiling, not the ink's value.
-        assert overlay.max() == result['observations'][0]['result']['annotation']['foreground'] <= 255
-        assert np.any(overlay == 1)
-        assert not np.array_equal(source, overlay)
-        assert result['observations'][0]['artifact_sha256'] == overlays[0]['sha256']
     assert hashlib.sha256(source.tobytes()).hexdigest() == result['mosaic']['pixel_sha256']
-    assert not list(Path(result['mosaic']['artifact']['path']).parent.glob('*.labeled.tiff'))
     placements = result['mosaic']['tile_placements']
     assert len(placements) == 3
     for index, placement in enumerate(placements):
@@ -1179,37 +1039,6 @@ def test_mosaic_placement_identity_length_mismatch_refuses(component_frames, mon
     assert result['failure']['message'] == 'Mosaic tile placements and saved metadata must have equal lengths'
 
 
-def test_filtered_components_are_numbered_consecutively(component_frames, monkeypatch):
-    from microclaw import dataset_mosaic
-    analyze, *_ = component_frames
-    renderer = dataset_mosaic.draw_text_labels
-    drawn = []
-    def capture(canvas, labels, **kwargs):
-        drawn.append([text for _, _, text in labels])
-        return renderer(canvas, labels, **kwargs)
-    monkeypatch.setattr(dataset_mosaic, 'draw_text_labels', capture)
-    result = analyze(parameters={'min_area_um2': .1})
-    assert result['status'] == 'completed', result['failure']
-    measured = result['observations'][0]['result']
-    assert measured['n_components'] == 1
-    assert measured['objects'][0]['label'] == 2  # label 1 was filtered out
-    assert drawn[0] == ['1', 'T1']  # display number is the retained component number
-
-
-def test_default_annotation_limit_preserves_200_field_counts(component_frames):
-    analyze, images, metadata, dataset, _ = component_frames
-    images[:] = [images[0]] * 200
-    metadata[:] = [dict(metadata[0], PositionName=f'field-{index}') for index in range(200)]
-    dataset.axes['position'] = list(range(200))
-    result = analyze()
-    assert result['status'] == 'completed', result['failure']
-    assert len(result['observations']) == 200
-    assert all(o['result']['n_components'] == 2 for o in result['observations'])
-    assert result['annotations'] == {'requested': 200, 'written': 64, 'reason': 'artifact count limit exhausted'}
-    assert result['observations'][64]['result']['annotation']['failure_kind'] == 'limit_exhausted'
-    assert result['observations'][65]['result']['annotation']['failure_kind'] == 'limit_exhausted_upstream'
-
-
 def test_singleton_dominance_is_disclosed_per_field_and_stays_observed(component_frames):
     analyze, images, *_ = component_frames
     # field 0: three real 2x2 objects, no minimum-size detections.
@@ -1243,9 +1072,6 @@ def test_singleton_dominance_is_disclosed_per_field_and_stays_observed(component
     note, = measured[1]['review_notes']
     assert note.startswith('5 of 6 counted components (83%) are one pixel')
     assert 'min_area_um2 is the smallest component area counted; it is 0 µm² here' in note
-    # It quotes the reader's own evidence image, which is mostly ink at this count.
-    ink = measured[1]['annotation']['annotation_ink_fraction']
-    assert 0 < ink <= 1 and f'marks {ink:.0%} of its pixels' in note
 
     # An empty field reports the zero and says nothing that reads as a failure.
     assert measured[2]['component_size_distribution'] == {
@@ -1270,93 +1096,7 @@ def test_mosaic_path_gains_no_size_disclosure(component_frames):
     result = analyze(input_kind='stage_coordinate_mosaic')
     assert result['status'] == 'completed', result['failure']
     measured = result['observations'][0]['result']
+    # A subset because a mosaic with no covered pixels reports the short form.
     assert set(measured) <= {'threshold', 'background_level', 'noise_mad_sigma',
-                             'n_components', 'objects', 'annotation'}
+                             'n_components', 'objects'}
     assert 'component_size_distribution' not in measured and 'review_notes' not in measured
-
-
-def _rendered_thumbnail(plane):
-    """Exactly what open_artifact(analyze=True) shows an operator."""
-    import base64, io
-    from PIL import Image
-    from microclaw.image_analysis import image_content
-    content = image_content({}, plane, mask=plane != 0)
-    data = base64.standard_b64decode(content[1]['source']['data'])
-    return np.array(Image.open(io.BytesIO(data)))
-
-
-def _bead_frame(seed=3):
-    """A 16-bit frame with a real camera's range, not a dtype's.
-
-    The archived bead field this is modelled on spans 154-402 in a uint16
-    container: three orders of magnitude below 65535, which is the whole
-    finding.
-    """
-    rng = np.random.default_rng(seed)
-    image = np.clip(rng.normal(200, 15, (32, 32)), 154, None).astype(np.uint16)
-    # Wide enough that the outline does not consume the whole object: a bead
-    # whose every pixel is ink cannot show an operator what was counted.
-    image[4:16, 4:16] = 402
-    image[20:28, 18:26] = 380
-    return image
-
-
-def test_annotated_evidence_keeps_the_sample_visible_under_the_stretch(component_frames):
-    import tifffile
-    analyze, images, *_ = component_frames
-    images[0] = _bead_frame()
-    result = analyze(parameters={'min_area_um2': .05})
-    assert result['status'] == 'completed', result['failure']
-    observation = result['observations'][0]
-    artifact = next(a for a in result['artifacts'] if a['sha256'] == observation['artifact_sha256'])
-    annotated = tifffile.imread(artifact['path'])
-    assert not np.array_equal(annotated, images[0])  # it really is annotated
-
-    thumbnail = _rendered_thumbnail(annotated)
-    values, counts = np.unique(thumbnail, return_counts=True)
-    interior = float(counts[(values > 0) & (values < 255)].sum()) / thumbnail.size
-    # The defect this replaces rendered 22,088 pixels at 0 and 412 at 255 and
-    # nothing between: outlines and numbers on a black field, so an operator
-    # could see where the tool claimed a detection and never what was there.
-    assert len(values) > 20
-    assert interior > .5
-    # The sample is not merely present, it is distinguishable. Measured over
-    # the pixels the annotation never touched, so this is the data speaking:
-    # they spread across the ramp, and brighter data renders brighter.
-    untouched = annotated == images[0]
-    assert untouched.sum() > .7 * untouched.size
-    data, shown = images[0][untouched], thumbnail[untouched]
-    assert int(shown.max()) - int(shown.min()) > 100
-    assert int(shown[data.argmax()]) > int(shown[data.argmin()]) + 100
-
-    # And the untouched frame renders the same way, so the annotation is not
-    # what makes the picture readable.
-    plain = _rendered_thumbnail(images[0])
-    assert len(np.unique(plain)) > 20
-
-
-@pytest.mark.parametrize('fill, expected_foreground', [(0, 2), (201, 211)])
-def test_degenerate_fields_still_get_ink_that_is_neither_uncovered_nor_outline(
-    component_frames, fill, expected_foreground,
-):
-    import tifffile
-    analyze, images, *_ = component_frames
-    images[0] = np.full((32, 32), fill, np.uint16)
-    result = analyze()
-    assert result['status'] == 'completed', result['failure']
-    observation = result['observations'][0]
-    assert observation['result']['n_components'] == 0  # nothing to count, and that is a result
-    annotation = observation['result']['annotation']
-    assert annotation['foreground'] > 1  # never uncovered (0), never the outline (1)
-    assert annotation['foreground'] > fill  # never dimmer than the data it sits on
-    assert annotation['foreground'] == expected_foreground
-    annotated = tifffile.imread(artifact_path(result, observation))
-    assert annotated.max() == expected_foreground
-    thumbnail = _rendered_thumbnail(annotated)
-    # The count handle is legible against the field rather than lost in it.
-    assert thumbnail.max() == 255 and thumbnail.min() == 0
-
-
-def artifact_path(result, observation):
-    return next(a['path'] for a in result['artifacts']
-                if a['sha256'] == observation['artifact_sha256'])

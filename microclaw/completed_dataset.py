@@ -50,16 +50,8 @@ class ConnectedComponents:
     """Component counts over original saved frames or a stage-coordinate mosaic."""
 
     def __init__(self, min_snr: float, min_snr_source: str,
-                 min_area_um2: float = 0.0, max_area_um2: float | None = None,
-                 write_annotations: bool = True):
-        if not isinstance(write_annotations, bool):
-            raise ValueError("write_annotations must be a boolean")
-        self.write_annotations = write_annotations
+                 min_area_um2: float = 0.0, max_area_um2: float | None = None):
         self.affine = None  # resolved and injected only by the trusted runner
-        self.annotations = {"requested": 0, "written": 0, "reason": None}
-        self._annotation_limit_reason = None
-        self.position_labels = []  # saved identity mapping injected by the runner
-        self.field_label = None
         self.count_semantics = (
             "Component count: contiguous thresholded signal, not object identification. "
             "Touching objects can merge; noise, fragmentation and threshold choice affect counts. "
@@ -70,7 +62,6 @@ class ConnectedComponents:
 
         self.parameters = {
             "min_area_um2": min_area_um2, "max_area_um2": max_area_um2,
-            "write_annotations": write_annotations,
             "min_snr": min_snr, "min_snr_source": min_snr_source,
         }
 
@@ -81,17 +72,12 @@ class ConnectedComponents:
         basis = mosaic["output_basis_um"]
         if basis[0][1] != 0 or basis[1][0] != 0 or basis[0][0] != basis[1][1]:
             raise ValueError("connected_components requires a square axis-aligned mosaic basis")
-        measured, labels = connected_components(
+        return {"result": connected_components(
             image, pixel_size_um=float(basis[0][0]), origin_um=mosaic["origin_um"],
             min_area_um2=self.parameters["min_area_um2"],
             max_area_um2=self.parameters["max_area_um2"],
-            min_snr=self.parameters["min_snr"], return_labels=True,
-        )
-        envelope = {"result": measured, "status": "observed", "parameters": self.parameters}
-        if self.write_annotations:
-            self._annotate(image, measured, labels, context, envelope, mosaic=True,
-                           source_dtype=mosaic.get("source_dtype", image.dtype))
-        return envelope
+            min_snr=self.parameters["min_snr"],
+        ), "status": "observed", "parameters": self.parameters}
 
     def _analyze_source_frame(self, image, metadata, context):
         affine = self.affine
@@ -108,12 +94,12 @@ class ConnectedComponents:
             dx, dy = affine.px_to_um(-(width - 1) / 2, -(height - 1) / 2)
             origin = [float(metadata["XPosition_um_Intended"]) + dx,
                       float(metadata["YPosition_um_Intended"]) + dy]
-        measured, labels = connected_components(
+        measured = connected_components(
             image, basis_um=[[affine.a, affine.b], [affine.c, affine.d]],
             origin_um=origin, covered_mask=np.ones((height, width), dtype=bool),
             min_area_um2=self.parameters["min_area_um2"],
             max_area_um2=self.parameters["max_area_um2"],
-            min_snr=self.parameters["min_snr"], return_labels=True,
+            min_snr=self.parameters["min_snr"],
         )
         measured.update({
             "min_area_um2": self.parameters["min_area_um2"],
@@ -122,114 +108,15 @@ class ConnectedComponents:
             "count_semantics_ref": "count_semantics",
             "frame_statistics": dict(compute_stats(image, min_snr=self.parameters["min_snr"])._asdict()),
         })
-        envelope = {"result": measured, "status": "observed", "parameters": self.parameters}
-        if self.write_annotations:
-            self._annotate(image, measured, labels, context, envelope)
-        # After the annotation, so the note can quote the reader's own evidence
-        # image. The geometry is unchanged and the status stays `observed`: this
+        # The geometry is unchanged and the status stays `observed`: this
         # discloses what the count is made of, it does not judge it.
         distribution, notes = component_size_review(
             measured["objects"], abs(affine.a * affine.d - affine.b * affine.c),
             self.parameters["min_area_um2"],
-            annotation_ink_fraction=measured.get("annotation", {}).get("annotation_ink_fraction"),
         )
         measured["component_size_distribution"] = distribution
         measured["review_notes"] = notes
-        return envelope
-
-    def _annotate(self, image, measured, labels, context, envelope, *, mosaic=False,
-                  source_dtype=None):
-        from scipy import ndimage
-        from microclaw.dataset_mosaic import draw_text_labels
-
-        context.raise_if_cancelled()
-        self.annotations["requested"] += 1
-        annotation = {
-            "field_label": None if mosaic else self.field_label,
-            "position_labels": self.position_labels,
-            "position_labels_partial": not self.position_labels,
-            "position_label_reason": (None if self.position_labels else "selection has no position axis"),
-            "order": "none; T numbers saved position identity, not capture order",
-            "outline": 1,
-            "written": False,
-        }
-        measured["annotation"] = annotation
-        if self._annotation_limit_reason is not None:
-            annotation.update({"reason": self._annotation_limit_reason,
-                               "failure_kind": "limit_exhausted_upstream"})
-            return
-        # Ink has to land inside the display window the data itself produces.
-        # open_artifact stretches between the 2nd and 99.8th percentile of the
-        # nonzero pixels, so ink at the dtype's ceiling sets the white point
-        # far above anything real: a 16-bit frame spanning 154-402 rendered as
-        # 22,088 pixels at 0 and 412 at 255, every real pixel crushed to black.
-        # The evidence image then shows only where the tool says it found
-        # something, never what is there, which is the one thing D5 needs it
-        # for. So scale the ink to the frame's own bright end, with 5% headroom
-        # so it is never dimmer than the data it sits on, never 0 (which means
-        # uncovered), never the outline value of 1 (which would fill a glyph
-        # solid), and never above what the source dtype can hold.
-        ceiling = int(np.iinfo(image.dtype if source_dtype is None else source_dtype).max)
-        data_max = int(np.max(image)) if image.size else 0
-        foreground = min(ceiling, max(2, data_max + max(1, data_max // 20)))
-        height, width = image.shape[:2]
-        scale = min(8, max(1, min(height, width) // 70))
-        annotation.update({"foreground": foreground, "glyph_scale": scale})
-        canvas = image.copy()
-        text_labels = []
-        for number, component in enumerate(measured["objects"], 1):
-            # This is the segmentation returned by the measurement, never a
-            # second threshold/label pass that could diverge from its count.
-            support = labels == component["label"]
-            boundary = support & ~ndimage.binary_erosion(support)
-            halo = ndimage.binary_dilation(boundary) & ~boundary
-            canvas[halo] = 1
-            canvas[boundary] = foreground
-            rows, cols = np.nonzero(support)
-            text_labels.append((float(rows.mean()), float(cols.mean()), str(number)))
-        if not mosaic and self.field_label is not None:
-            text_labels.append((4.5 * scale, (6 * len(self.field_label) + 1) * scale / 2,
-                                self.field_label))
-        # No position axis and an empty field still has visible evidence: 0 is
-        # a count handle, not an invented position identity.
-        if not text_labels:
-            text_labels.append(((height - 1) / 2, (width - 1) / 2, "0"))
-        clamped = []
-        for row, col, text in text_labels:
-            half_h = (9 * scale - 1) / 2
-            half_w = ((6 * len(text) + 1) * scale - 1) / 2
-            clamped.append((max(half_h, min(row, height - 1 - half_h)),
-                            max(half_w, min(col, width - 1 - half_w)), text))
-        draw_text_labels(canvas, clamped, foreground=foreground, outline=1, scale=scale)
-        # One comparison against the frame the measurement read, so a count made
-        # of noise discloses that its evidence image is mostly ink.
-        annotation["annotation_ink_fraction"] = round(
-            float(np.count_nonzero(canvas != image)) / canvas.size, 4)
-        filename = f"components-{self.annotations['requested']:04d}.tiff"
-        try:
-            artifact = context.artifacts.emit(filename, canvas)
-        except AnalysisCancelled:
-            raise
-        except ValueError as error:
-            # The existing bounded writer uses ValueError for these three
-            # limit cases. Other ValueErrors are programming/input defects.
-            reason = str(error)
-            if not (reason == "artifact count limit exhausted"
-                    or reason == "artifact exceeds per-run total-bytes limit"
-                    or (reason.startswith("artifact size ")
-                        and " exceeds per-artifact size limit " in reason)):
-                raise
-            self._annotation_limit_reason = reason
-            self.annotations["reason"] = reason
-            annotation.update({"reason": reason, "failure_kind": "limit_exhausted"})
-        except OSError as error:
-            reason = f"{type(error).__name__}: {error}"
-            self.annotations["reason"] = reason
-            annotation.update({"reason": reason, "failure_kind": "io_error"})
-        else:
-            envelope["artifact_sha256"] = artifact["sha256"]
-            annotation["written"] = True
-            self.annotations["written"] += 1
+        return {"result": measured, "status": "observed", "parameters": self.parameters}
 
 
 class FrameStatistics:
@@ -585,23 +472,6 @@ def run_analysis_on_saved_dataset(
     mosaic_result = None
     try:
         context.raise_if_cancelled()
-        if builtin is ConnectedComponents:
-            metadata_items = [(item, dataset.read_metadata(**item)) for item in coordinates]
-            if "position" in dataset.axes:
-                # Lexical order numbers saved identity, never capture order.
-                # design/73's warning about lexical P10/P2 applies to P, not T.
-                for number, position in enumerate(sorted({item["position"] for item in coordinates}), 1):
-                    label = {"label": f"T{number}", "position": position}
-                    names = []
-                    for item, metadata in metadata_items:
-                        if item["position"] == position and "PositionName" in metadata:
-                            if metadata["PositionName"] not in names:
-                                names.append(metadata["PositionName"])
-                    if len(names) == 1:
-                        label["PositionName"] = names[0]
-                    elif names:
-                        label["PositionNames"] = names
-                    instance.position_labels.append(label)
         if input_kind == "stage_coordinate_mosaic":
             from microclaw.tools import build_stage_coordinate_mosaic
             mosaic_path = str(Path(output_dir) / "stage_coordinate_mosaic.tiff")
@@ -625,7 +495,7 @@ def run_analysis_on_saved_dataset(
                 from microclaw.tools import _resolve_saved_dataset_calibration
                 affine, calibration_identity, camera_identity, roi_difference = (
                     _resolve_saved_dataset_calibration(
-                        dataset, metadata_items,
+                        dataset, [(item, dataset.read_metadata(**item)) for item in coordinates],
                         axis_selection, calibration_ref, guard=guard,
                     )
                 )
@@ -639,9 +509,6 @@ def run_analysis_on_saved_dataset(
                 where = dict(item)
                 if "PositionName" in metadata:
                     where["PositionName"] = metadata["PositionName"]
-                if builtin is ConnectedComponents:
-                    instance.field_label = next((entry["label"] for entry in instance.position_labels
-                                                 if entry["position"] == item.get("position")), None)
                 raw_results.append((where, instance.analyze_saved_frame(
                     view.read_image(**item), metadata, context
                 )))
@@ -683,8 +550,6 @@ def run_analysis_on_saved_dataset(
         "cancelled": status == "cancelled", "failure": failure,
     }
     if builtin is ConnectedComponents:
-        manifest_base["annotations"] = instance.annotations
-        manifest_base["position_labels"] = instance.position_labels
         manifest_base["count_semantics"] = instance.count_semantics
     if calibration_identity is not None:
         manifest_base["calibration_identity"] = calibration_identity

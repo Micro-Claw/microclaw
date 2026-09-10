@@ -395,26 +395,3 @@ def test_placements_preserve_pre81b_mosaic_golden(transform, expected, monkeypat
     stats = expected['overlap_statistics']
     assert manifest['coverage_fraction'] == stats['covered_pixels'] / (stats['covered_pixels'] + stats['uncovered_pixels'])
     assert manifest['overwrite_convention'] == 'later source tiles overwrite earlier source tiles for display'
-
-
-@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
-def test_bitmap_renderer_contract(dtype):
-    from microclaw.dataset_mosaic import draw_text_labels, _LABEL_FONT
-    assert set(_LABEL_FONT) == set('PT0123456789')
-    canvas = np.full((12, 15), 17, dtype=dtype)
-    maximum = np.iinfo(dtype).max
-    rendered = draw_text_labels(canvas.copy(), [(5, 7, 'T1')], foreground=maximum, outline=1, scale=1)
-    assert set(np.unique(rendered)) == {1, 17, maximum}
-    assert np.all(rendered[2, 2:7] == maximum)  # T's complete five-cell top
-    assert np.all(rendered[1, 1:8] == 1)  # nonzero halo
-    assert np.all(canvas == 17)
-    double = draw_text_labels(canvas.repeat(2,0).repeat(2,1), [(10.5, 14.5, 'T1')], foreground=maximum, outline=1, scale=2)
-    np.testing.assert_array_equal(double, rendered.repeat(2,0).repeat(2,1))
-    clipped = draw_text_labels(np.zeros((2, 2), dtype=dtype), [(-1, -1, 'T')], foreground=maximum, outline=1, scale=1)
-    assert clipped.shape == (2, 2)
-
-
-def test_bitmap_renderer_refuses_unsupported_glyph():
-    from microclaw.dataset_mosaic import draw_text_labels
-    with pytest.raises(ValueError, match='glyph set is P, T and digits 0-9'):
-        draw_text_labels(np.zeros((10, 10), np.uint8), [(5, 5, 'X')], foreground=255, outline=1, scale=1)

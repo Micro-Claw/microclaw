@@ -937,16 +937,6 @@ def test_component_size_review_on_an_empty_field_is_a_result_not_a_warning():
     }
 
 
-def test_component_size_review_quotes_the_reader_s_own_evidence_image():
-    from microclaw.image_analysis import component_size_review
-    objects = [{'n_pixels': 1}, {'n_pixels': 1}, {'n_pixels': 9}]
-    _, plain = component_size_review(objects, .016129, 0.0)
-    _, inked = component_size_review(objects, .016129, 0.0, annotation_ink_fraction=.88)
-    assert 'of its pixels' not in plain[0]  # no evidence claim without a measured fraction
-    assert inked[0].startswith(plain[0])
-    assert '88% of its pixels' in inked[0]
-
-
 def test_component_size_review_is_absent_from_the_scalar_mosaic_path():
     from microclaw.image_analysis import connected_components
     image = _speckled_field()
