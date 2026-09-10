@@ -100,6 +100,7 @@ Rows added since the triage:
 | `R107` | `design/79` block 79a's replay, 2026-09-08; owned by 79b |
 | `R123`–`R127` | `design/79` block 79c-1's coordinator review, 2026-09-10 |
 | `R128`–`R129` | `design/79` block 79c-1's demo gate, scored from artifacts 2026-09-10 |
+| `R130` | `design/79`'s M2 close-out, 2026-09-10 |
 
 
 ## The work queue
@@ -149,6 +150,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R127` | [Expiry landing inside cleanup can leave a reservation closed by nobody](#r127) | LOW | SMALL |  |
 | ~~`R128`~~ | [Every runtime timing span microclaw measures is quantized to ~15.6 ms on Windows](#r128) | HIGH | SMALL | **79c-2** |
 | `R129` | [Every dataset on the demo machine was written to `<name>_1` on a clean directory](#r129) | LOW | SMALL |  |
+| `R130` | [Two committed gates drive the stage to absolute coordinates](#r130) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2548,8 +2550,12 @@ visible; do not put one of these on a checklist.
 - **Why 78a's gate did not answer it** — its three arms requested `interval_s = 0.5`, so the observed 0.499–0.505 s cadence is the engine honouring `min_start_time`, not a floor. Any residual under 0.5 s is invisible in that data. This is the distinction design/79 item 1 exists for, and the gate's own table now says so explicitly.
 - **What 78a *did* establish, and its limit** — the write→exposure span is 18–44 ms, which bounds the *write-associated* work. It says nothing about the rest of the per-frame dispatch, which happens outside that span.
 - **How to close it** — one short-interval or zero-interval hooked run on M2 with debug logging, scored with the existing gate. The cadence column then reports achieved timing rather than the requested interval. Cheap, and a natural passenger.
+- **MEASURED TWICE ON M2, 2026-09-10, AND THE TWO RUNS DISAGREE 3×.** Reading exact means, not the clamped `_le_` bounds: a 20-frame hooked timelapse at 50 ms requesting `interval_s = 0.06` achieved **0.2169 s** in round 1 and **0.0710 s** in round 2, minutes apart on the same rig with the same arguments — while the interval-limited control reproduced to 0.4 ms (0.5031 vs 0.5027). The 2026-09-04 band of ~0.20–0.35 s was reproduced once and not the second time. **So this is not a stable per-frame floor**, and design/79's round-1 write-up calling it "~0.19 s of software-paced dispatch" is withdrawn there as a property.
+- **The hook is excluded.** A no-hook control at the same interval and exposure returned **0.0711 s** against the hooked arm's 0.0710 s — identical to four significant figures, so `snr_observer`'s per-frame analysis is not a measurable part of the cost.
+- **The round-1 excursion is NOT attributed.** It ran immediately after a failed 4.4 mm stage move that had just reported idle after 10.28 s. That is plausible and entirely unverified, and naming it would be the misattribution design/79 exists to forbid.
+- **What would settle it** — several short-interval runs on M2 in one sitting with the rig otherwise quiet, which is what distinguishes a floor from an excursion. `design/79-m2-closeout-gate.py` runs them; the arms are already shaped for it.
 - **Where** — RIG:M2 (or any EMU rig), as a passenger.
-- **Block** — NONE; `design/79c` owns the optimization if the number turns out to matter.
+- **Block** — NONE. `design/79` closed 2026-09-10 without optimizing it, because there is not yet a number stable enough to optimize against.
 - **Effort** — SMALL
 - **Provenance** — `design/78`'s carried-forward list, routed here at close-out 2026-09-08 after 78a's gate proved unable to answer it.
 
@@ -2844,6 +2850,7 @@ the model" as the actual blast radius.
 - **Why the omission** — retaining a child breakdown per field is unbounded in the field count: at 500 fields it is ~500 × 1 KB in a tool result. The block's measured composite payload is flat instead, 1,100 bytes at 2 fields to 1,280 at 500.
 - **What is lost** — 79a's per-field detail on the 77b split path, and the ability to identify the slow field on either composite. A grid that spent 21 s of a 36 s run on stage motion is now visible; a grid where *one* field cost 20 s is not distinguishable from one where four cost 5 s each.
 - **The bounded answer that was offered and not taken** — retain the breakdown for at most the **three slowest fields**, the same bound `slowest_records` already applies to write records. The coordinator offered this or the disclosure; the implementer chose the disclosure and the coordinator accepted it, so this is a deliberate deferral, not an oversight.
+- **A concrete use appeared 2026-09-10.** M2's per-field grid reported a 9.736 s residual over six fields and there is no way to tell whether that is five even moves or one bad one — which is exactly what `R126`'s trade needs, and what block 64d's 0.984 s per settled move only half explains.
 - **Where** — LOCAL. No rig.
 - **Block** — NONE.
 - **Importance** — MEDIUM once anyone reads a composite breakdown in anger.
@@ -2856,6 +2863,7 @@ the model" as the actual blast radius.
 
 - **The asymmetry** — the 77b split path (`interval_s > 0`) calls `ctrl.set_xy(...)` per field and so takes `settle_xy_move`'s per-axis band. The zero-interval path builds one event list with a `position` axis and hands it to AcqEngJ, which moves between exposures with nothing of microclaw's in between. The hookless per-position route settles every field via `_run_protocol_at`. So the same tool, at two intervals, has two different arrival guarantees.
 - **Why block 79c-1 did not touch it** — it is why that block **refused** to merge the hookless zero-interval grid into one acquisition, which would have extended this asymmetry to the route that currently settles. Recorded there as a deliberate non-change: *removing a required wait is not an optimization.*
+- **Both sides now have a number, measured on M2 2026-09-10.** A six-field 20 µm grid ran 11.300 s through the settled per-field route — of which **9.736 s** is the residual holding five arrival-verified moves plus per-position setup — and 3.202 s through the shared-dataset route, where the engine moves the stage inside its own acquisition span. Roughly **4× per field**, and that difference *is* the price of arrival verification rather than of acquisition startup: per-acquisition overhead came out at 0.26 s here against 0.28 s on the demo machine, so it is not what separates the routes. Block 64d measured an ordinary settled 20 µm M2 move at 0.984 s, which accounts for about half the residual; the rest needs the per-field breakdown `R125` asks for.
 - **What is NOT known** — whether it has ever mattered. A stage that has not arrived exposes the wrong field, which on a uniform sample or the demo camera is invisible; design/28 F4's family. No incident is attributed to it.
 - **Where a check could live** — `post_hardware_hook_fn` is the only microclaw code that runs between the engine's move and its exposure, and it receives a batch when the engine sequences (the first engine contract), so a per-event arrival check is not expressible there for a hardware-sequenced batch. That is the design problem, and it is design/68's shape rather than design/79's.
 - **Where** — RIG, to demonstrate; LOCAL to reason about.
@@ -2889,6 +2897,7 @@ the model" as the actual blast radius.
 - **How to close it** — `time.perf_counter()`: monotonic, `QueryPerformanceCounter()` on Windows, `mach_absolute_time()` on macOS where it is byte-identical to `monotonic` (41 ns, measured). The substitution is mechanical, but `"clock": "time.monotonic"` ships in every `duration_breakdown` and every hook timing record and must change with it — which is what that field is for. Do it **before** `R124` adds new spans, so the new ones are not written against the old clock.
 - **Where** — LOCAL to implement. Already measured; nothing further is owed.
 - **CLOSED by block 79c-2, merged 2026-09-10.** The domain moved to `time.perf_counter()` through a seam in `controller.py`, with the shipped `"clock"` string derived from it. Two guards, each mutation-verified: a split pair trips a numeric test, a whole pair — numerically invisible, since macOS resolves both clocks to one 41 ns counter — trips a source-inspection test naming the site. **The assignment's site inventory was incomplete in the way that mattered**: `_run_duration_breakdown` selected records *by clock name*, so a rename without it would have zeroed `accounted_s` in silence. A domain built by grepping for a clock call misses the code that reasons about the clock's name.
+- **Confirmed on M2 too, 2026-09-10** — Windows-11-10.0.22631 with Python 3.12.14 against the demo machine's 26200 and 3.12.13: `GetTickCount64()` observed stepping **15000 µs** where the demo machine stepped 16000 (it alternates 15/16), and `QueryPerformanceCounter()` resolving a 40 µs gap as **40.2 µs**. Two machines, two Windows builds, two Python patch versions, same conclusion — so the floor is a property of the interpreter and OS as expected, not of a rig.
 - **Confirmed on the demo machine, 2026-09-10**, which is the only place it is observable: `clock` now reports `time.perf_counter` in all six payloads, **0 of 36** nonzero span values are exact integer milliseconds where **16 of 18** were, and the no-op `restoration` sweep reads **0.70–1.10 µs** where it read exactly `0.0`. The nonzero count doubling from 18 to 36 is the proof rather than a coincidence: it is precisely the phase that was below the floor.
 - **Block** — **79c-2**.
 - **Importance** — HIGH. It bounds every timing number the runtime agent reads, on the platform every rig runs.
@@ -2908,3 +2917,17 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — SMALL
 - **Provenance** — coordinator scoring of block 79c-1's demo-gate artifacts, 2026-09-10.
+
+### R130 — Two committed gates drive the stage to absolute coordinates, which only works where the stage is at the origin
+
+**`design/79-block79c1-demo-gate.py` builds its grid from absolute positions 0, 20, 40… µm. That is invisible on the demo machine, whose stage sits at the origin, and on M2 it asked for a 4.4 mm move to (0, 0).**
+
+- **What happened** (2026-09-10, M2): the stage was at (4392.6, −5082.4). The gate's first field was absolute (0, 0). The stage travelled 971 µm in X and 63 µm in Y, reported idle after **10.28 s**, and `settle_xy_move` refused to claim arrival — `measured_um` 3421.6 against `requested_um` 0.0, band 439.26 µm from the relative policy. The limb measured nothing and the stage was left ~971 µm from where it started.
+- **The product was right.** Block 56 and block 64d's arrival contract met a real incomplete motion on a real rig and reported measured-not-requested rather than success. This row is about the *instrument*.
+- **Fixed in `design/79-m2-closeout-gate.py`**, whose fields are offsets from `get_x_position()`/`get_y_position()` — the way `run_tile_acquisition` has always defaulted its centre — pinned by a selftest that uses M2's real coordinates as its fixture. **`design/79-block79c1-demo-gate.py` still carries the defect** and has only ever run on the demo machine.
+- **Why it is a row rather than a fix** — that gate is a merged block's evidence instrument and nothing currently reuses it. Anyone who does, on any rig, must take the offset fix with it. `CLAUDE.md`'s "never anchor on one microscope" applies to gate code, which gets no review pass.
+- **Where** — LOCAL to fix. Only a real rig could have shown it.
+- **Block** — NONE.
+- **Importance** — MEDIUM for anyone reusing that gate; LOW otherwise.
+- **Effort** — SMALL
+- **Provenance** — `design/79`'s M2 close-out, round 1, 2026-09-10.

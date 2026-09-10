@@ -10517,3 +10517,58 @@ left clean trees, so nothing needed committing as unreviewed; I verified each
 worktree myself rather than believing the notification. The operator's answer to
 a blocked runner was to switch runners rather than wait for the window, which the
 workflow does not mention and should.
+
+## design/79's M2 close-out — two rounds, 2026-09-10
+
+Not a block: a measurement run the coordinator built and scored, on
+`design79/m2-close-out`. It closed nothing and it is the most useful thing the
+notebook produced.
+
+**Round 1 measured `R105` at last and I wrote it up as a property.** A 20-frame
+hooked timelapse at 50 ms requesting `interval_s = 0.06` achieved a 0.2169 s
+mean — squarely inside the ~0.20–0.35 s band the row predicted from 2026-09-04 —
+against a 0.050 s hardware-sequenced floor and a 0.5 s control that came back at
+0.5031 s. I recorded "~0.19 s of software-paced dispatch" and committed it.
+**Round 2, minutes later, same rig, same arguments: 0.0710 s.** Three times
+apart, while the interval-limited control reproduced to 0.4 ms. The residual is
+not a floor. `feedback_one_measurement_is_not_a_property`, committed to a design
+document by the coordinator who quotes it at runners — and the only reason it was
+caught is that a second run happened at all, for an unrelated reason.
+
+**The unrelated reason was a defect in my own gate, and it was worth more than
+the limb it broke.** The grid limb drove the stage to absolute 0, 20, 40 µm.
+M2's stage was at (4392.6, −5082.4), so field P0 was a 4.4 mm move; the stage
+travelled 971 µm, reported idle after 10.28 s, and `settle_xy_move` refused to
+claim arrival. The product was exactly right — block 56 and 64d's contract
+meeting a real incomplete motion — and the instrument was anchored to the demo
+machine, whose stage sits at the origin (`R130`). **`CLAUDE.md`'s "never anchor
+on one microscope" applies to gate code, which gets no review pass**, and only a
+real rig could show it.
+
+**Three things the second round bought that the first could not.** A **no-hook
+control** — 0.0711 s against 0.0710 s hooked, so the hook's per-frame analysis is
+excluded, and design/79 item 4 asks for exactly that control and round 1 had
+none. The **variance itself**, which is now R105's actual content. And the
+multiplier on a real stage, **3.5×** against the demo machine's 6.5–7.9× — whose
+decomposition says the ratio is not measuring per-acquisition overhead at all
+(0.26 s on M2, 0.28 s on the demo machine, agreeing) but *where stage motion is
+accounted*: settled and verified in the residual, versus engine-moved inside the
+acquisition. That is `R126`'s trade with numbers on both sides for the first time.
+
+**A gate that prints a bound as if it were a statistic misleads its own author.**
+The limb printed `median_le_s` as "median". It is a histogram bin edge clamped
+into `[min_s, max_s]`; block 79a kept the `_le_` suffix *because it is
+load-bearing*, and my line stripped that context. I misread round 2 at first
+glance — "median 0.100" against round 1's "median 0.2407" — and only caught it by
+checking the values against `min_s`/`max_s`. It reports the exact mean now, pinned
+by a selftest whose fixture has a mean and a bound that differ. **Print the exact
+statistic, or print the bound with its name intact.**
+
+**And the operator was right to run a gate I had argued against.** I recommended
+demoting 79c-1's demo gate as over-built, which it was — five of six criteria
+duplicated local tests. The operator ran it anyway and it produced the
+per-acquisition multiplier, two artifact findings, and later a second sample. Then
+I proposed this M2 run and it withdrew one of my own conclusions. **Both times the
+run I would have skipped is the one that changed something.** The correct lesson
+is not "always run the gate" — it is that *sizing a gate down is a judgement about
+what is already known, and I was over-confident about what was known.*
