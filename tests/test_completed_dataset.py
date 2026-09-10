@@ -893,9 +893,16 @@ def test_annotation_opt_out_gray8_determinism_and_partial_identity(component_fra
     assert [a['sha256'] for a in first['artifacts']] == [a['sha256'] for a in second['artifacts']]
     for artifact in first['artifacts']:
         assert tifffile.imread(artifact['path']).max() == 255  # dtype, not mosaic uint16
-    assert 'PositionName' not in first['observations'][0]
-    assert first['observations'][0]['result']['annotation']['position_labels_partial'] is False
-    assert first['observations'][0]['result']['annotation']['field_label'] == 'T2'
+    by_position = {o['position']: o for o in first['observations']}
+    assert 'PositionName' not in by_position['left']
+    assert by_position['left']['result']['annotation']['position_labels_partial'] is False
+    assert by_position['left']['result']['annotation']['field_label'] == 'T2'
+    empty = by_position['empty']
+    assert empty['result']['n_components'] == 0
+    assert empty['result']['annotation']['field_label'] == 'T1'
+    evidence = next(a for a in first['artifacts'] if a['sha256'] == empty['artifact_sha256'])
+    assert set(np.unique(tifffile.imread(evidence['path']))) == {0, 1, 255}
+    assert not images[2].any()  # The empty source stayed empty; the T1 label is evidence ink.
     assert first['position_labels'] == [
         {'label': 'T1', 'position': 'empty', 'PositionName': 'field-2'},
         {'label': 'T2', 'position': 'left'},
@@ -905,7 +912,9 @@ def test_annotation_opt_out_gray8_determinism_and_partial_identity(component_fra
         assert observation['result']['annotation']['position_labels'] == first['position_labels']
     off = analyze('off', parameters={'write_annotations': False})
     assert off['status'] == 'completed' and off['artifacts'] == []
-    assert [o['result']['n_components'] for o in off['observations']] == [2, 1, 0]
+    assert {o['position']: o['result']['n_components'] for o in off['observations']} == {
+        'left': 2, 'right': 1, 'empty': 0,
+    }
 
 
 @pytest.mark.parametrize('key,value', [('Core-Camera', 'other'), ('Camera-Camera', 'other'), ('Binning', '2x2')])
