@@ -142,6 +142,12 @@ not the problem so much as how often they had to be paid for at write price.
 
 ### F0 — A session cannot say what it cost
 
+> **Closed 2026-09-11.** The first session that could: **$9.58 over 63 API calls
+> in 9.9 minutes** — cache read $5.39 (56%), cache write $3.98 (42%), output
+> $0.22 (2%), uncached input $0.00. 63 usage records against 63 assistant
+> messages in the history. The shape the reconstruction predicted holds: the
+> bill is the context, resent, and output tokens are a rounding error.
+
 `_stream_one_round` returns the SDK `Message`, whose `.usage` carries
 `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and
 `output_tokens`. It is discarded. Nothing downstream records it, so this whole
@@ -198,6 +204,16 @@ handful of new numbers.
 
 ### F4 — `estimate_tokens` undercounts message content by ~1.4×
 
+> **Measured on live traffic, 2026-09-11: the factor is 1.69×, not 1.4×**, and
+> it is remarkably stable — min 1.67, median 1.69, max 1.71 over 59 calls of one
+> session, once the 50,868-token static head is taken out of the billed input.
+> So the estimator should divide by **2.36 bytes/token**, not the 4 it uses and
+> not the 3 D4 proposes; D4 lands closer but still optimistic, in the one
+> direction a context guard must not be. The consequence is larger than the
+> reconstruction said too: the guard read **119,673** on the call that actually
+> billed **254,790 input tokens**. That is the peak context of a ten-minute
+> session, against a high-water mark of 120,000.
+
 `conversation.py:394` uses bytes/4, commented "deliberately conservative for
 ASCII-heavy JSON". Measured against session 3's actual history: **2.89
 chars/token**, and **2.54** on the analysis payloads — dense numeric JSON with
@@ -226,6 +242,16 @@ generation that runs long spends its own TTL: a 4-minute reply leaves one minute
 for the operator.
 
 ### F6 — Every compaction throws the whole prefix away: $17.02
+
+> **Measured on the demo machine, 2026-09-11, and this finding is wrong.** A
+> compaction throws the *message* prefix away and keeps the static head: the
+> post-compaction call **read 50,377 cached tokens** and rewrote 133,774, so 27%
+> of the prefix was kept, not rebuilt. `tools` and `system` carry their own
+> breakpoints ahead of the messages and a checkpoint does not touch them, so the
+> cache is invalid from the **first message**, not "from byte one". The $17.02
+> below is overstated by whatever share of each invalidation was the static
+> head — on this session's numbers, by about a quarter — and **D7's value falls
+> with it**. Re-price it from D1's records before 82c decides anything.
 
 `model_messages` returns `[self._checkpoint, *full_history[self._cut:]]`, and
 `self._checkpoint = _checkpoint(full_history[:chosen])` is re-derived from the
@@ -483,7 +509,7 @@ an answer from the operator.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | `design/82-block82a-gate.md`, pinned at `d2d8217` | — |
+| 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | demo machine 2026-09-11: **11/11**, $9.58, one compaction (n=1); the round's one FAIL was the gate's limb, corrected | — |
 | 82b | — | — | — | — | — |
 | 82c | — | — | — | — | — |
 

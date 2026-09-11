@@ -33,7 +33,7 @@ _spec = importlib.util.spec_from_file_location(
 gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
-PREFIX = 50_000  # microclaw's fixed tools+system prefix, measured at 49,901.
+PREFIX = 50_377  # the static tools+system head, measured on the demo machine.
 
 
 class _Stream:
@@ -84,22 +84,44 @@ def drive_session(directory: Path, turns: int = 14) -> tuple[Path, Path]:
                               high_water_tokens=4_000, low_water_tokens=2_500)
     usage_audit = AuditLog(usage_path)
     guard = SafetyGuard(SafetyConstraints())
-    seen = {"compactions": 0}
+    seen = {"compactions": 0, "called": False}
 
     def next_usage() -> Usage:
-        history_tokens = store.last_estimated_tokens or 0
-        if store.compaction_count > seen["compactions"]:
-            seen["compactions"] = store.compaction_count
-            written = PREFIX + int(history_tokens * 1.4)
+        """Bill the way the demo machine really billed on 2026-09-11.
+
+        The first version of this fixture zeroed `cache_read` after a
+        compaction, because the scorer's author assumed a compaction throws the
+        whole prefix away — design/82 F6 says exactly that. The rig says
+        otherwise: `tools` and `system` carry their own breakpoints *ahead* of
+        the messages and a checkpoint does not touch them, so ~50k survives as
+        a read and only the message part is rewritten. Measured: read 50,377,
+        rewrite 133,774. The fake that agreed with the assumption is why the
+        selftest was green while the gate failed.
+        """
+        history_tokens = int((store.last_estimated_tokens or 0) * 1.7)
+        if not seen["called"]:
+            # The session's first call reads nothing and writes the whole
+            # prefix. The scorer seeds the static head from exactly this
+            # record, so a fixture that skips it is not a session.
+            seen["called"] = True
+            written = PREFIX + history_tokens
             return Usage(input_tokens=4, output_tokens=90,
                          cache_read_input_tokens=0,
                          cache_creation_input_tokens=written,
                          cache_creation=CacheCreation(
                              ephemeral_5m_input_tokens=0,
                              ephemeral_1h_input_tokens=written))
+        if store.compaction_count > seen["compactions"]:
+            seen["compactions"] = store.compaction_count
+            return Usage(input_tokens=4, output_tokens=90,
+                         cache_read_input_tokens=PREFIX,
+                         cache_creation_input_tokens=history_tokens,
+                         cache_creation=CacheCreation(
+                             ephemeral_5m_input_tokens=0,
+                             ephemeral_1h_input_tokens=history_tokens))
         grown = 900
         return Usage(input_tokens=4, output_tokens=90,
-                     cache_read_input_tokens=PREFIX + int(history_tokens * 1.4) - grown,
+                     cache_read_input_tokens=PREFIX + history_tokens - grown,
                      cache_creation_input_tokens=grown,
                      cache_creation=CacheCreation(ephemeral_5m_input_tokens=0,
                                                   ephemeral_1h_input_tokens=grown))
@@ -139,7 +161,7 @@ def verdicts(capsys, usage_path, history_path) -> tuple[int, dict[str, str]]:
     for line in capsys.readouterr().out.splitlines():
         for verdict in ("NOT EXERCISED", "PASS", "FAIL", "REPORT"):
             if line.startswith(verdict):
-                rows[line[len(verdict):].split(" — ")[0].strip()] = verdict
+                rows[line[len(verdict):].split(" - ")[0].strip()] = verdict
                 break
     return code, rows
 
@@ -191,10 +213,10 @@ def test_a_missing_sidecar_is_not_exercised(tmp_path, capsys):
                   "cache_creation_1h_input_tokens": 0} if i == 2 else r
                  for i, r in enumerate(rs)]),
     ("one record per API call", lambda rs: rs[:-1]),
-    ("a compaction invalidates the prefix",
-     lambda rs: [{**r, "cache_read_input_tokens": 4242}
+    ("a compaction rewrites the messages and keeps the static head",
+     lambda rs: [{**r, "cache_read_input_tokens": 0}
                  if i == first_compaction(rs) else r for i, r in enumerate(rs)]),
-    ("and pays to rewrite it",
+    ("and pays to rewrite the rest",
      lambda rs: [{**r, "cache_creation_input_tokens": 0,
                   "cache_creation_1h_input_tokens": 0}
                  if i == first_compaction(rs) else r for i, r in enumerate(rs)]),
@@ -243,4 +265,5 @@ def test_a_usage_figure_in_the_history_is_caught(session, tmp_path, capsys):
 def test_the_reported_limbs_are_never_graded(session, capsys):
     _, rows = verdicts(capsys, *session)
     assert rows["output tokens vs the assistant text they produced"] == "REPORT"
-    assert rows["the store's estimate vs the tokens actually billed"] == "REPORT"
+    assert rows["how far the store's estimate is from the real history"] == "REPORT"
+    assert rows["the largest context this session actually paid for"] == "REPORT"

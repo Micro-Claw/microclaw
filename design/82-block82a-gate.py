@@ -45,7 +45,7 @@ class Score:
 
     def _add(self, verdict: str, name: str, detail: str) -> None:
         self.rows.append((verdict, name, detail))
-        print(f"{verdict:<14} {name} — {detail}", flush=True)
+        print(f"{verdict:<14} {name} - {detail}", flush=True)
 
     def check(self, name: str, ok: bool, detail: str) -> None:
         self._add("PASS" if ok else "FAIL", name, detail)
@@ -61,7 +61,7 @@ class Score:
         passed = sum(1 for r in self.rows if r[0] == "PASS")
         graded = sum(1 for r in self.rows if r[0] != "REPORT")
         print(f"\n{passed}/{graded} graded limbs passed"
-              f"{'' if not bad else ' — ' + ', '.join(f'{v}: {n}' for v, n, _ in bad)}")
+              f"{'' if not bad else ' - ' + ', '.join(f'{v}: {n}' for v, n, _ in bad)}")
         return 1 if bad else 0
 
 
@@ -182,17 +182,36 @@ def score(usage_path: Path | None, history_path: Path | None) -> int:
     else:
         s.check("the session compacted at least once", True,
                 f"{len(compactions)} compaction(s), at record(s) {compactions}")
-        cold = [i for i in compactions
-                if (records[i].get("cache_read_input_tokens") or 0) == 0]
-        s.check("a compaction invalidates the prefix", len(cold) == len(compactions),
-                f"{len(cold)}/{len(compactions)} post-compaction records read 0 "
-                "cached tokens" + ("" if len(cold) == len(compactions) else
-                                   f"; read on the others: "
-                                   f"{[records[i]['cache_read_input_tokens'] for i in compactions if i not in cold]}"))
+        # NOT "cache_read drops to zero". `tools` and `system` carry their own
+        # breakpoints ahead of the messages, and a checkpoint does not touch
+        # them, so the static head survives every compaction as a read and only
+        # the message part is rewritten. design/82 F6 assumed otherwise and the
+        # first version of this limb inherited the assumption; the demo machine
+        # measured read 50,377 / rewrite 133,774 on 2026-09-11.
+        head = records[0].get("cache_creation_input_tokens") or 0
+        survived = [records[i].get("cache_read_input_tokens") or 0
+                    for i in compactions]
+        # Strictly less than the previous read (something *was* invalidated) and
+        # strictly more than zero (the head was *not*). Not "less than half":
+        # how far the read falls depends on how much history there was, which is
+        # a property of the session, not of the mechanism.
+        collapsed = all(
+            0 < survived[n] < (records[i - 1].get("cache_read_input_tokens") or 0)
+            for n, i in enumerate(compactions))
+        near_head = head > 0 and all(abs(v - head) <= 0.25 * head for v in survived)
+        s.check("a compaction rewrites the messages and keeps the static head",
+                collapsed and near_head,
+                f"survived per compaction: {survived} against a first-call prefix of "
+                f"{head}" + ("" if collapsed and near_head else
+                             "; expected each to collapse to roughly the static head, "
+                             "neither to zero nor to the whole prefix"))
         rewrites = [records[i].get("cache_creation_input_tokens") or 0
                     for i in compactions]
-        s.check("and pays to rewrite it", all(v > 0 for v in rewrites),
-                f"rewritten tokens per compaction: {rewrites}")
+        s.check("and pays to rewrite the rest", all(v > 0 for v in rewrites),
+                f"rewritten tokens per compaction: {rewrites}; "
+                f"{sum(survived)} of {sum(survived) + sum(rewrites)} tokens "
+                f"({100 * sum(survived) / max(sum(survived) + sum(rewrites), 1):.0f}%) "
+                "were kept, not rebuilt")
 
     # --- D5's payoff: is any miss unexplained? ----------------------------
     unexplained = []
@@ -213,6 +232,21 @@ def score(usage_path: Path | None, history_path: Path | None) -> int:
             f"{len(unexplained)} miss(es) after a gap shorter than the 1h TTL: "
             f"{unexplained}")
 
+    # And say whether this session could have told the two TTLs apart at all.
+    # A pass over boundaries that never approached five minutes is a pass the
+    # run did not earn: the old 5-minute entry would have survived them too.
+    gaps = sorted((seconds_between(records[i - 1]["timestamp"], records[i]["timestamp"])
+                   for i in range(1, len(records))), reverse=True)
+    over_5m = [g for g in gaps if g > 300]
+    s.report("could this session tell a 1h TTL from a 5m one",
+             f"longest gap between calls {gaps[0]:.0f} s, {len(over_5m)} gap(s) over "
+             f"300 s. " + ("Yes - at least one boundary would have expired a "
+                           "5-minute entry." if over_5m else
+                           "No - every boundary was inside the old 5-minute TTL, so "
+                           "the limb above discriminates nothing here. What proves D5 "
+                           "shipped is the 1h/5m split on the writes, not this.")
+             if gaps else "one call only")
+
     # --- no cost anywhere the model can see it ----------------------------
     if history:
         blob = json.dumps(history)
@@ -231,21 +265,34 @@ def score(usage_path: Path | None, history_path: Path | None) -> int:
                  f"{out} output tokens for {assistant_chars} chars of assistant "
                  f"text and tool arguments = {assistant_chars / max(out, 1):.2f} chars/token")
 
+    # F4, measured on live traffic: the store meters the *history*, so the
+    # static head has to come out before the ratio means anything. Seeded from
+    # the session's own first call, which is the head plus one small prompt.
+    head = records[0].get("cache_creation_input_tokens") or 0
+    # Relative, not a fixed 20k floor: early records carry almost no history
+    # and would drag the ratio, but "non-trivial" has to scale with the session.
     pairs = [(r["estimated_tokens"],
               (r.get("cache_read_input_tokens") or 0)
               + (r.get("cache_creation_input_tokens") or 0)
-              + (r.get("input_tokens") or 0))
-             for r in records if r.get("estimated_tokens")]
+              + (r.get("input_tokens") or 0) - head)
+             for r in records
+             if (r.get("estimated_tokens") or 0)
+             >= 0.25 * max((x.get("estimated_tokens") or 0) for x in records)]
     if pairs:
-        ratios = [real / est for est, real in pairs]
-        residuals = [real - est for est, real in pairs]
-        s.report("the store's estimate vs the tokens actually billed",
-                 f"real/estimated over {len(pairs)} calls: "
-                 f"min {min(ratios):.2f}, median {sorted(ratios)[len(ratios) // 2]:.2f}, "
-                 f"max {max(ratios):.2f}; absolute residual median "
-                 f"{sorted(residuals)[len(residuals) // 2]} tokens. The estimate "
-                 "covers the history only, so this carries both F4's chars/token "
-                 "error and the fixed tools+system prefix; it is not one number.")
+        ratios = sorted(real / est for est, real in pairs)
+        median = ratios[len(ratios) // 2]
+        s.report("how far the store's estimate is from the real history",
+                 f"real/estimated over {len(pairs)} calls with a non-trivial history: "
+                 f"min {ratios[0]:.2f}, median {median:.2f}, max {ratios[-1]:.2f} "
+                 f"(static head taken as {head}). A median of m means "
+                 f"estimate_tokens should divide by {4 / median:.2f} bytes/token, "
+                 f"against the 4 it uses now and the 3 design/82 D4 proposes.")
+    peak = max((r.get("cache_read_input_tokens") or 0)
+               + (r.get("cache_creation_input_tokens") or 0)
+               + (r.get("input_tokens") or 0) for r in records)
+    s.report("the largest context this session actually paid for",
+             f"{peak} billed input tokens on one call, against a high-water mark of "
+             f"120,000 that meters the history alone")
 
     return s.exit_code()
 

@@ -3,11 +3,35 @@
 **Demo machine. About 30 minutes, of which ~20 is you driving a session.
 DemoCamera, so no dose that matters.** Firefox is this machine's browser.
 
-**This one spends your API key: about $2–4.** That is the point of it — design/82
-exists because five sessions cost $102.35 and nothing recorded where it went.
-82a adds `*_microclaw_usage.jsonl` (D1) and moves all four cache breakpoints to
-the one-hour TTL (D5). A short session cannot show the thing that matters, so
-this drives one long enough to **compact at least twice**.
+**This one spends your API key.** That is the point of it — design/82 exists
+because five sessions cost $102.35 and nothing recorded where it went. 82a adds
+`*_microclaw_usage.jsonl` (D1) and moves all four cache breakpoints to the
+one-hour TTL (D5). A short session cannot show the thing that matters, so this
+drives one long enough to compact.
+
+## Round 1 ran on 2026-09-11 — read this before re-running anything
+
+It cost **$9.58 over 63 calls in 9.9 minutes** (the session says so itself now,
+which is F0 closed) and it **passed 11/11 after one correction to the gate**.
+Nothing below is outstanding work; it is kept so the run is repeatable.
+
+Three of round 1's problems were this document's, not the product's:
+
+* The limb `a compaction invalidates the prefix` asserted `cache_read == 0` and
+  **failed on correct behaviour**. `tools` and `system` carry their own
+  breakpoints ahead of the messages, so a compaction rewrites the message part
+  and the ~50k static head survives as a read — measured, read 50,377 against a
+  rewrite of 133,774. design/82 F6 says the prefix is "invalid from byte one";
+  the rig says otherwise, and the limb now checks the real mechanism.
+* The progress meter in step 3b was the history **file size**, which grows
+  forever and is not what compacts. Fixed below.
+* The filler drifted onto `inspect_artifacts` (23 calls returning almost
+  nothing), so the session reached one compaction rather than two and the
+  operator, reasonably, stopped.
+
+One compaction is n=1 and is recorded as such. A second round was **not**
+requested: what it would add is repeatability of a limb that now passes and a
+mechanism that is now understood.
 
 ## What is already settled, so you do not pay for it again
 
@@ -25,12 +49,15 @@ this drives one long enough to **compact at least twice**.
   guard meters the *history* only, so every call carries about 50k more than the
   high-water mark says.
 
-What is **not** settled, and is the whole reason for this trip: whether a real
+What is **not** settled off-rig, and is the reason for the trip: whether a real
 session's records agree with the real API's cache behaviour — one record per
-call, a compaction visibly invalidating the prefix, and **no cache miss the
-session start or a compaction cannot explain**. That last limb is D5's payoff:
-before 82a, every one of 137 turn boundaries risked a 5-minute expiry, worth
-$18–29 of the $102.
+call, and what a compaction actually does to the prefix.
+
+Note what this gate **cannot** show, whatever it prints: a session with no idle
+gap over five minutes would have kept a 5-minute entry warm too, so its
+"no unexplained miss" limb discriminates nothing. The scorer says so in its own
+`could this session tell a 1h TTL from a 5m one` line. What proves D5 shipped is
+the 1h/5m split on the writes.
 
 ## 0 — pin the tree
 
@@ -85,10 +112,10 @@ Open **Firefox** at `http://127.0.0.1:8000`. The session's files —
 `*_microclaw_history.jsonl`, `*_microclaw_usage.jsonl` and the rest — appear in
 `D:\Code\microclaw`.
 
-## 3 — drive it until it compacts twice
+## 3 — drive it until it compacts
 
-The history has to reach roughly 500 KB for the context guard to compact, and
-the cheapest honest way there is design/82's own finding F2: `read_hook_log`
+The model context has to cross 120,000 estimated tokens for the guard to
+compact, and the cheapest honest way there is design/82's own finding F2: `read_hook_log`
 returns every entry, 44–45k chars at a time. So: make one log, then read it.
 
 **Turn 1** — paste this as your first message:
@@ -108,23 +135,42 @@ In a **second** PowerShell window, after each turn:
 
 ```powershell
 cd D:\Code\microclaw
-(Get-ChildItem *_microclaw_history.jsonl | Select-Object -Last 1).Length
-Get-Content (Get-ChildItem *_microclaw_usage.jsonl | Select-Object -Last 1) | Select-Object -Last 1
+Get-Content (Get-ChildItem *_microclaw_usage.jsonl | Select-Object -Last 1) |
+  Select-Object -Last 1 | ConvertFrom-Json |
+  Format-List estimated_tokens, compaction_count
 ```
 
-The first number is the history size; you are heading for **> 500000**. The
-second line is the newest usage record — watch `compaction_count`. **Keep
-repeating the turn-2 prompt until `compaction_count` reads 2, then do two more
-turns and stop.** Those last two are what the post-compaction limbs read; a
-session that stops *at* the compaction has nothing after it to score.
+**`estimated_tokens` is the only number that matters, and it is not the file
+size.** The history file grows forever — it is the full audit — while the model
+context is what compacts, and after a compaction it *drops*. The first round of
+this gate watched the file pass 500 KB and never understood why nothing
+happened.
+
+A compaction fires when `estimated_tokens` crosses **120,000**. So:
+
+* drive until `estimated_tokens` is over 120,000 — `compaction_count` becomes 1
+  and `estimated_tokens` falls back to roughly 78,000;
+* then keep going until it climbs past 120,000 **again** — that is the second
+  compaction, and it needs about another 42,000 tokens of history, roughly
+  170 KB;
+* then **two more turns**, so the post-compaction limbs have something to read.
+
+If `estimated_tokens` is not moving by a few thousand per turn, the filler has
+stopped working — the first round drifted onto `inspect_artifacts`, which
+returns almost nothing, and spent 46 calls adding 7,000 tokens. Switch to the
+fallback below rather than pushing on; it moves ~15,000 tokens a turn and cannot
+drift.
+
+One compaction is worth having if you run out of patience: say so and send what
+you have. The second only buys repeatability.
 
 If a turn takes more than about 3 minutes, or the reply says it will not read the
 log again, say so in your own words in the next prompt — an ordinary
 conversational nudge is fine and does not spoil anything.
 
-**If turn 1 fails** (the timelapse refuses, or no hook log is written), do not
-debug it — that is not what this gate is for. Use this filler instead, which
-needs nothing but the repo, and repeat it the same way:
+**If turn 1 fails, or `estimated_tokens` stalls**, do not debug it — that is not
+what this gate is for. Use this filler instead, which needs nothing but the repo,
+moves ~15,000 tokens a turn, and cannot wander off onto a small tool:
 
 ```powershell
 Get-Content D:\Code\microclaw\CLAUDE.md -Raw | Set-Clipboard
@@ -152,8 +198,14 @@ It prints one line per limb, reports each **independently** — one FAIL never
 hides the limbs after it — and **exits nonzero on any FAIL or any NOT
 EXERCISED**. Expect `exit: 0` and `11/11 graded limbs passed`.
 
-Two lines say `REPORT` rather than PASS or FAIL, deliberately: the output-token
-rate and the store's estimate against the tokens actually billed. Those are
+`Get-Content` may show the log as spaced-out characters: PowerShell's `>` writes
+UTF-16. The file is fine and I can read it; if you want it legible on screen, run
+the command again without the redirect.
+
+Four lines say `REPORT` rather than PASS or FAIL, deliberately: the output-token
+rate, how far the store's estimate is from the real history, the largest context
+the session paid for, and whether the session could tell the two TTLs apart.
+Those are
 measurements D1 exists to make, not criteria — design/79's lesson is that naming
 the winner turns attribution into label-reading. Send the numbers; they are what
 82b's D4 will be judged against.
