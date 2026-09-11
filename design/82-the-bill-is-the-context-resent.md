@@ -367,17 +367,27 @@ def read_hook_log(ctrl, guard, log_path: str, limit: int = 50,
 reach for `rank_hook_log` instead, per
 `feedback_rules_belong_in_parameter_descriptions`.
 
-**D4 (F4) — `estimate_tokens` divides by 3, and says what it is.** One constant,
-one comment that stops claiming conservatism it does not have. Measured
-2.54–2.89 chars/token on real session content; 3 keeps a small margin on the
-prose-heavy end without pretending to be a tokenizer.
+**D4 (F4) — `estimate_tokens` divides by 2.36, and says what it is.** One
+constant, one comment that stops claiming conservatism it does not have.
+
+**The divisor is 2.36, not the 3 this decision first proposed** (operator's
+call, 2026-09-11). Three came from a *proxy* tokenizer over archived text —
+2.54–2.89 chars/token — and kept "a small margin on the prose-heavy end". Block
+82a's gate then measured the real thing on live traffic with Claude's own
+tokenizer: the undercount is **1.69×, stable at 1.67–1.71 over 59 calls**, which
+puts the real content at 2.36 bytes/token. Three still under-counts by 27%, in
+the one direction a context guard must not. The known cost of 2.36 is that a
+prose-heavy session will be *over*-counted and compact sooner than it needs
+to — which is the safe direction, and cheaper than F6 claimed now that a
+compaction is known to keep the static head.
 
 ```python
 # conversation.py
-# Three UTF-8 bytes per token, measured on real session histories (design/82 F4):
-# 2.89 chars/token over a whole 2.9 MB history, 2.54 on numeric analysis payloads.
+# 2.36 UTF-8 bytes per token, measured against the API's own accounting on a
+# live session (design/82, block 82a's gate): billed history tokens ran
+# 1.69x the old bytes/4 estimate, stable at 1.67-1.71 over 59 calls.
 # Four was optimistic in the one direction a context guard must not be.
-return math.ceil(len(payload.encode("utf-8")) / 3) + 8 * len(messages)
+return math.ceil(len(payload.encode("utf-8")) / 2.36) + 8 * len(messages)
 ```
 
 The high-water and low-water constants stay at 120k/90k, which now mean what
