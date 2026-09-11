@@ -1263,10 +1263,12 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Under context compaction the model twice attributed an earlier turn's tool calls to the current turn; the original diagnosis was refuted and no cause was established.**
 
-- **Status** — OPEN as an observation, not a defect - design/32 §5 records the sighting and its own refutation; nothing in the code has been identified as wrong.
+- **Status** — **OPEN, with an instrument attached as of 2026-09-11 (block 82c).** Still an observation, not a defect: design/32 §5 records the sighting and its own refutation, and nothing in the code has been identified as wrong. What changed is that the row is no longer waiting on a probe — `design/82-block82c-r63-probe.py` is an offline scorer over any session's history plus its `_usage.jsonl`, so it rides on artifacts an ordinary session already writes and costs no API credit.
+- **What it has measured so far — a null over six sessions.** Zero checkpoint-only attributions in block 82a's gate session; across the five archived nestor histories, two candidates, both in the 404-call session and both the model *describing* a tool rather than claiming to have called it. **Read that as an upper bound, not an all-clear**: a whole-identifier name match surfaces tool discussion at least as often as attribution, and the probe deliberately does not score temporal phrasing. Run it on future sessions as they accumulate rather than booking work for it.
+- **One caveat the probe itself reports (design/82 F9).** A usage log pins *when* a compaction fired, never *where* it cut, so a replay reproduces the historical partition only while `estimate_tokens` is unchanged. On the 82a artifact the recorded-vs-current estimator ratio is ~1.69 — D4's divisor change — and one recorded compaction replays as five. The probe prints that ratio beside the disagreement; a pre-82a artifact has no usage sidecar at all and gets no such check.
 - **Importance** — LOW - two sightings, cause unknown, no measured consequence; it is a note asking for a sharper probe before anyone claims a cause.
 - **Where** — LOCAL - a compaction probe is a scripted conversation, no hardware.
-- **Block** — **82c**, adopted 2026-09-11, and the reason changed the same day.
+- **Block** — **82c delivered the probe and is merged (2026-09-11); the row itself stays open.** Adopted 2026-09-11, and the reason changed twice that day.
   It was adopted because D7 would rewrite the checkpoint that carries the
   temporal disclaimer; **D7 was then dropped on measurement**
   (`design/82-block82c-d7-probe.py`), so nothing in 82c edits that text. The row

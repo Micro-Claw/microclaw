@@ -1,6 +1,6 @@
 """Reconstruct what a set of saved microclaw sessions cost to run.
 
-No session records `response.usage` (design/82 F0), so cost has to be
+The archived sessions predate records of `response.usage` (design/82 F0), so cost has to be
 reconstructed from the message histories. This script is the instrument that
 produced every table in `design/82-the-bill-is-the-context-resent.md`, and it
 is block 82b's acceptance gate: run it before and after a payload change and
@@ -12,7 +12,7 @@ install it into a scratch environment and put that on `PYTHONPATH`:
 
     uv pip install --python "$(command -v python3)" --target /tmp/tk tiktoken
     PYTHONPATH=/tmp/tk python3 design/82-session-cost-reconstruction.py \
-        "<archive>/nestor-expensive-sessions" --kb-tokens 10000 --report 89.27 13.08
+        "<archive>/nestor-expensive-sessions" --cache-ttl 5m --kb-tokens 10000 --report 89.27 13.08
 
 which prints floor $75.04 and a residual of $27.31 — 31 of 137 turn boundaries,
 22%. Without `--kb-tokens` the floor is $70.88 and the per-line attribution is
@@ -24,6 +24,11 @@ It reads `*_microclaw_history.jsonl` and nothing else, writes nothing, and
 touches no hardware. `--report` takes the console's per-day figures (UTC, less
 non-session use of the key) in the same order the sessions fall across the day
 boundary, and prints the reconciliation table.
+
+Cache writes cost $6.25/MTok for 5m (1.25x base input), reconstructing the
+pre-82a archive, or $10.00/MTok for 1h (2x), pricing the post-82a tree.
+The default follows the real tree breakpoints; mixed TTLs refuse. Window
+defaults likewise come from the shipped ConversationStore constants.
 
 WHAT IT ASSUMES, ALL OF IT LOAD-BEARING
 
@@ -53,12 +58,39 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from microclaw import agent
-from microclaw.conversation import AuditLog, ConversationStore
+from microclaw import agent, tools_schema
+from microclaw.conversation import (AuditLog, ConversationStore,
+    DEFAULT_CONTEXT_HIGH_WATER_TOKENS, DEFAULT_CONTEXT_LOW_WATER_TOKENS)
 from microclaw.tools_schema import TOOLS
 
-# $/MTok, claude-opus-4-8: input, output, 5-minute cache write, cache read.
-PRICE_IN, PRICE_OUT, PRICE_WRITE, PRICE_READ = 5.00, 25.00, 6.25, 0.50
+# $/MTok, claude-opus-4-8. Documented cache-write multipliers of base input.
+PRICE_IN, PRICE_OUT, PRICE_READ = 5.00, 25.00, 0.50
+WRITE_MULTIPLIERS = {"5m": 1.25, "1h": 2.0}
+
+
+def tree_cache_ttl() -> str:
+    """Read every cache marker returned by the production request builders."""
+    ttls = []
+
+    def collect(value):
+        if isinstance(value, dict):
+            if "cache_control" in value:
+                ttls.append(value["cache_control"].get("ttl", "5m"))
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(agent._system_blocks())
+    collect(agent._with_cache_breakpoint([{"role": "user", "content": "probe"}]))
+    collect(tools_schema.TOOLS_CACHED)
+    if len(set(ttls)) != 1:
+        raise ValueError(f"tree cache breakpoints disagree: {ttls}")
+    if ttls[0] not in WRITE_MULTIPLIERS:
+        raise ValueError(f"unsupported tree cache TTL: {ttls[0]}")
+    return ttls[0]
+
 # Measured on real session histories (design/82 F4). One global ratio is wrong:
 # schema and prose tokenize at 4.2-4.8 chars/token, dense numeric tool-result
 # JSON at 2.54-2.89. Using either for both is how the estimator got F4 wrong.
@@ -216,19 +248,24 @@ def _as_if_82b(messages: list[dict], names: dict[str, str]) -> list[dict]:
     return out
 
 
-def replay(path: str, count: Counter, base: dict[str, int], as_if_82b: bool = False):
+def replay(path: str, count: Counter, base: dict[str, int], as_if_82b: bool = False, *,
+           cache_ttl: str | None = None,
+           high_water: int = DEFAULT_CONTEXT_HIGH_WATER_TOKENS,
+           low_water: int = DEFAULT_CONTEXT_LOW_WATER_TOKENS):
     """Price one session, attributing every priced token to what it was.
 
     Returns (row, attribution). A call is billed as a full-prefix cache write on
     the first call and after each compaction — those are the only invalidations
     the history can prove. Everything else is a warm read plus its delta.
     """
+    write_rate = PRICE_IN * WRITE_MULTIPLIERS[cache_ttl or tree_cache_ttl()]
     messages = [json.loads(line) for line in open(path) if line.strip()]
     names = tool_name_index(messages)
     if as_if_82b:
         # Before pricing, so a slimmer result also moves *when* compaction fires.
         messages = _as_if_82b(messages, names)
-    store = ConversationStore(AuditLog(None, enabled=False))
+    store = ConversationStore(AuditLog(None, enabled=False),
+                              high_water_tokens=high_water, low_water_tokens=low_water)
     attribution: collections.Counter = collections.Counter()
 
     base_tokens = sum(base.values())
@@ -256,7 +293,7 @@ def replay(path: str, count: Counter, base: dict[str, int], as_if_82b: bool = Fa
             write += max(0, size - previous)
         previous = size
 
-        rate = PRICE_WRITE if cold else PRICE_READ
+        rate = write_rate if cold else PRICE_READ
         for label, tokens in base.items():
             attribution[label] += tokens * rate / 1e6
         for entry in context:
@@ -270,7 +307,7 @@ def replay(path: str, count: Counter, base: dict[str, int], as_if_82b: bool = Fa
     output = sum(count(m["content"]) for m in messages
                  if m.get("role") == "assistant")
     attribution["[output tokens generated]"] += output * PRICE_OUT / 1e6
-    cost = read * PRICE_READ / 1e6 + write * PRICE_WRITE / 1e6 + output * PRICE_OUT / 1e6
+    cost = read * PRICE_READ / 1e6 + write * write_rate / 1e6 + output * PRICE_OUT / 1e6
 
     turns = sum(1 for m in messages
                 if m.get("role") == "user" and isinstance(m.get("content"), str))
@@ -303,7 +340,20 @@ def main() -> int:
     parser.add_argument("--report", type=float, nargs="*", default=[],
                         help="console per-day totals (UTC, less non-session use), "
                              "in session order, for the reconciliation")
+    parser.add_argument("--cache-ttl", choices=WRITE_MULTIPLIERS)
+    parser.add_argument("--high-water", type=int, default=DEFAULT_CONTEXT_HIGH_WATER_TOKENS)
+    parser.add_argument("--low-water", type=int, default=DEFAULT_CONTEXT_LOW_WATER_TOKENS)
     args = parser.parse_args()
+    try:
+        shipped_ttl = tree_cache_ttl()
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.cache_ttl = args.cache_ttl or shipped_ttl
+    if not 0 < args.low_water < args.high_water:
+        parser.error("context low-water must be positive and below high-water")
+    write_rate = PRICE_IN * WRITE_MULTIPLIERS[args.cache_ttl]
+    settings = (f"TTL {args.cache_ttl}; cache write ${write_rate:.2f}/MTok; "
+                f"window {args.high_water}/{args.low_water}")
 
     count = Counter(_tokenizer(), args.scale)
     base = {
@@ -320,7 +370,7 @@ def main() -> int:
         return 1
 
     print(f"model claude-opus-4-8 at ${PRICE_IN}/${PRICE_OUT} per MTok; "
-          f"cache write ${PRICE_WRITE}, read ${PRICE_READ}")
+          f"{settings}; cache read ${PRICE_READ}/MTok")
     print("base per call: %d tokens (%s), scale %s\n" % (
         sum(base.values()),
         ", ".join(f"{k.strip('[]')} {v}" for k, v in base.items()), args.scale))
@@ -331,7 +381,9 @@ def main() -> int:
     total = collections.Counter()
     rows = []
     for path in paths:
-        row, attribution = replay(path, count, base, args.as_if_82b)
+        row, attribution = replay(path, count, base, args.as_if_82b,
+                                  cache_ttl=args.cache_ttl, high_water=args.high_water,
+                                  low_water=args.low_water)
         rows.append(row)
         total.update(attribution)
         print("%-24s%6d%6d%6d%7dk%7dk%8.1f%8.2f%7d%9.2f" % (
@@ -342,8 +394,9 @@ def main() -> int:
 
     floor = sum(r["cost"] for r in rows)
     reads = sum(r["read"] for r in rows) * PRICE_READ / 1e6
-    writes = sum(r["write"] for r in rows) * PRICE_WRITE / 1e6
+    writes = sum(r["write"] for r in rows) * write_rate / 1e6
     outputs = sum(r["output"] for r in rows) * PRICE_OUT / 1e6
+    print(f"TOTAL / summary — {settings}")
     print("%-24s%6d%6d%6d%8s%8s%8.1f%8.2f%7d%9.2f" % (
         "TOTAL", sum(r["calls"] for r in rows), sum(r["turns"] for r in rows),
         sum(r["compactions"] for r in rows), "", "",
@@ -355,15 +408,16 @@ def main() -> int:
 
     invalidations = sum(r["invalidations"] for r in rows)
     print(f"{invalidations} full-prefix invalidations (compactions + session starts): "
-          f"each pays 12.5x for its whole context")
+          f"each pays {write_rate / PRICE_READ:g}x for its whole context")
 
-    print("\nwhat the priced context was, as a share of the floor:")
+    print(f"\nwhat the priced context was, as a share of the floor — {settings}:")
     attributed = sum(total.values())
     for label, dollars in total.most_common(12):
         print(f"  {dollars:7.2f}  {100 * dollars / attributed:5.1f}%  {label}")
 
     if args.report:
-        print("\nreconciliation — the floor assumes a warm cache; the residual is "
+        print(f"\nreconciliation — {settings}\n"
+              "the floor assumes a warm cache; the residual is "
               "\nwhat cold turn boundaries and anything unmodelled cost:")
         if len(args.report) != len(rows) and len(args.report) != 1:
             print(f"  ({len(args.report)} reported totals for {len(rows)} sessions: "
@@ -372,7 +426,7 @@ def main() -> int:
         residual = reported - floor
         turns = sum(r["turns"] for r in rows)
         per_cold = (sum(r["avg_context"] * r["turns"] for r in rows) / max(1, turns)
-                    * (PRICE_WRITE - PRICE_READ) / 1e6)
+                    * (write_rate - PRICE_READ) / 1e6)
         print(f"  reported ${reported:.2f}  floor ${floor:.2f}  "
               f"residual ${residual:.2f} ({100 * residual / reported:.0f}% of the bill)")
         print(f"  at ${per_cold:.2f} per cold boundary that is "
