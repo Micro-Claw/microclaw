@@ -2,7 +2,10 @@
 name: zeiss-can29
 description: Verify cubes, side port and illumination on a ZeissCAN29 stand, and engage Definite Focus correctly.
 ---
-# ZeissCAN29 reference (microclaw)
+
+# ZeissCAN29 reference
+
+Returned by `load_skill(name="zeiss-can29")`.
 
 Zeiss stands on the ZeissCAN29 adapter. Only the `ZeissScope` hub is registered;
 every peripheral is discovered from what the stand reports, so `list_devices` is

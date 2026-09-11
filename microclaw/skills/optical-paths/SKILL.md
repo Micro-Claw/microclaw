@@ -2,7 +2,23 @@
 name: optical-paths
 description: Interpret generic microscope optical paths, ports, objectives, and manual components.
 ---
+
 # Optical-path reference: how light paths usually work
+
+Returned by `load_skill(name="optical-paths")`.
+
+## Sources
+
+Partly compiled from one reference page:
+
+- **[MicroscopyU-OpticalTrain]** — "The Microscope Optical Train." Nikon's MicroscopyU,
+  Microscopy Basics. <https://www.microscopyu.com/microscopy-basics/components> — the
+  ordering of the illumination and imaging path and the conjugate image planes are drawn
+  from this page.
+
+The rest is not from it: what a Micro-Manager installation can and cannot see of that path,
+which components are manual, and how to treat a continuous light-path adjuster are this
+document's own, and none of it is a claim about the stand in front of you.
 
 ## Usual path ordering — and why the actual stand may differ
 

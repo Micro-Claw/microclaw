@@ -3,7 +3,24 @@ name: fluorescence-microscopy
 description: Plan general fluorescence imaging - sample prep, objectives, sampling, channels, photobleaching, and trustworthy intensity comparisons.
 ---
 
-# General fluorescence microscopy reference (microclaw)
+# General fluorescence microscopy reference
+
+Returned by `load_skill(name="fluorescence-microscopy")`.
+
+## Sources
+
+Condensed from one reference paper:
+
+- **[Jonkman2020]** — Jonkman J, Brown CM, Wright GD, Anderson KI, North AJ.
+  "Tutorial: guidance for quantitative confocal microscopy." *Nat Protoc.*
+  2020;15(5):1585–1611.
+  [doi:10.1038/s41596-020-0313-9](https://doi.org/10.1038/s41596-020-0313-9) — the source
+  this document is condensed from, and the origin of its section order: sample preparation,
+  objectives, sampling, channel configuration, photobleaching and phototoxicity, the
+  instrument faults that corrupt intensities, and the analysis, presentation and statistics
+  rules. It is written for confocal; the guidance below is stated for fluorescence imaging
+  generally, so where a point here is broadened beyond confocal, the paper is the exact
+  statement.
 
 ## Scope
 

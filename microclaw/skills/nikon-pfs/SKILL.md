@@ -3,6 +3,10 @@ name: nikon-pfs
 description: Safely find, engage, verify, and tune Nikon Perfect Focus System focus locks.
 ---
 
+# Nikon Perfect Focus System (PFS) reference
+
+Returned by `load_skill(name="nikon-pfs")`.
+
 Nikon rigs:
 - Nikon systems often use the Perfect Focus System (PFS) as the focus lock. If you see TIPFS hardware, use run_autofocus with its property probe to identify the capture range. TIPFSStatus-Status tells you if you are focusing, regardless of whether or not the PFS is on. Pass the status device, property, and its exact in-range values to probe; use method='sweep' and a reviewed wide window. Name only steady in-range states, never a transient one the status reports while the lock is engaging. The sweep stops at the first plane that reads in range and leaves Z there, so it costs no exposures and does not sweep the rest of the window; size the step to the capture range you expect rather than defaulting to a fine one. Once it is in range of focus, the focus lock can be engaged, and engaging it is what confirms the plane.
 - Once the PFS is on, use an image-based focusing metric to confirm there is signal. You can use the PFSOffset to fine tune the focus, using image-based focusing metrics to improve the contrast.

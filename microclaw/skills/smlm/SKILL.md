@@ -2,7 +2,23 @@
 name: smlm
 description: Plan and run SMLM workflows including dSTORM, PALM, PAINT, and DNA-PAINT.
 ---
-# Single-Molecule Localization Microscopy (SMLM) reference (microclaw)
+
+# Single-Molecule Localization Microscopy (SMLM) reference
+
+Returned by `load_skill(name="smlm")`.
+
+## Sources
+
+Condensed from one reference paper:
+
+- **[Lelek2021]** — Lelek M, Gyparaki MT, Beliu G, Schueder F, Griffié J, Manley S,
+  Jungmann R, Sauer M, Lakadamyali M, Zimmer C. "Single-molecule localization microscopy."
+  *Nat Rev Methods Primers.* 2021;1:39.
+  [doi:10.1038/s43586-021-00038-x](https://doi.org/10.1038/s43586-021-00038-x) — the SMLM
+  primer this document is condensed from: technique variants, photophysics and blinking
+  kinetics, acquisition parameters, drift correction and the post-processing pipeline. It is
+  also the second source of `load_skill(name="dna-paint")`, so the two documents agree where
+  they both cite it.
 
 ## What SMLM is
 

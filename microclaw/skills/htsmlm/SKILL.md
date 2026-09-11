@@ -2,7 +2,10 @@
 name: htsmlm
 description: Operate htSMLM and EMU configurations through their semantic hardware mappings.
 ---
-# htSMLM / EMU reference (microclaw)
+
+# htSMLM / EMU reference
+
+Returned by `load_skill(name="htsmlm")`.
 
 ## What EMU and htSMLM are
 

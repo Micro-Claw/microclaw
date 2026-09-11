@@ -2,7 +2,10 @@
 name: hook-authoring
 description: Write and verify pycro-manager acquisition hooks and saved analysis adapters.
 ---
-# pycro-manager hook API reference (microclaw)
+
+# pycro-manager hook API reference
+
+Returned by `load_skill(name="hook-authoring")`.
 
 ## Integrating the user's own analysis
 
