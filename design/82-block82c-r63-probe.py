@@ -14,7 +14,12 @@ WHAT IT ASSUMES, ALL OF IT LOAD-BEARING
 * The real ConversationStore.model_messages(history[:i]) reproduces the context
   under the tree and window being tested. Usage compaction counts are checked
   on every call; disagreement is reported and partitions remain replay estimates,
-  not a claim about the historical context.
+  not a claim about the historical context. A usage log from a tree with a
+  different estimate_tokens pins WHEN compaction fired, not WHERE it cut.
+  Compare current/recorded estimated tokens only while both are uncompacted:
+  near 1 supports estimator equivalence and replay partition trust; away from 1
+  indicates a different estimator and a replay context the model never saw.
+  Missing or nonpositive recorded estimates cannot contribute to this ratio.
   Without usage, partitions and compactions are replay estimates only, and
   usage-pinned timestamps and turn IDs are unavailable.
 * A mention is a case-sensitive, whole-identifier occurrence of a tool name
@@ -37,6 +42,7 @@ import collections
 import json
 from pathlib import Path
 import re
+import statistics
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -65,6 +71,7 @@ def score(messages, usage=None, *, high_water=DEFAULT_CONTEXT_HIGH_WATER_TOKENS,
     vocabulary = session_tools | {tool['name'] for tool in TOOLS}
     pattern = re.compile(r'(?<!\w)(?:' + '|'.join(map(re.escape, sorted(vocabulary))) + r')(?!\w)')
     events, mentions, disagreements, usage_events = [], [], [], []
+    estimate_ratios = []
     usage_previous = 0
     if usage is not None:
         for n, record in enumerate(usage, 1):
@@ -84,6 +91,10 @@ def score(messages, usage=None, *, high_water=DEFAULT_CONTEXT_HIGH_WATER_TOKENS,
         context = store.model_messages(messages[:index])
         record = usage[call - 1] if usage is not None else None
         if record is not None:
+            recorded_estimate = record.get('estimated_tokens')
+            if (store.compaction_count == 0 and record['compaction_count'] == 0
+                    and recorded_estimate is not None and recorded_estimate > 0):
+                estimate_ratios.append(store.last_estimated_tokens / recorded_estimate)
             if record['compaction_count'] != store.compaction_count:
                 disagreements.append(call)
             tid = record['turn_id']
@@ -126,7 +137,8 @@ def score(messages, usage=None, *, high_water=DEFAULT_CONTEXT_HIGH_WATER_TOKENS,
             event['timestamp'] = None
     return dict(calls=calls, turns=turn, events=events, mentions=mentions,
                 usage_records=len(usage) if usage is not None else None,
-                usage_events=usage_events, disagreements=disagreements)
+                usage_events=usage_events, disagreements=disagreements,
+                estimate_ratios=estimate_ratios)
 
 
 def report(result):
@@ -145,6 +157,18 @@ def report(result):
                   'the exact historical partition is unavailable on this tree.')
         else:
             print('Usage/replay compaction counts and turn boundaries agree on every call.')
+    if result['usage_records'] is not None:
+        ratios = result['estimate_ratios']
+        if ratios:
+            print(f'Estimator ratio current/recorded, both uncompacted: n={len(ratios)}; '
+                  f'min {min(ratios):.4f}, median {statistics.median(ratios):.4f}, '
+                  f'max {max(ratios):.4f}')
+            print('Near 1 supports an equivalent estimator and trustworthy replay partition; '
+                  'away from 1 indicates a different estimator and a replay context '
+                  'the model never saw.')
+        else:
+            print('Estimator ratio unavailable: no calls with both contexts uncompacted '
+                  'and a positive recorded estimated_tokens value.')
     for event in result['events']:
         print(f"REPLAY compaction at call {event['call']}, turn {event['turn']} "
               f"({event['turn_id'] or 'ID unavailable'}), "

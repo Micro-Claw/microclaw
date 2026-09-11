@@ -43,15 +43,9 @@ def history(tmp_path):
 
 def test_d8_default_follows_real_breakpoints(monkeypatch, history, capsys):
     instrument = load_script('82-session-cost-reconstruction')
-    blocks = agent._system_blocks()
-    blocks += agent._with_cache_breakpoint([{'role': 'user', 'content': 'probe'}])[-1]['content']
-    blocks += tools_schema.TOOLS_CACHED
-    ttls = {b['cache_control'].get('ttl', '5m') for b in blocks if 'cache_control' in b}
-    assert len(ttls) == 1
-    expected = ttls.pop()
     monkeypatch.setattr('sys.argv', ['instrument', str(history.parent)])
     assert instrument.main() == 0
-    assert f'TTL {expected}' in capsys.readouterr().out
+    assert 'TTL 1h; cache write $10.00/MTok' in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('source', ['system', 'messages', 'tools'])
@@ -111,7 +105,8 @@ def test_d8_window_reaches_store(monkeypatch, history, capsys):
     assert rows[1]['compactions'] > rows[0]['compactions']
 
 
-def test_r63_real_checkpoint_partition_and_usage(capsys):
+@pytest.mark.parametrize('estimator_ratio', [1.0, 2.5])
+def test_r63_real_checkpoint_partition_and_usage(capsys, estimator_ratio):
     probe = load_script('82-block82c-r63-probe')
     messages = fixture_messages()
     store = ConversationStore(AuditLog(None, enabled=False),
@@ -124,17 +119,31 @@ def test_r63_real_checkpoint_partition_and_usage(capsys):
         if message['role'] == 'assistant':
             store.model_messages(messages[:index])
             usage.append(dict(compaction_count=store.compaction_count,
+                              estimated_tokens=store.last_estimated_tokens / (
+                                  estimator_ratio if store.compaction_count == 0 else 99),
                               turn_id=f'turn-{turn}', timestamp=f'fixture-call-{len(usage)}'))
     result = probe.score(messages, usage, high_water=5000, low_water=3000)
     assert result['events']
     assert not result['disagreements']
+    assert result['estimate_ratios'] == pytest.approx([estimator_ratio] * sum(
+        record['compaction_count'] == 0 for record in usage))
     categories = {(m['tool'], m['category']) for m in result['mentions']}
     assert ('snap_and_analyze', 'checkpoint-only') in categories
     assert ('get_system_state', 'live-window') in categories
     assert ('move_stage_xy', 'never-called-in-this-session') in categories
     assert any(e['last_mention'] is not None for e in result['events'])
     probe.report(result)
-    assert 'Earlier I used snap_and_analyze.' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert 'Earlier I used snap_and_analyze.' in output
+    assert (f'min {estimator_ratio:.4f}, median {estimator_ratio:.4f}, '
+            f'max {estimator_ratio:.4f}') in output
+    for record in usage:
+        record.pop('estimated_tokens')
+    usage[0]['estimated_tokens'] = 0
+    unavailable = probe.score(messages, usage, high_water=5000, low_water=3000)
+    assert unavailable['estimate_ratios'] == []
+    probe.report(unavailable)
+    assert 'Estimator ratio unavailable' in capsys.readouterr().out
     offline = probe.score(messages, high_water=5000, low_water=3000)
     probe.report(offline)
     assert 'usage-pinned timestamps and turn IDs unavailable' in capsys.readouterr().out
@@ -178,3 +187,11 @@ def test_d8_default_changes_with_uniform_real_tree(monkeypatch, history, capsys)
     monkeypatch.setattr('sys.argv', ['instrument', str(history.parent)])
     assert instrument.main() == 0
     assert 'TTL 5m; cache write $6.25/MTok' in capsys.readouterr().out
+
+
+def test_r63_estimator_ratio_without_eligible_calls(capsys):
+    probe = load_script('82-block82c-r63-probe')
+    result = probe.score([], [])
+    assert result['estimate_ratios'] == []
+    probe.report(result)
+    assert 'Estimator ratio unavailable: no calls with both contexts uncompacted' in capsys.readouterr().out
