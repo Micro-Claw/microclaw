@@ -416,9 +416,38 @@ that the previous run did not answer. Revisit only if D1's records show
 re-analysis is still a material share after D2 lands — D2 cuts the unit cost of
 this pattern by ~60%, which may be the whole fix.
 
-**D7 (F6) — proposed, not decided: checkpoint the new slice, not the whole
-history.** Worth $17, and the only item here that could weaken what the context
-guarantees, so it needs the operator's judgement first.
+**D7 (F6) — DROPPED, 2026-09-11, on measurement.** It was proposed as worth $17
+and "nearly free", conditional on one judgement about provenance. Both halves of
+that turned out to be wrong, and the probe is
+`design/82-block82c-d7-probe.py`, run against the 404-call session:
+
+| | current (one block) | D7 (29 blocks) |
+|---|---|---|
+| size | 86,201 bytes = 40,060 est tokens | 195,325 bytes = 90,870 est tokens |
+| actions carried | 200 of 367 | 367 of 367 |
+| hashes | 200 of 204 | 204 of 204 |
+
+**The provenance question was the wrong question.** No segment came near a cap —
+the largest held 69 entries against a limit of 200 — and no artifact appeared in
+two segments, so D7 would carry *more* provenance than today, not less. Today's
+single checkpoint silently drops 167 actions.
+
+**The size is the problem, and it cannot be tuned away.** D7 costs **+50,810
+estimated tokens on every call** after the first compaction, because each
+segment repeats the contract text, its own digest and its own totals, and the
+segments together are uncapped. Capping them is not available: trimming an older
+segment changes its bytes and destroys exactly the cache stability D7 exists to
+buy. **An immutable prefix cannot be globally bounded** — that is the general
+result, not a fact about this session.
+
+And the prize shrank twice while this was pending. 82a measured that a
+compaction already keeps the ~50k static tools+system head (F6 is wrong), and
+82b cut the peak context from 208k to 134k. So D7 pays ~50k tokens a call to
+save a rewrite that is both smaller and cheaper than the finding that motivated
+it.
+
+The original text follows, for anyone who wants to reopen it with a different
+session:
 
 ```python
 # conversation.py, ConversationStore.model_messages — the prefix survives compaction
@@ -530,12 +559,33 @@ tests, because D2 changes the shape of a recorded tool result and
 `read_hook_log`'s `entries` being complete, which is D3's contract change and
 must be updated deliberately rather than relaxed.
 
-**82c — the levers 82b does not pull.** D7 (the append-only checkpoint, worth
-$17 and the only change here that touches a contract rather than a payload), the
-context window (120k/90k), and the tool-schema base (F7) — all measured against
-D1's records from real sessions rather than a replay of these five. No decision
-is pre-committed, and D7 does not start until the provenance question in F6 has
-an answer from the operator.
+**82c — the levers 82b does not pull.** Not started. **D7 is dropped** (see the
+decision above; it is measured, and the probe is committed), so 82c is two
+things:
+
+1. **The tool schemas (F7), now the largest single line at 21.2%** of the
+   post-82b floor — $9.98 of $52.23. F7 still says do not act on this yet, and
+   its reason still holds: those descriptions are where design/62 measured
+   statically-knowable refusals working, and trimming them re-buys refusals at
+   runtime, which costs rig trips. The lever that keeps the text and stops
+   re-sending it is `defer_loading` + tool search (`R101`), which changes what
+   the model can see without a search step. **This is a decision about
+   behaviour, not a payload edit, and it needs the operator.**
+2. **The context window (120k/90k).** These now mean what they say, since D4
+   meters honestly. 82b's replay showed the shape of the trade directly: D4
+   alone took the floor from $71.25 to $63.49 by *raising* invalidations from 19
+   to 36 while cutting read cost $38.86 → $25.85. A lower window pushes further
+   along that curve, and a compaction is cheaper than F6 claimed. Measure it on
+   the replay before proposing a number.
+
+A third item arrived from 82b and belongs here: **D4 made compaction more
+frequent**, which makes register row `R63` — the model attributing a compacted
+turn's tool calls to the current turn — more likely than when it was filed, not
+less. 82a's `_usage.jsonl` pins each compaction to an exact call and timestamp,
+which is the sharper probe that row has been asking for.
+
+What 82c does **not** need: a rig. Every item settles on the replay, the
+archived histories, or a local probe.
 
 ## What this notebook will not do
 
@@ -554,6 +604,6 @@ an answer from the operator.
 |---|---|---|---|---|---|
 | 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | demo machine 2026-09-11: **11/11**, $9.58, one compaction (n=1); the round's one FAIL was the gate's limb, corrected | `414fc39` 2026-09-11 |
 | 82b | `design82/82b-payloads` | `af7a63f` | codex runner (`64ee6ec`) + coordinator (`9d8db2c`) | replay 2026-09-11: **$71.25 → $52.23**, peak context 208k → 134k | `cec6a3b` 2026-09-11 |
-| 82c | — | — | — | — | — |
+| 82c | — | — | — | — | not started; **D7 dropped on measurement 2026-09-11**, so its scope is F7 and the context window |
 
 Rows this notebook declines to take go to `design/70`, not into this file.

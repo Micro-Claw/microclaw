@@ -1266,14 +1266,16 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 - **Status** — OPEN as an observation, not a defect - design/32 §5 records the sighting and its own refutation; nothing in the code has been identified as wrong.
 - **Importance** — LOW - two sightings, cause unknown, no measured consequence; it is a note asking for a sharper probe before anyone claims a cause.
 - **Where** — LOCAL - a compaction probe is a scripted conversation, no hardware.
-- **Block** — **82c**, adopted 2026-09-11. design/82 F6 names this phenomenon
-  from the other side — "the temporal disclaimer whose absence made a model
-  report four-turn-old tool calls as current activity" — and D7 rewrites the
-  checkpoint that carries it. Whatever 82c decides about the append-only
-  checkpoint has to answer this row in the same breath, because a per-segment
-  checkpoint changes what the model is told about *when* the elided turns
-  happened. 82a also made the sharper probe affordable: a session's
-  `_usage.jsonl` now pins each compaction to an exact call and timestamp.
+- **Block** — **82c**, adopted 2026-09-11, and the reason changed the same day.
+  It was adopted because D7 would rewrite the checkpoint that carries the
+  temporal disclaimer; **D7 was then dropped on measurement**
+  (`design/82-block82c-d7-probe.py`), so nothing in 82c edits that text. The row
+  stays with 82c for a stronger reason: **82b's D4 made compaction more
+  frequent** — the replay went from 19 compactions to 36 on D4 alone — so the
+  phenomenon this row records is more likely now than when it was filed, not
+  less. 82a also made the sharper probe affordable: a session's `_usage.jsonl`
+  pins each compaction to an exact call and timestamp, so a probe no longer has
+  to guess when the model's context moved under it.
 - **Effort** — SMALL
 - **Provenance** — *coordinator-triaged, not runner-evaluated.* The Codex usage limit was reached before this row got a runner; the judgement above is the coordinator's own code read.
 
