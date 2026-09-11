@@ -553,7 +553,7 @@ an answer from the operator.
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
 | 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | demo machine 2026-09-11: **11/11**, $9.58, one compaction (n=1); the round's one FAIL was the gate's limb, corrected | `414fc39` 2026-09-11 |
-| 82b | `design82/82b-payloads` | `af7a63f` | codex runner (`64ee6ec`) + coordinator (`9d8db2c`) | replay 2026-09-11: **$71.25 → $52.23**, peak context 208k → 134k | — |
+| 82b | `design82/82b-payloads` | `af7a63f` | codex runner (`64ee6ec`) + coordinator (`9d8db2c`) | replay 2026-09-11: **$71.25 → $52.23**, peak context 208k → 134k | `cec6a3b` 2026-09-11 |
 | 82c | — | — | — | — | — |
 
 Rows this notebook declines to take go to `design/70`, not into this file.

@@ -10618,3 +10618,41 @@ by demonstration ($9.58, 63 calls, 9.9 min), F6 refuted, F4 measured at 1.69x
 (stable 1.67-1.71) against a reconstructed 1.4x, and a peak billed context of
 254,790 tokens on a call the guard scored at 119,673. Two of those change blocks
 that had not been written yet.
+
+## design/82 block 82b — the payload fixes (merged `cec6a3b`, 2026-09-11)
+
+One Codex turn again, no revision turns, and again the coordinator's own full
+run found what the runner's scope could not.
+
+- **Scoping a runner's test list by the modules it changes misses the
+  meta-tests.** 82a lost `test_authorization.py` that way; 82b lost
+  `test_suite_integrity.py`, which enforces `encoding="utf-8"` on every text I/O
+  in the suite — eight new `read_text()`/`write_text()` calls failed it. **Put
+  `tests/test_suite_integrity.py` in every runner prompt's test list**: any new
+  test code can trip it, whatever module the block touches.
+- The runner force-added `result.md`, which `.gitignore:83` exists to keep out
+  (79b's lesson). Untracked on review. Worth one line in the prompt.
+- It improved on the design's own stub: D2's published snippet re-adds
+  `scientific_payload_sha256` by subscript, which raises `KeyError` on the
+  manifest-assembly failure branch, where no such key exists. The runner kept
+  the key by *not dropping* it instead, and wrote the failure-branch test that
+  proves it.
+
+**The acceptance as specified could not have measured two of the three
+decisions**, and this is the transferable part. The replay reads archived
+histories, which hold the results the *old* code returned — so re-running it
+against changed code moves D4 and nothing else; D2 and D3 are invisible by
+construction. `--as-if-82b` re-prices the archive as if the new code had
+produced it: `read_hook_log` through the **real shipped tool** against a
+temporary log of the archived entries (a measurement), and D2's key drop as a
+projection whose key tuple is read out of the shipped source with
+`inspect.getsource` (so it refuses loudly rather than quietly disagreeing).
+Before writing a before/after gate, ask what in the recorded evidence actually
+changes when the code does.
+
+Numbers, on the same five sessions: **$71.25 → $52.23, 27%**; peak single-call
+context 208k → 134k. D4 alone is worth $7.76 and gets there by *increasing*
+invalidations 19 → 36 while cutting read cost $38.86 → $25.85 — an honest meter
+holds a smaller window. And the baseline was **$71.25, not the notebook's
+$70.84**, because design/81 had merged in between: measure the baseline on the
+tree under test, never quote one from a document.
