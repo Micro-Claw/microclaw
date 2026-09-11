@@ -393,10 +393,12 @@ def prune_transcripts(directory: str | os.PathLike[str], retention_days: int | N
 
 def estimate_tokens(messages: list[dict]) -> int:
     """Return a local deterministic token *estimate*, never an exact count."""
-    # Four UTF-8 bytes per token is deliberately conservative for ASCII-heavy
-    # JSON, plus fixed structural overhead per message.
+    # 2.36 UTF-8 bytes per token, measured against the API's own accounting on a
+    # live session (design/82, block 82a's gate): billed history tokens ran 1.69x
+    # the old bytes/4 estimate, stable at 1.67-1.71 over 59 calls.
+    # Four was optimistic in the one direction a context guard must not be.
     payload = json.dumps(jsonable(messages), ensure_ascii=False, separators=(",", ":"))
-    return math.ceil(len(payload.encode("utf-8")) / 4) + 8 * len(messages)
+    return math.ceil(len(payload.encode("utf-8")) / 2.36) + 8 * len(messages)
 
 
 def _block_type(block: Any) -> str | None:

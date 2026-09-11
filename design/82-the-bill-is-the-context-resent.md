@@ -367,17 +367,27 @@ def read_hook_log(ctrl, guard, log_path: str, limit: int = 50,
 reach for `rank_hook_log` instead, per
 `feedback_rules_belong_in_parameter_descriptions`.
 
-**D4 (F4) — `estimate_tokens` divides by 3, and says what it is.** One constant,
-one comment that stops claiming conservatism it does not have. Measured
-2.54–2.89 chars/token on real session content; 3 keeps a small margin on the
-prose-heavy end without pretending to be a tokenizer.
+**D4 (F4) — `estimate_tokens` divides by 2.36, and says what it is.** One
+constant, one comment that stops claiming conservatism it does not have.
+
+**The divisor is 2.36, not the 3 this decision first proposed** (operator's
+call, 2026-09-11). Three came from a *proxy* tokenizer over archived text —
+2.54–2.89 chars/token — and kept "a small margin on the prose-heavy end". Block
+82a's gate then measured the real thing on live traffic with Claude's own
+tokenizer: the undercount is **1.69×, stable at 1.67–1.71 over 59 calls**, which
+puts the real content at 2.36 bytes/token. Three still under-counts by 27%, in
+the one direction a context guard must not. The known cost of 2.36 is that a
+prose-heavy session will be *over*-counted and compact sooner than it needs
+to — which is the safe direction, and cheaper than F6 claimed now that a
+compaction is known to keep the static head.
 
 ```python
 # conversation.py
-# Three UTF-8 bytes per token, measured on real session histories (design/82 F4):
-# 2.89 chars/token over a whole 2.9 MB history, 2.54 on numeric analysis payloads.
+# 2.36 UTF-8 bytes per token, measured against the API's own accounting on a
+# live session (design/82, block 82a's gate): billed history tokens ran
+# 1.69x the old bytes/4 estimate, stable at 1.67-1.71 over 59 calls.
 # Four was optimistic in the one direction a context guard must not be.
-return math.ceil(len(payload.encode("utf-8")) / 3) + 8 * len(messages)
+return math.ceil(len(payload.encode("utf-8")) / 2.36) + 8 * len(messages)
 ```
 
 The high-water and low-water constants stay at 120k/90k, which now mean what
@@ -474,6 +484,39 @@ the five archived histories, not a rig trip:
 `design/82-session-cost-reconstruction.py` re-run against the changed code,
 reporting the floor before and after per session. Every limb settles locally.
 
+**Measured 2026-09-11, on the same five sessions:**
+
+| | floor | compactions | session 3 avg / max context |
+|---|---|---|---|
+| before (today's tree) | **$71.25** | 19 | 161k / 208k |
+| D4 alone | $63.49 | 36 | — |
+| all of 82b | **$52.23** | 23 | **105k / 134k** |
+
+**A 27% cut**, and the peak context of a single call falls from 208k to 134k.
+By line item: `run_analysis_on_saved_dataset` results $16.84 → $4.85 (−71%),
+`read_hook_log` results $6.26 → $3.25 (−48%).
+
+Two things the numbers say that the plan did not. **D4 alone is worth $7.76**,
+and it gets there by *increasing* invalidations — 19 compactions to 36, write
+cost up $25.60 → $30.85 — while cutting read cost $38.86 → $25.85, because a
+guard that meters honestly holds a much smaller window. Combined with D2 and D3
+the compaction count settles back to 23, because the payloads that were filling
+the window are gone. And **the tool schemas are now the largest single line at
+21.2%** of a smaller bill, which is F7's item and 82c's to weigh.
+
+The instrument needed extending before it could say any of this: a plain re-run
+moves **D4 only**, because the archive holds the results the *old* code
+returned. `--as-if-82b` re-prices the archive as if the new code had produced
+it — `read_hook_log` through the real shipped tool against a temporary log of
+the archived entries, D2's key drop as a projection whose key tuple is read out
+of the shipped source with `inspect.getsource` so it cannot quietly disagree
+with what shipped.
+
+Note the baseline is **$71.25, not the $70.84 above**: design/81 merged after
+this notebook's reconstruction was run, and the tool schemas now measure 22,677
+tokens against F7's 25,786. Compare against a baseline from the tree under
+test, never against a number in a document.
+
 The instrument has one trap of its own, and it is this notebook's own F4 in
 miniature: its no-tiktoken fallback needs a *different* chars-per-token for
 schemas than for tool-result JSON, and a single global ratio put the tool-schema
@@ -510,7 +553,7 @@ an answer from the operator.
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
 | 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | demo machine 2026-09-11: **11/11**, $9.58, one compaction (n=1); the round's one FAIL was the gate's limb, corrected | `414fc39` 2026-09-11 |
-| 82b | — | — | — | — | — |
+| 82b | `design82/82b-payloads` | `af7a63f` | codex runner (`64ee6ec`) + coordinator (`9d8db2c`) | replay 2026-09-11: **$71.25 → $52.23**, peak context 208k → 134k | — |
 | 82c | — | — | — | — | — |
 
 Rows this notebook declines to take go to `design/70`, not into this file.

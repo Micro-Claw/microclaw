@@ -10395,14 +10395,22 @@ def open_artifact(
 
 
 @emits_nothing
-def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str) -> dict:
+def read_hook_log(ctrl: MicroscopeController, guard: SafetyGuard, log_path: str,
+                  limit: int = 50, where: str = "last") -> dict:
     """Read a hook's output log file after an acquisition completes."""
+    if where not in ("last", "first"):
+        return {"error": "where must be 'last' or 'first'."}
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        return {"error": "limit must be a positive integer."}
     log_path = guard.resolve_readable_path(log_path)
     path = Path(log_path)
     if not path.exists():
         return {"error": f"Log file not found: {log_path}"}
     entries = json.loads(path.read_text(encoding="utf-8"))
-    return {"log_path": log_path, "entry_count": len(entries), "entries": entries,
+    shown = entries[-limit:] if where == "last" else entries[:limit]
+    return {"log_path": log_path, "entry_count": len(entries), "entries": shown,
+            "entries_shown": len(shown), "entries_omitted": len(entries) - len(shown),
+            "rank_this_log_instead": "rank_hook_log" if len(shown) < len(entries) else None,
             "autofocus_outcomes": _autofocus_outcomes(entries),
             "artifact": {"kind": "hook_log", "path": log_path}}
 

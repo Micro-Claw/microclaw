@@ -6677,3 +6677,36 @@ def test_mda_refuses_a_stale_token_when_settings_changed(
     result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
     assert "changed" in result.get("error", "").lower()
     manager.run_acquisition.assert_not_called()
+
+
+@pytest.mark.parametrize("count,options,start,stop", [
+    (60, {}, 10, 60), (60, {"limit": 3, "where": "first"}, 0, 3),
+    (60, {"limit": 3, "where": "last"}, 57, 60),
+    (3, {"limit": 50}, 0, 3), (50, {}, 0, 50), (0, {}, 0, 0),
+])
+def test_read_hook_log_window(mock_ctrl, unconstrained_guard, tmp_path,
+                              count, options, start, stop):
+    entries = [{"position": i, "autofocus": "converged"} for i in range(count)]
+    path = tmp_path / "hook.json"
+    path.write_text(json.dumps(entries), encoding="utf-8")
+    result = tools.read_hook_log(mock_ctrl, unconstrained_guard, str(path), **options)
+    assert result["entries"] == entries[start:stop]
+    assert result["entry_count"] == count
+    assert result["entries_shown"] == stop - start
+    assert result["entries_omitted"] == count - (stop - start)
+    assert result["rank_this_log_instead"] == ("rank_hook_log" if count > stop - start else None)
+    assert result["autofocus_outcomes"]["event_count"] == count
+    assert result["autofocus_outcomes"]["counts"]["converged"] == count
+    assert json.loads(path.read_text(encoding="utf-8")) == entries
+
+
+@pytest.mark.parametrize("options,word", [
+    ({"where": "middle"}, "where"), ({"limit": 0}, "limit"),
+    ({"limit": -1}, "limit"), ({"limit": True}, "limit"),
+    ({"limit": 1.5}, "limit"),
+])
+def test_read_hook_log_invalid_window(mock_ctrl, unconstrained_guard, tmp_path, options, word):
+    path = tmp_path / "hook.json"
+    path.write_text("[]", encoding="utf-8")
+    result = tools.read_hook_log(mock_ctrl, unconstrained_guard, str(path), **options)
+    assert word in result["error"]
