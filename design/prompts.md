@@ -10656,3 +10656,29 @@ invalidations 19 → 36 while cutting read cost $38.86 → $25.85 — an honest 
 holds a smaller window. And the baseline was **$71.25, not the notebook's
 $70.84**, because design/81 had merged in between: measure the baseline on the
 tree under test, never quote one from a document.
+
+## design/82 — state at the end of 2026-09-11, for a cold start
+
+82a and 82b are merged and `main` is pushed. **82c is not started**, needs no
+rig, and its scope shrank: **D7 is dropped on measurement**, so what is left is
+F7's tool schemas (now the largest single line at 21.2% of the reduced floor,
+and an operator decision about behaviour because the lever is `defer_loading` +
+tool search) and the context window. `design/82-block82c-d7-probe.py` is the
+evidence for the drop; `design/82-session-cost-reconstruction.py --as-if-82b` is
+the instrument for anything measured against the archived sessions, and it wants
+`tiktoken`, which is not a project dependency.
+
+Two process notes this notebook paid for, both about *scope*:
+
+- **Put `tests/test_suite_integrity.py` in every runner prompt's test list.**
+  Scoping a runner's tests by the modules its block changes is the wrong axis
+  twice over: 82a broke `test_authorization.py` (a caller that monkeypatches the
+  function whose signature changed), 82b broke the suite-integrity meta-test
+  (new test code must satisfy the rules about test code). Neither runner could
+  have seen it; both were caught by the coordinator's own full run, which is
+  exactly what step 3 is for.
+- **Before writing a before/after gate, ask what in the recorded evidence
+  actually changes when the code does.** 82b's specified acceptance — replay the
+  archived histories against the changed code — could only ever have moved D4,
+  because the archive holds the results the *old* code returned. Two of the
+  three decisions were invisible to their own acceptance test.
