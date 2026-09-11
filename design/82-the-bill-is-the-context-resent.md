@@ -1,6 +1,7 @@
 # The bill is the context, resent
 
-Status: **82a and 82b merged; 82c in flight**, updated 2026-09-11. The **total is measured**: the console (UTC)
+Status: **CLOSED 2026-09-11** — 82a, 82b and 82c all merged. `R63` stays open in
+design/70 with the probe 82c built attached to it. The **total is measured**: the console (UTC)
 reports **$89.27 on 2026-09-08 and $17.08 on 2026-09-09**, of which ~$4 that
 second day was other use of the key, so the five sessions cost **$102.35**. A
 credit balance that went from ~$104 to −$0.47 corroborates it to $2. Nothing
@@ -323,6 +324,40 @@ The ratio 82b reported is not invalidated, because both of its arms were priced
 the same way; every *absolute* forward-looking figure is. A script whose output
 does not say which TTL it priced will keep producing one of the two silently.
 
+### F9 — A replay on a changed tree is not a replay of what the model saw
+
+Block 82c's probe found this on its first real artifact, and it applies to every
+instrument in this notebook. Replaying block 82a's gate session — 63 calls, one
+**recorded** compaction — through today's `ConversationStore` produces **five**
+compactions, disagreeing with the record on 53 of 63 calls.
+
+Nothing is wrong with the artifact. That session ran before 82b, when
+`estimate_tokens` divided by 4; today it divides by 2.36, so the same history
+crosses the high-water mark far sooner. And the usage sidecar **measures this
+directly**, because `estimated_tokens` is the recording tree's own estimator
+output: comparing it against this tree's, on the calls where both are still
+uncompacted, gives
+
+    n=10; min 1.6066, median 1.6925, max 1.6937      (4 / 2.36 = 1.6949)
+
+D4's divisor change to three figures. (The low end is one 61-token context,
+where `estimate_tokens`' fixed `8 * len(messages)` term dominates and the ratio
+is not measuring a divisor at all — read the median.)
+
+The general statement: **a usage log pins *when* a compaction fired, never
+*where* it cut**, so a replay can reproduce a historical schedule only while the
+estimator is unchanged. The probe reports the ratio beside the disagreement and
+says which way to read it; it does not try to reconstruct the historical
+partition, and it must not — the cut index is nowhere in the record.
+
+Two consequences worth carrying. Any pre-82a artifact — the five nestor
+histories included — has **no usage sidecar at all**, so this check is
+unavailable for them and their replays are estimates with no way to say by how
+much. And D9's sweep is unaffected, because every row in it uses the same
+current estimator: it asks what these messages would cost on *today's* tree at
+window W, which is the forward-looking question, and the rows are comparable to
+each other even though none reproduces what the sessions historically did.
+
 ## Decisions
 
 **D1 (F0) — Record `response.usage` per call, in the sidecar shape the session
@@ -534,6 +569,15 @@ tokenizer's own stated ±10–15%. So the honest reading is not "120k is optimal
 but **"the window is not a lever on this session, and moving it is as likely to
 cost as to save"**.
 
+**What the replay cannot see, and why it does not rescue the low window.** These
+are the messages a model produced while running at 120k/90k. Re-pricing them at
+a narrower window changes *when compaction fires*, not what the model would have
+said — a model given less context may ask more questions, re-read a dataset it
+has forgotten, or take more turns to finish. Every one of those costs money the
+replay does not charge. So the sweep is **generous to the low-window arm**, and
+the low-window arm still loses monotonically. The same asymmetry makes the high
+end's loss a fair one: a wider window needs no extra turns to explain.
+
 The premise 82c inherited was wrong, and worth saying why. The notebook reasoned
 that because D4 alone cut the floor while *raising* invalidations 19 → 36, "a
 lower window pushes further along that curve". It does not: D4's gain came from
@@ -638,34 +682,56 @@ tests, because D2 changes the shape of a recorded tool result and
 `read_hook_log`'s `entries` being complete, which is D3's contract change and
 must be updated deliberately rather than relaxed.
 
-**82c — what is left after both levers were measured away.** Neither of the two
-items 82c inherited survived being measured. **D7 was dropped** before the block
-opened (the probe is `design/82-block82c-d7-probe.py`); **the context window is a
-no-op** (D9's table, measured at scoping); and **F7 is closed** on the schema
-distribution plus an operator decision — the cheap half of that lever is worth
-~$3 and the expensive half is the text design/62 measured working. So the block
-is small and entirely local:
+**82c — what is left after both levers were measured away.** Merged
+2026-09-11. Neither of the two items 82c inherited survived being measured. **D7
+was dropped** before the block opened (`design/82-block82c-d7-probe.py`); **the
+context window is a no-op** (D9); and **F7 is closed** on the schema
+distribution plus an operator decision. So the block was small and entirely
+local:
 
-1. **D8 — the instrument tells you which price it charged**, and takes the
-   window as an argument instead of needing a scratch monkey-patch. F8 is the
-   finding: the script still prices the 5-minute write 82a stopped paying.
-2. **`R63`'s probe** — the compaction-attribution row, now affordable. 82a's
-   `_usage.jsonl` carries `compaction_count` and `turn_id` per call, so a
-   compaction is pinned to an exact call and turn *from artifacts an ordinary
-   session already writes*. The probe is an **offline scorer over a session's
-   history plus its usage sidecar**, not a driven conversation: it finds the
-   assistant turns that follow a compaction and reports whether their prose
-   attributes tool calls that are in the checkpoint rather than in the live
-   window. That costs no API credit and rides on every future session.
-3. **Reconcile the notebook** to what all of this measured.
+1. **D8 — the instrument tells you which price it charged.** `--cache-ttl`,
+   `--high-water` / `--low-water`, and every table naming the TTL, the write
+   rate and the window it used. The default is *derived from the tree* by
+   walking what `_system_blocks()`, `_with_cache_breakpoint()` and
+   `TOOLS_CACHED` actually return, and a tree whose breakpoints disagree
+   **refuses** rather than picking one — D5 forbids mixed TTLs out of order, and
+   a constant that can drift out of agreement with the code is how F8 happened.
+   `PRICE_WRITE` is gone as a module global. Both floors reproduce: **$52.23 at
+   5m, $64.13 at 1h**, same 556 calls and 23 compactions.
+2. **`R63`'s probe** — `design/82-block82c-r63-probe.py`, an offline scorer over
+   a session's history plus its usage sidecar. It reports; it does not
+   adjudicate.
+3. **F9**, which the probe found on its first real artifact and which is the
+   block's most transferable result.
 
-Acceptance is local, on `block82a-evidence`'s own artifacts (63 usage records,
-34 turns, one compaction at call 16, turn `971f5fed`) and on the five archived
-histories. **Expect the R63 probe to report a null at n=1**; that is the correct
-outcome to record, not a reason to enlarge the sample. The row stays open with
-an instrument attached, which is what it has been asking for since design/32.
+**What R63 measured: a null, across six sessions.** Zero checkpoint-only
+attributions in block 82a's gate session, and across the five archived nestor
+histories only **two** candidates — both in the 404-call session, and both the
+model *describing* a tool rather than claiming to have called it:
 
-What 82c does **not** need: a rig, a driven session, or API credit.
+> …apply a `np.rot90` (and possibly a flip) so tile pixels align with the
+> stage/grid axes, the same way `build_stage_coordinate_mosaic` does it
+> internally.
+
+That is the instrument's precision characteristic and it is worth stating
+plainly: **a whole-identifier name match surfaces tool discussion at least as
+often as tool attribution**, so the candidate count is an upper bound on the
+phenomenon and a human has to read them. Deliberate — scoring temporal phrasing
+is a judgement the probe must not make, and R63 has never had a known
+signature to match. The row **stays open with an instrument attached**, which is
+what it has been asking for since design/32, and the honest statement is that
+six sessions produced no attribution error, not that the phenomenon is gone.
+
+The 404-call session also reproduced D7's truncation number from the other
+side: its last checkpoint carries **200 of 367 actions, dropping 167**, so
+checkpoint-only coverage there is partial and the probe says so per compaction.
+
+Acceptance was local and the coordinator ran all of it: full suite **3334
+passed, 99 skipped**; the D8 tests independently watched failing against the
+pre-block tree (7 failures, for the stated reasons); the archive replay
+reproducing both floors; and the probe run on real artifacts.
+
+What 82c did **not** need: a rig, a driven session, or API credit.
 
 ## What this notebook will not do
 
@@ -684,6 +750,6 @@ What 82c does **not** need: a rig, a driven session, or API credit.
 |---|---|---|---|---|---|
 | 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | demo machine 2026-09-11: **11/11**, $9.58, one compaction (n=1); the round's one FAIL was the gate's limb, corrected | `414fc39` 2026-09-11 |
 | 82b | `design82/82b-payloads` | `af7a63f` | codex runner (`64ee6ec`) + coordinator (`9d8db2c`) | replay 2026-09-11: **$71.25 → $52.23**, peak context 208k → 134k | `cec6a3b` 2026-09-11 |
-| 82c | `design82/82c-instrument` | `8f8ee29` | — | local: replay + `block82a-evidence` | in flight; **D7, the context window and F7 all measured away at scoping 2026-09-11**, so the scope is D8 (instrument pricing) + `R63`'s offline probe |
+| 82c | `design82/82c-instrument` | `8f8ee29` | codex runner (`b897cf0`, revision `24edc51`) + coordinator (`833e3e3`) | local 2026-09-11: full suite 3334/99, both floors reproduced, R63 null over six sessions | 2026-09-11 |
 
 Rows this notebook declines to take go to `design/70`, not into this file.

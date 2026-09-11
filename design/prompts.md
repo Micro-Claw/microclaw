@@ -10682,3 +10682,75 @@ Two process notes this notebook paid for, both about *scope*:
   archived histories against the changed code — could only ever have moved D4,
   because the archive holds the results the *old* code returned. Two of the
   three decisions were invisible to their own acceptance test.
+
+## design/82 block 82c — coordination notes, 2026-09-11
+
+Merged. The block that mostly consisted of **not writing the code it was scoped
+for**, which is the note worth keeping.
+
+**Both inherited items measured away before a runner was assigned.** 82c came
+with two: F7's tool schemas and the context window. Scoping measured both, and
+neither survived.
+
+- The window is a **no-op**. Swept 60k/45k to 400k/300k on the archived
+  sessions: the shipped 120k/90k is at the sampled minimum in *both* directions
+  at both cache prices, and 105k–135k is flat within $2 — inside the proxy
+  tokenizer's own ±10–15%. The premise was that D4 cutting the floor while
+  raising invalidations 19 → 36 showed a curve worth pushing along. **A trend
+  observed while a second variable moved is not a curve**: D4's gain came from
+  metering a bigger payload honestly, and once 82b removed that payload the
+  curve reverses.
+- F7 is **closed** on the distribution. Eight acquisition tools are 54% of all
+  schema tokens; the other 61 together are 28%, about $3. So the long-tail lever
+  buys ~5% and hides 61 tools behind a search step, and the only version worth
+  real money defers exactly the descriptions design/62 measured preventing
+  refusals. Operator's call, asked with the numbers in hand rather than as an
+  open question.
+
+**Measure the block's own premise before you assign it.** Both of these cost
+one scratch script and about twenty minutes; assigning either as written would
+have bought a runner turn, a review round and a change that made the bill worse.
+The notebook had already said "measure it on the replay before proposing a
+number" — the mistake available here was reading that as the block's first task
+rather than the coordinator's last scoping step.
+
+**A stale constant in the instrument (F8).** The reconstruction script priced
+the 5-minute cache write 82a stopped paying when D5 shipped `ttl: "1h"`. Both
+prices are right for different questions — $6.25 reconstructs the pre-82a
+archive, $10.00 prices today's tree — and the script answered one of them
+silently. 82b's *ratio* survives (both its arms were priced alike); every
+absolute forward-looking figure it produced does not. The fix is not a new
+constant: the default is **derived from the tree** by walking what
+`_system_blocks()`, `_with_cache_breakpoint()` and `TOOLS_CACHED` return, and a
+mixed-TTL tree refuses. A constant that can drift out of agreement with the code
+is exactly what went wrong.
+
+**The finding the runner could not have been asked for (F9).** The R63 probe's
+first real artifact disagreed with itself: block 82a's gate session records one
+compaction, and replaying it on today's tree produces five. The runner reported
+that as a limitation and explicitly refused to claim it had recovered the
+historical partition — the right call, and the review then found the cause in
+data the probe already had. `_usage.jsonl` records `estimated_tokens`, which is
+the *recording* tree's estimator output; against today's, on calls where both
+are uncompacted, the ratio is 1.61–1.69, median 1.6925, against 4/2.36 = 1.6949.
+D4's divisor change to three figures. **A usage log pins when a compaction
+fired, never where it cut.** The revision asks for that ratio as a general check
+with no divisor-specific logic, so it keeps working for the next estimator
+change.
+
+That is the shape to reuse: a runner flagged an unexplained disagreement rather
+than burying it, and the review's job was to turn a warning into a number. An
+implementation that hides an anomaly costs a rig trip later; one that surfaces
+it costs a review round.
+
+**R63 got an instrument, not an answer, and the row says so.** Null across six
+sessions — but the only two candidates raised were the model *describing* tools
+(`the same way build_stage_coordinate_mosaic does it internally`), not claiming
+to have called them. A whole-identifier name match surfaces discussion at least
+as often as attribution, so the count is an upper bound and a human reads the
+candidates. Scoring temporal phrasing is a judgement the probe must not make.
+
+**Process slip worth recording.** The coordinator edited a design doc *inside
+the runner's live worktree* while the runner was working there. Caught before
+the runner committed, reverted, and the patch held in scratch until the turn
+returned. One worktree per agent means the coordinator is an agent too.
