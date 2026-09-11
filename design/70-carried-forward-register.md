@@ -175,7 +175,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R81` | [run_multiposition_acquisition refuses any non-observation hook](#r81) | MEDIUM | MEDIUM |  |
 | `R38` | [Import-stripping check and emitted analysis block can disagree](#r38) | LOW | SMALL |  |
 | `R62` \* | [Historical calibration-artifact authoring gap](#r62) | LOW | SMALL |  |
-| `R63` \* | [Context-compaction attribution observation](#r63) | LOW | SMALL |  |
+| `R63` \* | [Context-compaction attribution observation](#r63) | LOW | SMALL | 82c |
 | `R74` | [Phase 2 XY typed-actuator ambiguity / proposed axis field](#r74) | LOW | MEDIUM |  |
 | `R82` | [Open the community skill package notebook](#r82) | HIGH | LARGE | → `design/71` §"next notebook brief" |
 | `R83` | [Generic package/protocol conformance needs a fixture](#r83) | HIGH | MEDIUM |  |
@@ -1266,7 +1266,14 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 - **Status** — OPEN as an observation, not a defect - design/32 §5 records the sighting and its own refutation; nothing in the code has been identified as wrong.
 - **Importance** — LOW - two sightings, cause unknown, no measured consequence; it is a note asking for a sharper probe before anyone claims a cause.
 - **Where** — LOCAL - a compaction probe is a scripted conversation, no hardware.
-- **Block** — NONE
+- **Block** — **82c**, adopted 2026-09-11. design/82 F6 names this phenomenon
+  from the other side — "the temporal disclaimer whose absence made a model
+  report four-turn-old tool calls as current activity" — and D7 rewrites the
+  checkpoint that carries it. Whatever 82c decides about the append-only
+  checkpoint has to answer this row in the same breath, because a per-segment
+  checkpoint changes what the model is told about *when* the elided turns
+  happened. 82a also made the sharper probe affordable: a session's
+  `_usage.jsonl` now pins each compaction to an exact call and timestamp.
 - **Effort** — SMALL
 - **Provenance** — *coordinator-triaged, not runner-evaluated.* The Codex usage limit was reached before this row got a runner; the judgement above is the coordinator's own code read.
 
