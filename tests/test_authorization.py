@@ -1227,7 +1227,7 @@ def test_repl_resolves_api_key_through_shared_loader(monkeypatch, capsys, source
     monkeypatch.setattr(cli, "MicroscopeController", lambda port, guard: Controller())
     monkeypatch.setattr(credentials, "load_api_key", lambda: (key, source))
     monkeypatch.setattr(agent, "set_api_key", installed.append)
-    monkeypatch.setattr(cli, "_repl", lambda *args: None)
+    monkeypatch.setattr(cli, "_repl", lambda *a, **k: None)
     cli.run_session(SimpleNamespace(
         safety_config=None, port=1, save_history=False, history_retention_days=None,
     ))
@@ -1383,7 +1383,7 @@ def test_repl_refuses_missing_api_key_before_repl(monkeypatch):
         lambda port, guard: constructed.append((port, guard)) or Controller(),
     )
     monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
-    monkeypatch.setattr(cli, "_repl", lambda *args: pytest.fail("REPL exposed"))
+    monkeypatch.setattr(cli, "_repl", lambda *a, **k: pytest.fail("REPL exposed"))
     with pytest.raises(SystemExit, match="environment variable, the system keyring, and the Microclaw credential file"):
         cli.run_session(SimpleNamespace(safety_config=None, port=1, save_history=False))
     assert constructed == []

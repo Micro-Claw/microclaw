@@ -2484,4 +2484,4 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 # Add cache_control on the last tool so the entire tool list is cached.
-TOOLS_CACHED = [*TOOLS[:-1], {**TOOLS[-1], "cache_control": {"type": "ephemeral"}}]
+TOOLS_CACHED = [*TOOLS[:-1], {**TOOLS[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}}]

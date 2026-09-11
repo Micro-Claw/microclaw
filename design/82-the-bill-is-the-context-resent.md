@@ -142,6 +142,12 @@ not the problem so much as how often they had to be paid for at write price.
 
 ### F0 — A session cannot say what it cost
 
+> **Closed 2026-09-11.** The first session that could: **$9.58 over 63 API calls
+> in 9.9 minutes** — cache read $5.39 (56%), cache write $3.98 (42%), output
+> $0.22 (2%), uncached input $0.00. 63 usage records against 63 assistant
+> messages in the history. The shape the reconstruction predicted holds: the
+> bill is the context, resent, and output tokens are a rounding error.
+
 `_stream_one_round` returns the SDK `Message`, whose `.usage` carries
 `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and
 `output_tokens`. It is discarded. Nothing downstream records it, so this whole
@@ -198,6 +204,16 @@ handful of new numbers.
 
 ### F4 — `estimate_tokens` undercounts message content by ~1.4×
 
+> **Measured on live traffic, 2026-09-11: the factor is 1.69×, not 1.4×**, and
+> it is remarkably stable — min 1.67, median 1.69, max 1.71 over 59 calls of one
+> session, once the 50,868-token static head is taken out of the billed input.
+> So the estimator should divide by **2.36 bytes/token**, not the 4 it uses and
+> not the 3 D4 proposes; D4 lands closer but still optimistic, in the one
+> direction a context guard must not be. The consequence is larger than the
+> reconstruction said too: the guard read **119,673** on the call that actually
+> billed **254,790 input tokens**. That is the peak context of a ten-minute
+> session, against a high-water mark of 120,000.
+
 `conversation.py:394` uses bytes/4, commented "deliberately conservative for
 ASCII-heavy JSON". Measured against session 3's actual history: **2.89
 chars/token**, and **2.54** on the analysis payloads — dense numeric JSON with
@@ -226,6 +242,16 @@ generation that runs long spends its own TTL: a 4-minute reply leaves one minute
 for the operator.
 
 ### F6 — Every compaction throws the whole prefix away: $17.02
+
+> **Measured on the demo machine, 2026-09-11, and this finding is wrong.** A
+> compaction throws the *message* prefix away and keeps the static head: the
+> post-compaction call **read 50,377 cached tokens** and rewrote 133,774, so 27%
+> of the prefix was kept, not rebuilt. `tools` and `system` carry their own
+> breakpoints ahead of the messages and a checkpoint does not touch them, so the
+> cache is invalid from the **first message**, not "from byte one". The $17.02
+> below is overstated by whatever share of each invalidation was the static
+> head — on this session's numbers, by about a quarter — and **D7's value falls
+> with it**. Re-price it from D1's records before 82c decides anything.
 
 `model_messages` returns `[self._checkpoint, *full_history[self._cut:]]`, and
 `self._checkpoint = _checkpoint(full_history[:chosen])` is re-derived from the
@@ -412,10 +438,36 @@ above stands as the only estimate of it. That trade is worth naming: paying
 $16–26 a session to narrow a number we do not need is the wrong way round.
 Acceptance: a driven session on
 the demo machine produces a `_usage.jsonl` whose `cache_read_input_tokens` is
-non-zero on ordinary rounds and **zero on the round after a compaction**; a
-`cache_creation_input_tokens` on that round within 10% of the store's own
-context estimate; and the sum of `output_tokens` agreeing with the history's
-assistant content to within the tokenizer's margin.
+non-zero on ordinary rounds and **zero on the round after a compaction**, whose
+every write is `ephemeral_1h_input_tokens` with nothing at 5m, which carries one
+record per API call (checked against the history's assistant messages), and in
+which **no cache miss the session start or a compaction cannot explain** — that
+last one is D5's payoff and the only direct measurement of the cold-boundary
+term. `design/82-block82a-gate.py` scores it; `design/82-block82a-gate.md` is
+the runbook.
+
+**Two of this block's originally stated criteria were withdrawn before the gate
+shipped, and one of them was arithmetically impossible.** "A
+`cache_creation_input_tokens` on the post-compaction round within 10% of the
+store's own context estimate" cannot hold: `estimate_tokens` meters the
+**history alone**, while the rewritten prefix is history *plus* the fixed
+tools+system block — measured at **49,901 tokens** by the API's own tokenizer
+(`design/82-block82a-ttl-probe.py`, 2026-09-10, 137,312 chars at 2.75
+chars/token). Add F4's ~1.4× undercount of the history and the ratio lands near
+20, not 1.1. A limb written that way would have failed the gate for the
+product's correct behaviour, which is design/69a's mistake with a different
+subject. It is now a **reported** number, not a graded one, alongside the
+output-token rate — both are what D1 exists to measure and neither has a
+defensible threshold yet. The same measurement corrects F7's parenthetical that
+"the tool schemas and prose do sit at 4.2–4.8": by Claude's tokenizer the static
+prefix sits at **2.75**, so D4's divisor of 3 is a floor rather than a margin,
+and the 120k high-water admits ~50k more per call than it says. That is 82c's
+lever, measured early.
+
+D5 needed no gate trip of its own: the four-breakpoint 1h request was measured
+live off-rig before the runbook shipped — 49,901 tokens written at
+`ephemeral_1h_input_tokens`, 0 at 5m, all read back seconds later, no beta
+header.
 
 **82b — the three payload fixes.** D2, D3, D4. Acceptance is a **replay** of
 the five archived histories, not a rig trip:
@@ -457,7 +509,7 @@ an answer from the operator.
 
 | Block | Branch | Start commit | Implementer | Gate | Merged |
 |---|---|---|---|---|---|
-| 82a | — | — | — | — | — |
+| 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | demo machine 2026-09-11: **11/11**, $9.58, one compaction (n=1); the round's one FAIL was the gate's limb, corrected | — |
 | 82b | — | — | — | — | — |
 | 82c | — | — | — | — | — |
 

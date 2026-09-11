@@ -2,6 +2,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from typing import Any
 import json
+import sys
+from datetime import datetime, timezone
 import os
 import time
 
@@ -586,7 +588,7 @@ def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
     if not (isinstance(content, list) and content and isinstance(content[-1], dict)):
         # e.g. assistant turns hold SDK model objects, not dicts — skip.
         return messages
-    content = [*content[:-1], {**content[-1], "cache_control": {"type": "ephemeral"}}]
+    content = [*content[:-1], {**content[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
     return [*messages[:-1], {**last, "content": content}]
 
 
@@ -652,14 +654,14 @@ def _system_blocks(*, setup_mode: bool = False) -> list[dict[str, Any]]:
         {
             "type": "text",
             "text": SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
         }
     ]
     knowledge = load_knowledge()
     kb_text = format_for_prompt(knowledge)
     if kb_text:
         blocks.append(
-            {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral"}}
+            {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral", "ttl": "1h"}}
         )
     if setup_mode:
         blocks.append({
@@ -706,7 +708,7 @@ ask afterwards, in the same reply. Never re-ask a stored topic."""
 
 
 def _stream_one_round(messages, system_blocks, model, tool_schemas,
-                      context_provider=None):
+                      context_provider=None, iteration=0, usage_sink=None):
     """One model call, streamed.
 
     Yields `text_delta` events as the prose arrives; returns the final Message —
@@ -741,7 +743,35 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
                         and event.delta.type == "text_delta"
                     ):
                         yield {"type": "text_delta", "text": event.delta.text}
-                return stream.get_final_message()
+                response = stream.get_final_message()
+                if usage_sink is not None:
+                    # Deliberately broad, and confined to building and delivering
+                    # one diagnostic record: this runs after a call that may
+                    # already have moved the stage, so a usage failure must not
+                    # lose the turn. Reading the response is inside the guard for
+                    # the same reason the sink call is — an unexpected response
+                    # shape is a diagnostic problem, not an acquisition one. The
+                    # API call and the tool dispatch stay outside it.
+                    try:
+                        usage = getattr(response, "usage", None)
+                        creation = getattr(usage, "cache_creation", None)
+                        usage_sink({
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "model": response.model,
+                            "iteration": iteration,
+                            "stop_reason": response.stop_reason,
+                            **{field: getattr(usage, field, None) for field in (
+                                "input_tokens", "output_tokens", "cache_read_input_tokens",
+                                "cache_creation_input_tokens",
+                            )},
+                            "cache_creation_5m_input_tokens": getattr(
+                                creation, "ephemeral_5m_input_tokens", None),
+                            "cache_creation_1h_input_tokens": getattr(
+                                creation, "ephemeral_1h_input_tokens", None),
+                        })
+                    except Exception as exc:
+                        print(f"[microclaw] Could not record usage: {exc}", file=sys.stderr)
+                return response
         except anthropic.NotFoundError as e:
             # A free-text model picker (v4c) can hold an id the API rejects.
             # Without this it escapes run_agent_iter as a 500 on the SSE stream.
@@ -784,6 +814,7 @@ def run_agent_iter(
     acquisition_event_sink: Callable[[dict], None] | None = None,
     acquisition_diagnostic_writer=None,
     acquisition_session_id: str | None = None,
+    usage_sink: Callable[[dict], None] | None = None,
 ) -> Iterator[dict]:
     """Run one user turn, yielding an event per thing that happens.
 
@@ -826,7 +857,8 @@ def run_agent_iter(
 
         try:
             response = yield from _stream_one_round(
-                messages, system_blocks, model, tool_schemas, context_provider
+                messages, system_blocks, model, tool_schemas, context_provider,
+                iteration=iteration, usage_sink=usage_sink,
             )
         except Exception as e:
             # A failed API call must not strand its attempted prompt in the
@@ -968,6 +1000,7 @@ def run_agent(
     on_message: Callable[[dict], None] | None = None,
     acquisition_diagnostic_writer=None,
     acquisition_session_id: str | None = None,
+    usage_sink: Callable[[dict], None] | None = None,
 ) -> tuple[str, list[dict]]:
     """Run one user turn through the agent loop.
 
@@ -984,7 +1017,7 @@ def run_agent(
     for event in run_agent_iter(
         user_message, ctrl, guard, messages, model, max_iterations,
         tool_schemas=TOOLS_CACHED, tool_registry=TOOL_REGISTRY,
-        context_provider=context_provider, on_message=on_message,
+        context_provider=context_provider, on_message=on_message, usage_sink=usage_sink,
         acquisition_diagnostic_writer=acquisition_diagnostic_writer,
         acquisition_session_id=acquisition_session_id,
     ):

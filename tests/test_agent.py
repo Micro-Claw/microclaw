@@ -121,6 +121,8 @@ def tool_use_response(tool_name: str, tool_input: dict, call_id: str = "call_1")
     block.input = tool_input
     block.id = call_id
     response = MagicMock()
+    response.model = "served-model"
+    response.usage = sdk_usage()
     response.stop_reason = "tool_use"
     response.content = [block]
     return response
@@ -131,6 +133,8 @@ def text_response(text: str):
     block.type = "text"
     block.text = text
     response = MagicMock()
+    response.model = "served-model"
+    response.usage = sdk_usage()
     response.stop_reason = "end_turn"
     response.content = [block]
     return response
@@ -580,7 +584,7 @@ class TestConversationCacheBreakpoint:
             run_agent("Hello", mock_ctrl, guard)
         sent = client.messages.stream.call_args.kwargs["messages"]
         last_block = sent[-1]["content"][-1]
-        assert last_block["cache_control"] == {"type": "ephemeral"}
+        assert last_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
     def test_breakpoint_moves_to_latest_tool_result(self, mock_ctrl, guard):
         client = make_mock_client([
@@ -593,7 +597,7 @@ class TestConversationCacheBreakpoint:
         sent = client.messages.stream.call_args_list[1].kwargs["messages"]
         last_block = sent[-1]["content"][-1]
         assert last_block["type"] == "tool_result"
-        assert last_block["cache_control"] == {"type": "ephemeral"}
+        assert last_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
         # and the first round's user message no longer carries a marker,
         # so markers never accumulate beyond the API's breakpoint budget
         assert "cache_control" not in json.dumps(sent[0]["content"])
@@ -799,6 +803,8 @@ class TestRunAgentIter:
 
     def test_max_tokens_is_a_named_recoverable_error(self, mock_ctrl, guard):
         response = MagicMock()
+        response.model = "served-model"
+        response.usage = sdk_usage()
         response.stop_reason = "max_tokens"
         response.content = []
         events = self._drain([response], [], mock_ctrl, guard)
@@ -984,6 +990,8 @@ def multi_tool_response(names, call_ids):
         b.type, b.name, b.input, b.id = "tool_use", name, {}, cid
         blocks.append(b)
     response = MagicMock()
+    response.model = "served-model"
+    response.usage = sdk_usage()
     response.stop_reason = "tool_use"
     response.content = blocks
     return response
@@ -1322,3 +1330,170 @@ def test_offers_require_tools_and_cleanup_stays_with_the_operator():
                    "remove, overwrite or move", "inspect_artifacts", "removal is theirs",
                    "deletes data and will not get one", "do not propose adding one"):
         assert anchor in reporting
+
+
+def sdk_usage():
+    from anthropic.types import Usage, CacheCreation
+    return Usage(input_tokens=12, output_tokens=412,
+                 cache_read_input_tokens=160000, cache_creation_input_tokens=90,
+                 cache_creation=CacheCreation(ephemeral_5m_input_tokens=20,
+                                              ephemeral_1h_input_tokens=70))
+
+
+@pytest.mark.parametrize("stop", ["end_turn", "tool_use", "max_tokens"])
+def test_usage_each_response(stop, mock_ctrl, guard):
+    from datetime import datetime
+    response = text_response("done")
+    response.stop_reason = stop
+    client = make_mock_client([response, text_response("next")])
+    records = []
+    with patch("microclaw.agent._get_client", return_value=client):
+        events = list(run_agent_iter("go", mock_ctrl, guard, [], usage_sink=records.append))
+    assert len(records) == client.messages.stream.call_count == (2 if stop == "tool_use" else 1)
+    assert [r["iteration"] for r in records] == list(range(len(records)))
+    record = dict(records[0])
+    assert datetime.fromisoformat(record.pop("timestamp")).utcoffset().total_seconds() == 0
+    assert record == dict(model="served-model", iteration=0, stop_reason=stop,
+                          input_tokens=12, output_tokens=412,
+                          cache_read_input_tokens=160000, cache_creation_input_tokens=90,
+                          cache_creation_5m_input_tokens=20, cache_creation_1h_input_tokens=70)
+    assert not any(e["type"] == "usage" for e in events)
+
+
+@pytest.mark.parametrize("outcome", ["retry", "spent", "bad_model"])
+def test_usage_retry_accounting(outcome, mock_ctrl, guard, monkeypatch):
+    monkeypatch.setattr("microclaw.agent._RETRY_DELAYS", (0,))
+    client = MagicMock()
+    failure = connection_error()
+    client.messages.stream.side_effect = (
+        [failure, FakeStream(text_response("done"))] if outcome == "retry" else
+        [status_error(anthropic.NotFoundError, 404)] if outcome == "bad_model" else
+        [failure, failure])
+    records = []
+    with patch("microclaw.agent._get_client", return_value=client):
+        events = list(run_agent_iter("go", mock_ctrl, guard, [], usage_sink=records.append))
+    assert len(records) == (1 if outcome == "retry" else 0)
+    assert events[-1]["type"] == ("done" if outcome == "retry" else "error")
+
+
+def test_usage_sink_failure_preserves_turn(mock_ctrl, guard, capsys):
+    def broken(record):
+        raise OSError("disk full")
+    with patch("microclaw.agent._get_client", return_value=make_mock_client([text_response("done")])):
+        reply, history = run_agent("go", mock_ctrl, guard, usage_sink=broken)
+    assert reply == "done"
+    assert len(history) == 2
+    assert "Could not record usage: disk full" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_usage_missing_fields(missing, mock_ctrl, guard):
+    response = text_response("done")
+    if missing:
+        del response.usage
+    else:
+        from anthropic.types import Usage
+        response.usage = Usage(input_tokens=1, output_tokens=2)
+    records = []
+    with patch("microclaw.agent._get_client", return_value=make_mock_client([response])):
+        run_agent("go", mock_ctrl, guard, usage_sink=records.append)
+    assert len(records) == 1
+    assert records[0]["input_tokens"] == (None if missing else 1)
+    for field in ("cache_read_input_tokens", "cache_creation_input_tokens",
+                  "cache_creation_5m_input_tokens", "cache_creation_1h_input_tokens"):
+        assert records[0][field] is None
+
+
+@pytest.mark.parametrize("setup", [False, True])
+def test_usage_cache_ttl_request(setup, mock_ctrl, guard, monkeypatch):
+    monkeypatch.setattr("microclaw.agent.load_knowledge", lambda: {})
+    monkeypatch.setattr("microclaw.agent.format_for_prompt", lambda knowledge: "knowledge")
+    client = make_mock_client([text_response("done")])
+    with patch("microclaw.agent._get_client", return_value=client):
+        list(run_agent_iter("go", mock_ctrl, guard, [], setup_mode=setup,
+                            **({"tool_schemas": []} if setup else {})))
+    request = client.messages.stream.call_args.kwargs
+    expected = {"type": "ephemeral", "ttl": "1h"}
+    assert [b["cache_control"] for b in request["system"] if "cache_control" in b] == [expected, expected]
+    assert request["messages"][-1]["content"][-1]["cache_control"] == expected
+    if setup:
+        assert "tools" not in request
+        assert "cache_control" not in request["system"][-1]
+    else:
+        assert [t["cache_control"] for t in request["tools"] if "cache_control" in t] == [expected]
+
+
+@pytest.mark.parametrize("profile", [False, True])
+def test_usage_cli_repl_forwards_sink(profile, mock_ctrl, guard, monkeypatch):
+    from microclaw import __main__ as cli
+    from microclaw.conversation import AuditLog, ConversationStore
+    sink = lambda record: None
+    calls = []
+    def runner(*args, **kwargs):
+        calls.append(kwargs)
+        return "done", []
+    monkeypatch.setattr(cli, "run_agent", runner)
+    answers = iter(["go", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    cli._repl(types.SimpleNamespace(profile=profile, model=None), mock_ctrl, guard, [],
+              ConversationStore(AuditLog(None)), usage_sink=sink)
+    assert calls[0]["usage_sink"] is sink
+
+
+@pytest.mark.parametrize("save", [False, True])
+def test_usage_cli_sidecar(save, mock_ctrl, guard, monkeypatch, tmp_path):
+    from microclaw import __main__ as cli
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("microclaw.updates.start_due_check", lambda *a: None)
+    monkeypatch.setattr("microclaw.updates.terminal_update_notice", lambda: (None, None))
+    monkeypatch.setattr(cli, "load_safety_config_or_exit",
+                        lambda path: types.SimpleNamespace(constraints=SafetyConstraints()))
+    monkeypatch.setattr(cli.credentials, "load_api_key", lambda: ("test-key", "test"))
+    monkeypatch.setattr("microclaw.agent.set_api_key", lambda key: None)
+    monkeypatch.setattr(cli, "MicroscopeController", lambda **kw: mock_ctrl)
+    monkeypatch.setattr(cli, "validate_live_rig", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "report_declared_illumination_on_exit", lambda *a: None)
+    observed = []
+    def repl(args, ctrl, guard, history, store, *rest, usage_sink):
+        store.last_estimated_tokens = 12345
+        store.compaction_count = 3
+        usage_sink({"model": "served-model"})
+        observed.append(store.audit.path)
+    monkeypatch.setattr(cli, "_repl", repl)
+    cli.run_session(types.SimpleNamespace(safety_config=None, port=4827, save_history=save))
+    path = Path(str(observed[0]).replace("_history.jsonl", "_usage.jsonl"))
+    assert path.exists() is save
+    if save:
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "model": "served-model", "estimated_tokens": 12345, "compaction_count": 3}
+    else:
+        assert not list(tmp_path.glob("*_usage.jsonl"))
+
+
+def test_usage_record_building_cannot_lose_the_turn(mock_ctrl, guard, capsys):
+    """An unexpected response shape is a diagnostic problem, not an acquisition
+    one. Reading the response for the record happens inside the same guard as
+    the sink call, so a turn that may already have moved the stage still ends
+    normally."""
+    class Unreadable:
+        stop_reason = "end_turn"
+        usage = sdk_usage()
+
+        def __init__(self):
+            block = MagicMock()
+            block.type, block.text = "text", "done"
+            self.content = [block]
+
+        @property
+        def model(self):
+            raise RuntimeError("no model on this response")
+
+    client = MagicMock()
+    client.messages.stream.side_effect = lambda **kw: FakeStream(Unreadable())
+    records = []
+    with patch("microclaw.agent._get_client", return_value=client):
+        reply, history = run_agent("go", mock_ctrl, guard, usage_sink=records.append)
+    assert reply == "done"
+    assert len(history) == 2
+    assert records == []
+    assert "Could not record usage: no model on this response" in capsys.readouterr().err
