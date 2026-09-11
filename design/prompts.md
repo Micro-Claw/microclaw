@@ -10572,3 +10572,49 @@ I proposed this M2 run and it withdrew one of my own conclusions. **Both times t
 run I would have skipped is the one that changed something.** The correct lesson
 is not "always run the gate" — it is that *sizing a gate down is a judgement about
 what is already known, and I was over-confident about what was known.*
+
+## design/82 block 82a — the usage instrument (merged `414fc39`, 2026-09-11)
+
+One Codex turn, no revision turns: the runner's diff was right on the seam it
+was given. Three coordinator corrections after it, all small, all found by
+things the runner could not have run.
+
+- **Scoping a runner's tests to the modules it changes misses the callers.**
+  `run_session` started passing `usage_sink` to `_repl`, and
+  `test_authorization.py` — which drives `run_session` and monkeypatches `_repl`
+  with a positional-only `lambda *args` — broke. The five-file list in the
+  prompt was chosen from the modules under change, and that is the wrong axis;
+  it is the coordinator's full run that has to catch this, which it did.
+- **A diagnostic must not be able to kill what it observes.** The record was
+  *built* outside the sink's try block, so an unexpected response shape could
+  still end a turn that had already moved the stage.
+- **Measure the API question off-rig before booking the operator.** The
+  four-breakpoint 1h request cost $0.52 to settle locally
+  (`design/82-block82a-ttl-probe.py`) and removed a whole class of gate failure.
+  It also measured the fixed prefix at 49,901 tokens / 2.75 chars/token, which
+  immediately **withdrew one of the block's own acceptance criteria** — the
+  notebook asked for a post-compaction rewrite within 10% of the store's
+  estimate, which is impossible when the estimate meters the history alone.
+
+The gate round is the part worth reading. It came back **one FAIL, and the FAIL
+was the gate's**: the limb asserted `cache_read == 0` after a compaction,
+inheriting F6's "invalid from byte one". The rig read 50,377 and rewrote
+133,774, because `tools` and `system` sit ahead of the messages and a checkpoint
+does not touch them. **The selftest's fixture had scripted the same wrong
+number**, which is exactly why it was green while the rig was not —
+*a fake that encodes your assumption is not a test of it*, applied to gate code.
+Fixing the fixture first reproduced the failure, then the limb.
+
+The other three round-1 defects were the runbook's, and they cost the operator
+their patience rather than the product's correctness: the progress meter was the
+history **file size**, which grows forever and is not what compacts; the filler
+drifted onto a tool returning almost nothing, so the session reached one
+compaction rather than two; and a limb "passed" over a 9.9-minute session in
+which no boundary came near five minutes, so it discriminated nothing. The
+scorer now prints whether the session could have told the two TTLs apart.
+
+**A gate that ends early is not a gate that failed.** This one bought: F0 closed
+by demonstration ($9.58, 63 calls, 9.9 min), F6 refuted, F4 measured at 1.69x
+(stable 1.67-1.71) against a reconstructed 1.4x, and a peak billed context of
+254,790 tokens on a call the guard scored at 119,673. Two of those change blocks
+that had not been written yet.
