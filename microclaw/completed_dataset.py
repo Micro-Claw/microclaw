@@ -597,5 +597,8 @@ def run_analysis_on_saved_dataset(
         }
     manifest_path = Path(output_dir) / "analysis-manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, allow_nan=False), encoding="utf-8")
-    return {**manifest, "manifest_path": str(manifest_path),
+    result = {k: v for k, v in manifest.items()
+              if k not in ("scientific_payload", "parameters")}
+    return {**result, "parameters_sha256": _sha(_canonical_bytes(manifest["parameters"])),
+            "manifest_path": str(manifest_path),
             "mosaic": mosaic_result}

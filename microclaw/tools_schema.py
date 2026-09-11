@@ -1867,7 +1867,12 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "log_path": {"type": "string", "description": "Path to the hook log file."}
+                "log_path": {"type": "string", "description": "Path to the hook log file."},
+                "limit": {"type": "integer", "minimum": 1, "default": 50, "description":
+                    "Maximum entries to return. Reach for rank_hook_log instead when "
+                    "choosing which fields to revisit from the whole log."},
+                "where": {"type": "string", "enum": ["last", "first"], "default": "last",
+                    "description": "Which end of the log to show."}
             },
             "required": ["log_path"],
         },

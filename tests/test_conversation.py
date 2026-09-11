@@ -104,11 +104,11 @@ def test_compaction_is_batched_stable_and_keeps_tool_pairs_together(tmp_path):
     history[0]["content"] += " with " + secret
     store = ConversationStore(
         # The high-water mark has to clear the checkpoint's own fixed cost (the
-        # contract text, totals and digest -- ~500 tokens) plus the retained
-        # turns, or the next small turn re-trips it and the "stable prefix"
+        # contract text, totals and digest, now metered at 2.36 bytes/token)
+        # plus the retained turns, or the next small turn re-trips it and the "stable prefix"
         # property this test exists to check is untestable. Production's 120k
         # default dwarfs that cost; these miniature budgets do not.
-        AuditLog(tmp_path / "audit.jsonl", secrets=[secret]), high_water_tokens=1500,
+        AuditLog(tmp_path / "audit.jsonl", secrets=[secret]), high_water_tokens=2500,
         low_water_tokens=500,
     )
     first = store.model_messages(history)
@@ -389,3 +389,8 @@ def test_lifecycle_queue_races_never_escape_submit(monkeypatch, race):
         {"type": "new"}, lifecycle=True, fallback=fallbacks.append,
     ) is False
     assert fallbacks == [{"type": "new"}]
+
+
+def test_estimate_tokens_uses_measured_utf8_ratio():
+    # Compact JSON is [{"role":"user","content":"é"}]: 32 UTF-8 bytes.
+    assert estimate_tokens([{"role": "user", "content": "é"}]) == 22

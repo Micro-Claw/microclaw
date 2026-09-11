@@ -150,11 +150,12 @@ class Shadow:
     assert result["status"] == "completed"
     assert {item["status"] for item in result["observations"]} == {"observed"}
     assert result["analyzer"]["source"] == "builtin"
-    assert result["parameters"] == {
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    assert manifest["parameters"] == {
         "min_snr": completed_dataset.resolve_min_snr()[0],
         "min_snr_source": "package_default_uncalibrated",
     }
-    assert result["observations"][0]["parameters"] == result["parameters"]
+    assert result["observations"][0]["parameters"] == manifest["parameters"]
     assert {"signal_coverage", "structure_coverage", "signal_concentration"} <= set(
         result["observations"][0]["result"]
     )
@@ -172,14 +173,14 @@ def test_builtin_threshold_prefers_explicit_then_records_rig_configuration(offli
         configured_guard, str(dataset), "frame_statistics", {"time": 0}, "frames", {},
         str(root / "configured-threshold"),
     )
-    assert configured["parameters"] == {
+    assert json.loads(Path(configured["manifest_path"]).read_text())["parameters"] == {
         "min_snr": 7.5, "min_snr_source": "rig_config",
     }
     explicit = completed_dataset.run_analysis_on_saved_dataset(
         configured_guard, str(dataset), "frame_statistics", {"time": 0}, "frames",
         {"min_snr": 4.25}, str(root / "explicit-threshold"),
     )
-    assert explicit["parameters"] == {
+    assert json.loads(Path(explicit["manifest_path"]).read_text())["parameters"] == {
         "min_snr": 4.25, "min_snr_source": "explicit",
     }
 
@@ -370,7 +371,12 @@ class Artifact:
     result = run(offline_home, "bad_record")
     assert result["status"] == "failed"
     assert result["failure"]["type"] == "ValueError"
-    assert Path(result["manifest_path"]).exists()
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    assert manifest["manifest_assembly_failure"]["type"] == "ValueError"
+    assert "scientific_payload_sha256" not in result
+    assert "parameters" not in result
+    assert result["parameters_sha256"] == hashlib.sha256(
+        completed_dataset._canonical_bytes(manifest["parameters"])).hexdigest()
 
 
 def test_dataset_and_content_hashes_are_distinct(offline_home):
@@ -586,7 +592,7 @@ def test_builtin_connected_components_runs_real_mosaic_path_in_stage_coordinates
         "x_min": 5.0, "y_min": 15.0, "x_max": 7.0, "y_max": 17.0,
     }
     assert result["observations"][0]["status"] == "observed"
-    assert result["parameters"]["min_snr_source"] == "package_default_uncalibrated"
+    assert json.loads(Path(result["manifest_path"]).read_text())["parameters"]["min_snr_source"] == "package_default_uncalibrated"
     assert len(result["analyzer"]["source_sha256"]) == 64
     json.dumps(result, allow_nan=False)
 
@@ -1100,3 +1106,36 @@ def test_mosaic_path_gains_no_size_disclosure(component_frames):
     assert set(measured) <= {'threshold', 'background_level', 'noise_mad_sigma',
                              'n_components', 'objects'}
     assert 'component_size_distribution' not in measured and 'review_notes' not in measured
+
+
+def test_result_omits_duplicate_payloads_but_disk_preserves_them(offline_home):
+    result = run(offline_home, "frame_statistics")
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    assert "scientific_payload" not in result
+    assert "parameters" not in result
+    assert manifest["scientific_payload"]["observations"] == [
+        {k: v for k, v in row.items() if k != "observed_at"}
+        for row in result["observations"]
+    ]
+    assert manifest["parameters"]["min_snr_source"] == "package_default_uncalibrated"
+    assert result["scientific_payload_sha256"] == manifest["scientific_payload_sha256"]
+    assert result["parameters_sha256"] == hashlib.sha256(
+        completed_dataset._canonical_bytes(manifest["parameters"])).hexdigest()
+    assert result["selected_coordinates"] == result["selection"]["coordinates"]
+
+
+def test_parameters_hash_describes_json_normalized_manifest(offline_home):
+    save, dataset, guard, root = offline_home
+    save("numeric_keys", '''
+class NumericKeys:
+ def __init__(self, config): pass
+ def analyze_saved_frame(self, image, metadata, context): return {"value": 1}
+''')
+    result = completed_dataset.run_analysis_on_saved_dataset(
+        guard, str(dataset), "numeric_keys", {"time": 0}, "frames",
+        {"config": {2: "two", 10: "ten"}}, str(root / "normalized"),
+    )
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    assert manifest["parameters"] == {"config": {"2": "two", "10": "ten"}}
+    assert result["parameters_sha256"] == hashlib.sha256(
+        completed_dataset._canonical_bytes(manifest["parameters"])).hexdigest()
