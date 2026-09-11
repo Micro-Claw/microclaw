@@ -35,7 +35,20 @@ with the notices of the complete resolved dependency set.
 
 ## Research references
 
-The repository cites research articles by DOI, but does not redistribute the
-article PDFs. In particular, the previously included Nature Protocols article
+The repository cites published sources by DOI or URL, but does not redistribute
+the articles themselves — no PDFs, figures, tables, or quoted passages. In
+particular, the previously included Nature Protocols article
 `10.1038/nprot.2017.024` and the Creative Commons-licensed review article
 `10.1038/s43586-021-00038-x` are references, not parts of the BSD-licensed work.
+
+Where a packaged skill in `microclaw/skills/` says it is "condensed from" a
+source, the condensation is Microclaw's own expression of that source's factual
+guidance and is covered by `LICENSE`. Each such skill credits its source in its
+own `## Sources` block. The complete set:
+
+| Source | Cited by | Identifier |
+| --- | --- | --- |
+| Schnitzbauer et al., "Super-resolution microscopy with DNA-PAINT", *Nat Protoc* 2017 | `dna-paint` | `10.1038/nprot.2017.024` |
+| Lelek et al., "Single-molecule localization microscopy", *Nat Rev Methods Primers* 2021 | `dna-paint`, `smlm` | `10.1038/s43586-021-00038-x` |
+| Jonkman et al., "Tutorial: guidance for quantitative confocal microscopy", *Nat Protoc* 2020 | `fluorescence-microscopy` | `10.1038/s41596-020-0313-9` |
+| "The Microscope Optical Train", Nikon MicroscopyU | `optical-paths` | <https://www.microscopyu.com/microscopy-basics/components> |

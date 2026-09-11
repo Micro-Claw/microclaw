@@ -1,6 +1,7 @@
 import ast
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -290,3 +291,86 @@ def test_model_visible_guidance_has_no_development_references():
         for name, text in surface.items() if re.search(r"\bdesign/\d+", text)
     }
     assert not leaks, f"Model-visible development references: {leaks}"
+
+
+def _skill_sources_block(text: str) -> str:
+    """The `## Sources` section of a SKILL.md, empty when it has none."""
+    lines = text.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == "## Sources")
+    except StopIteration:
+        return ""
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
+def _cited_identifiers(block: str) -> set[str]:
+    """Every DOI and non-DOI URL a Sources block credits.
+
+    A DOI is reduced to the bare `10.x/y` form because that is how
+    THIRD_PARTY_NOTICES.md records it, while the skill writes it twice -- once as
+    `doi:...` and once as a `https://doi.org/...` link.
+    """
+    dois = set(re.findall(r"10\.\d{4,9}/[-._;()/:a-zA-Z0-9]*[a-zA-Z0-9]", block))
+    urls = {
+        url.rstrip(">.,)")
+        for url in re.findall(r"https?://[^\s<>)]+", block)
+        if "doi.org" not in url
+    }
+    return dois | urls
+
+
+def test_every_skill_citation_is_recorded_in_third_party_notices():
+    """A source credited by a skill must appear in THIRD_PARTY_NOTICES.md.
+
+    Nothing else watches that file: a fifth citation would otherwise ship with
+    the whole suite green and be discovered at the public flip, which is the
+    `docs/architecture-figure.md` failure mode one file over.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    notices = (repo / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+
+    unrecorded = {}
+    for skill_file in sorted((repo / "microclaw" / "skills").glob("*/SKILL.md")):
+        block = _skill_sources_block(skill_file.read_text(encoding="utf-8"))
+        missing = sorted(
+            item for item in _cited_identifiers(block) if item not in notices
+        )
+        if missing:
+            unrecorded[skill_file.parent.name] = missing
+
+    assert not unrecorded, (
+        "Sources cited by a skill but absent from THIRD_PARTY_NOTICES.md: "
+        f"{unrecorded}. Add each to its Research references table."
+    )
+
+
+def test_third_party_notices_cites_no_source_a_skill_dropped():
+    """The reverse: a citation table entry no skill credits any more.
+
+    The two DOIs named in the prose above the table are deliberately exempt --
+    they record PDFs that were once in this repository, which is a statement
+    about its history rather than about a current skill.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    notices = (repo / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    table_rows = [
+        line for line in notices.splitlines()
+        if line.startswith("|") and ("10." in line or "http" in line)
+    ]
+    assert table_rows, "The Research references table is missing or has no entries."
+
+    cited = set()
+    for skill_file in (repo / "microclaw" / "skills").glob("*/SKILL.md"):
+        cited |= _cited_identifiers(
+            _skill_sources_block(skill_file.read_text(encoding="utf-8"))
+        )
+
+    stale = [row for row in table_rows if not any(item in row for item in cited)]
+    assert not stale, (
+        "Research references rows no skill cites any more: "
+        f"{stale}. Remove them, or note why they are kept."
+    )
