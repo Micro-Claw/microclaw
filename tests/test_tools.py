@@ -6688,7 +6688,7 @@ def test_read_hook_log_window(mock_ctrl, unconstrained_guard, tmp_path,
                               count, options, start, stop):
     entries = [{"position": i, "autofocus": "converged"} for i in range(count)]
     path = tmp_path / "hook.json"
-    path.write_text(json.dumps(entries))
+    path.write_text(json.dumps(entries), encoding="utf-8")
     result = tools.read_hook_log(mock_ctrl, unconstrained_guard, str(path), **options)
     assert result["entries"] == entries[start:stop]
     assert result["entry_count"] == count
@@ -6697,7 +6697,7 @@ def test_read_hook_log_window(mock_ctrl, unconstrained_guard, tmp_path,
     assert result["rank_this_log_instead"] == ("rank_hook_log" if count > stop - start else None)
     assert result["autofocus_outcomes"]["event_count"] == count
     assert result["autofocus_outcomes"]["counts"]["converged"] == count
-    assert json.loads(path.read_text()) == entries
+    assert json.loads(path.read_text(encoding="utf-8")) == entries
 
 
 @pytest.mark.parametrize("options,word", [
@@ -6707,6 +6707,6 @@ def test_read_hook_log_window(mock_ctrl, unconstrained_guard, tmp_path,
 ])
 def test_read_hook_log_invalid_window(mock_ctrl, unconstrained_guard, tmp_path, options, word):
     path = tmp_path / "hook.json"
-    path.write_text("[]")
+    path.write_text("[]", encoding="utf-8")
     result = tools.read_hook_log(mock_ctrl, unconstrained_guard, str(path), **options)
     assert word in result["error"]

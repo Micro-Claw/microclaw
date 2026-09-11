@@ -132,7 +132,91 @@ def block_label(block, role: str, names: dict[str, str]) -> str:
     return str(kind)
 
 
-def replay(path: str, count: Counter, base: dict[str, int]):
+def _shipped_drops() -> tuple[str, ...]:
+    """The keys 82b's D2 removes from the tool result, read off the shipped code.
+
+    Not retyped from the design doc: `inspect.getsource` of the function that
+    actually returns the result, so this instrument cannot quietly disagree with
+    what shipped. The same discipline `export_session_script` uses for inlining.
+    """
+    import inspect
+    from microclaw import completed_dataset
+    source = inspect.getsource(completed_dataset.run_analysis_on_saved_dataset)
+    drops = tuple(k for k in ("scientific_payload", "parameters")
+                  if f'"{k}"' in source.split("manifest_path.write_text")[-1])
+    if not drops:
+        raise SystemExit(
+            "--as-if-82b: the shipped run_analysis_on_saved_dataset does not drop "
+            "scientific_payload or parameters from its result. Either 82b is not "
+            "in this tree, or it landed differently and this projection is stale.")
+    return drops
+
+
+def _as_if_82b(messages: list[dict], names: dict[str, str]) -> list[dict]:
+    """Rewrite archived tool results into the shape 82b's code produces.
+
+    The archive holds the results the *old* code returned, so re-running this
+    script against a changed tree measures D4 alone — the payload decisions
+    cannot show up on their own. This applies them to the recorded payloads.
+
+    `read_hook_log` is not projected: the real, shipped tool is called against a
+    temporary log holding the archived entries, so what is priced is what the
+    code now returns. D2 is a projection of the shipped key filter, checked
+    against the shipped source by `_shipped_drops`.
+    """
+    import tempfile
+    from microclaw import tools as microclaw_tools
+
+    drops = _shipped_drops()
+
+    class _PassThroughGuard:
+        """Path resolution only; the file is one this function just wrote."""
+
+        def resolve_readable_path(self, path):
+            return path
+
+    def rewrite(payload: str, tool: str) -> str:
+        try:
+            value = json.loads(payload)
+        except (TypeError, ValueError):
+            return payload
+        if not isinstance(value, dict):
+            return payload
+        if tool == "read_hook_log" and isinstance(value.get("entries"), list):
+            with tempfile.TemporaryDirectory() as directory:
+                log = os.path.join(directory, "hook.log")
+                with open(log, "w", encoding="utf-8") as stream:
+                    json.dump(value["entries"], stream)
+                fresh = microclaw_tools.read_hook_log(None, _PassThroughGuard(), log)
+            fresh["log_path"] = value.get("log_path", fresh["log_path"])
+            fresh["artifact"] = value.get("artifact", fresh.get("artifact"))
+            return _dumps(fresh)
+        if tool == "run_analysis_on_saved_dataset" and "observations" in value:
+            slim = {k: v for k, v in value.items() if k not in drops}
+            if "parameters" in drops and "parameters" in value:
+                slim["parameters_sha256"] = "0" * 64
+            return _dumps(slim)
+        return payload
+
+    out = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            out.append(message)
+            continue
+        blocks = []
+        for block in content:
+            if (isinstance(block, dict) and block.get("type") == "tool_result"
+                    and isinstance(block.get("content"), str)):
+                tool = names.get(block.get("tool_use_id"), "")
+                blocks.append({**block, "content": rewrite(block["content"], tool)})
+            else:
+                blocks.append(block)
+        out.append({**message, "content": blocks})
+    return out
+
+
+def replay(path: str, count: Counter, base: dict[str, int], as_if_82b: bool = False):
     """Price one session, attributing every priced token to what it was.
 
     Returns (row, attribution). A call is billed as a full-prefix cache write on
@@ -141,6 +225,9 @@ def replay(path: str, count: Counter, base: dict[str, int]):
     """
     messages = [json.loads(line) for line in open(path) if line.strip()]
     names = tool_name_index(messages)
+    if as_if_82b:
+        # Before pricing, so a slimmer result also moves *when* compaction fires.
+        messages = _as_if_82b(messages, names)
     store = ConversationStore(AuditLog(None, enabled=False))
     attribution: collections.Counter = collections.Counter()
 
@@ -206,6 +293,13 @@ def main() -> int:
                              "error against Claude's is the one free parameter")
     parser.add_argument("--kb-tokens", type=int, default=0,
                         help="rig knowledge base tokens, added to every call")
+    parser.add_argument("--as-if-82b", action="store_true",
+                        help="re-price the archived sessions as if block 82b's "
+                             "payload decisions had produced them: read_hook_log "
+                             "through the real shipped tool, D2's key drop as a "
+                             "projection checked against the shipped source. "
+                             "Without this, a re-run measures D4 alone, because "
+                             "the archive holds the results the old code returned.")
     parser.add_argument("--report", type=float, nargs="*", default=[],
                         help="console per-day totals (UTC, less non-session use), "
                              "in session order, for the reconciliation")
@@ -237,7 +331,7 @@ def main() -> int:
     total = collections.Counter()
     rows = []
     for path in paths:
-        row, attribution = replay(path, count, base)
+        row, attribution = replay(path, count, base, args.as_if_82b)
         rows.append(row)
         total.update(attribution)
         print("%-24s%6d%6d%6d%7dk%7dk%8.1f%8.2f%7d%9.2f" % (
