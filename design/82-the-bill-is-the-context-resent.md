@@ -1,6 +1,6 @@
 # The bill is the context, resent
 
-Status: **PROPOSED**, 2026-09-09. The **total is measured**: the console (UTC)
+Status: **82a and 82b merged; 82c in flight**, updated 2026-09-11. The **total is measured**: the console (UTC)
 reports **$89.27 on 2026-09-08 and $17.08 on 2026-09-09**, of which ~$4 that
 second day was other use of the key, so the five sessions cost **$102.35**. A
 credit balance that went from ~$104 to −$0.47 corroborates it to $2. Nothing
@@ -275,6 +275,21 @@ current activity.
 
 ### F7 — 25,786 tokens of tool schema on every one of 556 calls
 
+> **Closed 2026-09-11, on measurement and an operator decision: leave them.**
+> Re-measured on today's tree — 81 tools, **21,534 schema tokens** — the line is
+> the largest single item at 21.2% of the post-82b floor, and it is also the one
+> whose cheap half is worth almost nothing. **Eight acquisition tools are 54% of
+> all schema tokens** (`run_adaptive_survey` 2,207, `run_multiposition_acquisition`
+> 1,551, `run_timelapse` 1,517, `run_tile_acquisition` 1,455, `run_zstack` 1,404,
+> `run_autofocus` 1,341, `run_analysis_on_saved_dataset` 1,237,
+> `run_multiposition_with_autofocus` 917); the **other 61 tools together are 28%**,
+> about $3 of a $52–64 floor, median schema 119 tokens. So deferring the long tail
+> buys ~5% and hides 61 tools behind a search step, and the only version worth
+> real money is the one that defers exactly the parameter descriptions design/62
+> measured preventing refusals at runtime. The finding below already said do not
+> act on this yet; the distribution says the lever is not there to be pulled at
+> all. Reopen it with a session whose profile is different, not with this one.
+
 81 tools. The median schema is **133 tokens**; the ten largest are 13,953 of the
 24,166, led by `run_adaptive_survey` at 2,548, `run_timelapse` 1,789,
 `run_multiposition_acquisition` 1,748, `run_zstack` 1,675, `run_tile_acquisition`
@@ -289,6 +304,24 @@ to save $9 risks re-buying refusals at runtime, which cost rig trips. `R101`-sty
 deferred loading (`defer_loading` + tool search) keeps the text and stops
 re-sending it, but changes which tools the model can see without a search step.
 This is a measurement, not a decision.
+
+### F8 — The instrument prices a cache TTL the code no longer pays
+
+`design/82-session-cost-reconstruction.py` hardcodes `PRICE_WRITE = 6.25`, the
+**5-minute** cache-write rate. D5 shipped `ttl: "1h"` on all four breakpoints in
+block 82a, and a 1-hour write is 2× base input — **$10.00/MTok** on Opus 4.8, not
+$6.25.
+
+Both prices are correct, for different questions, and the script answers only one
+of them. As a *reconstruction of what those five sessions cost*, $6.25 is right:
+they ran on 2026-09-08/09, before 82a. As the instrument for *what a session
+costs on today's tree* — which is what 82b's before/after used it for and what
+any later block will use it for — it is 1.6× low on every write. At $10.00 the
+post-82b floor is **$64.13, not $52.23**, and the schema line is $12.37 (22.2%).
+
+The ratio 82b reported is not invalidated, because both of its arms were priced
+the same way; every *absolute* forward-looking figure is. A script whose output
+does not say which TTL it priced will keep producing one of the two silently.
 
 ## Decisions
 
@@ -462,7 +495,53 @@ per-segment, so artifact and hash de-duplication is no longer session-wide. If
 that is acceptable, this is nearly free; if it is not, the fallback is to compact
 *less often* by lowering the window (82c) and accept the invalidations.
 
-**F7 — deferred deliberately.** See the finding.
+**D8 (F8) — the instrument names the price it charged, and takes the window as
+an argument.** Two things the script cannot currently express, both of which a
+later block needs:
+
+- `--cache-ttl {5m,1h}`, defaulting to **the TTL the tree under test actually
+  ships** rather than to a constant. Read it from `agent.py`'s breakpoints, do
+  not hard-code a default that can drift out of agreement with the code the same
+  way `PRICE_WRITE` did. Every printed table names the TTL and the write rate it
+  used, so a figure cannot be quoted without its price.
+- `--high-water` / `--low-water`, passed through to the `ConversationStore` the
+  replay constructs. The window sweep below was run by monkey-patching the store
+  from a scratch script, which is not committed evidence; the instrument should
+  be able to reproduce its own table.
+
+Neither changes what the script measures — they stop it measuring one thing and
+being read as another.
+
+**D9 (82c item 2) — the context window stays at 120,000 / 90,000, measured.**
+The notebook asked for a number before proposing one. The number is: there is no
+move to make. Swept over the five archived sessions with `--as-if-82b` and
+tiktoken present, coordinator measurement 2026-09-11:
+
+| high / low | compactions | read $ | write $ | floor $ (5m) | floor $ (1h) |
+|---|---|---|---|---|---|
+| 60k / 45k | 72 | 18.49 | 40.01 | 65.28 | 89.29 |
+| 90k / 65k | 36 | 21.90 | 25.11 | 53.79 | 68.86 |
+| 105k / 80k | 30 | 23.57 | 23.18 | 53.53 | 67.43 |
+| 110k / 82k | 27 | 24.11 | 21.43 | 52.33 | 65.19 |
+| **120k / 90k (shipped)** | **23** | **25.62** | **19.83** | **52.23** | **64.13** |
+| 130k / 97k | 23 | 26.73 | 20.71 | 54.22 | 66.65 |
+| 160k / 120k | 17 | 31.00 | 18.77 | 56.56 | 67.82 |
+| 400k / 300k | 6 | 59.80 | 16.56 | 83.15 | 93.09 |
+
+The shipped window is at the sampled minimum **in both directions**, at both
+prices, and the whole 105k–135k range is flat within ±$2 — inside the proxy
+tokenizer's own stated ±10–15%. So the honest reading is not "120k is optimal"
+but **"the window is not a lever on this session, and moving it is as likely to
+cost as to save"**.
+
+The premise 82c inherited was wrong, and worth saying why. The notebook reasoned
+that because D4 alone cut the floor while *raising* invalidations 19 → 36, "a
+lower window pushes further along that curve". It does not: D4's gain came from
+metering a **bigger** payload honestly, and once 82b removed that payload the
+curve reverses and lowering the window is monotonically worse. A trend observed
+while a second variable moved is not a curve.
+
+**F7 — closed on measurement, 2026-09-11.** See the finding.
 
 ## Blocks
 
@@ -559,33 +638,34 @@ tests, because D2 changes the shape of a recorded tool result and
 `read_hook_log`'s `entries` being complete, which is D3's contract change and
 must be updated deliberately rather than relaxed.
 
-**82c — the levers 82b does not pull.** Not started. **D7 is dropped** (see the
-decision above; it is measured, and the probe is committed), so 82c is two
-things:
+**82c — what is left after both levers were measured away.** Neither of the two
+items 82c inherited survived being measured. **D7 was dropped** before the block
+opened (the probe is `design/82-block82c-d7-probe.py`); **the context window is a
+no-op** (D9's table, measured at scoping); and **F7 is closed** on the schema
+distribution plus an operator decision — the cheap half of that lever is worth
+~$3 and the expensive half is the text design/62 measured working. So the block
+is small and entirely local:
 
-1. **The tool schemas (F7), now the largest single line at 21.2%** of the
-   post-82b floor — $9.98 of $52.23. F7 still says do not act on this yet, and
-   its reason still holds: those descriptions are where design/62 measured
-   statically-knowable refusals working, and trimming them re-buys refusals at
-   runtime, which costs rig trips. The lever that keeps the text and stops
-   re-sending it is `defer_loading` + tool search (`R101`), which changes what
-   the model can see without a search step. **This is a decision about
-   behaviour, not a payload edit, and it needs the operator.**
-2. **The context window (120k/90k).** These now mean what they say, since D4
-   meters honestly. 82b's replay showed the shape of the trade directly: D4
-   alone took the floor from $71.25 to $63.49 by *raising* invalidations from 19
-   to 36 while cutting read cost $38.86 → $25.85. A lower window pushes further
-   along that curve, and a compaction is cheaper than F6 claimed. Measure it on
-   the replay before proposing a number.
+1. **D8 — the instrument tells you which price it charged**, and takes the
+   window as an argument instead of needing a scratch monkey-patch. F8 is the
+   finding: the script still prices the 5-minute write 82a stopped paying.
+2. **`R63`'s probe** — the compaction-attribution row, now affordable. 82a's
+   `_usage.jsonl` carries `compaction_count` and `turn_id` per call, so a
+   compaction is pinned to an exact call and turn *from artifacts an ordinary
+   session already writes*. The probe is an **offline scorer over a session's
+   history plus its usage sidecar**, not a driven conversation: it finds the
+   assistant turns that follow a compaction and reports whether their prose
+   attributes tool calls that are in the checkpoint rather than in the live
+   window. That costs no API credit and rides on every future session.
+3. **Reconcile the notebook** to what all of this measured.
 
-A third item arrived from 82b and belongs here: **D4 made compaction more
-frequent**, which makes register row `R63` — the model attributing a compacted
-turn's tool calls to the current turn — more likely than when it was filed, not
-less. 82a's `_usage.jsonl` pins each compaction to an exact call and timestamp,
-which is the sharper probe that row has been asking for.
+Acceptance is local, on `block82a-evidence`'s own artifacts (63 usage records,
+34 turns, one compaction at call 16, turn `971f5fed`) and on the five archived
+histories. **Expect the R63 probe to report a null at n=1**; that is the correct
+outcome to record, not a reason to enlarge the sample. The row stays open with
+an instrument attached, which is what it has been asking for since design/32.
 
-What 82c does **not** need: a rig. Every item settles on the replay, the
-archived histories, or a local probe.
+What 82c does **not** need: a rig, a driven session, or API credit.
 
 ## What this notebook will not do
 
@@ -604,6 +684,6 @@ archived histories, or a local probe.
 |---|---|---|---|---|---|
 | 82a | `design82/82a-instrument` | `afa15eb` | codex runner (`84c2400`) + coordinator (`d2d8217`) | demo machine 2026-09-11: **11/11**, $9.58, one compaction (n=1); the round's one FAIL was the gate's limb, corrected | `414fc39` 2026-09-11 |
 | 82b | `design82/82b-payloads` | `af7a63f` | codex runner (`64ee6ec`) + coordinator (`9d8db2c`) | replay 2026-09-11: **$71.25 → $52.23**, peak context 208k → 134k | `cec6a3b` 2026-09-11 |
-| 82c | — | — | — | — | not started; **D7 dropped on measurement 2026-09-11**, so its scope is F7 and the context window |
+| 82c | `design82/82c-instrument` | `8f8ee29` | — | local: replay + `block82a-evidence` | in flight; **D7, the context window and F7 all measured away at scoping 2026-09-11**, so the scope is D8 (instrument pricing) + `R63`'s offline probe |
 
 Rows this notebook declines to take go to `design/70`, not into this file.
