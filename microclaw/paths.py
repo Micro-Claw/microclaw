@@ -84,11 +84,10 @@ def default_safety_config() -> Path:
 def desktop_dir() -> Path:
     """The desktop Explorer actually renders. NOT `Path.home() / "Desktop"`.
 
-    Measured on the lab rig (design/17 spike Q1): the Desktop is redirected to a
-    roaming profile on a network share, `\\\\isis\\roamingdata\\rieslab\\Desktop`,
-    while `Path.home()/"Desktop"` is a local `C:\\Users\\rieslab\\Desktop` that
-    Explorer never shows. A shortcut written there reports success and appears
-    nowhere.
+    Measured on the lab rig (design/17 spike Q1, which records the literal
+    paths): the Desktop is redirected to a roaming profile on a UNC network
+    share, while `Path.home()/"Desktop"` is a local directory Explorer never
+    shows. A shortcut written there reports success and appears nowhere.
 
     The redirect there is a roaming profile, not OneDrive — checking for
     "OneDrive" in the path, or reading %OneDrive%, would have missed it. Ask the
