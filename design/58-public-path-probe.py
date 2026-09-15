@@ -100,8 +100,58 @@ def main() -> int:
             else:
                 record("archive carries launcher files", "PASS", "install.bat CRLF intact")
 
-    # 4. Build a slot from that source: uv venv, [serve] install, smoke check.
     uv = find_uv()
+
+    # 4. Give the sandbox an ACTIVE slot before staging into the inactive one.
+    #    stage_inactive_slot runs the active slot's own microclaw.exe to
+    #    classify the safety config, so a root with only active-slot.txt fails
+    #    with "[WinError 2] The system cannot find the file specified" -- the
+    #    instrument's defect, not the product's.  A managed install always has
+    #    this slot; the sandbox has to build one.  Both slots land at the same
+    #    commit, so the two classifications agree and the comparison proceeds.
+    active_built = False
+    if source is None:
+        record("sandbox active slot", "NOT EXERCISED", "nothing extracted")
+    elif uv is None:
+        record("sandbox active slot", "NOT EXERCISED", "uv not found on PATH or in ~/.local/bin")
+    else:
+        env_a = root / "env-a"
+        bin_dir = "Scripts" if sys.platform == "win32" else "bin"
+        started = time.time()
+        steps = (
+            [uv, "venv", "--python", "3.12", str(env_a)],
+            [uv, "pip", "install", "--python", str(env_a / bin_dir / "python"),
+             f"{source}[serve]"],
+        )
+        failure = None
+        for step in steps:
+            completed = subprocess.run(step, capture_output=True, text=True, check=False)
+            if completed.returncode:
+                failure = f"uv {step[1]} exit {completed.returncode}: " \
+                          f"{(completed.stderr or completed.stdout).strip()[-400:]}"
+                break
+        console = env_a / bin_dir / ("microclaw.exe" if sys.platform == "win32" else "microclaw")
+        # An interpreter that exists is not an interpreter that runs, and a
+        # console script that exists is not one that starts: execute both.
+        started_ok = subprocess.run(
+            [str(env_a / bin_dir / "python"), "-I", "-c",
+             "import microclaw, microclaw.webserve, uvicorn"],
+            capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+        )
+        if failure:
+            record("sandbox active slot", "FAIL", failure)
+        elif not console.is_file():
+            record("sandbox active slot", "FAIL", f"no console script at {console}")
+        elif started_ok.returncode:
+            record("sandbox active slot", "FAIL",
+                   (started_ok.stderr or started_ok.stdout).strip()[-400:])
+        else:
+            active_built = True
+            record("sandbox active slot", "PASS",
+                   f"built and started env-a in {time.time() - started:.0f}s")
+
+    # 5. Build the inactive slot from that source: uv venv, [serve] install,
+    #    smoke check, slot marker, and the two-slot config comparison.
     if sys.platform != "win32":
         record("stage_inactive_slot", "NOT EXERCISED",
                f"staging resolves Scripts\\python.exe; this is {sys.platform}")
@@ -109,6 +159,9 @@ def main() -> int:
         record("stage_inactive_slot", "NOT EXERCISED", "nothing extracted")
     elif uv is None:
         record("stage_inactive_slot", "NOT EXERCISED", "uv not found on PATH or in ~/.local/bin")
+    elif not active_built:
+        record("stage_inactive_slot", "NOT EXERCISED",
+               "the sandbox has no active slot to compare the config against")
     else:
         try:
             updates.write_state(updates.public_provenance(), root / updates.STATE_NAME)
@@ -135,7 +188,7 @@ def main() -> int:
                 pass
             record("stage_inactive_slot", "FAIL", f"{type(exc).__name__}: {exc} {detail}")
 
-    # 5. The staged slot must actually run `serve`'s imports.  stage_inactive_slot
+    # 6. The staged slot must actually run `serve`'s imports.  stage_inactive_slot
     #    smoke-checks this, but prove it from outside: an updater that bricks the
     #    thing it updates is the worst failure this design can have (58e, round 5).
     staged_python = root / "env-b" / "Scripts" / "python.exe"
