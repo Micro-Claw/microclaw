@@ -35,11 +35,17 @@ with the notices of the complete resolved dependency set.
 
 ## Research references
 
-The repository cites published sources by DOI or URL, but does not redistribute
-the articles themselves — no PDFs, figures, tables, or quoted passages. In
-particular, the previously included Nature Protocols article
-`10.1038/nprot.2017.024` and the Creative Commons-licensed review article
-`10.1038/s43586-021-00038-x` are references, not parts of the BSD-licensed work.
+The repository cites published sources by DOI or URL. The current source tree
+redistributes no article content — no PDFs, figures, tables, or quoted passages.
+
+Two article PDFs were committed in `f6cc25a` and removed in `3db1b88`, and they
+remain in this repository's Git history, which a full clone fetches: the Nature
+Protocols article `10.1038/nprot.2017.024`, whose publisher holds copyright, and
+the Creative Commons-licensed review article `10.1038/s43586-021-00038-x`.
+Neither is part of the BSD-licensed work, neither is covered by `LICENSE`, and
+nothing here grants permission to reuse them. Obtain either article from its
+publisher through the DOI above; anyone redistributing this repository's history
+carries those files and should treat them accordingly.
 
 Where a packaged skill in `microclaw/skills/` says it is "condensed from" a
 source, the condensation is Microclaw's own expression of that source's factual
