@@ -12,10 +12,12 @@ rem
 rem  Source of the code, in order:
 rem    1. %MICROCLAW_SRC%, if set -- a URL or a pip requirement.
 rem    2. the folder this script sits in.
-rem  The repo is private today, so a URL install would need a token; the
-rem  user downloads the repo ZIP and runs this from inside it. When the
-rem  repo goes public, set MICROCLAW_SRC to the archive URL and the same
-rem  script becomes a one-file download. Nothing else changes.
+rem  Either way, run this script from inside the extracted repo folder.
+rem  MICROCLAW_SRC changes only where the PACKAGE is installed from; the
+rem  launcher does not come from there.  :write_managed copies
+rem  scripts\Microclaw.cmd, scripts\updater-launcher.ps1 and
+rem  scripts\launcher-protocol.txt out of %~dp0, so install.bat on its own
+rem  cannot install Microclaw -- public repository or not.
 rem =====================================================================
 
 setlocal EnableExtensions
@@ -125,8 +127,9 @@ rem %~dp0 is this script's folder, with a trailing backslash.
 if not exist "%~dp0pyproject.toml" (
     echo.
     echo   ERROR: no pyproject.toml next to this script.
-    echo   Run install.bat from inside the extracted Microclaw folder,
-    echo   or set MICROCLAW_SRC to a URL first.
+    echo   Run install.bat from inside the extracted Microclaw folder.
+    echo   MICROCLAW_SRC only changes where the package is installed from;
+    echo   this script still needs its own scripts\ folder beside it.
     exit /b 1
 )
 echo   [1/7] Source: %~dp0
