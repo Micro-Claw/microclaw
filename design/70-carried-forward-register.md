@@ -102,6 +102,7 @@ Rows added since the triage:
 | `R128`–`R129` | `design/79` block 79c-1's demo gate, scored from artifacts 2026-09-10 |
 | `R130` | `design/79`'s M2 close-out, 2026-09-10 |
 | `R131` | the public flip's ZIP-install rehearsal on the demo machine, 2026-09-16 |
+| `R132` | the first Windows CI runs, scored from the skip arithmetic 2026-09-16 |
 
 
 ## The work queue
@@ -153,6 +154,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R129` | [Every dataset on the demo machine was written to `<name>_1` on a clean directory](#r129) | LOW | SMALL |  |
 | `R130` | [Two committed gates drive the stage to absolute coordinates](#r130) | MEDIUM | SMALL |  |
 | `R131` | ["Building the update…" has no progress and no timeout, and it is slow](#r131) | MEDIUM | SMALL |  |
+| `R132` | [The workspace symlink-escape test does not run on Windows](#r132) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2959,3 +2961,18 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM. It cannot corrupt anything, but "is it hung?" is the question a user answers by killing the update.
 - **Effort** — SMALL for progress reporting; MEDIUM if a bound is wanted too.
 - **Provenance** — the public flip's ZIP-install rehearsal, 2026-09-16. Deferred deliberately by the operator on the day it was found: **row now, fix later.**
+
+### R132 — The workspace symlink-escape test does not run on Windows, which is the platform this ships on
+
+**`test_symlink_escape_refused` skips on Windows because the runner cannot create a symlink without Developer Mode. The guard it covers — `resolve_in_workspace` refusing a path that leaves `workspace_dir` — is a safety property, and Windows is where Microclaw runs.**
+
+- **How it was found** — not from a failure. Both CI platforms were green, but the skip counts differed: Ubuntu 3338 passed / 99 skipped, Windows 3334 / 103, with identical totals. Four `os.name == "nt"` markers plus one Windows-only installer test predicted 3335 / 102, one short of what was reported. The missing one is `tests/test_safety.py:873`, a runtime `pytest.skip` on `OSError` from `os.symlink` (WinError 1314). **The arithmetic is the evidence**; the log carries no skip reasons because the workflow does not pass `-rs`.
+- **What is still covered** — the guard's logic runs on Linux and macOS, and `resolve_in_workspace` is one shared implementation (`microclaw/safety.py:1326`): expand `~`, `os.path.realpath`, then reject anything not under the resolved root. The `..` and absolute-path escapes are tested everywhere. Only the symlink limb is unexercised on Windows.
+- **What is NOT known, and should not be assumed** — whether `os.path.realpath` resolves the Windows-specific objects the way the POSIX test implies. A **junction** (`mklink /J`) needs no privilege and is documented as resolved since Python 3.8, which would make a junction fixture the obvious fix — but that is read from documentation, not measured here. **8.3 short names** (`C:\PROGRA~1`) are a second Windows-only spelling of the same directory and are not covered by any test on any platform.
+- **What a fix would look like** — create a junction on Windows instead of skipping (`cmd /c mklink /J`), and keep the symlink path where symlinks can be made. That exercises the same `realpath` call against a real Windows reparse point. Adding `-rs` to the CI invocation would also make future skip drift visible without arithmetic.
+- **What NOT to do** — enable Developer Mode on the runner to make the existing test pass. It would make CI unlike every machine Microclaw installs on, which is the failure this whole exercise just spent a day on.
+- **Where** — LOCAL to write; a Windows machine or the CI runner to verify. No rig, no dose.
+- **Block** — NONE.
+- **Importance** — MEDIUM. Nothing is known to be broken; a safety limb is simply unverified where it matters most.
+- **Effort** — SMALL
+- **Provenance** — the first two Windows CI runs, 2026-09-16, scored from the skip arithmetic rather than from a failure.
