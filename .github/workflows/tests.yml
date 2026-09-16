@@ -11,23 +11,26 @@
 name: tests
 
 on:
+  # Pull requests only. A `pull_request` check runs against refs/pull/N/merge --
+  # the head merged into the base -- so a green result already describes what
+  # `main` becomes, and re-running on the merge itself buys a second copy of an
+  # answer we have. `pull_request`, never `pull_request_target`: the repo is
+  # public, forks can open pull requests, and `pull_request_target` would run
+  # their code with this repository's token.
   pull_request:
-  # Keep reporting on `main` itself, so the branch stays scored while merges
-  # still land directly. `pull_request`, never `pull_request_target`: the repo
-  # is public, forks can open pull requests, and `pull_request_target` would
-  # run their code with this repository's token.
-  push:
-    branches: [main]
+  # The escape hatch, and the reason dropping `push` is safe: a change that
+  # reaches `main` without a pull request -- an admin bypass for a fast fix --
+  # can be checked from the Actions tab, on any branch, on demand. It fires
+  # nothing on its own.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: tests-${{ github.ref }}
-  # Supersede on a pull request, never on `main`. Cancelling on `main` means a
-  # merge followed quickly by another loses its verdict: 328ef94's run was
-  # killed 7m26s in by the next push and that commit has no result of its own.
-  # A branch's superseded run is noise; `main`'s is the record.
+  # A superseded pull-request run is noise: cancel it. A manual run is asked
+  # for deliberately, so leave it alone.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
