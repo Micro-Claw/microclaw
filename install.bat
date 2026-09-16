@@ -280,6 +280,19 @@ copy /Y "%~dp0scripts\updater-launcher.ps1" "%MC_HOME%\updater-launcher.ps1" >nu
 if errorlevel 1 exit /b 1
 copy /Y "%~dp0scripts\launcher-protocol.txt" "%MC_HOME%\launcher-protocol.txt" >nul
 if errorlevel 1 exit /b 1
+rem A GitHub ZIP carries the Mark of the Web, `copy` preserves that alternate
+rem data stream, and an execution policy set at MachinePolicy scope beats the
+rem Process-scope -ExecutionPolicy Bypass that Microclaw.cmd passes.  Measured
+rem on the demo machine 2026-09-15 (MachinePolicy=Unrestricted, by GPO): every
+rem launch prompted "Do you want to run ...updater-launcher.ps1?" with [D] Do
+rem not run as the default, on the first launch and on the restart after an
+rem update.  Under a RemoteSigned machine policy the same file is refused
+rem outright and the ZIP route cannot launch at all.  A clone has no MOTW,
+rem which is why no gate before the repository went public ever saw this.
+rem Unblocking is what the warning itself tells the user to do; do it for them.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Unblock-File -LiteralPath '%MC_HOME%\Microclaw.cmd','%MC_HOME%\updater-launcher.ps1','%MC_HOME%\launcher-protocol.txt' -ErrorAction SilentlyContinue" >nul 2>&1
+rem Deliberately not checked: a machine with no Unblock-File still installs,
+rem and the user can answer [R] as they could before.
 set "MC_COMMIT=unknown"
 if exist "%MC_SOURCE_DIR%\.git" for /f "delims=" %%I in ('git -C "%MC_SOURCE_DIR%" rev-parse HEAD 2^>nul') do set "MC_COMMIT=%%I"
 rem retract_pending_slot runs first and deliberately: a slot staged but never

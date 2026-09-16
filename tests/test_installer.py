@@ -99,6 +99,30 @@ def test_installer_declares_and_copies_launcher_protocol(bat):
     assert 'scripts\\launcher-protocol.txt" "%MC_HOME%\\launcher-protocol.txt' in bat
 
 
+def test_installer_unblocks_every_launcher_file_it_copies(bat):
+    """A GitHub ZIP marks its files as internet content and `copy` keeps that.
+
+    Microclaw.cmd passes -ExecutionPolicy Bypass, but that is Process scope and
+    loses to a policy set at MachinePolicy scope. Measured on the demo machine
+    the day the repository went public: MachinePolicy=Unrestricted by GPO, and
+    every launch of a ZIP install prompted "Do you want to run ...
+    updater-launcher.ps1?" with [D] Do not run as the default. A clone carries
+    no such mark, which is why every gate before the public flip missed it.
+
+    The unblock must name each file the installer copies, so adding a fourth
+    copy without unblocking it fails here rather than on a user's first launch.
+    """
+    copied = re.findall(r'copy /Y "%~dp0scripts\\([^"]+)"', bat)
+    assert copied, "the installer copies no launcher files"
+    unblock = re.search(r"Unblock-File[^\r\n]*", bat)
+    assert unblock, "the installer never unblocks what it copies"
+    for name in copied:
+        assert f"%MC_HOME%\\{name}" in unblock.group(0), name
+    # It must not be able to fail the install: a machine without Unblock-File
+    # still installs, and the user can answer [R] as they could before.
+    assert "if errorlevel 1" not in bat[unblock.end():unblock.end() + 60]
+
+
 def test_installer_reuses_a_slot_only_after_proving_its_python_runs(bat):
     """`uv venv` refuses an existing environment, and migration always hands it one.
 
