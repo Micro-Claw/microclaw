@@ -101,6 +101,7 @@ Rows added since the triage:
 | `R123`–`R127` | `design/79` block 79c-1's coordinator review, 2026-09-10 |
 | `R128`–`R129` | `design/79` block 79c-1's demo gate, scored from artifacts 2026-09-10 |
 | `R130` | `design/79`'s M2 close-out, 2026-09-10 |
+| `R131` | the public flip's ZIP-install rehearsal on the demo machine, 2026-09-16 |
 
 
 ## The work queue
@@ -151,6 +152,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | ~~`R128`~~ | [Every runtime timing span microclaw measures is quantized to ~15.6 ms on Windows](#r128) | HIGH | SMALL | **79c-2** |
 | `R129` | [Every dataset on the demo machine was written to `<name>_1` on a clean directory](#r129) | LOW | SMALL |  |
 | `R130` | [Two committed gates drive the stage to absolute coordinates](#r130) | MEDIUM | SMALL |  |
+| `R131` | ["Building the update…" has no progress and no timeout, and it is slow](#r131) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2942,3 +2944,18 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM for anyone reusing that gate; LOW otherwise.
 - **Effort** — SMALL
 - **Provenance** — `design/79`'s M2 close-out, round 1, 2026-09-10.
+
+### R131 — "Building the update…" has no progress and no timeout, and it is slow
+
+**A staging build sat on a static banner for minutes with nothing to distinguish slow from hung. The operator read it as stuck, and so did the model — which is the definition of the defect, since nothing was wrong.**
+
+- **What happened** (2026-09-16, demo machine, `public-head` provenance): **Update** was clicked, the banner showed `Building the update…`, and it stayed there long enough for the operator to report "It is stuck on 'Building the update…' never finishes". It then completed normally and the update activated correctly. Exact duration not recorded — the next measurement should capture it, because the whole point is that nobody can see it.
+- **Why there is nothing to look at.** The banner's staging flag is the **in-process** `update_job["running"]` (`webserve.py:799`), not the state file's `staging` key, so it reports only "a thread is alive". `stage_inactive_slot`'s two `subprocess.run` calls for `uv venv` and `uv pip install` pass **no timeout** at all, and neither does the smoke check — a genuinely wedged `uv` would hold that banner forever with no error and no bound.
+- **Why it is slow on a ZIP install in particular** — `stage_cached_candidate` downloads and extracts the archive *before* uv runs, so a `public-head` build carries a codeload download the clone path does not.
+- **What a fix would look like** — the state file already records `staging.status`; the phases (`downloading`, `building`, `verifying`) are known to the staging thread and nothing reports them. A bound on the uv calls needs the same care as design/60's teardown bound: **a timeout that fires on a slow machine is worse than none**, so if one is added it should be self-calibrated or generous, not a constant.
+- **Nothing is damaged by waiting**, and killing the console is safe: staging writes only the inactive slot and publishes `pending-slot.txt` strictly after success.
+- **Where** — LOCAL to design; the demo machine to measure. No rig, no dose.
+- **Block** — NONE.
+- **Importance** — MEDIUM. It cannot corrupt anything, but "is it hung?" is the question a user answers by killing the update.
+- **Effort** — SMALL for progress reporting; MEDIUM if a bound is wanted too.
+- **Provenance** — the public flip's ZIP-install rehearsal, 2026-09-16. Deferred deliberately by the operator on the day it was found: **row now, fix later.**
