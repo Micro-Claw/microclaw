@@ -24,7 +24,11 @@ permissions:
 
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede on a pull request, never on `main`. Cancelling on `main` means a
+  # merge followed quickly by another loses its verdict: 328ef94's run was
+  # killed 7m26s in by the next push and that commit has no result of its own.
+  # A branch's superseded run is noise; `main`'s is the record.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   pytest:
