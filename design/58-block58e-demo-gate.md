@@ -278,10 +278,20 @@ comparison with Prepare.
 Public ZIP replaces the managed install, so it goes last. Download GitHub's
 **Download ZIP** into the normal Downloads folder, close Microclaw, then run
 this block. It selects exactly the newest `microclaw*.zip`, fails if none exists,
-extracts it, resolves the one `install.bat`, and runs it:
+extracts it, **re-marks the extracted files as internet content**, resolves the
+one `install.bat`, and runs it.
+
+The re-mark is not decoration. `Expand-Archive` writes through
+`System.IO.Compression.ZipFile`, which does **not** propagate the
+`Zone.Identifier` stream, while Explorer's "Extract All" — what a user actually
+does — does. Without it this block installs a ZIP whose files are no longer
+internet content, which is how it passed ten rounds while every real ZIP install
+prompted `Do you want to run ...updater-launcher.ps1?` with `[D] Do not run` as
+the default (found 2026-09-15, the day the repository went public). A gate must
+extract the way a user extracts.
 
 ```powershell
-$zip=Get-ChildItem "$env:USERPROFILE\Downloads\microclaw*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if($null -eq $zip){throw 'No microclaw ZIP in Downloads'}; $dest=Join-Path $env:TEMP 'block58e-publiczip'; if(Test-Path $dest){Remove-Item $dest -Recurse -Force}; Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest; $installer=Get-ChildItem $dest -Filter install.bat -Recurse; if($installer.Count -ne 1){throw "Expected one install.bat, found $($installer.Count)"}; & $installer.FullName; if($LASTEXITCODE -ne 0){throw "public ZIP install failed: $LASTEXITCODE"}
+$zip=Get-ChildItem "$env:USERPROFILE\Downloads\microclaw*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if($null -eq $zip){throw 'No microclaw ZIP in Downloads'}; $dest=Join-Path $env:TEMP 'block58e-publiczip'; if(Test-Path $dest){Remove-Item $dest -Recurse -Force}; Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest; Get-ChildItem $dest -Recurse -File | ForEach-Object { Set-Content -LiteralPath "$($_.FullName):Zone.Identifier" -Value "[ZoneTransfer]`r`nZoneId=3" }; $installer=Get-ChildItem $dest -Filter install.bat -Recurse; if($installer.Count -ne 1){throw "Expected one install.bat, found $($installer.Count)"}; & $installer.FullName; if($LASTEXITCODE -ne 0){throw "public ZIP install failed: $LASTEXITCODE"}
 ```
 
 Launch it once and allow its first background check to cache the private 404.
