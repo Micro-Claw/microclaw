@@ -1,0 +1,63 @@
+# The test gate for `main` (design/58-P).
+#
+# Linux and Windows, not macOS: runner multipliers are 1x / 2x / 10x, and
+# Windows is the only platform Microclaw ships on. Public repositories get
+# Actions free and unlimited, so the private-repo minute budget that shaped
+# earlier thinking no longer applies.
+#
+# This does not build or publish anything. The updater stages an exact commit
+# and runs `uv pip install` on the user's machine; nothing is distributed
+# through PyPI. A workflow's only role here is as a test gate.
+name: tests
+
+on:
+  pull_request:
+  # Keep reporting on `main` itself, so the branch stays scored while merges
+  # still land directly. `pull_request`, never `pull_request_target`: the repo
+  # is public, forks can open pull requests, and `pull_request_target` would
+  # run their code with this repository's token.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A hung job must not sit for six hours. The suite is ~5 minutes locally.
+    timeout-minutes: 30
+    strategy:
+      # Each platform reports independently. A Windows failure must not hide
+      # Linux's result, or the reverse -- one refusal hiding untested limbs is
+      # the failure mode CLAUDE.md's gate rules exist to prevent.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The same extras CLAUDE.md provisions a worktree with, so CI installs
+      # what the suite imports rather than a guess at it.
+      - name: Install Microclaw and its test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[serve,test,ilastik]"
+
+      # No `-m "not integration"`: every test needing Micro-Manager, an EMU rig
+      # or a real MDA already skips itself on an unset environment variable, and
+      # deselecting by marker would also drop the ones that legitimately run.
+      # `--durations` is here to answer a live question -- whether requiring the
+      # whole suite on every pull request is affordable.
+      - name: Run the test suite
+        run: python -m pytest -q --durations=10

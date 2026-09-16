@@ -36,7 +36,7 @@ def reconcile(payload, *, confirm_id=None, grant_ids=(), turn_id=None):
         "});\n"
     )
     return json.loads(subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, check=True
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout)
 
 
@@ -169,7 +169,7 @@ def run_node(body):
         "(async () => {\n" + body + "\n})().catch(e => { console.error(e); process.exit(1); });\n"
     )
     return json.loads(subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, check=True
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout)
 
 
@@ -514,7 +514,7 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False):
     """
     wrapper = "(async () => {\n" + script + "\n})().catch(e => { console.error(e); process.exit(1); });"
     result = subprocess.run(
-        ["node", "-e", wrapper], capture_output=True, text=True
+        ["node", "-e", wrapper], capture_output=True, text=True, encoding="utf-8"
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -671,7 +671,7 @@ def run_browser_turn(*, unrelated_abort=False):
     """
     wrapper = "(async () => {\n" + script + "\n})().catch(e => { console.error(e); process.exit(1); });"
     result = subprocess.run(
-        ["node", "-e", wrapper], capture_output=True, text=True
+        ["node", "-e", wrapper], capture_output=True, text=True, encoding="utf-8"
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -714,5 +714,5 @@ def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suf
       process.stdout.write(JSON.stringify({{text: pendingProgress, renders}}));
     """
     result = subprocess.run(["node", "-e", script], stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, check=True, timeout=5)
+                            capture_output=True, text=True, encoding="utf-8", check=True, timeout=5)
     assert json.loads(result.stdout) == {"text": "frames 1 / 1" + suffix, "renders": 1}

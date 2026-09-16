@@ -19,6 +19,33 @@ THUMB = {
 }
 
 
+def test_every_node_invocation_decodes_as_utf8():
+    """`text=True` alone decodes with the locale encoding, which on Windows is
+    cp1252 — so an em dash, a middle dot or an ellipsis in the rendered HTML
+    comes back as a replacement character and six tests fail on a string the
+    product got right. Node writes UTF-8 to a pipe on every platform.
+
+    Checked by parsing both files rather than grepping them, because the next
+    node call added here will be written from the one above it.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent
+    for name in ("test_transcript_js.py", "test_recovery_js.py"):
+        source = (root / name).read_text(encoding="utf-8")
+        calls = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run"
+        ]
+        assert calls, f"{name} invokes no subprocess"
+        for call in calls:
+            keywords = {k.arg: k.value for k in call.keywords}
+            assert "encoding" in keywords, f"{name}:{call.lineno} decodes with the locale"
+            assert keywords["encoding"].value == "utf-8", f"{name}:{call.lineno}"
+
+
 def render_result(content):
     """Load transcript.js in node and call Transcript.renderResult(content)."""
     path = resources.files("microclaw").joinpath("transcript.js")
@@ -28,7 +55,7 @@ def render_result(content):
         f"process.stdout.write(window.Transcript.renderResult({json.dumps(content)}));\n"
     )
     out = subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, check=True
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
     )
     return out.stdout
 
@@ -41,7 +68,7 @@ def update_view(state):
         f"process.stdout.write(JSON.stringify(window.Transcript.updateBannerView({json.dumps(state)})));\n"
     )
     return json.loads(subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, check=True
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout)
 
 
@@ -119,7 +146,7 @@ def tool_card_body(block, result, live):
         + f"const card = window.Transcript.toolCard({args});\n"
         "process.stdout.write(card.kids[0].innerHTML);\n"
     )
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True)
     return out.stdout
 
 
@@ -157,7 +184,7 @@ def in_node(expr, protocol=None):
         + f"require({json.dumps(str(path))});\n"
         + f"process.stdout.write(String({expr}));\n"
     )
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True)
     return out.stdout
 
 
@@ -216,7 +243,7 @@ def md(text):
         f"process.stdout.write(window.Transcript.md({json.dumps(text)}));\n"
     )
     out = subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, check=True
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
     )
     return out.stdout
 
@@ -282,7 +309,7 @@ def rendered_turns(history):
         "({counts, html: tx.children.map(c => c.innerHTML).join('')}));\n"
     )
     out = subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, check=True
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
     )
     return json.loads(out.stdout)
 

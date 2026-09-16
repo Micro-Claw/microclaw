@@ -147,7 +147,14 @@ def install(dest: Path | None = None, dry_run: bool = False) -> dict:
     materialize_icon(p["icon"])
     p["cmd"].parent.mkdir(parents=True, exist_ok=True)
     if not managed_layout_present(p["workdir"]):
-        p["cmd"].write_text(_wrapper_text(p["target"], p["args"]), encoding="utf-8")
+        # newline="" or Windows text mode expands the \n of this already-CRLF
+        # text and the file lands with \r\r\n -- which is precisely the
+        # hazard _wrapper_text's CRLF comment exists to avoid, reintroduced by
+        # the write.  Invisible on macOS and Linux, where "\n" needs no
+        # translation; found by the first Windows CI run, 2026-09-16.
+        p["cmd"].write_text(
+            _wrapper_text(p["target"], p["args"]), encoding="utf-8", newline="",
+        )
 
     _powershell(
         _PS_CREATE,

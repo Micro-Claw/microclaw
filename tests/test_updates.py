@@ -368,21 +368,33 @@ def test_github_clone_repointed_after_provenance_is_refused(clone_pair):
 
 
 def test_noninteractive_fetch_failure_uses_desktop_guidance(tmp_path, monkeypatch):
-    script = tmp_path / "git"
-    script.write_text(
-        "#!/bin/sh\n"
-        "if test \"$GIT_TERMINAL_PROMPT\" != 0; then sleep 5; fi\n"
-        "case \" $* \" in *' fetch '*) exit 1;; *' rev-parse '*) exit 1;; esac\n",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    state = {**updates.clone_provenance.__annotations__, "git_executable": str(script),
+    """A fetch that would prompt fails fast, with the GitHub Desktop sentence.
+
+    This drove a `/bin/sh` fake that slept unless GIT_TERMINAL_PROMPT was 0 and
+    inferred "we did not prompt" from elapsed time. Windows cannot exec a shell
+    script -- the first CI run died with `WinError 193` -- and the timing was
+    only ever a proxy for the argument. So assert the argument: every git
+    invocation must carry GIT_TERMINAL_PROMPT=0 in its environment, which is
+    what makes a credential prompt impossible rather than merely unobserved.
+    Same reasoning as install.bat's stdin guard, asserted on the argument
+    because no test runner can have a console.
+    """
+    invocations = []
+
+    def fake_run(command, **kwargs):
+        invocations.append((list(command), dict(kwargs.get("env") or {})))
+        failing = {"fetch", "rev-parse"} & set(command)
+        return subprocess.CompletedProcess(command, 1 if failing else 0, "", "")
+
+    monkeypatch.setattr(updates.subprocess, "run", fake_run)
+    state = {**updates.clone_provenance.__annotations__, "git_executable": "git",
              "clone_path": str(tmp_path), "remote": "origin", "installed_commit": "a" * 40,
              "remote_identity": updates._normalize_remote_url("", tmp_path)}
-    started = time.monotonic()
     with pytest.raises(updates.UpdateError, match="Open GitHub Desktop, Fetch origin, then Check again"):
         updates.discover_clone(state, timeout=1)
-    assert time.monotonic() - started < 0.75
+    assert invocations, "discover_clone ran no git at all"
+    for command, env in invocations:
+        assert env.get("GIT_TERMINAL_PROMPT") == "0", command
 
 
 def test_git_archive_materializes_exact_sha_and_mismatch_refuses(clone_pair, tmp_path):

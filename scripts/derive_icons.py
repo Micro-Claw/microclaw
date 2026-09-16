@@ -43,6 +43,19 @@ def render() -> bytes:
     return buf.getvalue()
 
 
+def _pixels(data: bytes) -> tuple:
+    """The image a PNG encodes, independent of how it was encoded."""
+    if not data:
+        return ()
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            rgba = img.convert("RGBA")
+            return (rgba.size, rgba.tobytes())
+    except Exception:
+        # Unreadable is not "the same image"; let the caller report it stale.
+        return ()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -55,7 +68,13 @@ def main() -> int:
     want = render()
     if args.check:
         have = PNG.read_bytes() if PNG.exists() else b""
-        if have != want:
+        # Compare PIXELS, not the encoded stream. A PNG's bytes depend on the
+        # zlib and Pillow the encoder happened to use, so byte equality calls
+        # the file stale whenever the check runs somewhere other than the
+        # machine that last wrote it -- which is what the first Linux CI run
+        # reported, on an image whose pixels were fine. The property this
+        # guards is that the README shows what the generator produces.
+        if _pixels(have) != _pixels(want):
             print(f"{PNG} is stale; run: python scripts/derive_icons.py", file=sys.stderr)
             return 1
         print(f"{PNG} is up to date.")

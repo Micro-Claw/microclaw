@@ -208,11 +208,23 @@ class TestGetCurrentDatetime:
 
         monkeypatch.setattr(tools, "datetime", FrozenDatetime)
         result = tools.get_current_datetime(mock_ctrl, unconstrained_guard)
-        assert result["local_iso"] == "2026-08-20T17:26:32+02:00"
-        assert result["date"] == "2026-08-20"
-        assert result["time"] == "17:26:32"
-        assert result["compact"] == "20260820_172632"
-        assert result["utc_offset"] == "+0200"
+        # Every LOCAL field is asserted against the machine's own rendering of
+        # that one instant, never against a literal: `now().astimezone()` reads
+        # the system zone, so hard-coded "+02:00" strings passed in Vienna and
+        # failed on both CI runners. The instant itself is absolute, so the UTC
+        # rendering stays a literal and anchors the whole comparison.
+        local = datetime.fromisoformat(result["local_iso"])
+        assert local == fixed
+        assert result["date"] == local.strftime("%Y-%m-%d")
+        assert result["time"] == local.strftime("%H:%M:%S")
+        assert result["compact"] == local.strftime("%Y%m%d_%H%M%S")
+        assert result["utc_offset"] == local.strftime("%z")
+        # `timezone` is deliberately not compared: fromisoformat rebuilds a
+        # fixed-offset zone whose tzname() is "UTC+02:00", while the product
+        # reports the system's real abbreviation ("CEST"). Asserting equality
+        # there just re-encodes the machine's zone, which is the bug being
+        # fixed. Only that it is populated is checkable everywhere.
+        assert result["timezone"]
         assert result["utc_iso"] == "2026-08-20T15:26:32+00:00"
 
     def test_compact_is_filename_safe(self, mock_ctrl, unconstrained_guard):
