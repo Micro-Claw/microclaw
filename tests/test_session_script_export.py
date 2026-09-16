@@ -4142,7 +4142,10 @@ def test_autofocus_multiposition_emitter_forwards_the_tool_call_exactly(monkeypa
         "save_dir": "session",
         "protocol_params": {"n_frames": 1, "interval_s": 0},
         "preserve_unsupported": True,
-        "log_path": "session/af_autofocus_log.json",
+        # The tool builds this with `Path(save_dir) / ...`, so the separator
+        # is the running platform's. A literal "session/..." asserted POSIX
+        # and failed on Windows, where the product was right.
+        "log_path": str(Path("session") / "af_autofocus_log.json"),
         "hook_strategy": "autofocus_per_position",
         "hook_params": {
             "z_range_um": 4,
