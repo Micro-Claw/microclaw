@@ -1,0 +1,62 @@
+cff-version: 1.2.0
+message: "If you use Microclaw in your work, please cite the preprint below."
+title: Microclaw
+abstract: >-
+  An AI agent for Micro-Manager microscopy control. Describe your acquisition
+  protocol in plain language; Microclaw translates it into Pycro-Manager tool
+  calls while the GUI responds in real time. Acquisition routines can be
+  compiled to standalone Pycro-Manager scripts for re-use outside of the agent.
+type: software
+version: 0.1.0
+license: BSD-3-Clause
+repository-code: "https://github.com/Micro-Claw/microclaw"
+authors:
+  - given-names: Zach
+    family-names: Marin
+  - given-names: Amr
+    family-names: Abouelezz
+  - given-names: Nestor Miguel
+    family-names: Castillo Duque de Estrada
+  - given-names: Sarah V.
+    family-names: Schweighofer
+  - given-names: Fabian
+    family-names: Hauser
+  - given-names: Leia T.
+    family-names: Koestinger
+  - given-names: Anvita
+    family-names: Manjunath
+  - given-names: Nico
+    family-names: Stuurman
+  - given-names: Florian
+    family-names: Schueder
+  - given-names: Jonas
+    family-names: Ries
+preferred-citation:
+  type: article
+  title: Microscope control with a natural language agent
+  journal: bioRxiv
+  year: 2026
+  month: 9
+  doi: 10.64898/2026.09.15.751723
+  url: "https://www.biorxiv.org/content/10.64898/2026.09.15.751723v1"
+  authors:
+    - given-names: Zach
+      family-names: Marin
+    - given-names: Amr
+      family-names: Abouelezz
+    - given-names: Nestor Miguel
+      family-names: Castillo Duque de Estrada
+    - given-names: Sarah V.
+      family-names: Schweighofer
+    - given-names: Fabian
+      family-names: Hauser
+    - given-names: Leia T.
+      family-names: Koestinger
+    - given-names: Anvita
+      family-names: Manjunath
+    - given-names: Nico
+      family-names: Stuurman
+    - given-names: Florian
+      family-names: Schueder
+    - given-names: Jonas
+      family-names: Ries

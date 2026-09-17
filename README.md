@@ -100,6 +100,15 @@ microclaw serve                               # browser GUI, Ctrl+C to stop
 [Developing Microclaw](docs/development.md) covers the rest — conda environments,
 the ilastik extra, the desktop shortcut, and the integration tests.
 
+## Citation
+
+If Microclaw is useful in your work, please cite the preprint:
+
+> Marin Z, Abouelezz A, Castillo Duque de Estrada NM, Schweighofer SV, Hauser F,
+> Koestinger LT, Manjunath A, Stuurman N, Schueder F, Ries J.
+> *Microscope control with a natural language agent.* bioRxiv 2026.
+> doi:[10.64898/2026.09.15.751723](https://doi.org/10.64898/2026.09.15.751723)
+
 ## Contributing
 
 Contributions are welcome. Every commit needs a `Signed-off-by` trailer
