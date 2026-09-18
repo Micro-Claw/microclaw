@@ -250,6 +250,102 @@ not declare it**. Declare `packaging` in `[project].dependencies` — it is alre
 installed everywhere, so it costs nothing — or the installer rests on a
 transitive dependency nobody promised.
 
+## Rechecked 2026-09-18, against a tree that has moved
+
+Every code anchor this notebook names still matches except the exporter's, and
+every measured mechanism reproduces. `skills.py:48` / `:101`, `updates.py:447`
+and its failure branch, `serve.html:242`, `transcript.js:282` and
+`ilastik_adapter.py:368`/`:421` are unchanged. 71c needs no adjustment; 71b's
+reinstall gate does: `install.bat` reuses a working environment, so an ordinary
+reinstall preserves installed extras. Its missing-extension limb must arrange
+a rebuilt environment explicitly.
+Measurement 1 reproduces on uv 0.12.8 (the editable still freezes as a nameless
+`-e file://` line) and measurement 4's mechanism reproduces exactly — only its
+absolute counts moved, which is why the test bullet below now asserts the
+difference rather than either number. `packaging` is still undeclared and still
+reaches every environment through `scikit-image`'s `packaging>=21`.
+
+The exporter anchors in the community brief were re-pinned here: `refuse()` is
+`tools.py:2284`, its `# NOT EMITTED` + `raise RuntimeError` pair `:2297-2298`,
+the `renderer is None` branch `:2316-2321`, the `@emits_nothing` branch
+`:2313-2315`, the recorded-pairs loop `:2300`, and `_recorded_outcome` `:1040`.
+The behaviour at each is unchanged, so R84's conclusion stands; only the numbers
+had rotted.
+
+**The one new constraint is CI** (design/58-P, 2026-09-16).
+`.github/workflows/tests.yml` runs the suite on `ubuntu-latest` and
+`windows-latest` for every pull request, installing `.[serve,test,ilastik]`
+with **pip**. Three consequences for 71a:
+
+- **`h5py` is always installed there**, so a test shaped *not installed → install
+  → ready* asserts the machine it runs on. Readiness tests drive fixtures; only
+  the demo gate observes a genuinely absent extension. Two commits on 2026-09-16
+  cleaned up exactly this defect elsewhere in the suite, and this block is the
+  most likely place to reintroduce it.
+- **The workflow does not provision `uv`**; using pip does not establish that
+  the runner image lacks it. CI's uv invocations use fakes, and discovery tests
+  explicitly control presence and absence rather than inspecting the host.
+  Real-uv evidence comes from the development measurements and demo gate.
+- **`locate_uv()`'s `%USERPROFILE%\.local\bin\uv.exe` route is Windows-only.**
+  Its test must not assume either platform's filesystem; the PATH route is the
+  part both runners can exercise.
+
+**6. Measured: what uv prints when nothing is a terminal.** The progress design
+below rests on this, so it was run rather than assumed — uv 0.12.8, into
+throwaway venvs, output redirected. Uncached:
+
+```text
+Using Python 3.12.14 environment at: uvprobe2
+Resolved 2 packages in 242ms
+Downloading numpy (5.2MiB)
+Downloading h5py (2.9MiB)
+ Downloaded h5py
+ Downloaded numpy
+Prepared 2 packages in 369ms
+Installed 2 packages in 12ms
+ + h5py==3.16.0
+ + numpy==2.5.3
+```
+
+Four facts, each load-bearing below:
+
+- **It streams.** `Resolved ... in 242ms` arrived ~239 ms after launch, not at
+  exit; uv's self-reported duration matching its arrival time is the evidence.
+  (Per-line timestamps carry the instrument's own overhead, so the gaps between
+  lines are not quotable — the ordering is.)
+- **All of it is stderr. stdout is empty.** uv's failure text is the same
+  stream: 71a item 3's "a resolution conflict says which requirement fought
+  which pin" is read from it, and so is the progress. One reader, fanning out
+  to the phase and to the retained error tail — never two consumers of one
+  pipe. (The bounded tail in *Pin the current environment* is the
+  `ENUMERATE_DISTRIBUTIONS` helper's, a different subprocess.) `--dry-run` is
+  on stderr too.
+- **`capture_output=True` buffers until exit**, so publishing progress while uv
+  runs means `Popen` and a reader thread rather than `subprocess.run`. Keep
+  `stdin=subprocess.DEVNULL` through that change — 58e's inherited console is
+  exactly the failure a hand-rolled `Popen` reintroduces.
+- **The vocabulary is literal and per package.** `Resolved` ends resolution;
+  `Downloading`/`Downloaded` are emitted **per package**, so there is no
+  whole-operation percentage to render; there is no `installing` line at all —
+  uv prints `Prepared` then `Installed`. `checking environment` is ours, which
+  is fine because we own that phase.
+
+A **warm-cache** install printed no `Downloading` lines at all and finished in
+41 ms. That is the ordinary repeat case, and it is why the gate limb's NOT
+EXERCISED clause is right. Even the demo machine's first `ilastik` install may
+use cached packages: absence from the active environment does not imply absence
+from uv's cache. An uncached install offers more opportunity to observe progress;
+if no transition is observed, the limb remains NOT EXERCISED.
+
+**R131 is this block's shape, found after it was written.** A staging build sits
+on `Building the update…` with no phase and no bound, and `stage_inactive_slot`
+passes no timeout to uv; an operator read a healthy build as hung. 71a adds a
+second long uv subprocess behind a second banner with a job lock *shaped like*
+`update_job`, so it reproduces R131 unless the **installing** state carries the
+phase uv is in. It should. A bound is optional and takes R131's own caution: a
+timeout that fires on a slow machine is worse than none, so generous or
+self-calibrated, never a constant.
+
 ## Decision
 
 ### First-party extras here; community packages open in a separate notebook
@@ -375,7 +471,9 @@ merely safe: nothing already imported is replaced, so only new files are written
 into the running interpreter's `site-packages`.
 
 Run `--dry-run` anyway, with the same constraints, only to show the user what
-would be added before they press the button. If its output cannot be parsed,
+would be added before they press the button. **It writes to stderr, not stdout**
+(measurement 6), and its shape — `Would install N packages` then `+ name==ver`
+lines — is not the shape a real install prints. If its output cannot be parsed,
 show no preview — a preview is information, and losing it must never change what
 gets installed.
 
@@ -451,10 +549,12 @@ clearing neither*. Structure it so the extras attempt is tried and discarded
 existing branch. The success path already pops all three keys, so a fallback
 that succeeds must run to the end of the function rather than return early.
 
-Three states leave a recorded extension unusable, and all three are ordinary:
-a rollback to the previous slot, an `install.bat` reinstall (which builds
-`.[serve]` and is deliberately *not* being taught to read JSON), and a staged
-extras failure. So at startup, compare the record against readiness and, when
+Three states can leave a recorded extension unusable: a rollback to a slot
+without it, an installer rebuild of the environment, and a staged extras
+failure. An ordinary `install.bat` reinstall reuses a working environment;
+installing `[serve]` does not remove already-installed extras. A rebuilt
+environment starts without them, and the installer is deliberately *not* being
+taught to read JSON. So at startup, compare the record against readiness and, when
 they disagree, say so in the panel with a Reinstall button. **No network at
 startup and no automatic install** — the check is local, and the button is the
 user's. This is the compensation for `install.bat` not carrying extras, and it
@@ -549,9 +649,13 @@ the separate, explicit export disposition below.
 the running environment; the update system stays the only thing that builds
 slots.
 
-**No version pinning UI, no uninstall.** Removing an extension is
-`install.bat` plus not reinstalling it, which the reconcile already surfaces.
-Add uninstall when someone asks for it.
+**No version pinning UI, no uninstall.** Note what the `install.bat`
+correction above costs here: a reinstall *preserves* an extension, so there is
+no user-facing way to remove one short of forcing an environment rebuild. The
+decision stands — nobody has asked, and `uv pip uninstall` of a shared
+transitive dependency is a worse hazard than keeping an unused wheel — but it
+is now a real gap rather than something the reconcile surfaces. Add uninstall
+when someone asks for it, and say this much in the panel if they do.
 
 **No `EXTENSIONS` validation layer.** It is a description table, not a registry
 with predicates: one test asserts its keys are a subset of `Provides-Extra`, and
@@ -611,7 +715,7 @@ intent above is right — preserve the acquisition, disclose the analysis — bu
 neither of the two obvious markers produces it, and the code says so plainly:
 
 - `@refuses` routes through the `renderer is None` branch
-  (`tools.py:1989-1994`) into `refuse()` (`:1968`), which appends
+  (`tools.py:2316-2321`) into `refuse()` (`:2284`), which appends
   `# NOT EMITTED: …` **and** `raise RuntimeError(…)` on the next line. A session
   that ran the analysis tool therefore exports a script that halts there and
   strands every later step — including the `run_timelapse` the same session
@@ -621,7 +725,7 @@ neither of the two obvious markers produces it, and the code says so plainly:
   "must never replace an otherwise-emittable `run_timelapse` with a total
   export failure" is violated by the marker, not by the acquisition emitter.
 - `@emits_nothing` prints `# No hardware-routine effect.` and continues
-  (`:1986-1988`), which is silence about an HDF5 the session really produced —
+  (`:2313-2315`), which is silence about an HDF5 the session really produced —
   and *silently deleting a step is worse than the raise it replaces*.
 
 So the analysis tool takes **`@emits`**, with a renderer that emits a comment
@@ -633,7 +737,7 @@ package-reference format can turn that comment into code, and v1 does not
 fabricate one.
 
 **The trigger's comment is unrenderable unless the acquisition records it.** The
-export loop iterates recorded `(tool, params)` pairs (`:1973`). A trigger is
+export loop iterates recorded `(tool, params)` pairs (`:2300`). A trigger is
 *configuration*, so it never appears in that list, and `_emit_acquisition` has
 nothing to render a disclosure from. The trigger design must therefore make the
 acquisition tool's **recorded result** carry the fired trigger's package,
@@ -642,7 +746,7 @@ and this is the same debt the shutter, the EMU write and the centring loop each
 had to pay in 63a before they could be emitted at all.
 
 **And an analysis failure must not reach the record in the shape
-`_recorded_outcome` reads.** That function (`:794`) decides how much of a call
+`_recorded_outcome` reads.** That function (`:1040`) decides how much of a call
 completed from exactly two structural signals: a **top-level `error`** key, and
 per-item `error` entries inside a **top-level list**. A worker crash reported
 either way turns a flawless acquisition into a `refuse()` (partial) or a skipped
@@ -865,14 +969,43 @@ skill packages* above for the separate notebook brief.
    every rig via `scikit-image`, but as a transitive dependency nobody
    promised.
 4. `GET /api/extensions`, `POST /api/extensions/install`. One job lock, shaped
-   like `update_job`. Refuse (409) while a turn holds `session.lock`, while an
-   acquisition ledger is in flight, while a confirmation is pending, or while
-   update staging runs. Rate-limit the install route with `_RateLimiter`.
+   like `update_job`. Refuse (409) on the four `/api/update/restart` already
+   guards (`webserve.py:898-907`) — a turn holding `session.lock`, an
+   acquisition ledger in flight, a pending confirmation, and a **setup write in
+   flight**, which this design's original list omitted — plus a fifth of its
+   own, update staging running. Rate-limit the install route with
+   `_RateLimiter`.
+   Exclusion works in both directions: while installation runs, refuse a new
+   turn, update staging, restart, or another install with 409; acquisition and
+   setup-write entry paths must not start either. Check and reserve admission
+   atomically with the existing session/job synchronization, and release the
+   reservation on success and every failure. This is coordination within the
+   running server, not ownership of the microscope across processes.
+   **Note what "atomically" spans**: `session.lock` is an `asyncio.Lock` and
+   `update_job_lock` is a `threading.Lock`, so one reservation covering both is
+   the hardest thing in this block, not a detail of it. Design it before the
+   endpoints.
 5. Panel markup in `serve.html`, which only *calls* the view
    (`serve.html:242`); the pure `Transcript.extensionsView(state)` goes in
    `transcript.js` beside `updateBannerView` (`transcript.js:282`) and is
    exported alongside it, so the rendering is testable without a browser. Four
    states, not six: not installed / installing / ready / failed-or-missing.
+   **Installing carries the uv phase**, not just "a thread is alive" — R131 is
+   the same banner one feature over, and it was read as hung while working.
+   Expose our `checking environment` phase, then `running package installer`
+   until uv reports progress. Map its messages to milestones: `Resolved` →
+   `Resolution complete`, `Downloading <package>` → `Downloading <package>`,
+   `Downloaded <package>` → `Downloaded <package>`, `Prepared` →
+   `Package preparation complete`, and `Installed` → `Package installation
+   complete`. Completion messages do not claim a phase is still running, and
+   installation is not readiness: our import check reports `verifying` next.
+   Publish these observations while uv runs, not after it exits; unrecognized
+   output must not invent a phase. Three consequences from measurement 6: the stream is
+   **stderr**, which is also where item 3 gets its conflict text, so read it
+   once and fan out; `subprocess.run(capture_output=True)` buffers until exit,
+   so this is `Popen` plus a reader thread, keeping `stdin=subprocess.DEVNULL`;
+   and `Downloading` is per package, so the panel names a package and never a
+   percentage.
 6. `ilastik_adapter.py`'s two messages (`:371`, `:424`) point at the panel.
 
 **Tests** — the ones that must be watched failing on the pre-change tree are
@@ -896,8 +1029,10 @@ marked ✦; the rest are regression or structure tests (mutate, don't watch).
   still pins that distribution.
 - ✦ The pins are identical whatever the caller process CWD is — run the builder
   from a directory holding a planted `foo.egg-info`, and assert `foo` is absent.
-  (Measurement 4: a bare in-process `distributions()` pins it, at 64 entries
-  instead of 63.) Assert on **`-I`**, which is the condition that does the work:
+  (Measurement 4: a bare in-process `distributions()` pins it, one entry more
+  than the isolated run returns. Assert the *difference*, never either count —
+  the environment has already grown by two since that measurement and CI's is
+  different again.) Assert on **`-I`**, which is the condition that does the work:
   dropping it reintroduces `foo` and also loses `PYTHONPATH` isolation, while
   dropping the empty CWD alone changes nothing measurable. Do not write a
   fixture claiming both conditions are individually load-bearing — one of them
@@ -928,17 +1063,41 @@ marked ✦; the rest are regression or structure tests (mutate, don't watch).
   import (fake a module that raises `ValueError`, which is h5py's real numpy-
   mismatch failure, not `ImportError`).
 - An extra whose requirement carries `; python_version < "3.13"` is refused.
-- 409 for each of the four in-flight conditions, parameterized over them.
+- 409 for each of the **five** in-flight conditions, parameterized over them.
+  The one this design's original list of four omitted is a setup write, which
+  `/api/update/restart` has guarded since before this notebook was written
+  (`_microclaw_setup_write_capability.in_flight`, `webserve.py:905-907`).
+- Hold an install at a deterministic barrier and attempt a turn, staging,
+  restart, another install, and acquisition/setup-write entry: each refuses
+  without starting work. Test both admission orderings and a concurrent start;
+  only one conflicting operation is admitted. Success and failure both release
+  admission so a later request can proceed.
+- Control uv discovery explicitly: PATH present, PATH absent with the Windows
+  fallback present, and neither present. CI must not depend on host uv.
 - `extensions.json` survives a concurrent `write_state` (the reason it is its
   own file) — assert both files after interleaved writes.
 - `Transcript.extensionsView` renders installed / not installed / recorded-but-
   missing / install-failed, from fixtures.
+- Drive a fake uv through captured progress messages while keeping it running.
+  Between messages, query `GET /api/extensions` and render its state: the phase
+  and displayed text must change before process exit. Also cover an
+  unclassified interval, verification, and terminal success/failure. A static
+  installing banner must fail this test. The messages come from measurement 6's
+  transcript, **on stderr**, one line at a time — a fake that writes them to
+  stdout, or all at once, tests neither the stream nor the streaming.
+- `test_missing_h5py_names_optional_extra`
+  (`tests/test_ilastik_adapter.py:382`) asserts today's `microclaw[ilastik]`
+  wording, so item 6 changes it rather than adding a test. Existing endpoint
+  tests also gain coverage of admission while an extension install runs.
 
 **The fake trap.** The uv fake must be written from uv's actual behaviour, not
 from our caller: a resolution *conflict* exits nonzero with the explanation on
 stderr, `uv pip` is a uv subcommand, and a plain `uv venv` has no pip module.
-Capture one real `uv pip install --dry-run` transcript on the dev machine and
-paste it into the parse test. Keep measurement 1's real editable-freeze
+Capture **two** real transcripts on the dev machine and paste them into the
+parse tests: a `--dry-run` for the preview parser, and an uncached real install
+for the progress parser. They are different shapes (measurement 6) and a fake
+written from one cannot stand in for the other — writing the progress fake from
+imagination is this section's own trap. Keep measurement 1's real editable-freeze
 transcript as the regression evidence for why freeze text is not used, while
 the metadata fixture represents that same installed distribution. *A fake that
 encodes your assumption is not a test of it.*
@@ -962,6 +1121,11 @@ captured and asserted to be all-`==` on a machine where the slot install is
 *not* editable, so the limb is not merely re-testing the dev checkout. Carry a
 **control that fires**: a deliberately impossible extra name must fail the limb
 if the endpoint accepts it, so the refusal limb cannot pass by doing nothing.
+
+The progress limb captures phase observations while the real install is still
+running and verifies that the panel renders their changes. If the install
+finishes too quickly to observe a transition, report NOT EXERCISED for this
+limb; terminal success alone is not progress evidence.
 
 The gate runs on the **demo machine's managed install**, where `sys.executable`
 is `env-<active>/Scripts/python.exe` and microclaw is installed non-editably —
@@ -997,15 +1161,31 @@ there.
 - The smoke check is unchanged — it must not import an extension.
 - Reconcile reports missing-after-rollback from a fixture where the record names
   an extension the running slot cannot import.
+- Reconcile keeps a recorded extension ready when it remains importable after
+  an ordinary reinstall, and offers Reinstall when a rebuilt environment lacks
+  it. Both states are fixtures, independent of the test host's installed extras.
 
 **Gate — demo machine, one program with 71c's limb appended.** A real update
 cycle: install `ilastik` from the panel, stage an update, restart, then assert
 the extension is *still* ready in the new slot and that `microclaw-slot.json`
-names the new commit. Then `install.bat`, and assert the panel reports the
-extension as missing with a working Reinstall — the recovery path, tested
-against the state that makes recovery necessary. Score it from
-`extensions.json`, `update-state.json` and the slot markers, not from the
-banner text.
+names the new commit. Then run `install.bat` against that working environment
+and assert the extension remains ready. For the recovery limb, stop the server
+and preserve the managed environment outside its slot in the disposable demo
+installation; retain `extensions.json`, then run `install.bat` to build a fresh
+environment. Prove that `h5py` is absent before launching the server, assert the
+panel reports recorded-but-missing, and use Reinstall to restore readiness.
+**Delete the preserved environment only after recovery is verified, and report
+the cleanup.** If rebuilding or verification fails, stop any server using the
+replacement, move the failed replacement aside, and restore the preserved
+environment to its original slot before exiting nonzero. Restore any selector
+or state files changed by the recovery limb from snapshots taken before it;
+verify the restored environment starts. If restoration itself fails, retain
+the preserved environment and report its path and the recovery error explicitly.
+Block 5b's
+gate planted a delayed failure by leaving durable state pointing at a fixture;
+an orphaned slot environment is the same family, and a gate that moves
+production state owns putting it back. Score it from `extensions.json`,
+`update-state.json` and the slot markers, not from the banner text.
 
 ### 71c — a skill declares its extension
 

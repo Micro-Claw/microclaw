@@ -1346,7 +1346,7 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Three export decisions for the community-package path are stated as intent but not pinned by a test, and an unpinned export decision is exactly what blocks 43h, 47 and 52a each paid for.**
 
-- **Status** — OPEN - the three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:1989`-`:1994`) into `refuse()` (`:1968`), which plants a `raise RuntimeError` in the exported script.
+- **Status** — OPEN - the three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:2316`-`:2321`) into `refuse()` (`:2284`), which plants a `raise RuntimeError` in the exported script.
 - **Importance** — HIGH - `CLAUDE.md` records this failure shape three times over (43h's `generate_and_save_hook`, 47's `set_roi`/`clear_roi`, 52a's `move_named_stage`); each killed its own block's gate script.
 - **Where** — LOCAL - the marker's behaviour is settled by reading the emitter and pinning it with a test, the way `test_every_registered_tool_has_exactly_one_export_decision` pins the marker count.
 - **Block** — NONE - pin these before a runner is handed the notebook, not during it.
