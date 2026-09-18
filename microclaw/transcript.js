@@ -286,7 +286,7 @@
       if (job.running && job.name === item.name) {
         status = "installing";
         text = job.phase || "running package installer";
-      } else if (item.ready) {
+      } else if (item.ready && item.recorded) {
         status = "ready";
         text = "Ready";
       } else if (item.error || item.recorded || (job.name === item.name && job.error)) {

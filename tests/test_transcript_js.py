@@ -358,7 +358,7 @@ def extensions_view(state):
 
 @pytest.mark.parametrize("patch,status,text,button", [
     ({}, "not-installed", "Not installed", "Install"),
-    ({"ready": True}, "ready", "Ready", None),
+    ({"ready": True, "recorded": True}, "ready", "Ready", None),
     ({"recorded": True}, "failed-or-missing", "Recorded but missing from this environment.", "Reinstall"),
     ({"error": "Resolution conflict"}, "failed-or-missing", "Resolution conflict", "Reinstall"),
 ])

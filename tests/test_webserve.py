@@ -2535,6 +2535,7 @@ def test_extension_holds_admission_and_releases(extension_client, session, monke
         for route, body in [("/api/prompt", {"message": "acquire"}), ("/api/update/stage", None),
                             ("/api/update/restart", None), ("/api/extensions/install", {"name": "ilastik"})]:
             response = extension_client.post(route, json=body)
+            assert entries == [], "acquisition chokepoint entered during install"
             assert response.status_code == 409, f"{route}: {response.text}"
         assert entries == [], "acquisition chokepoint entered during install"
     finally:
@@ -2698,4 +2699,26 @@ def test_extension_rate_limit(extension_client, monkeypatch):
         wait_extension(extension_client, lambda s: not s["job"]["running"])
     response = extension_client.post("/api/extensions/install", json={"name": "ilastik"})
     assert response.status_code == 429
+    assert not extension_client.get("/api/extensions").json()["job"]["running"]
+
+
+def test_extension_restart_reservation_blocks_install(extension_client, session, monkeypatch, tmp_path):
+    _managed_updates(tmp_path, monkeypatch)
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *a: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
+    monkeypatch.setattr(updates, "validate_launch_environment", lambda: (tmp_path, "a", "nonce"))
+    monkeypatch.setattr(updates, "write_restart_request", lambda *a: None)
+    extension_client.app.state.uvicorn_server = types.SimpleNamespace(should_exit=False)
+    assert extension_client.post("/api/update/restart").status_code == 200
+    response = extension_client.post("/api/extensions/install", json={"name": "ilastik"})
+    assert response.status_code == 409 and "restart" in response.text
+
+
+def test_extension_catalog_failure_releases(extension_client, monkeypatch):
+    from microclaw import extensions
+    real = extensions.available
+    monkeypatch.setattr(extensions, "available", lambda: (_ for _ in ()).throw(RuntimeError("catalog failed")))
+    with pytest.raises(RuntimeError, match="catalog failed"):
+        extension_client.post("/api/extensions/install", json={"name": "ilastik"})
+    monkeypatch.setattr(extensions, "available", real)
     assert not extension_client.get("/api/extensions").json()["job"]["running"]
