@@ -342,3 +342,41 @@ def test_a_fetch_warning_reaches_the_banner_text():
         "A newer Microclaw commit is available: abcdef1 — Some change "
         "Open GitHub Desktop, Fetch origin, then Check again."
     )
+
+
+def extensions_view(state):
+    path = resources.files("microclaw").joinpath("transcript.js")
+    script = (
+        "global.window = {};\n"
+        f"require({json.dumps(str(path))});\n"
+        f"process.stdout.write(JSON.stringify(window.Transcript.extensionsView({json.dumps(state)})));\n"
+    )
+    return json.loads(subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout)
+
+
+@pytest.mark.parametrize("patch,status,text,button", [
+    ({}, "not-installed", "Not installed", "Install"),
+    ({"ready": True, "recorded": True}, "ready", "Ready", None),
+    ({"recorded": True}, "failed-or-missing", "Recorded but missing from this environment.", "Reinstall"),
+    ({"error": "Resolution conflict"}, "failed-or-missing", "Resolution conflict", "Reinstall"),
+])
+def test_extensions_four_states(patch, status, text, button):
+    item = {"name": "ilastik", "description": "<untrusted>", "ready": False, "recorded": False, **patch}
+    row = extensions_view({"extensions": [item]})[0]
+    assert (row["status"], row["text"], row["button"]) == (status, text, button)
+    assert row["description"] == "<untrusted>"  # text contract: serve uses textContent.
+
+
+@pytest.mark.parametrize("phase", [
+    "checking environment", "running package installer", "Resolution complete",
+    "Downloading numpy", "Downloading h5py", "Downloaded h5py", "Downloaded numpy",
+    "Package preparation complete", "Package installation complete", "verifying",
+])
+def test_extensions_view_renders_observed_phase(phase):
+    state = {"extensions": [{"name": "ilastik", "description": "HDF5", "ready": False}],
+             "job": {"name": "ilastik", "running": True, "phase": phase}}
+    view = extensions_view(state)[0]
+    assert view["status"] == "installing"
+    assert view["text"] == phase

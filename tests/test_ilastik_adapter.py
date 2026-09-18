@@ -389,7 +389,7 @@ def test_missing_h5py_names_optional_extra(tmp_path, monkeypatch):
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", missing)
-    with pytest.raises(RuntimeError, match=r"microclaw\[ilastik\]"):
+    with pytest.raises(RuntimeError, match=r"Extensions panel"):
         instance.analyze_completed_dataset(FakeView(), {}, FakeContext())
 
 

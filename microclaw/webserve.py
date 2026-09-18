@@ -50,7 +50,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, shortcut, tools, updates
+from microclaw import config, credentials, shortcut, tools, updates, extensions
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import (
     AcquisitionDiagnosticWriter, AuditLog, ConversationStore, prune_transcripts,
@@ -604,6 +604,39 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     update_job_lock = threading.Lock()
     update_job = {"running": False}
+    extension_job = {"running": False}
+    extension_installs = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
+    restarting = False
+    turn_reserved = False
+    extension_catalog = None
+    catalog_task = None
+
+    def refuse_extension_install():
+        if extension_job["running"]:
+            raise HTTPException(409, "An extension install is in progress.")
+
+    def reserve_extension(name):
+        # Turn admission publishes turn_reserved before awaiting session.lock.
+        # Both reservations are checked/published under the existing job lock;
+        # neither path awaits while holding that threading lock.
+        refuse_extension_install()
+        if restarting:
+            raise HTTPException(409, "A restart is in progress.")
+        if turn_reserved or session.lock.locked():
+            raise HTTPException(409, "An agent turn is in progress.")
+        ledger = tools._existing_acquisition_ledger(session.ctrl)
+        if ledger is not None and ledger.in_flight:
+            raise HTTPException(409, "An acquisition is in progress.")
+        if session.pending is not None:
+            raise HTTPException(409, "A confirmation is pending.")
+        capability = getattr(session.ctrl, "_microclaw_setup_write_capability", None)
+        if capability is not None and capability.in_flight:
+            raise HTTPException(409, "A setup write is in progress.")
+        if update_job["running"]:
+            raise HTTPException(409, "An update staging job is in progress.")
+        session.ctrl._microclaw_extension_install = extension_job
+        extension_job.clear()
+        extension_job.update(running=True, name=name, phase="checking environment")
     update_checks = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
     page = load_page("serve.html")
     if session.mode is SessionMode.SETUP:
@@ -804,6 +837,82 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             "dismissal": dismissal,
         }
 
+    async def ensure_extension_catalog():
+        nonlocal extension_catalog, catalog_task
+        # Discover/import once off the event loop, then refresh only after an
+        # install while its admission is still held. Polls only copy cached
+        # state: no repeated metadata walks or process-global invalidation.
+        if extension_catalog is None:
+            if catalog_task is None:
+                catalog_task = asyncio.create_task(run_in_threadpool(extensions.available))
+            try:
+                catalog = await asyncio.shield(catalog_task)
+            except Exception:
+                catalog_task = None
+                raise
+            with update_job_lock:
+                if extension_catalog is None:
+                    extension_catalog = catalog
+        return extension_catalog
+
+    @app.get("/api/extensions")
+    async def get_extensions():
+        await ensure_extension_catalog()
+        with update_job_lock:
+            job = dict(extension_job)
+            catalog = extension_catalog
+        return JSONResponse({"extensions": catalog, "job": job})
+
+    @app.post("/api/extensions/install")
+    async def post_extension_install(request: Request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Expected an extension name.") from None
+        if not isinstance(body, dict) or set(body) != {"name"} or not isinstance(body["name"], str):
+            raise HTTPException(400, "The request must contain only an extension name.")
+        name = body["name"]
+        try:
+            extensions.requirements_for(name)
+        except extensions.ExtensionInstallError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if not extension_installs.allow(client_address(request)):
+            raise HTTPException(429, "Too many extension installs.")
+        await ensure_extension_catalog()
+        with update_job_lock:
+            reserve_extension(name)
+        try:
+            def progress(**state):
+                with update_job_lock:
+                    extension_job.update(state)
+
+            def install_extension():
+                nonlocal extension_catalog
+                try:
+                    result = extensions.install(name, progress=progress)
+                    progress(result=result)
+                except Exception as exc:
+                    progress(error=str(exc) or type(exc).__name__)
+                finally:
+                    try:
+                        catalog = extensions.available()
+                        with update_job_lock:
+                            extension_catalog = catalog
+                    except Exception as exc:
+                        progress(error=f"Could not refresh extension readiness: {exc}")
+                    finally:
+                        with update_job_lock:
+                            extension_job["running"] = False
+                            extension_job.pop("phase", None)
+
+            threading.Thread(target=install_extension, name="microclaw-extension-install", daemon=True).start()
+        except BaseException:
+            with update_job_lock:
+                extension_job["running"] = False
+                extension_job.pop("phase", None)
+            raise
+        return JSONResponse({"installing": name}, status_code=202)
+
     @app.get("/api/update")
     async def get_update():
         return JSONResponse(update_status())
@@ -818,6 +927,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     @app.post("/api/update/stage")
     async def post_update_stage():
         with update_job_lock:
+            refuse_extension_install()
             if update_job["running"]:
                 raise HTTPException(409, "An update staging job is already running.")
             try:
@@ -872,8 +982,13 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 with update_job_lock:
                     update_job["running"] = False
 
-        (updates.state_path().parent / "downloads").mkdir(parents=True, exist_ok=True)
-        threading.Thread(target=stage, name="microclaw-update-stage", daemon=True).start()
+        try:
+            (updates.state_path().parent / "downloads").mkdir(parents=True, exist_ok=True)
+            threading.Thread(target=stage, name="microclaw-update-stage", daemon=True).start()
+        except BaseException:
+            with update_job_lock:
+                update_job["running"] = False
+            raise
         return JSONResponse({"staging": True}, status_code=202)
 
     @app.post("/api/update/dismiss")
@@ -895,7 +1010,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     @app.post("/api/update/restart")
     async def post_update_restart(request: Request):
-        if session.lock.locked():
+        nonlocal restarting
+        # This handler has no await: the check through publication is one event
+        # loop turn. The job lock synchronizes with installer completion.
+        with update_job_lock:
+            refuse_extension_install()
+        if turn_reserved or session.lock.locked():
             raise HTTPException(409, "An agent turn is in progress.")
         ledger = tools._existing_acquisition_ledger(session.ctrl)
         if ledger is not None and ledger.in_flight:
@@ -916,23 +1036,36 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(409, "Automatic restart is not available; restart later.")
         root, _slot, nonce = launch
         updates.write_restart_request(root, nonce)
-        os.environ[shortcut.UPDATE_RESTART_ENV] = "1"
-        server.should_exit = True
+        restarting = True
+        try:
+            os.environ[shortcut.UPDATE_RESTART_ENV] = "1"
+            server.should_exit = True
+        except BaseException:
+            restarting = False
+            os.environ.pop(shortcut.UPDATE_RESTART_ENV, None)
+            raise
+        # Uvicorn now owns shutdown (should_exit stays set); admission must stay
+        # closed until this process exits. Failed publication above clears it.
         return JSONResponse({"restart_requested": True})
 
     @app.post("/api/prompt")
     async def post_prompt(p: Prompt, request: Request):
+        nonlocal turn_reserved
         msg = p.message.strip()
         if not msg:
             raise HTTPException(400, "Empty message.")
         if credentials.load_api_key()[0] is None:
             raise HTTPException(400, "No Anthropic API key is set.")
-        if session.lock.locked():
-            raise HTTPException(409, "A turn is already in progress.")
-        # Acquired here, not inside events(): the response body is not iterated
-        # until after this handler returns, so a lock taken there would leave a
-        # window in which a second prompt passes the check above.
-        await session.lock.acquire()
+        with update_job_lock:
+            refuse_extension_install()
+            if turn_reserved or session.lock.locked():
+                raise HTTPException(409, "A turn is already in progress.")
+            turn_reserved = True
+        try:
+            await session.lock.acquire()
+        finally:
+            with update_job_lock:
+                turn_reserved = False
         session.cancel.clear()
         session.current_turn_id = uuid.uuid4().hex
         session.last_resolution = None
@@ -1041,7 +1174,11 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 emit(_TURN_DONE)
                 loop.call_soon_threadsafe(session.lock.release)
 
-        threading.Thread(target=run_turn, name="microclaw-turn", daemon=True).start()
+        try:
+            threading.Thread(target=run_turn, name="microclaw-turn", daemon=True).start()
+        except BaseException:
+            session.lock.release()
+            raise
 
         async def events():
             # A client that vanishes leaves this generator closed and the worker
