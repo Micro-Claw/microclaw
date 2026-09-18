@@ -446,7 +446,15 @@ because a block looks small.
    out on the rig and the runbook must be in front of them for the whole run.
    Pin the implementation inside it with `git merge-base --is-ancestor <commit>
    HEAD`, never an exact tip hash, so amending the runbook cannot invalidate it.
-   Push to `origin`. **Pushed, not just committed locally.** No PR.
+   Push to `origin`. **Pushed, not just committed locally.**
+
+   **Then open the pull request** (`gh pr create --base main`). The repository is
+   public as of 2026-09-15 and nothing lands on `main` except through a PR. Open
+   it here, at step 4, rather than at step 9: `.github/workflows/tests.yml` runs
+   the suite on `ubuntu-latest` and `windows-latest` **for pull requests only**,
+   so a PR opened at merge time would let an operator spend instrument time on a
+   branch CI has never seen. The PR is also where the block's review lives, so
+   findings from step 3 and results from step 6 belong in it.
 5. **The user runs the gates** on M5, the demo machine, M2, or the Nikon. This
    is theirs. Never simulate rig evidence, and never treat a self-confirming
    probe as proof of a human boundary.
@@ -616,12 +624,15 @@ because a block looks small.
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.
 8. **The user re-tests.** Loop 5–8 until the gates pass.
-9. **Merge and clean up.** Merge the branch to `main`, **push `main`**, then
+9. **Merge the PR and clean up.** Merge through the pull request opened at step
+   4 — never `git merge` into a local `main` and push it, which bypasses the PR
+   and CI both. Confirm the merge landed (`gh pr view --json state,mergedAt`),
+   then bring the local checkout back to it (`git checkout main && git pull`) and
    delete the branch locally *and* on `origin`. A block is not closed until
-   `git log --oneline origin/main..main` is empty — a merge that never left the
-   machine is not done. Record the block's coordination notes in
-   `design/prompts.md` and close its ledger row, so a cold session can resume
-   from the remote alone.
+   `origin/main` carries the merge and the local `main` matches it — a merge that
+   never left the machine is not done, and neither is one the machine never came
+   back to. Record the block's coordination notes in `design/prompts.md` and
+   close its ledger row, so a cold session can resume from the remote alone.
 10. **Run the post-merge design gate** the block names — reconcile the design
     docs to what was actually measured, and tick the carried-forward rows. If
     documentation must change, merge that before assigning the next block.
