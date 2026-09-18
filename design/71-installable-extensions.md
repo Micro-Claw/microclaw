@@ -1247,20 +1247,47 @@ installing returns the file alone. Score it by diffing the two responses, not by
 grepping for the sentence: a limb that only greps passes if the line is added
 unconditionally.
 
-## Open questions for the user
+## Settled by the operator, 2026-09-18
 
-1. **Is `ilastik` the only first-party extension at v1?** The design supports
-   more the day an extra and a line in `EXTENSIONS` land together, but 71a's
-   gate should exercise exactly what ships.
-2. **Should a recorded-but-missing extension after an update be reinstalled
-   automatically?** This plan says no — network on startup, without a button.
-   Say so if you want it automatic; it is a two-line change and a different
-   gate limb.
+**`ilastik` is the only first-party extension at v1.** More land the day an
+extra and a line in `EXTENSIONS` arrive together; 71a's gate exercises exactly
+what ships.
+
+**A recorded-but-missing extension is not reinstalled automatically.** The panel
+reports it and the Reinstall button is the user's, as written above. The
+operator asked for a reason not to do it automatically, since being made to
+reinstall extensions after reinstalling MicroClaw would be annoying. Three
+answers, and the first is the one that decided it:
+
+- **The case is narrower than "after a reinstall".** `install.bat` reuses a
+  working environment and clears it only when the interpreter fails to *run*
+  (`install.bat:178-183`), so an ordinary reinstall preserves `h5py`; 71b item 1
+  makes staging build `[serve,ilastik]`, so an ordinary update carries it too.
+  What is left is a genuine environment rebuild after a dead interpreter, a
+  rollback to a slot predating the install, and a staged extras failure.
+- **It is not the two-line change this document called it.** An install holds
+  71a's admission and refuses turns, staging and restart; started at launch it
+  would 409 the user's first prompt for something they never asked for, which is
+  R131 one feature over and a worse annoyance than a button. It also needs an
+  attempt record keyed to the environment or a failure repaints the banner and
+  hammers an index on every launch — *a record that some earlier attempt failed
+  is not a record of this one*.
+- **The panel and the button have to exist regardless**, because measurement 2
+  makes a requirement above a pin a clean `No solution found`: an automatic
+  attempt can fail legitimately and still leaves the user pressing something.
+
+There is no argument of principle against it — `extensions.json` **is** the
+user's consent, and startup is the safest moment for an in-place install, with
+nothing imported and no acquisition in flight. If the three narrow states above
+are measured annoying in practice, the shape to build is `start_due_check`'s
+(`webserve.py:1385`): background, off the startup and request paths, yielding
+admission to a user turn rather than blocking it, one attempt per environment.
+That measurement buys it; nothing else does.
 
 ## Run ledger
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| 71a | — | — | not started |
+| 71a | `block-71a` | `720309b` | in progress |
 | 71b | — | — | not started |
 | 71c | — | — | not started |
