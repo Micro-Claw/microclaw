@@ -607,20 +607,22 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     extension_job = {"running": False}
     extension_installs = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
     restarting = False
+    turn_reserved = False
+    extension_catalog = None
+    catalog_task = None
 
     def refuse_extension_install():
         if extension_job["running"]:
             raise HTTPException(409, "An extension install is in progress.")
 
     def reserve_extension(name):
-        # Called on the event loop, under update_job_lock. There is no await
-        # between checking session.lock and publishing admission. Turn admission
-        # uses this same lock and acquires the unlocked asyncio.Lock without
-        # yielding; worker completion changes only the job under this lock.
+        # Turn admission publishes turn_reserved before awaiting session.lock.
+        # Both reservations are checked/published under the existing job lock;
+        # neither path awaits while holding that threading lock.
         refuse_extension_install()
         if restarting:
             raise HTTPException(409, "A restart is in progress.")
-        if session.lock.locked():
+        if turn_reserved or session.lock.locked():
             raise HTTPException(409, "An agent turn is in progress.")
         ledger = tools._existing_acquisition_ledger(session.ctrl)
         if ledger is not None and ledger.in_flight:
@@ -835,16 +837,30 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             "dismissal": dismissal,
         }
 
+    async def ensure_extension_catalog():
+        nonlocal extension_catalog, catalog_task
+        # Discover/import once off the event loop, then refresh only after an
+        # install while its admission is still held. Polls only copy cached
+        # state: no repeated metadata walks or process-global invalidation.
+        if extension_catalog is None:
+            if catalog_task is None:
+                catalog_task = asyncio.create_task(run_in_threadpool(extensions.available))
+            try:
+                catalog = await asyncio.shield(catalog_task)
+            except Exception:
+                catalog_task = None
+                raise
+            with update_job_lock:
+                if extension_catalog is None:
+                    extension_catalog = catalog
+        return extension_catalog
+
     @app.get("/api/extensions")
     async def get_extensions():
+        await ensure_extension_catalog()
         with update_job_lock:
             job = dict(extension_job)
-            # No await here: checking admission and importing must not straddle
-            # another request starting uv. While installing use the snapshot.
-            if job.get("running"):
-                catalog = job.pop("catalog")
-            else:
-                catalog = extensions.available()
+            catalog = extension_catalog
         return JSONResponse({"extensions": catalog, "job": job})
 
     @app.post("/api/extensions/install")
@@ -860,32 +876,34 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             extensions.requirements_for(name)
         except extensions.ExtensionInstallError as exc:
             raise HTTPException(400, str(exc)) from None
+        if not extension_installs.allow(client_address(request)):
+            raise HTTPException(429, "Too many extension installs.")
+        await ensure_extension_catalog()
         with update_job_lock:
             reserve_extension(name)
         try:
-            if not extension_installs.allow(client_address(request)):
-                raise HTTPException(429, "Too many extension installs.")
-            # Reservation precedes readiness imports, so another installer cannot
-            # begin changing the environment while this request probes it.
-            catalog = extensions.available()
-            with update_job_lock:
-                extension_job["catalog"] = catalog
-
             def progress(**state):
                 with update_job_lock:
                     extension_job.update(state)
 
             def install_extension():
+                nonlocal extension_catalog
                 try:
                     result = extensions.install(name, progress=progress)
                     progress(result=result)
                 except Exception as exc:
                     progress(error=str(exc) or type(exc).__name__)
                 finally:
-                    with update_job_lock:
-                        extension_job["running"] = False
-                        extension_job.pop("phase", None)
-                        extension_job.pop("catalog", None)
+                    try:
+                        catalog = extensions.available()
+                        with update_job_lock:
+                            extension_catalog = catalog
+                    except Exception as exc:
+                        progress(error=f"Could not refresh extension readiness: {exc}")
+                    finally:
+                        with update_job_lock:
+                            extension_job["running"] = False
+                            extension_job.pop("phase", None)
 
             threading.Thread(target=install_extension, name="microclaw-extension-install", daemon=True).start()
         except BaseException:
@@ -997,7 +1015,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         # loop turn. The job lock synchronizes with installer completion.
         with update_job_lock:
             refuse_extension_install()
-        if session.lock.locked():
+        if turn_reserved or session.lock.locked():
             raise HTTPException(409, "An agent turn is in progress.")
         ledger = tools._existing_acquisition_ledger(session.ctrl)
         if ledger is not None and ledger.in_flight:
@@ -1019,12 +1037,20 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         root, _slot, nonce = launch
         updates.write_restart_request(root, nonce)
         restarting = True
-        os.environ[shortcut.UPDATE_RESTART_ENV] = "1"
-        server.should_exit = True
+        try:
+            os.environ[shortcut.UPDATE_RESTART_ENV] = "1"
+            server.should_exit = True
+        except BaseException:
+            restarting = False
+            os.environ.pop(shortcut.UPDATE_RESTART_ENV, None)
+            raise
+        # Uvicorn now owns shutdown (should_exit stays set); admission must stay
+        # closed until this process exits. Failed publication above clears it.
         return JSONResponse({"restart_requested": True})
 
     @app.post("/api/prompt")
     async def post_prompt(p: Prompt, request: Request):
+        nonlocal turn_reserved
         msg = p.message.strip()
         if not msg:
             raise HTTPException(400, "Empty message.")
@@ -1032,11 +1058,14 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(400, "No Anthropic API key is set.")
         with update_job_lock:
             refuse_extension_install()
-            if session.lock.locked():
+            if turn_reserved or session.lock.locked():
                 raise HTTPException(409, "A turn is already in progress.")
-            # An unlocked asyncio.Lock acquires without yielding. No thread may
-            # publish an install between this check and the turn reservation.
+            turn_reserved = True
+        try:
             await session.lock.acquire()
+        finally:
+            with update_job_lock:
+                turn_reserved = False
         session.cancel.clear()
         session.current_turn_id = uuid.uuid4().hex
         session.last_resolution = None
@@ -1145,7 +1174,11 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 emit(_TURN_DONE)
                 loop.call_soon_threadsafe(session.lock.release)
 
-        threading.Thread(target=run_turn, name="microclaw-turn", daemon=True).start()
+        try:
+            threading.Thread(target=run_turn, name="microclaw-turn", daemon=True).start()
+        except BaseException:
+            session.lock.release()
+            raise
 
         async def events():
             # A client that vanishes leaves this generator closed and the worker

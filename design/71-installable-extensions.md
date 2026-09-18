@@ -122,8 +122,8 @@ pinned at its installed version, a requirement needing more fails outright —
 
 ```text
 uv pip install --constraint c.txt 'numpy>=2.6'
-  x No solution found when resolving dependencies:
-  '-> Because you require numpy>=2.6 and numpy==2.5.2, we can conclude that
+  × No solution found when resolving dependencies:
+  ╰─▶ Because you require numpy>=2.6 and numpy==2.5.2, we can conclude that
       your requirements are unsatisfiable.
 ```
 
@@ -470,12 +470,12 @@ This is also what makes the in-place install *possible* on Windows and not
 merely safe: nothing already imported is replaced, so only new files are written
 into the running interpreter's `site-packages`.
 
-Run `--dry-run` anyway, with the same constraints, only to show the user what
-would be added before they press the button. **It writes to stderr, not stdout**
-(measurement 6), and its shape — `Would install N packages` then `+ name==ver`
-lines — is not the shape a real install prints. If its output cannot be parsed,
-show no preview — a preview is information, and losing it must never change what
-gets installed.
+Do not run a dry-run preview (operator decision, 2026-09-18). Before pressing
+Install, the panel discloses the packages from the wheel's `Requires-Dist`.
+The real install reports added packages and exact versions in its `+ name==version`
+lines. A dry-run inside installation adds another resolution and failure point
+only to repeat information the real install reports immediately afterwards;
+there is no pre-button resolution endpoint in this design.
 
 ### Prove the extension by importing it
 
@@ -1124,11 +1124,9 @@ marked ✦; the rest are regression or structure tests (mutate, don't watch).
 **The fake trap.** The uv fake must be written from uv's actual behaviour, not
 from our caller: a resolution *conflict* exits nonzero with the explanation on
 stderr, `uv pip` is a uv subcommand, and a plain `uv venv` has no pip module.
-Capture **two** real transcripts on the dev machine and paste them into the
-parse tests: a `--dry-run` for the preview parser, and an uncached real install
-for the progress parser. They are different shapes (measurement 6) and a fake
-written from one cannot stand in for the other — writing the progress fake from
-imagination is this section's own trap. Keep measurement 1's real editable-freeze
+Capture a real uncached install transcript for the progress parser and a
+nonzero conflict transcript for its retained error text, both on stderr
+(measurement 6). Keep measurement 1's real editable-freeze
 transcript as the regression evidence for why freeze text is not used, while
 the metadata fixture represents that same installed distribution. *A fake that
 encodes your assumption is not a test of it.*

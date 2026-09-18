@@ -367,3 +367,16 @@ def test_extensions_four_states(patch, status, text, button):
     row = extensions_view({"extensions": [item]})[0]
     assert (row["status"], row["text"], row["button"]) == (status, text, button)
     assert row["description"] == "<untrusted>"  # text contract: serve uses textContent.
+
+
+@pytest.mark.parametrize("phase", [
+    "checking environment", "running package installer", "Resolution complete",
+    "Downloading numpy", "Downloading h5py", "Downloaded h5py", "Downloaded numpy",
+    "Package preparation complete", "Package installation complete", "verifying",
+])
+def test_extensions_view_renders_observed_phase(phase):
+    state = {"extensions": [{"name": "ilastik", "description": "HDF5", "ready": False}],
+             "job": {"name": "ilastik", "running": True, "phase": phase}}
+    view = extensions_view(state)[0]
+    assert view["status"] == "installing"
+    assert view["text"] == phase

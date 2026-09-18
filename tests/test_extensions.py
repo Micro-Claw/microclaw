@@ -13,12 +13,6 @@ import pytest
 
 from microclaw import extensions as ext, updates
 
-DRY_RUN = '''Using Python 3.12.14 environment at: uvprobe
-Resolved 2 packages in 9ms
-Would install 2 packages
- + h5py==3.16.0
- + numpy==2.5.3
-'''
 UNCACHED = '''Using Python 3.12.14 environment at: uvprobe2
 Resolved 2 packages in 214ms
 Downloading numpy (5.2MiB)
@@ -52,14 +46,14 @@ def isolated(monkeypatch, tmp_path):
     return tmp_path
 
 
-def uv_fake(monkeypatch, tmp_path, output=UNCACHED, code=0, preview=DRY_RUN):
+def uv_fake(monkeypatch, tmp_path, output=UNCACHED, code=0):
     """Real pipes/exit codes; only replace which executable handles uv's argv."""
     script = tmp_path / "uv_fake.py"
     script.write_text(
         "import sys\n"
         "assert sys.argv[1:3] == ['pip', 'install']\n"
-        f"sys.stderr.write({preview!r} if '--dry-run' in sys.argv else {output!r})\n"
-        f"sys.exit(0 if '--dry-run' in sys.argv else {code})\n", encoding="utf-8")
+        f"sys.stderr.write({output!r})\n"
+        f"sys.exit({code})\n", encoding="utf-8")
     real_popen = subprocess.Popen
     calls = []
 
@@ -90,9 +84,9 @@ def target(tmp_path):
     venv.EnvBuilder(with_pip=False).create(root)
     python = root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     payload = tmp_path / "site.json"
-    subprocess.run([str(python), "-I", "-c", "import sysconfig,json,sys;from pathlib import Path;Path(sys.argv[1]).write_text(json.dumps(sysconfig.get_paths()))", str(payload)],
+    subprocess.run([str(python), "-I", "-c", "import sysconfig,json,sys;from pathlib import Path;Path(sys.argv[1]).write_text(json.dumps(sysconfig.get_paths()),encoding='utf-8')", str(payload)],
                    stdin=subprocess.DEVNULL, capture_output=True, check=True)
-    site = Path(json.loads(payload.read_text())["purelib"])
+    site = Path(json.loads(payload.read_text(encoding="utf-8"))["purelib"])
     return str(python), site
 
 
@@ -108,9 +102,9 @@ def test_unknown_extra_refuses_before_spawn(isolated, monkeypatch):
 def test_requirements_come_only_from_wheel(isolated, monkeypatch):
     calls = uv_fake(monkeypatch, isolated)
     ext.install("ilastik")
-    assert calls
+    assert len(calls) == 1, "installation ran more than one resolver"
     for argv, _ in calls:
-        assert argv[argv.index("--constraint") + 2:] in (["h5py>=3.10"], ["h5py>=3.10", "--dry-run"])
+        assert argv[argv.index("--constraint") + 2:] == ["h5py>=3.10"]
 
 
 def test_target_paths_pins_banner_and_interpreter(isolated, target, monkeypatch):
@@ -179,7 +173,7 @@ def test_cwd_difference_and_isolated_flag(isolated, monkeypatch):
 def test_payload_file_not_stdout(isolated, monkeypatch):
     records = [{"name": "Only_File", "version": "1.0", "origin": "/public"}]
     def run(argv, **kw):
-        Path(argv[-1]).write_text(json.dumps(records))
+        Path(argv[-1]).write_text(json.dumps(records), encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="noise, not JSON")
     monkeypatch.setattr(subprocess, "run", run)
     assert ext._pins("python", isolated) == ["only-file==1.0"]
@@ -194,7 +188,7 @@ def test_helper_uses_public_origin(tmp_path, monkeypatch):
     monkeypatch.setattr(metadata, "distributions", lambda: [double])
     monkeypatch.setattr(sys, "argv", ["helper", str(tmp_path / "payload")])
     exec(ext.ENUMERATE_DISTRIBUTIONS, {})
-    assert json.loads((tmp_path / "payload").read_text())[0]["origin"] == str(Path("/public"))
+    assert json.loads((tmp_path / "payload").read_text(encoding="utf-8"))[0]["origin"] == str(Path("/public"))
 
 
 def test_live_pins_ignore_stale_record(isolated, target, monkeypatch):
@@ -203,8 +197,8 @@ def test_live_pins_ignore_stale_record(isolated, target, monkeypatch):
     monkeypatch.setattr(ext, "sys", SimpleNamespace(executable=python))
     state = isolated / "state"
     state.mkdir()
-    (state / "constraints.txt").write_text("numpy==1.26.0\n")
-    (state / "extensions.json").write_text(json.dumps({"installed": {"ilastik": {"requirements": ["numpy==1.26.0"]}}}))
+    (state / "constraints.txt").write_text("numpy==1.26.0\n", encoding="utf-8")
+    (state / "extensions.json").write_text(json.dumps({"installed": {"ilastik": {"requirements": ["numpy==1.26.0"]}}}), encoding="utf-8")
     calls = uv_fake(monkeypatch, isolated)
     ext.install("ilastik")
     assert calls[-1][1] == "numpy==2.5.3\n", "install reused a stale pin"
@@ -300,15 +294,13 @@ def test_record_and_update_writes_are_independent(isolated):
     ext.record("ilastik", ["h5py>=3.10"])
     updates.write_state({**stale, "staging": "ready"}, update)
     assert ext._records()["installed"]["ilastik"]["requirements"] == ["h5py>=3.10"]
-    assert json.loads(update.read_text())["staging"] == "ready"
+    assert json.loads(update.read_text(encoding="utf-8"))["staging"] == "ready"
     ext.forget("ilastik")
     assert not ext._records()["installed"]
 
 
 @pytest.mark.parametrize("output", [UNCACHED, WARM])
-def test_transcripts_preview_and_progress(isolated, monkeypatch, output):
-    assert ext.preview_packages(DRY_RUN) == ["h5py==3.16.0", "numpy==2.5.3"]
-    assert ext.preview_packages(output) == []
+def test_transcripts_progress(isolated, monkeypatch, output):
     calls = uv_fake(monkeypatch, isolated, output)
     seen = []
     result = ext.install("ilastik", progress=lambda **kw: seen.append(kw))
@@ -317,13 +309,6 @@ def test_transcripts_preview_and_progress(isolated, monkeypatch, output):
     assert phases[-2:] == ["Package installation complete", "verifying"]
     assert result["added"] == ["h5py==3.16.0", "numpy==2.5.3"]
     assert ext.progress_phase("unclassified output") is None
-
-
-def test_bad_preview_does_not_change_install(isolated, monkeypatch):
-    calls = uv_fake(monkeypatch, isolated, preview="new uv vocabulary")
-    result = ext.install("ilastik")
-    assert len(calls) == 2 and result["added"]
-    assert calls[0][0][:-1] == calls[1][0]
 
 
 @pytest.mark.parametrize("key", ["UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_EXTRA_INDEX_URL", "PIP_INDEX_URL"])
@@ -360,3 +345,14 @@ def test_enumerator_failure_and_timeout_refuse_before_uv(isolated, monkeypatch):
     monkeypatch.setattr(subprocess, 'run', timeout)
     with pytest.raises(ext.ExtensionInstallError, match='enumerate the target environment'):
         ext._pins('target', isolated)
+
+
+def test_gate_keeps_only_changed_observations(tmp_path):
+    gate = Path(__file__).resolve().parents[1] / "design" / "71-block71a-demo-gate.py"
+    result = subprocess.run([sys.executable, str(gate), "--selftest", "--out", str(tmp_path)],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert "FAIL " not in result.stdout, result.stdout + result.stderr
+    observations = json.loads((tmp_path / "observations.json").read_text(encoding="utf-8"))
+    assert observations
+    assert all(a["state"] != b["state"] for a, b in zip(observations, observations[1:])), "gate retained duplicate poll observations"
+    assert all(a["at"] <= b["at"] for a, b in zip(observations, observations[1:]))

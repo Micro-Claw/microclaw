@@ -584,13 +584,14 @@ def _write_json_atomic(state: dict[str, Any], target: Path) -> Path:
     return target
 
 
-def locate_uv() -> str:
+def locate_uv(*, path: str | None = None, user_profile: str | Path | None = None,
+              platform: str | None = None) -> str:
     """Use PATH, then the Windows installer's bootstrap location."""
-    found = shutil.which("uv")
+    found = shutil.which("uv", path=path)
     if found:
         return found
-    if sys.platform == "win32":
-        profile = os.environ.get("USERPROFILE")
+    if (platform or sys.platform) == "win32":
+        profile = user_profile if user_profile is not None else os.environ.get("USERPROFILE")
         if profile:
             candidate = Path(profile) / ".local" / "bin" / "uv.exe"
             if candidate.is_file():

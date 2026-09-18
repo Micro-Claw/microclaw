@@ -24,10 +24,6 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from microclaw import credentials, tools, updates, webserve
-from microclaw.controller import MicroscopeController
-from microclaw.authorization import validate_live_rig
-from microclaw.config import load_safety_config_or_exit
 
 
 @contextmanager
@@ -112,6 +108,7 @@ def main(argv=None):
     say(f"71a gate pid={os.getpid()} interpreter={sys.executable} selftest={args.selftest}")
     try:
         from microclaw import extensions
+        from microclaw import credentials, updates, webserve
     except ImportError as exc:
         for name in ("managed target", "initial panel", "install", "no restart adapter", "record",
                      "repeat", "refusal", "refusal control", "in-flight", "constraints", "progress"):
@@ -172,7 +169,6 @@ def main(argv=None):
             # Captured uv vocabulary, stderr with a real running-process interval.
             (args.out / "fake-uv.py").write_text(
                 "import sys,time\nassert sys.argv[1:3]==['pip','install']\n"
-                "if '--dry-run' in sys.argv:\n print('Would install 1 package\\n + h5py==3.16.0',file=sys.stderr);sys.exit(0)\n"
                 "for line in ['Resolved 2 packages in 214ms','Downloading h5py (2.9MiB)',"
                 "' Downloaded h5py','Prepared 1 package in 370ms','Installed 1 package in 11ms',' + h5py==3.16.0']:\n"
                 " print(line,file=sys.stderr,flush=True);time.sleep(.12)\n", encoding="utf-8")
@@ -253,7 +249,8 @@ def main(argv=None):
                 deadline = time.monotonic() + 900
                 while time.monotonic() < deadline:
                     state = catalog()
-                    observations.append({"at": time.time(), "state": state})
+                    if not observations or observations[-1]["state"] != state:
+                        observations.append({"at": time.time(), "state": state})
                     if not state["job"].get("running"):
                         assert not state["job"].get("error"), state["job"].get("error")
                         result = state["job"].get("result", {})
@@ -327,7 +324,7 @@ def main(argv=None):
             limb("in-flight", inflight)
 
             def constraints():
-                real = [c for c in invocations if "--dry-run" not in c["argv"]]
+                real = invocations
                 if not real:
                     raise NotExercised("no real install invocation to inspect")
                 for call in real:

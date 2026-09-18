@@ -252,7 +252,6 @@
         text.textContent = row.name + " — " + row.description + " " + row.text +
           " Packages: " + row.packages.join(", ") +
           (row.skills.length ? ". Skills: " + row.skills.join(", ") : "") +
-          (row.preview.length ? ". Installer preview: " + row.preview.join(", ") : "") +
           (row.result ? ". " + row.result.message +
             (row.result.added.length ? " Added: " + row.result.added.join(", ") : "") : "");
         item.append(text);
@@ -274,6 +273,9 @@
         }
         list.append(item);
       }
+    } catch (err) {
+      // Optional panel failures must not interrupt turn adoption or streaming.
+      $("extensions-list").textContent = "Could not load extensions: " + err.message;
     } finally {
       extensionPollTimer = setTimeout(refreshExtensions, fast ? 500 : 30000);
     }
@@ -931,11 +933,11 @@
       showKey(await keyRes.json());
       showModel(await (await apiFetch("/api/model")).json());
       await refreshUpdate();
-      await refreshExtensions();
       await refresh();
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.
       await confirmationRecovery.startFromBoot();
+      void refreshExtensions();
     } catch (err) { toast("Could not reach the MicroClaw server: " + err.message); }
     msg.focus();
   })();

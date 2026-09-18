@@ -250,7 +250,7 @@ def test_staging_passes_the_session_config_path(session, tmp_path, monkeypatch):
         return source
 
     monkeypatch.setattr(updates, "materialize_public", materialize)
-    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(webserve.shutil, "which", lambda name, **kw: "uv.exe")
     monkeypatch.setattr(
         updates, "stage_inactive_slot",
         lambda *args, **kwargs: captured.append(kwargs["config_path"]),
@@ -430,7 +430,7 @@ def test_staging_failure_is_recorded_even_after_an_earlier_refusal(session, tmp_
     state["comparison_refused_commit"] = sha
     state["comparison_refusal_reason"] = "an earlier, legitimate refusal"
     updates.write_state(state, tmp_path / updates.STATE_NAME)
-    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(webserve.shutil, "which", lambda name, **kw: "uv.exe")
     monkeypatch.setattr(updates, "materialize_clone", lambda *a, **k: None)
     monkeypatch.setattr(updates, "materialize_public", lambda *a, **k: None)
     monkeypatch.setattr(updates, "stage_cached_candidate", lambda *a, **k: (_ for _ in ()).throw(
@@ -450,7 +450,7 @@ def test_a_comparison_refusal_keeps_its_own_reason(session, tmp_path, monkeypatc
     """The typed refusal is the one failure that must NOT be overwritten."""
     sha = "a" * 40
     _managed_updates(tmp_path, monkeypatch, candidate_sha=sha)
-    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(webserve.shutil, "which", lambda name, **kw: "uv.exe")
 
     def refuse(*args, **kwargs):
         state = updates.load_state(tmp_path / updates.STATE_NAME)
@@ -495,7 +495,7 @@ def test_update_endpoints_do_not_enter_agent_state(session, tmp_path, monkeypatc
         updates, "materialize_public",
         lambda state, selected, source: source.mkdir(parents=True) or source,
     )
-    monkeypatch.setattr(webserve.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(webserve.shutil, "which", lambda name, **kw: "uv.exe")
     monkeypatch.setattr(updates, "stage_inactive_slot", lambda *args, **kwargs: None)
     (tmp_path / updates.PENDING_SLOT_NAME).write_text("b\n", encoding="ascii")
     monkeypatch.setattr(updates, "valid_pending_slot", lambda *args: "b")
@@ -2615,10 +2615,7 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
     import subprocess
     import sys
     from microclaw import extensions
-    from tests.test_extensions import DRY_RUN, UNCACHED, CONFLICT
-    from tests.test_transcript_js import extensions_view
-    if not __import__('shutil').which('node'):
-        pytest.skip('node not installed')
+    from tests.test_extensions import UNCACHED, CONFLICT
     monkeypatch.setattr(updates, "locate_uv", lambda: "fixture-uv")
     lines = UNCACHED.splitlines()
     script = tmp_path / "stream.py"
@@ -2627,7 +2624,6 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
         f"root=Path({str(tmp_path)!r})\n"
         f"lines={lines!r}\n"
         "assert sys.argv[1:3] == ['pip','install']\n"
-        f"if '--dry-run' in sys.argv:\n sys.stderr.write({DRY_RUN!r});sys.exit(0)\n"
         "for i,line in enumerate(lines):\n"
         " while not (root / ('release-'+str(i))).exists(): time.sleep(.005)\n"
         " print(line,file=sys.stderr,flush=True)\n"
@@ -2642,8 +2638,7 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
             assert kw["stdin"] == subprocess.DEVNULL
             argv = [sys.executable, str(script), *argv[1:]]
             process = real_popen(argv, **kw)
-            if '--dry-run' not in argv:
-                processes.append(process)
+            processes.append(process)
             return process
         return real_popen(argv, **kw)
     monkeypatch.setattr(subprocess, "Popen", popen)
@@ -2663,7 +2658,7 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
     try:
         assert enumerating.wait(3)
         state = extension_client.get("/api/extensions").json()
-        assert extensions_view(state)[0]["text"] == "checking environment"
+        assert state["job"]["phase"] == "checking environment"
         enumerated.set()
         state = wait_extension(extension_client, lambda s: s["job"].get("phase") == "running package installer")
         expected = "running package installer"
@@ -2678,19 +2673,18 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
                         "Package preparation complete", "Package installation complete",
                         "Package installation complete", "Package installation complete"][i]
             state = wait_extension(extension_client, lambda s: s["job"].get("phase") == expected)
-            row = extensions_view(state)[0]
-            assert row["status"] == "installing"
-            assert row["text"] == expected, "panel did not render the live uv phase"
+            assert state["job"]["running"] is True
+            assert state["job"]["phase"] == expected
             assert processes[0].poll() is None, "phase was published only after exit"
         (tmp_path / "exit").touch()
         if not failed:
             assert verifying.wait(3)
             state = extension_client.get("/api/extensions").json()
-            assert extensions_view(state)[0]["text"] == "verifying"
+            assert state["job"]["phase"] == "verifying"
             monkeypatch.setattr(extensions, "ready", lambda name: True)
             verified.set()
         state = wait_extension(extension_client, lambda s: not s["job"]["running"])
-        assert extensions_view(state)[0]["status"] == ("failed-or-missing" if failed else "ready")
+        assert bool(state["job"].get("error")) is failed
         if failed:
             assert "numpy>=2.6 and numpy==2.5.3" in state["job"]["error"]
     finally:
@@ -2734,3 +2728,140 @@ def test_extension_catalog_failure_releases(extension_client, monkeypatch):
         extension_client.post("/api/extensions/install", json={"name": "ilastik"})
     monkeypatch.setattr(extensions, "available", real)
     assert not extension_client.get("/api/extensions").json()["job"]["running"]
+
+
+def test_extension_chokepoint_accepts_unreserved_mock_controller():
+    from unittest.mock import MagicMock
+    class ReachedWorkspace(Exception):
+        pass
+    guard = MagicMock()
+    guard.resolve_in_workspace.side_effect = ReachedWorkspace("passed admission")
+    with pytest.raises(ReachedWorkspace, match="passed admission"):
+        tools._acquire_with_hooks(guard, "unused", "unused", [], ctrl=MagicMock(), policy=None)
+
+
+def test_prompt_waits_without_holding_job_lock(extension_client, session, monkeypatch):
+    import inspect
+    route = next(r for r in extension_client.app.routes if r.path == "/api/prompt")
+    job_lock = inspect.getclosurevars(route.endpoint).nonlocals["update_job_lock"]
+    class Suspends(asyncio.Lock):
+        async def acquire(self):
+            assert not job_lock.locked(), "asyncio acquisition holds the threading lock"
+            await asyncio.sleep(0)
+            return await super().acquire()
+    session.lock = Suspends()
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter())
+    assert extension_client.post("/api/prompt", json={"message": "go"}).status_code == 200
+
+
+def test_extension_poll_caches_readiness_off_loop(extension_client, monkeypatch):
+    from microclaw import extensions
+    original = extensions.available
+    calls = []
+    def available():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            pytest.fail("readiness runs on the event loop")
+        calls.append(1)
+        return original()
+    monkeypatch.setattr(extensions, "available", available)
+    for _ in range(3):
+        assert extension_client.get("/api/extensions").status_code == 200
+    assert calls == [1], "polling repeats readiness discovery"
+
+
+def test_extension_refuses_reserved_turn_while_async_lock_waits(extension_client, session, monkeypatch):
+    from microclaw import extensions
+    entered = threading.Event()
+    grant = asyncio.Event()
+    class Waits(asyncio.Lock):
+        async def acquire(self):
+            entered.set()
+            await grant.wait()
+            return await super().acquire()
+    session.lock = Waits()
+    monkeypatch.setattr(webserve, "run_agent_iter", _agent_iter())
+    monkeypatch.setattr(extensions, "install", lambda *a, **k: {"message": "ready", "added": []})
+    responses = []
+    worker = threading.Thread(target=lambda: responses.append(extension_client.post("/api/prompt", json={"message": "go"})))
+    worker.start()
+    try:
+        assert entered.wait(3)
+        assert not session.lock.locked()
+        response = extension_client.post("/api/extensions/install", json={"name": "ilastik"})
+        assert response.status_code == 409, "install ignored the pending turn reservation"
+    finally:
+        extension_client.portal.call(grant.set)
+        worker.join(5)
+    assert responses[0].status_code == 200
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+    wait_extension(extension_client, lambda s: not s["job"]["running"])
+
+
+def test_extension_initial_discovery_does_not_block_other_requests(extension_client, monkeypatch):
+    from microclaw import extensions
+    entered, release = threading.Event(), threading.Event()
+    original = extensions.available
+    def slow():
+        entered.set()
+        assert release.wait(5)
+        return original()
+    monkeypatch.setattr(extensions, "available", slow)
+    responses = []
+    worker = threading.Thread(target=lambda: responses.append(extension_client.get("/api/extensions")))
+    worker.start()
+    try:
+        assert entered.wait(3)
+        assert extension_client.get("/api/key").status_code == 200
+    finally:
+        release.set()
+        worker.join(5)
+    assert responses[0].status_code == 200
+
+
+def test_extension_rate_limit_never_publishes_admission(extension_client, session, monkeypatch):
+    monkeypatch.setattr(webserve._RateLimiter, "allow", lambda *a: False)
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 429
+    assert not hasattr(session.ctrl, "_microclaw_extension_install"), "rate-limited request published admission"
+
+
+def test_extension_failed_shutdown_publication_releases(extension_client, monkeypatch, tmp_path):
+    from microclaw import extensions
+    _managed_updates(tmp_path, monkeypatch)
+    monkeypatch.setattr(updates, "valid_pending_slot", lambda *a: "b")
+    monkeypatch.setattr(updates, "installed_launcher_protocol", lambda root: 1)
+    monkeypatch.setattr(updates, "validate_launch_environment", lambda: (tmp_path, "a", "nonce"))
+    monkeypatch.setattr(updates, "write_restart_request", lambda *a: None)
+    class BrokenServer:
+        @property
+        def should_exit(self):
+            return False
+        @should_exit.setter
+        def should_exit(self, value):
+            raise RuntimeError("shutdown publication failed")
+    extension_client.app.state.uvicorn_server = BrokenServer()
+    with pytest.raises(RuntimeError, match="shutdown publication failed"):
+        extension_client.post("/api/update/restart")
+    monkeypatch.setattr(extensions, "install", lambda *a, **k: {"message": "ready", "added": []})
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+    wait_extension(extension_client, lambda s: not s["job"]["running"])
+
+
+def test_cancelled_prompt_releases_pending_admission(extension_client, session, monkeypatch):
+    from microclaw import extensions
+    class Cancelled(asyncio.Lock):
+        async def acquire(self):
+            await asyncio.sleep(0)
+            raise asyncio.CancelledError()
+    session.lock = Cancelled()
+    prompt = next(r.endpoint for r in extension_client.app.routes if r.path == "/api/prompt")
+    async def cancelled():
+        with pytest.raises(asyncio.CancelledError):
+            await prompt(webserve.Prompt(message="go"), None)
+    extension_client.portal.call(cancelled)
+    monkeypatch.setattr(extensions, "install", lambda *a, **k: {"message": "ready", "added": []})
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+    wait_extension(extension_client, lambda s: not s["job"]["running"])

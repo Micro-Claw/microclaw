@@ -78,7 +78,6 @@ def _verify(name):
 
 
 def ready(name):
-    importlib.invalidate_caches()
     try:
         _verify(name)
     except (ImportError, ValueError):
@@ -176,12 +175,6 @@ def _pins(python, work):
     return [f"{name}=={version}" for name, version in sorted(versions.items())]
 
 
-def preview_packages(text):
-    count = re.search(r"^Would install (\d+) packages?\s*$", text, re.M)
-    packages = re.findall(r"^ \+ ([A-Za-z0-9_.-]+==\S+)\s*$", text, re.M)
-    return packages if count and int(count[1]) == len(packages) else []
-
-
 def progress_phase(line):
     line = line.strip()
     for word, phase in (("Resolved", "Resolution complete"), ("Prepared", "Package preparation complete"),
@@ -219,13 +212,6 @@ def install(name, *, progress=lambda **state: None):
             # No package name in this call came from the network.
             argv = [uv, "pip", "install", "--python", python, "--constraint", str(constraints), *requirements]
             progress(phase="running package installer")
-            try:
-                preview = subprocess.run([*argv, "--dry-run"], stdin=subprocess.DEVNULL,
-                                         capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                         timeout=60, check=False)
-                progress(preview=preview_packages(preview.stderr) if preview.returncode == 0 else [])
-            except (OSError, subprocess.TimeoutExpired):
-                progress(preview=[])
             tail = deque(maxlen=100)
             added = []
             process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

@@ -1026,7 +1026,7 @@ def test_stage_cached_candidate_uses_shared_materialize_and_slot_builder(tmp_pat
         updates, "materialize_public",
         lambda state, candidate, source: calls.append(("materialize", candidate.sha)) or source.mkdir(),
     )
-    monkeypatch.setattr(updates.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(updates.shutil, "which", lambda name, **kw: "uv.exe")
     monkeypatch.setattr(
         updates, "stage_inactive_slot",
         lambda root, source, candidate, **kwargs: calls.append(
@@ -1154,16 +1154,18 @@ def test_terminal_notice_carries_a_fetch_warning(tmp_path):
     ("linux", None, True, None),
 ])
 def test_locate_uv_controlled(monkeypatch, tmp_path, platform, path_found, fallback, expected):
-    from types import SimpleNamespace
-    monkeypatch.setattr(updates, "sys", SimpleNamespace(platform=platform))
-    monkeypatch.setattr(updates.shutil, "which", lambda name: path_found)
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    search = tmp_path / "path"
+    search.mkdir()
+    if path_found:
+        executable = search / ("uv.exe" if os.name == "nt" else "uv")
+        executable.write_text("fixture", encoding="utf-8")
+        executable.chmod(0o755)
     candidate = tmp_path / ".local" / "bin" / "uv.exe"
     if fallback:
         candidate.parent.mkdir(parents=True)
-        candidate.write_text("fixture")
+        candidate.write_text("fixture", encoding="utf-8")
     if expected is None:
         with pytest.raises(updates.UpdateError, match="uv was not found"):
-            updates.locate_uv()
+            updates.locate_uv(path=str(search), user_profile=tmp_path, platform=platform)
     else:
-        assert updates.locate_uv() == (str(candidate) if expected == "fallback" else expected)
+        assert updates.locate_uv(path=str(search), user_profile=tmp_path, platform=platform) == (str(candidate) if expected == "fallback" else str(executable))

@@ -300,7 +300,6 @@
       }
       return { name: item.name, description: item.description, status, text, button,
         packages: item.packages || [], skills: item.skills || [],
-        preview: job.name === item.name ? (job.preview || []) : [],
         result: job.name === item.name ? job.result : null };
     });
   }
