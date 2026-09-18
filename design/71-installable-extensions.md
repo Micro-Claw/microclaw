@@ -976,15 +976,35 @@ skill packages* above for the separate notebook brief.
    own, update staging running. Rate-limit the install route with
    `_RateLimiter`.
    Exclusion works in both directions: while installation runs, refuse a new
-   turn, update staging, restart, or another install with 409; acquisition and
-   setup-write entry paths must not start either. Check and reserve admission
-   atomically with the existing session/job synchronization, and release the
-   reservation on success and every failure. This is coordination within the
-   running server, not ownership of the microscope across processes.
+   turn, update staging, restart, or another install with 409. Check and
+   reserve admission atomically with the existing session/job synchronization,
+   and release the reservation on success and every failure. This is
+   coordination within the running server, not ownership of the microscope
+   across processes.
    **Note what "atomically" spans**: `session.lock` is an `asyncio.Lock` and
    `update_job_lock` is a `threading.Lock`, so one reservation covering both is
    the hardest thing in this block, not a detail of it. Design it before the
    endpoints.
+   **Acquisition and setup-write entry need no guard of their own; the turn
+   guard is their guard.** Both are reachable only from a tool call inside a
+   turn, and a turn cannot start while an install holds admission — so this is
+   a property to state and test, not a second refusal to write. Test it where
+   it is observable rather than where it is stated: every pycro-manager
+   acquisition funnels through `_acquire_with_hooks` (`tools.py:4659`, holding
+   the only runtime `Acquisition` construction at `:4883`), so count entries
+   there and assert zero.
+   Then put a one-line refusal at that chokepoint anyway, commented as
+   unreachable through the turn path and explaining why it exists: it is where
+   a *future* non-turn path would trip, and it is the difference between a new
+   path failing loudly and racing silently. One labelled unreachable line at a
+   chokepoint is worth it where five scattered ones would not be — and the test
+   below calls it directly, so it ships executed rather than as 58a's
+   never-reached `github:` guard.
+   **`run_mda` is not behind that chokepoint.** It drives MMStudio's own MDA
+   through `ctrl.studio.acquisitions()` (`:11935`) and constructs no
+   `Acquisition` at all, so neither the property nor the refusal covers it —
+   the same boundary that already keeps `on_dataset_created` triggers away from
+   MDA runs. Say so; do not imply the chokepoint is complete.
 5. Panel markup in `serve.html`, which only *calls* the view
    (`serve.html:242`); the pure `Transcript.extensionsView(state)` goes in
    `transcript.js` beside `updateBannerView` (`transcript.js:282`) and is
@@ -1068,10 +1088,21 @@ marked ✦; the rest are regression or structure tests (mutate, don't watch).
   `/api/update/restart` has guarded since before this notebook was written
   (`_microclaw_setup_write_capability.in_flight`, `webserve.py:905-907`).
 - Hold an install at a deterministic barrier and attempt a turn, staging,
-  restart, another install, and acquisition/setup-write entry: each refuses
-  without starting work. Test both admission orderings and a concurrent start;
-  only one conflicting operation is admitted. Success and failure both release
-  admission so a later request can proceed.
+  restart, and another install: each refuses without starting work. Test both
+  admission orderings and a concurrent start; only one conflicting operation is
+  admitted. Success and failure both release admission so a later request can
+  proceed.
+- No acquisition begins while an install holds admission — asserted as the
+  **observable effect**, counting entries to `_acquire_with_hooks` and
+  asserting zero, driven through `POST /api/prompt` because that is the only
+  path that reaches it. It passes *because the turn refused*, and that is the
+  point: it pins the property without claiming a guard the turn path cannot
+  reach. Not ✦ — on the pre-change tree there is no install endpoint, so there
+  is nothing to watch fail; this is structure, so mutate instead.
+- The chokepoint refusal is executed, not merely shipped: call
+  `_acquire_with_hooks` directly with admission held and assert it refuses.
+  Without this the line is an unreachable branch that reads as covered, which
+  is exactly 58a.
 - Control uv discovery explicitly: PATH present, PATH absent with the Windows
   fallback present, and neither present. CI must not depend on host uv.
 - `extensions.json` survives a concurrent `write_state` (the reason it is its
