@@ -279,6 +279,32 @@
     });
   }
 
+  function extensionsView(state) {
+    const job = (state && state.job) || {};
+    return ((state && state.extensions) || []).map(item => {
+      let status, text, button = null;
+      if (job.running && job.name === item.name) {
+        status = "installing";
+        text = job.phase || "running package installer";
+      } else if (item.ready) {
+        status = "ready";
+        text = "Ready";
+      } else if (item.error || item.recorded || (job.name === item.name && job.error)) {
+        status = "failed-or-missing";
+        text = item.error || job.error || "Recorded but missing from this environment.";
+        button = "Reinstall";
+      } else {
+        status = "not-installed";
+        text = "Not installed";
+        button = "Install";
+      }
+      return { name: item.name, description: item.description, status, text, button,
+        packages: item.packages || [], skills: item.skills || [],
+        preview: job.name === item.name ? (job.preview || []) : [],
+        result: job.name === item.name ? job.result : null };
+    });
+  }
+
   function updateBannerView(state) {
     const candidate = state && state.candidate;
     if (!candidate && !(state && state.pending_staged)) return { visible: false, text: "", buttons: [] };
@@ -340,7 +366,7 @@
 
   global.Transcript = {
     esc, escAttr, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
-    updateBannerView,
+    updateBannerView, extensionsView,
     artifactOf, artifactChip, parseHistoryText,
     expandAll: (tx) => setOpen(tx, true),
     collapseAll: (tx) => setOpen(tx, false),

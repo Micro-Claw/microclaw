@@ -548,7 +548,12 @@ def load_state(path: str | Path | None = None) -> dict[str, Any] | None:
 
 def write_state(state: dict[str, Any], path: str | Path | None = None) -> Path:
     """Atomically replace shared update state."""
-    target = Path(path) if path is not None else state_path()
+    return _write_json_atomic(state, Path(path) if path is not None else state_path())
+
+
+def _write_json_atomic(state: dict[str, Any], target: Path) -> Path:
+    """Replace a JSON file, including Windows reader/share-violation retries."""
+    target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     temporary = Path(temporary_name)
@@ -577,6 +582,20 @@ def write_state(state: dict[str, Any], path: str | Path | None = None) -> Path:
     finally:
         temporary.unlink(missing_ok=True)
     return target
+
+
+def locate_uv() -> str:
+    """Use PATH, then the Windows installer's bootstrap location."""
+    found = shutil.which("uv")
+    if found:
+        return found
+    if sys.platform == "win32":
+        profile = os.environ.get("USERPROFILE")
+        if profile:
+            candidate = Path(profile) / ".local" / "bin" / "uv.exe"
+            if candidate.is_file():
+                return str(candidate)
+    raise UpdateError("uv was not found on PATH or in the Windows bootstrap location.")
 
 
 def locate_git(*, path: str | None = None, local_app_data: str | Path | None = None) -> str:
@@ -1097,9 +1116,7 @@ def stage_cached_candidate(candidate: Candidate, *, config_path: str | Path | No
         source = work / "source"
         materialize = materialize_clone if candidate.source == "clone" else materialize_public
         materialize(state, candidate, source)
-        uv = shutil.which("uv")
-        if not uv:
-            raise UpdateError("the update could not be built: uv was not found")
+        uv = locate_uv()
         return stage_inactive_slot(
             root, source, candidate, uv_executable=uv, config_path=config_path,
         )

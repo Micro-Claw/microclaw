@@ -1145,3 +1145,25 @@ def test_terminal_notice_carries_a_fetch_warning(tmp_path):
         "A newer Microclaw commit is available: aaaaaaa — Useful change. "
         "Open GitHub Desktop, Fetch origin, then Check again."
     )
+
+
+@pytest.mark.parametrize("platform,path_found,fallback,expected", [
+    ("linux", "controlled-uv", False, "controlled-uv"),
+    ("win32", None, True, "fallback"),
+    ("win32", None, False, None),
+    ("linux", None, True, None),
+])
+def test_locate_uv_controlled(monkeypatch, tmp_path, platform, path_found, fallback, expected):
+    from types import SimpleNamespace
+    monkeypatch.setattr(updates, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(updates.shutil, "which", lambda name: path_found)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    candidate = tmp_path / ".local" / "bin" / "uv.exe"
+    if fallback:
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("fixture")
+    if expected is None:
+        with pytest.raises(updates.UpdateError, match="uv was not found"):
+            updates.locate_uv()
+    else:
+        assert updates.locate_uv() == (str(candidate) if expected == "fallback" else expected)

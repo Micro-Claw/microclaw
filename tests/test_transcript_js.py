@@ -342,3 +342,28 @@ def test_a_fetch_warning_reaches_the_banner_text():
         "A newer Microclaw commit is available: abcdef1 — Some change "
         "Open GitHub Desktop, Fetch origin, then Check again."
     )
+
+
+def extensions_view(state):
+    path = resources.files("microclaw").joinpath("transcript.js")
+    script = (
+        "global.window = {};\n"
+        f"require({json.dumps(str(path))});\n"
+        f"process.stdout.write(JSON.stringify(window.Transcript.extensionsView({json.dumps(state)})));\n"
+    )
+    return json.loads(subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout)
+
+
+@pytest.mark.parametrize("patch,status,text,button", [
+    ({}, "not-installed", "Not installed", "Install"),
+    ({"ready": True}, "ready", "Ready", None),
+    ({"recorded": True}, "failed-or-missing", "Recorded but missing from this environment.", "Reinstall"),
+    ({"error": "Resolution conflict"}, "failed-or-missing", "Resolution conflict", "Reinstall"),
+])
+def test_extensions_four_states(patch, status, text, button):
+    item = {"name": "ilastik", "description": "<untrusted>", "ready": False, "recorded": False, **patch}
+    row = extensions_view({"extensions": [item]})[0]
+    assert (row["status"], row["text"], row["button"]) == (status, text, button)
+    assert row["description"] == "<untrusted>"  # text contract: serve uses textContent.

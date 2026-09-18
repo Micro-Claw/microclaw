@@ -2440,3 +2440,262 @@ def test_usage_browser_sidecar(session, client, monkeypatch, tmp_path, with_stor
     assert expected_path.exists() is save
     if save:
         assert json.loads(expected_path.read_text(encoding="utf-8")) == record
+
+
+@pytest.fixture
+def extension_client(session, monkeypatch, tmp_path):
+    from microclaw import extensions
+    session.ctrl = types.SimpleNamespace()
+    session.lock = asyncio.Lock()  # Exercise the real primitive, not _FakeLock.
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("fixture", "env"))
+    monkeypatch.setattr(extensions, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(extensions, "ready", lambda name: False)
+    with TestClient(build_app(session)) as client:
+        yield client
+
+
+def wait_extension(client, predicate):
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        state = client.get("/api/extensions").json()
+        if predicate(state):
+            return state
+        time.sleep(.01)
+    pytest.fail(f"extension state did not reach expected observation: {state}")
+
+
+@pytest.mark.parametrize("name", ["unknown", "ilastik; rm -rf /", "h5py"])
+def test_extension_unknown_endpoint_never_spawns(extension_client, monkeypatch, name):
+    import subprocess
+    spawned = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    response = extension_client.post("/api/extensions/install", json={"name": name})
+    assert response.status_code == 400, response.text
+    assert spawned == [], "refused name reached uv"
+
+
+def test_extension_body_only_name(extension_client):
+    response = extension_client.post("/api/extensions/install", json={"name": "ilastik", "requirements": ["evil"]})
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("condition", ["turn", "acquisition", "confirmation", "setup-write", "staging"])
+def test_extension_five_inflight_conditions(extension_client, session, monkeypatch, tmp_path, condition):
+    from microclaw import extensions
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(extensions, "install", lambda *a, **k: pytest.fail("install crossed in-flight guard"))
+    if condition == "turn":
+        extension_client.portal.call(session.lock.acquire)
+    elif condition == "acquisition":
+        monkeypatch.setattr(tools, "_existing_acquisition_ledger", lambda ctrl: types.SimpleNamespace(in_flight=True))
+    elif condition == "confirmation":
+        session.pending = object()
+    elif condition == "setup-write":
+        session.ctrl._microclaw_setup_write_capability = types.SimpleNamespace(in_flight=True)
+    else:
+        _managed_updates(tmp_path, monkeypatch)
+        def stage(*a, **kw):
+            started.set()
+            assert release.wait(8)
+        monkeypatch.setattr(updates, "stage_cached_candidate", stage)
+        assert extension_client.post("/api/update/stage").status_code == 202
+        assert started.wait(3)
+    try:
+        response = extension_client.post("/api/extensions/install", json={"name": "ilastik"})
+        assert response.status_code == 409, response.text
+    finally:
+        release.set()
+        if condition == "turn":
+            extension_client.portal.call(session.lock.release)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_extension_holds_admission_and_releases(extension_client, session, monkeypatch, tmp_path, fail):
+    from microclaw import extensions
+    started, release = threading.Event(), threading.Event()
+    _managed_updates(tmp_path, monkeypatch)
+    def install(*a, **kw):
+        started.set()
+        assert release.wait(8)
+        if fail:
+            raise extensions.ExtensionInstallError("fixture install failed")
+        return {"message": "ready", "added": []}
+    monkeypatch.setattr(extensions, "install", install)
+    entries = []
+    monkeypatch.setattr(tools, "_acquire_with_hooks", lambda *a, **k: entries.append(1))
+    def agent(*a, **kw):
+        tools._acquire_with_hooks()
+        yield {"type": "text", "text": "done"}
+    monkeypatch.setattr(webserve, "run_agent_iter", agent)
+    monkeypatch.setattr(updates, "stage_cached_candidate", lambda *a, **k: pytest.fail("staging entered during install"))
+    monkeypatch.setattr(updates, "write_restart_request", lambda *a, **k: pytest.fail("restart entered during install"))
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+    assert started.wait(3)
+    try:
+        for route, body in [("/api/prompt", {"message": "acquire"}), ("/api/update/stage", None),
+                            ("/api/update/restart", None), ("/api/extensions/install", {"name": "ilastik"})]:
+            response = extension_client.post(route, json=body)
+            assert response.status_code == 409, f"{route}: {response.text}"
+        assert entries == [], "acquisition chokepoint entered during install"
+    finally:
+        release.set()
+    wait_extension(extension_client, lambda s: not s["job"]["running"])
+    assert extension_client.post("/api/prompt", json={"message": "acquire"}).status_code == 200
+    assert entries == [1], "control turn did not reach the acquisition chokepoint"
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+    wait_extension(extension_client, lambda s: not s["job"]["running"])
+
+
+def test_extension_chokepoint_refusal_executed():
+    ctrl = types.SimpleNamespace(_microclaw_extension_install={"running": True})
+    with pytest.raises(RuntimeError, match="Extension install admission: acquisition refused"):
+        tools._acquire_with_hooks(None, "unused", "unused", [], ctrl=ctrl, policy=None)
+
+
+def test_extension_concurrent_turn_start(extension_client, session, monkeypatch):
+    from microclaw import extensions
+    barrier = threading.Barrier(3)
+    entered, release = threading.Event(), threading.Event()
+    admitted = []
+    results = {}
+    def install(*a, **kw):
+        admitted.append("install")
+        entered.set()
+        assert release.wait(8)
+        return {"message": "ready", "added": []}
+    def agent(*a, **kw):
+        admitted.append("turn")
+        entered.set()
+        assert release.wait(8)
+        yield {"type": "text", "text": "done"}
+    monkeypatch.setattr(extensions, "install", install)
+    monkeypatch.setattr(webserve, "run_agent_iter", agent)
+    def request(kind, route, body):
+        barrier.wait()
+        results[kind] = extension_client.post(route, json=body).status_code
+    workers = [threading.Thread(target=request, args=("install", "/api/extensions/install", {"name": "ilastik"})),
+               threading.Thread(target=request, args=("turn", "/api/prompt", {"message": "go"}))]
+    for worker in workers:
+        worker.start()
+    barrier.wait()
+    try:
+        assert entered.wait(3)
+        deadline = time.monotonic() + 3
+        while 409 not in results.values() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert 409 in results.values(), "concurrent conflicting operation was not refused"
+        assert len(admitted) == 1, admitted
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(5)
+    wait_extension(extension_client, lambda s: not s["job"]["running"])
+
+
+def test_extension_thread_start_failure_releases(extension_client, monkeypatch):
+    from microclaw import extensions
+    real_start = threading.Thread.start
+    def start(thread):
+        if thread.name == "microclaw-extension-install":
+            raise RuntimeError("cannot start installer thread")
+        return real_start(thread)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError, match="cannot start installer thread"):
+        extension_client.post("/api/extensions/install", json={"name": "ilastik"})
+    assert not extension_client.get("/api/extensions").json()["job"]["running"]
+    monkeypatch.setattr(threading.Thread, "start", real_start)
+    monkeypatch.setattr(extensions, "install", lambda *a, **k: {"message": "ready", "added": []})
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+    wait_extension(extension_client, lambda s: not s["job"]["running"])
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_extension_progress_streams_stderr_before_exit(extension_client, monkeypatch, tmp_path, failed):
+    import subprocess
+    import sys
+    from microclaw import extensions
+    from tests.test_extensions import DRY_RUN, UNCACHED, CONFLICT
+    from tests.test_transcript_js import extensions_view
+    if not __import__('shutil').which('node'):
+        pytest.skip('node not installed')
+    monkeypatch.setattr(updates, "locate_uv", lambda: "fixture-uv")
+    lines = UNCACHED.splitlines()
+    script = tmp_path / "stream.py"
+    script.write_text(
+        "import sys,time\nfrom pathlib import Path\n"
+        f"root=Path({str(tmp_path)!r})\n"
+        f"lines={lines!r}\n"
+        "assert sys.argv[1:3] == ['pip','install']\n"
+        f"if '--dry-run' in sys.argv:\n sys.stderr.write({DRY_RUN!r});sys.exit(0)\n"
+        "for i,line in enumerate(lines):\n"
+        " while not (root / ('release-'+str(i))).exists(): time.sleep(.005)\n"
+        " print(line,file=sys.stderr,flush=True)\n"
+        " (root / ('sent-'+str(i))).touch()\n"
+        "while not (root / 'exit').exists(): time.sleep(.005)\n"
+        f"sys.stderr.write({CONFLICT!r} if {failed!r} else '')\n"
+        f"sys.exit({1 if failed else 0})\n", encoding="utf-8")
+    real_popen = subprocess.Popen
+    processes = []
+    def popen(argv, **kw):
+        if argv[0] == "fixture-uv":
+            assert kw["stdin"] == subprocess.DEVNULL
+            argv = [sys.executable, str(script), *argv[1:]]
+            process = real_popen(argv, **kw)
+            if '--dry-run' not in argv:
+                processes.append(process)
+            return process
+        return real_popen(argv, **kw)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    verifying, verified = threading.Event(), threading.Event()
+    def verify(name):
+        verifying.set()
+        assert verified.wait(8)
+    monkeypatch.setattr(extensions, "_verify", verify)
+    assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+    try:
+        state = wait_extension(extension_client, lambda s: s["job"].get("phase") == "running package installer")
+        expected = "running package installer"
+        for i, line in enumerate(lines):
+            (tmp_path / f"release-{i}").touch()
+            deadline = time.monotonic() + 3
+            while not (tmp_path / f"sent-{i}").exists() and time.monotonic() < deadline:
+                time.sleep(.005)
+            assert (tmp_path / f"sent-{i}").exists()
+            expected = ["running package installer", "Resolution complete", "Downloading numpy",
+                        "Downloading h5py", "Downloaded h5py", "Downloaded numpy",
+                        "Package preparation complete", "Package installation complete",
+                        "Package installation complete", "Package installation complete"][i]
+            state = wait_extension(extension_client, lambda s: s["job"].get("phase") == expected)
+            row = extensions_view(state)[0]
+            assert row["status"] == "installing"
+            assert row["text"] == expected, "panel did not render the live uv phase"
+            assert processes[0].poll() is None, "phase was published only after exit"
+        (tmp_path / "exit").touch()
+        if not failed:
+            assert verifying.wait(3)
+            state = extension_client.get("/api/extensions").json()
+            assert extensions_view(state)[0]["text"] == "verifying"
+            monkeypatch.setattr(extensions, "ready", lambda name: True)
+            verified.set()
+        state = wait_extension(extension_client, lambda s: not s["job"]["running"])
+        assert extensions_view(state)[0]["status"] == ("failed-or-missing" if failed else "ready")
+        if failed:
+            assert "numpy>=2.6 and numpy==2.5.3" in state["job"]["error"]
+    finally:
+        verified.set()
+        for i in range(len(lines)):
+            (tmp_path / f"release-{i}").touch()
+        (tmp_path / "exit").touch()
+        for process in processes:
+            process.wait(timeout=5)
+
+
+def test_extension_rate_limit(extension_client, monkeypatch):
+    from microclaw import extensions
+    monkeypatch.setattr(extensions, "install", lambda *a, **k: {"message": "ready", "added": []})
+    for _ in range(webserve.RATE_MAX_UPDATE_CHECKS):
+        assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
+        wait_extension(extension_client, lambda s: not s["job"]["running"])
+    response = extension_client.post("/api/extensions/install", json={"name": "ilastik"})
+    assert response.status_code == 429
+    assert not extension_client.get("/api/extensions").json()["job"]["running"]

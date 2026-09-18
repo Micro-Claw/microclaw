@@ -50,7 +50,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, shortcut, tools, updates
+from microclaw import config, credentials, shortcut, tools, updates, extensions
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import (
     AcquisitionDiagnosticWriter, AuditLog, ConversationStore, prune_transcripts,
@@ -604,6 +604,37 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     update_job_lock = threading.Lock()
     update_job = {"running": False}
+    extension_job = {"running": False}
+    extension_installs = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
+    restarting = False
+
+    def refuse_extension_install():
+        if extension_job["running"]:
+            raise HTTPException(409, "An extension install is in progress.")
+
+    def reserve_extension(name):
+        # Called on the event loop, under update_job_lock. There is no await
+        # between checking session.lock and publishing admission. Turn admission
+        # uses this same lock and acquires the unlocked asyncio.Lock without
+        # yielding; worker completion changes only the job under this lock.
+        refuse_extension_install()
+        if restarting:
+            raise HTTPException(409, "A restart is in progress.")
+        if session.lock.locked():
+            raise HTTPException(409, "An agent turn is in progress.")
+        ledger = tools._existing_acquisition_ledger(session.ctrl)
+        if ledger is not None and ledger.in_flight:
+            raise HTTPException(409, "An acquisition is in progress.")
+        if session.pending is not None:
+            raise HTTPException(409, "A confirmation is pending.")
+        capability = getattr(session.ctrl, "_microclaw_setup_write_capability", None)
+        if capability is not None and capability.in_flight:
+            raise HTTPException(409, "A setup write is in progress.")
+        if update_job["running"]:
+            raise HTTPException(409, "An update staging job is in progress.")
+        session.ctrl._microclaw_extension_install = extension_job
+        extension_job.clear()
+        extension_job.update(running=True, name=name, phase="checking environment")
     update_checks = _RateLimiter(RATE_MAX_UPDATE_CHECKS)
     page = load_page("serve.html")
     if session.mode is SessionMode.SETUP:
@@ -804,6 +835,66 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             "dismissal": dismissal,
         }
 
+    @app.get("/api/extensions")
+    async def get_extensions():
+        with update_job_lock:
+            job = dict(extension_job)
+            # No await here: checking admission and importing must not straddle
+            # another request starting uv. While installing use the snapshot.
+            if job.get("running"):
+                catalog = job.pop("catalog")
+            else:
+                catalog = extensions.available()
+        return JSONResponse({"extensions": catalog, "job": job})
+
+    @app.post("/api/extensions/install")
+    async def post_extension_install(request: Request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Expected an extension name.") from None
+        if not isinstance(body, dict) or set(body) != {"name"} or not isinstance(body["name"], str):
+            raise HTTPException(400, "The request must contain only an extension name.")
+        name = body["name"]
+        try:
+            extensions.requirements_for(name)
+        except extensions.ExtensionInstallError as exc:
+            raise HTTPException(400, str(exc)) from None
+        with update_job_lock:
+            reserve_extension(name)
+        try:
+            if not extension_installs.allow(client_address(request)):
+                raise HTTPException(429, "Too many extension installs.")
+            # Reservation precedes readiness imports, so another installer cannot
+            # begin changing the environment while this request probes it.
+            catalog = extensions.available()
+            with update_job_lock:
+                extension_job["catalog"] = catalog
+
+            def progress(**state):
+                with update_job_lock:
+                    extension_job.update(state)
+
+            def install_extension():
+                try:
+                    result = extensions.install(name, progress=progress)
+                    progress(result=result)
+                except Exception as exc:
+                    progress(error=str(exc) or type(exc).__name__)
+                finally:
+                    with update_job_lock:
+                        extension_job["running"] = False
+                        extension_job.pop("phase", None)
+                        extension_job.pop("catalog", None)
+
+            threading.Thread(target=install_extension, name="microclaw-extension-install", daemon=True).start()
+        except BaseException:
+            with update_job_lock:
+                extension_job["running"] = False
+                extension_job.pop("phase", None)
+            raise
+        return JSONResponse({"installing": name}, status_code=202)
+
     @app.get("/api/update")
     async def get_update():
         return JSONResponse(update_status())
@@ -818,6 +909,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     @app.post("/api/update/stage")
     async def post_update_stage():
         with update_job_lock:
+            refuse_extension_install()
             if update_job["running"]:
                 raise HTTPException(409, "An update staging job is already running.")
             try:
@@ -872,8 +964,13 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 with update_job_lock:
                     update_job["running"] = False
 
-        (updates.state_path().parent / "downloads").mkdir(parents=True, exist_ok=True)
-        threading.Thread(target=stage, name="microclaw-update-stage", daemon=True).start()
+        try:
+            (updates.state_path().parent / "downloads").mkdir(parents=True, exist_ok=True)
+            threading.Thread(target=stage, name="microclaw-update-stage", daemon=True).start()
+        except BaseException:
+            with update_job_lock:
+                update_job["running"] = False
+            raise
         return JSONResponse({"staging": True}, status_code=202)
 
     @app.post("/api/update/dismiss")
@@ -895,6 +992,11 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     @app.post("/api/update/restart")
     async def post_update_restart(request: Request):
+        nonlocal restarting
+        # This handler has no await: the check through publication is one event
+        # loop turn. The job lock synchronizes with installer completion.
+        with update_job_lock:
+            refuse_extension_install()
         if session.lock.locked():
             raise HTTPException(409, "An agent turn is in progress.")
         ledger = tools._existing_acquisition_ledger(session.ctrl)
@@ -916,6 +1018,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(409, "Automatic restart is not available; restart later.")
         root, _slot, nonce = launch
         updates.write_restart_request(root, nonce)
+        restarting = True
         os.environ[shortcut.UPDATE_RESTART_ENV] = "1"
         server.should_exit = True
         return JSONResponse({"restart_requested": True})
@@ -927,12 +1030,13 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(400, "Empty message.")
         if credentials.load_api_key()[0] is None:
             raise HTTPException(400, "No Anthropic API key is set.")
-        if session.lock.locked():
-            raise HTTPException(409, "A turn is already in progress.")
-        # Acquired here, not inside events(): the response body is not iterated
-        # until after this handler returns, so a lock taken there would leave a
-        # window in which a second prompt passes the check above.
-        await session.lock.acquire()
+        with update_job_lock:
+            refuse_extension_install()
+            if session.lock.locked():
+                raise HTTPException(409, "A turn is already in progress.")
+            # An unlocked asyncio.Lock acquires without yielding. No thread may
+            # publish an install between this check and the turn reservation.
+            await session.lock.acquire()
         session.cancel.clear()
         session.current_turn_id = uuid.uuid4().hex
         session.last_resolution = None

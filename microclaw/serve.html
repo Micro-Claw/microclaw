@@ -125,6 +125,10 @@
 </header>
 
 <main>
+  <details id="extensions-panel" class="banner">
+    <summary>Extensions</summary>
+    <div id="extensions-list"></div>
+  </details>
   <div class="banner hidden" id="update-banner">
     <h2>Microclaw update</h2>
     <p id="update-text"></p>
@@ -229,6 +233,50 @@
   function requirePairing() {
     $("pair-banner").classList.remove("hidden");
     $("pair-input").focus();
+  }
+
+  let extensionPollTimer;
+  async function refreshExtensions() {
+    clearTimeout(extensionPollTimer);
+    let fast = false;
+    try {
+      const res = await apiFetch("/api/extensions");
+      if (!res.ok) return;
+      const state = await res.json();
+      fast = !!state.job.running;
+      const list = $("extensions-list");
+      list.replaceChildren();
+      for (const row of Transcript.extensionsView(state)) {
+        const item = document.createElement("div");
+        const text = document.createElement("p");
+        text.textContent = row.name + " — " + row.description + " " + row.text +
+          " Packages: " + row.packages.join(", ") +
+          (row.skills.length ? ". Skills: " + row.skills.join(", ") : "") +
+          (row.preview.length ? ". Installer preview: " + row.preview.join(", ") : "") +
+          (row.result ? ". " + row.result.message +
+            (row.result.added.length ? " Added: " + row.result.added.join(", ") : "") : "");
+        item.append(text);
+        if (row.button) {
+          const button = document.createElement("button");
+          button.textContent = row.button;
+          button.disabled = fast;
+          button.addEventListener("click", async () => {
+            button.disabled = true;
+            try {
+              const res = await apiFetch("/api/extensions/install", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({name: row.name}),
+              });
+              if (!res.ok) toast(await detail(res));
+            } finally { await refreshExtensions(); }
+          });
+          item.append(button);
+        }
+        list.append(item);
+      }
+    } finally {
+      extensionPollTimer = setTimeout(refreshExtensions, fast ? 500 : 30000);
+    }
   }
 
   let updateState = null;
@@ -883,6 +931,7 @@
       showKey(await keyRes.json());
       showModel(await (await apiFetch("/api/model")).json());
       await refreshUpdate();
+      await refreshExtensions();
       await refresh();
       // A reload mid-turn destroyed the stream that carried confirm_request;
       // without this fetch the turn would sit stranded until the deadline.
