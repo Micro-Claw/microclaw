@@ -2647,6 +2647,13 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
             return process
         return real_popen(argv, **kw)
     monkeypatch.setattr(subprocess, "Popen", popen)
+    enumerating, enumerated = threading.Event(), threading.Event()
+    real_pins = extensions._pins
+    def pins(*args):
+        enumerating.set()
+        assert enumerated.wait(8)
+        return real_pins(*args)
+    monkeypatch.setattr(extensions, "_pins", pins)
     verifying, verified = threading.Event(), threading.Event()
     def verify(name):
         verifying.set()
@@ -2654,6 +2661,10 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
     monkeypatch.setattr(extensions, "_verify", verify)
     assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
     try:
+        assert enumerating.wait(3)
+        state = extension_client.get("/api/extensions").json()
+        assert extensions_view(state)[0]["text"] == "checking environment"
+        enumerated.set()
         state = wait_extension(extension_client, lambda s: s["job"].get("phase") == "running package installer")
         expected = "running package installer"
         for i, line in enumerate(lines):
@@ -2683,6 +2694,7 @@ def test_extension_progress_streams_stderr_before_exit(extension_client, monkeyp
         if failed:
             assert "numpy>=2.6 and numpy==2.5.3" in state["job"]["error"]
     finally:
+        enumerated.set()
         verified.set()
         for i in range(len(lines)):
             (tmp_path / f"release-{i}").touch()

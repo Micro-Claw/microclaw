@@ -204,6 +204,18 @@ def main(argv=None):
                 assert response.status_code == 200, response.text
                 return response.json()
 
+            def render_states(states, name):
+                node = shutil.which("node")
+                if not node:
+                    raise NotExercised("node is needed to execute the actual pure panel view")
+                path = args.out / f"panel-{name}.json"
+                path.write_text(json.dumps(states), encoding="utf-8")
+                js = Path(extensions.__file__).with_name("transcript.js")
+                script = "global.window={};require(process.argv[1]);const states=JSON.parse(require('fs').readFileSync(process.argv[2],'utf8'));process.stdout.write(JSON.stringify(states.map(s=>window.Transcript.extensionsView(s))));"
+                result = subprocess.run([node, "-e", script, str(js), str(path)],
+                                        capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL, check=True)
+                return json.loads(result.stdout)
+
             def managed():
                 nonlocal managed_target
                 if args.selftest:
@@ -227,6 +239,8 @@ def main(argv=None):
                     raise NotExercised("ilastik is already installed or recorded; use a disposable clean managed install")
                 assert not row.get("error"), row["error"]
                 initially_absent = True
+                view = next(row for row in render_states([state], "initial")[0] if row["name"] == "ilastik")
+                assert view["status"] == "not-installed" and view["button"] == "Install", view
                 return "ilastik not installed"
             limb("initial panel", initial)
 
@@ -331,14 +345,7 @@ def main(argv=None):
                 uv_phases = phases - {None, "checking environment", "running package installer", "verifying"}
                 if len(uv_phases) < 2:
                     raise NotExercised("install finished too quickly to observe two uv milestones")
-                node = shutil.which("node")
-                if not node:
-                    raise NotExercised("node is needed to execute the actual pure panel view")
-                js = Path(extensions.__file__).with_name("transcript.js")
-                script = "global.window={};require(process.argv[1]);const states=JSON.parse(require('fs').readFileSync(process.argv[2],'utf8'));process.stdout.write(JSON.stringify(states.filter(o=>o.state.job.running).map(o=>window.Transcript.extensionsView(o.state)[0].text)));"
-                result = subprocess.run([node, "-e", script, str(js), str(args.out / "observations.json")],
-                                        capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL, check=True)
-                rendered = json.loads(result.stdout)
+                rendered = [rows[0]["text"] for rows in render_states(live, "progress")]
                 assert rendered == [s["job"]["phase"] for s in live], rendered
                 return sorted(uv_phases)
             limb("progress", progress)
