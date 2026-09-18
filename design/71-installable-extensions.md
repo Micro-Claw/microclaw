@@ -1286,6 +1286,6 @@ That measurement buys it; nothing else does.
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| 71a | `block-71a` | `720309b` | in progress |
+| 71a | `block-71a` | `720309b` | implemented, reviewed, awaiting demo gate |
 | 71b | — | — | not started |
 | 71c | — | — | not started |
