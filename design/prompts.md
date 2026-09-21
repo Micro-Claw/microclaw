@@ -10807,3 +10807,70 @@ reschedule gap between `mkdir` and the next statement, it orphaned its lock 10
 times out of 10. No trap closes that, and `kill -9` runs no handler at all, so
 the stand-down path has to heal a stale lock rather than the go path being made
 perfect. **Exercise a launcher's stop path, not only its go path.**
+
+## design/71 blocks 71b + 71c — carrying extensions across updates (PR #34, 2026-09-21)
+
+**Two blocks on one branch, one demo trip.** design/71 specified 71c's gate as
+"one limb on 71b's program", which the per-block workflow does not naturally
+produce. Asking the operator was the right call: 71c is an allowed-key check, a
+prepended line and a fixture, and splitting it would have bought a second trip
+for a string. The block workflow owns process, but *how many rig visits a
+decision costs* is the operator's, and it is worth one question.
+
+**Four runner turns, three of them review rounds.** 71b product, one revision,
+71c, gate, one gate revision. Thirteen findings; four were defects.
+
+**The scoped-test rule has a hole, and it is `test_suite_integrity.py`.** Giving
+the runner only the files it touches is right and the coordinator's full run is
+the backstop — but turn 1 shipped six `read_text()` calls with no
+`encoding="utf-8"`, and the file that polices that is in nobody's scope by
+construction. **Name it in every runner prompt alongside the block's own
+files.** It is one fast file and it is the one that catches what scoping hides.
+
+**A sandbox-blocked check is the coordinator's to close, not to record as
+outstanding.** 71c's new built-wheel assertion needs `pip wheel`, and the runner
+has no network, so it handed back "mutation verification remains outstanding" —
+correctly. Running it here took a minute: a planted `not-an-extra` key fails it
+against the wheel's own `Provides-Extra`. A runner's blocked item is a handoff,
+not a gap in the evidence.
+
+**The gate could not reuse 71a's shape, and finding that out off-rig was the
+whole game.** 71a's gate hosted the ASGI app; `POST /api/update/restart` refuses
+any process the launcher did not start, and a restart is the centre of 71b. So
+this gate hosts nothing, the operator drives the real app, and the program
+probes each slot with *that slot's* interpreter under `-I` — which also fixes a
+latent hole in 71a's step-0 refusal, whose probe had no `-I` and could have been
+satisfied by the `microclaw/` package sitting in the operator's CWD.
+
+**The gate's own review found more than the product's.** Gate code gets no
+review pass and it showed: litter left in the launcher root with nothing to
+remove it (block 5b), a reinstall limb asserting a `pyvenv.cfg` mtime equality
+that a supported operation could break (design/69a), two limb clauses that were
+literals assigned after a `DONE` prompt and could not fail, a `KeyError` scored
+as NOT EXERCISED so a typo would have read as a fact about the machine, and bare
+asserts that printed `AssertionError:` with no values. **Re-run the selftest on
+both trees yourself.** The report said 13/10+3 and it was true, but the numbers
+are worth a minute to reproduce, and doing so is what surfaced the empty assert
+message.
+
+**And the gate still lost a phase — to a heading.** Two commands under
+*"## 2. Stage, then restart"*; the operator ran the first, and three limbs
+reported "not captured" at the end of a run in which the restart had already
+happened, unobserved. The claims were recoverable only by luck: the next phase's
+pre-snapshot caught the new launcher line and its matching health nonce.
+
+The fix is the point. design/69a had **already** proved that giving a skipped
+step its own numbered heading does not stop it being skipped — its seed step was
+missed in rounds 2, 3 and 4 through exactly that remedy — so the renumbering is
+the weaker half and the real fix is that the program refuses a phase whose
+predecessor has no artifact. **When a runbook step gets skipped, make the
+program refuse; do not make the runbook ask harder.** And the guard went in a
+module-level function rather than inline in `main()`, because the selftest
+drives phase methods directly and never reaches `main()`: a guard the selftest
+cannot execute is 58a's `github:` branch a second time. Neutering it now fails
+the selftest with `staged ran with installed missing`.
+
+**One limb that never fired, honestly recorded.** `h5py` resolves cleanly, so
+`[serve,ilastik]` succeeded on every run and the extras-*failure* fallback — the
+branch that exists so an extension can never break an update — has no rig
+evidence at all. `R137`, rather than a sentence implying the gate covered it.

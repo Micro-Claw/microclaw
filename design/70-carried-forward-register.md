@@ -104,6 +104,7 @@ Rows added since the triage:
 | `R131` | the public flip's ZIP-install rehearsal on the demo machine, 2026-09-16 |
 | `R132` | the first Windows CI runs, scored from the skip arithmetic 2026-09-16 |
 | `R133`–`R136` | found while reviewing and gating `design/71` block 71a, 2026-09-18 to 2026-09-21 |
+| `R137`–`R138` | found while reviewing and gating `design/71` blocks 71b and 71c, 2026-09-21 |
 
 
 ## The work queue
@@ -160,6 +161,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R134` | [The demo machine has no node, so no gate can execute the real `transcript.js`](#r134) | LOW | SMALL |  |
 | `R135` | [`locate_uv()`'s Windows bootstrap fallback has never run on a real machine](#r135) | LOW | SMALL |  |
 | `R136` | [`design/55-gate-probe-selftest.py` is hard-coded to block 55a](#r136) | MEDIUM | SMALL |  |
+| `R137` | [The extras-failure fallback that protects an update has no rig evidence](#r137) | LOW | SMALL |  |
+| `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3036,3 +3039,29 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM. It is a rule that is quietly not being followed as written.
 - **Effort** — SMALL
 - **Provenance** — block 71a, runner round 1 report, 2026-09-18.
+
+### R137 — The extras-failure fallback that protects an update has no rig evidence
+
+**`stage_inactive_slot` retries with `[serve]` when `[serve,<extras>]` fails, so an extension can never break an update. Every observation of that path is a unit test against a fake uv.**
+
+- **What happened** — block 71b's demo gate staged `[serve,ilastik]` successfully on every run; `h5py` resolves cleanly, so the fallback never fired. `errors` was `{}` in every captured snapshot.
+- **Why it matters** — this is the branch that exists precisely for the day a wheel is yanked or a pin conflicts, which is the day nobody is watching. It is also the branch that must *not* write `build_failed_commit`, and a poisoned SHA is refused until `next_check` passes.
+- **What a fix would look like** — a gate limb that provokes a real extras failure. The honest way is a temporary extra whose requirement cannot resolve, which needs a throwaway commit rather than a product change; `UV_INDEX_URL` pointed at an unreachable host would also do it, but 58e's lesson is that a hostile variable must be set for the child only and cleared immediately, and it would fail the base spec too.
+- **Where** — DEMO MACHINE. No dose, but it needs a staged build.
+- **Block** — NONE.
+- **Importance** — LOW. Four unit tests cover it, three of them watched failing on the pre-change tree, and the failure mode is degraded-not-broken.
+- **Effort** — SMALL
+- **Provenance** — block 71b's demo gate, scored from artifacts 2026-09-21.
+
+### R138 — An extension recorded but not installed cannot be forgotten from the panel
+
+**`extensions.forget()` exists and nothing calls it. A record whose extension the user no longer wants shows `Reinstall` for ever.**
+
+- **What happened** — noticed while reviewing 71b's reconcile path. The panel's four states are driven by `recorded` and `ready`; a user who installed `ilastik` once, then rebuilt their environment and decided they do not want it, has a permanent recorded-but-missing row and a button whose only alternative is to install it again.
+- **Why it matters** — design/71 deliberately ships no uninstall, and says so: *"it is now a real gap rather than something the reconcile surfaces."* This is the narrower half of that gap and is much cheaper than uninstall — forgetting a record removes nothing from the environment and cannot disturb a shared transitive dependency, which is the hazard uninstall was rejected over.
+- **What a fix would look like** — a Dismiss control beside Reinstall on the recorded-but-missing row only, calling the existing `forget()`. It is not an uninstall and must not be described as one.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW. Nobody has asked, exactly as with uninstall.
+- **Effort** — SMALL
+- **Provenance** — block 71b's coordinator review, 2026-09-21.
