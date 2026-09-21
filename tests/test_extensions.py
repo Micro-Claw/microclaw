@@ -350,8 +350,15 @@ def test_enumerator_failure_and_timeout_refuse_before_uv(isolated, monkeypatch):
 def test_gate_keeps_only_changed_observations(tmp_path):
     gate = Path(__file__).resolve().parents[1] / "design" / "71-block71a-demo-gate.py"
     result = subprocess.run([sys.executable, str(gate), "--selftest", "--out", str(tmp_path)],
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=30)
-    assert "FAIL " not in result.stdout, result.stdout + result.stderr
+                            stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+    # Score the gate from gate.log, which the gate owns and writes with an
+    # explicit encoding -- not from captured stdout, which came back as None on
+    # the Windows CI runner and turned this assertion into a TypeError. It is
+    # the same rule the gate itself follows: read the artifact, not the stream.
+    log_path = tmp_path / "gate.log"
+    assert log_path.exists(), (result.stdout or b"").decode("utf-8", "replace")
+    log = log_path.read_text(encoding="utf-8")
+    assert "FAIL " not in log, log
     observations = json.loads((tmp_path / "observations.json").read_text(encoding="utf-8"))
     assert observations
     assert all(a["state"] != b["state"] for a, b in zip(observations, observations[1:])), "gate retained duplicate poll observations"

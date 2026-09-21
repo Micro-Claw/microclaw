@@ -1168,4 +1168,9 @@ def test_locate_uv_controlled(monkeypatch, tmp_path, platform, path_found, fallb
         with pytest.raises(updates.UpdateError, match="uv was not found"):
             updates.locate_uv(path=str(search), user_profile=tmp_path, platform=platform)
     else:
-        assert updates.locate_uv(path=str(search), user_profile=tmp_path, platform=platform) == (str(candidate) if expected == "fallback" else str(executable))
+        # Compare as paths, not strings: shutil.which resolves through PATHEXT
+        # and returns "uv.EXE" on Windows for a file created as "uv.exe".
+        # WindowsPath equality is case-insensitive and PosixPath's is not, which
+        # is the right rule on each platform.
+        found = updates.locate_uv(path=str(search), user_profile=tmp_path, platform=platform)
+        assert Path(found) == (candidate if expected == "fallback" else executable)
