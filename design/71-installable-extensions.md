@@ -1361,5 +1361,5 @@ casing assumption failed a Windows CI test, which is how it was caught.
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | 71a | `block-71a` (deleted) | `720309b` | **merged 2026-09-21** as `2ad4e13`, PR #32 |
-| 71b | — | — | not started |
+| 71b | `block-71b` | `a4013eb` | in flight |
 | 71c | — | — | not started |
