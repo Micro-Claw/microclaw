@@ -103,6 +103,7 @@ Rows added since the triage:
 | `R130` | `design/79`'s M2 close-out, 2026-09-10 |
 | `R131` | the public flip's ZIP-install rehearsal on the demo machine, 2026-09-16 |
 | `R132` | the first Windows CI runs, scored from the skip arithmetic 2026-09-16 |
+| `R133`–`R136` | found while reviewing and gating `design/71` block 71a, 2026-09-18 to 2026-09-21 |
 
 
 ## The work queue
@@ -155,6 +156,10 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R130` | [Two committed gates drive the stage to absolute coordinates](#r130) | MEDIUM | SMALL |  |
 | `R131` | ["Building the update…" has no progress and no timeout, and it is slow](#r131) | MEDIUM | SMALL |  |
 | `R132` | [The workspace symlink-escape test does not run on Windows](#r132) | MEDIUM | SMALL |  |
+| `R133` | [`refreshUpdate()` can abort browser boot before the page adopts a running turn](#r133) | MEDIUM | SMALL |  |
+| `R134` | [The demo machine has no node, so no gate can execute the real `transcript.js`](#r134) | LOW | SMALL |  |
+| `R135` | [`locate_uv()`'s Windows bootstrap fallback has never run on a real machine](#r135) | LOW | SMALL |  |
+| `R136` | [`design/55-gate-probe-selftest.py` is hard-coded to block 55a](#r136) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -2976,3 +2981,58 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM. Nothing is known to be broken; a safety limb is simply unverified where it matters most.
 - **Effort** — SMALL
 - **Provenance** — the first two Windows CI runs, 2026-09-16, scored from the skip arithmetic rather than from a failure.
+
+### R133 — `refreshUpdate()` can abort browser boot before the page adopts a running turn
+
+**`refreshUpdate()` is `try/finally` with no `catch`, and boot awaits it before `refresh()`. Anything it throws stops boot, and a page reloaded mid-turn then never picks that turn back up.**
+
+- **How it was found** — not from a failure. Block 71a added `refreshExtensions()` in the same shape and the same position, and `test_recovery_js.py::test_serve_boot_adopts_running_turn_survives_failure_and_releases_at_end` caught it. 71a's own call was fixed (moved after `confirmationRecovery.startFromBoot()`, no longer awaited, and it catches its own failures); `refreshUpdate` was deliberately left alone as out of scope.
+- **Why it matters** — reloading mid-turn and having the page adopt the running turn is exactly what `design/69a` exists to make safe. An update-banner fetch that throws is enough to defeat it.
+- **What is NOT known** — whether `apiFetch` can actually reject here in practice, or whether every failure path already returns a non-ok response instead. That is the first thing to measure; the row may close as "cannot throw".
+- **What a fix would look like** — the same one 71a used: catch inside the function, and do not await it ahead of turn adoption.
+- **Where** — LOCAL. No rig, no dose.
+- **Block** — NONE.
+- **Importance** — MEDIUM. Nothing is known to be broken; the shape that broke once is still present next door.
+- **Effort** — SMALL
+- **Provenance** — block 71a review round 1, 2026-09-18.
+
+### R134 — The demo machine has no node, so no gate can execute the real `transcript.js`
+
+**Two limbs of block 71a's gate reported NOT EXERCISED on all three rounds because `node` is absent. Any future gate whose deliverable is what an operator sees in the panel will hit the same wall.**
+
+- **What happened** — `initial panel render` and `progress render` execute `transcript.js` under node, as a stand-in for the browser. Both reported NOT EXERCISED, 2026-09-21. The product limbs beside them passed, because 71a's gate splits the two claims into separate limbs specifically so a missing node costs the rendering evidence and not the product evidence.
+- **What still covers it** — `tests/test_transcript_js.py` drives the same pure functions from fixtures, and is itself skipped where node is absent. CI runners do have node.
+- **What this is not** — evidence about the product. Node is an instrument dependency; MicroClaw ships `transcript.js` to a browser and needs no node anywhere.
+- **What a fix would look like** — install node on the demo machine, once. It is a package manager line and it unblocks every future panel-rendering limb. The alternative — accepting that rendering is only ever proven off-rig — is also defensible and is what 71a did.
+- **Where** — the demo machine. No rig, no dose.
+- **Block** — NONE.
+- **Importance** — LOW. Nothing is unverified that the suite does not verify.
+- **Effort** — SMALL
+- **Provenance** — block 71a's demo gate, rounds 2 and 3, 2026-09-21.
+
+### R135 — `locate_uv()`'s Windows bootstrap fallback has never run on a real machine
+
+**The gate artifact appeared to exercise it and did not. `uv-invocations.json` recorded `C:\Users\rieslab\.local\bin\uv.EXE`, which is `shutil.which` finding uv on PATH and returning the PATHEXT casing — not the `%USERPROFILE%\.local\bin\uv.exe` fallback firing.**
+
+- **Why the distinction matters** — the fallback exists because `install.bat` bootstraps uv into that directory and a process started before the PATH change cannot see it. That is the case it is for, and it is the case no machine has yet been in when a gate ran.
+- **How it was caught** — a Windows CI failure, `test_locate_uv_controlled` comparing `uv.EXE` to `uv.exe` as strings. The same casing assumption had already produced a wrong reading of the rig artifact, which was corrected in the block's PR.
+- **What covers it now** — unit tests only, with PATH and the fallback location controlled explicitly. They pass on both CI platforms.
+- **What a fix would look like** — exercise it where it is real: a gate step that runs microclaw from a shell whose PATH predates the uv bootstrap. Cheap to arrange on the demo machine and worth folding into the next update-related gate rather than booking its own.
+- **Where** — the demo machine. No rig, no dose.
+- **Block** — NONE.
+- **Importance** — LOW. The route is three lines and unit-tested; only its real-world trigger is unobserved.
+- **Effort** — SMALL
+- **Provenance** — block 71a's Windows CI failure, 2026-09-21.
+
+### R136 — `design/55-gate-probe-selftest.py` is hard-coded to block 55a
+
+**`CLAUDE.md` requires every gate to be run against the bridge-shaped selftest on both trees. The instrument that does it only knows about one block, so each later block either retargets it in scratch or builds its own.**
+
+- **What happened** — block 71a's runner retargeted it in a scratch directory, which is unreviewable and gone. 71a ended up with a `--selftest` switch inside its own gate program instead, which works well and is arguably better, but is now the third private copy of this idea.
+- **Why it matters** — the selftest is the check that stops a gate reaching an operator untested, and it is the check most likely to be skipped when using it costs an afternoon of adaptation.
+- **What a fix would look like** — either a small reusable harness a gate can be pointed at, or a written decision that `--selftest` inside each gate program is the convention and `design/55`'s script is historical. The second is cheaper and matches what the last three gates actually did.
+- **Where** — LOCAL. No rig, no dose.
+- **Block** — NONE.
+- **Importance** — MEDIUM. It is a rule that is quietly not being followed as written.
+- **Effort** — SMALL
+- **Provenance** — block 71a, runner round 1 report, 2026-09-18.
