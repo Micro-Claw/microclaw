@@ -17,13 +17,14 @@ git checkout block-71b
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor TODO-COMMIT HEAD
+git merge-base --is-ancestor 513e483 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 .\install.bat
 if ($LASTEXITCODE -ne 0) { throw 'install failed' }
 ```
 
-The coordinator replaces `TODO-COMMIT` before push. Checkout alone supplies
+`513e483` is 71c, the last product commit; the gate files came after it, so
+amending them cannot invalidate this check. Checkout alone supplies
 only the gate script: **install.bat puts this branch in the slot**.
 Close Microclaw's console and launcher before prepare. Leave Micro-Manager open.
 
