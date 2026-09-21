@@ -1,4 +1,10 @@
-param([string]$Out = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) ('block71a-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))))
+param(
+    [string]$Out = (Join-Path ([Environment]::GetFolderPath('MyDocuments')) ('block71a-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+    # -Fresh undoes what a previous run of this gate left behind: the installed
+    # h5py, the extensions.json record, and uv's warm cache. Without it a second
+    # run cannot exercise the absent-extension limbs or see uv download anything.
+    [switch]$Fresh
+)
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:LOCALAPPDATA 'microclaw'
 $active = (Get-Content -LiteralPath (Join-Path $root 'active-slot.txt') -Raw).Trim()
@@ -42,12 +48,41 @@ if ((Invoke-SlotProbe 'import microclaw.extensions') -ne 0) {
     exit 2
 }
 
+New-Item -ItemType Directory -Force -Path $Out | Out-Null
+
 # The gate program writes under-test.json itself. It used to be a `python -c`
 # string here and PowerShell stripped its inner double quotes when building the
 # native command line, so `user_data_dir()/"update-state.json"` arrived as a bare
 # name and raised NameError -- and `>` wrote the traceback out as UTF-16.
 # Measured on the demo machine, 2026-09-21. Anything that computes belongs in
 # the program, not in the shell that launches it.
+
+if ($Fresh) {
+    # uv is not necessarily on PATH -- the first gate run found it through the
+    # installer's bootstrap location, which is exactly why locate_uv() has that
+    # route. Resolve it the same way rather than assuming.
+    $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
+    if (-not $uv) { $uv = Join-Path $env:USERPROFILE '.local\bin\uv.exe' }
+    if (-not (Test-Path -LiteralPath $uv)) { throw "uv not found on PATH or at $uv" }
+    Write-Host "Resetting for a fresh run (uv: $uv)"
+
+    $ErrorActionPreference = 'Continue'
+    & $uv pip uninstall --python $python h5py 2>&1 | Out-Null
+    Write-Host ('  h5py uninstalled from the slot: exit ' + $LASTEXITCODE)
+    & $uv cache clean h5py numpy 2>&1 | Out-Null
+    Write-Host ('  uv cache cleared for h5py and numpy: exit ' + $LASTEXITCODE)
+    $ErrorActionPreference = 'Stop'
+
+    $record = Join-Path $root 'extensions.json'
+    if (Test-Path -LiteralPath $record) {
+        Copy-Item -LiteralPath $record -Destination (Join-Path $Out 'extensions.json.before') -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $record -Force
+        Write-Host "  removed $record (the gate rewrites it)"
+    } else {
+        Write-Host "  no extensions.json to remove"
+    }
+    Write-Host ''
+}
 
 # h5py already in the slot makes the absent-extension limbs NOT EXERCISED.
 # install.bat never installs it, and this gate's own install limb puts it back,

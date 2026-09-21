@@ -32,8 +32,16 @@ Expect `IMPLEMENTATION PRESENT`.
 ## 1. Run the gate
 
 ```powershell
-.\design\71-block71a-demo-gate.ps1
+.\design\71-block71a-demo-gate.ps1 -Fresh
 ```
+
+**`-Fresh` on every run after the first.** A previous run leaves `h5py` in the
+slot and `ilastik` recorded in `%LOCALAPPDATA%\microclaw\extensions.json`, and
+leaves uv's cache warm. Without clearing those three the absent-extension limbs
+cannot be exercised and the installer has nothing to download, so the run tells
+you less than the one before it. `-Fresh` uninstalls `h5py` from the slot, cleans
+uv's cache for `h5py` and `numpy`, and removes the record after copying it into
+the evidence folder. The gate rewrites all of it.
 
 It refuses in one line if step 0 did not take, prints the commit under test, and
 warns you if `h5py` is already installed — in which case remove it with the
@@ -71,14 +79,9 @@ inside the server process that was already running when you pressed Install. The
 whole feature is that no restart is needed.
 
 **`progress phases` needs a slow install to say much.** It reports every phase
-it saw, in order. If uv's cache is already warm the install takes a couple of
-seconds and you will see few uv milestones — that is a real result, not a
-failure. To exercise it properly, clear uv's cache first:
-
-```powershell
-uv cache clean h5py
-uv cache clean numpy
-```
+it saw, in order. With a warm cache the install takes a couple of seconds and
+shows few uv milestones — a real result, not a failure. `-Fresh` is what makes
+it uncached.
 
 ## What this changes on the machine, and what puts it back
 
