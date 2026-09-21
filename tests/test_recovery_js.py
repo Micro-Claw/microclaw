@@ -721,8 +721,14 @@ def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suf
       switch (ev.type) {{ {case} }}
       process.stdout.write(JSON.stringify({{text: pendingProgress, renders}}));
     """
+    # 60s, not 5: this is the only node invocation in the suite that carries a
+    # timeout at all, and 5 was short enough that node's own startup exceeded it
+    # on a loaded windows-latest runner -- the job failed with TimeoutExpired
+    # while ubuntu passed the identical commit. The timeout is here to bound a
+    # hang, not to assert a speed, so it should be generous. A timeout that
+    # fires on a slow machine is worse than no timeout.
     result = subprocess.run(["node", "-e", script], stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, encoding="utf-8", check=True, timeout=5)
+                            capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
     assert json.loads(result.stdout) == {"text": "frames 1 / 1" + suffix, "renders": 1}
 
 
