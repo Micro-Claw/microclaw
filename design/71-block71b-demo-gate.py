@@ -570,6 +570,33 @@ def panel_row(snapshot):
     return next(row for row in panel["body"]["extensions"] if row["name"] == "ilastik")
 
 
+def require_previous_phase(gate, phase):
+    """Refuse a phase whose predecessor was never captured.
+
+    The 2026-09-21 gate lost the whole `restarted` phase: the runbook put its
+    command under the same heading as `staged`, the operator ran the first one,
+    and the three limbs it owned reported "not captured" at the end of the run
+    -- by which time the restart had been performed and not observed.  Its three
+    claims were recoverable off-rig only because the next phase's pre-snapshot
+    happened to catch the new launcher line and its health nonce.
+
+    design/69a already established that renumbering a skipped step does not stop
+    it being skipped; that seed step was missed in three consecutive rounds
+    through exactly that fix.  So the program refuses at the moment it matters
+    rather than the runbook asking harder.
+    """
+    order = PHASES[:PHASES.index("restore")]
+    if phase not in order or phase == "prepare":
+        return None
+    previous = order[order.index(phase) - 1]
+    if not (gate.out / f"{previous}.json").exists():
+        raise NotExercised(
+            f"{previous} was never captured, so {phase} cannot be scored against it; "
+            f"run -Phase {previous} first"
+        )
+    return previous
+
+
 def verify(gate, only=None, *, cleanup=True):
     results = []
     def score(name, phase, fn):
@@ -971,6 +998,26 @@ def selftest(out):
                 path.write_bytes(original)
             gate.say("PASS: selftest changed mtime does not change the reinstall verdict")
 
+            # The ordering guard is the fix for the 2026-09-21 skipped `restarted`
+            # phase, and main() is not reachable from here, so drive it directly:
+            # a guard nothing executes is 58a's `github:` branch again.
+            for phase, previous in (("staged", "installed"), ("restarted", "staged"),
+                                    ("reinstalled", "restarted"), ("recovery", "reinstalled")):
+                path = gate.out / f"{previous}.json"
+                original = path.read_bytes()
+                path.unlink()
+                try:
+                    require_previous_phase(gate, phase)
+                except NotExercised as exc:
+                    assert previous in str(exc) and phase in str(exc), exc
+                else:
+                    raise AssertionError(f"{phase} ran with {previous} missing")
+                finally:
+                    path.write_bytes(original)
+                assert require_previous_phase(gate, phase) == previous
+            assert require_previous_phase(gate, "prepare") is None
+            gate.say("PASS: selftest phase ordering refuses a skipped predecessor")
+
             # Controls mutate saved observations only, never product code.
             controls = []
             for label, phase, mutate, expected in (
@@ -1132,6 +1179,7 @@ def main():
     if not args.phase:
         parser.error("a phase is required")
     try:
+        require_previous_phase(gate, args.phase)
         if args.phase in ("prepare", "reinstalled", "recovery", "restore"):
             require_branch()
         if args.phase == "prepare":

@@ -59,7 +59,7 @@ Expect three PASS lines: active-slot import, record, and exact before/after skil
 diff (the prepare phase already checked the absent half). The original file is
 always retained. Do not stage until these pass.
 
-## 2. Stage, then restart
+## 2. Stage
 
 Start this command **before pressing Update**, so it clears old build verdicts:
 
@@ -72,6 +72,14 @@ When prompted, press **Update** in Firefox. Wait for the restart controls; type
 slot now imports it, and pending/state/extension errors agree. If discovery did
 not produce a candidate, use the app's **Check now**, then retry this phase.
 
+## 3. Restart
+
+**Do not skip this; do not press Restart now before running it.** On
+2026-09-21 this command shared a heading with step 2, the operator ran only the
+first, and the restart happened unobserved — three limbs reported "not
+captured". Every later phase now refuses until this one has been captured, so a
+skip stops you here rather than at the end.
+
 ```powershell
 .\design\71-block71b-demo-gate.ps1 -Phase restarted
 ```
@@ -80,7 +88,7 @@ Press **Restart now** in Firefox when the program tells you. It waits first for
 the new launcher line, then that launch's own health nonce. Expect three PASS
 lines: flipped slot and candidate marker, ready extension, surviving record.
 
-## 3. Ordinary reinstall
+## 4. Ordinary reinstall
 
 ```powershell
 .\design\71-block71b-demo-gate.ps1 -Phase reinstalled
@@ -102,7 +110,7 @@ is Ready in Firefox, then type `DONE` in the gate. Expect one PASS line: readine
 survived. The environment's before/after `pyvenv.cfg` timestamps are reported
 as observations; changing that timestamp does not fail the limb.
 
-## 4. Recovery — keep the gate running while following its prompts
+## 5. Recovery — keep the gate running while following its prompts
 
 ```powershell
 .\design\71-block71b-demo-gate.ps1 -Phase recovery
@@ -112,7 +120,7 @@ The program asks you to close Microclaw/launcher, snapshots recovery state, and
 **renames the active environment inside `%LOCALAPPDATA%\microclaw`** to a
 `71b-preserved-...` directory. No environment is copied to Documents.
 
-When prompted, run the same `install.bat` command from step 3 in the second
+When prompted, run the same `install.bat` command from step 4 in the second
 window. **Do not launch Microclaw yet. If the installer asks to press a key for
 bridge/setup, leave it paused and type DONE in the gate first.** This lets the
 program prove h5py is absent before any server is launched. Then cancel that
@@ -140,7 +148,7 @@ only after recovery is verified. If deletion itself failed part-way, `restore`
 rechecks the working replacement and retries cleanup; it never restores the
 partly deleted directory. The local safety backup is retained in all cases.
 
-## 5. Verify and send back
+## 6. Verify and send back
 
 ```powershell
 $gateEvidence = (Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'microclaw\71b-gate-evidence.txt') -Raw).Trim()
