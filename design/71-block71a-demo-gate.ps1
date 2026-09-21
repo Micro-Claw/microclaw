@@ -42,19 +42,12 @@ if ((Invoke-SlotProbe 'import microclaw.extensions') -ne 0) {
     exit 2
 }
 
-# Record WHICH commit is under test, into the evidence, so a passing gate can be
-# tied to a tree afterwards rather than taken on trust.
-New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$probe = 'import json,sys,microclaw' +
-    ';from microclaw.updates import user_data_dir' +
-    ';p=user_data_dir()/"update-state.json"' +
-    ';s=json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}' +
-    ';sys.stdout.write(json.dumps({"installed_commit":s.get("installed_commit"),' +
-    '"microclaw":microclaw.__file__,"python":sys.executable},indent=2))'
-$ErrorActionPreference = 'Continue'
-& $python -c $probe > (Join-Path $Out 'under-test.json') 2>&1
-$ErrorActionPreference = 'Stop'
-Get-Content -LiteralPath (Join-Path $Out 'under-test.json')
+# The gate program writes under-test.json itself. It used to be a `python -c`
+# string here and PowerShell stripped its inner double quotes when building the
+# native command line, so `user_data_dir()/"update-state.json"` arrived as a bare
+# name and raised NameError -- and `>` wrote the traceback out as UTF-16.
+# Measured on the demo machine, 2026-09-21. Anything that computes belongs in
+# the program, not in the shell that launches it.
 
 # h5py already in the slot makes the absent-extension limbs NOT EXERCISED.
 # install.bat never installs it, and this gate's own install limb puts it back,

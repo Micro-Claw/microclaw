@@ -107,11 +107,23 @@ def main(argv=None):
 
     say(f"71a gate pid={os.getpid()} interpreter={sys.executable} selftest={args.selftest}")
     try:
+        from microclaw.updates import user_data_dir
+        import microclaw
+        state_file = user_data_dir() / "update-state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+        under_test = {"installed_commit": state.get("installed_commit"),
+                      "microclaw": microclaw.__file__, "python": sys.executable}
+    except Exception as exc:
+        under_test = {"error": f"{type(exc).__name__}: {exc}", "python": sys.executable}
+    (args.out / "under-test.json").write_text(json.dumps(under_test, indent=2), encoding="utf-8")
+    say(f"under test: {under_test}")
+    try:
         from microclaw import extensions
         from microclaw import credentials, updates, webserve
     except ImportError as exc:
-        for name in ("managed target", "initial panel", "install", "no restart adapter", "record",
-                     "repeat", "refusal", "refusal control", "in-flight", "constraints", "progress"):
+        for name in ("managed target", "initial state", "initial panel render", "install",
+                     "no restart adapter", "record", "repeat", "refusal", "refusal control",
+                     "in-flight", "constraints", "progress phases", "progress render"):
             limb(name, lambda: (_ for _ in ()).throw(NotExercised(f"extension implementation absent: {exc}")))
         log.close()
         return 1
@@ -227,18 +239,32 @@ def main(argv=None):
                 return str(expected)
             limb("managed target", managed)
 
+            initial_state = []
+
             def initial():
                 nonlocal initially_absent
                 state = catalog()
+                initial_state.append(state)
                 row = next(r for r in state["extensions"] if r["name"] == "ilastik")
                 if row["ready"] or row["recorded"]:
                     raise NotExercised("ilastik is already installed or recorded; use a disposable clean managed install")
                 assert not row.get("error"), row["error"]
                 initially_absent = True
-                view = next(row for row in render_states([state], "initial")[0] if row["name"] == "ilastik")
-                assert view["status"] == "not-installed" and view["button"] == "Install", view
                 return "ilastik not installed"
-            limb("initial panel", initial)
+            limb("initial state", initial)
+
+            def initial_render():
+                # Node-only. Kept separate from the limb above so a machine
+                # without node loses the rendering evidence and not the product
+                # evidence -- one limb asserting two things reports NOT
+                # EXERCISED for both when only one of them is blocked.
+                if not initially_absent:
+                    raise NotExercised("no absent-extension state to render")
+                view = next(row for row in render_states([initial_state[0]], "initial")[0]
+                            if row["name"] == "ilastik")
+                assert view["status"] == "not-installed" and view["button"] == "Install", view
+                return view["text"]
+            limb("initial panel render", initial_render)
 
             def install():
                 nonlocal install_complete
@@ -336,16 +362,38 @@ def main(argv=None):
                 return f"{len(pins)} exact pins captured at uv dispatch"
             limb("constraints", constraints)
 
-            def progress():
+            def phase_sequence():
+                # R131 is "the banner reads as hung". The claim is that the
+                # phase CHANGES while the installer runs, so count every phase
+                # transition, not only uv's own milestones -- and say which were
+                # seen either way, because "NOT EXERCISED" with no numbers
+                # cannot be told apart from "published nothing".
                 live = [o["state"] for o in observations if o["state"]["job"].get("running")]
-                phases = {s["job"].get("phase") for s in live}
-                uv_phases = phases - {None, "checking environment", "running package installer", "verifying"}
-                if len(uv_phases) < 2:
-                    raise NotExercised("install finished too quickly to observe two uv milestones")
+                ordered, seen = [], set()
+                for state in live:
+                    phase = state["job"].get("phase")
+                    if phase and (not ordered or ordered[-1] != phase):
+                        ordered.append(phase)
+                    seen.add(phase)
+                uv_phases = sorted(seen - {None, "checking environment",
+                                           "running package installer", "verifying"})
+                say(f"observed phases in order: {ordered}; uv milestones: {uv_phases}")
+                if len(ordered) < 2:
+                    raise NotExercised(f"the panel never changed phase: {ordered}")
+                if not uv_phases:
+                    raise NotExercised(
+                        f"no uv milestone was observed; only our own phases {ordered}")
+                return f"{len(ordered)} phase changes, uv milestones {uv_phases}"
+            limb("progress phases", phase_sequence)
+
+            def progress_render():
+                if not observations:
+                    raise NotExercised("no observations to render")
+                live = [o["state"] for o in observations if o["state"]["job"].get("running")]
                 rendered = [rows[0]["text"] for rows in render_states(live, "progress")]
                 assert rendered == [s["job"]["phase"] for s in live], rendered
-                return sorted(uv_phases)
-            limb("progress", progress)
+                return f"{len(rendered)} rendered phases match the published ones"
+            limb("progress render", progress_render)
     say(f"RESULT: {len(failures)} failed or not exercised limbs: {failures}")
     log.close()
     return int(bool(failures))

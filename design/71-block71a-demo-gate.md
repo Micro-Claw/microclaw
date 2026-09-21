@@ -49,15 +49,36 @@ The whole evidence folder (the path is printed at the end, under `Documents`).
 It holds `gate.log`, `under-test.json`, `uv-invocations.json`,
 `installed-constraints.txt`, `observations.json` and `records\extensions.json`.
 
+## Expected output that looks alarming and is not
+
+- **`No Anthropic API key found — set one from the browser.`** The gate patches
+  the key lookup to return nothing while it builds its session, so it can drive a
+  real turn without touching your key or spending credit. Your keyring entry is
+  untouched and the desktop shortcut keeps working.
+- **`NOT EXERCISED: node is needed ...`** on the two `render` limbs, if node is
+  not installed. Those limbs execute `transcript.js` for real; the product limbs
+  beside them still run. Install node if you want that evidence, otherwise it is
+  covered by the test suite.
+
 ## What passing looks like
 
-Eleven limbs, each reported on its own line, and `RESULT: 0 failed or not
+Thirteen limbs, each reported on its own line, and `RESULT: 0 failed or not
 exercised limbs`. Any `FAIL` or `NOT EXERCISED` line is a result — send the
 folder either way, and do not re-run to get a cleaner log.
 
 The limb that matters most is **`no restart adapter`**: it proves `h5py` imports
 inside the server process that was already running when you pressed Install. The
 whole feature is that no restart is needed.
+
+**`progress phases` needs a slow install to say much.** It reports every phase
+it saw, in order. If uv's cache is already warm the install takes a couple of
+seconds and you will see few uv milestones — that is a real result, not a
+failure. To exercise it properly, clear uv's cache first:
+
+```powershell
+uv cache clean h5py
+uv cache clean numpy
+```
 
 ## What this changes on the machine, and what puts it back
 
