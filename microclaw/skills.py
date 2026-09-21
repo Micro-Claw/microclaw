@@ -27,6 +27,7 @@ class SkillMetadata:
     name: str
     description: str
     resource: Traversable
+    requires: tuple[str, ...] = ()
 
 
 def _parse_skill(resource: Traversable) -> SkillMetadata:
@@ -45,9 +46,10 @@ def _parse_skill(resource: Traversable) -> SkillMetadata:
         raise RuntimeError(f"Malformed skill frontmatter in {resource}: {exc}") from exc
     if not isinstance(metadata, dict):
         raise RuntimeError(f"Malformed skill frontmatter in {resource}: expected a mapping")
-    if set(metadata) != {"name", "description"}:
+    if (not {"name", "description"} <= metadata.keys()
+            or metadata.keys() - {"name", "description", "requires"}):
         raise RuntimeError(
-            f"Malformed skill frontmatter in {resource}: exactly name and description are required"
+            f"Malformed skill frontmatter in {resource}: name and description are required; only requires is optional"
         )
     name = metadata["name"]
     description = metadata["description"]
@@ -57,7 +59,15 @@ def _parse_skill(resource: Traversable) -> SkillMetadata:
         raise RuntimeError(
             f"Malformed skill frontmatter in {resource}: description must be one nonempty line"
         )
-    return SkillMetadata(name=name, description=description, resource=resource)
+    requires = metadata.get("requires", [])
+    if not isinstance(requires, list) or any(
+        not isinstance(extra, str) or not extra.strip() for extra in requires
+    ):
+        raise RuntimeError(
+            f"Malformed skill frontmatter in {resource}: requires must be a list of nonempty strings"
+        )
+    return SkillMetadata(name=name, description=description, resource=resource,
+                         requires=tuple(requires))
 
 
 def _build_catalog(root: Traversable) -> tuple[SkillMetadata, ...]:
@@ -110,6 +120,31 @@ def load_skill_text(name: str) -> str:
     """Return one complete SKILL.md after validating an exact catalog name."""
     for skill in SKILL_CATALOG:
         if skill.name == name:
-            return skill.resource.read_text(encoding="utf-8")
+            from microclaw import extensions
+
+            notices = []
+            for extra in sorted(set(skill.requires)):
+                unavailable = (
+                    f"Skill `{skill.name}` declares extension `{extra}`, "
+                    "which this build does not provide"
+                )
+                if extra not in extensions.EXTENSIONS:
+                    notices.append(unavailable + ".")
+                    continue
+                try:
+                    ready = extensions.ready(extra)
+                except extensions.ExtensionInstallError as exc:
+                    notices.append(f"{unavailable}: {exc}")
+                except Exception as exc:
+                    notices.append(
+                        f"Could not check extension `{extra}` for skill `{skill.name}`: {exc}"
+                    )
+                else:
+                    if not ready:
+                        notices.append(
+                            f"The `{extra}` extension is not installed; tools using it will refuse "
+                            "until the user installs it from Microclaw's Extensions panel."
+                        )
+            return "".join(line + "\n" for line in notices) + skill.resource.read_text(encoding="utf-8")
     available = ", ".join(skill.name for skill in SKILL_CATALOG)
     raise ValueError(f"Unknown skill {name!r}. Available catalog names: {available}")
