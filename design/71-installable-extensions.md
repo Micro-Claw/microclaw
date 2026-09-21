@@ -1282,10 +1282,52 @@ are measured annoying in practice, the shape to build is `start_due_check`'s
 admission to a user turn rather than blocking it, one attempt per environment.
 That measurement buys it; nothing else does.
 
+## 71a gate results — demo machine, 2026-09-21
+
+Three rounds. **Round 3 passed eleven of thirteen limbs**; the two NOT EXERCISED
+were `initial panel render` and `progress render`, both blocked by node being
+absent on that machine. Node is a gate dependency, not a product one, and
+`Transcript.extensionsView` is covered by fixtures in `tests/test_transcript_js.py`,
+so they were accepted rather than chased.
+
+Measured, scored from the artifacts rather than the verdict:
+
+- **No restart is needed.** `h5py` imported inside pid 6120 — the server process
+  already running when the install was requested — and the real ilastik adapter
+  read a real `.ilp` through it. This is the claim the whole block exists for and
+  it is the one the gate proves.
+- **One uv invocation**, confirming the dry-run's removal, at
+  `uv pip install --python <slot> --constraint <tmp> h5py>=3.10`.
+- **55 pins, every one `==`**, on a non-editable managed slot: `microclaw`
+  excluded, `h5py` absent (not yet installed), and `numpy==2.5.3` held. The
+  install could have moved numpy under a running server and could not.
+- **The panel changes phase while uv runs.** With uv's cache cleared:
+  `checking environment` → `running package installer` → `Downloading h5py` →
+  `Package installation complete` → `verifying`, five changes over a 1.02 s
+  install, two of them uv's own milestones. R131's "is it hung?" is answered by
+  observation here, not by argument.
+- `installed_commit` and the `extensions.json` record both carried the branch
+  HEAD, so the run is tied to a tree rather than taken on trust.
+
+**Three of the three gate rounds failed on the instrument, never on the
+product.** Round 1 ran against the slot's installed `microclaw` because the
+runbook did not say to run `install.bat` — the step was already recorded in
+`design/58-block58d-demo-gate.md` and was invented instead of looked up. Round 2
+lost two limbs because each asserted a product claim and a node-only rendering
+claim together, and lost `under-test.json` to PowerShell stripping the inner
+quotes out of a `python -c` string. Round 3 needed `-Fresh`, because the first
+successful run leaves `h5py` installed, the record written and uv's cache warm —
+a repeat run then tells you strictly less than the one before it.
+
+**What has no rig evidence.** `locate_uv()`'s `%USERPROFILE%\.local\bin\uv.exe`
+fallback: the artifact shows `...\.local\bin\uv.EXE`, which is `shutil.which`
+returning the PATHEXT casing from **PATH**, not the fallback firing. The same
+casing assumption failed a Windows CI test, which is how it was caught.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| 71a | `block-71a` | `720309b` | implemented, reviewed, awaiting demo gate |
+| 71a | `block-71a` (deleted) | `720309b` | **merged 2026-09-21** as `2ad4e13`, PR #32 |
 | 71b | — | — | not started |
 | 71c | — | — | not started |

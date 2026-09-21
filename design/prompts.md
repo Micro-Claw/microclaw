@@ -10754,3 +10754,56 @@ candidates. Scoring temporal phrasing is a judgement the probe must not make.
 the runner's live worktree* while the runner was working there. Caught before
 the runner committed, reverted, and the patch held in scratch until the turn
 returned. One worktree per agent means the coordinator is an agent too.
+
+## design/71 block 71a — installable extensions (merged 2026-09-21, PR #32)
+
+**One runner turn produced ten review findings, four of them blocking, and none
+of the four was found by the runner's own tests.** They were all the same shape
+as design/60's: code that is correct in the fixture it was written against and
+wrong in the one it will meet. The chokepoint refusal read
+`getattr(ctrl, "_microclaw_extension_install", {}).get("running")`, which is a
+truthy `MagicMock` on every mock controller — 129 acquisition tests refused, in
+eight files nobody expected the block to touch. The test written to prove that
+line works hands it a real dict, so it was the one fixture shape under which the
+line behaved. **When a refusal goes in at a shared chokepoint, the question is
+not "does my test pass" but "what shape does every *other* caller hand it".**
+
+**The runner ran the targeted files and reported 376 passing; the full suite was
+130 failed.** That division is working as intended — the runner tests what it
+changed, the coordinator re-runs everything — but only if the coordinator
+actually does it. Worth stating because the temptation is to read a green
+targeted run as a green suite.
+
+**Three gate rounds, three instrument defects, zero product defects.** Round 1
+ran against the slot's *installed* microclaw, because the runbook never said to
+run `install.bat`: the demo machine's slot is a non-editable copy, so checking
+out a branch supplies the gate script and nothing else. That step was already
+written down in `design/58-block58d-demo-gate.md` and was invented instead of
+looked up — the fourth time this repo has paid for a step 0 written from the
+design rather than from the gates that already ran on that machine. Round 2 lost
+two limbs because each asserted a product claim *and* a node-only rendering
+claim, so a missing node cost both; splitting them recovered the product
+evidence. Round 3 needed a `-Fresh` switch, because a successful run leaves
+`h5py` installed, the record written and uv's cache warm, so the next run
+exercises strictly less than the one before it. **A gate that changes the state
+it depends on needs a reset it owns.**
+
+**CI caught two Windows-only test defects after three green local suites and a
+passing rig gate.** `shutil.which` returns the PATHEXT casing (`uv.EXE`), and a
+captured `subprocess` stdout came back `None` on the Windows runner. The first
+of those had *also* produced a wrong reading of a rig artifact: the demo gate
+appeared to exercise `locate_uv()`'s Windows fallback and did not — it was the
+PATH route with an uppercased extension. **A casing assumption in a test and a
+misread of an artifact were the same bug, and only CI distinguished them.** The
+correction is in the PR and in `R135`.
+
+**Two coordinator-side lessons.** A design doc's *own measurements* can be
+transcribed wrong: `design/71` rendered uv's conflict output in ASCII
+(`x`, `'->`) where uv emits `×` and `╰─▶`, so a fixture written from the document
+would not have matched uv — found only by capturing the transcripts for the
+runner rather than letting it imagine them. And the retry launcher written to
+resume a usage-limited turn **failed its own stop test**: killed in the
+reschedule gap between `mkdir` and the next statement, it orphaned its lock 10
+times out of 10. No trap closes that, and `kill -9` runs no handler at all, so
+the stand-down path has to heal a stale lock rather than the go path being made
+perfect. **Exercise a launcher's stop path, not only its go path.**
