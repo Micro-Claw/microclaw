@@ -1163,6 +1163,38 @@ there.
 
 ### 71b — carry extensions across an update, a rollback, and a reinstall
 
+**What 71a already shipped, which changes three assumptions here.** Read this
+before the items; each one is a place 71b would otherwise build a second
+mechanism.
+
+- **Readiness is computed once and cached at the server, not per poll.** 71a's
+  review found `GET /api/extensions` running `importlib.invalidate_caches()`,
+  `packages_distributions()` and a native `h5py` import **on the event loop**,
+  every poll. It now discovers once through `run_in_threadpool`
+  (`ensure_extension_catalog` in `webserve.py`) and refreshes only after an
+  install completes. **So item 2's "startup reconcile" already exists**: the
+  first `available()` call *is* the reconcile, and it already reports
+  `recorded` and `ready` separately, which is exactly the recorded-but-missing
+  signal. 71b should surface and test it, not add a second pass.
+- **`extensions.json` carries an `errors` key** as well as `installed`:
+  `{"installed": {...}, "errors": {name: message}}`. A failed install records
+  its message there and `available()` returns it as `error`. `extras_error`
+  from a staging fallback belongs in the same place.
+- **`updates.locate_uv()` and `updates._write_json_atomic()` exist**, and
+  `stage_cached_candidate` already uses `locate_uv`. Do not reintroduce
+  `shutil.which("uv")`.
+
+**Its gate inherits 71a's, and the instrument lessons are the expensive part.**
+`design/71-block71a-demo-gate.md` and `.ps1` are the working pattern: step 0 is
+`git checkout` **and `install.bat`**, because the slot runs a non-editable copy
+and a branch checkout alone supplies only the gate script; `-Fresh` exists
+because a successful run leaves `h5py` installed, the record written and uv's
+cache warm, so an unreset repeat run exercises less than the run before it; and
+the two `render` limbs need node, which that machine does not have (`R134`).
+71b's gate additionally moves a whole managed environment aside and must put it
+back — write the restore before the test, and score it from `extensions.json`,
+`update-state.json` and the slot markers rather than from the banner.
+
 **Items**
 
 1. `stage_inactive_slot` builds `f"{source}[serve,<recorded extras>]"`, falls
