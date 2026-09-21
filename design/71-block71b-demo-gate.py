@@ -149,8 +149,41 @@ class Gate:
         value = read_json(path)
         return value
 
+    def clean_artifacts(self):
+        """Remove our launcher-root artifacts, preserving restoration snapshots locally."""
+        pointer = self.root / "71b-gate-evidence.txt"
+        journal_path = self.out / "recovery-journal.json"
+        removed = []
+        journal = read_json(journal_path) if journal_path.exists() else None
+        backup = Path(journal.get("launcher_backup", journal["backup"])) if journal else None
+        self.say(f"GATE CLEANUP: recovery files={backup}; evidence pointer={pointer} (removed last)")
+        if backup and backup.parent == self.root:
+            # Verify may follow a failed recovery. Preserve the restore input
+            # outside production state before removing its launcher-root copy.
+            archive = self.root.parent / backup.name
+            if backup.exists():
+                shutil.copytree(backup, archive, dirs_exist_ok=True)
+                if (archive / "files.json").read_bytes() != (backup / "files.json").read_bytes():
+                    raise RuntimeError(f"Recovery backup copy mismatch: {archive}")
+                journal.update(backup=str(archive), launcher_backup=str(backup))
+                write_json(journal_path, journal)
+                shutil.rmtree(backup)
+                removed.append(str(backup))
+            self.say(f"Recovery snapshots retained outside launcher root: {archive}")
+        if pointer.exists():
+            recorded = Path(pointer.read_text(encoding="ascii").strip()).resolve()
+            if recorded != self.out:
+                raise RuntimeError(f"Pointer belongs to another evidence folder: {recorded}; current={self.out}")
+            pointer.unlink()
+            removed.append(str(pointer))
+        write_json(self.out / "gate-cleanup.json", {"removed": removed,
+                   "pointer": str(pointer), "recovery_files": str(backup) if backup else None})
+        self.say(f"GATE CLEANUP COMPLETE: removed {removed}")
+
     def prompt(self, event, message):
         self.say(message)
+        if event == "missing":
+            return input("Type the exact button label beside ilastik (or STOP to abort): ")
         if input("Type DONE after completing this, or STOP to abort: ").strip() != "DONE":
             raise NotExercised(f"operator stopped at {event}")
 
@@ -245,6 +278,9 @@ class Gate:
         return saved
 
     def restore_files(self, saved):
+        # Final verify removes our pointer. A later recovery retry must not
+        # resurrect it from the pre-recovery snapshot.
+        saved = {name: data for name, data in saved.items() if name != "71b-gate-evidence.txt"}
         # Installer can create these even if absent before recovery.
         names = set(saved) | {ACTIVE, PENDING, STATE, RECORD, HEALTH, "restart-request.txt",
                              "rollback-report.txt", "launcher.log", "launcher-protocol.txt",
@@ -365,13 +401,14 @@ class Gate:
             probe = data["rebuilt"]["slots"][slot]["probe"]
             if probe.get("exit") != 0 or probe.get("h5py") != "absent" or probe.get("ready") is not False:
                 raise RuntimeError("Fresh environment did not prove h5py absent before launch")
-            self.prompt("missing", "If the installer is paused, cancel it with Ctrl+C (answer Y if asked). "
+            data["operator_missing_button"] = self.prompt("missing", "If the installer is paused, cancel it with Ctrl+C (answer Y if asked). "
                         "Now launch the desktop icon. In Firefox open Extensions. "
-                        "Confirm ilastik says missing and offers Reinstall; do NOT press it yet.")
+                        "Read the button label beside ilastik; do NOT press it yet.")
             data["missing"] = self.snapshot()
-            data["operator_missing_reinstall"] = True
             self.save_phase("recovery", data)
             row = panel_row(data["missing"])
+            if data["operator_missing_button"] != "Reinstall":
+                raise RuntimeError(f"Expected Reinstall button; operator typed {data['operator_missing_button']!r}")
             if not row.get("recorded") or row.get("ready"):
                 raise RuntimeError("Panel JSON is not recorded-but-missing")
             self.prompt("recover-install", "Press Reinstall for ilastik in Firefox; wait for Ready and no install job.")
@@ -467,7 +504,7 @@ class Gate:
 
     def installed(self):
         self.prompt("install", "In Firefox Extensions, install ilastik; wait for Ready and no install job.")
-        data = {"after": self.snapshot(), "operator_ready": True}
+        data = {"after": self.snapshot()}
         self.save_phase("installed", data)
         require_ready(data["after"])
         require_record(data["after"])
@@ -503,7 +540,7 @@ class Gate:
         self.prompt("reinstall", "Close Microclaw and its launcher; in a second PowerShell run .\\install.bat. "
                     "If the installer pauses for bridge/setup, cancel there with Ctrl+C (Y if asked). "
                     "Launch the desktop icon again and confirm ilastik remains Ready in Firefox.")
-        data = {"before": before, "after": self.snapshot(), "operator_ready": True}
+        data = {"before": before, "after": self.snapshot()}
         self.save_phase("reinstalled", data)
         return data
 
@@ -533,7 +570,7 @@ def panel_row(snapshot):
     return next(row for row in panel["body"]["extensions"] if row["name"] == "ilastik")
 
 
-def verify(gate, only=None):
+def verify(gate, only=None, *, cleanup=True):
     results = []
     def score(name, phase, fn):
         if only and phase != only:
@@ -541,7 +578,7 @@ def verify(gate, only=None):
         try:
             detail = fn()
             status = "PASS"
-        except (NotExercised, KeyError) as exc:
+        except NotExercised as exc:
             status, detail = "NOT EXERCISED", str(exc)
         except Exception as exc:
             status, detail = "FAIL", f"{type(exc).__name__}: {exc}"
@@ -563,9 +600,9 @@ def verify(gate, only=None):
         if before.get("h5py") != "absent":
             raise NotExercised("no absent-extension capture")
         assert after.get("ready") is True, after
-        assert before["skill_original"] == after["skill_original"]
-        assert before["skill_text"] == LINE + after["skill_text"]
-        assert after["skill_text"] == after["skill_original"]
+        assert before["skill_original"] == after["skill_original"], {"before_file": before["skill_original"], "after_file": after["skill_original"]}
+        assert before["skill_text"] == LINE + after["skill_text"], {"before": before["skill_text"], "expected": LINE + after["skill_text"]}
+        assert after["skill_text"] == after["skill_original"], {"after": after["skill_text"], "expected": after["skill_original"]}
         return f"before/after differ by exactly {len(LINE)} prefix characters; after is file alone"
 
     def carried():
@@ -576,11 +613,11 @@ def verify(gate, only=None):
         if baseline.get("h5py") != "absent":
             raise NotExercised(f"inactive {inactive} was not demonstrably h5py-absent: {baseline}")
         after = stage["after"]
-        assert stage["before"]["active"] == prep["active"] == after["active"]
-        assert after["pending"] == inactive, after["pending"]
+        assert stage["before"]["active"] == prep["active"] == after["active"], {"prepare": prep["active"], "before_stage": stage["before"]["active"], "after_stage": after["active"]}
+        assert after["pending"] == inactive, {"pending": after["pending"], "expected": inactive}
         probe = after["slots"][inactive]["probe"]
         assert probe.get("exit") == 0 and probe.get("h5py") == "ready" and probe.get("ready") is True, probe
-        assert after["slots"][inactive]["marker"]["commit"] == stage["candidate"]["sha"]
+        assert after["slots"][inactive]["marker"]["commit"] == stage["candidate"]["sha"], {"marker": after["slots"][inactive]["marker"], "candidate": stage["candidate"]}
         return f"inactive={inactive}: absent -> ready; pending={after['pending']}; commit={stage['candidate']['sha']}"
 
     def stage_state():
@@ -594,22 +631,22 @@ def verify(gate, only=None):
         stage = gate.need("staged")
         data = gate.need("restarted")
         after = data["after"]
-        assert after["active"] == other(stage["before"]["active"])
-        assert after["slots"][after["active"]]["marker"]["commit"] == stage["candidate"]["sha"]
-        assert data["health"]["nonce"] == after["health"] and data["health"]["slot"] == after["active"]
+        assert after["active"] == other(stage["before"]["active"]), {"before": stage["before"]["active"], "after": after["active"]}
+        assert after["slots"][after["active"]]["marker"]["commit"] == stage["candidate"]["sha"], {"marker": after["slots"][after["active"]]["marker"], "candidate": stage["candidate"]}
+        assert data["health"]["nonce"] == after["health"] and data["health"]["slot"] == after["active"], {"launch": data["health"], "marker_nonce": after["health"], "active": after["active"]}
         return f"active={after['active']}; SHA={stage['candidate']['sha']}; nonce={after['health']}"
 
     def reinstall():
         data = gate.need("reinstalled")
         before, after = data["before"], data["after"]
         slot = before["active"]
-        assert after["active"] == slot
+        assert after["active"] == slot, {"before": slot, "after": after["active"]}
         old, new = before["slots"][slot]["venv_mtime_ns"], after["slots"][slot]["venv_mtime_ns"]
-        assert old is not None and old == new, (old, new)
-        assert data["operator_ready"] and panel_row(after)["ready"]
-        assert after["slots"][slot]["marker"]["commit"] == gate.need("prepare")["head"]
+        row = panel_row(after)
+        assert row["ready"], row
+        assert after["slots"][slot]["marker"]["commit"] == gate.need("prepare")["head"], {"marker": after["slots"][slot]["marker"], "expected": gate.need("prepare")["head"]}
         require_record(after)
-        return require_ready(after) + f"; pyvenv.cfg mtime unchanged={new}"
+        return require_ready(after) + f"; pyvenv.cfg mtime before={old}, after={new} (observation only)"
 
     def absent():
         data = gate.need("recovery")
@@ -621,7 +658,7 @@ def verify(gate, only=None):
         data = gate.need("recovery")
         row = panel_row(data["missing"])
         assert row["recorded"] is True and row["ready"] is False, row
-        assert data["operator_missing_reinstall"]
+        assert data["operator_missing_button"] == "Reinstall", {"typed": data["operator_missing_button"], "expected": "Reinstall"}
         return "JSON recorded=True ready=False; operator saw Reinstall in Firefox"
 
     def recovered():
@@ -629,7 +666,8 @@ def verify(gate, only=None):
         assert "recovery_error" not in data, data.get("recovery_error")
         require_ready(data["recovered"])
         require_record(data["recovered"])
-        assert panel_row(data["recovered"])["ready"]
+        row = panel_row(data["recovered"])
+        assert row["ready"], row
         assert data["cleanup"].get("exists") is False, data["cleanup"]
         return f"ready=True; deleted preserved environment {data['cleanup']['deleted']}"
 
@@ -637,7 +675,7 @@ def verify(gate, only=None):
     def installed_panel():
         data = gate.need("installed")
         row = panel_row(data["after"])
-        assert row["ready"] and row["recorded"] and data["operator_ready"], row
+        assert row["ready"] and row["recorded"], row
         return require_ready(data["after"]) + "; panel ready=True recorded=True"
 
     score("installed readiness", "installed", installed_panel)
@@ -652,10 +690,17 @@ def verify(gate, only=None):
     score("recovery genuine absence", "recovery", absent)
     score("recovery missing panel", "recovery", missing)
     score("recovery readiness and cleanup", "recovery", recovered)
+    cleanup_error = None
+    if cleanup and only is None:
+        try:
+            gate.clean_artifacts()
+        except Exception as exc:
+            cleanup_error = str(exc)
+            gate.say(f"FAIL: gate artifact cleanup — {type(exc).__name__}: {exc}")
     failures = sum(row["status"] != "PASS" for row in results)
-    gate.say(f"RESULT: {failures} failed or not exercised limbs / {len(results)}")
+    gate.say(f"RESULT: {failures} failed or not exercised limbs / {len(results)}" + ("; gate artifact cleanup FAILED" if cleanup_error else ""))
     write_json(gate.out / ("results.json" if not only else f"{only}-results.json"), results)
-    return int(bool(failures))
+    return int(bool(failures or cleanup_error))
 
 
 # The fake reads the *installer's spec*. It never reads a limb's desired answer.
@@ -853,6 +898,7 @@ class FakeGate(Gate):
                 self.launch()
         elif event == "missing":
             self.launch()
+            return "Reinstall"
         else:
             raise AssertionError(event)
 
@@ -871,6 +917,8 @@ def selftest(out):
         root = base / "microclaw"
         root.mkdir()
         gate = FakeGate(root, out / "cycle", updates, extensions)
+        pointer = root / "71b-gate-evidence.txt"
+        pointer.write_text(str(gate.out), encoding="ascii")
         old_appdata = os.environ.get("APPDATA")
         os.environ["APPDATA"] = str(base / "roaming")
         try:
@@ -903,7 +951,25 @@ def selftest(out):
                 gate.say("SELFTEST: seeding recovery prerequisite after failed carry; earlier artifacts unchanged")
                 gate.install(selector(root), "ilastik")
             gate.recovery()
-            cycle_result = verify(gate)
+            cycle_result = verify(gate, cleanup=False)
+            baseline_results = read_json(gate.out / "results.json")
+            # A supported uv operation may touch this file; observe it without
+            # changing the readiness/record verdict, on either product tree.
+            path = gate.out / "reinstalled.json"
+            original = path.read_bytes()
+            try:
+                data = read_json(path)
+                data["after"]["slots"][data["after"]["active"]]["venv_mtime_ns"] = 123
+                write_json(path, data)
+                verify(gate, only="reinstalled", cleanup=False)
+                observed = read_json(gate.out / "reinstalled-results.json")[0]
+                baseline = next(r for r in baseline_results if r["phase"] == "reinstalled")
+                assert observed["status"] == baseline["status"], observed
+                if observed["status"] == "PASS":
+                    assert "after=123" in observed["detail"], observed
+            finally:
+                path.write_bytes(original)
+            gate.say("PASS: selftest changed mtime does not change the reinstall verdict")
 
             # Controls mutate saved observations only, never product code.
             controls = []
@@ -911,6 +977,8 @@ def selftest(out):
                 ("inactive already had h5py", "prepare", lambda d: d["before"]["slots"]["b"]["probe"].update(h5py="ready"), "extras carried into clean inactive slot"),
                 ("unconditional skill prefix", "installed", lambda d: d["after"]["slots"]["a"]["probe"].update(skill_text=LINE + d["after"]["slots"]["a"]["probe"]["skill_original"]), "71c before/after diff"),
                 ("rebuilt h5py never absent", "recovery", lambda d: active_probe(d["rebuilt"]).update(h5py="ready"), "recovery genuine absence"),
+                ("wrong button label", "recovery", lambda d: d.update(operator_missing_button="Install"), "recovery missing panel"),
+                ("instrument missing key", "staged", lambda d: d["candidate"].pop("sha"), "staged state and extras errors"),
             ):
                 path = gate.out / f"{phase}.json"
                 original = path.read_bytes()
@@ -919,21 +987,24 @@ def selftest(out):
                     data = read_json(path)
                     mutate(data)
                     write_json(path, data)
-                    verify(gate)
+                    verify(gate, cleanup=False)
                     rows = read_json(gate.out / "results.json")
                     status = next(row["status"] for row in rows if row["name"] == expected)
                     assert status != "PASS", label
+                    if label in ("wrong button label", "instrument missing key"):
+                        assert status == "FAIL", (label, status)
                     controls.append({"control": label, "observed": status})
                     gate.say(f"CONTROL DETECTED: {label} -> {status}")
                 finally:
                     path.write_bytes(original)
             write_json(out / "controls.json", controls)
-            verify(gate)  # Restore the unmutated score artifact.
+            verify(gate, cleanup=False)  # Restore the unmutated score artifact.
 
             # The same recovery method must execute its restore, not a duplicate.
             for fail_restore in (False, True):
                 failed = FakeGate(root, out / ("restore-failure" if fail_restore else "recovery-failure"), updates, extensions)
                 shutil.copytree(gate.fixture, failed.fixture)
+                pointer.write_text(str(failed.out), encoding="ascii")
                 failed.inject_failure = True
                 original_slot = selector(root)
                 original_record = (root / RECORD).read_bytes()
@@ -957,13 +1028,23 @@ def selftest(out):
                     assert Path(record["retained_environment"]).exists()
                     assert "injected restored-launch failure" in record["restore_error"]
                     # Exercise the documented retry after a retained environment.
+                    # Verify cleanup must leave the journal usable even while
+                    # a preserved environment still needs a restore retry.
+                    failed.clean_artifacts()
                     failed.inject_restore_failure = False
                     original_restore()
+                    assert not pointer.exists(), "restore resurrected the evidence pointer"
                 else:
                     assert record["status"] == "restored" and record["files_restored"]
+                failed.clean_artifacts()
+                journal = read_json(failed.out / "recovery-journal.json")
+                assert not Path(journal["launcher_backup"]).exists(), journal
+                assert Path(journal["backup"]).exists(), journal
+                assert not pointer.exists(), "pointer remained after cleanup"
                 gate.say(f"PASS: selftest {'retained-environment retry' if fail_restore else 'recovery failure restoration'}")
             cleanup = FakeGate(root, out / "cleanup-failure", updates, extensions)
             shutil.copytree(gate.fixture, cleanup.fixture)
+            pointer.write_text(str(cleanup.out), encoding="ascii")
             real_rmtree = shutil.rmtree
             def partial_delete(path, *args, **kwargs):
                 path = Path(path)
@@ -984,7 +1065,37 @@ def selftest(out):
             assert cleanup.probe(selector(root))["h5py"] == "ready"
             cleanup.restore()
             assert not Path(journal["preserved"]).exists()
+            cleanup.clean_artifacts()
+            assert not pointer.exists()
             gate.say("PASS: selftest partial cleanup retry retained the verified replacement")
+            pointer.write_text(str(gate.out), encoding="ascii")
+            real_cleanup = shutil.rmtree
+            def check_pointer_last(path, *args, **kwargs):
+                if Path(path).name.startswith("71b-recovery-files-"):
+                    assert pointer.exists(), "pointer removed before recovery files"
+                return real_cleanup(path, *args, **kwargs)
+            with patch("shutil.rmtree", side_effect=check_pointer_last):
+                assert verify(gate) == cycle_result
+            assert not pointer.exists()
+            assert not list(root.glob("71b-recovery-files-*"))
+            # Both Python's entry guard and the launcher check require the named
+            # field, not a dataclass field count that an unrelated field can match.
+            from microclaw import skills
+            require_branch()
+            fields = dict(skills.SkillMetadata.__dataclass_fields__)
+            fields["unrelated"] = fields.pop("requires")
+            with patch.object(skills.SkillMetadata, "__dataclass_fields__", fields):
+                try:
+                    require_branch()
+                except NotExercised as exc:
+                    assert sys.executable in str(exc), str(exc)
+                else:
+                    raise AssertionError("Unrelated fourth field passed capability guard")
+            import ast
+            tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+            scorer = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "verify")
+            assert all(n.msg is not None for n in ast.walk(scorer) if isinstance(n, ast.Assert))
+            gate.say("PASS: selftest cleanup removes launcher-root artifacts, pointer last; capability guard and assertion diagnostics checked")
             gate.say("PASS: selftest controls fired (preinstalled inactive, unconditional prefix, false absence)")
             gate.say(f"SELFTEST RESULT: {'FAIL' if cycle_result else 'PASS'}; full cycle plus recovery/restore failures exercised")
             return cycle_result
@@ -993,6 +1104,15 @@ def selftest(out):
                 os.environ.pop("APPDATA", None)
             else:
                 os.environ["APPDATA"] = old_appdata
+
+
+def require_branch():
+    try:
+        from microclaw import extensions, skills
+        if "requires" not in skills.SkillMetadata.__dataclass_fields__ or not callable(extensions.recorded_errors):
+            raise ValueError("requires/recorded_errors capabilities absent")
+    except Exception as exc:
+        raise NotExercised(f"Control interpreter {sys.executable} lacks 71b/71c: {exc}") from exc
 
 
 def main():
@@ -1012,6 +1132,8 @@ def main():
     if not args.phase:
         parser.error("a phase is required")
     try:
+        if args.phase in ("prepare", "reinstalled", "recovery", "restore"):
+            require_branch()
         if args.phase == "prepare":
             gate.prepare(fresh=args.fresh)
         else:

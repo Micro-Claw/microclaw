@@ -28,6 +28,7 @@ if ($active -notin @('a','b')) { throw 'active-slot.txt must name a or b.' }
 $slot = $active
 # A process executing inside the preserved environment would prevent its rename
 # on Windows. Use the other slot, including during manual restore retries.
+# That slot retains step 0's branch build after restart flips the active slot.
 if ($Phase -in @('reinstalled','recovery','restore')) {
     $slot = if ($active -eq 'a') { 'b' } else { 'a' }
 }
@@ -40,15 +41,14 @@ function Invoke-SlotProbe([string]$code) {
     finally { $ErrorActionPreference = $previous }
 }
 if ((Invoke-SlotProbe 'pass') -ne 0) { throw "Control interpreter cannot run: $python" }
-# Only prepare requires the branch build: staging deliberately targets the
-# discovery candidate on origin/main, which can predate this branch before merge.
-if ($Phase -eq 'prepare' -and (Invoke-SlotProbe 'from microclaw import skills,extensions; assert len(skills.SkillMetadata.__dataclass_fields__)==4; assert callable(extensions.recorded_errors)') -ne 0) {
-    Write-Host 'STOP: active slot lacks 71b/71c; checkout block-71b AND run .\install.bat before prepare.' -ForegroundColor Red
+# Refuse directly if the selected control interpreter lacks this branch.
+if ($Phase -in @('prepare','reinstalled','recovery','restore') -and (Invoke-SlotProbe 'from microclaw import skills,extensions; assert ''requires'' in skills.SkillMetadata.__dataclass_fields__; assert callable(extensions.recorded_errors)') -ne 0) {
+    Write-Host "NOT EXERCISED: control interpreter $python lacks 71b/71c; retain recovery artifacts and send evidence." -ForegroundColor Red
     exit 2
 }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 if ($Phase -eq 'prepare') {
-    Set-Content -LiteralPath $pointer -Value $Out -Encoding UTF8
+    Set-Content -LiteralPath $pointer -Value $Out -Encoding ASCII
 }
 $gateArgs = @((Join-Path $PSScriptRoot '71-block71b-demo-gate.py'), $Phase, '--out', $Out)
 if ($Fresh) { $gateArgs += '--fresh' }

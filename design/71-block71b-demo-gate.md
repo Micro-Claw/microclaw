@@ -98,7 +98,8 @@ from that deliberate cancellation is expected. If it instead prints **Install
 failed**, type `STOP` in the gate and send evidence. No configuration field is
 required by the gate. Launch the desktop icon again, confirm ilastik
 is Ready in Firefox, then type `DONE` in the gate. Expect one PASS line: readiness
-survived and the environment's `pyvenv.cfg` timestamp did not change.
+survived. The environment's before/after `pyvenv.cfg` timestamps are reported
+as observations; changing that timestamp does not fail the limb.
 
 ## 4. Recovery — keep the gate running while following its prompts
 
@@ -117,8 +118,9 @@ program prove h5py is absent before any server is launched. Then cancel that
 paused installer with Ctrl+C (Y if asked), as the next gate prompt instructs.
 
 Launch the desktop icon. In Firefox Extensions, confirm **recorded but missing**
-and **Reinstall**, then type `DONE` without pressing Reinstall yet. The gate saves
-the missing-state JSON. At its next prompt, press **Reinstall**, wait for
+and a recovery button. Type that button's exact label at the gate prompt,
+without pressing it yet. The gate records your answer verbatim alongside the
+missing-state JSON and checks that you typed `Reinstall`. At its next prompt, press **Reinstall**, wait for
 **Ready**, and type `DONE`. Expect three PASS lines: genuine absence, the missing
 panel, and recovered readiness plus deletion of the preserved environment.
 
@@ -140,10 +142,26 @@ partly deleted directory. The local safety backup is retained in all cases.
 ## 5. Verify and send back
 
 ```powershell
-.\design\71-block71b-demo-gate.ps1 -Phase verify
+$gateEvidence = (Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'microclaw\71b-gate-evidence.txt') -Raw).Trim()
+.\design\71-block71b-demo-gate.ps1 -Phase verify -Out $gateEvidence
 ```
 
-Expect **13 PASS lines** and `RESULT: 0 failed or not exercised limbs / 13`.
+Expect **13 PASS lines**, `GATE CLEANUP COMPLETE`, and
+`RESULT: 0 failed or not exercised limbs / 13`. Verify reports and removes the
+launcher root's `71b-recovery-files-...` directory and `71b-gate-evidence.txt`
+(pointer last). Recovery snapshots remain at the reported local path **outside**
+the launcher root, with the journal updated so restoration remains possible.
+Retained `71b-preserved-*` environments are not removed by verify.
+
+After verify, the pointer is gone. In this same PowerShell window, a restoration
+retry uses the evidence path retained above:
+
+```powershell
+.\design\71-block71b-demo-gate.ps1 -Phase restore -Out $gateEvidence
+```
+
+In a new window, supply the printed evidence-folder path with `-Out`.
+
 Every limb is independent. **NOT EXERCISED is not a pass**; any failure or missing
 mechanism exits nonzero. Stop on a failed phase, then run verify and send the
 **whole printed evidence folder**, even on failure. It contains `gate.log`,
