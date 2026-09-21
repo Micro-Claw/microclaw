@@ -624,18 +624,28 @@ because a block looks small.
    branch. Larger ones: back to a runner in a worktree, then validate its output
    as in step 3. Either way the fix is pushed to the same branch.
 8. **The user re-tests.** Loop 5–8 until the gates pass.
-9. **Merge the PR and clean up.** Merge through the pull request opened at step
-   4 — never `git merge` into a local `main` and push it, which bypasses the PR
-   and CI both. Confirm the merge landed (`gh pr view --json state,mergedAt`),
-   then bring the local checkout back to it (`git checkout main && git pull`) and
-   delete the branch locally *and* on `origin`. A block is not closed until
-   `origin/main` carries the merge and the local `main` matches it — a merge that
-   never left the machine is not done, and neither is one the machine never came
-   back to. Record the block's coordination notes in `design/prompts.md` and
-   close its ledger row, so a cold session can resume from the remote alone.
-10. **Run the post-merge design gate** the block names — reconcile the design
-    docs to what was actually measured, and tick the carried-forward rows. If
-    documentation must change, merge that before assigning the next block.
+9. **Reconcile the documentation on the branch, in the block's own PR.** Run the
+   design gate the block names: reconcile the design docs to what was actually
+   *measured*, close the ledger row, open the carried-forward rows the block
+   found and tick the ones it closed, and write the coordination notes in
+   `design/prompts.md`. All of it goes in the same pull request as the code.
+
+   **Not a second PR afterwards** (operator decision, 2026-09-21: *"it would make
+   sense to land the documentation in the pull request with the rest of the code.
+   it's weird to add it now in a second pull request"*). Nothing forces the split
+   — the gate has already run by now, so its measurements exist, and a reviewer
+   reading the diff should see the evidence and the reconciliation beside the
+   change they justify. The one fact that genuinely cannot exist yet is the merge
+   commit SHA, so the ledger row cites the **PR number**, which is knowable the
+   moment step 4 opens it.
+10. **Merge the PR and clean up.** Merge through the pull request opened at step
+    4 — never `git merge` into a local `main` and push it, which bypasses the PR
+    and CI both. Confirm the merge landed (`gh pr view --json state,mergedAt`),
+    then bring the local checkout back to it (`git checkout main && git pull`) and
+    delete the branch locally *and* on `origin`. A block is not closed until
+    `origin/main` carries the merge and the local `main` matches it — a merge that
+    never left the machine is not done, and neither is one the machine never came
+    back to. A cold session must be able to resume from the remote alone.
 
 Standing rules that support the above: one worktree per concurrent agent, never
 `git add -A`, never `pip install -e .` while another tree is live. Push uses a
