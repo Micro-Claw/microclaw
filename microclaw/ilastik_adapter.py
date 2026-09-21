@@ -368,8 +368,8 @@ class IlastikCompletedDatasetAdapter:
             import h5py
         except (ImportError, ValueError) as error:
             raise RuntimeError(
-                "ilastik HDF5 support is unavailable; install the microclaw[ilastik] "
-                "extra in Microclaw's environment"
+                "ilastik HDF5 support is unavailable; install ilastik from the "
+                "Extensions panel."
             ) from error
         with h5py.File(self.project_path, "r") as project:
             label_names = list(project["PixelClassification/LabelNames"][()])
@@ -421,8 +421,8 @@ class IlastikCompletedDatasetAdapter:
             import h5py
         except (ImportError, ValueError) as error:
             raise RuntimeError(
-                "ilastik HDF5 support is unavailable; install the microclaw[ilastik] "
-                "extra in Microclaw's environment"
+                "ilastik HDF5 support is unavailable; install ilastik from the "
+                "Extensions panel."
             ) from error
         with tempfile.TemporaryDirectory(prefix="microclaw-ilastik-") as temporary:
             work = Path(temporary).resolve()

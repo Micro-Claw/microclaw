@@ -4713,6 +4713,12 @@ def _acquire_with_hooks(
     `save_dir` up front too, to fail before any hardware moves; resolving twice
     is idempotent.
     """
+    # Unreachable through turn admission: a future non-turn path must fail loudly
+    # rather than race an install. run_mda is NOT behind this chokepoint: it
+    # drives ctrl.studio.acquisitions() and constructs no Acquisition.
+    admission = getattr(ctrl, "_microclaw_extension_install", None)
+    if isinstance(admission, dict) and admission.get("running") is True:
+        raise RuntimeError("Extension install admission: acquisition refused.")
     save_dir = guard.resolve_in_workspace(save_dir)
     hook_fn_kwargs: dict[str, Any] = {}
     if hook is not None:

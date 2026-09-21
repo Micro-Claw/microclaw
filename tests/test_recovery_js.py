@@ -387,6 +387,7 @@ def browser_turn_snippets():
     submit_start = html.index('  $("composer").addEventListener("submit"')
     submit_end = html.index('\n\n  $("expand")', submit_start)
     return "\n".join((
+        html[html.index("  let extensionPollTimer;"):html.index("  let updateState = null;")],
         html[set_busy_start:set_busy_end],
         html[recovery_start:recovery_end],
         html[turn_start:turn_end],
@@ -405,13 +406,14 @@ def browser_boot_snippets():
     boot_start = html.index("  // ---- boot ----")
     boot_end = html.index("\n})();\n</script>", boot_start)
     return "\n".join((
+        html[html.index("  let extensionPollTimer;"):html.index("  let updateState = null;")],
         html[set_busy_start:set_busy_end],
         html[recovery_start:recovery_end],
         html[boot_start:boot_end],
     ))
 
 
-def run_browser_boot(confirm_steps, *, ownership_probe=False):
+def run_browser_boot(confirm_steps, *, ownership_probe=False, extension_pending=False):
     path = resources.files("microclaw").joinpath("recovery.js")
     snippets = browser_boot_snippets()
     script = f"""
@@ -441,6 +443,10 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False):
       let busy = false, hasKey = true, history = [];
       const steps = {json.dumps(confirm_steps)};
       async function apiFetch(url) {{
+        if (url === '/api/extensions') {{
+          if ({str(extension_pending).lower()}) return new Promise(() => {{}});
+          throw new Error('extension service unavailable');
+        }}
         if (url === '/api/key') return {{status: 200, ok: true, json: async () => ({{}})}};
         if (url === '/api/model') return {{status: 200, ok: true,
           json: async () => ({{model: 'test'}})}};
@@ -465,6 +471,8 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False):
         const id = ++nextTimer; timers.set(id, {{fn, delay}}); return id;
       }};
       window.clearTimeout = id => timers.delete(id);
+      global.setTimeout = window.setTimeout;
+      global.clearTimeout = window.clearTimeout;
       window.history = {{replaceState() {{}}}};
       global.location = {{hash: '', pathname: '/', search: ''}};
       global.document = {{visibilityState: 'visible'}};
@@ -476,8 +484,8 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False):
         await new Promise(setImmediate); await new Promise(setImmediate);
       }}
       async function tick() {{
-        const timer = [...timers.values()][0];
-        if (timer) {{ timers.clear(); await timer.fn(); await drain(); }}
+        const next = [...timers.entries()].sort((a, b) => a[1].delay - b[1].delay)[0];
+        if (next) {{ timers.delete(next[0]); await next[1].fn(); await drain(); }}
       }}
       await drain();
       const afterBoot = {{
@@ -716,3 +724,15 @@ def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suf
     result = subprocess.run(["node", "-e", script], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, encoding="utf-8", check=True, timeout=5)
     assert json.loads(result.stdout) == {"text": "frames 1 / 1" + suffix, "renders": 1}
+
+
+def test_pending_extensions_request_does_not_delay_boot_adoption():
+    running = {"id": "confirm-1", "grants": [], "running": True,
+               "turn_id": "turn-1", "remaining_s": 42}
+    result = run_browser_boot([
+        {"state": running}, {"state": running}, {"state": running},
+        {"state": {"grants": [], "running": False, "turn_id": "turn-1"}},
+    ], extension_pending=True)
+    assert result["afterBoot"]["sendDisabled"] is True, "pending extensions blocked turn adoption"
+    assert result["afterBoot"]["refreshes"] == 1
+    assert result["toasts"] == []
