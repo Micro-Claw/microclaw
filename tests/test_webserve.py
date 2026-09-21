@@ -2865,3 +2865,42 @@ def test_cancelled_prompt_releases_pending_admission(extension_client, session, 
     monkeypatch.setattr(extensions, "install", lambda *a, **k: {"message": "ready", "added": []})
     assert extension_client.post("/api/extensions/install", json={"name": "ilastik"}).status_code == 202
     wait_extension(extension_client, lambda s: not s["job"]["running"])
+
+
+def test_extension_poll_exposes_staging_error_without_rechecking_readiness(extension_client, monkeypatch):
+    from microclaw import extensions
+    extensions.record("ilastik", ["h5py>=3.10"])
+    monkeypatch.setattr(extensions, "ready", lambda name: True)
+    row = extension_client.get("/api/extensions").json()["extensions"][0]
+    assert row["ready"] and row["error"] is None
+    monkeypatch.setattr(extensions, "ready", lambda name: pytest.fail("readiness repeated"))
+    extensions.record("ilastik", None, error="Update abc: combined extras failed")
+    row = extension_client.get("/api/extensions").json()["extensions"][0]
+    assert row["ready"] and row["error"] == "Update abc: combined extras failed"
+    extensions.record("ilastik", None)
+    row = extension_client.get("/api/extensions").json()["extensions"][0]
+    assert row["ready"] and row["error"] is None
+
+
+@pytest.mark.parametrize("broken", ["malformed", "shape", "errors-shape", "unreadable"])
+def test_extension_poll_survives_bad_record(extension_client, monkeypatch, broken):
+    from microclaw import extensions
+    extensions.record("ilastik", ["h5py>=3.10"])
+    extensions.record("ilastik", None, error="previous staging error")
+    monkeypatch.setattr(extensions, "ready", lambda name: True)
+    before = extension_client.get("/api/extensions").json()["extensions"]
+    assert before[0]["error"] == "previous staging error"
+    monkeypatch.setattr(extensions, "ready", lambda name: pytest.fail("readiness repeated"))
+    path = extensions.user_data_dir() / "extensions.json"
+    path.unlink()
+    if broken == "unreadable":
+        path.mkdir()
+    else:
+        path.write_text({
+            "malformed": "{", "shape": '{"installed": []}',
+            "errors-shape": '{"installed": {"ilastik": {}}, "errors": []}',
+        }[broken], encoding="utf-8")
+    for _ in range(2):
+        response = extension_client.get("/api/extensions")
+        assert response.status_code == 200
+        assert response.json()["extensions"] == [{**item, "error": None} for item in before]

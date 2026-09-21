@@ -363,3 +363,14 @@ def test_gate_keeps_only_changed_observations(tmp_path):
     assert observations
     assert all(a["state"] != b["state"] for a, b in zip(observations, observations[1:])), "gate retained duplicate poll observations"
     assert all(a["at"] <= b["at"] for a, b in zip(observations, observations[1:]))
+
+
+def test_record_error_clear_preserves_install_metadata(isolated):
+    ext.record("ilastik", ["h5py>=3.10"])
+    installed = ext._records()["installed"]
+    ext.record("ilastik", None, error="staged extras failed")
+    assert ext.available()[0]["error"] == "staged extras failed"
+    ext.record("ilastik", None)
+    assert ext._records()["installed"] == installed
+    assert "ilastik" not in ext._records()["errors"]
+    assert ext.available()[0]["error"] is None

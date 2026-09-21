@@ -1356,10 +1356,80 @@ fallback: the artifact shows `...\.local\bin\uv.EXE`, which is `shutil.which`
 returning the PATHEXT casing from **PATH**, not the fallback firing. The same
 casing assumption failed a Windows CI test, which is how it was caught.
 
+## 71b/71c gate results — demo machine, 2026-09-21
+
+One round. **Ten of thirteen limbs PASS; the product passed all thirteen.** The
+three NOT EXERCISED were the whole `restarted` phase, which was never run — an
+instrument defect, below. Scored from the artifacts rather than the verdict.
+
+- **An extension survives an update, and the control fired.** At `prepare`
+  *both* slots read `h5py=absent` and `extensions.json` was `{"errors": {},
+  "installed": {}}`. Slot `a` then went absent → ready purely through staging,
+  carrying the candidate marker `a4013eb`. Without that baseline the limb would
+  have been re-reading a slot that already had the wheel.
+- **`install.bat` preserves an extension**, with `pyvenv.cfg`'s mtime identical
+  before and after (`1790002909446264200`) — reported as an observation, not a
+  verdict, because *which supported operations break this equality* is a
+  question about uv that nobody has answered.
+- **Recovery works end to end.** A rebuilt environment proved `h5py` absent
+  before any server started, the panel reported recorded-but-missing, Reinstall
+  restored readiness, and the preserved environment was deleted only after that.
+- **71c's line is added and removed on the real readiness of the real machine.**
+  Before and after differ by exactly 131 characters and the file is returned
+  whole in both — a diff, not a grep, so a line added unconditionally fails it.
+- **The gate cleaned up after itself**, which is the thing block 5b's rule
+  exists for: `gate-cleanup.json` shows `71b-recovery-files-…` and
+  `71b-gate-evidence.txt` both removed from `%LOCALAPPDATA%\microclaw`.
+- `under-test.json` carries `checkout: cb3dbe1`, so the run is tied to a tree.
+
+**The three unexercised limbs' claims are nonetheless established**, from the
+`reinstalled` phase's pre-snapshot, which happened to capture the restart:
+
+- a 47th launcher line at `17:03:31 slot=a nonce=e887a3ac…`, and
+  `launch-health.txt` holding **that same nonce** — the marker carries this
+  launch's own value, which is the whole point of `HEALTH_NAME`;
+- `active` flipped `b`→`a`, `pending` cleared, slot `a`'s marker at the
+  candidate `a4013eb`;
+- slot `a` reporting `h5py=ready, ready=True`, with `installed.ilastik` present
+  and `errors` empty.
+
+They are recorded as NOT EXERCISED, not ticked. A limb that did not run is not a
+limb that passed, and the operator declined a re-run because these artifacts
+already carry its substance (2026-09-21).
+
+**The instrument defect, and why the fix is not a renumbering.** The runbook
+headed one section *"Stage, then restart"* and put two commands under it. The
+operator ran the first; its own prompt ends "press Update … then DONE", which
+reads as the section completing. design/69a had already established that moving
+a skipped step to its own numbered heading does not stop it being skipped —
+there it was missed in three consecutive rounds through exactly that fix — so
+`require_previous_phase()` now refuses any phase whose predecessor has no
+artifact, naming both. The runbook gets its own Restart step as well, but that
+is the weaker half. The guard is a module-level function rather than inline in
+`main()` because the selftest drives the phase methods directly and never
+reaches `main()`; a selftest control deletes each predecessor in turn, and
+neutering the guard fails it with `staged ran with installed missing`.
+
+**What the block changed that the plan above did not anticipate.** 71b item 2
+said to surface recorded-but-not-ready "in the panel with a Reinstall button".
+71a had already shipped that. The hole 71b actually closed is one level up:
+`webserve` cached the error text *alongside* readiness, so an error written
+after the catalog first loaded — which is exactly what a staging extras failure
+is — could never reach the panel. `GET /api/extensions` now overlays a fresh
+read of the records on the cached readiness, through a public
+`recorded_errors()` that tolerates a damaged file the same way staging does.
+The first version of that overlay called the private `_records()` and would have
+returned 500 for the whole panel on a file staging deliberately survives.
+
+**What has no rig evidence.** The extras-*failure* fallback. `h5py` resolved on
+every run, so `[serve,ilastik]` never failed and `errors` was `{}` throughout;
+the path that retries with `[serve]` and records `extras_error` is covered only
+by unit tests, three of them watched failing on `fe63c4b`. `R137`.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | 71a | `block-71a` (deleted) | `720309b` | **merged 2026-09-21** as `2ad4e13`, PR #32 |
-| 71b | — | — | not started |
-| 71c | — | — | not started |
+| 71b | `block-71b` | `a4013eb` | **gated 2026-09-21**, PR #34 |
+| 71c | `block-71b` | `a4013eb` | **gated 2026-09-21**, PR #34 — landed on 71b's branch so the two shared one trip (operator decision, 2026-09-21) |

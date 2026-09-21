@@ -17,6 +17,12 @@ import pytest
 from microclaw import updates
 
 
+@pytest.fixture(autouse=True)
+def isolated_extension_records(tmp_path, monkeypatch):
+    from microclaw import extensions
+    monkeypatch.setattr(extensions, "user_data_dir", lambda: tmp_path / "extension-data")
+
+
 def git(cwd: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False,
@@ -574,7 +580,8 @@ def test_rollback_restores_known_good_and_defers_report(tmp_path):
 
 
 
-def fake_uv(root, *, classification="ready", classifications=None, seen=None):
+def fake_uv(root, *, classification="ready", classifications=None, seen=None,
+            fail_extras=False, fail_serve=False, fail_venv=False):
     """A `uv` that behaves like the one on the demo machine (0.11.28).
 
     `uv venv` **refuses an existing environment** with exit 2 unless `--clear`
@@ -586,9 +593,14 @@ def fake_uv(root, *, classification="ready", classifications=None, seen=None):
     """
     calls = seen if seen is not None else []
 
+    installed_extras = set()
+
     def run(command, **kwargs):
         calls.append(command)
         if command[1] == "venv":
+            if fail_venv:
+                return subprocess.CompletedProcess(command, 2, "", "venv creation failed")
+            installed_extras.clear()
             target = Path(command[-1])
             if (target / "pyvenv.cfg").exists() and "--clear" not in command:
                 return subprocess.CompletedProcess(
@@ -601,11 +613,17 @@ def fake_uv(root, *, classification="ready", classifications=None, seen=None):
             (target / "pyvenv.cfg").write_text("home = python\n", encoding="ascii")
             return subprocess.CompletedProcess(command, 0, "", "")
         if command[1] == "pip":
+            extras = set(command[-1].rsplit("[", 1)[-1].rstrip("]").split(","))
+            if (fail_extras and extras - {"serve"}) or fail_serve:
+                return subprocess.CompletedProcess(
+                    command, 1, "", "discarded prefix" + "x" * 2100 +
+                    "\nNo solution found when resolving dependencies: fixture conflict")
+            installed_extras.update(extras)
             return subprocess.CompletedProcess(command, 0, "", "")
         if "-c" in command:
             # The staged slot's smoke check.  It succeeds only when the install
             # asked for the [serve] extra -- which is what the real one proves.
-            served = any(str(arg).endswith("[serve]") for call in calls for arg in call)
+            served = "serve" in installed_extras
             if served:
                 return subprocess.CompletedProcess(command, 0, "", "")
             return subprocess.CompletedProcess(
@@ -1174,3 +1192,149 @@ def test_locate_uv_controlled(monkeypatch, tmp_path, platform, path_found, fallb
         # is the right rule on each platform.
         found = updates.locate_uv(path=str(search), user_profile=tmp_path, platform=platform)
         assert Path(found) == (candidate if expected == "fallback" else executable)
+
+
+@pytest.fixture
+def extension_stage(tmp_path, monkeypatch):
+    from microclaw import extensions as ext
+    source = _staging_fixture(tmp_path)
+    monkeypatch.setattr(ext, "user_data_dir", lambda: tmp_path / "data")
+    ext.record("ilastik", ["h5py>=3.10"])
+    candidate = updates.Candidate("e" * 40, "extensions", "public-head")
+    state = updates.load_state(tmp_path / updates.STATE_NAME)
+    state["next_check"] = 100
+    updates.write_state(state, tmp_path / updates.STATE_NAME)
+    return source, candidate, ext
+
+
+def test_staging_carries_recorded_extras(extension_stage, tmp_path, monkeypatch):
+    source, candidate, ext = extension_stage
+    run, calls = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    assert [c[-1] for c in calls if c[1] == "pip"] == [f"{source}[serve,ilastik]"]
+
+
+def test_extras_failure_still_stages(extension_stage, tmp_path, monkeypatch):
+    source, candidate, ext = extension_stage
+    run, calls = fake_uv(tmp_path, fail_extras=True)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="utf-8").strip() == "b"
+    assert any("-c" in c for c in calls)
+    error = ext._records().get("errors", {}).get("ilastik")
+    assert error, "extras failure was not recorded"
+    assert candidate.sha in error
+    assert "combined" in error and "ilastik" in error
+    assert "No solution found" in error and "fixture conflict" in error
+    assert "discarded prefix" not in error
+    assert len(error) < 2400
+    assert [c[-1] for c in calls if c[1] == "pip"] == [
+        f"{source}[serve,ilastik]", f"{source}[serve]"]
+
+
+def test_extras_failure_does_not_poison_commit(extension_stage, tmp_path, monkeypatch):
+    source, candidate, ext = extension_stage
+    run, calls = fake_uv(tmp_path, fail_extras=True)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    state = json.loads((tmp_path / updates.STATE_NAME).read_text(encoding="utf-8"))
+    assert "build_failed_commit" not in state
+    assert "build_error" not in state and "build_error_detail" not in state
+    assert any(c[-1] == f"{source}[serve,ilastik]" for c in calls), "extras failure was never exercised"
+    calls.clear()
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=11)
+    assert calls
+    assert "build_failed_commit" not in json.loads((tmp_path / updates.STATE_NAME).read_text(encoding="utf-8"))
+
+
+def test_extras_success_clears_previous_error(extension_stage, tmp_path, monkeypatch):
+    source, candidate, ext = extension_stage
+    ext.record("ilastik", [], error="previous extras failure")
+    before = ext._records()["installed"]
+    run, _ = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    assert "ilastik" not in ext._records().get("errors", {})
+    assert ext._records()["installed"] == before
+
+
+@pytest.mark.parametrize("broken", ["malformed", "shape", "errors-shape", "unreadable"])
+def test_staging_survives_bad_extension_record(extension_stage, tmp_path, monkeypatch, broken):
+    source, candidate, ext = extension_stage
+    path = ext.user_data_dir() / "extensions.json"
+    path.unlink()
+    if broken == "unreadable":
+        path.mkdir()  # read_text raises OSError on all platforms, without chmod assumptions.
+    else:
+        path.write_text({"malformed": "{", "shape": '{"installed": []}',
+                         "errors-shape": '{"installed": {"ilastik": {}}, "errors": []}'}[broken], encoding="utf-8")
+    run, calls = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    assert [c[-1] for c in calls if c[1] == "pip"] == [f"{source}[serve]"]
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="utf-8").strip() == "b"
+
+
+def test_staging_filters_and_sorts_extras_and_keeps_smoke_bounded(extension_stage, tmp_path, monkeypatch):
+    source, candidate, ext = extension_stage
+    monkeypatch.setattr(ext, "EXTENSIONS", {"zeta": "", "ilastik": "", "alpha": ""})
+    for name in ["zeta", "obsolete", "alpha"]:
+        ext.record(name, [])
+    run, calls = fake_uv(tmp_path)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    assert [c[-1] for c in calls if c[1] == "pip"] == [f"{source}[serve,alpha,ilastik,zeta]"]
+    assert [c[-1] for c in calls if "-c" in c] == ["import microclaw, microclaw.webserve, uvicorn"]
+
+
+@pytest.mark.parametrize("failure", ["venv", "serve"])
+def test_extensions_do_not_hide_base_build_failure(extension_stage, tmp_path, monkeypatch, failure):
+    source, candidate, ext = extension_stage
+    run, calls = fake_uv(tmp_path, fail_extras=True,
+                         fail_venv=failure == "venv", fail_serve=failure == "serve")
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    with pytest.raises(updates.UpdateError, match="could not be built"):
+        updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    assert updates.load_state(tmp_path / updates.STATE_NAME)["build_failed_commit"] == candidate.sha
+    assert not (tmp_path / updates.PENDING_SLOT_NAME).exists()
+    assert not ext._records().get("errors")
+    if failure == "venv":
+        assert len(calls) == 1
+
+
+def test_combined_failure_is_attributed_to_each_extra(extension_stage, tmp_path, monkeypatch):
+    source, candidate, ext = extension_stage
+    monkeypatch.setattr(ext, "EXTENSIONS", {"ilastik": "", "other": ""})
+    ext.record("other", [])
+    run, _ = fake_uv(tmp_path, fail_extras=True)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    errors = ext._records()["errors"]
+    assert errors["ilastik"] == errors["other"]
+    assert "combined" in errors["other"]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_extension_record_write_failure_cannot_break_staging(extension_stage, tmp_path, monkeypatch, failure):
+    source, candidate, ext = extension_stage
+    run, _ = fake_uv(tmp_path, fail_extras=failure)
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    def denied(*args, **kwargs):
+        raise PermissionError("extension record is read-only")
+    monkeypatch.setattr(ext, "record", denied)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)
+    assert (tmp_path / updates.PENDING_SLOT_NAME).read_text(encoding="utf-8").strip() == "b"
+
+
+def test_extras_failure_is_discarded_before_state_writes(extension_stage, tmp_path, monkeypatch):
+    source, candidate, ext = extension_stage
+    run, _ = fake_uv(tmp_path, fail_extras=True)
+    initial = (tmp_path / updates.STATE_NAME).read_bytes()
+    def observe(command, **kwargs):
+        if command[-1] == f"{source}[serve]":
+            assert (tmp_path / updates.STATE_NAME).read_bytes() == initial
+            assert not ext._records().get("errors")
+        return run(command, **kwargs)
+    monkeypatch.setattr(updates.subprocess, "run", observe)
+    updates.stage_inactive_slot(tmp_path, source, candidate, uv_executable="uv.exe", now=10)

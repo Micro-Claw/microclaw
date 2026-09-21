@@ -95,15 +95,27 @@ def _records():
         raise ExtensionInstallError(f"Could not read extension records: {exc}.") from exc
     if not isinstance(value, dict) or not isinstance(value.get("installed"), dict):
         raise ExtensionInstallError("Could not read extension records: expected an installed object.")
+    if not isinstance(value.get("errors", {}), dict):
+        raise ExtensionInstallError("Could not read extension records: expected an errors object.")
     return value
+
+
+def recorded_errors():
+    """Read panel diagnostics; damaged records must not hide cached readiness."""
+    try:
+        return _records().get("errors", {})
+    except ExtensionInstallError:
+        return {}
 
 
 def record(name, requirements, *, error=None):
     value = _records()
     if error is None:
-        marker = updates.read_slot_marker() or {}
-        value["installed"][name] = {"at": time.time(), "commit": marker.get("commit"),
-                                     "requirements": requirements}
+        # Staging clears an error without claiming an install in the running slot.
+        if requirements is not None:
+            marker = updates.read_slot_marker() or {}
+            value["installed"][name] = {"at": time.time(), "commit": marker.get("commit"),
+                                         "requirements": requirements}
         value.setdefault("errors", {}).pop(name, None)
     else:
         value.setdefault("errors", {})[name] = error

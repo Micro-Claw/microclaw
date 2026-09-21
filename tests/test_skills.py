@@ -1,4 +1,5 @@
 import ast
+from email.parser import BytesParser
 import json
 import os
 import re
@@ -6,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import venv
+import zipfile
 
 import pytest
 
@@ -227,6 +229,12 @@ def test_built_wheel_contains_the_source_tree_skill_catalog(tmp_path):
         cwd=build_source, check=True, capture_output=True, text=True,
     )
     wheel = next(wheelhouse.glob("microclaw-*.whl"))
+    # Check the built artifact, not metadata from the ambient editable install.
+    from microclaw import extensions
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_path = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata = BytesParser().parsebytes(archive.read(metadata_path))
+    assert extensions.EXTENSIONS.keys() <= set(metadata.get_all("Provides-Extra", []))
     subprocess.run(
         [str(interpreter), "-m", "pip", "install", "--no-deps", str(wheel)],
         cwd=tmp_path, check=True, capture_output=True, text=True,
@@ -374,3 +382,117 @@ def test_third_party_notices_cites_no_source_a_skill_dropped():
         "Research references rows no skill cites any more: "
         f"{stale}. Remove them, or note why they are kept."
     )
+
+
+@pytest.fixture
+def extension_skill(tmp_path, monkeypatch):
+    """Real files through the same catalog builder used at module import."""
+    source = Path(__file__).parent / "fixtures" / "skills"
+    root = tmp_path / "skills"
+    shutil.copytree(source, root)
+    resource = root / "extension-example" / "SKILL.md"
+
+    def build(requires="requires: [ilastik]"):
+        text = (source / "extension-example" / "SKILL.md").read_text(encoding="utf-8")
+        resource.write_text(text.replace("requires: [ilastik]\n", requires + "\n" if requires else ""),
+                            encoding="utf-8", newline="\n")
+        catalog = skills._build_catalog(root)
+        monkeypatch.setattr(skills, "SKILL_CATALOG", catalog)
+        return catalog[0], resource.read_text(encoding="utf-8")
+    return build
+
+
+def test_skill_requires_parses_declared_names(extension_skill):
+    skill, _ = extension_skill("requires: [ilastik, future-extra]")
+    assert skill.requires == ("ilastik", "future-extra")
+
+
+@pytest.mark.parametrize("value", ["ilastik", "null", "{}", "[ilastik, 3]", '[""]', '["   "]'])
+def test_skill_requires_rejects_malformed_shape(extension_skill, value):
+    with pytest.raises(RuntimeError, match="requires must be a list of nonempty strings"):
+        extension_skill("requires: " + value)
+
+
+def test_skill_requires_rejects_unknown_frontmatter_key(extension_skill):
+    with pytest.raises(RuntimeError, match="Malformed skill frontmatter"):
+        extension_skill("requires: [ilastik]\nunknown: value")
+
+
+@pytest.mark.parametrize("requires", ["", "requires: []"])
+def test_skill_without_requirements_is_unchanged(extension_skill, monkeypatch, requires):
+    from microclaw import extensions
+    skill, original = extension_skill(requires)
+    monkeypatch.setattr(extensions, "ready", lambda name: pytest.fail("unneeded readiness check"))
+    assert skill.requires == ()
+    assert skills.load_skill_text(skill.name).encode("utf-8") == skill.resource.read_bytes()
+    assert skills.load_skill_text(skill.name) == original
+
+
+@pytest.mark.parametrize("ready", [False, True])
+def test_skill_extension_prefix_preserves_whole_resource(extension_skill, monkeypatch, ready):
+    from microclaw import extensions
+    skill, original = extension_skill()
+    monkeypatch.setattr(extensions, "ready", lambda name: ready)
+    line = ("The `ilastik` extension is not installed; tools using it will refuse until "
+            "the user installs it from Microclaw's Extensions panel.\n")
+    expected_prefix = "" if ready else line
+    result = skills.load_skill_text(skill.name)
+    assert result == expected_prefix + original
+    assert result.removeprefix(expected_prefix) == skill.resource.read_text(encoding="utf-8")
+    assert result.removeprefix(expected_prefix).startswith("---\n")
+    assert tools.load_skill(None, None, skill.name)["documentation"] == result
+    assert skills.catalog_text() == f"- {skill.name}: {skill.description}"
+
+
+def test_skill_unknown_extension_survives_import_and_load(extension_skill, monkeypatch):
+    import runpy
+    skill, original = extension_skill("requires: [future-extra]")
+    # Execute the module's actual import-time SKILL_CATALOG assignment over
+    # our real fixture tree. No fake metadata object bypasses the parser.
+    monkeypatch.setattr(skills.resources, "files", lambda package: skill.resource.parent.parent.parent)
+    namespace = runpy.run_path(skills.__file__)
+    assert namespace["SKILL_CATALOG"][0].requires == ("future-extra",)
+    text = namespace["load_skill_text"](skill.name)
+    prefix = ("Skill `extension-example` declares extension `future-extra`, "
+              "which this build does not provide.\n")
+    assert text == prefix + original
+
+
+@pytest.mark.parametrize("exception", ["metadata", "unexpected"])
+def test_skill_readiness_error_is_disclosed(extension_skill, monkeypatch, exception):
+    from microclaw import extensions
+    skill, original = extension_skill()
+    error = extensions.ExtensionInstallError("broken metadata") if exception == "metadata" else RuntimeError("probe failed")
+    def broken(name):
+        raise error
+    monkeypatch.setattr(extensions, "ready", broken)
+    text = skills.load_skill_text(skill.name)
+    prefix, rest = text.split("\n", 1)
+    assert rest == original
+    assert skill.name in prefix and "ilastik" in prefix
+    assert str(error) in prefix
+    if exception == "metadata":
+        assert "this build does not provide" in prefix
+
+
+def test_skill_multiple_unready_extensions_are_sorted(extension_skill, monkeypatch):
+    from microclaw import extensions
+    skill, original = extension_skill("requires: [zeta, ilastik, alpha, zeta]")
+    monkeypatch.setattr(extensions, "EXTENSIONS", {"zeta": "", "ilastik": "", "alpha": ""})
+    calls = []
+    def ready(name):
+        calls.append(name)
+        return name == "ilastik"
+    monkeypatch.setattr(extensions, "ready", ready)
+    lines = "".join(
+        f"The `{name}` extension is not installed; tools using it will refuse until "
+        "the user installs it from Microclaw's Extensions panel.\n"
+        for name in ["alpha", "zeta"]
+    )
+    assert skills.load_skill_text(skill.name) == lines + original
+    assert calls == ["alpha", "ilastik", "zeta"]
+
+
+def test_catalog_requires_names_are_provided_extensions():
+    from microclaw import extensions
+    assert {name for skill in skills.SKILL_CATALOG for name in skill.requires} <= extensions.EXTENSIONS.keys()
