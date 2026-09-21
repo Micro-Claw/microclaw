@@ -426,6 +426,12 @@ def stage_inactive_slot(
     inactive = "b" if active == "a" else "a"
     target = base / f"env-{inactive}"
     python = target / "Scripts" / "python.exe"
+    # extensions imports updates at module scope.
+    from microclaw import extensions
+    try:
+        extras = sorted(set(extensions._records()["installed"]) & extensions.EXTENSIONS.keys())
+    except extensions.ExtensionInstallError:
+        extras = []
     commands = (
         # --clear because the inactive slot is normally already an environment:
         # every machine that has updated once has one here, and uv refuses to
@@ -446,8 +452,24 @@ def stage_inactive_slot(
         [str(uv_executable), "pip", "install", "--python", str(python),
          f"{source}[serve]"],
     )
-    for command in commands:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    extras_error = None
+    for index, command in enumerate(commands):
+        # Only commands[1], the dependency install above, carries extras.
+        # Other uv commands must keep their ordinary build-failure behavior.
+        if index == 1 and extras:
+            extra_command = [*command[:-1], f"{source}[serve,{','.join(extras)}]"]
+            completed = subprocess.run(extra_command, capture_output=True, text=True, check=False)
+            if completed.returncode:
+                detail = (completed.stderr or completed.stdout or "").strip()
+                extras_error = (
+                    f"Update {candidate.sha}: combined extras spec "
+                    f"[serve,{','.join(extras)}] failed; the failure cannot be attributed "
+                    f"to an individual extension. uv pip exit {completed.returncode}: {detail[-2000:]}"
+                )
+                # Discard the extras failure before the build-failure branch.
+                completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        else:
+            completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode:
             state = load_state(base / STATE_NAME) or {}
             state["build_error"] = "the update could not be built"
@@ -459,6 +481,14 @@ def stage_inactive_slot(
             state["build_error_detail"] = f"uv {command[1]} exit {completed.returncode}: {detail[-2000:]}"
             write_state(state, base / STATE_NAME)
             raise UpdateError("the update could not be built")
+    # A total build failure is not an extension failure. Publish diagnostics
+    # only after the dependency install (including any base retry) succeeds.
+    for name in extras:
+        try:
+            extensions.record(name, None, error=extras_error)
+        except (extensions.ExtensionInstallError, OSError):
+            # Extension bookkeeping must never prevent a base update.
+            pass
     # The bounded smoke check the design has always called for and the code
     # never had: prove the staged slot can actually start before anything
     # publishes it as pending.  `serve` imports uvicorn lazily, so naming it

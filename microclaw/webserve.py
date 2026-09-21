@@ -858,9 +858,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     @app.get("/api/extensions")
     async def get_extensions():
         await ensure_extension_catalog()
+        # Staging changes diagnostics, not readiness in the running slot.
+        errors = await run_in_threadpool(extensions.recorded_errors)
         with update_job_lock:
             job = dict(extension_job)
-            catalog = extension_catalog
+            catalog = [{**item, "error": errors.get(item["name"])}
+                       for item in extension_catalog]
         return JSONResponse({"extensions": catalog, "job": job})
 
     @app.post("/api/extensions/install")

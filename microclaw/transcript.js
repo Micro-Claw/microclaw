@@ -286,9 +286,11 @@
       if (job.running && job.name === item.name) {
         status = "installing";
         text = job.phase || "running package installer";
+        if (item.error) text += " — " + item.error;
       } else if (item.ready && item.recorded) {
         status = "ready";
         text = "Ready";
+        if (item.error) text += " — " + item.error;
       } else if (item.error || item.recorded || (job.name === item.name && job.error)) {
         status = "failed-or-missing";
         text = item.error || job.error || "Recorded but missing from this environment.";

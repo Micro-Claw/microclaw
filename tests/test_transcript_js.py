@@ -380,3 +380,40 @@ def test_extensions_view_renders_observed_phase(phase):
     view = extensions_view(state)[0]
     assert view["status"] == "installing"
     assert view["text"] == phase
+
+
+@pytest.mark.parametrize("ready,recorded,running", [
+    (False, False, False), (False, True, False), (True, True, False),
+    (True, False, False), (False, True, True), (True, True, True),
+])
+def test_extensions_view_retains_extras_error_in_every_state(ready, recorded, running):
+    error = "Update abc: combined extras spec failed."
+    item = {"name": "ilastik", "ready": ready, "recorded": recorded, "error": error}
+    row = extensions_view({"extensions": [item], "job": {
+        "name": "ilastik", "running": running, "phase": "verifying"}})[0]
+    assert row["text"].count(error) == 1
+    if running:
+        assert row["status"] == "installing" and row["button"] is None
+        assert row["text"].startswith("verifying")
+    elif ready and recorded:
+        assert row["status"] == "ready" and row["button"] is None
+        assert row["text"] == "Ready — " + error
+    else:
+        assert row["status"] == "failed-or-missing" and row["button"] == "Reinstall"
+
+
+@pytest.mark.parametrize("scenario,ready", [
+    ("rollback", False), ("ordinary reinstall", True), ("rebuilt environment", False),
+])
+def test_extension_catalog_reconcile_renders_controlled_slot(tmp_path, monkeypatch, scenario, ready):
+    from microclaw import extensions as ext
+    monkeypatch.setattr(ext, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(ext, "requirements_for", lambda name: ["h5py>=3.10"])
+    monkeypatch.setattr(ext, "ready", lambda name: ready)
+    ext.record("ilastik", ["h5py>=3.10"])
+    catalog = ext.available()
+    assert catalog[0]["recorded"] is True
+    assert catalog[0]["ready"] is ready
+    row = extensions_view({"extensions": catalog})[0]
+    assert row["status"] == ("ready" if ready else "failed-or-missing"), scenario
+    assert row["button"] == (None if ready else "Reinstall"), scenario
