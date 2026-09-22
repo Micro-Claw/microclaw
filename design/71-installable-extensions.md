@@ -1,5 +1,24 @@
 # Installable extensions — optional dependencies a user can actually install
 
+Status: **CLOSED 2026-09-21.** All three blocks merged — 71a as `2ad4e13`
+(PR #32), 71b and 71c together as `8947766` (PR #34). A user installs `ilastik`
+from the browser into the running environment with **no restart** (proven on the
+demo machine: `h5py` imported inside the already-running server process, pid
+6120), staging carries recorded extras across an update and falls back to
+`[serve]` so an extension can never break one, and a skill declares
+`requires: [ilastik]` and gets one informational line rather than being
+withheld. Nothing in this notebook is owed. See §Blocks, §71a gate results,
+§71b/71c gate results and §Run ledger.
+
+The **community-package half was never in scope here** and remains a brief for
+its own notebook — see §"Community skill packages — next notebook brief" and
+rows `R82`–`R86` in `design/70-carried-forward-register.md`. Blocks 71a–71c
+must not be read as a step toward it: the allowlist is this distribution's own
+`Provides-Extra`, deliberately, and a community package is not in it.
+
+Register rows left open by this notebook: `R133`–`R138`. None blocks anything
+here.
+
 ## Problem
 
 `microclaw[ilastik]` is correctly not installed by default: most users never
