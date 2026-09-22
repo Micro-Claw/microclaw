@@ -10,3 +10,9 @@
 
 # Retained M5 evidence must survive checkout byte-for-byte on every platform.
 tests/fixtures/hooks/m5_legacy/*.py binary
+
+# A release's assets are pinned by SHA-256 in its manifest, so the fixture's
+# bytes must survive checkout byte-for-byte: a CRLF translation on Windows
+# changes the digest and the package stops validating. `-text` rather than
+# `binary`, so these stay reviewable in a diff.
+tests/fixtures/skill_packages/** -text
