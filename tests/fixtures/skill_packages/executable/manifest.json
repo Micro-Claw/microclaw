@@ -1,0 +1,75 @@
+{
+  "package_id": "executable-fixture",
+  "publisher": "fixture-lab",
+  "version": "1.0.0",
+  "microclaw": ">=0.1,<2",
+  "kind": "executable",
+  "license": "MIT",
+  "source_url": "https://github.com/fixture-lab/skills",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "artifact": "https://github.com/fixture-lab/skills/releases/download/v1.0.0/executable.zip",
+  "assets": [
+    {
+      "path": "SKILL.md",
+      "sha256": "b8a76f1af489238d9e1223879f4f5b741b0e12a7cfd5371570089f84acfc955b"
+    },
+    {
+      "path": "notes.txt",
+      "sha256": "d93e92fc1db8aede521daa2490f26c3024197b9bf6fe777810021cd48981aa38"
+    }
+  ],
+  "skills": [
+    {
+      "name": "workflow",
+      "description": "A publisher-provided fixture workflow.",
+      "path": "SKILL.md"
+    }
+  ],
+  "python": ">=3.10,<4",
+  "platforms": [
+    "win_amd64",
+    "macosx_arm64",
+    "manylinux_x86_64"
+  ],
+  "protocol_version": "1.0",
+  "entry_point": {
+    "module": "fixture_worker.runner"
+  },
+  "operations": [
+    {
+      "name": "self_check",
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      }
+    }
+  ],
+  "locks": {
+    "win_amd64": [
+      {
+        "requirement": "fixture-dependency==1.2.3",
+        "hashes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ],
+    "macosx_arm64": [
+      {
+        "requirement": "fixture-dependency==1.2.3",
+        "hashes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ],
+    "manylinux_x86_64": [
+      {
+        "requirement": "fixture-dependency==1.2.3",
+        "hashes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    ]
+  }
+}
