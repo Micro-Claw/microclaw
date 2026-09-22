@@ -10921,3 +10921,16 @@ catalog — and design/83e requires a malformed external skill to disable only i
 own record. Fixing it here would have invented 83e's disabled-and-why state
 early, so the raise stays with a docstring saying whose it is. A known shape with
 an owner is not a defect; an unknown one is.
+
+**A digest-pinned fixture is not text, and only CI knew.** Five tests failed on
+`windows-latest` and nowhere else: the fixture's `SKILL.md` and `notes.txt` are
+pinned by SHA-256 in their manifests, and a Windows checkout translates LF to
+CRLF, which changes the bytes and therefore the digest. The fix is one
+`.gitattributes` line (`tests/fixtures/skill_packages/** -text`, beside the
+existing `tests/fixtures/hooks/m5_legacy/*.py binary` written for the same
+reason) — but the point is where it was caught. Two full local suites, 5068
+tests, and a runner's own runs were all green; *CI catches the machine you
+develop on*, and it is the reason the PR is opened at step 4 rather than at
+merge time. One of the five, `test_loaded_asset_bytes_are_bound_to_manifest
+[SKILL.md]`, had even *passed* on Windows for the wrong reason: the CRLF made
+the digest mismatch that the test was asserting for a different cause.
