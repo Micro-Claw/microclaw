@@ -1,0 +1,7 @@
+{
+  "package_id": "markdown-fixture",
+  "publisher": "fixture-lab",
+  "version": "1.0.0",
+  "artifact": "https://github.com/fixture-lab/skills/releases/download/v1.0.0/markdown.zip",
+  "artifact_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+}

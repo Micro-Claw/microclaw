@@ -189,10 +189,10 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R62` \* | [Historical calibration-artifact authoring gap](#r62) | LOW | SMALL |  |
 | `R63` \* | [Context-compaction attribution observation](#r63) | LOW | SMALL | 82c |
 | `R74` | [Phase 2 XY typed-actuator ambiguity / proposed axis field](#r74) | LOW | MEDIUM |  |
-| `R82` | [Open the community skill package notebook](#r82) | HIGH | LARGE | → `design/71` §"next notebook brief" |
-| `R83` | [Generic package/protocol conformance needs a fixture](#r83) | HIGH | MEDIUM |  |
-| `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL |  |
-| `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM |  |
+| ~~`R82`~~ | ~~[Open the community skill package notebook](#r82)~~ | — | — | **CLOSED 2026-09-22 by opening `design/83`** |
+| `R83` | [Generic package/protocol conformance needs a fixture](#r83) | HIGH | MEDIUM | `design/83` 83a + 83c |
+| `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL | `design/83` 83a, 83e |
+| `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM | disclosed by `design/83` 83e |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
 | ~~`R88`~~ | ~~[The probe_hint payload reached a live model and did not route it](#r88)~~ | — | — | **CLOSED 2026-09-05 by the Nikon's own sessions** |
 | `R89` | [The PFS offset fine-tune is a hand-driven loop with no tool](#r89) | MEDIUM | MEDIUM |  |
@@ -1332,10 +1332,10 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Accepting a community-authored skill package needs its own design notebook; `design/71` settled the decisions it should start from and deliberately left the work out of its blocks.**
 
-- **Status** — OPEN - `design/71` §"Community skill packages — next notebook brief" records the settled ownership, hosting, intake, isolation, observer and export dispositions, and states that blocks 71a–71c must not grow toward them.
+- **Status** — **CLOSED 2026-09-22 by opening `design/83-community-skill-packages.md`.** That notebook carries the sequencing decision this row asked for, the trust boundary, the transport decision, and six blocks in execution order. `design/71` §"Community skill packages — next notebook brief" remains its starting material.
 - **Importance** — HIGH - it blocks *any* community skill, which is the ownership problem `design/71` opens on: accepting one into this repository silently makes MicroClaw its maintainer.
 - **Where** — LOCAL - a design notebook, written against `design/71`'s brief and the SMAPpy 0.1.0 feasibility section.
-- **Block** — None yet; this row *is* the request to open the notebook. `design/71` §"What the boundary should be, when it is taken up" is its starting material.
+- **Block** — None; this row *was* the request to open the notebook, and `design/83` is the answer. The work it names is now 83a–83f.
 - **Effort** — LARGE
 - **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
 
@@ -1343,10 +1343,10 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Conformance should be built against a fixture package rather than against SMAPpy, so the generic work does not wait on a third party's release.**
 
-- **Status** — OPEN - no fixture package exists; `design/71`'s feasibility section is written against SMAPpy 0.1.0, whose release is not ours to schedule (see R85).
+- **Status** — OPEN - **83a's half landed 2026-09-22** (`tests/fixtures/skill_packages/`: both manifest kinds and their assets, with the format validators and refusals in `microclaw/skill_packages.py`). The executable fixture carries no runner by design, so the row stays open until 83c supplies one and executes it against the protocol it specifies. `design/71`'s feasibility section is written against SMAPpy 0.1.0, whose release is not ours to schedule (see R85).
 - **Importance** — HIGH - without a fixture, every conformance decision is coupled to one external package's timetable, and the first real package becomes the specification.
 - **Where** — LOCAL - a fixture package plus the protocol it has to satisfy.
-- **Block** — NONE - it precedes the notebook R82 asks for, or is its first block.
+- **Block** — `design/83` 83a **and** 83c; the row closes only when both pass. The "precedes the notebook" reading was rejected on 2026-09-22: a conformance fixture written before the protocol exists either invents it unowned or is rewritten when it lands.
 - **Effort** — MEDIUM
 - **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
 
@@ -1354,10 +1354,10 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Three export decisions for the community-package path are stated as intent but not pinned by a test, and an unpinned export decision is exactly what blocks 43h, 47 and 52a each paid for.**
 
-- **Status** — OPEN - the three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:2316`-`:2321`) into `refuse()` (`:2284`), which plants a `raise RuntimeError` in the exported script.
+- **Status** — OPEN, first item **CLOSED 2026-09-22** by `design/83` 83a. The three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. The last of those is now characterized in both directions (`tests/test_skill_packages.py`) and each direction was proved to discriminate by mutating `_recorded_outcome`: narrowing its scan to the key `results` fails the top-level-list direction, and making it recurse into nested dicts fails the invisibility direction. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:2316`-`:2321`) into `refuse()` (`:2284`), which plants a `raise RuntimeError` in the exported script.
 - **Importance** — HIGH - `CLAUDE.md` records this failure shape three times over (43h's `generate_and_save_hook`, 47's `set_roi`/`clear_roi`, 52a's `move_named_stage`); each killed its own block's gate script.
 - **Where** — LOCAL - the marker's behaviour is settled by reading the emitter and pinning it with a test, the way `test_every_registered_tool_has_exactly_one_export_decision` pins the marker count.
-- **Block** — NONE - pin these before a runner is handed the notebook, not during it.
+- **Block** — `design/83`, split three ways as of 2026-09-22 after reading the code. The first item closes with 83a (a characterization test of `_recorded_outcome`, sharpened: it scans **every** top-level list-valued key, so the analysis record must sit under a nested dict). The second needs nothing — `refuse()`'s raise is already covered many times in `tests/test_session_script_export.py`, and it is an *input* to the marker decision rather than a thing to pin. The third cannot be pinned before the notebook at all, because no analysis tool exists to hang a renderer on; 83e's block statement fixes the marker as `@emits` with a comment-only renderer so no runner is left to choose it. HIGH/SMALL was optimistic in exactly that third part.
 - **Effort** — SMALL
 - **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
 

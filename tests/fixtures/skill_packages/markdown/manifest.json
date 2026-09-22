@@ -1,0 +1,28 @@
+{
+  "package_id": "markdown-fixture",
+  "publisher": "fixture-lab",
+  "version": "1.0.0",
+  "microclaw": ">=0.1,<2",
+  "kind": "markdown",
+  "license": "MIT",
+  "source_url": "https://github.com/fixture-lab/skills",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "artifact": "https://github.com/fixture-lab/skills/releases/download/v1.0.0/markdown.zip",
+  "assets": [
+    {
+      "path": "SKILL.md",
+      "sha256": "b8a76f1af489238d9e1223879f4f5b741b0e12a7cfd5371570089f84acfc955b"
+    },
+    {
+      "path": "notes.txt",
+      "sha256": "d93e92fc1db8aede521daa2490f26c3024197b9bf6fe777810021cd48981aa38"
+    }
+  ],
+  "skills": [
+    {
+      "name": "workflow",
+      "description": "A publisher-provided fixture workflow.",
+      "path": "SKILL.md"
+    }
+  ]
+}
