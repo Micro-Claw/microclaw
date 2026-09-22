@@ -398,7 +398,7 @@ and otherwise stays open.
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | `design-83-open` | `592c752` | opened 2026-09-22, PR #36 — closes `R82` |
-| 83a | `design-83-open` | `592c752` | not started |
+| 83a | `block-83a` | `45a11c7` | in progress 2026-09-22 — implementation branch merges into `design-83-open`, lands in PR #36 |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
