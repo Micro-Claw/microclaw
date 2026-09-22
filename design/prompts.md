@@ -10874,3 +10874,50 @@ the selftest with `staged ran with installed missing`.
 `[serve,ilastik]` succeeded on every run and the extras-*failure* fallback — the
 branch that exists so an extension can never break an update — has no rig
 evidence at all. `R137`, rather than a sentence implying the gate covered it.
+
+## design/83 block 83a — community package format, manifests and fixtures
+
+Local only, no gate. Two runner turns, 569k and 1.31M input tokens (31k output
+across both) — the scoped-test rule holding, against design/79's 5.0M and 6.2M
+for one unscoped block.
+
+**The scoped command has to be runnable *in the sandbox*, not merely runnable.**
+I did what step 2 asks: provisioned the worktree's venv, ran the literal command
+myself, and handed over the line I had run, with its benign warning named. It
+still cost the first turn, because `tests/test_skills.py` carries
+`test_built_wheel_contains_the_source_tree_skill_catalog`, which runs `pip wheel`
+under build isolation and therefore reaches PyPI. It passes here and cannot pass
+there. *A baseline measured outside the runner's sandbox is unmeetable* is
+usually read as a rule about performance numbers; it is a rule about **test
+selection** too. Before naming a test file, ask which of its tests need network,
+a console, or a rig — and deselect them by node id in the command itself, saying
+who runs them instead.
+
+The runner handled it exactly as asked: it stopped and reported rather than
+skipping the test, editing it, or retrying with escalation. That is the third
+block in a row where the start turn's automatic reviewer or the prompt's
+stop-and-report clause produced the right refusal, and the first where the
+blocker was the coordinator's own.
+
+**A blocked verification item is the coordinator's to close, not to re-delegate.**
+The block owed mutation evidence that its `_recorded_outcome` characterization
+discriminates in both directions. Doing it here took two minutes — narrow the
+scan to the key `results` and the top-level-list direction fails; make it recurse
+into nested dicts and the invisibility direction fails — so the revision turn
+carried the *result* rather than the *task*, and the runner was told not to
+repeat it. Same shape as 71c's sandbox-blocked wheel assertion.
+
+**Prefer the structural fix to the finding.** Review found `license`, three
+URLs, `entry_point.module`, `operations[].name`, `platforms[]` and the schema
+`type` unbounded, plus no count bound on any collection — the block's own
+acceptance asks for bounds on *every* rendered field. The fix that landed is not
+"bound those eight": `_text` now takes its limit **positionally**, so a field
+cannot be added unbounded by omission. A rule enforced by the signature beats a
+rule enforced by remembering.
+
+**One deliberate shape, recorded rather than fixed.** `external_catalog_lines`
+raises on the first malformed enabled record, so one bad package blanks the
+catalog — and design/83e requires a malformed external skill to disable only its
+own record. Fixing it here would have invented 83e's disabled-and-why state
+early, so the raise stays with a docstring saying whose it is. A known shape with
+an owner is not a defect; an unknown one is.

@@ -198,6 +198,28 @@ each rendered metadata field; the `_recorded_outcome` characterization passes.
 This establishes format conformance; trust is accepted in 83b and executable
 protocol conformance in 83c. Local only — no gate.
 
+**What 83a settled** (merged 2026-09-22, PR #36; `microclaw/skill_packages.py`,
+`tests/test_skill_packages.py`, `tests/fixtures/skill_packages/`). Identifiers
+are `[a-z][a-z0-9]*(?:-[a-z0-9]+)*` and the qualified external name is exactly
+`publisher/package/skill`; no component can contain `/`, so no external name can
+equal a packaged catalog name, which is asserted against the live
+`SKILL_CATALOG` rather than a copy of it. Refusals carry the failing field as a
+dotted path on one exception type (`PackageRefusal.field`) — that is what makes
+"names the field" an assertion rather than a substring match. Each kind's
+manifest is a **closed** mapping, so a Markdown-only manifest declaring
+`entry_point`, `locks`, an environment or a worker refuses as an unknown field,
+and so does a manifest carrying a digest of its own release; only the external
+intake record pins that digest, and it carries no signature field at all,
+because that is 83b's. Every rendered field has a named length bound and every
+collection a count bound: `_text` takes its limit positionally, so a field
+cannot be added unbounded by omission. Loading verifies **every** declared
+asset's digest, not just `SKILL.md`, so a changed ancillary file cannot
+accompany intact prose.
+
+One shape is deliberate and will change in 83e: `external_catalog_lines` raises
+on the first malformed enabled record rather than isolating it, and says so in
+its docstring, because the disabled-and-why state belongs to discovery.
+
 ### 83b — publisher trust: signature, identity, rotation and revocation
 
 The signature format, the exact signed payload, and the publisher identity
@@ -398,7 +420,7 @@ and otherwise stays open.
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | `design-83-open` | `592c752` | opened 2026-09-22, PR #36 — closes `R82` |
-| 83a | `block-83a` | `45a11c7` | in progress 2026-09-22 — implementation branch merges into `design-83-open`, lands in PR #36 |
+| 83a | `block-83a` | `45a11c7` | **merged 2026-09-22** as `0629178` into `design-83-open`, PR #36 — local only, no gate |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
