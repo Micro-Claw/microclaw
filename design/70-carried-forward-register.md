@@ -2517,7 +2517,7 @@ visible; do not put one of these on a checklist.
 
 **Six preconditions, signing included, that SMAPpy's own publisher must meet before it could be admitted as the first conformance package — none of them ours to schedule.**
 
-- **Status** — OPEN, and deliberately not ours. `design/71` §"Feasibility against SMAPpy 0.1.0" enumerates them.
+- **Status** — OPEN, and deliberately not ours. `design/71` §"Feasibility against SMAPpy 0.1.0" enumerates them. Item 6 is now enforced by code: design/83 block 83b's admission refuses an unsigned SMAPpy 0.1.0 intake at `signature` (`tests/fixtures/skill_packages/smappy-0.1.0-unsigned-intake.json`).
 - **Importance** — MEDIUM - it blocks admitting SMAPpy specifically. It does **not** block the generic work, which is why R83 asks for a fixture package instead.
 - **Where** — EXTERNAL - the publisher's release process. Nothing in this repository advances it.
 - **Block** — NONE, and none should be opened. If a checklist ever appears to depend on this row, the dependency is wrong: route it through R83.

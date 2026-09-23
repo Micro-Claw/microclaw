@@ -240,6 +240,59 @@ state as well as new submissions. Specify when reauthorization is needed, how
 future starts are refused, and what happens to already-running jobs; no trust
 refresh may block acquisition or delete its data. Local only — no gate.
 
+**What 83b settled** (PR #37; `microclaw/skill_packages.py`, trust fixtures
+under `tests/fixtures/skill_packages/trust/`). One algorithm, Ed25519, via
+`cryptography` as a **hard** runtime dependency: every path that loads or starts
+an external release verifies it, so a missing library must never be an ordinary
+installed state. A signature is `{alg, key_id, value}`; `key_id` is the SHA-256
+of the raw public key and is recomputed wherever a key is admitted, never
+trusted. Signed bytes are the canonical JSON (sorted keys, `,`/`:` separators,
+ASCII) of the document minus its `signature`, and each document carries a
+`type` tag inside those bytes, so a release signature cannot be replayed as a
+policy signature.
+
+- **The signed payload is the intake record.** It is closed and now requires
+  `type`, `kind`, `microclaw` and, for executables, `python`, `platforms`,
+  `protocol_version`, plus `signature`; every compatibility field must also
+  equal the manifest's. A submission carrying its own key refuses as an unknown
+  field, and a `key_id` the policy has not admitted **for that publisher**
+  refuses regardless. A key id may not appear under two publishers.
+- **Roots and policy.** The trust policy is MicroClaw's document, signed by a
+  root, with `environment`, a monotonic `revision`, `expires_at`, publishers
+  with key states, and digest-keyed `revoked_releases`. Its environment must
+  equal the root set's. **The production root set is empty**: no MicroClaw
+  production key exists, so production verification fails closed until 83f
+  creates one — key custody is 83f's decision, not a runner's. The test root is
+  `environment: "test"`, `TEST-ONLY` in every filename, and its committed seeds
+  say they are public.
+- **One gate for the future.** `check_release(intake, policy, *, purpose, now)`
+  with `purpose` `admission` or `execution`; the verdict carries `stale` and
+  `environment`. `load_external_skill` and `external_catalog_lines` run the
+  execution check on every enabled record.
+
+| Policy state | admission | execution of an installed release |
+|---|---|---|
+| key retired (rotation) | refuses | runs — rotation never needs reauthorization |
+| key, publisher or release revoked | refuses | refuses the next start; installed files untouched |
+| policy expired (stale/offline) | refuses | runs, `stale: true`; cached revocations still apply |
+| no verified policy | refuses | refuses |
+
+Revocation affects **future** starts only: a running job is not cancelled, and
+no trust check writes, moves or deletes anything — asserted against an installed
+tree and with `socket`/`Path.open` patched to raise. Reauthorization means a new
+admission of a different release, needed only after a revocation. A stale
+policy's residual is stated, not solved: revocation is only as fresh as the
+last verified policy, and freshness is 83f's.
+
+The policy passed to `check_release` is the return value of
+`verify_trust_policy`, a caller attestation like a record's `verified` flag.
+Round 1 re-verified it on every call against roots that travelled in the same
+snapshot — no protection, since whoever can alter the policy can alter those
+roots, at a full policy walk plus a signature check per record per catalog
+render. It now verifies exactly one signature per release, which a test counts;
+a future cache must re-verify a stored document against the module's roots on
+load.
+
 ### 83c — the job protocol and the supervisor, specified and executed together
 
 The versioned job protocol, including `self_check` and declared analysis
@@ -421,7 +474,7 @@ and otherwise stays open.
 |-------|--------|--------------|--------|
 | notebook | `design-83-open` | `592c752` | opened 2026-09-22, PR #36 — closes `R82` |
 | 83a | `block-83a` | `45a11c7` | **merged 2026-09-22** as `0629178` into `design-83-open`, PR #36 — local only, no gate |
-| 83b | `block-83b` | `d0a27a9` | in progress, started 2026-09-23 — local only, no gate |
+| 83b | `block-83b` | `d0a27a9` | reviewed 2026-09-23, PR #37 — local only, no gate |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
