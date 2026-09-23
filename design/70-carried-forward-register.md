@@ -190,7 +190,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R63` \* | [Context-compaction attribution observation](#r63) | LOW | SMALL | 82c |
 | `R74` | [Phase 2 XY typed-actuator ambiguity / proposed axis field](#r74) | LOW | MEDIUM |  |
 | ~~`R82`~~ | ~~[Open the community skill package notebook](#r82)~~ | — | — | **CLOSED 2026-09-22 by opening `design/83`** |
-| `R83` | [Generic package/protocol conformance needs a fixture](#r83) | HIGH | MEDIUM | `design/83` 83a + 83c |
+| ~~`R83`~~ | ~~[Generic package/protocol conformance needs a fixture](#r83)~~ | — | — | **CLOSED 2026-09-23 by `design/83` 83a + 83c** |
 | `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL | `design/83` 83a, 83e |
 | `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM | disclosed by `design/83` 83e |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
@@ -1343,7 +1343,7 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Conformance should be built against a fixture package rather than against SMAPpy, so the generic work does not wait on a third party's release.**
 
-- **Status** — OPEN - **83a's half landed 2026-09-22** (`tests/fixtures/skill_packages/`: both manifest kinds and their assets, with the format validators and refusals in `microclaw/skill_packages.py`). The executable fixture carries no runner by design, so the row stays open until 83c supplies one and executes it against the protocol it specifies. `design/71`'s feasibility section is written against SMAPpy 0.1.0, whose release is not ours to schedule (see R85).
+- **Status** — **CLOSED 2026-09-23** by `design/83` 83c (PR #38): the executable fixture now carries a stdlib-only `fixture_worker.runner` that passes `self_check` and a lifecycle operation through the real supervisor, and a separate TEST-ONLY `conformance/` release drives every failure path as a real subprocess. **83a's half landed 2026-09-22** (`tests/fixtures/skill_packages/`: both manifest kinds and their assets, with the format validators and refusals in `microclaw/skill_packages.py`). The executable fixture carries no runner by design, so the row stays open until 83c supplies one and executes it against the protocol it specifies. `design/71`'s feasibility section is written against SMAPpy 0.1.0, whose release is not ours to schedule (see R85).
 - **Importance** — HIGH - without a fixture, every conformance decision is coupled to one external package's timetable, and the first real package becomes the specification.
 - **Where** — LOCAL - a fixture package plus the protocol it has to satisfy.
 - **Block** — `design/83` 83a **and** 83c; the row closes only when both pass. The "precedes the notebook" reading was rejected on 2026-09-22: a conformance fixture written before the protocol exists either invents it unowned or is rewritten when it lands.

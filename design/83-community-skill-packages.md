@@ -318,6 +318,65 @@ unterminated acquisition followed by late writer completion, plus a worker that
 exits before that notification. Hardware lifecycle integration lands in 83e.
 `R83` closes when these executable conformance tests pass as well as 83a's.
 
+**What 83c settled** (PR #38; `microclaw/skill_packages.py` for the wire
+schemas, `microclaw/skill_supervisor.py` for the process — the notebook's one
+new module, because `skill_packages.py` promises no I/O and a supervisor is
+threads, pipes and deadlines; tests in `tests/test_skill_supervisor.py`).
+
+- **Identity.** Every message carries `protocol: "microclaw.analysis.v1"`; the
+  manifest and intake keep `protocol_version: "1.0"`, mapped by
+  `SUPPORTED_PROTOCOLS`, exact match only. `validate_manifest` stays
+  structural; **support is refused in `check_release`, after the signature**, at
+  both purposes, so 83d's startup recheck calls the same gate.
+  `supported_executable` additionally requires a declared `self_check` and v1's
+  only schema type, `object`.
+- **Messages.** Closed key sets both ways. stdin: `job` (release identity,
+  operation, parameters; analysis operations add `input.dataset` and
+  `output_dir`, `self_check` has neither), `acquisition {outcome, writer}`,
+  `writer {state: finished}`, `cancel`. `unterminated` requires
+  `writer: unknown`; no frame count can be expressed. stdout: `status`,
+  `artifact`, and one `result` whose `failure` is single-line (tracebacks go to
+  stderr) and whose `input_complete` is the worker's own claim. An artifact is
+  `{path, sha256, validity}` under `output_dir`; the supervisor verifies each at
+  the end, never deletes one, and labels every retained artifact `partial`
+  unless the worker's `succeeded` terminal stood.
+- **Violations are supervisor failures**: malformed, oversized, partial line at
+  EOF, wrong protocol/job/type, a second terminal, anything after it, exit
+  without one, a non-zero exit after one. Publisher `output` is kept verbatim —
+  an `{"error": ...}` there is publisher data, and the record's own fields never
+  use `error`, so `_recorded_outcome({"analysis": record})` stays blind to it.
+- **Bounds** (constants): message 65,536 bytes both ways, status 512 and failure
+  1,024 characters, 256 artifacts, 64 KiB stderr tail, 256 retained status, 8
+  pending notifications, 32 recorded notifications, queue 4, workers 2;
+  deadlines startup 60 s, `self_check` 120 s, shutdown grace 10 s, and **no
+  default analysis deadline**.
+- **The grace starts only from a delivered cancel, the terminal, or the
+  supervisor closing stdin.** Round 1 also started it when the *worker* closed
+  stdin, which made an undeliverable notification kill a working observer —
+  delivery gating the run. Worker-side closure now only marks notifications
+  undelivered.
+- **Tree cleanup after every exit, success included.** Windows: a Job Object
+  (`KILL_ON_JOB_CLOSE`), the child created suspended, assigned, then resumed with
+  `NtResumeProcess`, so no descendant can start outside the job. POSIX: a new
+  session and `killpg`; a descendant that calls `setsid` escapes, accepted off
+  the shipping platform. Proved by a grandchild heartbeat that stops, on
+  `windows-latest` as well as locally.
+- **Timing contract.** `submit` and `notify_*` never raise, never wait and do no
+  I/O on the calling thread; launch, hashing, pipe writes and kills run on
+  dispatcher and pipe threads, asserted by thread identity. Measured on one Mac
+  (macOS 14.5 ARM64, n=300 per row): `submit` p50 0.50 ms / max 0.87 ms with a
+  slow worker and 0.49 / 0.62 ms into a saturated queue; notifications p50
+  ≤ 0.015 ms, max ≤ 0.21 ms. Attributed: `check_release` 0.29 ms (one Ed25519
+  verify), `validate_manifest` 0.10 ms, `validate_intake` 0.05 ms — the latter
+  runs twice per submit, once inside `check_release`, which is not worth a
+  change. No Windows timing was taken.
+
+Two things for 83d, which owns both. `Supervisor.self_check` waits without a
+bound for its turn in the queue — its deadline starts at spawn — so an install
+queued behind a deadline-less analysis job waits for that job. And the Job
+Object has run only on a CI runner: its first desktop evidence, a worker under a
+`serve` launched from the shortcut, belongs in 83d's demo gate.
+
 ### 83d — isolated per-release installation and activation
 
 Executable packages get one environment per release under the user data
@@ -474,7 +533,8 @@ and otherwise stays open.
 |-------|--------|--------------|--------|
 | notebook | `design-83-open` | `592c752` | opened 2026-09-22, PR #36 — closes `R82` |
 | 83a | `block-83a` | `45a11c7` | **merged 2026-09-22** as `0629178` into `design-83-open`, PR #36 — local only, no gate |
-| 83b | `block-83b` | `d0a27a9` | reviewed 2026-09-23, PR #37 — local only, no gate |
+| 83b | `block-83b` | `d0a27a9` | **merged 2026-09-23** as `5936f3b`, PR #37 — local only, no gate |
+| 83c | `block-83c` | `5936f3b` | reviewed 2026-09-23, PR #38 — local only, no gate; closes `R83` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
