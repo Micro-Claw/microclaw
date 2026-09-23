@@ -390,6 +390,7 @@ def test_archive_refusals_are_durable(tmp_path, malice):
 
 @pytest.mark.parametrize("failure", ["hash", "sdist"])
 def test_real_uv_refuses_wrong_hash_and_sdist(tmp_path, failure, monkeypatch):
+    marker = tmp_path / "source-build-ran"
     if failure == "hash":
         source = mutate_source(tmp_path, lambda manifest: [item.update(hashes=["a" * 64]) for lock in manifest["locks"].values() for item in lock])
     else:
@@ -399,7 +400,7 @@ def test_real_uv_refuses_wrong_hash_and_sdist(tmp_path, failure, monkeypatch):
         wheel_dir.mkdir()
         archive = wheel_dir / "fixture_dependency-1.2.3.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
-            content = b"raise RuntimeError('must never build')\n"
+            content = f"from pathlib import Path\nPath({str(marker)!r}).write_bytes(b'built')\n".encode("utf-8")
             info = tarfile.TarInfo("fixture_dependency-1.2.3/setup.py")
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
@@ -411,6 +412,10 @@ def test_real_uv_refuses_wrong_hash_and_sdist(tmp_path, failure, monkeypatch):
     saved = read(directory(state()["installs"][0]) / "install.json")
     assert saved["state"] == "failed" and saved["reasons"][0]["field"] == "locks"
     assert "exit=" in saved["reasons"][0]["detail"]
+    if failure == "sdist":
+        assert not marker.exists()
+        detail = saved["reasons"][0]["detail"].lower()
+        assert "no usable wheels" in detail or "--no-build" in detail, detail
     assert read(package() / "pointer.json")["active"] is None
 
 
@@ -443,10 +448,15 @@ def test_subprocess_failure_records_environment_and_stderr(monkeypatch, mode):
         return subprocess.CompletedProcess(argv, 12, "", "x" * 2001 + "tail")
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(store.PackageRefusal) as caught:
-        store._run(["uv", "pip"], timeout=30, field="locks")
+        child_env = store._uv_env()
+        child_env["UV_PYTHON_INSTALL_DIR"] = str(store.store_dir() / "python")
+        child_env["UV_CHILD_ONLY"] = "not a user override"
+        store._run(["uv", "pip"], timeout=30, field="locks", env=child_env)
     message = str(caught.value)
     assert "uv pip exit=" in message and "tail" in message and "UV_INDEX_URL" in message
     assert "secret" not in message and "x" * 2001 not in message
+    assert "UV_CACHE_DIR" not in message and "UV_PYTHON_INSTALL_DIR" not in message
+    assert "UV_CHILD_ONLY" not in message
 
 
 @pytest.mark.parametrize("environment", ["test", "production", "other"])
@@ -669,5 +679,135 @@ def test_repair_named_nonactive_failed_previous(tmp_path):
     assert state("markdown")["broken"]
     repaired = store.repair("markdown-fixture", install_id=old["install_id"],
                             policy=store.load_trust_policy(), now=NOW, retained_digests=frozenset())
-    assert read(package("markdown") / "pointer.json") == dict(active=repaired["install_id"], previous=active["install_id"])
+    assert read(package("markdown") / "pointer.json") == dict(active=active["install_id"], previous=repaired["install_id"])
     assert not state("markdown")["broken"]
+
+
+@pytest.mark.parametrize("target", ["previous", "neither"])
+def test_repair_preserves_active_release(tmp_path, target):
+    old = install(tmp_path, kind="markdown")
+    active = install(tmp_path, kind="markdown", version="2.0.0")
+    pointer = read(package("markdown") / "pointer.json")
+    if target == "neither":
+        pointer["previous"] = None
+        write(package("markdown") / "pointer.json", pointer)
+    repaired = store.repair("markdown-fixture", install_id=old["install_id"],
+                            policy=store.load_trust_policy(), now=NOW,
+                            retained_digests={old["artifact_digest"]})
+    assert read(directory(repaired, "markdown") / "install.json")["state"] == "ready"
+    expected = dict(pointer, previous=repaired["install_id"]) if target == "previous" else pointer
+    assert read(package("markdown") / "pointer.json") == expected
+    assert expected["active"] == active["install_id"]
+
+
+def test_partial_previous_removal_preserves_active_eligibility(tmp_path, monkeypatch):
+    old = install(tmp_path, kind="markdown")
+    active = install(tmp_path, kind="markdown", version="2.0.0")
+    old_dir = directory(old, "markdown")
+    original = shutil.rmtree
+    def partial(path, *args, **kwargs):
+        if Path(path) == old_dir:
+            (old_dir / "install.json").unlink()
+            raise PermissionError("locked artifact.zip")
+        return original(path, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "rmtree", partial)
+        store.remove("markdown-fixture", install_id=old["install_id"], retained_digests=frozenset())
+    assert read(package("markdown") / "pointer.json") == dict(active=active["install_id"], previous=None)
+    snapshot = state("markdown")
+    assert not snapshot["broken"] and snapshot["deletion_failures"]
+    assert next(row for row in snapshot["installs"] if row["active"])["eligible"]
+    store.recover(retained_digests=frozenset())
+    assert not old_dir.exists()
+    assert not state("markdown")["deletion_failures"]
+
+
+def test_stale_lock_race_preserves_replacement_owner(tmp_path, monkeypatch):
+    install(tmp_path, kind="markdown")
+    lock = package("markdown") / ".lock"
+    lock.mkdir()
+    write(lock / "owner.json", dict(pid=123, nonce="dead", created_at=0))
+    monkeypatch.setattr(store, "_alive", lambda pid: False)
+    original = Path.rename
+    live_owner = dict(pid=os.getpid(), nonce="live", created_at=time.time())
+    def replace_before_rename(path, target):
+        if path == lock:
+            shutil.rmtree(lock)
+            lock.mkdir()
+            write(lock / "owner.json", live_owner)
+        return original(path, target)
+    monkeypatch.setattr(Path, "rename", replace_before_rename)
+    with pytest.raises(store.PackageRefusal) as caught:
+        with store.package_lock("markdown-fixture"):
+            pytest.fail("must not acquire the replacement lock")
+    assert caught.value.field == "lock"
+    assert read(lock / "owner.json") == live_owner
+
+
+@pytest.mark.parametrize("mismatch", ["extra", "missing"])
+def test_distribution_mismatch_fails_transaction(tmp_path, monkeypatch, mismatch):
+    original_probe, original_run = store.probe, store._run
+    calls = []
+    def probe(python):
+        identity = original_probe(python)
+        calls.append(identity)
+        if mismatch == "extra" and len(calls) == 2:
+            identity["distributions"]["unexpected-distribution"] = "1.0"
+        return identity
+    def run(argv, **kwargs):
+        if mismatch == "missing" and argv[1:3] == ["pip", "install"]:
+            return ""
+        return original_run(argv, **kwargs)
+    monkeypatch.setattr(store, "probe", probe)
+    monkeypatch.setattr(store, "_run", run)
+    with pytest.raises(store.PackageRefusal) as caught:
+        install(tmp_path)
+    assert caught.value.field == "locks"
+    assert len(calls) == 2
+    assert read(package() / "pointer.json") == dict(active=None, previous=None)
+    row = state()["installs"][0]
+    saved = read(directory(row) / "install.json")
+    assert saved["state"] == "failed" and saved["reasons"][0]["field"] == "locks"
+
+
+def test_running_interpreter_identity_change_requires_repair(tmp_path):
+    installed = install(tmp_path)
+    target = directory(installed)
+    saved = read(target / "install.json")
+    saved["interpreter"]["version"] += " changed base interpreter"
+    write(target / "install.json", saved)
+    assert store.probe(saved["python"]) != saved["interpreter"]
+    store.recheck(now=NOW, retained_digests=frozenset())
+    verdict = read(target / "verdict.json")
+    assert not verdict["eligible"]
+    assert any(reason["field"] == "interpreter" for reason in verdict["reasons"])
+    row = state()["installs"][0]
+    assert not row["eligible"] and row["reasons"] == verdict["reasons"]
+    with pytest.raises(store.PackageRefusal) as caught:
+        store.resolve("executable-fixture", installed["artifact_digest"], now=NOW)
+    assert caught.value.field == "interpreter"
+    repaired = store.repair("executable-fixture", policy=store.load_trust_policy(), now=NOW,
+                            uv_executable=uv.find_uv_bin(), base_python=BASE, retained_digests=frozenset())
+    assert read(directory(repaired) / "verdict.json")["eligible"]
+    assert store.resolve("executable-fixture", installed["artifact_digest"], now=NOW)["install_id"] == repaired["install_id"]
+
+
+def test_retention_preserves_unreferenced_ready_with_broken_pointer(tmp_path):
+    orphan = install(tmp_path, kind="markdown")
+    previous = install(tmp_path, kind="markdown", version="2.0.0")
+    artifact = tmp_path / "three.zip"
+    intake = builder.build_release(FIXTURES / "markdown", artifact, version="3.0.0")
+    store.install(intake, artifact, policy=store.load_trust_policy(), now=NOW,
+                  retained_digests={orphan["artifact_digest"]})
+    assert orphan["install_id"] not in read(package("markdown") / "pointer.json").values()
+    shutil.rmtree(directory(previous, "markdown"))
+    before = (package("markdown") / "pointer.json").read_bytes()
+    store.recover(retained_digests=frozenset())
+    assert directory(orphan, "markdown").exists()
+    # Recovery has its own damage guard. Pin retention's independent guard too:
+    # failed transactions also call retention directly under the package lock.
+    with store.package_lock("markdown-fixture") as locked:
+        store._retention(locked, retained_digests=frozenset(), failures=[])
+    assert directory(orphan, "markdown").exists()
+    assert read(directory(orphan, "markdown") / "install.json")["state"] == "ready"
+    assert (package("markdown") / "pointer.json").read_bytes() == before

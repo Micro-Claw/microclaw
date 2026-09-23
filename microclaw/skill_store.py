@@ -111,7 +111,10 @@ def package_lock(package_id):
                 owner = _read(lock / "owner.json")
             except (updates.UpdateError, OSError):
                 owner = None
-            # PID reuse is an accepted residual; nonce protects our unlock only.
+            # PID reuse remains an accepted residual. Nonces detect renaming a
+            # replacement lock, but the live owner temporarily loses its lock
+            # pathname before restoration; another contender can occupy it and
+            # prevent restoration. Missing-owner locks also share nonce None.
             try:
                 stale = (not _alive(owner["pid"]) if owner and type(owner.get("pid")) is int
                          else time.time() - lock.stat().st_mtime > 60)
@@ -119,11 +122,22 @@ def package_lock(package_id):
                 continue
             if not stale:
                 raise PackageRefusal("lock", "another operation owns this package")
+            stale_nonce = owner.get("nonce") if owner else None
             abandoned = package / (".lock-stale-" + uuid.uuid4().hex)
             try:
                 lock.rename(abandoned)
             except FileNotFoundError:
                 continue
+            try:
+                moved_owner = _read(abandoned / "owner.json")
+            except (updates.UpdateError, OSError):
+                moved_owner = None
+            if (moved_owner.get("nonce") if moved_owner else None) != stale_nonce:
+                try:
+                    abandoned.rename(lock)
+                except OSError:
+                    pass
+                raise PackageRefusal("lock", "lock owner changed during stale-lock recovery")
             _delete(abandoned, [])
     try:
         _write(lock / "owner.json", dict(pid=os.getpid(), nonce=nonce, created_at=time.time()))
@@ -287,7 +301,10 @@ def _run(argv, *, timeout, field, env=None):
         if result.returncode == 0:
             return result.stdout
         detail = f"{Path(argv[0]).name} {argv[1]} exit={result.returncode}: {result.stderr[-2000:]}"
-    variables = sorted(key for key in child_env if key.startswith("UV_"))
+    variables = sorted(key for key, value in os.environ.items()
+                       if key.startswith("UV_")
+                       and key not in {"UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR"}
+                       and child_env.get(key) == value)
     if variables:
         detail += "; environment set: " + ", ".join(variables)
     raise PackageRefusal(field, detail)
@@ -462,7 +479,7 @@ def _self_check(directory, record, policy, now):
 
 
 def _verdict(directory, record, policy, now):
-    start = time.monotonic()
+    start = time.perf_counter()
     build = current_build()
     reasons = []
     checks = [lambda: packages.check_release(record["intake"], policy, purpose="execution", now=now),
@@ -479,7 +496,7 @@ def _verdict(directory, record, policy, now):
         except Exception as exc:
             reasons.append(_reason(exc))
     return dict(build=build, interpreter=record.get("interpreter"), eligible=not reasons,
-                reasons=reasons, checked_at=now.isoformat(), duration_s=time.monotonic() - start)
+                reasons=reasons, checked_at=now.isoformat(), duration_s=time.perf_counter() - start)
 
 
 def _verify_assets(directory, record):
@@ -543,10 +560,13 @@ def _transaction(package, intake, artifact_path, *, policy, now, uv_executable,
         _write(package / "recovery.json", dict(deletion_failures=failures, broken=[]))
         raise
     # Nothing before this single atomic replacement activates the candidate.
-    previous = pointer.get("active")
-    if repairing is not None and pointer.get("active") == repairing:
-        previous = pointer.get("previous")
-    _write(package / "pointer.json", dict(active=install_id, previous=previous))
+    if repairing is None:
+        _write(package / "pointer.json", dict(active=install_id, previous=pointer.get("active")))
+    else:
+        repaired_pointer = {key: install_id if value == repairing else value
+                            for key, value in pointer.items()}
+        if repaired_pointer != pointer:
+            _write(package / "pointer.json", repaired_pointer)
     failures = []
     _retention(package, retained_digests=retained_digests, failures=failures)
     _write(package / "recovery.json", dict(deletion_failures=failures, broken=[]))
@@ -634,11 +654,11 @@ def remove(package_id, *, retained_digests, install_id=None):
             pointer = _read(package / "pointer.json")
             if pointer and pointer.get("active") == install_id:
                 raise PackageRefusal("active", "roll back or remove the package")
-            failures = []
-            _delete(path, failures)
-            if pointer and pointer.get("previous") == install_id and not failures:
+            if pointer and pointer.get("previous") == install_id:
                 pointer["previous"] = None
                 _write(package / "pointer.json", pointer)
+            failures = []
+            _delete(path, failures)
         else:
             failures = []
             _delete(package, failures)
