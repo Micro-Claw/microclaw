@@ -187,12 +187,12 @@ def test_nested_objects_closed_and_required(path, field):
     refuses(field + '.unknown', packages.validate_manifest, value)
 
 
-@pytest.mark.parametrize('collection,key,field', [
-    ('assets', 'path', 'assets[2].path'), ('skills', 'name', 'skills[1].name'),
-    ('operations', 'name', 'operations[1].name'),
+@pytest.mark.parametrize('collection,key', [
+    ('assets', 'path'), ('skills', 'name'), ('operations', 'name'),
 ])
-def test_duplicate_declarations(collection, key, field):
+def test_duplicate_declarations(collection, key):
     value = manifest()
+    field = f'{collection}[{len(value[collection])}].{key}'
     value[collection].append(deepcopy(value[collection][0]))
     refuses(field, packages.validate_manifest, value)
 
@@ -993,3 +993,12 @@ def test_execution_checks_every_enabled_record_before_returning_skill():
     refuses('signature.value', packages.load_external_skill,
             'fixture-lab/markdown-fixture/workflow', [good, bad], policy(), now=NOW)
     refuses('signature.value', packages.external_catalog_lines, [good, bad], policy(), now=NOW)
+
+
+@pytest.mark.parametrize("version", ["1.1", "2.0"])
+@pytest.mark.parametrize("purpose", ["admission", "execution"])
+def test_supported_protocol_after_signature(version, purpose):
+    value = intake()
+    value["protocol_version"] = version
+    refuses("signature.value", packages.check_release, value, policy(), purpose=purpose, now=NOW)
+    refuses("protocol_version", packages.check_release, sign(value), policy(), purpose=purpose, now=NOW)

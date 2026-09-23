@@ -15,7 +15,15 @@
     },
     {
       "path": "notes.txt",
-      "sha256": "d93e92fc1db8aede521daa2490f26c3024197b9bf6fe777810021cd48981aa38"
+      "sha256": "ee4ae8264b621e8c36c79a48420d1f013fb3257a4339e20388112b837ff24102"
+    },
+    {
+      "path": "fixture_worker/__init__.py",
+      "sha256": "ca55eef4661c96412b906ecac79471e88e0cb9aa1c469b6b0c4b3e8ec6cbab5b"
+    },
+    {
+      "path": "fixture_worker/runner.py",
+      "sha256": "b244218d0ec1ae9e3762dbe8874bb070d4651cd91601f1556eff11f160b265d8"
     }
   ],
   "skills": [
@@ -38,6 +46,15 @@
   "operations": [
     {
       "name": "self_check",
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "observe_dataset",
       "input_schema": {
         "type": "object"
       },

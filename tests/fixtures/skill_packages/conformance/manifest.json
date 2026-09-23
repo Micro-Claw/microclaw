@@ -1,0 +1,67 @@
+{
+  "package_id": "conformance-fixture",
+  "publisher": "fixture-lab",
+  "version": "1.0.0",
+  "microclaw": ">=0.1,<2",
+  "kind": "executable",
+  "license": "MIT",
+  "source_url": "https://github.com/fixture-lab/skills",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "artifact": "https://github.com/fixture-lab/skills/releases/download/v1.0.0/executable.zip",
+  "assets": [
+    {
+      "path": "SKILL.md",
+      "sha256": "6f667a4e4a9fcb35f5eb40e74c947360b880b283c39c565803d4c14f1f45cb36"
+    },
+    {
+      "path": "conformance_worker/__init__.py",
+      "sha256": "0a04dc014a35731303e91cd6dde4bf8ab3cd0128c7d3b4378e23a22b048c66de"
+    },
+    {
+      "path": "conformance_worker/runner.py",
+      "sha256": "48c1602aa3022d6e9da0503ce302b20375ccd9620c1e221a7be632a91f062255"
+    }
+  ],
+  "skills": [
+    {
+      "name": "workflow",
+      "description": "A publisher-provided fixture workflow.",
+      "path": "SKILL.md"
+    }
+  ],
+  "python": ">=3.10,<4",
+  "platforms": [
+    "win_amd64",
+    "macosx_arm64",
+    "manylinux_x86_64"
+  ],
+  "protocol_version": "1.0",
+  "entry_point": {
+    "module": "conformance_worker.runner"
+  },
+  "operations": [
+    {
+      "name": "self_check",
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "observe_dataset",
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      }
+    }
+  ],
+  "locks": {
+    "win_amd64": [],
+    "macosx_arm64": [],
+    "manylinux_x86_64": []
+  }
+}

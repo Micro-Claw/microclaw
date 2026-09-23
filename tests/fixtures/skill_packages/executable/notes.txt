@@ -1,1 +1,1 @@
-Format asset; no executable runner is supplied.
+Stdlib-only reference v1 worker: self_check and observe_dataset. The illustrative lock is not installed.
