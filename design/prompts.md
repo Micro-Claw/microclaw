@@ -10969,3 +10969,63 @@ has to say *which document* failed.
 5,068-pass baseline; `test_built_wheel_contains_the_source_tree_skill_catalog`
 run separately by the coordinator (network) and passed. Two runner turns, no
 killed turns, no escalations requested.
+
+## design/83 block 83c — job protocol and supervisor (PR #38, 2026-09-23)
+
+Local only, no gate. Three runner turns: a 129k-token start turn that stopped
+before editing, a 3.6M-token implementation turn, and a revision turn killed by
+the Codex usage limit during its final checks, with no usage recorded. The
+implementation turn ran the targeted command seven times and never the full
+suite — the scoped-test rule holding for a block of 101 subprocess tests.
+
+**The start turn's refusal was right, and the conflict was mine.** The prompt
+let a worker's `output` be any JSON object and also banned the key `error`
+anywhere in the record, so `{"error": "measurement residual"}` could be neither
+kept nor refused without inventing a rule. The runner stopped and named both
+resolutions. The ban now covers supervisor-authored fields only, and that exact
+output is a test. A prompt that pins decisions tightly also pins its
+contradictions, and a runner that obeys "stop rather than diverge" finds them
+for the price of one short turn.
+
+**My wording shipped the one real defect.** D3 said the shutdown grace runs
+"after stdin closes". I meant the supervisor closing stdin, but the runner wrote
+the literal sentence and a test enshrining it. A worker that closed its own
+stdin and kept working was killed ten seconds after the next notification, so
+an undeliverable message ended a run. §Transport forbids exactly that. The
+review caught it by asking what a legitimate observer that ignores lifecycle
+messages would suffer, not by reading the tests. **A deadline's trigger is a
+decision; name who performs the event.**
+
+**Check the sandbox before a subprocess block, not after.** `codex sandbox -P
+:workspace` ran a probe that spawned a grandchild, a thread and a process group
+and killed the group. That took one command and settled the block's feasibility
+before any prompt was written.
+
+**Windows was proved by CI, as planned.** The Job Object code (suspended start,
+assign, `NtResumeProcess`, `TerminateJobObject`) could not run on the
+development Mac. The PR was pushed with the first turn's commit specifically so
+`windows-latest` ran it before review closed. It passed first time: 5288 passed,
+103 skipped, which is 83b's Windows count plus exactly the 101 new tests. Every
+grandchild-heartbeat kill ran there, and none was skipped.
+
+**A killed turn at the end is recoverable, and still not evidence.** The
+revision turn died after its edits and during its own `git diff --check`. I
+followed step 2's rule for a turn killed at the end: read the diff, ran the
+targeted suite (1877), and ran the F1 and F4 tests against `94c917c`'s
+supervisor, swapping that file only. They failed for the stated reasons:
+`supervisor_failed` instead of `succeeded`, and `startup_deadline` instead of
+`stdout_failed`. The second failure is the silent reader death F4 was about. I
+also mutated the three new decisions and all three were killed. The commit
+message says who verified it. No further runner turn was needed, so the usage
+window's reopening did not gate the block.
+
+**Mutations: fifteen, all killed**. Twelve on the first turn: protocol support,
+the unterminated-writer rule, message after terminal, non-zero exit after
+terminal, tree kill after success, partial downgrade, environment stripping,
+`check_release` at submit, partial line at EOF, oversized buffering, the stderr
+bound and `put_nowait`. Three on the revision: the stdin-close grace, the
+notification-log bound and the stderr fault record.
+
+**Counts.** Targeted 1877; full suite 5297 passed, 99 skipped, against a 5191
+baseline. `test_built_wheel_contains_the_source_tree_skill_catalog` was run
+separately by the coordinator (it needs the network) and passed.
