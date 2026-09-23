@@ -26,6 +26,20 @@ from microclaw.tools_schema import TOOLS_CACHED
 from microclaw.webserve import build_app, serve
 
 
+@pytest.fixture(autouse=True)
+def _isolate_skill_store(tmp_path, monkeypatch):
+    # Lifespan recovery must never inspect or mutate the operator's real store.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
+    yield
+    # Let startup finish while this test's redirected home still applies.
+    for worker in threading.enumerate():
+        if worker.name == "microclaw-skill-startup":
+            worker.join(5)
+            assert not worker.is_alive()
+
+
 def _stub_uvicorn_server(monkeypatch, events=None):
     import uvicorn
     seen = []
@@ -2904,3 +2918,128 @@ def test_extension_poll_survives_bad_record(extension_client, monkeypatch, broke
         response = extension_client.get("/api/extensions")
         assert response.status_code == 200
         assert response.json()["extensions"] == [{**item, "error": None} for item in before]
+
+
+@pytest.fixture
+def skill_client(session, monkeypatch, tmp_path):
+    from microclaw import skill_store
+    from tests.test_skill_store import FIXTURES, install, read, write
+    monkeypatch.setattr(credentials, "load_api_key", lambda: ("fixture", "env"))
+    write(skill_store.store_dir() / "trust" / "roots.json", read(FIXTURES / "trust" / "roots-TEST-ONLY.json"))
+    skill_store.store_trust_policy(read(FIXTURES / "trust" / "policy-TEST-ONLY.json"))
+    install(tmp_path, kind="markdown")
+    install(tmp_path, kind="markdown", version="2.0.0")
+    # Route tests control operations explicitly; startup has its own blocking test.
+    return TestClient(build_app(session))
+
+
+def test_skill_panel_incompatible_release_is_disabled(skill_client, monkeypatch):
+    from microclaw import skill_store
+    from tests.test_skill_store import NOW, package, read
+    build = skill_store.current_build()
+    pointer = read(package("markdown") / "pointer.json")
+    monkeypatch.setattr(skill_store, "current_build", lambda: dict(build, version="2.0.0"))
+    assert skill_client.get("/api/skill-packages").json()["packages"][0]["installs"][0]["reasons"][0]["field"] == "unchecked"
+    skill_store.recheck(now=NOW, retained_digests=frozenset())
+    result = skill_client.get("/api/skill-packages").json()
+    assert len(result["packages"][0]["installs"]) == 2
+    for row in result["packages"][0]["installs"]:
+        assert row["state"] == "ready" and not row["eligible"]
+        assert row["reasons"][0]["field"] == "microclaw"
+        verdict = read(package("markdown") / "installs" / row["install_id"] / "verdict.json")
+        assert not verdict["eligible"] and verdict["reasons"] == row["reasons"]
+    assert read(package("markdown") / "pointer.json") == pointer
+    assert result["trust"]["test_roots_active"]
+
+
+@pytest.mark.parametrize("action", ["rollback", "repair"])
+def test_skill_jobs_do_not_reserve_acquisition_and_report_conflicts(skill_client, session, monkeypatch, action):
+    from microclaw import skill_store
+    from tests.test_skill_store import package, read
+    entered, release = threading.Event(), threading.Event()
+    real = getattr(skill_store, "_" + action)
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(8)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(skill_store, "_" + action, blocked)
+    monkeypatch.setattr(updates, "locate_uv", lambda: "unused-for-markdown")
+    # These block extension installation; they must not block isolated packages.
+    session.pending = {"fixture": True}
+    session.lock = types.SimpleNamespace(locked=lambda: True)
+    pointer = read(package("markdown") / "pointer.json")
+    try:
+        result = skill_client.post("/api/skill-packages/markdown-fixture/" + action)
+        assert result.status_code == 202
+        assert entered.wait(3)
+        state = skill_client.get("/api/skill-packages").json()["packages"][0]
+        assert state["job"]["running"] and state["job"]["phase"] == action
+        assert read(package("markdown") / "job.json")["running"]
+        assert skill_client.post("/api/skill-packages/markdown-fixture/repair").status_code == 409
+        assert skill_client.get("/api/skill-packages").status_code == 200
+    finally:
+        release.set()
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        job = read(package("markdown") / "job.json")
+        if not job["running"]:
+            break
+        time.sleep(.01)
+    assert not job["running"] and not job.get("reasons")
+    after = read(package("markdown") / "pointer.json")
+    assert after["active"] != pointer["active"]
+    if action == "rollback":
+        assert after["active"] == pointer["previous"]
+    else:
+        assert after["previous"] == pointer["previous"]
+
+
+def test_skill_startup_thread_does_not_delay_lifespan_or_get(session, monkeypatch):
+    from microclaw import skill_store
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    main_thread = threading.get_ident()
+    def recover(**kwargs):
+        calls.append(("recover", threading.get_ident(), kwargs))
+    def recheck(**kwargs):
+        calls.append(("recheck", threading.get_ident(), kwargs))
+        entered.set()
+        try:
+            assert release.wait(8)
+        finally:
+            finished.set()
+    monkeypatch.setattr(skill_store, "recover", recover)
+    monkeypatch.setattr(skill_store, "recheck", recheck)
+    try:
+        with TestClient(build_app(session)) as client:
+            assert entered.wait(3)
+            assert client.get("/api/skill-packages").status_code == 200
+            assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(3)
+    assert [call[0] for call in calls] == ["recover", "recheck"]
+    assert calls[0][1] == calls[1][1] != main_thread
+    assert all(call[2]["retained_digests"] == frozenset() for call in calls)
+
+
+@pytest.mark.parametrize("action", ["rollback", "repair"])
+def test_skill_routes_use_existing_auth(session, action):
+    path = "/api/skill-packages/markdown-fixture/" + action
+    local = TestClient(build_app(session))
+    assert local.post(path, headers={"Origin": "https://evil.invalid"}).status_code == 403
+    remote = TestClient(build_app(session, remote=True, api_token="test-token", behind_tls_proxy=True))
+    assert remote.post(path, headers={"x-forwarded-proto": "https"}).status_code == 401
+    assert remote.get("/api/skill-packages", headers={"x-forwarded-proto": "https"}).status_code == 401
+
+
+def test_skill_get_runs_in_threadpool(skill_client, monkeypatch):
+    from microclaw import skill_store
+    threads = []
+    real = skill_store.status
+    def status():
+        threads.append(threading.current_thread().name)
+        return real()
+    monkeypatch.setattr(skill_store, "status", status)
+    assert skill_client.get("/api/skill-packages").status_code == 200
+    assert threads and all("AnyIO worker" in name for name in threads)

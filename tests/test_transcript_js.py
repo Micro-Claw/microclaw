@@ -417,3 +417,22 @@ def test_extension_catalog_reconcile_renders_controlled_slot(tmp_path, monkeypat
     row = extensions_view({"extensions": catalog})[0]
     assert row["status"] == ("ready" if ready else "failed-or-missing"), scenario
     assert row["button"] == (None if ready else "Reinstall"), scenario
+
+
+def test_skill_packages_view_keeps_disabled_release_and_test_banner():
+    path = resources.files("microclaw").joinpath("transcript.js")
+    state = {"trust": {"test_roots_active": True}, "packages": [{
+        "package_id": "example", "installs": [{"manifest": {"publisher": "lab", "version": "1.0.0"},
+        "artifact_digest": "abcdef1234567890", "state": "ready", "eligible": False,
+        "reasons": [{"field": "microclaw", "detail": "incompatible with 2.0.0"}]}]}]}
+    script = ("global.window = {};\n" + f"require({json.dumps(str(path))});\n" +
+              f"process.stdout.write(JSON.stringify(window.Transcript.skillPackagesView({json.dumps(state)})));\n")
+    view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
+                                    encoding="utf-8", check=True).stdout)
+    assert view["rows"] == ["lab/example 1.0.0 abcdef123456 — ready — disabled: microclaw: incompatible with 2.0.0"]
+    assert view["trust"] == "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
+    html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
+    assert '<details id="skill-packages-panel"' in html
+    assert "Transcript.skillPackagesView(state)" in html and "item.textContent = row" in html
+    panel = html.split('<details id="skill-packages-panel"')[1].split("</details>")[0]
+    assert "<button" not in panel

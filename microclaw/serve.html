@@ -129,6 +129,11 @@
     <summary>Extensions</summary>
     <div id="extensions-list"></div>
   </details>
+  <details id="skill-packages-panel" class="banner">
+    <summary>Community skill packages</summary>
+    <p id="skill-packages-trust"></p>
+    <div id="skill-packages-list"></div>
+  </details>
   <div class="banner hidden" id="update-banner">
     <h2>Microclaw update</h2>
     <p id="update-text"></p>
@@ -278,6 +283,31 @@
       $("extensions-list").textContent = "Could not load extensions: " + err.message;
     } finally {
       extensionPollTimer = setTimeout(refreshExtensions, fast ? 500 : 30000);
+    }
+  }
+
+  let skillPackagesPollTimer;
+  async function refreshSkillPackages() {
+    clearTimeout(skillPackagesPollTimer);
+    let fast = false;
+    try {
+      const res = await apiFetch("/api/skill-packages");
+      if (!res.ok) return;
+      const state = await res.json();
+      const view = Transcript.skillPackagesView(state);
+      $("skill-packages-trust").textContent = view.trust;
+      const list = $("skill-packages-list");
+      list.replaceChildren();
+      for (const row of view.rows) {
+        const item = document.createElement("p");
+        item.textContent = row;
+        list.append(item);
+      }
+      fast = state.packages.some(p => p.job && p.job.running);
+    } catch (err) {
+      $("skill-packages-list").textContent = "Could not load skill packages: " + err.message;
+    } finally {
+      skillPackagesPollTimer = setTimeout(refreshSkillPackages, fast ? 500 : 30000);
     }
   }
 
@@ -938,6 +968,7 @@
       // without this fetch the turn would sit stranded until the deadline.
       await confirmationRecovery.startFromBoot();
       void refreshExtensions();
+      void refreshSkillPackages();
     } catch (err) { toast("Could not reach the MicroClaw server: " + err.message); }
     msg.focus();
   })();

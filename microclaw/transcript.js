@@ -279,6 +279,28 @@
     });
   }
 
+  function skillPackagesView(state) {
+    const reasons = values => (values || []).map(r => r.field + ": " + r.detail).join("; ");
+    const rows = [];
+    for (const pkg of state.packages || []) {
+      for (const install of pkg.installs || []) {
+        const manifest = install.manifest || install.intake || {};
+        rows.push((manifest.publisher || "unknown") + "/" + pkg.package_id + " " +
+          (manifest.version || "unknown") + " " + (install.artifact_digest || "").slice(0, 12) +
+          " — " + install.state + (install.active ? " (active)" : install.previous ? " (previous)" : "") +
+          (install.eligible ? " — eligible" : " — disabled: " + reasons(install.reasons)));
+      }
+      if ((pkg.broken || []).length) rows.push(pkg.package_id + " — disabled: " + reasons(pkg.broken));
+      for (const failure of pkg.deletion_failures || []) rows.push(pkg.package_id + " — deletion pending: " + failure.detail);
+      if (pkg.job) rows.push(pkg.package_id + " — " + pkg.job.operation + ": " + pkg.job.phase +
+        ((pkg.job.reasons || []).length ? " — " + reasons(pkg.job.reasons) : ""));
+    }
+    const trust = state.trust || {};
+    return {rows, trust: trust.test_roots_active
+      ? "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
+      : [trust.reason, reasons(trust.reasons)].filter(Boolean).join("; ")};
+  }
+
   function extensionsView(state) {
     const job = (state && state.job) || {};
     return ((state && state.extensions) || []).map(item => {
@@ -367,7 +389,7 @@
 
   global.Transcript = {
     esc, escAttr, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
-    updateBannerView, extensionsView,
+    updateBannerView, extensionsView, skillPackagesView,
     artifactOf, artifactChip, parseHistoryText,
     expandAll: (tx) => setOpen(tx, true),
     collapseAll: (tx) => setOpen(tx, false),
