@@ -558,7 +558,7 @@ def test_committed_intake_signature_is_reproducible_and_verifies(kind):
     assert sign(value) == value
     verdict = packages.check_release(value, policy(), purpose='execution', now=NOW)
     assert verdict == dict(publisher='fixture-lab', key_id=value['signature']['key_id'],
-                           key_state='active', revision=1, stale=False, purpose='execution')
+                           key_state='active', revision=1, stale=False, purpose='execution', environment='test')
 
 
 def test_committed_policy_signature_is_reproducible_and_detached():
@@ -745,7 +745,7 @@ def test_production_roots_fail_closed_and_test_environment_is_separate():
     document['environment'] = 'production'
     document = sign(document, 'root')
     refuses('trust.environment', packages.verify_trust_policy, document, roots)
-    refuses('signature.key_id', packages.verify_trust_policy, document)
+    refuses('trust.signature.key_id', packages.verify_trust_policy, document)
 
 
 def test_policy_rollback_and_equal_revision_content():
@@ -768,7 +768,7 @@ def test_policy_rollback_and_equal_revision_content():
 def test_policy_signed_fields_cannot_change(field, replacement):
     document = trust_file('policy')
     document[field] = replacement
-    expected = {'environment': 'trust.environment', 'type': 'trust.type'}.get(field, 'signature.value')
+    expected = {'environment': 'trust.environment', 'type': 'trust.type'}.get(field, 'trust.signature.value')
     refuses(expected, packages.verify_trust_policy, document, trust_file('roots'))
 
 
@@ -812,7 +812,7 @@ def test_policy_field_refusals(path, replacement, field):
 @pytest.mark.parametrize('location,field', [
     ((), 'trust'), (('publishers', 'fixture-lab'), 'trust.publishers.fixture-lab'),
     (('publishers', 'fixture-lab', 'keys', 0), 'trust.publishers.fixture-lab.keys[0]'),
-    (('signature',), 'signature'),
+    (('signature',), 'trust.signature'),
 ])
 def test_policy_closed_required_objects(location, field):
     base = trust_file('policy')
@@ -831,12 +831,28 @@ def test_policy_closed_required_objects(location, field):
         refuses(field + '.' + key, packages.verify_trust_policy, value, trust_file('roots'))
 
 
-def test_snapshot_mutation_is_not_verified_by_boolean():
+def test_release_gates_verify_only_release_signatures(monkeypatch):
     snapshot = policy()
-    snapshot['policy']['publishers']['fixture-lab']['state'] = 'revoked'
-    refuses('signature.value', packages.check_release, intake(), snapshot, purpose='execution', now=NOW)
-    refuses('trust.policy', packages.check_release, intake(), trust_file('policy'),
-            purpose='execution', now=NOW)
+    records = [record('markdown'), record('executable')]
+    calls = []
+    original = packages._verify_signature
+
+    def verify(document, keys, field="signature"):
+        calls.append(document['type'])
+        return original(document, keys, field)
+
+    monkeypatch.setattr(packages, '_verify_signature', verify)
+    packages.check_release(intake(), snapshot, purpose='execution', now=NOW)
+    assert calls == [packages.RELEASE_TYPE]
+    calls.clear()
+    assert len(packages.external_catalog_lines(records, snapshot, now=NOW)) == len(records)
+    assert calls == [packages.RELEASE_TYPE] * len(records)
+    calls.clear()
+    assert policy(previous=snapshot) == snapshot
+    assert calls == [packages.TRUST_POLICY_TYPE]
+
+
+def test_loading_gates_require_verified_policy():
     refuses('trust', packages.external_catalog_lines, [record()], None, now=NOW)
     refuses('trust', packages.load_external_skill, 'fixture-lab/executable-fixture/workflow',
             [record()], None, now=NOW)
@@ -897,9 +913,9 @@ def test_policy_requires_real_root_signature():
     del document['signature']
     refuses('trust.signature', packages.verify_trust_policy, document, trust_file('roots'))
     document = sign(document, 'publisher-a')
-    refuses('signature.key_id', packages.verify_trust_policy, document, trust_file('roots'))
+    refuses('trust.signature.key_id', packages.verify_trust_policy, document, trust_file('roots'))
     document['signature']['key_id'] = trust_file('roots')['keys'][0]['key_id']
-    refuses('signature.value', packages.verify_trust_policy, document, trust_file('roots'))
+    refuses('trust.signature.value', packages.verify_trust_policy, document, trust_file('roots'))
 
 
 @pytest.mark.parametrize('location,field', [((), 'roots'), (('keys', 0), 'roots.keys[0]')])

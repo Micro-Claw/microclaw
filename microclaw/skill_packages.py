@@ -423,12 +423,12 @@ def _base64(value, field, size, limit):
     return raw
 
 
-def _signature(signature):
-    _mapping(signature, "signature", {"alg", "key_id", "value"})
+def _signature(signature, field="signature"):
+    _mapping(signature, field, {"alg", "key_id", "value"})
     if signature["alg"] != "ed25519":
-        raise PackageRefusal("signature.alg", "expected ed25519")
-    _digest(signature["key_id"], "signature.key_id")
-    return _base64(signature["value"], "signature.value", 64, MAX_SIGNATURE_LENGTH)
+        raise PackageRefusal(field + ".alg", "expected ed25519")
+    _digest(signature["key_id"], field + ".key_id")
+    return _base64(signature["value"], field + ".value", 64, MAX_SIGNATURE_LENGTH)
 
 
 def _canonical(document):
@@ -452,15 +452,15 @@ def _keys(keys, field, *, states=False, empty=False):
     return admitted
 
 
-def _verify_signature(document, keys):
-    signature = _signature(document["signature"])
+def _verify_signature(document, keys, field="signature"):
+    signature = _signature(document["signature"], field)
     key = keys.get(document["signature"]["key_id"])
     if key is None:
-        raise PackageRefusal("signature.key_id", "key is not admitted")
+        raise PackageRefusal(field + ".key_id", "key is not admitted")
     try:
         Ed25519PublicKey.from_public_bytes(key).verify(signature, _canonical(document))
     except InvalidSignature as exc:
-        raise PackageRefusal("signature.value", "invalid signature") from exc
+        raise PackageRefusal(field + ".value", "invalid signature") from exc
 
 
 def _expires(value):
@@ -474,11 +474,11 @@ def _expires(value):
 
 
 def verify_trust_policy(document, roots=None, *, previous=None):
-    """Return a detached plain-data snapshot {policy, roots} after verification.
+    """Return the detached verified policy document.
 
     Roots are caller-owned MicroClaw configuration, never submission data.
     Omission selects the empty production root set (fails closed). Preserve the
-    last accepted snapshot as previous to enforce monotonic revisions. Freshness
+    last returned document as previous to enforce monotonic revisions. Freshness
     is purpose-dependent and is checked by check_release, not this function.
     """
     roots = PRODUCTION_ROOTS if roots is None else roots
@@ -517,23 +517,23 @@ def verify_trust_policy(document, roots=None, *, previous=None):
         _identifier(release["package_id"], field + ".package_id", MAX_PACKAGE_ID_LENGTH)
         _version(release["version"], field + ".version")
         _digest(release["artifact_digest"], field + ".artifact_digest")
-    _verify_signature(document, root_keys)
+    _verify_signature(document, root_keys, "trust.signature")
     if previous is not None:
-        _mapping(previous, "trust", {"policy", "roots"})
-        old = verify_trust_policy(previous["policy"], previous["roots"])["policy"]
-        if old["environment"] != document["environment"]:
+        if previous["environment"] != document["environment"]:
             raise PackageRefusal("trust.environment", "previous environment mismatch")
-        if (document["revision"] < old["revision"]
-                or (document["revision"] == old["revision"] and _canonical(document) != _canonical(old))):
+        if (document["revision"] < previous["revision"]
+                or (document["revision"] == previous["revision"] and _canonical(document) != _canonical(previous))):
             raise PackageRefusal("trust.revision", "rollback or conflicting revision")
-    return deepcopy({"policy": document, "roots": roots})
+    return deepcopy(document)
 
 
 def check_release(intake, policy, *, purpose, now, artifact=None):
     """Check admission or future execution against a verified policy snapshot.
 
-    policy is the caller-owned result of verify_trust_policy, never package data.
-    Reverify its signature to reject mutation of this plain-data snapshot.
+    policy must be the return value of verify_trust_policy, never package data.
+    The caller attests this, as with an installed record's verified flag. A future
+    cache (83f) must re-verify stored documents against the module's roots when
+    loading them. This gate does not repeat policy verification.
     Admission hashes bytes or a caller-named path; execution performs no I/O.
     """
     intake = validate_intake(intake)
@@ -543,19 +543,17 @@ def check_release(intake, policy, *, purpose, now, artifact=None):
         raise PackageRefusal("now", "expected timezone-aware datetime")
     if policy is None:
         raise PackageRefusal("trust", "no verified policy")
-    _mapping(policy, "trust", {"policy", "roots"})
-    document = verify_trust_policy(policy["policy"], policy["roots"])["policy"]
-    stale = now > _expires(document["expires_at"])
-    publisher = document["publishers"].get(intake["publisher"])
+    stale = now > _expires(policy["expires_at"])
+    publisher = policy["publishers"].get(intake["publisher"])
     if publisher is None or publisher["state"] == "revoked":
         raise PackageRefusal("publisher", "unknown or revoked publisher")
     key = next((key for key in publisher["keys"]
                 if key["key_id"] == intake["signature"]["key_id"]), None)
     if key is None or key["state"] == "revoked" or (purpose == "admission" and key["state"] == "retired"):
         raise PackageRefusal("signature.key_id", "unknown or ineligible publisher key")
-    _verify_signature(intake, _keys(publisher["keys"], "trust.keys", states=True))
+    _verify_signature(intake, {key["key_id"]: base64.b64decode(key["public_key"])})
     if any(release["artifact_digest"] == intake["artifact_digest"]
-           for release in document["revoked_releases"]):
+           for release in policy["revoked_releases"]):
         raise PackageRefusal("artifact_digest", "release revoked")
     if purpose == "admission":
         if stale:
@@ -575,5 +573,5 @@ def check_release(intake, policy, *, purpose, now, artifact=None):
         if digest.hexdigest() != intake["artifact_digest"]:
             raise PackageRefusal("artifact_digest", "artifact digest mismatch")
     return {"publisher": intake["publisher"], "key_id": key["key_id"],
-            "key_state": key["state"], "revision": document["revision"],
-            "stale": stale, "purpose": purpose}
+            "key_state": key["state"], "revision": policy["revision"],
+            "stale": stale, "purpose": purpose, "environment": policy["environment"]}
