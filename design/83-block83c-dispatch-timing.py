@@ -36,9 +36,9 @@ def measure(saturated, count=300):
                                   operation="observe_dataset", parameters={"behaviour": "never_read"},
                                   dataset=root, output_dir=root)
             first = submit()
-            end = time.monotonic() + 8
+            end = time.perf_counter() + 8
             while not (root / "heartbeat.txt").exists():
-                if time.monotonic() >= end or first.wait(0.01):
+                if time.perf_counter() >= end or first.wait(0.01):
                     raise RuntimeError("slow worker did not start")
             if saturated:
                 queued = submit()

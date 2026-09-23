@@ -6,8 +6,10 @@ put_nowait; neither path launches, hashes assets, accesses the filesystem, write
 pipes, starts threads, or waits for a worker. Short locks protect in-memory
 transitions only, never I/O. Fixed dispatchers own launch, deadlines, verification
 and cleanup. Message bytes, pending stdin, retained stdout and stderr, queued
-jobs and live workers have explicit bounds. There is no total analysis deadline
-unless supplied. Measurements live in design/83-block83c-dispatch-timing.py.
+jobs and live workers have explicit bounds. Notification history retains the first
+32 attempts and counts subsequent attempts without retaining them. There is no
+total analysis deadline unless supplied. All timing uses perf_counter, including
+deadlines. Measurements live in design/83-block83c-dispatch-timing.py.
 
 Workers have the user's permissions, not an OS sandbox. Windows uses a Job
 Object assigned before resume. POSIX uses a new session/process group; a POSIX
@@ -36,6 +38,7 @@ from . import skill_packages as packages
 MAX_STDERR_BYTES = 65536
 MAX_RETAINED_STATUS = 256
 MAX_PENDING_NOTIFICATIONS = 8
+MAX_RECORDED_NOTIFICATIONS = 32
 MAX_QUEUED_JOBS = 4
 MAX_CONCURRENT_WORKERS = 2
 STARTUP_DEADLINE_S = 60
@@ -161,13 +164,13 @@ class JobHandle:
         self._stderr = bytearray()
         self._declared = {}
         self._accepted = {}
-        self._created = time.monotonic()
+        self._created = time.perf_counter()
         self._spawned = self._first = self._shutdown = self._cancel_sent = None
-        self._stdin_closed = None
+        self._stdin_unavailable_reason = None
         self._violation = None
         self._record = dict(job_id=self.job_id, release={}, operation=None, state="queued",
                             result=None, failure=None, artifacts=[], rejected_artifacts=[],
-                            lifecycle=dict(acquisition=None, writer=None), notifications=[],
+                            lifecycle=dict(acquisition=None, writer=None), notifications=[], notifications_dropped=0,
                             status=[], status_dropped=0, stderr_tail="", exit_code=None,
                             duration_breakdown=dict(queued_s=0.0, startup_s=0.0, running_s=0.0,
                                                     shutdown_s=0.0, accounted_s=0.0))
@@ -184,7 +187,7 @@ class JobHandle:
 
     def _finish(self, state, failure=None):
         # Caller holds the lock. This is CPU-only, including queued cancellation.
-        end = time.monotonic()
+        end = time.perf_counter()
         spawn = self._spawned or end
         shutdown = self._shutdown or end
         first = min(self._first or shutdown, shutdown)
@@ -195,19 +198,29 @@ class JobHandle:
             running_s=max(0.0, shutdown - first), shutdown_s=end - shutdown,
             accounted_s=end - self._created)
         self._stop.set()
+        self._undeliver_pending(self._stdin_unavailable_reason or "worker_exited")
+        self._done.set()
+
+    def _undeliver_pending(self, reason):
+        # Caller holds the lock; only the bounded stdin queue is traversed.
         while True:
             try:
                 _, entry = self._pending.get_nowait()
             except queue.Empty:
                 break
-            entry.update(state="undelivered", reason="worker_exited")
-        self._done.set()
+            entry.update(state="undelivered", reason=reason)
 
     def _notify(self, kind, **fields):
         message = dict(protocol=packages.ANALYSIS_PROTOCOL, type=kind, job_id=self.job_id, **fields)
         with self._lock:
             entry = dict(type=kind, state="refused")
-            self._record["notifications"].append(entry)
+            if len(self._record["notifications"]) < MAX_RECORDED_NOTIFICATIONS:
+                self._record["notifications"].append(entry)
+            else:
+                self._record["notifications_dropped"] += 1
+            if self._stdin_unavailable_reason in ("stdin_closed", "stdin_failed"):
+                entry.update(state="undelivered", reason=self._stdin_unavailable_reason)
+                return False
             try:
                 value = packages.validate_notification(message, job_id=self.job_id,
                                                        operation=self._record["operation"])
@@ -290,7 +303,7 @@ class JobHandle:
                             self._stop.set()
                             return
                         if self._first is None:
-                            self._first = time.monotonic()
+                            self._first = time.perf_counter()
                         kind = message["type"]
                         if kind == "status":
                             if len(self._status) == self._status.maxlen:
@@ -305,12 +318,12 @@ class JobHandle:
                             self._declared[descriptor["path"]] = descriptor
                         else:
                             self._record["result"] = message
-                            self._shutdown = self._shutdown or time.monotonic()
+                            self._shutdown = self._shutdown or time.perf_counter()
                             self._stop.set()
                 if len(buffer) >= packages.MAX_MESSAGE_BYTES:
                     self._fail_protocol("message_too_large", "unterminated stdout exceeds byte bound")
                     return
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
             self._fail_protocol("stdout_failed", str(exc))
 
     def _drain_stderr(self, pipe):
@@ -319,11 +332,12 @@ class JobHandle:
                 with self._lock:
                     self._stderr.extend(chunk)
                     del self._stderr[:-self._supervisor.max_stderr_bytes]
-        except (OSError, ValueError):
-            pass
+        except Exception as exc:
+            self._fail_protocol("stderr_failed", str(exc))
 
     def _stdin(self, pipe, line):
         entry = None
+        unavailable = None
         try:
             _write_pipe(pipe, line)
             while not self._stop.is_set():
@@ -340,18 +354,30 @@ class JobHandle:
                     elif msg["type"] == "writer":
                         self._record["lifecycle"]["writer"] = "finished"
                     else:
-                        self._cancel_sent = time.monotonic()
+                        self._cancel_sent = time.perf_counter()
                         self._shutdown = self._shutdown or self._cancel_sent
                 entry = None
-        except (OSError, ValueError):
-            if entry is not None:
-                with self._lock:
-                    entry.update(state="undelivered", reason="stdin_closed")
+        except OSError:
+            # A disk observer may stop accepting notifications and keep working.
+            # Delivery failure must never become a run deadline or cancellation.
+            unavailable = "stdin_closed"
+        except Exception as exc:
+            unavailable = "stdin_failed"
+            self._fail_protocol("stdin_failed", str(exc))
         finally:
-            pipe.close()
+            try:
+                pipe.close()
+            except Exception as exc:
+                unavailable = "stdin_failed"
+                self._fail_protocol("stdin_failed", str(exc))
             with self._lock:
-                self._stdin_closed = time.monotonic()
-                self._shutdown = self._shutdown or self._stdin_closed
+                self._stdin_unavailable_reason = unavailable or "worker_exited"
+                if unavailable is None:
+                    # The supervisor elected to close stdin (terminal/cleanup).
+                    self._shutdown = self._shutdown or time.perf_counter()
+                if entry is not None and entry["state"] == "pending":
+                    entry.update(state="undelivered", reason=self._stdin_unavailable_reason)
+                self._undeliver_pending(self._stdin_unavailable_reason)
 
 
 class Supervisor:
@@ -445,9 +471,9 @@ class Supervisor:
                     if not handle._done.is_set():
                         handle._finish("cancelled")
                 self._queue.task_done()
-        end = time.monotonic() + max(0, timeout)
+        end = time.perf_counter() + max(0, timeout)
         for thread in self._threads:
-            thread.join(max(0, end - time.monotonic()))
+            thread.join(max(0, end - time.perf_counter()))
 
     def _dispatch(self):
         while not self._closing.is_set():
@@ -490,7 +516,7 @@ class Supervisor:
                    key.upper() not in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"}}
             env.update(PYTHONPATH=os.path.abspath(handle._release_dir), PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
             kwargs = dict(creationflags=0x00000004 | 0x08000000) if os.name == "nt" else dict(start_new_session=True)
-            handle._spawned = time.monotonic()
+            handle._spawned = time.perf_counter()
             process = subprocess.Popen([handle._python, "-u", "-m", handle._manifest["entry_point"]["module"]],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        cwd=cwd, env=env, bufsize=0, **kwargs)
@@ -503,10 +529,10 @@ class Supervisor:
                 threads.append(thread)
                 thread.start()
             while process.poll() is None:
-                now = time.monotonic()
+                now = time.perf_counter()
                 with handle._lock:
                     first, terminal = handle._first, handle._record["result"]
-                    shutdown = handle._shutdown or handle._cancel_sent or handle._stdin_closed
+                    shutdown = handle._shutdown
                     violation = handle._violation
                 reason = None
                 if violation:
@@ -540,9 +566,9 @@ class Supervisor:
                     process.wait(timeout=5)
                 except Exception as exc:
                     failure = dict(reason="cleanup_failed", detail=str(exc))
-                end = time.monotonic() + 2
+                end = time.perf_counter() + 2
                 for thread in threads:
-                    thread.join(max(0, end - time.monotonic()))
+                    thread.join(max(0, end - time.perf_counter()))
                 if any(thread.is_alive() for thread in threads):
                     failure = dict(reason="pipe_cleanup_failed", detail="pipe thread did not stop")
                 else:
@@ -571,7 +597,7 @@ class Supervisor:
             if not failure and state == "failed":
                 failure = dict(reason="worker_failed", detail=result["failure"]["message"])
             descriptors = result["artifacts"] if result else list(handle._declared.values())
-            handle._shutdown = handle._shutdown or time.monotonic()
+            handle._shutdown = handle._shutdown or time.perf_counter()
         retained, rejected = [], []
         for descriptor in descriptors:
             try:

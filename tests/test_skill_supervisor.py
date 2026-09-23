@@ -91,8 +91,8 @@ def finished(handle, state="succeeded", reason=None):
 
 
 def wait_status(handle, expected="ready"):
-    end = time.monotonic() + 8
-    while time.monotonic() < end:
+    end = time.perf_counter() + 8
+    while time.perf_counter() < end:
         if expected in handle.record()["status"]:
             return
         assert not handle.wait(0.01), handle.record()
@@ -100,8 +100,8 @@ def wait_status(handle, expected="ready"):
 
 
 def wait_path(path):
-    end = time.monotonic() + 8
-    while time.monotonic() < end:
+    end = time.perf_counter() + 8
+    while time.perf_counter() < end:
         if path.exists() and path.stat().st_size:
             return
         time.sleep(0.01)
@@ -109,7 +109,9 @@ def wait_path(path):
 
 
 def heartbeat_stopped(path):
-    wait_path(path)
+    # A kill can land between truncation and write; an empty final file is
+    # still evidence that the heartbeat started and must remain unchanged.
+    assert path.is_file()
     before = path.read_bytes()
     time.sleep(0.25)
     assert path.read_bytes() == before
@@ -234,11 +236,11 @@ def test_unterminated_flood_is_bounded_and_killed(supervisors, tmp_path):
     sup = supervisors()
     tracemalloc.start()
     try:
-        start = time.monotonic()
+        start = time.perf_counter()
         value = finished(submit(sup, tmp_path, "oversized"), "supervisor_failed", "message_too_large")
         _, peak = tracemalloc.get_traced_memory()
         assert peak < 8 * 1024 * 1024
-        assert time.monotonic() - start < 10
+        assert time.perf_counter() - start < 10
         assert value["exit_code"] != 0
     finally:
         tracemalloc.stop()
@@ -260,13 +262,13 @@ def test_status_and_stderr_flood(supervisors, tmp_path):
 def test_nonreader_large_job_and_notifications_never_block(supervisors, tmp_path):
     (tmp_path / "before-job.txt").write_text("never_read", encoding="utf-8")
     sup = supervisors(startup_deadline_s=3)
-    start = time.monotonic()
+    start = time.perf_counter()
     handle = submit(sup, tmp_path, "never_read", operation="observe_dataset", padding="x" * 60000)
-    assert time.monotonic() - start < 0.5
-    start = time.monotonic()
+    assert time.perf_counter() - start < 0.5
+    start = time.perf_counter()
     assert handle.notify_acquisition("unterminated", writer="unknown")
     assert handle.notify_writer_finished()
-    assert time.monotonic() - start < 0.5
+    assert time.perf_counter() - start < 0.5
     value = finished(handle, "supervisor_failed", "startup_deadline")
     assert value["exit_code"] != 0
     # A POSIX pipe may buffer the entire job without a reader; delivered
@@ -278,9 +280,9 @@ def test_nonreader_large_job_and_notifications_never_block(supervisors, tmp_path
 def test_job_only_reader_and_notification_after_exit(supervisors, tmp_path):
     handle = submit(supervisors(), tmp_path, operation="observe_dataset")
     finished(handle)
-    start = time.monotonic()
+    start = time.perf_counter()
     assert not handle.notify_acquisition("completed", writer="finished")
-    assert time.monotonic() - start < 0.5
+    assert time.perf_counter() - start < 0.5
     assert handle.record()["notifications"][-1]["state"] == "undelivered"
 
 
@@ -301,9 +303,9 @@ def test_crash_retains_only_pinned_artifacts(supervisors, tmp_path, behaviour, r
 def test_deadlines_kill_heartbeat_tree(supervisors, tmp_path, behaviour, reason):
     path = tmp_path / "heartbeat.txt"
     sup = supervisors(startup_deadline_s=3, self_check_deadline_s=4, shutdown_grace_s=1.5)
-    start = time.monotonic()
+    start = time.perf_counter()
     value = finished(submit(sup, tmp_path, behaviour, heartbeat=str(path)), "supervisor_failed", reason)
-    assert time.monotonic() - start < 10
+    assert time.perf_counter() - start < 10
     assert value["exit_code"] != 0
     heartbeat_stopped(path)
 
@@ -366,9 +368,9 @@ def test_concurrency_and_overflow(supervisors, tmp_path):
         wait_status(handle)
     for i in range(2, 6):
         handles.append(submit(sup, tmp_path, "slow", sleep=0.3, interval=str(tmp_path / str(i))))
-    start = time.monotonic()
+    start = time.perf_counter()
     overflow = submit(sup, tmp_path, "slow", interval=str(tmp_path / "overflow"))
-    assert time.monotonic() - start < 0.5
+    assert time.perf_counter() - start < 0.5
     finished(overflow, "dispatch_failed", "queue_full")
     for handle in handles:
         finished(handle)
@@ -454,9 +456,9 @@ def test_instances_are_independent_and_close_is_bounded(supervisors, tmp_path):
     running = submit(one, tmp_path, "mid_hang", heartbeat=str(heartbeat))
     wait_status(running)
     wait_path(heartbeat)
-    start = time.monotonic()
+    start = time.perf_counter()
     one.close(timeout=8)
-    assert time.monotonic() - start < 9
+    assert time.perf_counter() - start < 9
     finished(running, "supervisor_failed", "supervisor_closed")
     heartbeat_stopped(heartbeat)
     finished(submit(two, tmp_path))
@@ -496,30 +498,30 @@ def test_capture_thread_never_waits_or_does_worker_io(supervisors, tmp_path, mon
     def capture():
         ids.append(threading.get_ident())
         try:
-            start = time.monotonic()
+            start = time.perf_counter()
             handle = dispatch()
             captured.append(handle)
-            measured.append(time.monotonic() - start)
+            measured.append(time.perf_counter() - start)
             for _ in range(50):
                 for fn in (lambda: handle.notify_acquisition("unterminated", writer="unknown"),
                            handle.notify_writer_finished):
-                    start = time.monotonic()
+                    start = time.perf_counter()
                     fn()
-                    measured.append(time.monotonic() - start)
+                    measured.append(time.perf_counter() - start)
                 if saturated:
-                    start = time.monotonic()
+                    start = time.perf_counter()
                     captured.append(dispatch())
-                    measured.append(time.monotonic() - start)
+                    measured.append(time.perf_counter() - start)
                 time.sleep(0.01)
         except BaseException as exc:
             failures.append(exc)
-    start = time.monotonic()
+    start = time.perf_counter()
     thread = threading.Thread(target=capture)
     thread.start()
     thread.join(2)
     assert not thread.is_alive()
     assert not failures
-    assert time.monotonic() - start < 2
+    assert time.perf_counter() - start < 2
     assert max(measured) < 0.5
     assert len(calls["verify"]) - before_verify == len(captured)
     if saturated:
@@ -665,9 +667,9 @@ def test_live_unterminated_then_late_writer(supervisors, tmp_path):
     handle = submit(supervisors(), tmp_path, source=release("executable"), operation="observe_dataset")
     wait_status(handle)
     assert handle.notify_acquisition("unterminated", writer="unknown")
-    end = time.monotonic() + 5
+    end = time.perf_counter() + 5
     while handle.record()["lifecycle"]["writer"] != "unknown":
-        assert time.monotonic() < end
+        assert time.perf_counter() < end
         assert not handle.wait(0.01)
     assert handle.record()["lifecycle"] == dict(acquisition="unterminated", writer="unknown")
     assert not handle.wait(0.1)
@@ -729,12 +731,14 @@ def test_artifact_message_count_is_bounded(supervisors, tmp_path):
     assert len(value["rejected_artifacts"]) == p.MAX_ARTIFACTS
 
 
-def test_stdin_closure_starts_shutdown_grace(supervisors, tmp_path):
-    handle = submit(supervisors(), tmp_path, "close_stdin", operation="observe_dataset")
+def test_worker_stdin_closure_does_not_gate_analysis(supervisors, tmp_path):
+    handle = submit(supervisors(shutdown_grace_s=0.3), tmp_path, "close_stdin",
+                    operation="observe_dataset", sleep=2)
     wait_status(handle)
     assert handle.notify_acquisition("unterminated", writer="unknown")
-    finished(handle, "supervisor_failed", "shutdown_deadline")
-    assert handle.record()["notifications"][0]["state"] == "undelivered"
+    value = finished(handle)
+    assert value["notifications"][0]["state"] == "undelivered"
+    assert value["notifications"][0]["reason"] == "stdin_closed"
 
 
 def test_launch_failure_is_a_record(supervisors, tmp_path):
@@ -750,3 +754,101 @@ def test_deadline_refusals(supervisors, deadline):
                                   operation="self_check", parameters={}, deadline_s=deadline)
     value = finished(handle, "refused", "refused")
     assert value["failure"]["field"] == "deadline_s"
+
+
+def test_notification_history_is_bounded(supervisors, tmp_path):
+    handle = submit(supervisors(), tmp_path, "lifecycle", operation="observe_dataset")
+    wait_status(handle)
+    assert handle.notify_acquisition("unterminated", writer="unknown")
+    latencies = []
+    for _ in range(1000):
+        start = time.perf_counter()
+        assert not handle.notify_acquisition("unterminated", writer="unknown")
+        latencies.append(time.perf_counter() - start)
+    value = handle.record()
+    assert len(value["notifications"]) == s.MAX_RECORDED_NOTIFICATIONS == 32
+    assert value["notifications_dropped"] == 1001 - s.MAX_RECORDED_NOTIFICATIONS
+    assert max(latencies) < 0.5
+    assert all(entry["state"] == "refused" for entry in value["notifications"][1:])
+    assert handle.notify_writer_finished()
+    value = finished(handle)
+    assert len(value["notifications"]) == 32
+    assert value["notifications_dropped"] == 1002 - 32
+    assert value["lifecycle"]["writer"] == "finished"
+
+
+def test_closed_stdin_pending_and_later_notifications(supervisors, tmp_path, monkeypatch):
+    # Hold the first failed write briefly so a second notification is definitely
+    # pending when BrokenPipeError is observed. The worker is a real subprocess.
+    writing, proceed = threading.Event(), threading.Event()
+    original = s._write_pipe
+
+    def write(pipe, line):
+        if json.loads(line)["type"] != "job":
+            writing.set()
+            assert proceed.wait(5)
+        return original(pipe, line)
+    monkeypatch.setattr(s, "_write_pipe", write)
+    handle = submit(supervisors(shutdown_grace_s=0.3), tmp_path, "close_stdin",
+                    operation="observe_dataset", sleep=3)
+    try:
+        wait_status(handle)
+        assert handle.notify_acquisition("unterminated", writer="unknown")
+        assert writing.wait(5)
+        assert handle.notify_writer_finished()
+    finally:
+        proceed.set()
+    end = time.perf_counter() + 5
+    while handle.record()["notifications"][1]["state"] == "pending":
+        assert time.perf_counter() < end
+        time.sleep(0.01)
+    start = time.perf_counter()
+    assert not handle.cancel()
+    assert not handle.notify_acquisition("unterminated", writer="unknown")
+    assert time.perf_counter() - start < 0.5
+    value = finished(handle)
+    assert len(value["notifications"]) == 4
+    assert all(entry["state"] == "undelivered" and entry["reason"] == "stdin_closed"
+               for entry in value["notifications"])
+    assert value["lifecycle"] == dict(acquisition=None, writer=None)
+
+
+@pytest.mark.parametrize("pipe_name", ["stdout", "stderr", "stdin"])
+def test_unexpected_pipe_exception_fails_and_kills_tree(supervisors, tmp_path, monkeypatch, pipe_name):
+    detail = f"{pipe_name} injected bug"
+    if pipe_name == "stdout":
+        def validate(*args, **kwargs):
+            raise KeyError(detail)
+        monkeypatch.setattr(p, "validate_worker_message", validate)
+    elif pipe_name == "stderr":
+        class BrokenTail(bytearray):
+            def extend(self, chunk):
+                raise KeyError(detail)
+        original = s.JobHandle._drain_stderr
+
+        def drain(handle, pipe):
+            handle._stderr = BrokenTail()
+            original(handle, pipe)
+        monkeypatch.setattr(s.JobHandle, "_drain_stderr", drain)
+    else:
+        original = s._write_pipe
+
+        def write(pipe, line):
+            if json.loads(line)["type"] != "job":
+                raise KeyError(detail)
+            return original(pipe, line)
+        monkeypatch.setattr(s, "_write_pipe", write)
+    heartbeat = tmp_path / "heartbeat.txt"
+    handle = submit(supervisors(), tmp_path, "mid_hang", operation="observe_dataset", heartbeat=str(heartbeat))
+    if pipe_name == "stdin":
+        wait_status(handle)
+        assert handle.notify_acquisition("unterminated", writer="unknown")
+    start = time.perf_counter()
+    value = finished(handle, "supervisor_failed", pipe_name + "_failed")
+    assert time.perf_counter() - start < 10
+    assert value["failure"]["detail"] == str(KeyError(detail))
+    assert value["exit_code"] != 0
+    heartbeat_stopped(heartbeat)
+    if pipe_name == "stdin":
+        assert value["notifications"][0]["state"] == "undelivered"
+        assert value["notifications"][0]["reason"] == "stdin_failed"

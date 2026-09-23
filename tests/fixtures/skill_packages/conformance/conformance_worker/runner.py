@@ -12,7 +12,7 @@ PROTOCOL = "microclaw.analysis.v1"
 
 def heartbeat(path):
     while True:
-        Path(path).write_text(str(time.monotonic_ns()), encoding="utf-8")
+        Path(path).write_text(str(time.perf_counter_ns()), encoding="utf-8")
         time.sleep(0.05)
 
 
@@ -32,7 +32,7 @@ def main():
     behaviour = params.get("behaviour", "success")
     log = params.get("interval")
     if log:
-        Path(log + ".start").write_text(str(time.monotonic()), encoding="utf-8")
+        Path(log + ".start").write_text(str(time.perf_counter()), encoding="utf-8")
 
     def message(kind, **fields):
         return dict(protocol=PROTOCOL, type=kind, job_id=job["job_id"], **fields)
@@ -130,14 +130,15 @@ def main():
         for i in range(257):
             emit("artifact", artifact=dict(path=f"{i}.txt", sha256="0" * 64, validity="partial"))
     if behaviour == "close_stdin":
-        time.sleep(60)
-        return
+        time.sleep(params.get("sleep", 2))
     if behaviour == "flood":
         for i in range(params.get("count", 30000)):
             emit("status", message=str(i))
         sys.stderr.buffer.write(b"x" * 200000 + b"TAIL")
         sys.stderr.buffer.flush()
     if behaviour in {"mid_hang", "ignore_cancel"}:
+        sys.stderr.write("observer diagnostic\n")
+        sys.stderr.flush()
         time.sleep(60)
         return
     if behaviour == "cancel":
@@ -168,15 +169,15 @@ def main():
     elif behaviour == "heartbeat_success":
         time.sleep(0.2)
     if log:
-        Path(log + ".stop").write_text(str(time.monotonic()), encoding="utf-8")
+        Path(log + ".stop").write_text(str(time.perf_counter()), encoding="utf-8")
 
 
 def spawn_heartbeat(path):
     subprocess.Popen([sys.executable, "-u", "-m", "conformance_worker.runner", "heartbeat", path],
                      stdin=subprocess.DEVNULL)  # Deliberately inherits stdout/stderr.
-    deadline = time.monotonic() + 5
+    deadline = time.perf_counter() + 5
     while not Path(path).exists():
-        if time.monotonic() > deadline:
+        if time.perf_counter() > deadline:
             raise RuntimeError("heartbeat child did not start")
         time.sleep(0.01)
 
