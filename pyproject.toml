@@ -37,6 +37,8 @@ test = [
     "pytest-mock",
     "fastapi>=0.110",
     "httpx>=0.27",
+    # design/83 block 83d: skill-package install tests run a real uv offline.
+    "uv>=0.8",
 ]
 
 [project.scripts]
