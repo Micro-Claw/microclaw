@@ -1,0 +1,15 @@
+{
+  "type": "microclaw.skill-release.v1",
+  "publisher": "ries-lab",
+  "package_id": "smappy",
+  "version": "0.1.0",
+  "artifact": "https://github.com/ries-lab/SMAPpy/releases/download/v0.1.0/smappy-skills.zip",
+  "artifact_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "kind": "executable",
+  "microclaw": ">=0.1",
+  "python": ">=3.9",
+  "platforms": [
+    "win_amd64"
+  ],
+  "protocol_version": "1.0"
+}
