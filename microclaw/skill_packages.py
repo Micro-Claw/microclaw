@@ -1,27 +1,54 @@
-"""Community release format, without admission, installation or execution.
+"""Community release format and publisher trust, without installation or workers.
 
 The schema is the closed mapping checked by ``validate_manifest``. Metadata is
 in the manifest; SKILL.md is opaque publisher text (not first-party frontmatter).
 An artifact reference is a publisher HTTPS URL; only the *external* intake's
 SHA-256 pins its bytes. A caller supplying verified installed records attests
-that the manifest came from those bytes. This module does not establish trust.
+that the manifest came from those bytes. Signature verification establishes
+provenance, not safe behaviour.
+
+Revocation affects future execution only: every future start or skill load must
+pass check_release(purpose="execution"). Already-running jobs are not cancelled.
+Trust checks never delete, move or write anything; installed files and acquisition
+data remain untouched. A revoked release stays installed and visible but cannot
+start. Reauthorization means installing a different release as a new admission,
+only when release, key or publisher revocation makes a release unusable. Rotation
+never requires it; staleness never requires it and is disclosed in the verdict.
+Verification is a pure function of the caller's policy snapshot, with no I/O
+except hashing a caller-named artifact. No refresh can block acquisition.
 
 Operations carry name/input_schema/output_schema. Here a schema is an object
 with a nonempty type label; protocol support and schema semantics belong to 83c.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
+import json
 import keyword
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+RELEASE_TYPE = "microclaw.skill-release.v1"
+TRUST_POLICY_TYPE = "microclaw.trust-policy.v1"
+PRODUCTION_ROOTS = {"environment": "production", "keys": []}
+MAX_SIGNATURE_LENGTH = 88
+MAX_PUBLIC_KEY_LENGTH = 44
+MAX_TIMESTAMP_LENGTH = 20
+MAX_PUBLISHERS = 1024
+MAX_KEYS = 64
+MAX_REVOKED_RELEASES = 16384
 MAX_PUBLISHER_LENGTH = 64
 MAX_PACKAGE_ID_LENGTH = 64
 MAX_SKILL_NAME_LENGTH = 64
@@ -180,16 +207,41 @@ def parse_qualified_name(name):
     return parts
 
 
+def _compatibility(record):
+    _range(record["microclaw"], "microclaw")
+    if record["kind"] == "executable":
+        _range(record["python"], "python")
+        _list(record["platforms"], "platforms", MAX_PLATFORMS)
+        platforms = set()
+        for i, platform in enumerate(record["platforms"]):
+            field = f"platforms[{i}]"
+            _text(platform, field, MAX_PLATFORM_LENGTH)
+            if not re.fullmatch(r"[a-z0-9]+(?:[_-][a-z0-9]+)*", platform) or platform in platforms:
+                raise PackageRefusal(field, "expected a unique platform tag")
+            platforms.add(platform)
+        _version(record["protocol_version"], "protocol_version")
+
+
 def validate_intake(record):
-    """Validate the unsigned structural record only; never an admission verdict."""
+    """Validate signed-record structure only; check_release establishes trust."""
     if not isinstance(record, dict):
         raise PackageRefusal("intake", "expected an object")
-    _mapping(record, "", {"package_id", "publisher", "version", "artifact", "artifact_digest"})
+    required = {"type", "package_id", "publisher", "version", "artifact",
+                "artifact_digest", "kind", "microclaw", "signature"}
+    if record.get("kind") == "executable":
+        required |= {"python", "platforms", "protocol_version"}
+    _mapping(record, "", required)
+    if record["type"] != RELEASE_TYPE:
+        raise PackageRefusal("type", "expected skill release type")
+    if record["kind"] not in ("markdown", "executable"):
+        raise PackageRefusal("kind", "expected markdown or executable")
     _identifier(record["package_id"], "package_id", MAX_PACKAGE_ID_LENGTH)
     _identifier(record["publisher"], "publisher", MAX_PUBLISHER_LENGTH)
     _version(record["version"], "version")
     _url(record["artifact"], "artifact")
     _digest(record["artifact_digest"], "artifact_digest")
+    _compatibility(record)
+    _signature(record["signature"])
     return deepcopy(record)
 
 
@@ -204,7 +256,7 @@ def validate_manifest(manifest):
     _identifier(manifest["package_id"], "package_id", MAX_PACKAGE_ID_LENGTH)
     _identifier(manifest["publisher"], "publisher", MAX_PUBLISHER_LENGTH)
     _version(manifest["version"], "version")
-    _range(manifest["microclaw"], "microclaw")
+    _compatibility(manifest)
     _text(manifest["license"], "license", MAX_LICENSE_LENGTH)
     for field in ("source_url", "issues_url", "artifact"):
         _url(manifest[field], field)
@@ -232,16 +284,7 @@ def validate_manifest(manifest):
         if path not in paths or path.split("/")[-1] != "SKILL.md":
             raise PackageRefusal(field + ".path", "expected a declared SKILL.md asset")
     if kind == "executable":
-        _range(manifest["python"], "python")
-        _list(manifest["platforms"], "platforms", MAX_PLATFORMS)
-        platforms = set()
-        for i, platform in enumerate(manifest["platforms"]):
-            field = f"platforms[{i}]"
-            _text(platform, field, MAX_PLATFORM_LENGTH)
-            if not re.fullmatch(r"[a-z0-9]+(?:[_-][a-z0-9]+)*", platform) or platform in platforms:
-                raise PackageRefusal(field, "expected a unique platform tag")
-            platforms.add(platform)
-        _version(manifest["protocol_version"], "protocol_version")
+        platforms = set(manifest["platforms"])
         _mapping(manifest["entry_point"], "entry_point", {"module"})
         module = _text(manifest["entry_point"]["module"], "entry_point.module", MAX_MODULE_LENGTH)
         if any(not part.isidentifier() or keyword.iskeyword(part) for part in module.split(".")):
@@ -284,16 +327,20 @@ def validate_manifest(manifest):
     return deepcopy(manifest)
 
 
-def _enabled_releases(records):
+def _enabled_releases(records, policy, now):
     # Records are explicit caller data, never discovered from directories.
     for record in records:
         if record.get("enabled") is not True or record.get("verified") is not True:
             continue
         manifest = validate_manifest(record["manifest"])
         intake = validate_intake(record["intake"])
-        for field in ("publisher", "package_id", "version", "artifact"):
+        fields = ["publisher", "package_id", "version", "artifact", "kind", "microclaw"]
+        if manifest["kind"] == "executable":
+            fields += ["python", "platforms", "protocol_version"]
+        for field in fields:
             if manifest[field] != intake[field]:
                 raise PackageRefusal("intake." + field, "does not match verified manifest")
+        check_release(intake, policy, purpose="execution", now=now)
         yield record, manifest, intake
 
 
@@ -302,7 +349,7 @@ def _provenance(manifest, intake):
             f"release={manifest['version']} sha256:{intake['artifact_digest']}")
 
 
-def external_catalog_lines(records):
+def external_catalog_lines(records, policy, *, now):
     """Render enabled verified metadata; bounded formatting is not trust/authority.
 
     Raising for a malformed record is deliberate in 83a; per-record isolation
@@ -310,7 +357,7 @@ def external_catalog_lines(records):
     """
     lines = []
     names = set()
-    for _, manifest, intake in _enabled_releases(records):
+    for _, manifest, intake in _enabled_releases(records, policy, now):
         for skill in manifest["skills"]:
             name = qualified_name(manifest["publisher"], manifest["package_id"], skill["name"])
             if name in names:
@@ -320,19 +367,20 @@ def external_catalog_lines(records):
     return tuple(lines)
 
 
-def load_external_skill(name, records):
+def load_external_skill(name, records, policy, *, now):
     """Return text and operations with the same release identity, without executing.
 
     ``records`` contains plain dictionaries with enabled/verified booleans,
-    manifest, intake and release_dir. Verification is a caller obligation (83b/d),
-    not something a package can assert for itself. All declared assets are checked
-    so a changed ancillary file cannot accompany apparently intact skill prose.
+    manifest, intake and release_dir. The verified flag attests installed-byte
+    verification by the caller (83d); signatures are independently checked here.
+    All declared assets are checked so a changed ancillary file cannot accompany
+    apparently intact skill prose.
     Missing caller-owned record keys raise KeyError as programming errors; package
     format and asset failures use PackageRefusal.
     """
     publisher, package, skill_name = parse_qualified_name(name)
     matches = []
-    for record, manifest, intake in _enabled_releases(records):
+    for record, manifest, intake in _enabled_releases(records, policy, now):
         if (manifest["publisher"], manifest["package_id"]) == (publisher, package):
             for skill in manifest["skills"]:
                 if skill["name"] == skill_name:
@@ -362,3 +410,168 @@ def load_external_skill(name, records):
         "text": f"Publisher-provided skill ({_provenance(manifest, intake)}; {name})\n\n{text}",
         "operations": deepcopy(manifest.get("operations", [])),
     }
+
+
+def _base64(value, field, size, limit):
+    _text(value, field, limit)
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise PackageRefusal(field, "expected base64") from exc
+    if len(raw) != size or base64.b64encode(raw).decode("ascii") != value:
+        raise PackageRefusal(field, "wrong length or noncanonical base64")
+    return raw
+
+
+def _signature(signature, field="signature"):
+    _mapping(signature, field, {"alg", "key_id", "value"})
+    if signature["alg"] != "ed25519":
+        raise PackageRefusal(field + ".alg", "expected ed25519")
+    _digest(signature["key_id"], field + ".key_id")
+    return _base64(signature["value"], field + ".value", 64, MAX_SIGNATURE_LENGTH)
+
+
+def _canonical(document):
+    return json.dumps({k: v for k, v in document.items() if k != "signature"},
+                      sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def _keys(keys, field, *, states=False, empty=False):
+    _list(keys, field, MAX_KEYS, empty=empty)
+    admitted = {}
+    for i, key in enumerate(keys):
+        prefix = f"{field}[{i}]"
+        _mapping(key, prefix, {"key_id", "public_key"} | ({"state"} if states else set()))
+        _digest(key["key_id"], prefix + ".key_id")
+        raw = _base64(key["public_key"], prefix + ".public_key", 32, MAX_PUBLIC_KEY_LENGTH)
+        if hashlib.sha256(raw).hexdigest() != key["key_id"] or key["key_id"] in admitted:
+            raise PackageRefusal(prefix + ".key_id", "mismatched or duplicate key identity")
+        if states and key["state"] not in ("active", "retired", "revoked"):
+            raise PackageRefusal(prefix + ".state", "unknown key state")
+        admitted[key["key_id"]] = raw
+    return admitted
+
+
+def _verify_signature(document, keys, field="signature"):
+    signature = _signature(document["signature"], field)
+    key = keys.get(document["signature"]["key_id"])
+    if key is None:
+        raise PackageRefusal(field + ".key_id", "key is not admitted")
+    try:
+        Ed25519PublicKey.from_public_bytes(key).verify(signature, _canonical(document))
+    except InvalidSignature as exc:
+        raise PackageRefusal(field + ".value", "invalid signature") from exc
+
+
+def _expires(value):
+    _text(value, "trust.expires_at", MAX_TIMESTAMP_LENGTH)
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value):
+        raise PackageRefusal("trust.expires_at", "expected UTC timestamp")
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise PackageRefusal("trust.expires_at", "invalid UTC timestamp") from exc
+
+
+def verify_trust_policy(document, roots=None, *, previous=None):
+    """Return the detached verified policy document.
+
+    Roots are caller-owned MicroClaw configuration, never submission data.
+    Omission selects the empty production root set (fails closed). Preserve the
+    last returned document as previous to enforce monotonic revisions. Freshness
+    is purpose-dependent and is checked by check_release, not this function.
+    """
+    roots = PRODUCTION_ROOTS if roots is None else roots
+    _mapping(roots, "roots", {"environment", "keys"})
+    if roots["environment"] not in ("production", "test"):
+        raise PackageRefusal("roots.environment", "unknown environment")
+    root_keys = _keys(roots["keys"], "roots.keys", empty=True)
+    _mapping(document, "trust", {"type", "environment", "revision", "expires_at",
+                                "publishers", "revoked_releases", "signature"})
+    if document["type"] != TRUST_POLICY_TYPE:
+        raise PackageRefusal("trust.type", "expected trust policy type")
+    if document["environment"] != roots["environment"]:
+        raise PackageRefusal("trust.environment", "root environment mismatch")
+    if type(document["revision"]) is not int or document["revision"] < 1:
+        raise PackageRefusal("trust.revision", "expected positive integer")
+    _expires(document["expires_at"])
+    publishers = document["publishers"]
+    if not isinstance(publishers, dict) or len(publishers) > MAX_PUBLISHERS:
+        raise PackageRefusal("trust.publishers", "expected bounded publisher mapping")
+    identities = set()
+    for publisher, entry in publishers.items():
+        field = f"trust.publishers.{publisher}"
+        _identifier(publisher, "trust.publishers", MAX_PUBLISHER_LENGTH)
+        _mapping(entry, field, {"state", "keys"})
+        if entry["state"] not in ("active", "revoked"):
+            raise PackageRefusal(field + ".state", "unknown publisher state")
+        keys = _keys(entry["keys"], field + ".keys", states=True)
+        for i, key in enumerate(entry["keys"]):
+            if key["key_id"] in identities:
+                raise PackageRefusal(f"{field}.keys[{i}].key_id", "key belongs to another publisher")
+        identities.update(keys)
+    _list(document["revoked_releases"], "trust.revoked_releases", MAX_REVOKED_RELEASES, empty=True)
+    for i, release in enumerate(document["revoked_releases"]):
+        field = f"trust.revoked_releases[{i}]"
+        _mapping(release, field, {"package_id", "version", "artifact_digest"})
+        _identifier(release["package_id"], field + ".package_id", MAX_PACKAGE_ID_LENGTH)
+        _version(release["version"], field + ".version")
+        _digest(release["artifact_digest"], field + ".artifact_digest")
+    _verify_signature(document, root_keys, "trust.signature")
+    if previous is not None:
+        if previous["environment"] != document["environment"]:
+            raise PackageRefusal("trust.environment", "previous environment mismatch")
+        if (document["revision"] < previous["revision"]
+                or (document["revision"] == previous["revision"] and _canonical(document) != _canonical(previous))):
+            raise PackageRefusal("trust.revision", "rollback or conflicting revision")
+    return deepcopy(document)
+
+
+def check_release(intake, policy, *, purpose, now, artifact=None):
+    """Check admission or future execution against a verified policy snapshot.
+
+    policy must be the return value of verify_trust_policy, never package data.
+    The caller attests this, as with an installed record's verified flag. A future
+    cache (83f) must re-verify stored documents against the module's roots when
+    loading them. This gate does not repeat policy verification.
+    Admission hashes bytes or a caller-named path; execution performs no I/O.
+    """
+    intake = validate_intake(intake)
+    if purpose not in ("admission", "execution"):
+        raise PackageRefusal("purpose", "expected admission or execution")
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        raise PackageRefusal("now", "expected timezone-aware datetime")
+    if policy is None:
+        raise PackageRefusal("trust", "no verified policy")
+    stale = now > _expires(policy["expires_at"])
+    publisher = policy["publishers"].get(intake["publisher"])
+    if publisher is None or publisher["state"] == "revoked":
+        raise PackageRefusal("publisher", "unknown or revoked publisher")
+    key = next((key for key in publisher["keys"]
+                if key["key_id"] == intake["signature"]["key_id"]), None)
+    if key is None or key["state"] == "revoked" or (purpose == "admission" and key["state"] == "retired"):
+        raise PackageRefusal("signature.key_id", "unknown or ineligible publisher key")
+    _verify_signature(intake, {key["key_id"]: base64.b64decode(key["public_key"])})
+    if any(release["artifact_digest"] == intake["artifact_digest"]
+           for release in policy["revoked_releases"]):
+        raise PackageRefusal("artifact_digest", "release revoked")
+    if purpose == "admission":
+        if stale:
+            raise PackageRefusal("trust.expires_at", "policy expired")
+        digest = hashlib.sha256()
+        if isinstance(artifact, bytes):
+            digest.update(artifact)
+        elif isinstance(artifact, (str, Path)):
+            try:
+                with Path(artifact).open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except (OSError, ValueError) as exc:
+                raise PackageRefusal("artifact_digest", "artifact unreadable") from exc
+        else:
+            raise PackageRefusal("artifact_digest", "artifact bytes or path required")
+        if digest.hexdigest() != intake["artifact_digest"]:
+            raise PackageRefusal("artifact_digest", "artifact digest mismatch")
+    return {"publisher": intake["publisher"], "key_id": key["key_id"],
+            "key_state": key["state"], "revision": policy["revision"],
+            "stale": stale, "purpose": purpose, "environment": policy["environment"]}

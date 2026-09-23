@@ -1,4 +1,4 @@
-# Format fixtures only
+# Release format and TEST-ONLY trust fixtures
 
 `markdown/` and `executable/` contain release manifests and assets. The manifest
 is the authoritative external skill metadata; SKILL.md is opaque body text.
@@ -8,8 +8,27 @@ No runner or protocol transcript is supplied. Block 83c supplies the declared
 The adjacent intake records are external to those release directories. Their
 all-zero artifact digests and the executable lock's illustrative hash are
 structural examples, not verified artifacts or installable dependencies. Tests
-supply verified-installed records as explicit caller data; they do not perform
-admission. No fixture claims signature or executable protocol conformance.
+supply verified-installed records as explicit caller data; admission tests sign
+records with digests computed from test bytes. No fixture claims executable
+protocol conformance.
+
+Both intake records are signed with Ed25519 publisher-a's TEST-ONLY key for
+fixture-lab. They bind type, identity, artifact reference/digest and compatibility
+metadata. The committed trust/policy-TEST-ONLY.json is signed by the TEST-ONLY
+root and admits publisher-a and publisher-b, allowing rotation tests. All key
+files carry TEST-ONLY in their filenames; the private seeds explicitly warn
+that they are public test keys. Tests reproduce each committed signature from
+the committed seed and verify the committed documents without re-signing.
+The root set has environment "test". Nothing here is a production root;
+MicroClaw's production root set is empty and fails closed.
+
+smappy-0.1.0-unsigned-intake.json is an offline illustrative unsigned SMAPpy
+submission, which refuses admission at signature. It requires no publisher
+service or installed SMAPpy package.
+
+Signed bytes are ASCII canonical JSON (sorted keys, separators "," and ":",
+ensure_ascii=True) with the signature field removed. All pinned fixtures stay
+under this directory, protected from newline translation by .gitattributes.
 
 Manifest objects have closed fields. Asset hashes and external artifact digests
 are lowercase SHA-256 hex. Locks are keyed by declared platform tags, each with

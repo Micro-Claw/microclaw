@@ -3,5 +3,13 @@
   "publisher": "fixture-lab",
   "version": "1.0.0",
   "artifact": "https://github.com/fixture-lab/skills/releases/download/v1.0.0/markdown.zip",
-  "artifact_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+  "artifact_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "type": "microclaw.skill-release.v1",
+  "kind": "markdown",
+  "microclaw": ">=0.1,<2",
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+    "value": "9Fd4QEu4D46jJZ2tfHm9cG0pBxu9NSENCp8SLWtm6WAWbW/f5C3b/vbxqM2Yooe4ePqbZY1hltNOykR4JsTiBw=="
+  }
 }

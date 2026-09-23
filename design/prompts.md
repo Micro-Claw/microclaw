@@ -10934,3 +10934,38 @@ develop on*, and it is the reason the PR is opened at step 4 rather than at
 merge time. One of the five, `test_loaded_asset_bytes_are_bound_to_manifest
 [SKILL.md]`, had even *passed* on Windows for the wrong reason: the CRLF made
 the digest mismatch that the test was asserting for a different cause.
+
+## design/83 block 83b — publisher trust (PR #37, 2026-09-23)
+
+**The coordinator took the one decision a sandboxed runner cannot.** Nothing in
+the tree could verify an asymmetric signature, and the runner has no network.
+`cryptography` went in as a hard dependency before delegation, the worktree venv
+was provisioned with it, and the runner was handed the literal targeted command.
+It was already in `uv.lock`, but only through `secretstorage` on Linux, so it is
+new on every Windows rig — which is why the PR was opened at step 4 with only
+that commit on it, so CI saw the dependency on `windows-latest` first.
+
+**Pin a trust design; don't delegate it.** The prompt fixed the signature
+format, the payload, the policy shape and a rotation/revocation table, and asked
+the runner to object rather than diverge. It reported no divergences, and the
+first turn was right on every semantic branch: nine mutations of those branches
+(retired-at-execution, stale-at-execution, release and publisher revocation,
+environment check, the loader's trust call, rollback, compatibility binding,
+cross-publisher keys) each failed a test. For a block whose subject is
+decisions rather than structure, mutating the decisions was the discriminating
+evidence; watching new tests fail against a module without `check_release` would
+only have shown an `AttributeError`.
+
+**The one defect was a check that protected nothing.** `check_release`
+re-verified the policy against roots carried in the same snapshot — the shape of
+security, with none of the substance, and a policy walk plus an Ed25519 verify
+per record on every catalog render. Round 1 removed it and added a test that
+counts signature verifications: one per release, N per N-record catalog. That
+test failed against the first turn's module. The same round made policy
+signature refusals `trust.signature.*`, because "names the field that failed"
+has to say *which document* failed.
+
+**Counts.** Targeted 1,735; full suite 5,191 passed, 99 skipped, against a
+5,068-pass baseline; `test_built_wheel_contains_the_source_tree_skill_catalog`
+run separately by the coordinator (network) and passed. Two runner turns, no
+killed turns, no escalations requested.

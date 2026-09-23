@@ -1,16 +1,46 @@
-"""Release format tests; verification/installation/worker execution are not faked."""
+"""Release format and real Ed25519 trust checks; no installer or worker."""
 from copy import deepcopy
+import base64
+from datetime import datetime, timezone
 import hashlib
+import socket
 import json
 from pathlib import Path
 import shutil
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from microclaw import skill_packages as packages, skills
 from microclaw.tools import _recorded_outcome
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'skill_packages'
+
+
+NOW = datetime(2026, 9, 23, tzinfo=timezone.utc)
+
+
+def trust_file(name):
+    return json.loads((FIXTURES / 'trust' / f'{name}-TEST-ONLY.json').read_text(encoding='utf-8'))
+
+
+def sign(document, key='publisher-a'):
+    value = deepcopy(document)
+    value.pop('signature', None)
+    seed = json.loads(
+        (FIXTURES / 'trust' / f'{key}-TEST-ONLY-seed.json').read_text(encoding='utf-8'))
+    private = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed['seed']))
+    raw = private.public_key().public_bytes_raw()
+    payload = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+    value['signature'] = dict(alg='ed25519', key_id=hashlib.sha256(raw).hexdigest(),
+                              value=base64.b64encode(private.sign(payload)).decode('ascii'))
+    return value
+
+
+def policy(document=None, **kwargs):
+    return packages.verify_trust_policy(
+        trust_file('policy') if document is None else sign(document, 'root'),
+        trust_file('roots'), **kwargs)
 
 
 def manifest(kind='executable'):
@@ -46,11 +76,11 @@ def test_fixture_validates_and_loads(kind):
     assert packages.validate_manifest(source) == source
     assert packages.validate_intake(intake(kind)) == intake(kind)
     name = f'fixture-lab/{kind}-fixture/workflow'
-    loaded = packages.load_external_skill(name, [record(kind)])
+    loaded = packages.load_external_skill(name, [record(kind)], policy(), now=NOW)
     assert loaded['text'].endswith((FIXTURES / kind / 'SKILL.md').read_text(encoding='utf-8'))
     assert loaded['artifact_digest'] == intake(kind)['artifact_digest']
     assert loaded['operations'] == source.get('operations', [])
-    line, = packages.external_catalog_lines([record(kind)])
+    line, = packages.external_catalog_lines([record(kind)], policy(), now=NOW)
     for text in (name, 'publisher-provided', 'publisher=fixture-lab', 'release=1.0.0',
                  'sha256:' + intake(kind)['artifact_digest'], source['skills'][0]['description']):
         assert text in line
@@ -335,7 +365,7 @@ def test_intake_required_fields(field):
 
 @pytest.mark.parametrize('field,value', [('publisher','Bad'), ('package_id','bad/name'),
     ('version','bad'), ('artifact','relative.zip'), ('artifact_digest','A'*64),
-    ('signature',{}), ('signatures',[]), ('signing_key','placeholder')])
+    ('signatures',[]), ('signing_key','placeholder')])
 def test_intake_refusals(field, value):
     data = intake()
     data[field] = value
@@ -416,8 +446,8 @@ def test_external_identity_cannot_shadow_builtin_catalog():
         # All built-in names remain distinct even if an external skill uses its leaf name.
         qualified = packages.qualified_name('lab', 'package', item.name)
         assert qualified not in {builtin.name for builtin in original}
-        refuses('name', packages.load_external_skill, item.name, [record()])
-    packages.external_catalog_lines([record()])
+        refuses('name', packages.load_external_skill, item.name, [record()], policy(), now=NOW)
+    packages.external_catalog_lines([record()], policy(), now=NOW)
     assert skills.SKILL_CATALOG is original
 
 
@@ -426,24 +456,29 @@ def test_only_explicit_enabled_verified_records_resolve(changes):
     value = record(**changes)
     # Ineligible metadata isn't even read, and no directory scan takes place.
     value['manifest'] = None
-    assert packages.external_catalog_lines([value]) == ()
-    refuses('name', packages.load_external_skill, 'fixture-lab/executable-fixture/workflow', [value])
+    assert packages.external_catalog_lines([value], policy(), now=NOW) == ()
+    refuses('name', packages.load_external_skill, 'fixture-lab/executable-fixture/workflow', [value], policy(), now=NOW)
 
 
 def test_no_implicit_discovery_or_duplicate_resolution():
     name = 'fixture-lab/executable-fixture/workflow'
-    assert packages.external_catalog_lines([]) == ()
-    refuses('name', packages.load_external_skill, name, [])
-    refuses('name', packages.load_external_skill, name, [record(), record()])
-    refuses('name', packages.external_catalog_lines, [record(), record()])
+    assert packages.external_catalog_lines([], policy(), now=NOW) == ()
+    refuses('name', packages.load_external_skill, name, [], policy(), now=NOW)
+    refuses('name', packages.load_external_skill, name, [record(), record()], policy(), now=NOW)
+    refuses('name', packages.external_catalog_lines, [record(), record()], policy(), now=NOW)
 
 
 @pytest.mark.parametrize('field,replacement', [('publisher','other'), ('package_id','other'),
-    ('version','2.0'), ('artifact','https://example.org/other.zip')])
+    ('version','2.0'), ('artifact','https://example.org/other.zip'),
+    ('microclaw','>=99'), ('python','>=99'), ('platforms',['linux_x86_64']),
+    ('protocol_version','2.0'), ('kind','markdown')])
 def test_manifest_and_external_release_identity_must_match(field, replacement):
     value = record()
     value['intake'][field] = replacement
-    refuses('intake.' + field, packages.load_external_skill, 'fixture-lab/executable-fixture/workflow', [value])
+    if field == 'kind':
+        for key in ('python', 'platforms', 'protocol_version'):
+            del value['intake'][key]
+    refuses('intake.' + field, packages.load_external_skill, 'fixture-lab/executable-fixture/workflow', [value], policy(), now=NOW)
 
 
 @pytest.mark.parametrize('asset', ['SKILL.md', 'notes.txt'])
@@ -453,7 +488,7 @@ def test_loaded_asset_bytes_are_bound_to_manifest(tmp_path, asset):
     (root/asset).write_text('modified', encoding='utf-8')
     index = 0 if asset == 'SKILL.md' else 1
     refuses(f'assets[{index}].sha256', packages.load_external_skill,
-            'fixture-lab/executable-fixture/workflow', [record(release_dir=root)])
+            'fixture-lab/executable-fixture/workflow', [record(release_dir=root)], policy(), now=NOW)
 
 
 def test_missing_unreadable_or_symlink_asset_refuses(tmp_path):
@@ -462,15 +497,15 @@ def test_missing_unreadable_or_symlink_asset_refuses(tmp_path):
     (root/'SKILL.md').unlink()
     data = record('markdown', release_dir=root)
     name = 'fixture-lab/markdown-fixture/workflow'
-    refuses('assets[0].path', packages.load_external_skill, name, [data])
+    refuses('assets[0].path', packages.load_external_skill, name, [data], policy(), now=NOW)
     (root/'SKILL.md').mkdir()
-    refuses('assets[0].path', packages.load_external_skill, name, [data])
+    refuses('assets[0].path', packages.load_external_skill, name, [data], policy(), now=NOW)
     (root/'SKILL.md').rmdir()
     try:
         (root/'SKILL.md').symlink_to(FIXTURES/'markdown'/'SKILL.md')
     except OSError as exc:
         pytest.skip(f'Host cannot create test symlinks: {exc}')
-    refuses('assets[0].path', packages.load_external_skill, name, [data])
+    refuses('assets[0].path', packages.load_external_skill, name, [data], policy(), now=NOW)
 
 
 def test_skill_must_decode_as_utf8(tmp_path):
@@ -479,12 +514,12 @@ def test_skill_must_decode_as_utf8(tmp_path):
     (root/'SKILL.md').write_bytes(b'\xff')
     data = record('markdown', release_dir=root)
     data['manifest']['assets'][0]['sha256'] = hashlib.sha256(b'\xff').hexdigest()
-    refuses('skills.path', packages.load_external_skill, 'fixture-lab/markdown-fixture/workflow', [data])
+    refuses('skills.path', packages.load_external_skill, 'fixture-lab/markdown-fixture/workflow', [data], policy(), now=NOW)
 
 
 def test_loaded_operations_and_text_are_detached_from_caller_mutation():
     data = record()
-    loaded = packages.load_external_skill('fixture-lab/executable-fixture/workflow', [data])
+    loaded = packages.load_external_skill('fixture-lab/executable-fixture/workflow', [data], policy(), now=NOW)
     data['manifest']['operations'][0]['name'] = 'changed'
     data['intake']['artifact_digest'] = 'b'*64
     assert loaded['operations'][0]['name'] == 'self_check'
@@ -515,3 +550,446 @@ def test_recorded_outcome_top_level_failures_are_visible(result, expected):
     outcome = _recorded_outcome(result)
     assert outcome is not None
     assert outcome[0] == expected
+
+
+@pytest.mark.parametrize('kind', ['markdown', 'executable'])
+def test_committed_intake_signature_is_reproducible_and_verifies(kind):
+    value = intake(kind)
+    assert sign(value) == value
+    verdict = packages.check_release(value, policy(), purpose='execution', now=NOW)
+    assert verdict == dict(publisher='fixture-lab', key_id=value['signature']['key_id'],
+                           key_state='active', revision=1, stale=False, purpose='execution', environment='test')
+
+
+def test_committed_policy_signature_is_reproducible_and_detached():
+    document = trust_file('policy')
+    assert sign(document, 'root') == document
+    roots = trust_file('roots')
+    snapshot = packages.verify_trust_policy(document, roots)
+    document['publishers'].clear()
+    roots['keys'].clear()
+    assert snapshot == policy()
+
+
+@pytest.mark.parametrize('purpose', ['admission', 'execution'])
+def test_missing_policy_refuses(purpose):
+    refuses('trust', packages.check_release, intake(), None, purpose=purpose, now=NOW)
+
+
+def test_unsigned_smappy_refuses_admission():
+    value = json.loads((FIXTURES / 'smappy-0.1.0-unsigned-intake.json').read_text(encoding='utf-8'))
+    assert (value['publisher'], value['package_id'], value['version']) == ('ries-lab', 'smappy', '0.1.0')
+    refuses('signature', packages.check_release, value, policy(), purpose='admission', now=NOW)
+
+
+@pytest.mark.parametrize('path,replacement,field', [
+    (('signature',), None, 'signature'),
+    (('signature',), {}, 'signature.alg'),
+    (('signature', 'alg'), 'rsa', 'signature.alg'),
+    (('signature', 'key_id'), 'A'*64, 'signature.key_id'),
+    (('signature', 'value'), '*', 'signature.value'),
+    (('signature', 'value'), base64.b64encode(b'x'*63).decode(), 'signature.value'),
+    (('signature', 'value'), base64.b64encode(b'x'*64).decode(), 'signature.value'),
+    (('signature', 'extra'), True, 'signature.extra'),
+    (('public_key',), 'submission key', 'public_key'),
+    (('key',), 'submission key', 'key'),
+])
+def test_signature_structure_and_submission_keys_refuse(path, replacement, field):
+    value = intake()
+    put(value, path, replacement)
+    refuses(field, packages.check_release, value, policy(), purpose='execution', now=NOW)
+
+
+@pytest.mark.parametrize('purpose', ['admission', 'execution'])
+def test_unknown_publisher_and_other_publishers_key(purpose):
+    value = intake()
+    value['publisher'] = 'unknown-lab'
+    refuses('publisher', packages.check_release, sign(value), policy(), purpose=purpose, now=NOW)
+    document = trust_file('policy')
+    other = document['publishers']['fixture-lab']['keys'].pop()
+    document['publishers']['other-lab'] = dict(state='active', keys=[other])
+    value = sign(intake(), 'publisher-b')
+    refuses('signature.key_id', packages.check_release, value, policy(document), purpose=purpose, now=NOW)
+
+
+@pytest.mark.parametrize('purpose', ['admission', 'execution'])
+def test_forgery_under_admitted_key_id(purpose):
+    document = trust_file('policy')
+    document['publishers']['fixture-lab']['keys'].pop()
+    forged = sign(intake(), 'publisher-b')
+    refuses('signature.key_id', packages.check_release, forged, policy(document),
+            purpose=purpose, now=NOW)
+    forged['signature']['key_id'] = intake()['signature']['key_id']
+    refuses('signature.value', packages.check_release, forged, policy(document),
+            purpose=purpose, now=NOW)
+
+
+@pytest.mark.parametrize('field,replacement,expected', [
+    ('type', packages.TRUST_POLICY_TYPE, 'type'),
+    ('package_id', 'different', 'signature.value'),
+    ('publisher', 'other-lab', 'signature.key_id'),
+    ('version', '2.0', 'signature.value'),
+    ('artifact', 'https://example.org/different.zip', 'signature.value'),
+    ('artifact_digest', 'f'*64, 'signature.value'),
+    ('kind', 'markdown', 'signature.value'),
+    ('microclaw', '>=99', 'signature.value'),
+    ('python', '>=99', 'signature.value'),
+    ('platforms', ['linux_x86_64'], 'signature.value'),
+    ('protocol_version', '2.0', 'signature.value'),
+])
+@pytest.mark.parametrize('purpose', ['admission', 'execution'])
+def test_every_signed_release_field_is_bound(field, replacement, expected, purpose):
+    value = intake()
+    value[field] = replacement
+    if field == 'kind':
+        for key in ('python', 'platforms', 'protocol_version'):
+            del value[key]
+    document = trust_file('policy')
+    other = document['publishers']['fixture-lab']['keys'].pop()
+    document['publishers']['other-lab'] = dict(state='active', keys=[other])
+    refuses(expected, packages.check_release, value, policy(document), purpose=purpose, now=NOW)
+
+
+@pytest.mark.parametrize('kind', ['markdown', 'executable'])
+def test_admission_computes_artifact_digest(kind, tmp_path):
+    artifact = b'illustrative release bytes\x00\xff'
+    value = intake(kind)
+    value['artifact_digest'] = hashlib.sha256(artifact).hexdigest()
+    value = sign(value)
+    path = tmp_path / 'release.zip'
+    path.write_bytes(artifact)
+    for source in (artifact, path, str(path)):
+        assert packages.check_release(value, policy(), purpose='admission', now=NOW,
+                                      artifact=source)['stale'] is False
+    for source in (None, b'changed', b'', 'missing-artifact', '\x00', {'digest': value['artifact_digest']}):
+        refuses('artifact_digest', packages.check_release, value, policy(),
+                purpose='admission', now=NOW, artifact=source)
+    path.write_bytes(b'changed')
+    refuses('artifact_digest', packages.check_release, value, policy(),
+            purpose='admission', now=NOW, artifact=path)
+
+
+@pytest.mark.parametrize('purpose', ['admission', 'execution'])
+@pytest.mark.parametrize('change,field', [
+    ('retired', 'signature.key_id'), ('revoked', 'signature.key_id'),
+    ('publisher', 'publisher'), ('release', 'artifact_digest'),
+])
+def test_rotation_and_revocation_across_revisions(purpose, change, field):
+    value = intake()
+    value['artifact_digest'] = hashlib.sha256(b'release').hexdigest()
+    value = sign(value)
+    previous = policy()
+    assert packages.check_release(value, previous, purpose=purpose, now=NOW,
+                                  artifact=b'release')['revision'] == 1
+    document = trust_file('policy')
+    document['revision'] = 2
+    if change in ('retired', 'revoked'):
+        document['publishers']['fixture-lab']['keys'][0]['state'] = change
+    elif change == 'publisher':
+        document['publishers']['fixture-lab']['state'] = 'revoked'
+    else:
+        # The digest is the revocation identity even if descriptive fields differ.
+        document['revoked_releases'] = [dict(package_id='another', version='9.0',
+                                            artifact_digest=value['artifact_digest'])]
+    current = policy(document, previous=previous)
+    if change == 'retired' and purpose == 'execution':
+        result = packages.check_release(value, current, purpose=purpose, now=NOW)
+        assert result['key_state'] == 'retired'
+        assert result['revision'] == 2
+        replacement = sign(value, 'publisher-b')
+        assert packages.check_release(replacement, current, purpose='admission',
+                                      now=NOW, artifact=b'release')['key_state'] == 'active'
+    else:
+        refuses(field, packages.check_release, value, current, purpose=purpose,
+                now=NOW, artifact=b'release')
+
+
+@pytest.mark.parametrize('state,field', [('active', None), ('retired', None),
+                                       ('revoked', 'signature.key_id'),
+                                       ('publisher', 'publisher'), ('release', 'artifact_digest')])
+def test_stale_execution_still_applies_revocations(state, field):
+    document = trust_file('policy')
+    document['expires_at'] = '2020-01-01T00:00:00Z'
+    if state == 'publisher':
+        document['publishers']['fixture-lab']['state'] = 'revoked'
+    elif state == 'release':
+        document['revoked_releases'] = [{key: intake()[key] for key in
+                                        ('package_id', 'version', 'artifact_digest')}]
+    else:
+        document['publishers']['fixture-lab']['keys'][0]['state'] = state
+    snapshot = policy(document)
+    if field:
+        refuses(field, packages.check_release, intake(), snapshot, purpose='execution', now=NOW)
+    else:
+        assert packages.check_release(intake(), snapshot, purpose='execution', now=NOW)['stale']
+    refuses(field or ('signature.key_id' if state == 'retired' else 'trust.expires_at'),
+            packages.check_release, intake(), snapshot, purpose='admission', now=NOW)
+
+
+def test_expiry_boundary_and_explicit_time():
+    snapshot = policy()
+    expiry = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    assert not packages.check_release(intake(), snapshot, purpose='execution', now=expiry)['stale']
+    for now in (None, datetime(2026, 1, 1), '2026-01-01'):
+        refuses('now', packages.check_release, intake(), snapshot, purpose='execution', now=now)
+    refuses('purpose', packages.check_release, intake(), snapshot, purpose='refresh', now=NOW)
+
+
+def test_production_roots_fail_closed_and_test_environment_is_separate():
+    roots = trust_file('roots')
+    document = trust_file('policy')
+    assert packages.PRODUCTION_ROOTS == dict(environment='production', keys=[])
+    assert not ({k['key_id'] for k in roots['keys']} &
+                {k['key_id'] for k in packages.PRODUCTION_ROOTS['keys']})
+    refuses('trust.environment', packages.verify_trust_policy, document)
+    document['environment'] = 'production'
+    document = sign(document, 'root')
+    refuses('trust.environment', packages.verify_trust_policy, document, roots)
+    refuses('trust.signature.key_id', packages.verify_trust_policy, document)
+
+
+def test_policy_rollback_and_equal_revision_content():
+    first = policy()
+    assert policy(previous=first) == first
+    document = trust_file('policy')
+    document['revision'] = 2
+    second = policy(document, previous=first)
+    refuses('trust.revision', packages.verify_trust_policy, trust_file('policy'),
+            trust_file('roots'), previous=second)
+    document['expires_at'] = '2031-01-01T00:00:00Z'
+    refuses('trust.revision', policy, document, previous=second)
+
+
+@pytest.mark.parametrize('field,replacement', [
+    ('environment', 'production'), ('type', packages.RELEASE_TYPE),
+    ('revision', 2), ('expires_at', '2031-01-01T00:00:00Z'),
+    ('publishers', {}), ('revoked_releases', [dict(package_id='a',version='1',artifact_digest='0'*64)]),
+])
+def test_policy_signed_fields_cannot_change(field, replacement):
+    document = trust_file('policy')
+    document[field] = replacement
+    expected = {'environment': 'trust.environment', 'type': 'trust.type'}.get(field, 'trust.signature.value')
+    refuses(expected, packages.verify_trust_policy, document, trust_file('roots'))
+
+
+@pytest.mark.parametrize('root_key', [True, False])
+def test_key_ids_are_derived_at_every_admission(root_key):
+    document, roots = trust_file('policy'), trust_file('roots')
+    if root_key:
+        roots['keys'][0]['key_id'] = 'f'*64
+        expected = 'roots.keys[0].key_id'
+    else:
+        document['publishers']['fixture-lab']['keys'][0]['key_id'] = 'f'*64
+        expected = 'trust.publishers.fixture-lab.keys[0].key_id'
+    refuses(expected, packages.verify_trust_policy, sign(document, 'root'), roots)
+
+
+def test_key_cannot_bind_two_publishers():
+    document = trust_file('policy')
+    document['publishers']['other-lab'] = deepcopy(document['publishers']['fixture-lab'])
+    refuses('trust.publishers.other-lab.keys[0].key_id', policy, document)
+
+
+@pytest.mark.parametrize('path,replacement,field', [
+    (('revision',), True, 'trust.revision'), (('revision',), 0, 'trust.revision'),
+    (('expires_at',), '2030-02-30T00:00:00Z', 'trust.expires_at'),
+    (('expires_at',), '2030-01-01T00:00:00+00:00', 'trust.expires_at'),
+    (('expires_at',), '', 'trust.expires_at'),
+    (('publishers',), [], 'trust.publishers'),
+    (('publishers','fixture-lab','state'), 'retired', 'trust.publishers.fixture-lab.state'),
+    (('publishers','fixture-lab','keys'), [], 'trust.publishers.fixture-lab.keys'),
+    (('publishers','fixture-lab','keys',0,'state'), 'unknown', 'trust.publishers.fixture-lab.keys[0].state'),
+    (('publishers','fixture-lab','keys',0,'public_key'), '*', 'trust.publishers.fixture-lab.keys[0].public_key'),
+    (('revoked_releases',), {}, 'trust.revoked_releases'),
+    (('revoked_releases',), [{}], 'trust.revoked_releases[0].artifact_digest'),
+])
+def test_policy_field_refusals(path, replacement, field):
+    document = trust_file('policy')
+    put(document, path, replacement)
+    refuses(field, policy, document)
+
+
+@pytest.mark.parametrize('location,field', [
+    ((), 'trust'), (('publishers', 'fixture-lab'), 'trust.publishers.fixture-lab'),
+    (('publishers', 'fixture-lab', 'keys', 0), 'trust.publishers.fixture-lab.keys[0]'),
+    (('signature',), 'trust.signature'),
+])
+def test_policy_closed_required_objects(location, field):
+    base = trust_file('policy')
+    obj = base
+    for component in location:
+        obj = obj[component]
+    for key in [*obj, 'unknown']:
+        value = deepcopy(base)
+        target = value
+        for component in location:
+            target = target[component]
+        if key == 'unknown':
+            target[key] = True
+        else:
+            del target[key]
+        refuses(field + '.' + key, packages.verify_trust_policy, value, trust_file('roots'))
+
+
+def test_release_gates_verify_only_release_signatures(monkeypatch):
+    snapshot = policy()
+    records = [record('markdown'), record('executable')]
+    calls = []
+    original = packages._verify_signature
+
+    def verify(document, keys, field="signature"):
+        calls.append(document['type'])
+        return original(document, keys, field)
+
+    monkeypatch.setattr(packages, '_verify_signature', verify)
+    packages.check_release(intake(), snapshot, purpose='execution', now=NOW)
+    assert calls == [packages.RELEASE_TYPE]
+    calls.clear()
+    assert len(packages.external_catalog_lines(records, snapshot, now=NOW)) == len(records)
+    assert calls == [packages.RELEASE_TYPE] * len(records)
+    calls.clear()
+    assert policy(previous=snapshot) == snapshot
+    assert calls == [packages.TRUST_POLICY_TYPE]
+
+
+def test_loading_gates_require_verified_policy():
+    refuses('trust', packages.external_catalog_lines, [record()], None, now=NOW)
+    refuses('trust', packages.load_external_skill, 'fixture-lab/executable-fixture/workflow',
+            [record()], None, now=NOW)
+
+
+@pytest.mark.parametrize('kind', ['markdown', 'executable'])
+def test_revocation_blocks_loading_and_catalog_without_filesystem_or_network_effects(kind, tmp_path, monkeypatch):
+    root = tmp_path / 'installed'
+    shutil.copytree(FIXTURES / kind, root)
+    def contents():
+        return {str(p.relative_to(root)): p.read_bytes() if p.is_file() else None
+                for p in root.rglob('*')}
+    before = contents()
+    document = trust_file('policy')
+    document['revision'] = 2
+    document['publishers']['fixture-lab']['state'] = 'revoked'
+    snapshot = policy(document, previous=policy())
+    installed = record(kind, release_dir=root)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('trust verification must not perform I/O')
+    with monkeypatch.context() as patch:
+        patch.setattr(socket, 'socket', forbidden)
+        patch.setattr(Path, 'open', forbidden)
+        refuses('publisher', packages.check_release, installed['intake'], snapshot,
+                purpose='execution', now=NOW)
+        refuses('publisher', packages.external_catalog_lines, [installed], snapshot, now=NOW)
+        refuses('publisher', packages.load_external_skill,
+                f'fixture-lab/{kind}-fixture/workflow', [installed], snapshot, now=NOW)
+    assert contents() == before
+
+
+def test_execution_and_byte_admission_open_no_files_or_sockets(monkeypatch):
+    snapshot = policy()
+    value = intake()
+    value['artifact_digest'] = hashlib.sha256(b'release').hexdigest()
+    value = sign(value)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('unexpected I/O')
+    monkeypatch.setattr(socket, 'socket', forbidden)
+    monkeypatch.setattr(Path, 'open', forbidden)
+    for purpose in ('admission', 'execution'):
+        assert packages.check_release(value, snapshot, purpose=purpose, now=NOW,
+                                      artifact=b'release')['purpose'] == purpose
+
+
+@pytest.mark.parametrize('purpose', ['admission', 'execution'])
+def test_missing_and_invalid_signature_at_release_gate(purpose):
+    value = intake()
+    del value['signature']
+    refuses('signature', packages.check_release, value, policy(), purpose=purpose, now=NOW)
+    value = intake()
+    value['signature']['value'] = base64.b64encode(b'x'*64).decode('ascii')
+    refuses('signature.value', packages.check_release, value, policy(), purpose=purpose, now=NOW)
+
+
+def test_policy_requires_real_root_signature():
+    document = trust_file('policy')
+    del document['signature']
+    refuses('trust.signature', packages.verify_trust_policy, document, trust_file('roots'))
+    document = sign(document, 'publisher-a')
+    refuses('trust.signature.key_id', packages.verify_trust_policy, document, trust_file('roots'))
+    document['signature']['key_id'] = trust_file('roots')['keys'][0]['key_id']
+    refuses('trust.signature.value', packages.verify_trust_policy, document, trust_file('roots'))
+
+
+@pytest.mark.parametrize('location,field', [((), 'roots'), (('keys', 0), 'roots.keys[0]')])
+def test_roots_closed_and_required(location, field):
+    base = trust_file('roots')
+    obj = base
+    for component in location:
+        obj = obj[component]
+    for key in [*obj, 'unknown']:
+        roots = deepcopy(base)
+        target = roots
+        for component in location:
+            target = target[component]
+        if key == 'unknown':
+            target[key] = True
+        else:
+            del target[key]
+        refuses(field + '.' + key, packages.verify_trust_policy, trust_file('policy'), roots)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('environment', 'staging'), ('keys', None),
+    ('keys', trust_file('roots')['keys'] * 2),
+    ('keys', trust_file('roots')['keys'] * (packages.MAX_KEYS + 1)),
+])
+def test_root_structure_and_duplicate_key_refusals(field, value):
+    roots = trust_file('roots')
+    roots[field] = value
+    expected = 'roots.keys[1].key_id' if field == 'keys' and isinstance(value, list) and len(value) == 2 else 'roots.' + field
+    refuses(expected, packages.verify_trust_policy, trust_file('policy'), roots)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('package_id', 'Bad'), ('version', 'bad'), ('artifact_digest', 'A'*64),
+    ('unknown', True),
+])
+def test_revoked_release_fields(field, value):
+    document = trust_file('policy')
+    revoked = {key: intake()[key] for key in ('package_id', 'version', 'artifact_digest')}
+    revoked[field] = value
+    document['revoked_releases'] = [revoked]
+    refuses('trust.revoked_releases[0].' + field, policy, document)
+
+
+@pytest.mark.parametrize('collection', ['publishers', 'keys', 'revoked_releases'])
+def test_trust_collection_limits(collection):
+    document = trust_file('policy')
+    if collection == 'publishers':
+        document['publishers'] = {f'lab-{i}': {} for i in range(packages.MAX_PUBLISHERS + 1)}
+        field = 'trust.publishers'
+    elif collection == 'keys':
+        document['publishers']['fixture-lab']['keys'] *= packages.MAX_KEYS
+        field = 'trust.publishers.fixture-lab.keys'
+    else:
+        document['revoked_releases'] = [{}] * (packages.MAX_REVOKED_RELEASES + 1)
+        field = 'trust.revoked_releases'
+    refuses(field, policy, document)
+
+
+@pytest.mark.parametrize('field,value,expected', [
+    ('microclaw', 'bad', 'microclaw'), ('python', 'bad', 'python'),
+    ('platforms', [], 'platforms'), ('platforms', ['x', 'x'], 'platforms[1]'),
+    ('protocol_version', 'bad', 'protocol_version'),
+])
+def test_intake_compatibility_uses_manifest_validators(field, value, expected):
+    document = intake()
+    document[field] = value
+    refuses(expected, packages.validate_intake, document)
+
+
+def test_execution_checks_every_enabled_record_before_returning_skill():
+    good = record('markdown')
+    bad = record('executable')
+    bad['intake']['signature']['value'] = base64.b64encode(b'x'*64).decode('ascii')
+    refuses('signature.value', packages.load_external_skill,
+            'fixture-lab/markdown-fixture/workflow', [good, bad], policy(), now=NOW)
+    refuses('signature.value', packages.external_catalog_lines, [good, bad], policy(), now=NOW)
