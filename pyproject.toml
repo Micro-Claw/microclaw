@@ -14,6 +14,11 @@ dependencies = [
     "scikit-image>=0.22",
     "packaging>=21",
     "Pillow>=10.0",
+    # Ed25519 verification of community skill releases (design/83 block 83b).
+    # A hard dependency, not an extra: every path that loads or starts an
+    # external release must verify it, so a missing library must never be an
+    # ordinary installed state.
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

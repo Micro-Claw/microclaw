@@ -421,6 +421,7 @@ and otherwise stays open.
 |-------|--------|--------------|--------|
 | notebook | `design-83-open` | `592c752` | opened 2026-09-22, PR #36 — closes `R82` |
 | 83a | `block-83a` | `45a11c7` | **merged 2026-09-22** as `0629178` into `design-83-open`, PR #36 — local only, no gate |
+| 83b | `block-83b` | `d0a27a9` | in progress, started 2026-09-23 — local only, no gate |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
