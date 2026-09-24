@@ -11175,7 +11175,19 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 @emits_nothing
 def load_skill(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
-    """Return a repository-owned workflow skill without reading hardware."""
+    """Load built-in or discovery-enabled publisher/package/skill guidance."""
+    from microclaw.skill_packages import PackageRefusal, parse_qualified_name
+
+    try:
+        parse_qualified_name(name)
+    except PackageRefusal:
+        pass  # Built-in loading owns refusals for all other names, including paths.
+    else:
+        from microclaw.skill_store import load_discovered_skill
+        try:
+            return load_discovered_skill(name)
+        except Exception as exc:
+            return {"error": str(exc)}
     from microclaw.skills import load_skill_text
 
     try:

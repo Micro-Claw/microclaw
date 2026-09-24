@@ -663,6 +663,10 @@ def _system_blocks(*, setup_mode: bool = False) -> list[dict[str, Any]]:
         blocks.append(
             {"type": "text", "text": kb_text, "cache_control": {"type": "ephemeral", "ttl": "1h"}}
         )
+    from microclaw.skill_store import discovery_text
+    external = discovery_text()
+    if external:
+        blocks.append({"type": "text", "text": external})
     if setup_mode:
         blocks.append({
             "type": "text",

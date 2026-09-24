@@ -603,8 +603,9 @@ def test_real_process_death_leaves_stale_lock_and_unrecorded_install(tmp_path):
     artifact = tmp_path / "killed.zip"
     intake = builder.build_release(FIXTURES / "markdown", artifact, version="2.0.0")
     script = (
-        "import os\nfrom datetime import datetime, timezone\n"
+        "import os\nfrom pathlib import Path\nfrom datetime import datetime, timezone\n"
         "from microclaw import skill_store as s\n"
+        f"s.store_dir = lambda: Path({str(store.store_dir())!r})\n"
         "s._extract = lambda *a: os._exit(7)\n"
         f"s.install({intake!r}, {str(artifact)!r}, policy=s.load_trust_policy(), "
         "now=datetime(2026,9,23,tzinfo=timezone.utc), retained_digests=frozenset())\n"
@@ -646,6 +647,7 @@ def test_process_death_at_real_atomic_activation(tmp_path, after_replace):
     script = (
         "import os\nfrom pathlib import Path\nfrom datetime import datetime, timezone\n"
         "from microclaw import skill_store as s\n"
+        f"s.store_dir = lambda: Path({str(store.store_dir())!r})\n"
         "replace = os.replace\n"
         "def interrupt(source, target):\n"
         f" if Path(target) == Path({str(pointer_file)!r}):\n"
@@ -838,3 +840,204 @@ def test_failed_self_check_reason_is_readable_text(tmp_path):
     assert str(caught.value) == "self_check: exit_without_terminal: worker exited without terminal"
     saved = read(directory(state()["installs"][0]) / "install.json")
     assert saved["reasons"] == [dict(field="self_check", detail="exit_without_terminal: worker exited without terminal")]
+
+
+def test_discovery_refresh_load_and_no_unnecessary_work(tmp_path, monkeypatch):
+    from microclaw import agent, tools
+    from unittest.mock import Mock
+    monkeypatch.setattr(agent, "load_knowledge", lambda: {})
+    monkeypatch.setattr(agent, "format_for_prompt", lambda _: "fixture KB")
+    monkeypatch.setattr(agent, "rig_profile_gaps", lambda _: [])
+    record = install(tmp_path, kind="markdown")
+    name = "fixture-lab/markdown-fixture/workflow"
+    baseline = agent._system_blocks()
+    assert len(baseline) == 2 and baseline[1]["text"] == "fixture KB"
+    assert "error" in tools.load_skill(None, None, name)
+    decision = store.set_discovery("markdown-fixture", True, now=NOW)
+    assert read(package("markdown") / "discovery.json") == decision == dict(
+        enabled=True, decided_at="2026-09-23T00:00:00Z", artifact_digest=record["artifact_digest"])
+    real_lock = store.package_lock
+    for module, attr in [(subprocess, "run"), (subprocess, "Popen"), (store, "package_lock"),
+                         (store, "_start_discovery_recheck")]:
+        monkeypatch.setattr(module, attr, Mock(side_effect=AssertionError("unnecessary work")))
+    verify = Mock(wraps=store.load_trust_policy)
+    monkeypatch.setattr(store, "load_trust_policy", verify)
+    blocks = agent._system_blocks()
+    assert verify.call_count == 1
+    assert blocks[:2] == baseline
+    assert blocks[2] == {"type": "text", "text": store.discovery_text()}
+    assert name in blocks[2]["text"] and "grants no authority" in blocks[2]["text"]
+    assert blocks == agent._system_blocks()
+    loaded = tools.load_skill(None, None, name)
+    assert loaded["publisher"] == "fixture-lab" and loaded["version"] == "1.0.0"
+    assert loaded["artifact_digest"] == record["artifact_digest"]
+    assert "Publisher-provided skill" in loaded["text"]
+    assert "sha256:" + record["artifact_digest"] in loaded["text"]
+    for module, attr in [(subprocess, "run"), (subprocess, "Popen"), (store, "package_lock"),
+                         (store, "_start_discovery_recheck")]:
+        getattr(module, attr).assert_not_called()
+    monkeypatch.setattr(store, "package_lock", real_lock)
+    store.set_discovery("markdown-fixture", False, now=NOW)
+    assert agent._system_blocks() == baseline
+    assert not store.discovery_text()
+    assert "error" in tools.load_skill(None, None, name)
+
+
+def test_discovery_follows_active_release_and_whole_remove(tmp_path):
+    first = install(tmp_path, kind="markdown")
+    store.set_discovery("markdown-fixture", True, now=NOW)
+    decision = read(package("markdown") / "discovery.json")
+    second = install(tmp_path, kind="markdown", version="2.0.0")
+    assert second["artifact_digest"] in store.discovery_text()
+    assert first["artifact_digest"] not in store.discovery_text()
+    store.rollback("markdown-fixture", policy=store.load_trust_policy(), now=NOW, retained_digests=frozenset())
+    assert first["artifact_digest"] in store.discovery_text()
+    assert read(package("markdown") / "discovery.json") == decision
+    store.remove("markdown-fixture", retained_digests=frozenset())
+    assert not (package("markdown") / "discovery.json").exists()
+    assert store.discovery_text() == ""
+
+
+def test_unchecked_discovery_single_flight_and_later_render(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    record = install(tmp_path, kind="markdown")
+    store.set_discovery("markdown-fixture", True, now=NOW)
+    (directory(record, "markdown") / "verdict.json").unlink()
+    entered, release = threading.Event(), threading.Event()
+    real = store.recheck
+    calls = []
+    def blocked(**kwargs):
+        calls.append(kwargs)
+        entered.set()
+        assert release.wait(10)
+        return real(**kwargs)
+    monkeypatch.setattr(store, "recheck", blocked)
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            texts = list(pool.map(lambda _: store.discovery_text(), range(16)))
+        assert entered.wait(2)
+        assert texts == [""] * 16
+        assert len(calls) == 1 and calls[0]["retained_digests"] == frozenset()
+        assert calls[0]["package_ids"] == frozenset({"markdown-fixture"})
+        assert store._discovery_recheck_thread.daemon
+    finally:
+        release.set()
+        store._discovery_recheck_thread.join(10)
+    assert "fixture-lab/markdown-fixture/workflow" in store.discovery_text()
+
+
+def test_locked_unchecked_discovery_retries_later(tmp_path):
+    record = install(tmp_path, kind="markdown")
+    store.set_discovery("markdown-fixture", True, now=NOW)
+    (directory(record, "markdown") / "verdict.json").unlink()
+    with store.package_lock("markdown-fixture"):
+        assert store.discovery_text() == ""
+        store._discovery_recheck_thread.join(10)
+        assert not (directory(record, "markdown") / "verdict.json").exists()
+    assert store.discovery_text() == ""
+    store._discovery_recheck_thread.join(10)
+    assert "fixture-lab/markdown-fixture/workflow" in store.discovery_text()
+
+
+def test_discovery_isolates_bad_record_and_reports_reason(tmp_path):
+    good = install(tmp_path, kind="markdown")
+    store.set_discovery("markdown-fixture", True, now=NOW)
+    # A second signed Markdown fixture, not an executable environment.
+    source = tmp_path / "other"
+    shutil.copytree(FIXTURES / "markdown", source)
+    manifest = read(source / "manifest.json")
+    manifest["package_id"] = "other-fixture"
+    write(source / "manifest.json", manifest)
+    bad = install(tmp_path, kind="markdown", source=source)
+    store.set_discovery("other-fixture", True, now=NOW)
+    path = store.store_dir() / "packages" / "other-fixture" / "installs" / bad["install_id"] / "install.json"
+    bad["manifest"]["skills"] = None
+    write(path, bad)
+    assert good["artifact_digest"] in store.discovery_text()
+    row = next(p for p in store.status()["packages"] if p["package_id"] == "other-fixture")
+    assert row["installs"][0]["discovery_exclusions"]
+    assert not row["installs"][0]["discoverable"]
+    assert "other-fixture/workflow" not in store.discovery_text()
+
+
+def test_unreadable_store_cannot_abort_turn(tmp_path, monkeypatch):
+    from microclaw import agent
+    monkeypatch.setattr(agent, "load_knowledge", lambda: {})
+    monkeypatch.setattr(agent, "format_for_prompt", lambda _: "")
+    monkeypatch.setattr(agent, "rig_profile_gaps", lambda _: [])
+    def unreadable():
+        raise PermissionError("fixture unreadable store")
+    monkeypatch.setattr(store, "store_dir", unreadable)
+    assert agent._system_blocks() == [dict(type="text", text=agent.SYSTEM_PROMPT,
+        cache_control={"type": "ephemeral", "ttl": "1h"})]
+
+
+def test_discovery_render_timings(tmp_path, monkeypatch):
+    from statistics import median
+    from unittest.mock import Mock
+    measurements = {}
+    for count in range(11):
+        if count:
+            source = tmp_path / ("fixture-" + str(count))
+            shutil.copytree(FIXTURES / "markdown", source)
+            manifest = read(source / "manifest.json")
+            manifest["package_id"] = "fixture-" + str(count)
+            write(source / "manifest.json", manifest)
+            install(tmp_path, kind="markdown", source=source)
+            store.set_discovery(manifest["package_id"], True, now=NOW)
+        if count in (0, 1, 10):
+            with monkeypatch.context() as patch:
+                checks = []
+                for module, attr in [(subprocess, "run"), (subprocess, "Popen"),
+                                     (store, "package_lock"), (store, "_start_discovery_recheck")]:
+                    mock = Mock(side_effect=AssertionError("unnecessary render work"))
+                    patch.setattr(module, attr, mock)
+                    checks.append(mock)
+                times = []
+                for _ in range(30):
+                    start = time.perf_counter()
+                    text = store.discovery_text()
+                    times.append((time.perf_counter() - start) * 1000)
+                    assert text.count("\n- ") == count
+                for check in checks:
+                    check.assert_not_called()
+            measurements[count] = round(median(times), 3)
+    print("D7 render median milliseconds (30 renders):", measurements)
+
+
+def test_store_duplicates_exclude_all_carriers(tmp_path):
+    from microclaw import tools
+    good = install(tmp_path, kind="markdown")
+    store.set_discovery("markdown-fixture", True, now=NOW)
+    # Corrupt copied store metadata can claim another installed qualified name.
+    duplicate = store.store_dir() / "packages" / "duplicate-fixture"
+    shutil.copytree(package("markdown"), duplicate)
+    text = store.discovery_text()
+    assert text == ""
+    for row in store.status()["packages"]:
+        assert row["installs"][0]["discovery_exclusions"][0]["field"] == "name"
+    assert "error" in tools.load_skill(None, None, "fixture-lab/markdown-fixture/workflow")
+    # Even an ineligible carrier cannot let the other record win the name.
+    verdict_path = duplicate / "installs" / good["install_id"] / "verdict.json"
+    verdict = read(verdict_path)
+    verdict.update(eligible=False, reasons=[dict(field="microclaw", detail="incompatible")])
+    write(verdict_path, verdict)
+    assert store.discovery_text() == ""
+
+
+def test_ineligible_and_disabled_unchecked_records_do_not_start_recheck(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    record = install(tmp_path, kind="markdown")
+    verdict_path = directory(record, "markdown") / "verdict.json"
+    verdict = read(verdict_path)
+    start = Mock(side_effect=AssertionError("unnecessary recheck"))
+    monkeypatch.setattr(store, "_start_discovery_recheck", start)
+    verdict_path.unlink()
+    assert store.discovery_text() == ""  # unchecked but not enabled
+    store.set_discovery("markdown-fixture", True, now=NOW)
+    verdict.update(eligible=False, reasons=[dict(field="microclaw", detail="incompatible")])
+    write(verdict_path, verdict)
+    assert store.discovery_text() == ""
+    assert dict(field="microclaw", detail="incompatible") in state("markdown")["installs"][0]["discovery_exclusions"]
+    start.assert_not_called()

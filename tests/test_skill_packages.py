@@ -465,7 +465,9 @@ def test_no_implicit_discovery_or_duplicate_resolution():
     assert packages.external_catalog_lines([], policy(), now=NOW) == ()
     refuses('name', packages.load_external_skill, name, [], policy(), now=NOW)
     refuses('name', packages.load_external_skill, name, [record(), record()], policy(), now=NOW)
-    refuses('name', packages.external_catalog_lines, [record(), record()], policy(), now=NOW)
+    exclusions = []
+    assert packages.external_catalog_lines([record(), record()], policy(), now=NOW, exclusions=exclusions) == ()
+    assert len(exclusions) == 2 and all(exc.field == 'name' for _, exc in exclusions)
 
 
 @pytest.mark.parametrize('field,replacement', [('publisher','other'), ('package_id','other'),
@@ -853,7 +855,9 @@ def test_release_gates_verify_only_release_signatures(monkeypatch):
 
 
 def test_loading_gates_require_verified_policy():
-    refuses('trust', packages.external_catalog_lines, [record()], None, now=NOW)
+    exclusions = []
+    assert packages.external_catalog_lines([record()], None, now=NOW, exclusions=exclusions) == ()
+    assert exclusions[0][1].field == 'trust'
     refuses('trust', packages.load_external_skill, 'fixture-lab/executable-fixture/workflow',
             [record()], None, now=NOW)
 
@@ -878,7 +882,9 @@ def test_revocation_blocks_loading_and_catalog_without_filesystem_or_network_eff
         patch.setattr(Path, 'open', forbidden)
         refuses('publisher', packages.check_release, installed['intake'], snapshot,
                 purpose='execution', now=NOW)
-        refuses('publisher', packages.external_catalog_lines, [installed], snapshot, now=NOW)
+        exclusions = []
+        assert packages.external_catalog_lines([installed], snapshot, now=NOW, exclusions=exclusions) == ()
+        assert exclusions[0][1].field == 'publisher'
         refuses('publisher', packages.load_external_skill,
                 f'fixture-lab/{kind}-fixture/workflow', [installed], snapshot, now=NOW)
     assert contents() == before
@@ -986,13 +992,16 @@ def test_intake_compatibility_uses_manifest_validators(field, value, expected):
     refuses(expected, packages.validate_intake, document)
 
 
-def test_execution_checks_every_enabled_record_before_returning_skill():
+def test_bad_record_is_excluded_without_hiding_other_skills():
     good = record('markdown')
     bad = record('executable')
     bad['intake']['signature']['value'] = base64.b64encode(b'x'*64).decode('ascii')
-    refuses('signature.value', packages.load_external_skill,
-            'fixture-lab/markdown-fixture/workflow', [good, bad], policy(), now=NOW)
-    refuses('signature.value', packages.external_catalog_lines, [good, bad], policy(), now=NOW)
+    assert packages.load_external_skill('fixture-lab/markdown-fixture/workflow',
+        [good, bad], policy(), now=NOW)['publisher'] == 'fixture-lab'
+    exclusions = []
+    assert len(packages.external_catalog_lines([good, bad], policy(), now=NOW, exclusions=exclusions)) == 1
+    assert exclusions == [(bad, exclusions[0][1])]
+    assert exclusions[0][1].field == 'signature.value'
 
 
 @pytest.mark.parametrize("version", ["1.1", "2.0"])
@@ -1002,3 +1011,29 @@ def test_supported_protocol_after_signature(version, purpose):
     value["protocol_version"] = version
     refuses("signature.value", packages.check_release, value, policy(), purpose=purpose, now=NOW)
     refuses("protocol_version", packages.check_release, sign(value), policy(), purpose=purpose, now=NOW)
+
+
+@pytest.mark.parametrize("bad", [None, [], {}, {"enabled": True, "verified": True, "manifest": []},
+    {"enabled": True, "verified": True, "manifest": {"skills": [None]}}])
+def test_malformed_record_never_hides_another_package(bad):
+    good = record('markdown')
+    exclusions = []
+    assert len(packages.external_catalog_lines([bad, good], policy(), now=NOW, exclusions=exclusions)) == 1
+    assert len(exclusions) == 1 and exclusions[0][0] is bad
+
+
+@pytest.mark.parametrize("change", ["signature", "description", "eligibility"])
+def test_duplicate_excludes_both_even_when_one_carrier_is_invalid(change):
+    good, bad = record(), record()
+    if change == "signature":
+        bad['intake']['signature']['value'] = 'invalid'
+    elif change == "description":
+        bad['manifest']['skills'][0]['description'] = None
+    else:
+        bad['eligible'] = False
+    exclusions = []
+    assert packages.external_catalog_lines([good, bad], policy(), now=NOW, exclusions=exclusions) == ()
+    assert len(exclusions) == 2
+    assert all(exc.field == 'name' for _, exc in exclusions)
+    refuses('name', packages.load_external_skill, 'fixture-lab/executable-fixture/workflow',
+            [good, bad], policy(), now=NOW)
