@@ -90,6 +90,13 @@ def test_load_skill_refuses_unknown_and_path_shaped_names(name):
     assert "smlm" in result["error"]
 
 
+def test_undiscoverable_qualified_name_returns_external_refusal():
+    result = tools.load_skill(None, None, "fixture-lab/markdown-fixture/workflow")
+    assert "error" in result
+    assert "external skill" in result["error"]
+    assert "Available catalog names:" not in result["error"]
+
+
 def test_loaded_skill_emits_nothing_in_a_standalone_session_script(tmp_path):
     assert tools.load_skill._microclaw_emits_nothing is True
     records = [{"role": "assistant", "content": [{

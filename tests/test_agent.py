@@ -23,12 +23,6 @@ from microclaw.safety import SafetyConstraints, SafetyGuard
 from microclaw.skills import load_skill_text
 
 
-@pytest.fixture(autouse=True)
-def _isolated_external_skill_store(tmp_path, monkeypatch):
-    # Prompt refresh must never discover or recheck the developer's packages.
-    monkeypatch.setattr("microclaw.skill_store.store_dir", lambda: tmp_path / "skill-packages")
-
-
 class TestRigInterviewSystemBlock:
     @pytest.fixture(autouse=True)
     def _knowledge_path(self, monkeypatch, tmp_path):

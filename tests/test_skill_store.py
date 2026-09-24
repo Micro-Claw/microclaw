@@ -603,8 +603,9 @@ def test_real_process_death_leaves_stale_lock_and_unrecorded_install(tmp_path):
     artifact = tmp_path / "killed.zip"
     intake = builder.build_release(FIXTURES / "markdown", artifact, version="2.0.0")
     script = (
-        "import os\nfrom datetime import datetime, timezone\n"
+        "import os\nfrom pathlib import Path\nfrom datetime import datetime, timezone\n"
         "from microclaw import skill_store as s\n"
+        f"s.store_dir = lambda: Path({str(store.store_dir())!r})\n"
         "s._extract = lambda *a: os._exit(7)\n"
         f"s.install({intake!r}, {str(artifact)!r}, policy=s.load_trust_policy(), "
         "now=datetime(2026,9,23,tzinfo=timezone.utc), retained_digests=frozenset())\n"
@@ -646,6 +647,7 @@ def test_process_death_at_real_atomic_activation(tmp_path, after_replace):
     script = (
         "import os\nfrom pathlib import Path\nfrom datetime import datetime, timezone\n"
         "from microclaw import skill_store as s\n"
+        f"s.store_dir = lambda: Path({str(store.store_dir())!r})\n"
         "replace = os.replace\n"
         "def interrupt(source, target):\n"
         f" if Path(target) == Path({str(pointer_file)!r}):\n"

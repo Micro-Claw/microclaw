@@ -74,7 +74,9 @@ def _isolate_microclaw_home(tmp_path, monkeypatch):
     A test that wants a saved hook, a knowledge base or an EMU map monkeypatches
     over this; function-scoped patches applied in the test body win.
     """
-    from microclaw import hook_manager, knowledge_manager
+    from microclaw import hook_manager, knowledge_manager, skill_store
+
+    monkeypatch.setattr(skill_store, "store_dir", lambda: tmp_path / "microclaw_home" / "skill-packages")
 
     hooks = tmp_path / "microclaw_home" / "hooks"
     hooks.mkdir(parents=True)

@@ -27,10 +27,8 @@ from microclaw.webserve import build_app, serve
 
 
 @pytest.fixture(autouse=True)
-def _isolate_skill_store(tmp_path, monkeypatch):
-    # Lifespan recovery must never inspect or mutate the operator's real store.
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+def _skill_store_workers(tmp_path, monkeypatch, _isolate_microclaw_home):
+    # Store isolation is shared; keep subprocess caches and worker teardown local.
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
     yield
     # Let startup finish while this test's redirected home still applies.

@@ -11176,7 +11176,13 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 @emits_nothing
 def load_skill(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
     """Load built-in or discovery-enabled publisher/package/skill guidance."""
-    if isinstance(name, str) and "/" in name:
+    from microclaw.skill_packages import PackageRefusal, parse_qualified_name
+
+    try:
+        parse_qualified_name(name)
+    except PackageRefusal:
+        pass  # Built-in loading owns refusals for all other names, including paths.
+    else:
         from microclaw.skill_store import load_discovered_skill
         try:
             return load_discovered_skill(name)
