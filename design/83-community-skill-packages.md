@@ -598,6 +598,85 @@ loading, remote catalog entries remaining absent until discovery is enabled,
 schema/consent refusals, pinned receipts across updates, lifecycle failure paths
 and exported scripts that continue past the disclosure.
 
+**Split into three blocks** (operator decision, 2026-09-24). By this
+notebook's own rule, six design areas make more than one block:
+
+- **83e-1:** the discovery refresh, the enable-discovery record, per-record
+  isolation, loading by qualified name, and the recheck of a package that was
+  locked at startup (83d's hand-off).
+- **83e-2:** the analysis tool, execution consent, parameter validation, the
+  `@emits` comment renderer, and the shared `one_line`. It fills the live-job
+  half of `retained_digests`.
+- **83e-3:** trigger receipts, dispatch at dataset creation, lifecycle and
+  writer state, the receipt half of `retained_digests`, the acquisition
+  emitters' disclosure, and the `R86` panel copy.
+
+The paragraphs above remain the combined statement. Each block takes the
+acceptance items that belong to its own areas.
+
+**83e-1 decisions.** D1–D3 are operator decisions from 2026-09-24; D4–D7 are
+the coordinator's.
+
+- **D1 — discovery is its own system block.** `_system_blocks` already runs
+  once per user turn and already reloads the KB. It appends one text block,
+  after the KB, rendered from the store.
+  - The block carries **no cache breakpoint**, because the four the API allows
+    are all in use (tools, `SYSTEM_PROMPT`, KB, last message).
+  - It is omitted when nothing is discoverable, and it is byte-identical when
+    the discoverable set has not changed.
+  - `SYSTEM_PROMPT` stays a constant built at import.
+  - Cost, from sizes rather than an API run: an unchanged set is free. A change
+    rewrites the block plus the history once, at the 1h write rate (2× base,
+    design/82). Rebuilding `SYSTEM_PROMPT` instead would also rewrite about 9k
+    tokens and the KB on every change.
+- **D2 — one record per package, which follows the active release.**
+  - The record is `packages/<id>/discovery.json`:
+    `{enabled, decided_at, artifact_digest}`.
+  - The digest is the release that was active when the user decided. It is kept
+    for audit only.
+  - Discovery survives an update or a rollback: prose carries no authority, and
+    execution consent is pinned separately.
+  - It is written with the store's atomic `_write` under the existing package
+    lock. A held lock refuses at once with 409.
+  - A whole-package `remove` deletes it with the directory.
+  - A missing record means not discoverable. It is a user decision, not session
+    state.
+- **D3 — the panel only.** `POST /api/skill-packages/{id}/discovery`
+  `{enabled}`.
+  - The click is the recorded decision. There is no confirmation and no agent
+    tool, so skill text cannot enable itself.
+  - The panel says three things: discovery shows publisher text to the agent;
+    it does not authorize execution; and executable packages run with the
+    user's permissions, not sandboxed.
+- **D4 — isolation.** Discoverable means all of these hold: discovery is
+  enabled, the release is active and `eligible`, the trust policy verifies,
+  and `check_release` passes.
+  - A record that fails any of these is excluded, and its reason shows in the
+    panel.
+  - A duplicate qualified name excludes **every** record that carries it; the
+    first one does not win.
+  - Rendering never raises into the turn. If the store as a whole is
+    unreadable, the block is omitted and the turn proceeds.
+- **D5 — loading goes through `load_skill`.** A name containing `/` routes to
+  `load_external_skill`, against the same discoverable set as D4.
+  - The result carries publisher, version and digest.
+  - The marker stays `@emits_nothing`.
+- **D6 — recheck at the turn boundary.**
+  - If a discovery-enabled active release reads `unchecked`, the render starts
+    one background `recheck`. It is single-flight within the process, runs as
+    a daemon, and is never awaited.
+  - A lock that is still held is skipped again.
+  - That turn excludes the release; a later turn picks it up.
+  - When nothing is unchecked, the render runs no subprocess and takes no lock.
+  - `retained_digests` stays `frozenset()`. That is still true, because no job
+    or receipt exists until 83e-2 and 83e-3.
+- **D7 — timing contract.** The render adds file reads and one policy
+  verification per turn, and nothing else.
+  - Measure the render at 0, 1 and N packages.
+  - Tests cover the absence of unnecessary work (no subprocess, no lock) as
+    well as the lines that are rendered.
+- **Gate.** None; 83e-1 is local only.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -656,7 +735,8 @@ and otherwise stays open.
 | 83a | `block-83a` | `45a11c7` | **merged 2026-09-22** as `0629178` into `design-83-open`, PR #36 — local only, no gate |
 | 83b | `block-83b` | `d0a27a9` | **merged 2026-09-23** as `5936f3b`, PR #37 — local only, no gate |
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
-| 83d | `block-83d` | `a23b703` | gate passed on the demo machine 2026-09-24, PR #39 — 14/14 scored from artifacts |
+| 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
+| 83e-1 | `block-83e-1` | `fce0188` | in progress — local only, no gate |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
