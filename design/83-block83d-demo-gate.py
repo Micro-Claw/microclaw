@@ -326,8 +326,9 @@ class Gate:
         pending = (self.root / "pending-slot.txt").read_text(encoding="ascii").strip()
         launch = self.launch_desktop("The other slot now holds a 2.0.0 build and is pending.")
         panel = self.wait_current()
-        reason = self.ask("In the panel, what does the executable-fixture (active) row say after "
-                          "'disabled:'? Type it exactly.", "incompatible_reason")
+        reason = self.ask("In the panel, find the fixture-lab/executable-fixture row that says "
+                          "'ready (active)'. Type what it says after 'disabled:', exactly.",
+                          "incompatible_reason")
         files = self.files()
         executable = self.active(files, EXECUTABLE)
         self.save("updated", {"commit": commit, "active_before": active_before, "pending": pending,
@@ -355,15 +356,17 @@ class Gate:
     def reinstalled(self):
         self.close_microclaw("Next: leftovers are planted, one environment is broken, then install.bat.")
         before = self.files()
+        installer_before = self.installer_writes()
         planted = self.plant_leftovers(before)
         if self.fake:
             self.fake.install_bat()
         else:
-            self.ask("In a SECOND PowerShell window run:  cd $env:USERPROFILE\\Documents\\GitHub\\microclaw; "
+            self.ask(f'In a SECOND PowerShell window run:  cd "{REPO}"; '
                      ".\\install.bat   If it pauses for bridge/setup, cancel with Ctrl+C (Y). "
                      "Do NOT launch Microclaw. Type DONE when the installer has finished or been cancelled.",
                      "install_bat")
         between = self.files()
+        installer_after = self.installer_writes()
         launch = self.launch_desktop("After the reinstall.")
         broken_panel = self.wait_current()
         after_launch = self.files()
@@ -383,6 +386,7 @@ class Gate:
         removal["result"] = self.store.remove(MARKDOWN, retained_digests=frozenset())
         removal["panel"] = self.get()
         self.save("reinstalled", {"before": before, "planted": planted, "between": between,
+                                  "installer_before": installer_before, "installer_after": installer_after,
                                   "launch": launch, "broken_panel": broken_panel, "after_launch": after_launch,
                                   "repair_response": response, "job": job, "job_seconds": seconds,
                                   "repaired_panel": repaired_panel, "files": repaired,
@@ -433,6 +437,14 @@ class Gate:
             def __exit__(inner, *exc):
                 subprocess.Popen, store.Supervisor = real_popen, real_supervisor
         return Recorder()
+
+    def installer_writes(self):
+        """install.bat always ends by rewriting these two files (write_state, write_slot_marker)."""
+        if self.fake:
+            return self.fake.installer_writes()
+        slot = (self.root / "active-slot.txt").read_text(encoding="ascii").strip()
+        return {name: (self.root / name).stat().st_mtime_ns if (self.root / name).exists() else None
+                for name in ("update-state.json", f"env-{slot}/microclaw-slot.json")}
 
     def markers(self):
         result = {}
@@ -663,6 +675,10 @@ def verify(gate, *, cleanup):
     def reinstall_kept_store():
         re_ = gate.need("reinstalled")
         before, between = re_["before"], re_["between"]
+        ran = {name: (re_["installer_before"][name], re_["installer_after"].get(name))
+               for name in re_["installer_before"]}
+        if not all(old is not None and new is not None and new != old for old, new in ran.values()):
+            raise NotExercised(f"install.bat did not rewrite its files, so it did not run: {ran}")
         for package_id in (MARKDOWN, EXECUTABLE):
             for install_id, item in before[package_id]["installs"].items():
                 assert between[package_id]["installs"][install_id]["install.json"] == item["install.json"], install_id
@@ -725,6 +741,7 @@ class Fake:
         self.root, self.sabotage = Path(root), sabotage
         self.running = False
         self.timeout = 5
+        self.writes = 1
         self.answers = {"banner": None, "incompatible_reason": None}
         for slot in ("a", "b"):
             self.marker(slot, "0.1.0")
@@ -792,7 +809,11 @@ class Fake:
         return "c" * 40
 
     def install_bat(self):
-        pass
+        if self.sabotage != "no-install-bat":
+            self.writes += 1
+
+    def installer_writes(self):
+        return {"update-state.json": self.writes, "env-a/microclaw-slot.json": self.writes}
 
     def uv(self):
         import uv
@@ -815,7 +836,7 @@ def selftest(out):
     """Run every phase against the fake, then prove two limbs can fail."""
     out = Path(out)
     codes = {}
-    for sabotage in (None, "no-version-change", "no-startup-recheck"):
+    for sabotage in (None, "no-version-change", "no-startup-recheck", "no-install-bat"):
         with tempfile.TemporaryDirectory(prefix="83d-selftest-") as home:
             saved = {k: os.environ.get(k) for k in ("LOCALAPPDATA", "XDG_DATA_HOME", "UV_CACHE_DIR")}
             os.environ.update(LOCALAPPDATA=home, XDG_DATA_HOME=home, UV_CACHE_DIR=str(Path(home) / "uvc"))
@@ -845,7 +866,9 @@ def selftest(out):
     status = {s: {r["name"]: r["status"] for r in codes[s][1]} for s in codes}
     assert status["no-version-change"]["incompatible after update reads disabled-and-why"] == "FAIL", status
     assert status["no-startup-recheck"]["incompatible after update reads disabled-and-why"] != "PASS", status
-    print("SELFTEST PASSED: clean run all PASS; both sabotaged runs fail the compatibility limb")
+    assert status["no-install-bat"]["reinstall leaves the store untouched"] == "NOT EXERCISED", status
+    print("SELFTEST PASSED: clean run all PASS; both sabotaged runs fail the compatibility limb; "
+          "a skipped install.bat reads NOT EXERCISED")
     return 0
 
 

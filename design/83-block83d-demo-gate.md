@@ -13,8 +13,11 @@ removes the store and the roots; the next real update rebuilds the inactive slot
 
 ## 0. Install the branch
 
+Run everything from your microclaw checkout. On the demo machine that is
+`D:\Code\microclaw` (recorded by this gate's first run, 2026-09-24).
+
 ```powershell
-cd $env:USERPROFILE\Documents\GitHub\microclaw
+cd D:\Code\microclaw
 git fetch origin
 if ($LASTEXITCODE -ne 0) { throw 'fetch failed' }
 git checkout block-83d
@@ -77,12 +80,9 @@ Close, then launch the icon when told. Nothing to type beyond `DONE`.
 ```
 
 Close Microclaw when told. The program plants leftover files and hides one
-environment's `python.exe`. When it asks, run in a **second PowerShell**:
-
-```powershell
-cd $env:USERPROFILE\Documents\GitHub\microclaw
-.\install.bat
-```
+environment's `python.exe`. When it asks, run the `cd "…"; .\install.bat` line
+**it prints** in a **second PowerShell**. It prints its own checkout path, so
+nothing needs editing. The limb fails as NOT EXERCISED if install.bat did not run.
 
 Cancel a bridge/setup pause with Ctrl+C (Y). **Do not launch Microclaw from the
 installer**; type `DONE` in the gate, then launch the icon when told. The program
