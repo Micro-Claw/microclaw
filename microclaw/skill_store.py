@@ -269,6 +269,17 @@ def _recover(package, *, retained_digests):
         _retention(package, retained_digests=retained_digests, failures=failures)
     for path in package.glob(".lock-stale-*"):
         _delete(path, failures)
+    # Recovery holds the package lock, so no job can be live: a `running` record
+    # was left by a serve that exited mid-job, and would otherwise read as
+    # running (and keep the panel polling fast) forever.
+    try:
+        job = _read(package / "job.json")
+    except (updates.UpdateError, OSError):
+        job = None
+    if job and job.get("running"):
+        job.update(running=False, phase="interrupted",
+                   reasons=[dict(field="interrupted", detail="serve exited during " + str(job.get("operation")))])
+        _write(package / "job.json", job)
     _write(package / "recovery.json", dict(deletion_failures=failures, broken=broken))
     return dict(package_id=package.name, deletion_failures=failures, broken=broken)
 
@@ -473,7 +484,9 @@ def _self_check(directory, record, policy, now):
         record["self_check"] = result
         _write(directory / "install.json", record)
         if result["state"] != "succeeded":
-            raise PackageRefusal("self_check", str(result.get("failure") or result["state"]))
+            failure = result.get("failure") or {}
+            raise PackageRefusal("self_check", ": ".join(
+                str(failure[key]) for key in ("reason", "detail") if failure.get(key)) or result["state"])
     finally:
         supervisor.close()
 

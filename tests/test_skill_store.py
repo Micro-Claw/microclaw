@@ -811,3 +811,30 @@ def test_retention_preserves_unreferenced_ready_with_broken_pointer(tmp_path):
     assert directory(orphan, "markdown").exists()
     assert read(directory(orphan, "markdown") / "install.json")["state"] == "ready"
     assert (package("markdown") / "pointer.json").read_bytes() == before
+
+
+def test_recovery_marks_a_job_left_running_by_an_exited_serve_as_interrupted(tmp_path):
+    install(tmp_path, kind="markdown")
+    write(package("markdown") / "job.json", dict(operation="repair", running=True, phase="repair", started_at=0))
+    store.recover(retained_digests=frozenset())
+    job = read(package("markdown") / "job.json")
+    assert job["running"] is False and job["phase"] == "interrupted"
+    assert job["reasons"] == [dict(field="interrupted", detail="serve exited during repair")]
+    assert state("markdown")["job"]["running"] is False
+
+
+def test_failed_self_check_reason_is_readable_text(tmp_path):
+    source = mutate_source(tmp_path, lambda m: None)
+    runner = source / "fixture_worker" / "runner.py"
+    runner.write_text("raise SystemExit('exits before any terminal result')\n", encoding="utf-8")
+    manifest = read(source / "manifest.json")
+    for asset in manifest["assets"]:
+        if asset["path"] == "fixture_worker/runner.py":
+            asset["sha256"] = hashlib.sha256(runner.read_bytes()).hexdigest()
+    write(source / "manifest.json", manifest)
+    with pytest.raises(store.PackageRefusal) as caught:
+        install(tmp_path, source=source)
+    assert caught.value.field == "self_check"
+    assert str(caught.value) == "self_check: exit_without_terminal: worker exited without terminal"
+    saved = read(directory(state()["installs"][0]) / "install.json")
+    assert saved["reasons"] == [dict(field="self_check", detail="exit_without_terminal: worker exited without terminal")]
