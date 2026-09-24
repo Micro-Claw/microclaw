@@ -91,6 +91,32 @@ refusals, envelopes, write budgets and confirmations remain the enforcement
 boundary, regardless of who wrote the prose. Both package kinds therefore take
 the same admission policy, and enabling discovery is a recorded user decision.
 
+## What a package can be
+
+Three shapes, and every one of them leaves the tool layer as the enforcement
+boundary.
+
+- **Prose only** (Markdown-only kind). A skill that teaches the agent a workflow
+  — a light-sheet acquisition planned from the hardware the rig has, an htSMLM
+  mapping reference — with no code and no environment. Discovery (83e-1) shows
+  it; `load_skill("publisher/package/skill")` returns it; the agent carries it
+  out with existing tools, so it exports like any other session. **A skill can
+  only describe what MicroClaw can already do**: a capability MicroClaw lacks (a
+  galvo waveform locked to the camera trigger) is a first-party proposal, not a
+  package.
+- **A worker** (executable kind). Publisher code, out of process, over a saved
+  dataset (83e-2's package route in `run_analysis_on_saved_dataset`) or a growing
+  one (83e-3's trigger). A read-only observer, never a hook.
+- **Prose that teaches a hook.** SKILL.md may carry hook source as text; the agent
+  saves it through `generate_and_save_hook`, which lints it, shows it for review
+  and pins its hash. From then on it is an ordinary saved hook and exports as
+  one. It can use only MicroClaw's own environment, never the publisher's
+  locked dependencies — enough for a focus metric, not for SMAPpy's fitter.
+
+**Not a shape:** package code inside the hook runtime, or package results
+steering an acquisition. The second, if wanted, is a new typed MicroClaw
+capability under the normal authorization/envelope/write-budget rules — `R139`.
+
 ## Transport — follow the dataset, supervise over pipes
 
 V1 follows the growing, collision-resolved NDTiff dataset on disk. This uses the
@@ -698,6 +724,101 @@ the coordinator's.
   - Render cost grows by about 1 ms per package per turn.
   - `retained_digests` is still `frozenset()`; 83e-2 and 83e-3 fill it.
 
+**83e-2 decisions** (operator decisions, 2026-09-24, except where marked as
+the coordinator's).
+
+- **D1 — fold into `run_analysis_on_saved_dataset`.** ilastik is already one
+  adapter name there (`BUILTIN_ADAPTERS`), so a package operation is another:
+  `adapter="publisher/package:operation"` plus a required `release_digest`.
+  - `axis_selection` and `input_kind` stop being schema-required; the builtin
+    route refuses their absence, the package route refuses their presence, and
+    likewise `calibration_ref`, `output_pixel_size_um`, `model_project_config`,
+    `artifact_limits` and `max_array_bytes`.
+  - Path policy is the builtin route's: `guard.resolve_readable_path` for the
+    dataset, `guard.resolve_in_workspace` for `output_dir`, which must not
+    exist. The tool creates it; it is the job's reserved output directory.
+  - `release_digest` is looked up with `skill_store.resolve`, which never
+    consults the active pointer: any ready retained release that passes
+    `check_release(purpose="execution")` runs, and an update between loading the
+    skill and calling never silently runs a different digest. Discovery is not
+    required; consent is the gate (coordinator).
+  - One process-wide analysis `Supervisor`, built lazily and closed at serve
+    shutdown — never one per call, and not 83d's `self_check` supervisor
+    (coordinator).
+- **D2 — consent is a confirmation per call, with a session grant keyed to
+  package + digest.** `CONFIRM_FN(summary, kind="analysis",
+  subject="publisher/package@<digest>")`, raised only on the package route and
+  before anything is created or submitted. The summary names publisher,
+  package, version, digest, operation, the folded parameters, dataset, output
+  directory, and "runs with your user permissions; not sandboxed".
+  - `SessionGrants` gains the kind `analysis`, whose subject is a
+    `publisher/package@digest` pattern rather than a fixed set. The class
+    docstring gains one sentence: analysis is workflow, not self-modification.
+  - An update or rollback changes the digest, so the grant stops applying.
+  - A decline returns `{"status": "Analysis cancelled."}`, the shape the other
+    cancelled confirmations use, and submits nothing.
+  - Builtin adapters stay unprompted; ilastik is MicroClaw code running a
+    program on inputs MicroClaw prepared, a package is publisher code.
+- **D3 — the call returns at submission; completion is a durable record**
+  (coordinator).
+  - Explicit runs are for a completed dataset: the tool sends
+    `acquisition {completed, writer: finished}` right after `submit`. A growing
+    dataset is 83e-3's.
+  - The result nests everything under `{"analysis": {...}}`: state, job ID,
+    package, digest, operation, parameters, output directory, job record path.
+    A refusal *before* submission (schema, eligibility, path, lock) is an
+    ordinary top-level `error`, because nothing ran; a dispatch or worker
+    failure *after* submission is nested, never top-level, never in a list.
+  - The job record is `user_data_dir()/skill-packages/jobs/<job_id>.json`,
+    written atomically at submit and at the terminal with the supervisor's
+    record. It never lives in the worker's output directory. A record still
+    non-terminal when serve starts reads `abandoned` (83d's `job.json` lesson).
+  - One read tool, `analysis_job_status(job_id)`, `@emits_nothing`, reads the
+    record and never queries a live worker. 83e-3's trigger jobs use the same
+    record and tool.
+  - `retained_digests` gets one source: `skill_store.retained_digests()`,
+    returning the digests of non-terminal jobs; every caller that passes
+    `frozenset()` today calls it instead. 83e-3 adds receipts to it.
+- **D4 — parameter validation is a closed JSON Schema 2020-12 subset, with no
+  new runtime dependency.** Keywords: `type` (one string), `properties`,
+  `required`, `additionalProperties` (boolean), `items`, `enum`, `minimum`,
+  `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`, and the
+  annotations `title`, `description`, `default`.
+  - Each keyword means exactly what it means in 2020-12. The traps:
+    `additionalProperties` defaults to allowed; `true` is not an integer; `1.0`
+    *is* an integer; `minimum`/`maximum` are inclusive; `default` is never
+    applied.
+  - Admission (`validate_manifest`) refuses any keyword outside the subset, in
+    both `input_schema` and `output_schema`. That is what makes a later move to
+    `jsonschema` backward compatible: every admitted schema means the same thing
+    afterwards, and adding a keyword only loosens admission.
+  - `input_schema` is enforced at call time. `output_schema` is admitted under
+    the same subset and not enforced in 83e-2.
+  - `jsonschema` joins the `[test]` extra only. A differential test runs both
+    validators over one corpus and requires them to agree; a test asserts the
+    product never imports it.
+- **D5 — export: `@emits` with a comment-only renderer, for every adapter**
+  (closes `R84`'s third item). The marker moves from `@emits_nothing`.
+  - Builtin routes: adapter, dataset, output directory, and a statement that
+    the analysis was not reproduced with how to rerun it. Package route: package
+    ID, digest, operation, parameters, output directory, job record path, and
+    the same statement. Existing exports start carrying this comment on purpose:
+    silence about an artifact the session produced is the defect.
+  - `one_line` is promoted from inside `export_session_script` (`tools.py:2270`)
+    to one module-level helper that the exporter and this renderer both call.
+    Every interpolated value is folded.
+  - Tests: a multiline publisher failure and multiline parameters stay inside
+    their comments; a session with an analysis call followed by another step
+    compiles and emits that later step; a pre-submission refusal takes the
+    exporter's existing skipped path.
+- **D6 — timing contract** (coordinator). The package route adds, on the turn
+  thread: the confirmation, `resolve` (one `check_release`, ~0.3 ms in 83c), a
+  directory create and `submit` (p50 0.5 ms in 83c). It never waits on the
+  worker. Tests: the tool returns while a slow fixture worker is still running,
+  and the builtin route constructs no supervisor and reads no store.
+- **Gate.** None; local only. The worker under a desktop `serve` already ran in
+  83d's gate, and the consent prompt reuses the existing session-grant button.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -758,7 +879,7 @@ and otherwise stays open.
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
-| 83e-2 | `block-83e-2` | `2a1c42a` | opened 2026-09-24 — decisions pending |
+| 83e-2 | `block-83e-2` | `2a1c42a` | opened 2026-09-24 — decisions D1–D6 recorded, delegated |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

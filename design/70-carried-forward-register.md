@@ -105,6 +105,7 @@ Rows added since the triage:
 | `R132` | the first Windows CI runs, scored from the skip arithmetic 2026-09-16 |
 | `R133`–`R136` | found while reviewing and gating `design/71` block 71a, 2026-09-18 to 2026-09-21 |
 | `R137`–`R138` | found while reviewing and gating `design/71` blocks 71b and 71c, 2026-09-21 |
+| `R139` | `design/83` §"What a package can be", while scoping 83e-2, 2026-09-24 |
 
 
 ## The work queue
@@ -163,6 +164,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R136` | [`design/55-gate-probe-selftest.py` is hard-coded to block 55a](#r136) | MEDIUM | SMALL |  |
 | `R137` | [The extras-failure fallback that protects an update has no rig evidence](#r137) | LOW | SMALL |  |
 | `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
+| `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3065,3 +3067,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW. Nobody has asked, exactly as with uninstall.
 - **Effort** — SMALL
 - **Provenance** — block 71b's coordinator review, 2026-09-21.
+
+### R139 — A community package's results cannot steer an acquisition
+
+**A package worker is a read-only observer by design, so there is no route by which, say, SMAPpy's localisation density adjusts the 405 activation during a run.**
+
+- **What happened** — noticed while scoping `design/83` 83e-2, 2026-09-24, when the operator asked whether a community skill could be used inside a hook. It cannot: package code never runs in the hook runtime, and an observer has no channel back into acquisition. A package can only *teach* a hook (prose carrying hook source, saved through `generate_and_save_hook`), which cannot use the publisher's locked dependencies.
+- **Why it matters** — feedback-driven SMLM is the obvious next thing to want once SMAPpy runs as an observer, and the tempting shortcut — letting the worker write a property — is exactly the hardware authority design/71 refused.
+- **What a fix would look like** — a new typed MicroClaw capability that reads a worker's declared telemetry and acts on it under the normal authorization, envelope and write-budget rules, with a latency contract measured against design/78's dispatch numbers. Its own notebook.
+- **Where** — LOCAL for the design; a rig for any gate, since it is feedback at real hardware.
+- **Block** — NONE.
+- **Importance** — LOW. Nobody needs it before SMAPpy exists as a conforming package (`R85`).
+- **Effort** — LARGE
+- **Provenance** — `design/83` §"What a package can be", 2026-09-24.
