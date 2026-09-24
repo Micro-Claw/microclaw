@@ -288,15 +288,27 @@
         rows.push((manifest.publisher || "unknown") + "/" + pkg.package_id + " " +
           (manifest.version || "unknown") + " " + (install.artifact_digest || "").slice(0, 12) +
           " — " + install.state + (install.active ? " (active)" : install.previous ? " (previous)" : "") +
-          (install.eligible ? " — eligible" : " — disabled: " + reasons(install.reasons)));
+          (install.eligible ? " — eligible" : " — disabled: " + reasons(install.reasons)) +
+          ((install.discovery_exclusions || []).length
+            ? " — discovery excluded: " + reasons(install.discovery_exclusions) : ""));
       }
+      if ((pkg.discovery_reasons || []).length) rows.push(pkg.package_id + " — discovery excluded: " + reasons(pkg.discovery_reasons));
       if ((pkg.broken || []).length) rows.push(pkg.package_id + " — disabled: " + reasons(pkg.broken));
       for (const failure of pkg.deletion_failures || []) rows.push(pkg.package_id + " — deletion pending: " + failure.detail);
       if (pkg.job) rows.push(pkg.package_id + " — " + pkg.job.operation + ": " + pkg.job.phase +
         ((pkg.job.reasons || []).length ? " — " + reasons(pkg.job.reasons) : ""));
     }
     const trust = state.trust || {};
-    return {rows, trust: trust.test_roots_active
+    const discovery = (state.packages || []).map(pkg => ({
+      package_id: pkg.package_id,
+      enabled: !!(pkg.discovery && pkg.discovery.enabled),
+      label: (pkg.discovery && pkg.discovery.enabled ? "Disable" : "Enable") + " discovery",
+      disabled: !!(pkg.job && pkg.job.running)
+    }));
+    return {rows, discovery,
+      disclosure: "Discovery shows publisher text to the agent. It does not authorize execution. " +
+        "Executable packages run with your user permissions and are not sandboxed.",
+      trust: trust.test_roots_active
       ? "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
       : [trust.reason, reasons(trust.reasons)].filter(Boolean).join("; ")};
   }

@@ -3023,7 +3023,7 @@ def test_skill_startup_thread_does_not_delay_lifespan_or_get(session, monkeypatc
     assert all(call[2]["retained_digests"] == frozenset() for call in calls)
 
 
-@pytest.mark.parametrize("action", ["rollback", "repair"])
+@pytest.mark.parametrize("action", ["rollback", "repair", "discovery"])
 def test_skill_routes_use_existing_auth(session, action):
     path = "/api/skill-packages/markdown-fixture/" + action
     local = TestClient(build_app(session))
@@ -3043,3 +3043,30 @@ def test_skill_get_runs_in_threadpool(skill_client, monkeypatch):
     monkeypatch.setattr(skill_store, "status", status)
     assert skill_client.get("/api/skill-packages").status_code == 200
     assert threads and all("AnyIO worker" in name for name in threads)
+
+
+@pytest.mark.parametrize("body", [None, [], {}, {"enabled": 1}, {"enabled": "true"},
+                                   {"enabled": True, "extra": False}])
+def test_skill_discovery_bad_body(skill_client, body):
+    assert skill_client.post("/api/skill-packages/markdown-fixture/discovery", json=body).status_code == 400
+
+
+def test_skill_discovery_panel_decision_and_conflict(skill_client):
+    from microclaw import skill_store
+    from tests.test_skill_store import package, read
+    path = "/api/skill-packages/markdown-fixture/discovery"
+    assert skill_client.post(path, content="{").status_code == 400
+    assert skill_client.post("/api/skill-packages/unknown/discovery", json={"enabled": True}).status_code == 400
+    result = skill_client.post(path, json={"enabled": True})
+    assert result.status_code == 200
+    assert result.json() == read(package("markdown") / "discovery.json")
+    state = skill_client.get("/api/skill-packages").json()["packages"][0]
+    assert state["discovery"]["enabled"] is True
+    active = next(row for row in state["installs"] if row["active"])
+    assert active["discoverable"] and not active["discovery_exclusions"]
+    with skill_store.package_lock("markdown-fixture"):
+        assert skill_client.post(path, json={"enabled": False}).status_code == 409
+    assert skill_client.post(path, json={"enabled": False}).status_code == 200
+    state = skill_client.get("/api/skill-packages").json()["packages"][0]
+    assert not state["discovery"]["enabled"]
+    assert all(row["discovery_exclusions"] for row in state["installs"])

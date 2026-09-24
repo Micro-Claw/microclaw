@@ -338,15 +338,48 @@ def _bound_release(manifest, intake):
             raise PackageRefusal("intake." + field, "does not match verified manifest")
 
 
-def _enabled_releases(records, policy, now):
-    # Records are explicit caller data, never discovered from directories.
+def _enabled_releases(records, policy, now, *, exclusions=None):
+    """Isolate bad records; report (record, refusal) pairs to the caller.
+
+    Count names before validation so even a malformed carrier cannot make an
+    ambiguous name resolve to whichever record happens to validate first.
+    """
+    candidates = []
+    carriers = {}
     for record in records:
-        if record.get("enabled") is not True or record.get("verified") is not True:
+        names = set()
+        try:
+            if record.get("enabled") is not True or record.get("verified") is not True:
+                raise PackageRefusal("discovery", "not enabled and verified")
+            raw = record.get("manifest") or {}
+            for skill in raw.get("skills", []):
+                try:
+                    names.add(qualified_name(raw["publisher"], raw["package_id"], skill["name"]))
+                except (PackageRefusal, KeyError, TypeError):
+                    pass
+            error = None
+        except (AttributeError, TypeError, PackageRefusal) as exc:
+            error = exc if isinstance(exc, PackageRefusal) else PackageRefusal("record", str(exc))
+        for name in names:
+            carriers[name] = carriers.get(name, 0) + 1
+        candidates.append((record, names, error))
+    for record, names, error in candidates:
+        try:
+            if any(carriers[name] > 1 for name in names):
+                raise PackageRefusal("name", "ambiguous enabled external skill")
+            if error:
+                raise error
+            if record.get("eligible", True) is not True:
+                raise PackageRefusal("eligibility", "release is not eligible")
+            manifest = validate_manifest(record["manifest"])
+            intake = validate_intake(record["intake"])
+            _bound_release(manifest, intake)
+            check_release(intake, policy, purpose="execution", now=now)
+        except (PackageRefusal, KeyError, TypeError, AttributeError, ValueError) as exc:
+            refusal = exc if isinstance(exc, PackageRefusal) else PackageRefusal("record", str(exc))
+            if exclusions is not None:
+                exclusions.append((record, refusal))
             continue
-        manifest = validate_manifest(record["manifest"])
-        intake = validate_intake(record["intake"])
-        _bound_release(manifest, intake)
-        check_release(intake, policy, purpose="execution", now=now)
         yield record, manifest, intake
 
 
@@ -355,22 +388,18 @@ def _provenance(manifest, intake):
             f"release={manifest['version']} sha256:{intake['artifact_digest']}")
 
 
-def external_catalog_lines(records, policy, *, now):
-    """Render enabled verified metadata; bounded formatting is not trust/authority.
+def external_catalog_lines(records, policy, *, now, exclusions=None):
+    """Render metadata in stable order, isolating excluded records with reasons.
 
-    Raising for a malformed record is deliberate in 83a; per-record isolation
-    and the disabled-and-why discovery state land in 83e.
+    Optional ``exclusions`` receives (record, PackageRefusal) pairs. Publisher
+    metadata is bounded text, never authority.
     """
     lines = []
-    names = set()
-    for _, manifest, intake in _enabled_releases(records, policy, now):
+    for _, manifest, intake in _enabled_releases(records, policy, now, exclusions=exclusions):
         for skill in manifest["skills"]:
             name = qualified_name(manifest["publisher"], manifest["package_id"], skill["name"])
-            if name in names:
-                raise PackageRefusal("name", "ambiguous enabled external skill")
-            names.add(name)
             lines.append(f"- {name} [{_provenance(manifest, intake)}]: {skill['description']}")
-    return tuple(lines)
+    return tuple(sorted(lines))
 
 
 def verify_release_assets(release_dir, manifest, *, read_path=None):
@@ -404,17 +433,22 @@ def load_external_skill(name, records, policy, *, now):
     verification by the caller (83d); signatures are independently checked here.
     All declared assets are checked so a changed ancillary file cannot accompany
     apparently intact skill prose.
-    Missing caller-owned record keys raise KeyError as programming errors; package
-    format and asset failures use PackageRefusal.
+    Malformed records are isolated; a requested excluded skill refuses with its
+    reason. Asset failures use PackageRefusal.
     """
     publisher, package, skill_name = parse_qualified_name(name)
     matches = []
-    for record, manifest, intake in _enabled_releases(records, policy, now):
+    exclusions = []
+    for record, manifest, intake in _enabled_releases(records, policy, now, exclusions=exclusions):
         if (manifest["publisher"], manifest["package_id"]) == (publisher, package):
             for skill in manifest["skills"]:
                 if skill["name"] == skill_name:
                     matches.append((record, manifest, intake, skill))
     if len(matches) != 1:
+        for record, refusal in exclusions:
+            manifest = record.get("manifest") if isinstance(record, dict) else None
+            if isinstance(manifest, dict) and (manifest.get("publisher"), manifest.get("package_id")) == (publisher, package):
+                raise refusal
         raise PackageRefusal("name", "unknown or ambiguous enabled verified external skill")
     record, manifest, intake, skill = matches[0]
     skill_bytes = verify_release_assets(record["release_dir"], manifest, read_path=skill["path"])

@@ -865,6 +865,21 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def get_skill_packages():
         return JSONResponse(await run_in_threadpool(skill_store.status))
 
+    @app.post("/api/skill-packages/{package_id}/discovery")
+    async def set_skill_discovery(package_id: str, request: Request):
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Expected {enabled: boolean}.") from None
+        if not isinstance(body, dict) or set(body) != {"enabled"} or type(body["enabled"]) is not bool:
+            raise HTTPException(400, "Expected only {enabled: boolean}.")
+        try:
+            decision = await run_in_threadpool(skill_store.set_discovery, package_id,
+                                               body["enabled"], now=datetime.datetime.now(datetime.timezone.utc))
+        except skill_store.PackageRefusal as exc:
+            raise HTTPException(409 if exc.field == "lock" else 400, str(exc)) from None
+        return JSONResponse(decision)
+
     async def start_skill_job(package_id, operation):
         try:
             job = await run_in_threadpool(skill_store.start_job, package_id, operation,

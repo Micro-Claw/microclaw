@@ -436,3 +436,27 @@ def test_skill_packages_view_keeps_disabled_release_and_test_banner():
     assert "Transcript.skillPackagesView(state)" in html and "item.textContent = row" in html
     panel = html.split('<details id="skill-packages-panel"')[1].split("</details>")[0]
     assert "<button" not in panel
+
+
+def test_skill_discovery_toggle_exclusion_and_disclosure():
+    path = resources.files("microclaw").joinpath("transcript.js")
+    state = {"packages": [{"package_id": "example", "discovery": {"enabled": True},
+        "installs": [{"state": "ready", "eligible": True,
+        "discovery_exclusions": [{"field": "name", "detail": "ambiguous enabled external skill"}]}]},
+        {"package_id": "other", "job": {"running": True}}]}
+    script = ("global.window = {};\n" + f"require({json.dumps(str(path))});\n" +
+              f"process.stdout.write(JSON.stringify(window.Transcript.skillPackagesView({json.dumps(state)})));\n")
+    view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
+                                    encoding="utf-8", check=True).stdout)
+    assert "discovery excluded: name: ambiguous" in view["rows"][0]
+    assert view["discovery"] == [
+        dict(package_id="example", enabled=True, label="Disable discovery", disabled=False),
+        dict(package_id="other", enabled=False, label="Enable discovery", disabled=True)]
+    assert view["disclosure"] == ("Discovery shows publisher text to the agent. "
+        "It does not authorize execution. "
+        "Executable packages run with your user permissions and are not sandboxed.")
+    html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
+    assert '$("skill-packages-disclosure").textContent = view.disclosure' in html
+    assert 'JSON.stringify({enabled: !toggle.enabled})' in html
+    assert 'encodeURIComponent(toggle.package_id) + "/discovery"' in html
+    assert 'finally { await refreshSkillPackages(); }' in html

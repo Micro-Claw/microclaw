@@ -132,6 +132,7 @@
   <details id="skill-packages-panel" class="banner">
     <summary>Community skill packages</summary>
     <p id="skill-packages-trust"></p>
+    <p id="skill-packages-disclosure"></p>
     <div id="skill-packages-list"></div>
   </details>
   <div class="banner hidden" id="update-banner">
@@ -296,11 +297,35 @@
       const state = await res.json();
       const view = Transcript.skillPackagesView(state);
       $("skill-packages-trust").textContent = view.trust;
+      $("skill-packages-disclosure").textContent = view.disclosure;
       const list = $("skill-packages-list");
       list.replaceChildren();
       for (const row of view.rows) {
         const item = document.createElement("p");
         item.textContent = row;
+        list.append(item);
+      }
+      for (const toggle of view.discovery) {
+        const item = document.createElement("p");
+        item.textContent = toggle.package_id + " ";
+        const button = document.createElement("button");
+        button.textContent = toggle.label;
+        button.disabled = toggle.disabled;
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const res = await apiFetch("/api/skill-packages/" + encodeURIComponent(toggle.package_id) + "/discovery", {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({enabled: !toggle.enabled})
+            });
+            if (!res.ok) {
+              const body = await res.json();
+              alert(body.detail || "Could not change discovery.");
+            }
+          } catch (err) { alert(err.message); }
+          finally { await refreshSkillPackages(); }
+        });
+        item.append(button);
         list.append(item);
       }
       fast = state.packages.some(p => p.job && p.job.running);

@@ -2067,7 +2067,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "load_skill",
         "description": (
-            "Load one repository-owned workflow skill by its exact catalog name. "
+            "Load a built-in workflow skill by catalog name or an enabled external skill by "
+            "qualified publisher/package/skill name. "
             "The result is procedural guidance only: it reads no hardware, changes no "
             "state, and grants no authority."
         ),
@@ -2076,7 +2077,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Exact skill name from the generated system-prompt catalog.",
+                    "description": "Built-in catalog name or external qualified publisher/package/skill name.",
                 }
             },
             "required": ["name"],
