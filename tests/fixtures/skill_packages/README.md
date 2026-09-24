@@ -12,11 +12,14 @@ worker that never reads stdin cannot select that startup behaviour from stdin.
 All subsequent conformance behaviours are selected by job parameters.
 
 The adjacent intake records are external to those release directories. Their
-all-zero artifact digests and the executable lock's illustrative hash are
-structural examples, not verified artifacts or installable dependencies. Tests
-supply verified-installed records as explicit caller data; admission tests sign
-records with digests computed from test bytes. The reference executable is exercised through the real supervisor without
-installing the illustrative dependency.
+all-zero artifact digests are structural examples, not verified archives.
+The executable lock pins the real wheel in `wheels/`, built deterministically
+by `build_release.py`. That builder also creates signed release archives with
+real digests and optional version overrides for installation and the demo gate.
+Tests supply verified-installed records as explicit caller data; admission tests
+sign records with digests computed from test bytes. Supervisor tests exercise
+the reference executable without installing the dependency; store tests also
+exercise real offline installation.
 
 Both intake records are signed with Ed25519 publisher-a's TEST-ONLY key for
 fixture-lab. They bind type, identity, artifact reference/digest and compatibility

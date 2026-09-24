@@ -50,7 +50,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, shortcut, tools, updates, extensions
+from microclaw import config, credentials, shortcut, tools, updates, extensions, skill_store
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import (
     AcquisitionDiagnosticWriter, AuditLog, ConversationStore, prune_transcripts,
@@ -593,6 +593,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app):
+        def check_skill_packages():
+            skill_store.recover(retained_digests=frozenset())
+            skill_store.recheck(now=datetime.datetime.now(datetime.timezone.utc),
+                                retained_digests=frozenset())
+        threading.Thread(target=check_skill_packages, name="microclaw-skill-startup",
+                         daemon=True).start()
         try:
             yield
         finally:
@@ -854,6 +860,26 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 if extension_catalog is None:
                     extension_catalog = catalog
         return extension_catalog
+
+    @app.get("/api/skill-packages")
+    async def get_skill_packages():
+        return JSONResponse(await run_in_threadpool(skill_store.status))
+
+    async def start_skill_job(package_id, operation):
+        try:
+            job = await run_in_threadpool(skill_store.start_job, package_id, operation,
+                                          retained_digests=frozenset())
+        except skill_store.PackageRefusal as exc:
+            raise HTTPException(409 if exc.field == "lock" else 400, str(exc)) from None
+        return JSONResponse(job, status_code=202)
+
+    @app.post("/api/skill-packages/{package_id}/rollback")
+    async def rollback_skill_package(package_id: str):
+        return await start_skill_job(package_id, "rollback")
+
+    @app.post("/api/skill-packages/{package_id}/repair")
+    async def repair_skill_package(package_id: str):
+        return await start_skill_job(package_id, "repair")
 
     @app.get("/api/extensions")
     async def get_extensions():

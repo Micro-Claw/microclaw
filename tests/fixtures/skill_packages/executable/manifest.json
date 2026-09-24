@@ -68,7 +68,7 @@
       {
         "requirement": "fixture-dependency==1.2.3",
         "hashes": [
-          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "e4949f80297db57cc69fadcb112fd2521c37382422632d6907b354e0abce6b24"
         ]
       }
     ],
@@ -76,7 +76,7 @@
       {
         "requirement": "fixture-dependency==1.2.3",
         "hashes": [
-          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "e4949f80297db57cc69fadcb112fd2521c37382422632d6907b354e0abce6b24"
         ]
       }
     ],
@@ -84,7 +84,7 @@
       {
         "requirement": "fixture-dependency==1.2.3",
         "hashes": [
-          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "e4949f80297db57cc69fadcb112fd2521c37382422632d6907b354e0abce6b24"
         ]
       }
     ]
