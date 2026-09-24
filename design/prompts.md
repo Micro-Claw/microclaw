@@ -11102,3 +11102,46 @@ commit, and the gate passes an absolute path.
 coordinator fix, against a 5297 baseline. CI: ubuntu and windows green. Windows
 skipped 103, the same as 83c, so the real-uv store tests ran on the shipping
 platform.
+
+## design/83 block 83e-1 — external skill discovery (PR #40, 2026-09-24)
+
+**Splitting 83e was the user's decision, and asking cost one question.** 83e
+held six design areas. The notebook's own rule says that makes several blocks,
+but changing a notebook's block list is a design decision, so it went to the
+operator before anything else. 83e-1 then took one runner turn and one small
+revision, the shortest cycle in the notebook. A block sized to one design area
+is also one that a single review can hold.
+
+**The cost question answered itself once I read what the request already
+does.** "Measure the prompt-cache cost" pointed at an API run. It did not need
+one:
+- `_system_blocks` already runs once per turn and already reloads the KB;
+- all four cache breakpoints are in use, so a new block can only ride the
+  message breakpoint;
+- the sizes in the tree (about 9k tokens of system prompt, about 26k of tools)
+  priced the three options against design/82's measured 2× write rate.
+
+The property that matters is byte-identity while the set is unchanged. That is
+a test, not an invoice.
+
+**The runner's only defects were ones my prompt's command could not see.** I
+left `tests/test_skills.py` out because the runner "would not touch
+`skills.py`". It changed `load_skill`, which that file covers, and three
+path-shaped refusal tests failed in my full run. **Name test files by the
+behaviour a block changes, not by the modules you expect it to edit.**
+
+**A known failure at HEAD turns every mutant into KILLED.** My first mutation
+run used `-x` over a set that included those three failures, so every mutant
+"died". I stopped it mid-mutant, and the stop left `agent.py` mutated in the
+worktree, because a killed process never runs its `finally`. Check
+`git status` after stopping a mutation run, and run a control of the exact
+command before the first mutant. The rerun killed 14 of 15; the survivor is
+equivalent (deterministic line order).
+
+**Store isolation belongs in the fixture that already isolates the home.** 83d
+isolated the store per file, and 83e-1's first turn did the same in a third
+file. Meanwhile two other suites started reading the real store on every turn.
+It now lives in conftest's `_isolate_microclaw_home`.
+
+**Counts.** Full suite 5396 passed, 99 skipped on `d56634f`, against a 5369
+baseline on `fce0188`.

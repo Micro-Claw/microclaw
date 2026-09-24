@@ -677,6 +677,27 @@ the coordinator's.
     well as the lines that are rendered.
 - **Gate.** None; 83e-1 is local only.
 
+**What 83e-1 settled** (PR #40):
+- **Code.** `skill_store.discovery_text`, `set_discovery` and
+  `load_discovered_skill`, all served by one file-only snapshot,
+  `_discovery_state`, that `status()` also uses. The route is
+  `POST /api/skill-packages/{id}/discovery`, and the panel carries the toggle,
+  exclusion reasons and disclosure. `skill_packages._enabled_releases` isolates
+  per record.
+- **D7 render medians** (runner, n=30, fixture markdown packages): 0.37 ms with
+  0 packages, 1.47 ms with 1, 10.9 ms with 10. That is linear, at about 1 ms per
+  package. No subprocess, lock or recheck runs when nothing is unchecked.
+- **Review.** Round 1 found two defects. Path-shaped names lost the built-in
+  refusal, so external routing now requires a name `parse_qualified_name`
+  accepts. Store isolation lived in individual test files; it is now in
+  conftest. 14 of 15 decision mutants were killed; the survivor is equivalent.
+- **Residuals.**
+  - `package_lock` creates the package directory. A toggle that races a
+    whole-package `remove` can leave an empty directory behind; the toggle
+    itself refuses. `start_job` has the same shape from 83d.
+  - Render cost grows by about 1 ms per package per turn.
+  - `retained_digests` is still `frozenset()`; 83e-2 and 83e-3 fill it.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -736,7 +757,7 @@ and otherwise stays open.
 | 83b | `block-83b` | `d0a27a9` | **merged 2026-09-23** as `5936f3b`, PR #37 — local only, no gate |
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
-| 83e-1 | `block-83e-1` | `fce0188` | in progress — local only, no gate |
+| 83e-1 | `block-83e-1` | `fce0188` | reviewed, PR #40 — local only, no gate |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
