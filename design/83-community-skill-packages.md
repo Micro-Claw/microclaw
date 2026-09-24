@@ -430,6 +430,127 @@ and uses a compatibility control that actually becomes incompatible across a
 transition. It is scored from the state files and the panel rather than from a
 verdict. Everything a fake can settle is settled in 83a–83c first.
 
+**What 83d settled** (PR #39; `microclaw/skill_store.py`; serve's startup hook,
+`GET /api/skill-packages` and the rollback/repair routes in `webserve.py`; a
+read-only panel; tests in `tests/test_skill_store.py`; the gate is
+`design/83-block83d-demo-gate.{py,ps1,md}`).
+
+- **Layout.** Each release attempt lives at
+  `user_data_dir()/skill-packages/packages/<id>/installs/<digest[:16]>-<nonce>/`,
+  which holds:
+  - `artifact.zip` and the extracted `release/`;
+  - `env/` (executables only);
+  - `install.json`, whose state goes from `staged` to `ready` or `failed`;
+  - `verdict.json`.
+
+  **Activation is one `os.replace` of `pointer.json`** (`{active, previous}`).
+  A repair builds a new attempt directory, so a live environment is never
+  rebuilt or renamed.
+- **Lock.** One lock per package: `os.mkdir`, with the owner's pid and a nonce
+  inside. It is stale when the pid is dead; a live lock refuses at once and
+  never waits.
+- **Recovery.** Each kind of leftover has one fixed rule. **A damaged pointer is
+  never repaired by falling back to `previous`**: that would silently swap the
+  live release. The package reads `broken` instead and stays repairable.
+- **Interpreter.** A CPython 3.12 that MicroClaw pins under `skill-packages/python/`.
+  It is installed with
+  `uv python install --no-config --no-bin --no-registry --install-dir … 3.12`
+  and found with
+  `uv python find --managed-python --no-python-downloads`, with
+  `UV_PYTHON_INSTALL_DIR` set on that child process only.
+  **`--no-bin` and `--no-registry` are load-bearing.** Without them uv writes a
+  `python3.12` link into `~/.local/bin` and, on Windows, a PEP 514 registry
+  entry, both outside the store. The coordinator's own unsandboxed probe
+  planted the first of these on the development Mac.
+
+  The recorded identity is `{executable, base_prefix, version, cache_tag,
+  platform, distributions}`, and it is only ever read by **running** the
+  release environment's python.
+- **Environment.** Built with `uv venv` then
+  `uv pip install --require-hashes --no-deps --no-build`, the same two steps the
+  update slots use, and one builder serves both install and repair. The proof
+  that the lock was installed is that the probed distributions **equal** the
+  lock's pins, not that the worker happens to import them.
+
+  `self_check` runs on a **dedicated one-worker supervisor**, so an install never
+  queues behind an analysis job that has no deadline (83c hand-off a).
+- **Verdicts.** A verdict is keyed to `current_build()` (`__version__`, the slot
+  marker's commit and the supported protocols) and to the recorded interpreter.
+  One computed against a different build or interpreter reads `unchecked`, in
+  every process, with no ordering dependency.
+
+  A restart of the same build keeps its saved verdict until serve's startup
+  thread replaces it. That thread runs `recover` and then `recheck`; serve does
+  not wait for it, and it runs no publisher code.
+
+  Residual: an interpreter broken between two launches of the same build reads
+  eligible until that startup probe runs.
+- **Retention.** Every operation that can delete takes a required
+  `retained_digests`, which 83e fills in. `resolve(package, digest)` never
+  consults the active pointer and never returns a different digest. **Repair
+  never changes which release is active.**
+- **Trust files** (operator decision, 2026-09-23). `trust/policy.json` is
+  re-verified every time it is loaded. `trust/roots.json` is honoured only when
+  it says `environment: "test"`, and it turns on a panel banner. The product
+  never writes it.
+
+**Review.** Two runner turns plus one coordinator fix.
+
+The start turn stopped on a contradiction in the prompt, and it was right to.
+D5 said every release reads `unchecked` until the recheck finishes, which does
+not follow from D5's own rule on a same-build restart.
+
+Round 1 returned three defects:
+- repairing `previous` activated it;
+- removing `previous` deleted it before clearing the pointer, so a partial
+  Windows delete broke the whole package;
+- two processes could both break one stale lock.
+
+It also returned four surviving mutants out of fifteen. One of them was the
+block's central case: **no test had an interpreter that still starts but is
+not the one recorded.** The only such test deleted `python`, so the probe raised
+anyway. All fifteen mutants are now killed.
+
+**Gate.** The demo machine, 2026-09-24, one run, installed commit `c70cb92`.
+
+13 of the 14 limbs passed as scored. The compatibility limb failed on **the
+gate's own prompt**, which named a row label the panel does not print. Its
+artifacts meet the limb:
+- after the 2.0.0 slot started, every active release is disabled with exactly
+  `microclaw: incompatible with 2.0.0`;
+- every verdict is keyed to `version: 2.0.0`;
+- the operator transcribed that panel row.
+
+The reinstall limb had **no control proving `install.bat` ran**. The operator
+confirmed it ran to completion, and the limb now requires the two files
+`install.bat` always rewrites to have changed.
+
+Measured on the demo machine, n=1:
+- installs took 3.64 s for the first executable release (provisioning
+  included), 1.01 s for the second, and 0.05 s for Markdown;
+- a startup verdict took 0.10–0.13 s per executable release (one probe) and
+  0.007 s for Markdown;
+- under a desktop-launched serve, rollback took 0.846 s and repair 1.25 s. Each
+  ran a **real `self_check` worker under a desktop `serve`**, which meets 83c
+  hand-off (b).
+
+Scoring the artifacts of that 13/14 run found two product defects, both fixed
+in `68c8ebe`:
+- `job.json` survived a serve restart, so a serve closed mid-repair would have
+  left the panel showing "running" and polling every 500 ms forever;
+- a failed release's reason rendered a raw Python dict.
+
+**Handed on to 83e and 83f:**
+- the production index route (`find_links=None`) has never run, because every
+  test and the gate install from the committed wheel;
+- repair goes through admission, so a stale policy refuses it; freshness is
+  83f's;
+- a package whose lock is held when serve starts is skipped by that recheck and
+  reads `unchecked` until the next start; 83e's turn-boundary refresh is the
+  natural place to recheck it;
+- the demo machine's inactive slot still holds the gate's 2.0.0 build, which the
+  next real update rebuilds.
+
 ### 83e — agent discovery, execution consent, triggers and export
 
 Expose enabled external skill metadata through a discovery mechanism refreshed
@@ -535,7 +656,7 @@ and otherwise stays open.
 | 83a | `block-83a` | `45a11c7` | **merged 2026-09-22** as `0629178` into `design-83-open`, PR #36 — local only, no gate |
 | 83b | `block-83b` | `d0a27a9` | **merged 2026-09-23** as `5936f3b`, PR #37 — local only, no gate |
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
-| 83d | `block-83d` | `a23b703` | opened 2026-09-23 — demo-machine gate |
+| 83d | `block-83d` | `a23b703` | gate passed on the demo machine 2026-09-24, PR #39 — 14/14 scored from artifacts |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

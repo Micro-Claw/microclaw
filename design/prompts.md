@@ -11029,3 +11029,76 @@ notification-log bound and the stderr fault record.
 **Counts.** Targeted 1877; full suite 5297 passed, 99 skipped, against a 5191
 baseline. `test_built_wheel_contains_the_source_tree_skill_catalog` was run
 separately by the coordinator (it needs the network) and passed.
+
+## design/83 block 83d — isolated installation and activation (PR #39, 2026-09-24)
+
+The notebook's first demo-machine gate. Two runner turns: a start turn that
+stopped on a contradiction, and one revision turn. There was one coordinator
+fix after the gate. The gate passed in one round.
+
+**The runner stopped on my contradiction again, as in 83c, and it was cheap
+again.** D5 claimed every release reads `unchecked` until the startup recheck
+finishes. D5's own structural rule does not imply that on a restart of the
+same build. The runner named both resolutions and chose neither. **A prompt
+that pins decisions tightly also pins its contradictions; a runner that stops
+rather than diverges finds them for the price of one short turn.**
+
+**My own probe planted the delayed failure this workflow warns about.**
+Establishing the interpreter command meant running `uv python install
+--install-dir` outside the sandbox. Without `--no-bin`, that wrote
+`~/.local/bin/python3.12` pointing into my scratch directory. This is block 5b's
+lesson, reproduced by the coordinator while writing the prompt that prevents it,
+and it is how `--no-bin --no-registry` became decisions rather than
+afterthoughts. Diff the durable directories around any command you probe, not
+only the one you meant it to write.
+
+**Establish the sandbox before delegating, and measure it there.** Two facts came
+out of `codex sandbox -P :workspace` that nothing else would have shown: uv's
+default cache and managed-Python directories are not writable in it, and two
+`test_webserve.py` socket tests fail there by design. Both went into the prompt.
+The runner reported exactly those two failures and nothing else.
+
+**Mutations found what review did not.** Four of fifteen survived round 1. One
+of them was the block's central case: an interpreter that still starts but is
+not the one recorded. The only test deleted `python`, so the probe raised
+whatever the comparison did. Another was `--no-build`, whose test passed offline
+because a source build fails there regardless. In both, a green test was
+standing in for the decision.
+
+**Mutating in parallel with the full suite invalidated the suite.** I launched
+both at once. Several tests import `skill_store` fresh in child processes, so
+the suite read mutated files. I discarded the run and reran it. **Mutations own
+the tree while they run.**
+
+**The gate's two defects were both in the operator's half, and the selftest
+could catch neither.**
+- The compatibility prompt named `executable-fixture (active)`, but the panel
+  prints `fixture-lab/executable-fixture 1.0.0 … — ready (active)`. The
+  selftest's fake operator *computes* the right answer instead of reading the
+  prompt's words, so wording can never fail it.
+- The runbook's `cd` line was copied from 71b's runbook rather than checked, and
+  this machine's checkout is `D:\Code\microclaw`. That is *a literal command must
+  be established, never guessed*, broken by copying a command from a runbook
+  that was right for another checkout.
+
+The gate now prints its own checkout path, so there is nothing to guess.
+
+**A limb with no control surfaced only because a step failed.** The reinstall
+limb would have passed had `install.bat` never run. That only came to light
+because the operator mentioned that the `cd` had failed. It now requires the
+two files `install.bat` always rewrites to change, and the selftest sabotages
+that. **Ask of every limb: what does it read if the operator skipped the step?**
+
+**Scoring a 13/14 run from its artifacts found two product defects.** A
+`job.json` left `running` by an exited serve would keep the panel polling
+forever. A failed reason rendered a Python dict. Neither was a gate limb; both
+were visible in `updated.json` to anyone who read it.
+
+**`git -C <repo> archive -o <relative path>` writes into `<repo>`.** My probe
+left a 5 MB `src.zip` in the runner's live worktree. I caught it before a
+commit, and the gate passes an absolute path.
+
+**Counts.** Full suite 5367 passed, 99 skipped after round 2, and 5369 with the
+coordinator fix, against a 5297 baseline. CI: ubuntu and windows green. Windows
+skipped 103, the same as 83c, so the real-uv store tests ran on the shipping
+platform.
