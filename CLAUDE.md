@@ -22,7 +22,14 @@ replacement for it.
 - **Image analysis lives in hooks.** Analysis runs as an acquisition hook so it
   travels with the acquisition. Do not write custom image-analysis code outside
   a hook; if analysis is needed somewhere else, that is a signal the hook
-  contract needs extending, not a reason to fork the code path.
+  contract needs extending, not a reason to fork the code path. **One narrow
+  exception, from design/71 and design/83:** a community package's worker is a
+  read-only *observer*, not a hook — out of process, reading a saved or growing
+  dataset, writing only its reserved output directory, with no channel to
+  change, slow or gate acquisition. It enters through
+  `run_analysis_on_saved_dataset`'s package route (and 83e-3's triggers), never
+  through the hook runtime. Feedback from it into acquisition would be a new
+  typed capability (`R139`), not the package gaining hardware authority.
 - **Everything must compile to a standalone pycro-manager script.** Every tool
   call and every hook has to work as a composite inside plain pycro-manager, so
   a user can walk away with a script that runs without Microclaw. Reject designs
@@ -152,7 +159,8 @@ replacement for it.
   `move_named_stage` was undecorated while sitting on the gate path of the block
   about named-stage motion. **Every registered tool now carries exactly one
   marker** — design/63 block 63a, merged 2026-08-30, decided the last eleven
-  (81 tools: 23 `@emits`, 54 `@emits_nothing`, 4 `@refuses`) — and
+  (82 tools as of design/83 block 83e-2: 24 `@emits`, 54 `@emits_nothing`,
+  4 `@refuses`) — and
   `test_every_registered_tool_has_exactly_one_export_decision` keeps it that
   way, so a twelfth cannot ship the way the first eleven did. Do not re-derive
   that count by hand; if you must, the three attributes are

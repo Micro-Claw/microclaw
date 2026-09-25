@@ -593,15 +593,21 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app):
+        try:
+            skill_store.abandon_analysis_jobs()
+        except Exception as exc:
+            print(f"[microclaw] Could not sweep analysis jobs: {exc}", file=sys.stderr)
         def check_skill_packages():
-            skill_store.recover(retained_digests=frozenset())
+            skill_store.recover(retained_digests=skill_store.retained_digests())
             skill_store.recheck(now=datetime.datetime.now(datetime.timezone.utc),
-                                retained_digests=frozenset())
+                                retained_digests=skill_store.retained_digests())
         threading.Thread(target=check_skill_packages, name="microclaw-skill-startup",
                          daemon=True).start()
         try:
             yield
         finally:
+            from microclaw.completed_dataset import close_analysis_supervisor
+            close_analysis_supervisor()
             writer = getattr(session, "acquisition_diagnostic_writer", None)
             if writer is not None:
                 writer.close()
@@ -883,7 +889,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def start_skill_job(package_id, operation):
         try:
             job = await run_in_threadpool(skill_store.start_job, package_id, operation,
-                                          retained_digests=frozenset())
+                                          retained_digests=skill_store.retained_digests())
         except skill_store.PackageRefusal as exc:
             raise HTTPException(409 if exc.field == "lock" else 400, str(exc)) from None
         return JSONResponse(job, status_code=202)

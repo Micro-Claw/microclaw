@@ -3068,3 +3068,58 @@ def test_skill_discovery_panel_decision_and_conflict(skill_client):
     state = skill_client.get("/api/skill-packages").json()["packages"][0]
     assert not state["discovery"]["enabled"]
     assert all(row["discovery_exclusions"] for row in state["installs"])
+
+
+def test_d2_browser_analysis_session_grant(session, client, fast_confirm_poll):
+    subject = 'fixture-lab/package@' + 'a' * 64
+    thread, events, box = _start_confirm(session, 'run analysis', kind='analysis', subject=subject)
+    try:
+        assert any(event.get('grantable') is True for event in events)
+        response = client.post('/api/confirm', json={'id': session.pending.id, 'approve': 'session'})
+        assert response.status_code == 200
+        thread.join(timeout=5)
+        assert box['answer'] is True
+        assert session.confirm('rerun', kind='analysis', subject=subject)
+        thread, _, box = _start_confirm(session, 'updated', kind='analysis', subject=subject[:-1] + 'b')
+        client.post('/api/confirm', json={'id': session.pending.id, 'approve': False})
+        thread.join(timeout=5)
+        assert box['answer'] is False
+
+    finally:
+        session.cancel.set()
+        thread.join(timeout=5)
+
+
+def test_d3_serve_abandons_records_and_closes_analysis_pool(session, monkeypatch):
+    from microclaw import completed_dataset, skill_store
+    record = dict(job_id='a'*32, state='running', digest='b'*64)
+    skill_store._write(skill_store.analysis_job_path(record['job_id']), record)
+    closed = []
+    monkeypatch.setattr(completed_dataset, 'close_analysis_supervisor', lambda: closed.append(True))
+    with TestClient(build_app(session)):
+        assert skill_store.analysis_job_status(record['job_id'])['state'] == 'abandoned'
+    assert closed == [True]
+
+
+def test_f3_serve_starts_with_corrupt_record_and_preserves_live_owner(session):
+    import os
+    from microclaw import skill_store
+    bad = skill_store.analysis_job_path('e'*32)
+    bad.parent.mkdir(parents=True)
+    bad.write_text('{invalid', encoding='utf-8')
+    live = dict(job_id='a'*32, state='running', digest='b'*64,
+                owner=dict(pid=os.getpid(), nonce='live-process'))
+    skill_store._write(skill_store.analysis_job_path(live['job_id']), live)
+    with TestClient(build_app(session)):
+        assert skill_store.analysis_job_status(live['job_id']) == live
+        assert skill_store.retained_digests() == frozenset({live['digest']})
+    assert bad.read_text(encoding='utf-8') == '{invalid'
+
+
+def test_f3_startup_sweep_failure_cannot_prevent_serve(session, monkeypatch):
+    from microclaw import skill_store
+    def fail():
+        raise OSError('jobs directory unavailable')
+    monkeypatch.setattr(skill_store, 'abandon_analysis_jobs', fail)
+    with TestClient(build_app(session)):
+        pass

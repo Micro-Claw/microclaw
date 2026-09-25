@@ -105,6 +105,7 @@ Rows added since the triage:
 | `R132` | the first Windows CI runs, scored from the skip arithmetic 2026-09-16 |
 | `R133`–`R136` | found while reviewing and gating `design/71` block 71a, 2026-09-18 to 2026-09-21 |
 | `R137`–`R138` | found while reviewing and gating `design/71` blocks 71b and 71c, 2026-09-21 |
+| `R139` | `design/83` §"What a package can be", while scoping 83e-2, 2026-09-24 |
 
 
 ## The work queue
@@ -163,6 +164,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R136` | [`design/55-gate-probe-selftest.py` is hard-coded to block 55a](#r136) | MEDIUM | SMALL |  |
 | `R137` | [The extras-failure fallback that protects an update has no rig evidence](#r137) | LOW | SMALL |  |
 | `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
+| `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -1354,7 +1356,7 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Three export decisions for the community-package path are stated as intent but not pinned by a test, and an unpinned export decision is exactly what blocks 43h, 47 and 52a each paid for.**
 
-- **Status** — OPEN, first item **CLOSED 2026-09-22** by `design/83` 83a. The three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. The last of those is now characterized in both directions (`tests/test_skill_packages.py`) and each direction was proved to discriminate by mutating `_recorded_outcome`: narrowing its scan to the key `results` fails the top-level-list direction, and making it recurse into nested dicts fails the invisibility direction. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:2316`-`:2321`) into `refuse()` (`:2284`), which plants a `raise RuntimeError` in the exported script.
+- **Status** — OPEN until `design/83` 83e-3 records trigger identity in the acquisition's record. **`@emits`-as-comment CLOSED 2026-09-25** with `design/83` 83e-2 (PR #41): `run_analysis_on_saved_dataset` is `@emits` with a comment-only renderer for every adapter, a declined call exports as a decline, and a multiline publisher value stays inside its comment, pinned in `tests/test_session_script_export.py`. The first item **CLOSED 2026-09-22** by `design/83` 83a. The three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. The last of those is now characterized in both directions (`tests/test_skill_packages.py`) and each direction was proved to discriminate by mutating `_recorded_outcome`: narrowing its scan to the key `results` fails the top-level-list direction, and making it recurse into nested dicts fails the invisibility direction. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:2316`-`:2321`) into `refuse()` (`:2284`), which plants a `raise RuntimeError` in the exported script.
 - **Importance** — HIGH - `CLAUDE.md` records this failure shape three times over (43h's `generate_and_save_hook`, 47's `set_roi`/`clear_roi`, 52a's `move_named_stage`); each killed its own block's gate script.
 - **Where** — LOCAL - the marker's behaviour is settled by reading the emitter and pinning it with a test, the way `test_every_registered_tool_has_exactly_one_export_decision` pins the marker count.
 - **Block** — `design/83`, split three ways as of 2026-09-22 after reading the code. The first item closes with 83a (a characterization test of `_recorded_outcome`, sharpened: it scans **every** top-level list-valued key, so the analysis record must sit under a nested dict). The second needs nothing — `refuse()`'s raise is already covered many times in `tests/test_session_script_export.py`, and it is an *input* to the marker decision rather than a thing to pin. The third cannot be pinned before the notebook at all, because no analysis tool exists to hang a renderer on; 83e's block statement fixes the marker as `@emits` with a comment-only renderer so no runner is left to choose it. HIGH/SMALL was optimistic in exactly that third part.
@@ -3065,3 +3067,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW. Nobody has asked, exactly as with uninstall.
 - **Effort** — SMALL
 - **Provenance** — block 71b's coordinator review, 2026-09-21.
+
+### R139 — A community package's results cannot steer an acquisition
+
+**A package worker is a read-only observer by design, so there is no route by which, say, SMAPpy's localisation density adjusts the 405 activation during a run.**
+
+- **What happened** — noticed while scoping `design/83` 83e-2, 2026-09-24, when the operator asked whether a community skill could be used inside a hook. It cannot: package code never runs in the hook runtime, and an observer has no channel back into acquisition. A package can only *teach* a hook (prose carrying hook source, saved through `generate_and_save_hook`), which cannot use the publisher's locked dependencies.
+- **Why it matters** — feedback-driven SMLM is the obvious next thing to want once SMAPpy runs as an observer, and the tempting shortcut — letting the worker write a property — is exactly the hardware authority design/71 refused.
+- **What a fix would look like** — a new typed MicroClaw capability that reads a worker's declared telemetry and acts on it under the normal authorization, envelope and write-budget rules, with a latency contract measured against design/78's dispatch numbers. Its own notebook.
+- **Where** — LOCAL for the design; a rig for any gate, since it is feedback at real hardware.
+- **Block** — NONE.
+- **Importance** — LOW. Nobody needs it before SMAPpy exists as a conforming package (`R85`).
+- **Effort** — LARGE
+- **Provenance** — `design/83` §"What a package can be", 2026-09-24.

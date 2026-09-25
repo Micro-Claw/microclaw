@@ -1041,3 +1041,51 @@ def test_ineligible_and_disabled_unchecked_records_do_not_start_recheck(tmp_path
     assert store.discovery_text() == ""
     assert dict(field="microclaw", detail="incompatible") in state("markdown")["installs"][0]["discovery_exclusions"]
     start.assert_not_called()
+
+
+@pytest.mark.parametrize('state,retained', [('queued', True), ('running', True),
+    ('succeeded', False), ('failed', False), ('dispatch_failed', False),
+    ('supervisor_failed', False), ('cancelled', False), ('refused', False), ('abandoned', False)])
+def test_d3_live_job_retention_and_startup_abandonment(state, retained):
+    record = dict(job_id='a'*32, state=state, digest='b'*64, parameters={'text': 'a\nb'},
+                  owner=dict(pid=os.getpid(), nonce='live-process'))
+    path = store.analysis_job_path(record['job_id'])
+    store._write(path, record)
+    assert store.retained_digests() == (frozenset({'b'*64}) if retained else frozenset())
+    store.abandon_analysis_jobs()
+    assert store.analysis_job_status(record['job_id']) == record
+    assert store.retained_digests() == (frozenset({'b'*64}) if retained else frozenset())
+
+
+def test_f2_live_owner_survives_sweep_dead_owner_stops_pinning():
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    child.wait()
+    assert not store._alive(child.pid)
+    live = dict(job_id='a'*32, state='running', digest='b'*64,
+                owner=dict(pid=os.getpid(), nonce='live-process'))
+    dead = dict(job_id='c'*32, state='queued', digest='d'*64,
+                owner=dict(pid=child.pid, nonce='dead-process'))
+    for record in (live, dead):
+        store._write(store.analysis_job_path(record['job_id']), record)
+    assert store.retained_digests() == frozenset({live['digest']})
+    store.abandon_analysis_jobs()
+    assert store.analysis_job_status(live['job_id']) == live
+    assert store.analysis_job_status(dead['job_id']) == dict(dead, state='abandoned')
+
+
+@pytest.mark.parametrize('content', ['{invalid', '[]', '{"state": []}'])
+def test_f3_unreadable_record_isolated_from_live_jobs_and_package_management(tmp_path, content):
+    bad = store.analysis_job_path('e'*32)
+    bad.parent.mkdir(parents=True)
+    bad.write_text(content, encoding='utf-8')
+    live = dict(job_id='a'*32, state='running', digest='b'*64,
+                owner=dict(pid=os.getpid(), nonce='live-process'))
+    store._write(store.analysis_job_path(live['job_id']), live)
+    store.abandon_analysis_jobs()
+    assert bad.read_text(encoding='utf-8') == content
+    assert store.retained_digests() == frozenset({live['digest']})
+    with pytest.raises(store.PackageRefusal, match='unreadable'):
+        store.analysis_job_status('e'*32)
+    install(tmp_path, kind='markdown')
+    store.remove('markdown-fixture', retained_digests=store.retained_digests())
+    assert not package('markdown').exists()
