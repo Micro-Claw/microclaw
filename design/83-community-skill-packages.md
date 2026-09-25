@@ -819,6 +819,57 @@ the coordinator's).
 - **Gate.** None; local only. The worker under a desktop `serve` already ran in
   83d's gate, and the consent prompt reuses the existing session-grant button.
 
+**What 83e-2 settled** (PR #41):
+- **Code.** `completed_dataset.run_package_analysis`, behind
+  `run_analysis_on_saved_dataset`'s package route, and one lazily built
+  process-wide analysis `Supervisor` that serve closes at shutdown. In
+  `skill_packages`: `validate_parameter_schema` and `validate_parameters`. In
+  `skill_store`: job records, `_analysis_records`, `abandon_analysis_jobs` and
+  `retained_digests()`. The new tool `analysis_job_status` is `@emits_nothing`.
+  The tool count is now 82: 24 `@emits`, 54 `@emits_nothing`, 4 `@refuses`.
+- **Consent never holds a lock.** Everything that can be checked without the
+  lock runs first. The prompt then runs with no lock held. Under the lock, the
+  same digest is resolved again and the trust policy is reloaded, because a
+  person can take minutes to answer. A release removed while the prompt was
+  open refuses.
+- **A job record names its owner** (`pid` plus a per-process nonce). A sweep
+  abandons a job only when its owner is dead, and retention counts only jobs
+  whose owner is alive. So a second `serve` leaves the first one's jobs alone,
+  and a job left by a dead CLI process stops pinning its release without a
+  sweep. An unreadable record is skipped and pins nothing. PID reuse is
+  accepted, as for package locks.
+- **A declined call exports as a decline**
+  (`{"status": ..., "cancelled": true}`), not as an analysis that was not
+  reproduced.
+- **D6.** On the runner, n=5, with the real supervisor and a 300 ms fixture
+  worker: median 18.0 ms, max 21.6 ms. The tool returned before the worker's
+  sleep ended in every sample. Mean attributed phases: resolve 6.4 ms, atomic
+  writes 3.7 ms, submit 2.1 ms; about 5 ms is unattributed. Reusing one policy
+  snapshot measured no meaningful change (18.4 ms before). The pre-prompt
+  resolve is 6.4 ms, against 0.29 ms for `check_release` alone in 83c. Most of
+  it is file reads and the record glob, which has not been measured
+  separately.
+- **Review.** Round 1 rejected the first turn for six defects:
+  - the consent prompt held the package lock;
+  - a second process abandoned the first one's live jobs;
+  - one corrupt job record stopped serve starting and failed every package
+    operation;
+  - a declined call exported as an analysis;
+  - a bare `read_text()` failed the suite-integrity check;
+  - the no-import test walked a relative path, so from another directory it
+    visited nothing and passed.
+
+  All ten regression tests fail on the first turn's tree. The coordinator's
+  own fix, the policy reload, was mutation-checked. Removing the
+  `type`-length rows took 118 parametrized cases out of the suite, so the
+  count drop is explained.
+- **Residuals.**
+  - The job directory grows without bound, and every retention call reads all
+    of it.
+  - `output_schema` is admitted but not enforced.
+  - The terminal CLI never runs the startup sweep. Its dead jobs stop pinning
+    through the owner rule, but they read `running` until a serve starts.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -879,7 +930,7 @@ and otherwise stays open.
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
-| 83e-2 | `block-83e-2` | `2a1c42a` | opened 2026-09-24 — decisions D1–D6 recorded, delegated |
+| 83e-2 | `block-83e-2` | `2a1c42a` | reviewed, PR #41 — local only, no gate; closes `R84`'s third item |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

@@ -159,7 +159,8 @@ replacement for it.
   `move_named_stage` was undecorated while sitting on the gate path of the block
   about named-stage motion. **Every registered tool now carries exactly one
   marker** — design/63 block 63a, merged 2026-08-30, decided the last eleven
-  (81 tools: 23 `@emits`, 54 `@emits_nothing`, 4 `@refuses`) — and
+  (82 tools as of design/83 block 83e-2: 24 `@emits`, 54 `@emits_nothing`,
+  4 `@refuses`) — and
   `test_every_registered_tool_has_exactly_one_export_decision` keeps it that
   way, so a twelfth cannot ship the way the first eleven did. Do not re-derive
   that count by hand; if you must, the three attributes are
