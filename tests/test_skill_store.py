@@ -1041,3 +1041,16 @@ def test_ineligible_and_disabled_unchecked_records_do_not_start_recheck(tmp_path
     assert store.discovery_text() == ""
     assert dict(field="microclaw", detail="incompatible") in state("markdown")["installs"][0]["discovery_exclusions"]
     start.assert_not_called()
+
+
+@pytest.mark.parametrize('state,retained', [('queued', True), ('running', True),
+    ('succeeded', False), ('failed', False), ('dispatch_failed', False),
+    ('supervisor_failed', False), ('cancelled', False), ('refused', False), ('abandoned', False)])
+def test_d3_live_job_retention_and_startup_abandonment(state, retained):
+    record = dict(job_id='a'*32, state=state, digest='b'*64, parameters={'text': 'a\nb'})
+    path = store.analysis_job_path(record['job_id'])
+    store._write(path, record)
+    assert store.retained_digests() == (frozenset({'b'*64}) if retained else frozenset())
+    store.abandon_analysis_jobs()
+    assert store.analysis_job_status(record['job_id']) == dict(record, state='abandoned' if retained else state)
+    assert not store.retained_digests()

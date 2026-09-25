@@ -220,7 +220,6 @@ def test_protocol_is_structural_and_module_is_not_imported():
     value['protocol_version'] = '999.42'
     value['entry_point']['module'] = 'does_not_exist.some_runner'
     value['operations'][0]['name'] = 'future_operation'
-    value['operations'][0]['input_schema']['type'] = 'future-type'
     value['locks']['win_amd64'] = []
     assert packages.validate_manifest(value) == value
 
@@ -244,10 +243,6 @@ RENDERED = [
     (('license',), 'license', packages.MAX_LICENSE_LENGTH, 'a'),
     (('entry_point', 'module'), 'entry_point.module', packages.MAX_MODULE_LENGTH, 'a'),
     (('operations', 0, 'name'), 'operations[0].name', packages.MAX_OPERATION_NAME_LENGTH, 'a'),
-    (('operations', 0, 'input_schema', 'type'), 'operations[0].input_schema.type',
-     packages.MAX_SCHEMA_TYPE_LENGTH, 'a'),
-    (('operations', 0, 'output_schema', 'type'), 'operations[0].output_schema.type',
-     packages.MAX_SCHEMA_TYPE_LENGTH, 'a'),
 ]
 
 
@@ -1037,3 +1032,67 @@ def test_duplicate_excludes_both_even_when_one_carrier_is_invalid(change):
     assert all(exc.field == 'name' for _, exc in exclusions)
     refuses('name', packages.load_external_skill, 'fixture-lab/executable-fixture/workflow',
             [good, bad], policy(), now=NOW)
+
+
+# 83e-2 D4: the same admitted schemas and JSON instances go to both validators.
+def test_d4_schema_validity_matches_draft202012():
+    from jsonschema import Draft202012Validator
+    schemas = [
+        {}, True, False,
+        *({'type': t} for t in ('null', 'boolean', 'object', 'array', 'number', 'integer', 'string')),
+        {'properties': {'x': {'type': 'integer'}}, 'required': ['x']},
+        {'properties': {'x': True}, 'additionalProperties': False},
+        {'additionalProperties': False},
+        {'items': {'type': 'integer'}, 'minItems': 1, 'maxItems': 2},
+        {'items': False}, {'minimum': 1, 'maximum': 2},
+        {'minLength': 1, 'maxLength': 2},
+        {'enum': [True, {'x': [False]}, 2]},
+        {'enum': [1, {'x': [1]}]},
+        {'default': 1, 'title': 'label', 'description': 'text'},
+        {'properties': {'x': {'type': 'integer', 'default': 3}}, 'required': ['x']},
+        {'enum': []}, {'enum': [1, 1.0]}, {'minLength': 1.0},
+        {'minimum': -(10**400), 'maximum': 10**400},
+    ]
+    instances = [None, True, False, 0, 1, 1.0, 1.5, 2, 3, '', 'a', 'é🙂', 'abc',
+                 [], [1], [True], [1.0, 2], [1, 2, 3], {}, {'x': 1}, {'x': True},
+                 {'x': [False]}, {'x': [0]}, {'x': [1.0]}, {'y': 2}, 10**400]
+    for schema in schemas:
+        packages.validate_parameter_schema(schema)
+        Draft202012Validator.check_schema(schema)
+        for instance in instances:
+            try:
+                candidate = deepcopy(instance)
+                packages.validate_parameters(schema, candidate)
+                assert candidate == instance
+                valid = True
+            except packages.PackageRefusal:
+                valid = False
+            assert valid == Draft202012Validator(schema).is_valid(instance), (schema, instance)
+
+
+@pytest.mark.parametrize('key', ['input_schema', 'output_schema'])
+@pytest.mark.parametrize('schema', [
+    {'type': 'object', '$ref': '#'},
+    {'type': 'object', 'properties': {'x': {'pattern': 'x'}}},
+    {'type': 'array', 'items': {'oneOf': []}},
+    {'type': ['object', 'null']}, {'type': 'future-type'},
+    {'type': 'object', 'required': ['x', 'x']},
+    {'type': 'object', 'additionalProperties': {}},
+    {'type': 'array', 'minItems': True},
+])
+def test_d4_admission_refuses_outside_closed_subset(key, schema):
+    value = manifest()
+    value['operations'][0][key] = schema
+    with pytest.raises(packages.PackageRefusal):
+        packages.validate_manifest(value)
+
+
+def test_d4_product_never_imports_jsonschema():
+    import ast
+    for path in Path('microclaw').rglob('*.py'):
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(a.name.split('.')[0] != 'jsonschema' for a in node.names), path
+            elif isinstance(node, ast.ImportFrom):
+                assert (node.module or '').split('.')[0] != 'jsonschema', path

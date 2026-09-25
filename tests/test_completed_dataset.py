@@ -1139,3 +1139,216 @@ class NumericKeys:
     assert manifest["parameters"] == {"config": {"2": "two", "10": "ten"}}
     assert result["parameters_sha256"] == hashlib.sha256(
         completed_dataset._canonical_bytes(manifest["parameters"])).hexdigest()
+
+
+@pytest.fixture
+def package_analysis(tmp_path, monkeypatch):
+    """Real on-disk store resolution and real Supervisor with the fixture worker."""
+    import shutil
+    import sys
+    from microclaw import skill_store as store, tools
+    from tests.test_skill_supervisor import release
+    from tests.test_skill_packages import trust_file
+
+    source = release()
+    record = dict(source, state='ready', artifact_digest=source['intake']['artifact_digest'],
+                  python=sys.executable, interpreter={'test': 'current'}, install_id='0' * 16 + '-000000')
+    record.pop('release_dir')
+    # A test-local manifest: fixture assets/signatures remain byte-for-byte intact.
+    record['manifest']['operations'][1]['input_schema'] = {
+        'type': 'object', 'properties': {'behaviour': {'type': 'string'},
+                                       'sleep': {'type': 'number', 'minimum': 0},
+                                       'interval': {'type': 'string'},
+                                       'text': {'type': 'string'}}, 'additionalProperties': False}
+    directory = store._package('conformance-fixture') / 'installs' / record['install_id']
+    shutil.copytree(source['release_dir'], directory / 'release')
+    store._write(directory / 'install.json', record)
+    store._write(directory / 'verdict.json', dict(build=store.current_build(),
+                 interpreter=record['interpreter'], eligible=True, reasons=[]))
+    store._write(store.store_dir() / 'trust' / 'roots.json', trust_file('roots'))
+    store.store_trust_policy(trust_file('policy'))
+    guard = SafetyGuard(SafetyConstraints(workspace_dir=str(tmp_path)))
+    dataset = tmp_path / 'dataset'
+    dataset.mkdir()
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: True)
+    getattr(completed_dataset, 'close_analysis_supervisor', lambda: None)()
+    args = dict(ctrl=None, guard=guard, dataset_path=str(dataset),
+                adapter='fixture-lab/conformance-fixture:observe_dataset',
+                release_digest=record['artifact_digest'], parameters={}, output_dir=str(tmp_path / 'out'))
+    yield args, directory, record
+    getattr(completed_dataset, 'close_analysis_supervisor', lambda: None)()
+
+
+def terminal_analysis(job_id):
+    import time
+    from microclaw import skill_store as store
+    end = time.monotonic() + 10
+    while time.monotonic() < end:
+        record = store.analysis_job_status(job_id)
+        if record['state'] not in store.ANALYSIS_NONTERMINAL:
+            return record
+        time.sleep(0.01)
+    pytest.fail('analysis record did not reach terminal')
+
+
+def test_d1_d3_d6_package_returns_before_slow_worker_and_persists(package_analysis, monkeypatch):
+    import statistics
+    import time
+    from microclaw import skill_store as store, tools
+    args, directory, record = package_analysis
+    from microclaw.skill_supervisor import Supervisor
+    phases = {key: [] for key in ('resolve', 'atomic_writes', 'submit')}
+    main_thread = threading.get_ident()
+    def measure(owner, name, phase):
+        original = getattr(owner, name)
+        def measured(*a, **k):
+            start = time.perf_counter()
+            try:
+                return original(*a, **k)
+            finally:
+                if threading.get_ident() == main_thread:
+                    phases[phase].append(time.perf_counter() - start)
+        monkeypatch.setattr(owner, name, measured)
+    measure(store, 'resolve', 'resolve')
+    measure(store, '_write', 'atomic_writes')
+    measure(Supervisor, 'submit', 'submit')
+    timings = []
+    pool = None
+    for i in range(5):
+        interval = str(Path(args['output_dir']).parent / f'worker-{i}')
+        started = time.perf_counter()
+        result = tools.run_analysis_on_saved_dataset(**dict(args, output_dir=args['output_dir'] + str(i),
+                    parameters={'behaviour': 'slow', 'sleep': 0.3, 'interval': interval}))
+        elapsed = time.perf_counter() - started
+        analysis = result['analysis']
+        if pool is None:
+            pool = completed_dataset._analysis_supervisor
+        assert completed_dataset._analysis_supervisor is pool
+        timings.append(elapsed)
+        assert analysis['state'] in store.ANALYSIS_NONTERMINAL
+        assert elapsed < 0.3
+        assert store.analysis_job_status(analysis['job_id'])['parameters']['sleep'] == 0.3
+        assert args['release_digest'] in store.retained_digests()
+        assert Path(analysis['job_record_path']).parent == store.store_dir() / 'jobs'
+        terminal = terminal_analysis(analysis['job_id'])
+        worker_started = float(Path(interval + '.start').read_text())
+        # The worker's own real clock independently proves return before its sleep ends.
+        assert started + elapsed < worker_started + 0.3
+        assert terminal['state'] == 'succeeded', terminal
+        assert terminal['lifecycle'] == {'acquisition': 'completed', 'writer': 'finished'}
+        assert args['release_digest'] not in store.retained_digests()
+    print(f'D6 n=5 tool wall median={statistics.median(timings)*1000:.3f}ms max={max(timings)*1000:.3f}ms')
+    print('D6 mean phases ms/call:', {key: round(sum(values)/5*1000, 3) for key, values in phases.items()})
+    print('D6 mean remaining ms/call:', round((sum(timings)-sum(map(sum, phases.values())))/5*1000, 3))
+
+
+@pytest.mark.parametrize('field,value', [('axis_selection', {}), ('input_kind', 'frames'),
+    ('calibration_ref', {}), ('output_pixel_size_um', 1), ('model_project_config', {}),
+    ('artifact_limits', {}), ('max_array_bytes', 1), ('release_digest', None),
+    ('release_digest', 'b'*64),
+    ('adapter', 'other/conformance-fixture:observe_dataset'),
+    ('adapter', 'fixture-lab/conformance-fixture:missing'),
+    ('adapter', 'fixture-lab/conformance-fixture:self_check'),
+    ('parameters', {'sleep': True}), ('parameters', {'extra': 1}),
+    ('output_dir', '../escape-analysis')])
+def test_d1_d4_package_refuses_before_consent_or_submit(package_analysis, monkeypatch, field, value):
+    from microclaw import tools
+    args, _, _ = package_analysis
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: pytest.fail('unexpected consent'))
+    result = tools.run_analysis_on_saved_dataset(**dict(args, **{field: value}))
+    assert 'error' in result, result
+    assert not Path(args['output_dir']).exists()
+    assert completed_dataset._analysis_supervisor is None
+
+
+def test_d1_retained_release_ignores_active_pointer_and_discovery(package_analysis):
+    from microclaw import skill_store as store, tools
+    args, directory, _ = package_analysis
+    store._write(directory.parent.parent / 'pointer.json', {'active': 'absent', 'previous': None})
+    result = tools.run_analysis_on_saved_dataset(**args)
+    assert terminal_analysis(result['analysis']['job_id'])['state'] == 'succeeded'
+
+
+def test_d1_ineligible_and_locked_release_refuse(package_analysis):
+    from microclaw import skill_store as store, tools
+    args, directory, _ = package_analysis
+    with store.package_lock('conformance-fixture'):
+        assert 'lock' in tools.run_analysis_on_saved_dataset(**args)['error']
+    verdict = store._read(directory / 'verdict.json')
+    store._write(directory / 'verdict.json', dict(verdict, eligible=False, reasons=[{'field': 'test', 'detail': 'ineligible'}]))
+    assert 'ineligible' in tools.run_analysis_on_saved_dataset(**args)['error']
+    assert not Path(args['output_dir']).exists()
+
+
+def test_d2_consent_precedes_output_and_decline_submits_nothing(package_analysis, monkeypatch):
+    from microclaw import tools
+    args, _, _ = package_analysis
+    def decline(summary, **kwargs):
+        assert not Path(args['output_dir']).exists()
+        assert completed_dataset._analysis_supervisor is None
+        assert kwargs == {'kind': 'analysis', 'subject': 'fixture-lab/conformance-fixture@' + args['release_digest']}
+        for value in ('fixture-lab', 'conformance-fixture', '1.0.0', args['release_digest'],
+                      'observe_dataset', 'text', args['dataset_path'], args['output_dir'],
+                      'runs with your user permissions; not sandboxed'):
+            assert value in summary
+        return False
+    monkeypatch.setattr(tools, 'CONFIRM_FN', decline)
+    assert tools.run_analysis_on_saved_dataset(**dict(args, parameters={'text': 'a\nb'})) == {'status': 'Analysis cancelled.'}
+    assert not Path(args['output_dir']).exists()
+    assert completed_dataset._analysis_supervisor is None
+
+
+def test_d3_dispatch_and_worker_failure_are_nested(package_analysis):
+    from microclaw import tools
+    args, _, _ = package_analysis
+    completed_dataset.analysis_supervisor().close()
+    dispatched = tools.run_analysis_on_saved_dataset(**args)
+    assert dispatched['analysis']['state'] == 'dispatch_failed'
+    assert tools._recorded_outcome(dispatched) is None
+    completed_dataset.close_analysis_supervisor()
+    result = tools.run_analysis_on_saved_dataset(**dict(args, output_dir=args['output_dir'] + '2',
+                                                       parameters={'behaviour': 'failed'}))
+    terminal = terminal_analysis(result['analysis']['job_id'])
+    assert terminal['state'] == 'failed'
+    assert tools._recorded_outcome({'analysis': terminal}) is None
+
+
+def test_d3_status_reads_only_record(package_analysis, monkeypatch):
+    from microclaw import skill_store as store, tools
+    args, _, _ = package_analysis
+    job_id = 'a' * 32
+    record = {'job_id': job_id, 'state': 'failed', 'digest': args['release_digest']}
+    store._write(store.analysis_job_path(job_id), record)
+    monkeypatch.setattr(completed_dataset, 'analysis_supervisor', lambda: pytest.fail('worker queried'))
+    assert tools.analysis_job_status(None, None, job_id) == {'analysis': record}
+    assert 'error' in tools.analysis_job_status(None, None, '../outside')
+
+
+def test_d6_builtin_constructs_no_supervisor_and_reads_no_store(offline_home, monkeypatch):
+    from microclaw import skill_store as store, tools
+    _, dataset, guard, root = offline_home
+    def forbidden(*a, **k):
+        pytest.fail('builtin touched package store/supervisor/consent')
+    monkeypatch.setattr(store, 'store_dir', forbidden)
+    monkeypatch.setattr(completed_dataset, 'analysis_supervisor', forbidden)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', forbidden)
+    result = tools.run_analysis_on_saved_dataset(None, guard, str(dataset), 'frame_statistics',
+                                                {}, 'frames', {}, str(root / 'builtin'))
+    assert 'error' not in result
+    assert tools.run_analysis_on_saved_dataset(None, guard, str(dataset), 'frame_statistics',
+                                              parameters={}, output_dir='unused').get('error')
+    assert tools.run_analysis_on_saved_dataset(None, guard, str(dataset), 'frame_statistics',
+                                              {}, 'frames', {}, 'unused', release_digest='0'*64).get('error')
+
+
+def test_d3_live_job_blocks_remove_even_with_pre_submit_retention_snapshot(package_analysis):
+    from microclaw import skill_store as store, tools
+    args, directory, _ = package_analysis
+    old_snapshot = store.retained_digests()
+    result = tools.run_analysis_on_saved_dataset(**dict(args, parameters={'behaviour': 'slow', 'sleep': 0.5}))
+    with pytest.raises(store.PackageRefusal, match='retained'):
+        store.remove('conformance-fixture', retained_digests=old_snapshot)
+    assert directory.exists()
+    terminal_analysis(result['analysis']['job_id'])
+    store.remove('conformance-fixture', retained_digests=store.retained_digests())
+    assert not directory.exists()

@@ -1497,3 +1497,17 @@ def test_usage_record_building_cannot_lose_the_turn(mock_ctrl, guard, capsys):
     assert len(history) == 2
     assert records == []
     assert "Could not record usage: no model on this response" in capsys.readouterr().err
+
+
+def test_d1_analysis_schema_states_route_requirements_and_status_tool():
+    from microclaw.tools_schema import TOOLS
+    schema = next(tool['input_schema'] for tool in TOOLS if tool['name'] == 'run_analysis_on_saved_dataset')
+    assert set(schema['required']) == {'dataset_path', 'adapter', 'parameters', 'output_dir'}
+    props = schema['properties']
+    assert 'publisher/package:operation' in props['adapter']['description']
+    assert 'Required' in props['release_digest']['description']
+    assert 'refused' in props['release_digest']['description']
+    for name in ('axis_selection', 'input_kind', 'calibration_ref', 'output_pixel_size_um',
+                 'model_project_config', 'artifact_limits', 'max_array_bytes'):
+        assert 'forbidden for package operations' in props[name]['description'].lower()
+    assert next(tool for tool in TOOLS if tool['name'] == 'analysis_job_status')['input_schema']['required'] == ['job_id']

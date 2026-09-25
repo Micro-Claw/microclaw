@@ -314,6 +314,21 @@ class RecordedParams(dict):
         self.result = result or {}
 
 
+def one_line(reason: object) -> str:
+    """Fold a recorded message onto one line so it stays inside its comment.
+
+    A Micro-Manager bridge exception carries a multi-line Java stack trace.
+    Interpolated raw, only its first line got the `#` and every frame after
+    it was emitted as bare Python -- a SyntaxError that refused the *whole*
+    session's export, not just the failed step. Measured on M5 2026-08-17,
+    where a serial timeout on `Thorlabs ELL17/ELL20` made the session
+    unexportable and the agent hand-wrote a script instead, which is the
+    exact failure design/52 exists to remove. The paired `raise` below was
+    never affected: it interpolates with `!r`, which escapes the newlines.
+    """
+    return " ".join(str(reason).split())
+
+
 def _emit_acquisition(
     shape: dict[str, Any], params: dict[str, Any], default_name: str
 ) -> str:
@@ -2267,20 +2282,6 @@ def export_session_script(
     skipped_failed_calls: list[dict[str, str]] = []
     not_emitted_calls: list[dict[str, str]] = []
 
-    def one_line(reason: object) -> str:
-        """Fold a recorded message onto one line so it stays inside its comment.
-
-        A Micro-Manager bridge exception carries a multi-line Java stack trace.
-        Interpolated raw, only its first line got the `#` and every frame after
-        it was emitted as bare Python -- a SyntaxError that refused the *whole*
-        session's export, not just the failed step. Measured on M5 2026-08-17,
-        where a serial timeout on `Thorlabs ELL17/ELL20` made the session
-        unexportable and the agent hand-wrote a script instead, which is the
-        exact failure design/52 exists to remove. The paired `raise` below was
-        never affected: it interpolates with `!r`, which escapes the newlines.
-        """
-        return " ".join(str(reason).split())
-
     def refuse(tool: str, reason: str, tool_use_id: str) -> None:
         """One shape for every refusal: a comment, then a step that cannot run.
 
@@ -2524,6 +2525,8 @@ class SessionGrants:
     MMStudio's opaque current MDA.  Keep those call sites subject-less so they
     remain one-shot confirmations.
 
+    Analysis is workflow, not self-modification.
+
     The enable subject cannot infer the operator's natural-language intent. If
     an agent enables a source while trying to turn it off, a matching grant will
     approve that write; the distinguishable audit row is the only backstop.
@@ -2533,7 +2536,7 @@ class SessionGrants:
     operators can revoke while a turn is running.
     """
 
-    GRANTABLE = frozenset({"illumination", "acquisition"})
+    GRANTABLE = frozenset({"illumination", "acquisition", "analysis"})
     _SUBJECTS = {
         "illumination": frozenset({"enable"}),
         "acquisition": frozenset({"threshold"}),
@@ -2561,6 +2564,17 @@ class SessionGrants:
     @classmethod
     def is_grantable(cls, kind: str, subject: str | None) -> bool:
         """Whether this exact confirmation question may receive a grant."""
+        if kind == "analysis":
+            from microclaw import skill_packages
+            if not isinstance(subject, str) or subject.count('@') != 1:
+                return False
+            name, digest = subject.split('@')
+            try:
+                skill_packages.parse_qualified_name(name + '/analysis')
+                skill_packages._digest(digest, 'digest')
+            except ValueError:
+                return False
+            return True
         return subject in cls._SUBJECTS.get(kind, ())
 
     def grant(
@@ -6030,35 +6044,73 @@ def build_stage_coordinate_mosaic(
     return result
 
 
-@emits_nothing
+def _emit_saved_analysis(params: RecordedParams) -> str:
+    analysis = (params.result or {}).get('analysis', {})
+    values = (dict(analysis) if analysis else
+              {key: params.get(key) for key in ('adapter', 'dataset_path', 'output_dir', 'release_digest')})
+    if analysis:
+        values = {key: analysis.get(key) for key in
+                  ('package', 'digest', 'operation', 'parameters', 'output_dir', 'job_record_path', 'failure')}
+    lines = ['# Analysis was not reproduced. Rerun run_analysis_on_saved_dataset in Microclaw',
+             '# with the recorded adapter/package, pinned digest, parameters, dataset and a new output directory.']
+    values.setdefault('adapter', params.get('adapter'))
+    values.setdefault('dataset_path', params.get('dataset_path'))
+    lines.extend(f'# {one_line(key)}: {one_line(value)}' for key, value in values.items())
+    return '\n'.join(lines)
+
+
+@emits(_emit_saved_analysis)
 def run_analysis_on_saved_dataset(
     ctrl: MicroscopeController,
     guard: SafetyGuard,
     dataset_path: str,
     adapter: str,
-    axis_selection: dict,
-    input_kind: str,
-    parameters: dict,
-    output_dir: str,
+    axis_selection: dict | None = None,
+    input_kind: str | None = None,
+    parameters: dict | None = None,
+    output_dir: str | None = None,
     calibration_ref: dict | None = None,
     output_pixel_size_um: float | None = None,
     model_project_config: dict | None = None,
     artifact_limits: dict | None = None,
-    max_array_bytes: int = 512 * 1024 * 1024,
+    max_array_bytes: int | None = None,
+    release_digest: str | None = None,
 ) -> dict:
-    """Run a reviewed adapter over saved pixels without touching ``ctrl``.
-
-    ``ctrl`` is accepted only because public tools share one dispatcher shape;
-    it is deliberately not forwarded to the offline runner or adapter.
-    """
-    from microclaw.completed_dataset import run_analysis_on_saved_dataset as run
+    """Analyze saved data without hardware access; publisher jobs return at submit."""
+    from microclaw.completed_dataset import run_analysis_on_saved_dataset as run, run_package_analysis
+    if '/' in adapter or ':' in adapter:
+        forbidden = dict(axis_selection=axis_selection, input_kind=input_kind,
+                         calibration_ref=calibration_ref, output_pixel_size_um=output_pixel_size_um,
+                         model_project_config=model_project_config, artifact_limits=artifact_limits,
+                         max_array_bytes=max_array_bytes)
+        present = [key for key, value in forbidden.items() if value is not None]
+        if present:
+            return {'error': 'Package analysis refuses arguments: ' + ', '.join(present)}
+        if release_digest is None:
+            return {'error': 'Package analysis requires release_digest'}
+        return run_package_analysis(guard, dataset_path, adapter, release_digest, parameters, output_dir)
+    if release_digest is not None:
+        return {'error': 'Builtin/saved adapters refuse release_digest'}
+    if axis_selection is None or input_kind is None:
+        return {'error': 'Builtin/saved adapters require axis_selection and input_kind'}
     return run(
         guard, dataset_path, adapter, axis_selection, input_kind, parameters,
         output_dir, calibration_ref=calibration_ref,
         output_pixel_size_um=output_pixel_size_um,
         model_project_config=model_project_config,
-        artifact_limits=artifact_limits, max_array_bytes=max_array_bytes,
+        artifact_limits=artifact_limits,
+        max_array_bytes=512 * 1024 * 1024 if max_array_bytes is None else max_array_bytes,
     )
+
+
+@emits_nothing
+def analysis_job_status(ctrl: MicroscopeController, guard: SafetyGuard, job_id: str) -> dict:
+    """Read only the durable job record; never contact a worker."""
+    from microclaw import skill_store
+    try:
+        return {'analysis': skill_store.analysis_job_status(job_id)}
+    except Exception as exc:
+        return {'error': str(exc)}
 
 
 # --- Image capture with analysis ---
@@ -12079,6 +12131,7 @@ TOOL_REGISTRY = {
     "export_dataset_as_tiff": export_dataset_as_tiff,
     "build_stage_coordinate_mosaic": build_stage_coordinate_mosaic,
     "run_analysis_on_saved_dataset": run_analysis_on_saved_dataset,
+    "analysis_job_status": analysis_job_status,
     "run_autofocus": run_autofocus,
     "mark_position": mark_position,
     "get_position_list": get_position_list,

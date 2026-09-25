@@ -164,3 +164,21 @@ def test_metadata_free_confirmation_retains_existing_grant_behavior(monkeypatch)
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     assert tools._require_confirmation("enable 488", "illumination", "enable")
     assert tools._require_confirmation("enable 561", "illumination", "enable")
+
+
+def test_d2_analysis_terminal_grant_is_pinned_to_package_and_digest(monkeypatch):
+    subject = 'fixture-lab/package@' + 'a' * 64
+    answers = iter(['session', 'n', 'n'])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(answers))
+    assert tools._require_confirmation('run analysis', kind='analysis', subject=subject)
+    assert tools._require_confirmation('another operation', kind='analysis', subject=subject)
+    assert not tools._require_confirmation('updated', kind='analysis', subject=subject[:-1] + 'b')
+    assert not tools._require_confirmation('other package', kind='analysis', subject=subject.replace('/package', '/other'))
+
+
+@pytest.mark.parametrize('subject', [None, '', 'enable', 'a/b@123', '../b@'+'a'*64,
+    'a/b/c@'+'a'*64, 'a/b@'+'A'*64, 'a/b@'+'a'*64+'\n', 'a/b@'+'a'*64+'@'])
+def test_d2_analysis_grant_rejects_malformed_subject(subject):
+    assert not tools.SessionGrants.is_grantable('analysis', subject)
+    with pytest.raises(ValueError):
+        tools.SESSION_GRANTS.grant('analysis', subject, 'run', 'stdin')

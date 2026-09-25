@@ -602,3 +602,115 @@ def run_analysis_on_saved_dataset(
     return {**result, "parameters_sha256": _sha(_canonical_bytes(manifest["parameters"])),
             "manifest_path": str(manifest_path),
             "mosaic": mosaic_result}
+
+
+_analysis_supervisor = None
+_analysis_lock = threading.Lock()
+_analysis_recorders = set()
+
+
+def analysis_supervisor():
+    """One analysis pool per process, independent of installation self checks."""
+    global _analysis_supervisor
+    from microclaw.skill_supervisor import Supervisor
+    with _analysis_lock:
+        if _analysis_supervisor is None:
+            _analysis_supervisor = Supervisor()
+        return _analysis_supervisor
+
+
+def close_analysis_supervisor():
+    global _analysis_supervisor
+    with _analysis_lock:
+        supervisor = _analysis_supervisor
+        _analysis_supervisor = None
+    if supervisor is not None:
+        supervisor.close()
+    with _analysis_lock:
+        recorders = list(_analysis_recorders)
+    for thread in recorders:
+        thread.join(timeout=1)
+
+
+def run_package_analysis(guard, dataset_path, adapter, release_digest, parameters, output_dir):
+    """Validate, authorize and submit; never wait for publisher execution."""
+    from microclaw import skill_packages as packages, skill_store, tools
+
+    handle = None
+    metadata = {}
+    try:
+        if adapter.count(':') != 1:
+            raise packages.PackageRefusal('adapter', 'expected publisher/package:operation')
+        name, operation = adapter.split(':')
+        publisher, package_id, _ = packages.parse_qualified_name(name + '/analysis')
+        packages._digest(release_digest, 'release_digest')
+        dataset_path = guard.resolve_readable_path(dataset_path)
+        output_dir = guard.resolve_in_workspace(output_dir)
+        if Path(output_dir).exists():
+            raise FileExistsError(f'Output directory already exists: {output_dir}')
+        # Pin through submission and the first durable record. A concurrent
+        # update/remove cannot delete the resolved environment in this interval.
+        with skill_store.package_lock(package_id):
+            now = datetime.now(timezone.utc)
+            release = skill_store.resolve(package_id, release_digest, now=now)
+            manifest = release['manifest']
+            if manifest['publisher'] != publisher or release['intake']['publisher'] != publisher:
+                raise packages.PackageRefusal('publisher', 'resolved release belongs to another publisher')
+            packages.supported_executable(manifest)
+            declaration = next((op for op in manifest['operations'] if op['name'] == operation), None)
+            if declaration is None or operation == 'self_check':
+                raise packages.PackageRefusal('operation', 'expected a declared dataset analysis operation')
+            if not isinstance(parameters, dict):
+                raise packages.PackageRefusal('parameters', 'expected object')
+            packages.validate_parameters(declaration['input_schema'], parameters)
+            # Snapshot JSON data before publisher dispatch; defaults never mutate it.
+            parameters = json.loads(json.dumps(parameters, allow_nan=False))
+            subject = f'{publisher}/{package_id}@{release_digest}'
+            summary = '\n'.join([
+                f'Run analysis {tools.one_line(publisher)}/{tools.one_line(package_id)} '
+                f'version {tools.one_line(manifest["version"])}',
+                f'Digest: {tools.one_line(release_digest)}',
+                f'Operation: {tools.one_line(operation)}',
+                f'Parameters: {tools.one_line(parameters)}',
+                f'Dataset: {tools.one_line(dataset_path)}',
+                f'Output directory: {tools.one_line(output_dir)}',
+                'Publisher code runs with your user permissions; not sandboxed.',
+            ])
+            if not tools.CONFIRM_FN(summary, kind='analysis', subject=subject):
+                return {'status': 'Analysis cancelled.'}
+            policy = skill_store.load_trust_policy()
+            supervisor = analysis_supervisor()
+            Path(output_dir).mkdir(parents=True, exist_ok=False)
+            handle = supervisor.submit(release, policy, now=datetime.now(timezone.utc), python=release['python'],
+                                       operation=operation, parameters=parameters,
+                                       dataset=dataset_path, output_dir=output_dir)
+            handle.notify_acquisition('completed', writer='finished')
+            path = skill_store.analysis_job_path(handle.job_id)
+            metadata = dict(package=f'{publisher}/{package_id}', digest=release_digest,
+                            parameters=parameters, dataset=dataset_path,
+                            output_dir=output_dir, job_record_path=str(path))
+            record = dict(handle.record(), **metadata)
+            try:
+                skill_store._write(path, record)
+            except Exception as exc:
+                # Submission already happened: never let a persistence failure
+                # masquerade as a pre-submission refusal in session export.
+                record['record_failure'] = str(exc)
+
+            def persist_terminal():
+                try:
+                    handle.wait()
+                    skill_store._write(path, dict(handle.record(), **metadata))
+                finally:
+                    with _analysis_lock:
+                        _analysis_recorders.discard(threading.current_thread())
+
+            thread = threading.Thread(target=persist_terminal, name=f'analysis-record-{handle.job_id}', daemon=True)
+            with _analysis_lock:
+                _analysis_recorders.add(thread)
+            thread.start()
+            return {'analysis': record}
+    except Exception as exc:
+        if handle is not None:
+            return {'analysis': dict(handle.record(), **metadata, record_failure=str(exc))}
+        return {'error': str(exc)}

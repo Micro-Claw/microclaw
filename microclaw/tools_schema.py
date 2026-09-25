@@ -789,11 +789,17 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "dataset_path": {"type": "string"},
-                "adapter": {"type": "string"},
+                "adapter": {"type": "string", "description":
+                    "Builtin/saved adapter name, or publisher/package:operation. Package "
+                    "route requires release_digest and refuses axis_selection, input_kind, "
+                    "calibration_ref, output_pixel_size_um, model_project_config, "
+                    "artifact_limits and max_array_bytes. Runs asynchronously after consent."},
+                "release_digest": {"type": "string", "description":
+                    "Required SHA-256 release pin for package operations; refused by builtin/saved adapters."},
                 "axis_selection": {
                     "type": "object",
                     "description": (
-                        "Saved axes to select, e.g. time, channel and z. Frames measures "
+                        "Required for builtin/saved adapters; forbidden for package operations. Saved axes to select, e.g. time, channel and z. Frames measures "
                         "each matching coordinate separately, including position; omitted "
                         "axes are enumerated, never pooled into one count. Select explicit "
                         "time/channel/Z planes for a per-position report. Mosaic requires "
@@ -803,7 +809,7 @@ TOOLS: list[dict[str, Any]] = [
                 "input_kind": {
                     "type": "string", "enum": ["frames", "stage_coordinate_mosaic"],
                     "description": (
-                        "For connected_components, 'frames' measures original saved frames "
+                        "Required for builtin/saved adapters; forbidden for package operations. For connected_components, 'frames' measures original saved frames "
                         "per coordinate with real zero-valued pixels included. Overlapping "
                         "fields can count the same signal twice; their sum is not a unique "
                         "object total. 'stage_coordinate_mosaic' measures resampled, "
@@ -817,7 +823,7 @@ TOOLS: list[dict[str, Any]] = [
                 "parameters": {
                     "type": "object",
                     "description": (
-                        "Constructor arguments for the adapter itself — this is where "
+                        "Package parameters must satisfy the declared input_schema. Constructor arguments for the adapter itself — this is where "
                         "every adapter-specific value goes, NOT model_project_config. "
                         "connected_components accepts min_snr (otherwise configured/default), "
                         "min_area_um2 — the smallest component area counted, and the one "
@@ -850,21 +856,30 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                 },
                 "output_dir": {"type": "string"},
-                "calibration_ref": _CALIBRATION_REF_SCHEMA,
-                "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0},
+                "calibration_ref": {**_CALIBRATION_REF_SCHEMA, "description":
+                    "Builtin/saved adapters only; forbidden for package operations. " + _CALIBRATION_REF_SCHEMA.get("description", "")},
+                "output_pixel_size_um": {"type": "number", "exclusiveMinimum": 0, "description": "Builtin/saved adapters only; forbidden for package operations."},
                 "model_project_config": {
                     "type": "object",
                     "description": (
-                        "Provenance only: paths recorded and hashed into the manifest so "
+                        "Forbidden for package operations. Provenance only: paths recorded and hashed into the manifest so "
                         "a run can be reproduced. Passing an adapter's arguments here "
                         "does NOT configure it — they belong in parameters."
                     ),
                 },
-                "artifact_limits": _HOOK_ARTIFACT_LIMITS_SCHEMA,
-                "max_array_bytes": {"type": "integer", "minimum": 1},
+                "artifact_limits": {**_HOOK_ARTIFACT_LIMITS_SCHEMA, "description":
+                    "Builtin/saved adapters only; forbidden for package operations. " + _HOOK_ARTIFACT_LIMITS_SCHEMA.get("description", "")},
+                "max_array_bytes": {"type": "integer", "minimum": 1, "description": "Builtin/saved adapters only; forbidden for package operations."},
             },
-            "required": ["dataset_path", "adapter", "axis_selection", "input_kind",
-                         "parameters", "output_dir"],
+            "required": ["dataset_path", "adapter", "parameters", "output_dir"],
+        },
+    },
+    {
+        "name": "analysis_job_status",
+        "description": "Read a durable analysis job record by job_id without querying a live worker.",
+        "input_schema": {
+            "type": "object", "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
         },
     },
     {

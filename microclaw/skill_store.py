@@ -236,6 +236,9 @@ def _delete(path, failures):
 
 
 def _retention(package, *, retained_digests, failures):
+    # Callers may have captured their snapshot before this package lock was
+    # acquired. Submission publishes its durable pin under that same lock.
+    retained_digests = retained_digests | _analysis_retained_digests()
     records = _records(package)
     pointer, broken = _pointer(package, records)
     if broken:
@@ -657,6 +660,7 @@ def repair(package_id, *, policy, now, uv_executable=None, retained_digests, ins
 
 def remove(package_id, *, retained_digests, install_id=None):
     with package_lock(package_id) as package:
+        retained_digests = retained_digests | _analysis_retained_digests()
         _recover(package, retained_digests=retained_digests)
         records = _records(package)
         targets = [(path, record) for path, record, _ in records if install_id is None or path.name == install_id]
@@ -821,7 +825,7 @@ def _start_discovery_recheck(package_ids, *, now):
         if _discovery_recheck_thread is not None and _discovery_recheck_thread.is_alive():
             return
         _discovery_recheck_thread = threading.Thread(
-            target=recheck, kwargs=dict(now=now, retained_digests=frozenset(),
+            target=recheck, kwargs=dict(now=now, retained_digests=retained_digests(),
                                         package_ids=frozenset(package_ids)), daemon=True)
         _discovery_recheck_thread.start()
 
@@ -903,3 +907,41 @@ def start_job(package_id, action, *, retained_digests):
             lock.__exit__(None, None, None)
         raise
     return dict(package_id=package_id, operation=action)
+
+
+# Analysis records are outside worker-writable output directories. Only these
+# states retain a release; receipts will add another retention source in 83e-3.
+ANALYSIS_NONTERMINAL = frozenset({'queued', 'starting', 'running'})
+
+
+def analysis_job_path(job_id):
+    if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
+        raise PackageRefusal('job_id', 'expected 32 lowercase hex characters')
+    return store_dir() / 'jobs' / (job_id + '.json')
+
+
+def analysis_job_status(job_id):
+    record = _read(analysis_job_path(job_id))
+    if record is None:
+        raise PackageRefusal('job_id', 'unknown analysis job')
+    return record
+
+
+def abandon_analysis_jobs():
+    """At serve startup, no worker from the previous process can be queried."""
+    for path in (store_dir() / 'jobs').glob('*.json'):
+        record = _read(path)
+        if record and record.get('state') in ANALYSIS_NONTERMINAL:
+            _write(path, dict(record, state='abandoned'))
+
+
+def _analysis_retained_digests():
+    return frozenset(record['digest']
+                     for path in (store_dir() / 'jobs').glob('*.json')
+                     if (record := _read(path))
+                     and record.get('state') in ANALYSIS_NONTERMINAL)
+
+
+def retained_digests():
+    """Retention sources for package management; receipts will join live jobs."""
+    return _analysis_retained_digests()
