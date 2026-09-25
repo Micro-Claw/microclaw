@@ -1221,6 +1221,8 @@ def test_d1_d3_d6_package_returns_before_slow_worker_and_persists(package_analys
                     parameters={'behaviour': 'slow', 'sleep': 0.3, 'interval': interval}))
         elapsed = time.perf_counter() - started
         analysis = result['analysis']
+        import os
+        assert analysis['owner'] == dict(pid=os.getpid(), nonce=store.ANALYSIS_PROCESS_NONCE)
         if pool is None:
             pool = completed_dataset._analysis_supervisor
         assert completed_dataset._analysis_supervisor is pool
@@ -1231,9 +1233,10 @@ def test_d1_d3_d6_package_returns_before_slow_worker_and_persists(package_analys
         assert args['release_digest'] in store.retained_digests()
         assert Path(analysis['job_record_path']).parent == store.store_dir() / 'jobs'
         terminal = terminal_analysis(analysis['job_id'])
-        worker_started = float(Path(interval + '.start').read_text())
+        worker_started = float(Path(interval + '.start').read_text(encoding='utf-8'))
         # The worker's own real clock independently proves return before its sleep ends.
         assert started + elapsed < worker_started + 0.3
+        assert terminal['owner'] == analysis['owner']
         assert terminal['state'] == 'succeeded', terminal
         assert terminal['lifecycle'] == {'acquisition': 'completed', 'writer': 'finished'}
         assert args['release_digest'] not in store.retained_digests()
@@ -1293,7 +1296,7 @@ def test_d2_consent_precedes_output_and_decline_submits_nothing(package_analysis
             assert value in summary
         return False
     monkeypatch.setattr(tools, 'CONFIRM_FN', decline)
-    assert tools.run_analysis_on_saved_dataset(**dict(args, parameters={'text': 'a\nb'})) == {'status': 'Analysis cancelled.'}
+    assert tools.run_analysis_on_saved_dataset(**dict(args, parameters={'text': 'a\nb'})) == {'status': 'Analysis cancelled.', 'cancelled': True}
     assert not Path(args['output_dir']).exists()
     assert completed_dataset._analysis_supervisor is None
 
@@ -1352,3 +1355,52 @@ def test_d3_live_job_blocks_remove_even_with_pre_submit_retention_snapshot(packa
     terminal_analysis(result['analysis']['job_id'])
     store.remove('conformance-fixture', retained_digests=store.retained_digests())
     assert not directory.exists()
+
+
+def test_f1_confirmation_does_not_hold_package_lock(package_analysis, monkeypatch):
+    from microclaw import skill_store as store, tools
+    args, _, _ = package_analysis
+    entered, answer = threading.Event(), threading.Event()
+    result = {}
+    def confirm(*a, **k):
+        entered.set()
+        assert answer.wait(5)
+        return False
+    monkeypatch.setattr(tools, 'CONFIRM_FN', confirm)
+    thread = threading.Thread(target=lambda: result.update(tools.run_analysis_on_saved_dataset(**args)))
+    thread.start()
+    try:
+        assert entered.wait(5)
+        with store.package_lock('conformance-fixture'):
+            assert not Path(args['output_dir']).exists()
+    finally:
+        answer.set()
+        thread.join(5)
+    assert result.get('cancelled') is True
+
+
+def test_f1_removed_during_confirmation_refuses_same_digest(package_analysis, monkeypatch):
+    from microclaw import skill_store as store, tools
+    args, _, _ = package_analysis
+    def confirm(*a, **k):
+        store.remove('conformance-fixture', retained_digests=store.retained_digests())
+        return True
+    monkeypatch.setattr(tools, 'CONFIRM_FN', confirm)
+    result = tools.run_analysis_on_saved_dataset(**args)
+    assert 'no ready install with requested digest' in result['error']
+    assert not Path(args['output_dir']).exists()
+
+
+def test_c1_package_route_loads_one_policy_snapshot(package_analysis, monkeypatch):
+    from microclaw import skill_store as store, tools
+    args, _, _ = package_analysis
+    original = store.load_trust_policy
+    loaded = []
+    def load():
+        policy = original()
+        loaded.append(policy)
+        return policy
+    monkeypatch.setattr(store, 'load_trust_policy', load)
+    result = tools.run_analysis_on_saved_dataset(**args)
+    assert terminal_analysis(result['analysis']['job_id'])['state'] == 'succeeded'
+    assert len(loaded) == 1

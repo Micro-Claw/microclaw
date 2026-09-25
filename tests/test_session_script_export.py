@@ -5597,3 +5597,16 @@ def test_d5_presubmission_refusal_uses_existing_skipped_path(tmp_path):
     assert '# SKIPPED: run_analysis_on_saved_dataset' in source
     assert 'core.set_exposure(12)' in source
     assert 'Analysis was not reproduced' not in source
+
+
+def test_f4_declined_analysis_exports_only_decline_and_preserves_later_step(tmp_path):
+    records = completed_call('run_analysis_on_saved_dataset',
+        {'adapter': 'p/q:op', 'dataset_path': 'data', 'output_dir': 'out'},
+        {'status': 'Analysis cancelled.', 'cancelled': True})
+    records += completed_call('set_exposure', {'ms': 12}, {'ms': 12})
+    _, _, source = export(tmp_path, records)
+    ast.parse(source)
+    assert 'declined at confirmation' in source
+    assert 'nothing ran' in source
+    assert 'not reproduced' not in source
+    assert 'core.set_exposure(12)' in source

@@ -6045,6 +6045,8 @@ def build_stage_coordinate_mosaic(
 
 
 def _emit_saved_analysis(params: RecordedParams) -> str:
+    if params.result.get('cancelled') is True:
+        return '# Analysis call was declined at confirmation; nothing ran.'
     analysis = (params.result or {}).get('analysis', {})
     values = (dict(analysis) if analysis else
               {key: params.get(key) for key in ('adapter', 'dataset_path', 'output_dir', 'release_digest')})

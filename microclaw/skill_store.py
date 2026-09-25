@@ -852,8 +852,10 @@ def load_discovered_skill(name):
     return packages.load_external_skill(name, records, policy, now=now)
 
 
-def resolve(package_id, artifact_digest, *, now):
-    policy = load_trust_policy()
+def resolve(package_id, artifact_digest, *, now, policy=None):
+    """Resolve a pin, optionally reusing the caller's verified policy snapshot."""
+    if policy is None:
+        policy = load_trust_policy()
     refusal = None
     for directory, record, _ in _records(_package(package_id)):
         if record and record.get("state") == "ready" and record.get("artifact_digest") == artifact_digest:
@@ -912,6 +914,7 @@ def start_job(package_id, action, *, retained_digests):
 # Analysis records are outside worker-writable output directories. Only these
 # states retain a release; receipts will add another retention source in 83e-3.
 ANALYSIS_NONTERMINAL = frozenset({'queued', 'starting', 'running'})
+ANALYSIS_PROCESS_NONCE = uuid.uuid4().hex
 
 
 def analysis_job_path(job_id):
@@ -921,25 +924,62 @@ def analysis_job_path(job_id):
 
 
 def analysis_job_status(job_id):
-    record = _read(analysis_job_path(job_id))
+    path = analysis_job_path(job_id)
+    try:
+        record = _read(path)
+    except (OSError, updates.UpdateError) as exc:
+        raise PackageRefusal('job_id', f'analysis job record is unreadable: {exc}') from exc
     if record is None:
         raise PackageRefusal('job_id', 'unknown analysis job')
+    if not isinstance(record.get('state'), str):
+        raise PackageRefusal('job_id', 'analysis job record is unreadable: invalid state')
     return record
 
 
-def abandon_analysis_jobs():
-    """At serve startup, no worker from the previous process can be queried."""
+def _analysis_records():
     for path in (store_dir() / 'jobs').glob('*.json'):
-        record = _read(path)
-        if record and record.get('state') in ANALYSIS_NONTERMINAL:
-            _write(path, dict(record, state='abandoned'))
+        try:
+            record = _read(path)
+        except (OSError, updates.UpdateError):
+            continue  # Leave unreadable evidence in place; it cannot name a pin.
+        if record and isinstance(record.get('state'), str):
+            yield path, record
+
+
+def _analysis_owner_alive(record):
+    owner = record.get('owner')
+    pid = owner.get('pid') if isinstance(owner, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        return _alive(pid)
+    except OverflowError:
+        return False
+
+
+def abandon_analysis_jobs():
+    """Leave other live processes' jobs alone; abandon only dead owners' jobs."""
+    for path, record in _analysis_records():
+        if record.get('state') in ANALYSIS_NONTERMINAL and not _analysis_owner_alive(record):
+            try:
+                _write(path, dict(record, state='abandoned'))
+            except (OSError, updates.UpdateError):
+                continue  # One unwritable record must not block the others.
 
 
 def _analysis_retained_digests():
-    return frozenset(record['digest']
-                     for path in (store_dir() / 'jobs').glob('*.json')
-                     if (record := _read(path))
-                     and record.get('state') in ANALYSIS_NONTERMINAL)
+    """Dead CLI owners stop pinning too: the terminal never runs the serve sweep.
+
+    PID reuse has the same accepted limitation as package locks; the nonce
+    records process identity but cannot prove whether a foreign PID was reused.
+    """
+    digests = set()
+    for _, record in _analysis_records():
+        if record.get('state') in ANALYSIS_NONTERMINAL and _analysis_owner_alive(record):
+            digest = record.get('digest')
+            if isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest):
+                digests.add(digest)
+    return frozenset(digests)
 
 
 def retained_digests():

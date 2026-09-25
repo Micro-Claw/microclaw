@@ -3099,3 +3099,27 @@ def test_d3_serve_abandons_records_and_closes_analysis_pool(session, monkeypatch
     with TestClient(build_app(session)):
         assert skill_store.analysis_job_status(record['job_id'])['state'] == 'abandoned'
     assert closed == [True]
+
+
+def test_f3_serve_starts_with_corrupt_record_and_preserves_live_owner(session):
+    import os
+    from microclaw import skill_store
+    bad = skill_store.analysis_job_path('e'*32)
+    bad.parent.mkdir(parents=True)
+    bad.write_text('{invalid', encoding='utf-8')
+    live = dict(job_id='a'*32, state='running', digest='b'*64,
+                owner=dict(pid=os.getpid(), nonce='live-process'))
+    skill_store._write(skill_store.analysis_job_path(live['job_id']), live)
+    with TestClient(build_app(session)):
+        assert skill_store.analysis_job_status(live['job_id']) == live
+        assert skill_store.retained_digests() == frozenset({live['digest']})
+    assert bad.read_text(encoding='utf-8') == '{invalid'
+
+
+def test_f3_startup_sweep_failure_cannot_prevent_serve(session, monkeypatch):
+    from microclaw import skill_store
+    def fail():
+        raise OSError('jobs directory unavailable')
+    monkeypatch.setattr(skill_store, 'abandon_analysis_jobs', fail)
+    with TestClient(build_app(session)):
+        pass

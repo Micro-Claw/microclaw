@@ -593,7 +593,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
               behind_tls_proxy: bool = False, auth_state: RemoteAuth | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app):
-        skill_store.abandon_analysis_jobs()
+        try:
+            skill_store.abandon_analysis_jobs()
+        except Exception as exc:
+            print(f"[microclaw] Could not sweep analysis jobs: {exc}", file=sys.stderr)
         def check_skill_packages():
             skill_store.recover(retained_digests=skill_store.retained_digests())
             skill_store.recheck(now=datetime.datetime.now(datetime.timezone.utc),

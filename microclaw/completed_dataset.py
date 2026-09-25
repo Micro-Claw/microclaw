@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import platform
 import sys
 import threading
@@ -648,37 +649,40 @@ def run_package_analysis(guard, dataset_path, adapter, release_digest, parameter
         output_dir = guard.resolve_in_workspace(output_dir)
         if Path(output_dir).exists():
             raise FileExistsError(f'Output directory already exists: {output_dir}')
-        # Pin through submission and the first durable record. A concurrent
-        # update/remove cannot delete the resolved environment in this interval.
+        now = datetime.now(timezone.utc)
+        policy = skill_store.load_trust_policy()
+        release = skill_store.resolve(package_id, release_digest, now=now, policy=policy)
+        manifest = release['manifest']
+        if manifest['publisher'] != publisher or release['intake']['publisher'] != publisher:
+            raise packages.PackageRefusal('publisher', 'resolved release belongs to another publisher')
+        packages.supported_executable(manifest)
+        declaration = next((op for op in manifest['operations'] if op['name'] == operation), None)
+        if declaration is None or operation == 'self_check':
+            raise packages.PackageRefusal('operation', 'expected a declared dataset analysis operation')
+        if not isinstance(parameters, dict):
+            raise packages.PackageRefusal('parameters', 'expected object')
+        packages.validate_parameters(declaration['input_schema'], parameters)
+        # Snapshot JSON data before publisher dispatch; defaults never mutate it.
+        parameters = json.loads(json.dumps(parameters, allow_nan=False))
+        subject = f'{publisher}/{package_id}@{release_digest}'
+        summary = '\n'.join([
+            f'Run analysis {tools.one_line(publisher)}/{tools.one_line(package_id)} '
+            f'version {tools.one_line(manifest["version"])}',
+            f'Digest: {tools.one_line(release_digest)}',
+            f'Operation: {tools.one_line(operation)}',
+            f'Parameters: {tools.one_line(parameters)}',
+            f'Dataset: {tools.one_line(dataset_path)}',
+            f'Output directory: {tools.one_line(output_dir)}',
+            'Publisher code runs with your user permissions; not sandboxed.',
+        ])
+        if not tools.CONFIRM_FN(summary, kind='analysis', subject=subject):
+            return {'status': 'Analysis cancelled.', 'cancelled': True}
+        # Consent holds no package lock. The digest pins identity, so resolving
+        # it again under the lock is safe even if management ran during the prompt.
+        # A removed release refuses; it can never silently select a newer one.
         with skill_store.package_lock(package_id):
-            now = datetime.now(timezone.utc)
-            release = skill_store.resolve(package_id, release_digest, now=now)
-            manifest = release['manifest']
-            if manifest['publisher'] != publisher or release['intake']['publisher'] != publisher:
-                raise packages.PackageRefusal('publisher', 'resolved release belongs to another publisher')
-            packages.supported_executable(manifest)
-            declaration = next((op for op in manifest['operations'] if op['name'] == operation), None)
-            if declaration is None or operation == 'self_check':
-                raise packages.PackageRefusal('operation', 'expected a declared dataset analysis operation')
-            if not isinstance(parameters, dict):
-                raise packages.PackageRefusal('parameters', 'expected object')
-            packages.validate_parameters(declaration['input_schema'], parameters)
-            # Snapshot JSON data before publisher dispatch; defaults never mutate it.
-            parameters = json.loads(json.dumps(parameters, allow_nan=False))
-            subject = f'{publisher}/{package_id}@{release_digest}'
-            summary = '\n'.join([
-                f'Run analysis {tools.one_line(publisher)}/{tools.one_line(package_id)} '
-                f'version {tools.one_line(manifest["version"])}',
-                f'Digest: {tools.one_line(release_digest)}',
-                f'Operation: {tools.one_line(operation)}',
-                f'Parameters: {tools.one_line(parameters)}',
-                f'Dataset: {tools.one_line(dataset_path)}',
-                f'Output directory: {tools.one_line(output_dir)}',
-                'Publisher code runs with your user permissions; not sandboxed.',
-            ])
-            if not tools.CONFIRM_FN(summary, kind='analysis', subject=subject):
-                return {'status': 'Analysis cancelled.'}
-            policy = skill_store.load_trust_policy()
+            release = skill_store.resolve(package_id, release_digest,
+                                          now=datetime.now(timezone.utc), policy=policy)
             supervisor = analysis_supervisor()
             Path(output_dir).mkdir(parents=True, exist_ok=False)
             handle = supervisor.submit(release, policy, now=datetime.now(timezone.utc), python=release['python'],
@@ -687,6 +691,7 @@ def run_package_analysis(guard, dataset_path, adapter, release_digest, parameter
             handle.notify_acquisition('completed', writer='finished')
             path = skill_store.analysis_job_path(handle.job_id)
             metadata = dict(package=f'{publisher}/{package_id}', digest=release_digest,
+                            owner=dict(pid=os.getpid(), nonce=skill_store.ANALYSIS_PROCESS_NONCE),
                             parameters=parameters, dataset=dataset_path,
                             output_dir=output_dir, job_record_path=str(path))
             record = dict(handle.record(), **metadata)

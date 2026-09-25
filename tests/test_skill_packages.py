@@ -1087,9 +1087,13 @@ def test_d4_admission_refuses_outside_closed_subset(key, schema):
         packages.validate_manifest(value)
 
 
-def test_d4_product_never_imports_jsonschema():
+def test_d4_product_never_imports_jsonschema(tmp_path, monkeypatch):
     import ast
-    for path in Path('microclaw').rglob('*.py'):
+    import microclaw
+    monkeypatch.chdir(tmp_path)  # F6: a different cwd must still inspect the product.
+    paths = list(Path(microclaw.__file__).parent.rglob('*.py'))
+    assert paths, 'no product modules were checked'
+    for path in paths:
         tree = ast.parse(path.read_text(encoding='utf-8'))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

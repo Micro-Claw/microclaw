@@ -50,7 +50,7 @@ use packaging's PEP 440 parsing. Artifact/source/issues references are HTTPS URL
 Identifiers use `[a-z][a-z0-9]*(?:-[a-z0-9]+)*`; the qualified name is exactly
 `publisher/package/skill`. No component can contain `/`. Length limits (in
 characters) are 64 for publisher/package/skill identifiers, versions, digests,
-operation names, platform tags and schema type labels; 512 for descriptions and
+operation names and platform tags; 512 for descriptions and
 locked requirements; 256 for licenses, module names and version specifiers;
 2048 for URLs; and 1024 for paths. Collection limits per manifest are 256 assets,
 64 skills, 128 operations and 32 platforms, with 512 lock entries per platform
@@ -58,3 +58,6 @@ and 64 hashes per requirement. `microclaw.skill_packages` names these limits as
 `MAX_*` constants. Length limits and single-line control rejection apply before
 rendering. These formatting checks do not make publisher instructions trustworthy
 or authorize execution; v1 protocol validation and supervision are exercised by test_skill_supervisor.py.
+
+Operation schemas admit a closed JSON Schema 2020-12 subset; `type` is one of
+`null`, `boolean`, `object`, `array`, `number`, `integer`, or `string`.
