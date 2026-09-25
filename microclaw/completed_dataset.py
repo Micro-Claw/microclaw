@@ -680,7 +680,10 @@ def run_package_analysis(guard, dataset_path, adapter, release_digest, parameter
         # Consent holds no package lock. The digest pins identity, so resolving
         # it again under the lock is safe even if management ran during the prompt.
         # A removed release refuses; it can never silently select a newer one.
+        # The policy is reloaded too: a person can take minutes to answer, and a
+        # trust change or expiry in that time must reach the submitted job.
         with skill_store.package_lock(package_id):
+            policy = skill_store.load_trust_policy()
             release = skill_store.resolve(package_id, release_digest,
                                           now=datetime.now(timezone.utc), policy=policy)
             supervisor = analysis_supervisor()

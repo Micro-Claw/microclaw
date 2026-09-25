@@ -1391,16 +1391,22 @@ def test_f1_removed_during_confirmation_refuses_same_digest(package_analysis, mo
     assert not Path(args['output_dir']).exists()
 
 
-def test_c1_package_route_loads_one_policy_snapshot(package_analysis, monkeypatch):
+def test_c1_package_route_loads_policy_once_per_side_of_consent(package_analysis, monkeypatch):
+    # One snapshot serves everything before the prompt; the submitted job uses
+    # one loaded after it, because consent can take a person minutes.
     from microclaw import skill_store as store, tools
     args, _, _ = package_analysis
     original = store.load_trust_policy
-    loaded = []
+    events = []
     def load():
-        policy = original()
-        loaded.append(policy)
-        return policy
+        events.append('policy')
+        return original()
+    confirm = tools.CONFIRM_FN
+    def confirming(*a, **k):
+        events.append('confirm')
+        return confirm(*a, **k)
     monkeypatch.setattr(store, 'load_trust_policy', load)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', confirming)
     result = tools.run_analysis_on_saved_dataset(**args)
     assert terminal_analysis(result['analysis']['job_id'])['state'] == 'succeeded'
-    assert len(loaded) == 1
+    assert events == ['policy', 'confirm', 'policy']
