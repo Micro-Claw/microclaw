@@ -816,8 +816,13 @@ the coordinator's).
   directory create and `submit` (p50 0.5 ms in 83c). It never waits on the
   worker. Tests: the tool returns while a slow fixture worker is still running,
   and the builtin route constructs no supervisor and reads no store.
-- **Gate.** None; local only. The worker under a desktop `serve` already ran in
-  83d's gate, and the consent prompt reuses the existing session-grant button.
+- **Gate.** A demo-machine gate, added at the operator's request on
+  2026-09-25 because nobody had seen the browser prompt: the banner, its session
+  grant, a second release prompting under that grant, revoke, and the exported
+  script — which the gate also *runs*. `design/83-block83e2-demo-gate.{py,ps1,md}`,
+  built on 83d's gate plumbing; its `selftest` drives the real tool, supervisor
+  and exporter and proves each limb can fail. No SMAPpy needed: the fixture
+  package's `observe_dataset` is the path the prompt guards.
 
 **What 83e-2 settled** (PR #41):
 - **Code.** `completed_dataset.run_package_analysis`, behind
@@ -930,7 +935,7 @@ and otherwise stays open.
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
-| 83e-2 | `block-83e-2` | `2a1c42a` | reviewed, PR #41 — local only, no gate; closes `R84`'s third item |
+| 83e-2 | `block-83e-2` | `2a1c42a` | reviewed, PR #41 — **demo gate pending**; closes `R84`'s third item |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
