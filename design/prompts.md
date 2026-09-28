@@ -11192,3 +11192,22 @@ Correct, but invisible in a pass/fail line.
 `26e9978`; the difference is the 118 cases. The first turn's tree had one
 failure (a bare `read_text()`). All ten round-1 regression tests fail on
 `679d2a4`.
+
+**The gate's two defects were both inherited or fixed in advance, and neither
+was in the product.**
+- **An inherited sentence is an instruction nobody reread.** Round 1 died on
+  83d's launch message, which said "open the Community skill packages panel".
+  That was right for 83d and wrong here, because the panel offers exactly the
+  one action this gate must not take. Reusing a gate's plumbing is reuse of
+  its operator prompts too. Read every string the operator will see.
+- **A count fixed in advance is a limb an ordinary slip can fail.** Round 2's
+  operator sent one extra call under the grant, which is the grant working.
+  Two limbs failed on `== 3`, and the second one never reached the check it
+  existed for, running the exported script. Derive expected counts from the
+  session's own audit rows (approvals plus auto-approvals), and run the script
+  before counting what is in it. This is CLAUDE.md's "a limb must not score
+  supported operations as failure", met again from the other side.
+- **Scored from artifacts, the FAIL was a PASS.** The history accounted for
+  every call, including the refused retry, whose "already exists" came before
+  any prompt. That is evidence for the path-before-consent order, which no
+  limb had been written to look for.

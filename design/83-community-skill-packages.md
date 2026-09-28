@@ -868,6 +868,35 @@ the coordinator's).
   own fix, the policy reload, was mutation-checked. Removing the
   `type`-length rows took 118 parametrized cases out of the suite, so the
   count drop is explained.
+- **Gate.** The demo machine, 2026-09-28, two rounds, installed commit
+  `632536e`.
+  - **Round 1** stopped at the first launch. The launch message, reused from
+    83d's gate, sent the operator to the package panel, which offers **Enable
+    discovery**, and the runbook never mentioned it. This was a gate defect.
+    Round 2 says not to open the panel, and adds a limb that scores that the
+    jobs ran with no discovery record.
+  - **Round 2 scored 6 of 8.** Both FAILs were the gate's fixed counts ("3
+    jobs", "3 not-reproduced comments") meeting an operator slip. On turn 4 the
+    operator forgot to revoke first, so an extra call ran under the grant.
+    That is the grant working, not a defect.
+  - **Scored from the history and the exported script, both limbs are met.**
+    - Every call is accounted for: the unrevoked turn 4 was auto-approved and
+      wrote `-4`. The retry after revoking reused `-4` and was **refused before
+      any prompt** (the path check comes before consent). Then `-5` prompted
+      and was approved plainly.
+    - All 4 jobs `succeeded` with exit 0, one `final` artifact whose SHA-256
+      equals that of `dataset writer finished\n`, lifecycle
+      `completed`/`finished`, and one owner pid and nonce, serve's.
+      `accounted_s` ranged from 0.285 to 0.851 s.
+    - The export parses and carries 4 not-reproduced comments, 1 decline and 1
+      `SKIPPED` for the refused retry, all four output directories and the
+      digest, and no `NOT EMITTED`.
+    - It exits 0 under a stub `pycromanager`, run off-rig. **Its real
+      `Core()` connection on the demo machine was not exercised**, because the
+      limb failed at its count before running the script. That header is
+      identical to every export's, so nothing was re-run for it.
+  - Consent, grant, another digest, revoke and no-discovery all passed as
+    scored. The operator reported that the prompts behaved as expected.
 - **Residuals.**
   - The job directory grows without bound, and every retention call reads all
     of it.
@@ -935,7 +964,7 @@ and otherwise stays open.
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
-| 83e-2 | `block-83e-2` | `2a1c42a` | reviewed, PR #41 — **demo gate pending**; closes `R84`'s third item |
+| 83e-2 | `block-83e-2` | `2a1c42a` | reviewed, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
