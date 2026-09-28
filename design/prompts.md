@@ -11211,3 +11211,57 @@ was in the product.**
   every call, including the refused retry, whose "already exists" came before
   any prompt. That is evidence for the path-before-consent order, which no
   limb had been written to look for.
+
+## design/83 block 83e-3 — package analysis on acquired datasets (PR #42, 2026-09-28)
+
+**The operator removed the block's central object before any code.** 83e
+specified a persisted trigger receipt. Asked what a receipt was, and how it
+differed from a confirmation, the honest answer was that it only earns its
+state when consent must outlast a session, and nothing needed that yet. A
+plan-time `analysis` argument, confirmed before hardware moves, does the rest
+with no new store. The receipt is `R140`, renamed **saved permission** at the
+operator's word: "receipt" named proof of a past event, not a standing grant.
+**When a design names an object the tree does not have, explain it in one
+sentence to the operator before designing its storage.**
+
+**Two of the three product defects were in my decisions, not the runner's
+code.**
+- D5 said the job record is written off the foreground thread. That broke
+  `_retention`'s contract that submission publishes its pin under the package
+  lock, on 83e-2's route as well as the new one. The runner implemented D5
+  faithfully; reading the diff against the comment at `skill_store.py:240`
+  found it.
+- D3 returned a `status` for a declined acquisition. Every other declined
+  acquisition returns an `error`, the one signal `_recorded_outcome` reads as
+  "nothing ran", so the export rendered a timelapse the session never took. The
+  gate runner found it while planning the export limb, and stopped as told.
+
+**Grep for how the tree already reports the same outcome before specifying a
+result shape.** `grep -n "declined"` in `tools.py` showed four precedents, all
+`error`. It took one minute, after the fact.
+
+**Runner mechanics.**
+- Codex hit its usage limit at the end of revision 1, after its edits landed
+  and before it reported. The coordinator committed the turn as unreviewed-by-
+  report, read the diff, reran the targeted files and mutation-checked the F1
+  test itself. Nothing was lost.
+- The gate was built by a Claude agent instead (operator decision), with the
+  same constraints: the worktree only, no product edits, stop on a product
+  defect. It stopped once, correctly, and resumed through the same agent.
+- The first Codex turn committed its `result.md` into the repository. Say in
+  the prompt that the report goes in the final message, not a file.
+
+**The gate passed first time, and scoring its artifacts still found something
+no limb could.** Every limb met; the export comment was 2,167 characters of
+the whole job record on one line, with a `running` snapshot for a job that had
+succeeded. A limb that counts comments cannot say a comment is unreadable.
+**Open the exported script and read it, not only count it.**
+
+**An n=1 null under a dummy workload is not a cost measurement.** The cadence
+limb showed no difference with analysis; the operator pointed out the fixture
+does nothing. It is recorded as dispatch overhead only, and `R141` owns the real
+measurement.
+
+**Counts.** Baseline `5cf5831`: 5342 passed, 99 skipped. After round 1
+(`f4aef5d`): 5388. After the D3 fix (`c4c7a2d`): 5389. After the export-comment
+fix: see the PR.

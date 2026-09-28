@@ -107,6 +107,7 @@ Rows added since the triage:
 | `R137`–`R138` | found while reviewing and gating `design/71` blocks 71b and 71c, 2026-09-21 |
 | `R139` | `design/83` §"What a package can be", while scoping 83e-2, 2026-09-24 |
 | `R140` | `design/83` 83e-3's decisions, 2026-09-28 — the deferred "trigger receipt" |
+| `R141` | `design/83` 83e-3's demo gate, 2026-09-28 |
 
 
 ## The work queue
@@ -167,6 +168,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
 | `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE |  |
 | `R140` | [Automatic package analysis cannot outlast a session](#r140) | LOW | MEDIUM |  |
+| `R141` | [Package analysis cost during acquisition is unmeasured under a real worker](#r141) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -195,7 +197,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R74` | [Phase 2 XY typed-actuator ambiguity / proposed axis field](#r74) | LOW | MEDIUM |  |
 | ~~`R82`~~ | ~~[Open the community skill package notebook](#r82)~~ | — | — | **CLOSED 2026-09-22 by opening `design/83`** |
 | ~~`R83`~~ | ~~[Generic package/protocol conformance needs a fixture](#r83)~~ | — | — | **CLOSED 2026-09-23 by `design/83` 83a + 83c** |
-| `R84` | [Three export behaviours are unpinned ahead of a runner](#r84) | HIGH | SMALL | `design/83` 83a, 83e |
+| ~~`R84`~~ | ~~[Three export behaviours are unpinned ahead of a runner](#r84)~~ | — | — | **CLOSED 2026-09-28 by `design/83` 83a + 83e-2 + 83e-3** |
 | `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM | disclosed by `design/83` 83e |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
 | ~~`R88`~~ | ~~[The probe_hint payload reached a live model and did not route it](#r88)~~ | — | — | **CLOSED 2026-09-05 by the Nikon's own sessions** |
@@ -1358,7 +1360,7 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **Three export decisions for the community-package path are stated as intent but not pinned by a test, and an unpinned export decision is exactly what blocks 43h, 47 and 52a each paid for.**
 
-- **Status** — OPEN until `design/83` 83e-3 records trigger identity in the acquisition's record. **`@emits`-as-comment CLOSED 2026-09-25** with `design/83` 83e-2 (PR #41): `run_analysis_on_saved_dataset` is `@emits` with a comment-only renderer for every adapter, a declined call exports as a decline, and a multiline publisher value stays inside its comment, pinned in `tests/test_session_script_export.py`. The first item **CLOSED 2026-09-22** by `design/83` 83a. The three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. The last of those is now characterized in both directions (`tests/test_skill_packages.py`) and each direction was proved to discriminate by mutating `_recorded_outcome`: narrowing its scan to the key `results` fails the top-level-list direction, and making it recurse into nested dicts fails the invisibility direction. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:2316`-`:2321`) into `refuse()` (`:2284`), which plants a `raise RuntimeError` in the exported script.
+- **Status** — **CLOSED 2026-09-28** with `design/83` 83e-3 (PR #42): an acquisition's recorded result carries `{"analysis": {"jobs": [...]}}` with package, digest, operation, parameters, dataset, output directory and job record, including on error results, and the exporter discloses each job in a comment; demo-gated. The design moved from a persisted trigger receipt to a plan-time `analysis` argument, so "trigger identity" is the job's identity (`R140` keeps the receipt). **`@emits`-as-comment CLOSED 2026-09-25** with `design/83` 83e-2 (PR #41): `run_analysis_on_saved_dataset` is `@emits` with a comment-only renderer for every adapter, a declined call exports as a decline, and a multiline publisher value stays inside its comment, pinned in `tests/test_session_script_export.py`. The first item **CLOSED 2026-09-22** by `design/83` 83a. The three are `@emits`-as-comment for the analysis tool, trigger identity in the acquisition's record, and analysis failure kept out of `_recorded_outcome`'s two shapes. The last of those is now characterized in both directions (`tests/test_skill_packages.py`) and each direction was proved to discriminate by mutating `_recorded_outcome`: narrowing its scan to the key `results` fails the top-level-list direction, and making it recurse into nested dicts fails the invisibility direction. `design/71` shows neither `@refuses` nor `@emits_nothing` produces the wanted behaviour: `@refuses` routes through the `renderer is None` branch (`tools.py:2316`-`:2321`) into `refuse()` (`:2284`), which plants a `raise RuntimeError` in the exported script.
 - **Importance** — HIGH - `CLAUDE.md` records this failure shape three times over (43h's `generate_and_save_hook`, 47's `set_roi`/`clear_roi`, 52a's `move_named_stage`); each killed its own block's gate script.
 - **Where** — LOCAL - the marker's behaviour is settled by reading the emitter and pinning it with a test, the way `test_every_registered_tool_has_exactly_one_export_decision` pins the marker count.
 - **Block** — `design/83`, split three ways as of 2026-09-22 after reading the code. The first item closes with 83a (a characterization test of `_recorded_outcome`, sharpened: it scans **every** top-level list-valued key, so the analysis record must sit under a nested dict). The second needs nothing — `refuse()`'s raise is already covered many times in `tests/test_session_script_export.py`, and it is an *input* to the marker decision rather than a thing to pin. The third cannot be pinned before the notebook at all, because no analysis tool exists to hang a renderer on; 83e's block statement fixes the marker as `@emits` with a comment-only renderer so no runner is left to choose it. HIGH/SMALL was optimistic in exactly that third part.
@@ -1369,7 +1371,7 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **MMStudio MDA runs go around the supervised acquisition path, so any acquisition-lifecycle event added there does not fire for them.**
 
-- **Status** — OPEN - pre-existing, and not introduced by `design/71`; noticed while scoping where a community package's acquisition trigger would observe from. **Widened 2026-09-05 by `design/75`, which asked for this to be said in its close-out rather than rediscovered later**: neither block of that notebook reaches `run_mda` either. It gets no D4 diagnostic record (no correlation id, no lifecycle timestamps, no file that survives a restart) and no D1/D2 supervised-runtime bound (no `AcquisitionSupervisionPolicy`, no typed `AcquisitionUnterminated`, no session refusal). So an MMStudio MDA that hangs in teardown still hangs the way 2026-09-04 did, and leaves the same nothing behind.
+- **Status** — OPEN, **disclosed 2026-09-28 by `design/83` 83e-3**: `run_mda` does not take `analysis`, and its description and the package panel say it uses Micro-Manager's own engine and MicroClaw cannot see its dataset creation. Pre-existing, and not introduced by `design/71`; noticed while scoping where a community package's acquisition trigger would observe from. **Widened 2026-09-05 by `design/75`, which asked for this to be said in its close-out rather than rediscovered later**: neither block of that notebook reaches `run_mda` either. It gets no D4 diagnostic record (no correlation id, no lifecycle timestamps, no file that survives a restart) and no D1/D2 supervised-runtime bound (no `AcquisitionSupervisionPolicy`, no typed `AcquisitionUnterminated`, no session refusal). So an MMStudio MDA that hangs in teardown still hangs the way 2026-09-04 did, and leaves the same nothing behind.
 - **Importance** — LOW - `run_mda` is a deliberate hand-off to MMStudio's own engine and nothing today depends on observing it. It matters only once something subscribes to acquisition lifecycle events and quietly gets none from this route.
 - **Where** — LOCAL - the divergence is visible in the call path; whether to close it is a design question about what `run_mda` promises.
 - **Block** — NONE
@@ -3102,3 +3104,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — MEDIUM
 - **Provenance** — `design/83` §"83e" and 83e-3's decisions, 2026-09-28.
+
+### R141 — Package analysis cost during acquisition is unmeasured under a real worker
+
+**83e-3's gate compared frame gaps with and without `analysis` and saw no difference, but its worker writes one small file and exits. Nothing has measured an acquisition running beside a worker that actually computes.**
+
+- **What happened** — `design/83` 83e-3's demo gate, 2026-09-28, n=1 per arm on the demo camera: mean frame gap 12.3 and 14.1 ms with analysis, 13.7 ms without; tool start to construction 331 and 197 ms with, 396 ms without. The operator's reading: the null is the dummy routine, and a real analysis will probably cost something. design/83 §"Transport" already says CPU, memory and storage contention remain possible and v1 does not promise otherwise.
+- **Why it matters** — a worker that reads a growing NDTiff while fitting localisations competes with the writer for disk and with the engine for CPU. Where cadence or time under illumination matters (CLAUDE.md, "fastest correct approach"), the user needs the cost stated, not assumed away.
+- **What a fix would look like** — a CPU- and disk-loaded fixture operation (or SMAPpy once `R85` is met) run beside a hardware-sequenced burst and a spaced timelapse, reporting the run's `duration_breakdown` and gap summary with and without, n sized to the spread. If it costs, disclose the measured cost in the confirmation rather than cap the worker silently.
+- **Where** — DEMO MACHINE for a loaded fixture; a rig with a real camera for the number that matters.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — SMALL
+- **Provenance** — `design/83` 83e-3's demo gate, 2026-09-28.
