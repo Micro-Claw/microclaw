@@ -637,9 +637,10 @@ notebook's own rule, six design areas make more than one block:
 - **83e-2:** the analysis tool, execution consent, parameter validation, the
   `@emits` comment renderer, and the shared `one_line`. It fills the live-job
   half of `retained_digests`.
-- **83e-3:** trigger receipts, dispatch at dataset creation, lifecycle and
-  writer state, the receipt half of `retained_digests`, the acquisition
-  emitters' disclosure, and the `R86` panel copy.
+- **83e-3:** ~~trigger receipts~~ a plan-time `analysis` argument (see 83e-3
+  decisions), dispatch at dataset creation, lifecycle and writer state,
+  ~~the receipt half of `retained_digests`~~, the acquisition emitters'
+  disclosure, and the `R86` copy.
 
 The paragraphs above remain the combined statement. Each block takes the
 acceptance items that belong to its own areas.
@@ -931,6 +932,21 @@ the coordinator's).
   - `output_schema` is admitted but not enforced.
   - The terminal CLI never runs the startup sweep. Its dead jobs stop pinning
     through the owner rule, but they read `running` until a serve starts.
+
+**83e-3 decisions** (operator decision, 2026-09-28).
+
+- **D0 — no persisted consent; a plan-time argument instead.** The receipt
+  exists only so that consent can outlast a session, and nothing needs that
+  yet. Every tool that reaches `_acquire_with_hooks` (the one site in
+  `microclaw/` that constructs an `Acquisition`) takes an `analysis` argument,
+  confirmed before any hardware moves under 83e-2's `analysis` kind, so its
+  session grant covers repeats. Dispatch still happens at dataset creation;
+  the confirmation happens before the run starts, never during it.
+  - Dropped with it: the receipt store, a creation tool, receipt panel
+    controls, and the receipt half of `retained_digests()`. Live jobs already
+    retain their digest.
+  - The receipt design is kept, renamed **saved permission**, in `R140`.
+    "Receipt" was the wrong word for it: it is a session grant that persists.
 
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 

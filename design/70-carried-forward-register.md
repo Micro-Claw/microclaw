@@ -106,6 +106,7 @@ Rows added since the triage:
 | `R133`–`R136` | found while reviewing and gating `design/71` block 71a, 2026-09-18 to 2026-09-21 |
 | `R137`–`R138` | found while reviewing and gating `design/71` blocks 71b and 71c, 2026-09-21 |
 | `R139` | `design/83` §"What a package can be", while scoping 83e-2, 2026-09-24 |
+| `R140` | `design/83` 83e-3's decisions, 2026-09-28 — the deferred "trigger receipt" |
 
 
 ## The work queue
@@ -165,6 +166,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R137` | [The extras-failure fallback that protects an update has no rig evidence](#r137) | LOW | SMALL |  |
 | `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
 | `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE |  |
+| `R140` | [Automatic package analysis cannot outlast a session](#r140) | LOW | MEDIUM |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3080,3 +3082,23 @@ the model" as the actual blast radius.
 - **Importance** — LOW. Nobody needs it before SMAPpy exists as a conforming package (`R85`).
 - **Effort** — LARGE
 - **Provenance** — `design/83` §"What a package can be", 2026-09-24.
+
+### R140 — Automatic package analysis cannot outlast a session
+
+**83e-3 asks for analysis consent per acquisition call, at plan time, so nothing runs a package on a new dataset unless that call asked for it. A standing "every timelapse on this rig gets this analysis, across restarts" has no home.**
+
+- **What happened** — design/83 §"83e" specified a persisted *trigger receipt*. While deciding 83e-3 (2026-09-28) the operator chose a plan-time argument on the acquisition tools instead, confirmed before hardware moves and covered within a session by 83e-2's `analysis` grant, and asked for the receipt design to be kept here. The operator also judged "receipt" the wrong name: the thing is a **saved permission** — a session grant that persists — and any notebook that builds it should call it that.
+- **Why it matters** — only once someone wants unattended, cross-restart automatic analysis without the agent remembering to ask. Nothing needs it today.
+- **What a fix would look like** — the design worked out on 2026-09-28, so it need not be re-derived:
+  - *Scope:* this machine's store (it already is the rig) plus a required list of acquisition tool names. No capability field: a manifest has none, and the digest pins the whole manifest.
+  - *Pins:* package, release digest, operation, parameters (validated against `input_schema`), tools, `created_at`, `source`.
+  - *Creation:* one tool raising `CONFIRM_FN(kind="saved_permission")` every time, a kind **outside** `SessionGrants.GRANTABLE`, so a session grant cannot be laundered into lasting consent and skill text can only propose one. Validate before the prompt; re-resolve the digest and reload the trust policy after it; write under the package lock; hold no lock during the prompt.
+  - *Panel:* list, disable, re-enable, delete. The click is the decision, as for the reading toggle. No agent route to enable.
+  - *Storage:* `skill-packages/saved-permissions/<id>.json`, one atomic file each; a malformed one is skipped and shown with its reason.
+  - *Updates:* keeps firing its pinned digest and joins `skill_store.retained_digests()`; the panel says "pinned to 1.0.0; 1.1.0 is active". `remove` already refuses a referenced release (its message says "pinned receipt" — rename it with the rest).
+  - *Firing:* reuses 83e-3's dispatch at dataset creation unchanged; the saved permission only replaces the plan-time confirmation as the source of consent. It never prompts, because the acquisition must not wait for a person.
+- **Where** — LOCAL for the store and tool; the demo machine for the panel.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — MEDIUM
+- **Provenance** — `design/83` §"83e" and 83e-3's decisions, 2026-09-28.
