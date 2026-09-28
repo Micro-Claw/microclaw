@@ -960,8 +960,12 @@ the coordinator's).
   session grant applies. No lock is held across the prompt; the digest is
   resolved again and the policy reloaded after it. The resolved release is the
   snapshot every dispatch in the call uses.
-- **D3 — a decline acquires nothing**: `{"status": "Acquisition cancelled:
-  analysis declined", "cancelled": true}`.
+- **D3 — a decline acquires nothing**: `{"error": "Acquisition cancelled:
+  analysis declined; nothing was acquired.", "cancelled": true}`. A top-level
+  `error`, like every other declined acquisition, because it is the one signal
+  `_recorded_outcome` reads as "nothing ran". D3 first specified a `status`,
+  and the exporter rendered the declined call as a real timelapse; found by the
+  gate runner before the gate existed.
 - **D4 — the check runs once, in `execute_tool`, before the tool body**, so no
   acquisition tool can drop it. A later preflight refusal after an approval
   is an accepted cost; a tool that silently ignores `analysis` is not.

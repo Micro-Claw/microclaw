@@ -12325,7 +12325,10 @@ def execute_tool(
                 'One job per dataset; overflow past workers and queue is recorded as an analysis failure.',
             ])
             if prepared is None:
-                return encode_result({'status': 'Acquisition cancelled: analysis declined', 'cancelled': True})
+                # A top-level error, like every other declined acquisition: it is the
+                # one signal _recorded_outcome reads as "nothing ran", so export skips it.
+                return encode_result({'error': 'Acquisition cancelled: analysis declined; nothing was acquired.',
+                                      'cancelled': True})
             _ACQUISITION_EVENT_CONTEXT.analysis_prepared = prepared
         if 'analysis' in tool_input:
             tool_input = {key: value for key, value in tool_input.items() if key != 'analysis'}

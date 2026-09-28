@@ -56,7 +56,8 @@ def test_decline_precedes_every_real_tool_body(live, monkeypatch, name):
         return False
     monkeypatch.setattr(tools, 'CONFIRM_FN', decline)
     result = json.loads(tools.execute_tool(name, {'analysis': live.analysis}, live.ctrl, live.guard))
-    assert result == {'status': 'Acquisition cancelled: analysis declined', 'cancelled': True}
+    assert result == {'error': 'Acquisition cancelled: analysis declined; nothing was acquired.',
+                      'cancelled': True}
     assert not live.engine.core.trace and not live.engine.backends
     assert prompts[0][1] == dict(kind='analysis', subject='fixture-lab/conformance-fixture@' + live.analysis['release_digest'])
     assert 'each dataset' in prompts[0][0] and 'overflow' in prompts[0][0]
@@ -425,3 +426,28 @@ def test_keyboard_interrupt_notifies_cancelled_unknown_once_and_reraises(live, m
     assert (messages[0]['outcome'], messages[0]['writer']) == ('cancelled', 'unknown')
     assert not live.engine.core.captures
     job.handle.cancel()
+
+
+def test_declined_acquisition_exports_as_skipped_not_as_an_acquisition(live, monkeypatch, tmp_path):
+    # The result is taken from the real execute_tool decline, never hand-built:
+    # a record whose shape the test invents cannot catch a shape the exporter misreads.
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *_, **__: False)
+    inputs = dict(n_frames=5, interval_s=0, save_dir=str(tmp_path), name='declined',
+                  analysis=live.analysis)
+    raw = tools.execute_tool('run_timelapse', inputs, live.ctrl, live.guard)
+    records = [
+        {'role': 'assistant', 'content': [
+            {'type': 'tool_use', 'id': 't1', 'name': 'run_timelapse', 'input': inputs},
+            {'type': 'tool_use', 'id': 't2', 'name': 'set_exposure', 'input': {'ms': 12}},
+        ]},
+        {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': 't1', 'content': raw},
+            {'type': 'tool_result', 'tool_use_id': 't2', 'content': json.dumps({'ms': 12})},
+        ]},
+    ]
+    from tests.test_session_script_export import export
+    _, _, source = export(tmp_path, records)
+    section = source.split('# RECORDED TOOL: run_timelapse', 1)[1].split('# RECORDED TOOL:', 1)[0]
+    assert '# SKIPPED: run_timelapse' in section
+    assert 'Acquisition(' not in section and 'acquire(' not in section
+    assert 'core.set_exposure(12)' in source
