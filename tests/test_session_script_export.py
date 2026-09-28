@@ -5625,15 +5625,32 @@ def test_trigger_job_disclosure_executes_with_multiline_values_and_later_step(
     if acquisition_failed:
         result['error'] = 'engine refused\nstack trace'
     records = completed_call('run_timelapse', dict(
-        n_frames=2, interval_s=0, save_dir=str(tmp_path), name='cells'), result)
+        n_frames=2, interval_s=0, save_dir=str(tmp_path), name='cells',
+        analysis=dict(adapter='fixture-lab/package:observe_dataset', release_digest=job['digest'],
+                      parameters=job['parameters'])), result)
     records += completed_call('set_exposure', {'ms': 12}, {'ms': 12})
     _, exported, source = export(tmp_path, records)
     assert exported['complete'], exported
     assert source.count('Package analysis not reproduced') == 2
+    assert all(job['digest'] not in line for line in source.splitlines()
+               if not line.lstrip().startswith('#'))
     assert ('# SKIPPED: run_timelapse' in source) == acquisition_failed
     for line in source.splitlines():
         if 'publisher escaped' in line:
             assert line.lstrip().startswith('#')
     hooked_engine.execute(source)
     assert len(hooked_engine.core.captures) == (0 if acquisition_failed else 2)
+    assert hooked_engine.core.exposure == 12
+
+
+@pytest.mark.parametrize('analysis', ['malformed', {'jobs': {}}, {'jobs': ['malformed']}])
+def test_malformed_analysis_history_preserves_later_export_step(tmp_path, hooked_engine, analysis):
+    records = completed_call('run_timelapse', dict(
+        n_frames=1, interval_s=0, save_dir=str(tmp_path), name='cells'), {'analysis': analysis})
+    records += completed_call('set_exposure', {'ms': 12}, {'ms': 12})
+    _, exported, source = export(tmp_path, records)
+    assert exported['complete'], exported
+    assert 'Package analysis not reproduced' not in source
+    assert 'core.set_exposure(12)' in source
+    hooked_engine.execute(source)
     assert hooked_engine.core.exposure == 12

@@ -2305,10 +2305,13 @@ def export_session_script(
         renderer = getattr(fn, "_microclaw_emitter", None)
         body_lines.append("")
         body_lines.append(f"# RECORDED TOOL: {name}")
-        if isinstance(params.result, dict):
-            for job in params.result.get('analysis', {}).get('jobs', []):
-                body_lines.append('# Package analysis not reproduced: ' + one_line(job))
-                body_lines.append('# Rerun with run_analysis_on_saved_dataset using the recorded package, digest, operation and parameters.')
+        analysis = params.result.get('analysis') if isinstance(params.result, dict) else None
+        jobs = analysis.get('jobs') if isinstance(analysis, dict) else None
+        for job in jobs if isinstance(jobs, list) else []:
+            if not isinstance(job, dict):
+                continue
+            body_lines.append('# Package analysis not reproduced: ' + one_line(job))
+            body_lines.append('# Rerun with run_analysis_on_saved_dataset using the recorded package, digest, operation and parameters.')
         if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
             body_lines.append(
                 f"# SKIPPED: {name} — excluded by tool_use id selection "
@@ -5132,6 +5135,10 @@ def _acquire_with_hooks(
             ) from exc
         raise
     finally:
+        if analysis_job is not None:
+            # Idempotent: normal/failed/unterminated outcomes above take priority.
+            # BaseException (including CLI interrupt) must not strand an observer.
+            analysis_job.acquisition_finished('cancelled')
         if not waiter_started:
             finish_owned_cleanup()
 
@@ -12305,7 +12312,7 @@ def execute_tool(
         ):
             from microclaw.authorization import authorize_path
             authorize_path(ctrl, f"acquisition-tool:{name}")
-        if 'analysis' in tool_input:
+        if tool_input.get('analysis') is not None:
             from microclaw.tools_schema import ANALYSIS_TOOLS, ANALYSIS_SCHEMA
             from microclaw.skill_packages import validate_parameters
             from microclaw.completed_dataset import prepare_package_analysis
@@ -12314,11 +12321,13 @@ def execute_tool(
             validate_parameters(ANALYSIS_SCHEMA, tool_input['analysis'])
             prepared = prepare_package_analysis(**tool_input['analysis'], disclosure=[
                 'Runs on each dataset this call creates, while it grows.',
+                'Output goes to <dataset>/analysis/<job_id>/ inside each dataset.',
                 'One job per dataset; overflow past workers and queue is recorded as an analysis failure.',
             ])
             if prepared is None:
                 return encode_result({'status': 'Acquisition cancelled: analysis declined', 'cancelled': True})
             _ACQUISITION_EVENT_CONTEXT.analysis_prepared = prepared
+        if 'analysis' in tool_input:
             tool_input = {key: value for key, value in tool_input.items() if key != 'analysis'}
         if name == "export_session_script":
             result = fn(ctrl, guard, records=records, **tool_input)

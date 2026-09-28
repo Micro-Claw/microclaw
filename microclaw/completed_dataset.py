@@ -679,17 +679,33 @@ def prepare_package_analysis(adapter, release_digest, parameters, *, disclosure)
                 operation=operation, parameters=parameters)
 
 
-def submit_package_analysis(prepared, dataset_path, output_dir, *, job_id=None):
-    """Create the worker cwd before making the job visible to dispatch threads."""
+def submit_package_analysis(prepared, dataset_path, output_dir, *, job_id=None, metadata=None):
+    """Submit and publish the durable retention pin before releasing the lock."""
     from microclaw import skill_store
+    metadata = {} if metadata is None else metadata
     Path(output_dir).mkdir(parents=True, exist_ok=False)
     with skill_store.package_lock(prepared['package_id']):
         release = prepared['release']
-        return analysis_supervisor().submit(
+        handle = analysis_supervisor().submit(
             release, prepared['policy'], now=datetime.now(timezone.utc),
             python=release['python'], operation=prepared['operation'],
             parameters=prepared['parameters'], dataset=dataset_path,
             output_dir=output_dir, **({'job_id': job_id} if job_id else {}))
+        path = skill_store.analysis_job_path(handle.job_id)
+        metadata.update(
+            package=prepared['package'], digest=prepared['digest'],
+            operation=prepared['operation'], parameters=prepared['parameters'],
+            dataset=str(dataset_path), output_dir=str(output_dir), job_id=handle.job_id,
+            job_record_path=str(path),
+            owner=dict(pid=os.getpid(), nonce=skill_store.ANALYSIS_PROCESS_NONCE),
+        )
+        try:
+            skill_store._write(path, dict(handle.record(), **metadata))
+        except Exception as exc:
+            # Submission already happened. Persistence is an independent failure,
+            # never a pre-submission refusal or a replacement for worker failure.
+            metadata['record_failure'] = str(exc)
+        return handle
 
 
 def run_package_analysis(guard, dataset_path, adapter, release_digest, parameters, output_dir):
@@ -708,26 +724,17 @@ def run_package_analysis(guard, dataset_path, adapter, release_digest, parameter
         ])
         if prepared is None:
             return {'status': 'Analysis cancelled.', 'cancelled': True}
-        parameters = prepared['parameters']
-        handle = submit_package_analysis(prepared, dataset_path, output_dir)
+        handle = submit_package_analysis(prepared, dataset_path, output_dir, metadata=metadata)
         handle.notify_acquisition('completed', writer='finished')
-        path = skill_store.analysis_job_path(handle.job_id)
-        metadata = dict(package=prepared['package'], digest=release_digest,
-                        owner=dict(pid=os.getpid(), nonce=skill_store.ANALYSIS_PROCESS_NONCE),
-                        parameters=parameters, dataset=dataset_path,
-                        output_dir=output_dir, job_record_path=str(path))
+        path = Path(metadata['job_record_path'])
         record = dict(handle.record(), **metadata)
-        try:
-            skill_store._write(path, record)
-        except Exception as exc:
-            # Submission already happened: never let a persistence failure
-            # masquerade as a pre-submission refusal in session export.
-            record['record_failure'] = str(exc)
 
         def persist_terminal():
             try:
                 handle.wait()
                 skill_store._write(path, dict(handle.record(), **metadata))
+            except Exception as exc:
+                metadata['record_failure'] = str(exc)
             finally:
                 with _analysis_lock:
                     _analysis_recorders.discard(threading.current_thread())
@@ -764,7 +771,7 @@ class AcquisitionAnalysisJob:
         self.failure = None
         try:
             self.handle = submit_package_analysis(
-                prepared, str(dataset), self.metadata['output_dir'], job_id=job_id)
+                prepared, str(dataset), self.metadata['output_dir'], job_id=job_id, metadata=self.metadata)
         except Exception as exc:
             self.failure = dict(reason='dispatch_failed', detail=str(exc))
         self._persist(wait=True)
@@ -772,30 +779,20 @@ class AcquisitionAnalysisJob:
     def record(self):
         record = (self.handle.record() if self.handle is not None else
                   dict(state='dispatch_failed', failure=self.failure))
-        if 'record_failure' in self.metadata:
-            # A recorder failure does not make a running worker terminal or
-            # release its retention pin. Report persistence independently.
-            record.update(failure=dict(
-                reason='record_write_failed', detail=self.metadata['record_failure']))
         return dict(record, **self.metadata)
 
     def _persist(self, *, wait=False):
-        # Disk I/O is never on the acquisition thread, including initial writes.
+        # Lifecycle/terminal writes stay off-thread; the initial pin is already durable.
         from microclaw import skill_store
         def write():
             try:
+                if wait and self.handle is not None:
+                    self.handle.wait()
                 try:
                     with self._persistence_lock:
                         skill_store._write(Path(self.metadata['job_record_path']), self.record())
                 except Exception as exc:
                     self.metadata['record_failure'] = str(exc)
-                if wait and self.handle is not None:
-                    self.handle.wait()
-                    try:
-                        with self._persistence_lock:
-                            skill_store._write(Path(self.metadata['job_record_path']), self.record())
-                    except Exception as exc:
-                        self.metadata['record_failure'] = str(exc)
             finally:
                 with _analysis_lock:
                     _analysis_recorders.discard(threading.current_thread())
@@ -811,11 +808,13 @@ class AcquisitionAnalysisJob:
 
     def acquisition_finished(self, outcome):
         with self._lock:
+            if self._outcome is not None:
+                return
             self._outcome = outcome
             if self.handle is not None:
                 self.handle.notify_acquisition(
-                    outcome, writer='finished' if self._writer_finished and outcome != 'unterminated' else 'unknown')
-                if self._writer_finished and outcome == 'unterminated':
+                    outcome, writer='finished' if self._writer_finished and outcome not in {'unterminated', 'cancelled'} else 'unknown')
+                if self._writer_finished and outcome in {'unterminated', 'cancelled'}:
                     self.handle.notify_writer_finished()
         self._persist()
 

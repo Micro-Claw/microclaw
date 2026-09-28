@@ -60,6 +60,7 @@ def test_decline_precedes_every_real_tool_body(live, monkeypatch, name):
     assert not live.engine.core.trace and not live.engine.backends
     assert prompts[0][1] == dict(kind='analysis', subject='fixture-lab/conformance-fixture@' + live.analysis['release_digest'])
     assert 'each dataset' in prompts[0][0] and 'overflow' in prompts[0][0]
+    assert 'Output goes to <dataset>/analysis/<job_id>/ inside each dataset.' in prompts[0][0]
 
 
 @pytest.mark.parametrize('change', ['remove', 'policy'])
@@ -76,26 +77,35 @@ def test_human_wait_invalidates_release_and_policy(live, monkeypatch, change):
     assert 'policy changed' in result['error'] if change == 'policy' else 'no ready install' in result['error']
 
 
-def test_no_analysis_reads_no_store_or_supervisor(live, monkeypatch, tmp_path):
+@pytest.mark.parametrize('optional', [{}, {'analysis': None}])
+def test_no_analysis_reads_no_store_or_supervisor(live, monkeypatch, tmp_path, optional):
     def forbidden(*a, **k):
         pytest.fail('analysis work without an analysis argument')
     monkeypatch.setattr(store, 'load_trust_policy', forbidden)
     monkeypatch.setattr(store, 'resolve', forbidden)
     monkeypatch.setattr(cd, 'analysis_supervisor', forbidden)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', forbidden)
+    original = tools.TOOL_REGISTRY['run_timelapse']
+    def body(ctrl, guard, **kwargs):
+        assert 'analysis' not in kwargs
+        return original(ctrl, guard, **kwargs)
+    monkeypatch.setitem(tools.TOOL_REGISTRY, 'run_timelapse', body)
     result = json.loads(tools.execute_tool('run_timelapse', dict(
-        n_frames=1, interval_s=0, save_dir=str(tmp_path)), live.ctrl, live.guard))
+        n_frames=1, interval_s=0, save_dir=str(tmp_path), **optional), live.ctrl, live.guard))
     assert 'error' not in result and 'analysis' not in result
     assert len(live.engine.core.captures) == 1
 
 
-def test_dispatch_cwd_precedes_submit_records_off_thread_and_real_teardown(live, monkeypatch):
+def test_dispatch_cwd_precedes_submit_later_records_off_thread_and_real_teardown(live, monkeypatch):
     foreground = threading.get_ident()
     written = threading.Event()
+    write_threads = []
     original_write = store._write
     def write(path, value):
         if Path(path).parent.name == 'jobs':
-            assert threading.get_ident() != foreground
-            written.set()
+            write_threads.append(threading.get_ident())
+            if len(write_threads) > 1:
+                written.set()
         return original_write(path, value)
     monkeypatch.setattr(store, '_write', write)
     pool = cd.analysis_supervisor()
@@ -120,6 +130,8 @@ def test_dispatch_cwd_precedes_submit_records_off_thread_and_real_teardown(live,
     job = result['analysis']['jobs'][0]
     assert job['dataset'].endswith('collision_7')
     assert written.wait(5)
+    assert write_threads[0] == foreground
+    assert all(t != foreground for t in write_threads[1:])
     assert handles[0].wait(5)
     final = handles[0].record()
     assert final['state'] == 'succeeded', final
@@ -178,10 +190,10 @@ def test_dispatch_failures_never_fail_acquisition(live, monkeypatch, failure):
         assert tools._recorded_outcome(result) is None
         job = result['analysis']['jobs'][0]
         if failure == 'record':
-            assert job['failure']['reason'] == 'record_write_failed'
+            assert job['record_failure'] == 'record denied'
         else:
             assert job['state'] in {'dispatch_failed', 'refused'}, job
-        assert job['failure']
+            assert job['failure']
         assert len(live.engine.core.captures) == 1
     finally:
         if locked:
@@ -208,6 +220,16 @@ def test_malformed_neighbors_and_second_process_sweep_leave_dispatch_alone(live)
 def test_d8_foreground_dispatch_measurement(live, monkeypatch, capsys, tmp_path):
     foreground = threading.get_ident()
     dispatch = []
+    initial_writes = []
+    original_write = store._write
+    def write(path, value):
+        started = time.perf_counter()
+        try:
+            return original_write(path, value)
+        finally:
+            if Path(path).parent.name == 'jobs' and threading.get_ident() == foreground:
+                initial_writes.append((time.perf_counter() - started) * 1000)
+    monkeypatch.setattr(store, '_write', write)
     before_acquire = {False: [], True: []}
     original = cd.AcquisitionAnalysisJob
     def measured(*a, **k):
@@ -236,12 +258,14 @@ def test_d8_foreground_dispatch_measurement(live, monkeypatch, capsys, tmp_path)
             start = time.perf_counter()
             result = json.loads(tools.execute_tool('run_timelapse', inputs, live.ctrl, live.guard))
             assert 'error' not in result
+    assert len(initial_writes) == 10
     with capsys.disabled():
         print(f'83e-3 D8 n=10 per route machine={platform.platform()} '
               f'foreground_dispatch_ms median={statistics.median(dispatch):.3f} max={max(dispatch):.3f}; '
+              f'initial_job_write_ms median={statistics.median(initial_writes):.3f} max={max(initial_writes):.3f}; '
               f'call_to_acquire_without_ms median={statistics.median(before_acquire[False]):.3f} max={max(before_acquire[False]):.3f}; '
               f'call_to_acquire_with_ms median={statistics.median(before_acquire[True]):.3f} max={max(before_acquire[True]):.3f}; '
-              'automatic consent; dispatch includes mkdir, package lock, submit, recorder startup; '
+              'automatic consent; dispatch includes mkdir, package lock, submit, initial atomic write, recorder startup; '
               'individual phases and concurrent CPU/storage contention not attributed; no real microscope or human wait')
 
 
@@ -301,7 +325,7 @@ def test_per_position_jobs_and_per_call_collector(live, tmp_path):
     assert len(next_result['analysis']['jobs']) == 1
 
 
-@pytest.mark.parametrize('value', [None, [], {}, {'adapter': 'frame_statistics', 'release_digest': 'a' * 64, 'parameters': {}},
+@pytest.mark.parametrize('value', [[], {}, {'adapter': 'frame_statistics', 'release_digest': 'a' * 64, 'parameters': {}},
     {'adapter': 'fixture-lab/conformance-fixture:observe_dataset', 'release_digest': 'bad', 'parameters': {}},
     {'adapter': 'fixture-lab/conformance-fixture:observe_dataset', 'release_digest': 'a' * 64, 'parameters': {}, 'unexpected': 1}])
 def test_invalid_analysis_refuses_without_consent_or_hardware(live, monkeypatch, value):
@@ -321,3 +345,83 @@ def test_malformed_matching_install_does_not_hide_ready_copy(live):
     result = live.run()
     assert 'error' not in result, result
     assert len(result['analysis']['jobs']) == 1
+
+
+@pytest.mark.parametrize('route', ['saved', 'acquisition'])
+def test_initial_job_record_is_published_under_package_lock(live, package_analysis, monkeypatch, route):
+    observed = []
+    foreground = threading.get_ident()
+    original = store._write
+    seen = set()
+    def write(path, value):
+        if Path(path).parent.name == 'jobs' and str(path) not in seen:
+            seen.add(str(path))
+            try:
+                with store.package_lock('conformance-fixture'):
+                    held = False
+            except store.PackageRefusal as exc:
+                assert exc.field == 'lock'
+                held = True
+            observed.append((held, threading.get_ident()))
+        return original(path, value)
+    monkeypatch.setattr(store, '_write', write)
+    if route == 'saved':
+        args, _, _ = package_analysis
+        result = tools.run_analysis_on_saved_dataset(**args)
+    else:
+        result = live.run()
+    assert 'error' not in result, result
+    assert observed == [(True, foreground)]
+
+
+@pytest.mark.parametrize('route', ['saved', 'acquisition'])
+def test_dispatch_and_record_write_failures_both_survive(live, package_analysis, monkeypatch, route):
+    pool = cd.analysis_supervisor()
+    monkeypatch.setattr(pool._queue, 'put_nowait', lambda *_: (_ for _ in ()).throw(queue.Full()))
+    original = store._write
+    def write(path, value):
+        if Path(path).parent.name == 'jobs':
+            raise OSError('record denied')
+        return original(path, value)
+    monkeypatch.setattr(store, '_write', write)
+    if route == 'saved':
+        args, _, _ = package_analysis
+        result = tools.run_analysis_on_saved_dataset(**args)
+        job = result['analysis']
+    else:
+        result = live.run()
+        job = result['analysis']['jobs'][0]
+    assert 'error' not in result
+    assert job['failure']['reason'] == 'queue_full'
+    assert job['record_failure'] == 'record denied'
+    assert tools._recorded_outcome(result) is None
+
+
+def test_keyboard_interrupt_notifies_cancelled_unknown_once_and_reraises(live, monkeypatch):
+    jobs = []
+    original_job = cd.AcquisitionAnalysisJob
+    def track(*a, **k):
+        job = original_job(*a, **k)
+        jobs.append(job)
+        return job
+    monkeypatch.setattr(cd, 'AcquisitionAnalysisJob', track)
+    constructor = tools.Acquisition
+    interrupt = KeyboardInterrupt('operator interrupt')
+    def construct(**kwargs):
+        backend = constructor(**kwargs)
+        def acquire(events):
+            raise interrupt
+        backend.acquire = acquire
+        return backend
+    monkeypatch.setattr(tools, 'Acquisition', construct)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        live.run()
+    assert caught.value is interrupt
+    job = jobs[0]
+    job.acquisition_finished('failed')  # The fallback cannot overwrite or duplicate an outcome.
+    notifications = job.handle.record()['notifications']
+    messages = [entry['message'] for entry in notifications if entry['type'] == 'acquisition']
+    assert len(messages) == 1
+    assert (messages[0]['outcome'], messages[0]['writer']) == ('cancelled', 'unknown')
+    assert not live.engine.core.captures
+    job.handle.cancel()
