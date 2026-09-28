@@ -1214,11 +1214,15 @@ def test_d1_d3_d6_package_returns_before_slow_worker_and_persists(package_analys
     measure(Supervisor, 'submit', 'submit')
     timings = []
     pool = None
+    # The worker's sleep is the margin, not the claim. What proves the tool never
+    # waits is the job's state at return and the worker's own clock. A wall-clock
+    # bound against a 0.3 s sleep flaked on windows-latest (0.68 s, 2026-09-28).
+    sleep = 1.5
     for i in range(5):
         interval = str(Path(args['output_dir']).parent / f'worker-{i}')
         started = time.perf_counter()
         result = tools.run_analysis_on_saved_dataset(**dict(args, output_dir=args['output_dir'] + str(i),
-                    parameters={'behaviour': 'slow', 'sleep': 0.3, 'interval': interval}))
+                    parameters={'behaviour': 'slow', 'sleep': sleep, 'interval': interval}))
         elapsed = time.perf_counter() - started
         analysis = result['analysis']
         import os
@@ -1228,14 +1232,13 @@ def test_d1_d3_d6_package_returns_before_slow_worker_and_persists(package_analys
         assert completed_dataset._analysis_supervisor is pool
         timings.append(elapsed)
         assert analysis['state'] in store.ANALYSIS_NONTERMINAL
-        assert elapsed < 0.3
-        assert store.analysis_job_status(analysis['job_id'])['parameters']['sleep'] == 0.3
+        assert store.analysis_job_status(analysis['job_id'])['parameters']['sleep'] == sleep
         assert args['release_digest'] in store.retained_digests()
         assert Path(analysis['job_record_path']).parent == store.store_dir() / 'jobs'
         terminal = terminal_analysis(analysis['job_id'])
         worker_started = float(Path(interval + '.start').read_text(encoding='utf-8'))
         # The worker's own real clock independently proves return before its sleep ends.
-        assert started + elapsed < worker_started + 0.3
+        assert started + elapsed < worker_started + sleep
         assert terminal['owner'] == analysis['owner']
         assert terminal['state'] == 'succeeded', terminal
         assert terminal['lifecycle'] == {'acquisition': 'completed', 'writer': 'finished'}
