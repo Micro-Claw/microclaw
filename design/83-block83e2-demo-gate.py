@@ -42,6 +42,33 @@ def prompt_text(digest, dataset, output):
 
 
 class Gate(gate83d.Gate):
+    def launch_desktop(self, why):
+        """83d's launch, without its instruction to open the package panel.
+
+        That panel offers 'Enable discovery', which this gate must NOT be given:
+        running a package needs consent, not discovery (83e-2 D1), and the
+        'ran without discovery' limb scores exactly that. Round 1 on the demo
+        machine stopped at that button, because 83d's wording sent the
+        operator to it.
+        """
+        before = self.launch_lines()
+        if self.fake:
+            self.fake.launch()
+        else:
+            self.ask(f"{why} Launch Microclaw from its DESKTOP ICON now and wait for it to open "
+                     "in Firefox. Do NOT open the 'Community skill packages' panel or click "
+                     "'Enable discovery'. Then type DONE.", "launched")
+        deadline = time.perf_counter() + 180
+        while time.perf_counter() < deadline:
+            new = self.launch_lines()[len(before):]
+            if new:
+                match = gate83d.re.search(r" slot=([ab]) nonce=(\S+)\s*$", new[0])
+                health = self.root / "launch-health.txt"
+                if match and health.exists() and health.read_text(encoding="ascii").strip() == match[2]:
+                    return {"slot": match[1], "nonce": match[2], "line": new[0]}
+            time.sleep(0.25)
+        raise NotExercised("no health marker matching the first new launch's nonce within 180 s")
+
     def cleanup(self):
         result = super().cleanup()
         (self.root / POINTER).unlink(missing_ok=True)
@@ -253,12 +280,21 @@ def verify(gate, *, cleanup=True):
         assert ran.returncode == 0, f"exported script exited {ran.returncode}: {ran.stderr[-1500:]}"
         return {"path": str(path), "ran": "exit 0"}
 
+    def ran_without_discovery():
+        records = sorted((gate.store_root / "packages").glob("*/discovery.json"))
+        enabled = [str(p) for p in records if read_json(p).get("enabled")]
+        assert not enabled, f"discovery was enabled, so this run cannot show consent alone suffices: {enabled}"
+        if not any(j.get("digest") == d1 for j in jobs):
+            raise NotExercised("no job ran, so running without discovery was not shown")
+        return "no enabled discovery record; jobs ran on consent alone"
+
     for name, fn in [("first call prompts and grants", first_call_granted),
                      ("second call is auto-approved", second_call_auto),
                      ("another digest prompts under the grant", other_digest_prompts),
                      ("revoking restores the prompt", revoke_restores_prompt),
                      ("jobs ran and are recorded", jobs_ran_and_recorded),
-                     ("export discloses every call", export_discloses)]:
+                     ("export discloses every call", export_discloses),
+                     ("jobs ran without discovery", ran_without_discovery)]:
         score(name, fn)
     if cleanup:
         score("cleanup removed store and TEST-ONLY roots", lambda: _clean(gate))
@@ -328,7 +364,7 @@ def selftest():
         "class Core:\n    pass\nclass Acquisition:\n    pass\n"
         "def multi_d_acquisition_events(*a, **k):\n    return []\n", encoding="utf-8")
     for sabotage in (None, "no_grant", "grant_leaks_digest", "no_revoke", "no_export",
-                     "silent_export", "broken_export", "session_failed"):
+                     "silent_export", "broken_export", "session_failed", "discovery_enabled"):
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["XDG_DATA_HOME"] = os.environ["LOCALAPPDATA"] = tmp
             for name in [m for m in sys.modules if m.startswith("microclaw")]:
@@ -343,6 +379,8 @@ def selftest():
             gate.prepare()
             prep = gate.need("prepare")
             d1, d2 = prep["digests"]["1.0.0"], prep["digests"]["1.1.0"]
+            if sabotage == "discovery_enabled":
+                gate.store.set_discovery("executable-fixture", True, now=now())
             plan = [True, True, False, True] if sabotage == "no_grant" else ["session", False, True]
             scripted = ScriptedSession(root, plan)
             tools.CONFIRM_FN = scripted.confirm
