@@ -969,7 +969,11 @@ the coordinator's).
   the collision-resolved `dataset_path`: create `<dataset>/analysis/<job_id>/`,
   take the package lock without waiting, `submit`. A held lock, a full queue
   or a refused submit is a recorded dispatch failure; the acquisition goes on.
-  The job record is written off the foreground thread. One job per dataset, so
+  The initial job record is written **under that lock, before it is released**
+  (foreground, before `acquire()`): it is the durable retention pin, and a
+  write deferred to a thread lets `remove` or an update prune a release whose
+  worker is starting — `_retention`'s own contract, found in 83e-3's review.
+  Later lifecycle and terminal writes are off-thread. One job per dataset, so
   a per-position run gets N; overflow past queue + workers is recorded, and the
   confirmation says so. Nothing runs in a pycro-manager callback.
 - **D6 — lifecycle.** Normal return: `completed`/`finished`. Hooked or engine
