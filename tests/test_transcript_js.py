@@ -439,22 +439,38 @@ def test_skill_packages_view_keeps_disabled_release_and_test_banner():
 
 
 def test_skill_discovery_toggle_exclusion_and_disclosure():
+    # Plain-language copy (operator decision 2026-09-28): the panel never says
+    # "discovery", and only the active release's row says whether the agent can read it.
     path = resources.files("microclaw").joinpath("transcript.js")
-    state = {"packages": [{"package_id": "example", "discovery": {"enabled": True},
-        "installs": [{"state": "ready", "eligible": True,
-        "discovery_exclusions": [{"field": "name", "detail": "ambiguous enabled external skill"}]}]},
-        {"package_id": "other", "job": {"running": True}}]}
+    state = {"packages": [
+        {"package_id": "example", "discovery": {"enabled": True}, "installs": [
+            {"state": "ready", "eligible": True, "active": True, "discoverable": False,
+             "discovery_exclusions": [{"field": "name", "detail": "ambiguous enabled external skill"}]},
+            {"state": "ready", "eligible": True, "previous": True, "discoverable": False,
+             "discovery_exclusions": [{"field": "active", "detail": "release is not active"}]}]},
+        {"package_id": "readable", "discovery": {"enabled": True}, "installs": [
+            {"state": "ready", "eligible": True, "active": True, "discoverable": True,
+             "discovery_exclusions": []}]},
+        {"package_id": "other", "discovery": {"enabled": False}, "job": {"running": True}, "installs": [
+            {"state": "ready", "eligible": True, "active": True, "discoverable": False,
+             "discovery_exclusions": [{"field": "discovery", "detail": "hidden from the agent"}]}]}]}
     script = ("global.window = {};\n" + f"require({json.dumps(str(path))});\n" +
               f"process.stdout.write(JSON.stringify(window.Transcript.skillPackagesView({json.dumps(state)})));\n")
     view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
                                     encoding="utf-8", check=True).stdout)
-    assert "discovery excluded: name: ambiguous" in view["rows"][0]
+    assert view["rows"][0].endswith("(active) — eligible — hidden from the agent: name: ambiguous enabled external skill")
+    assert view["rows"][1].endswith("(previous) — eligible")
+    assert view["rows"][2].endswith("(active) — eligible — agent can read it")
+    assert view["rows"][3].endswith("(active) — eligible — hidden from the agent")
+    assert not any("discovery" in row for row in view["rows"])
     assert view["discovery"] == [
-        dict(package_id="example", enabled=True, label="Disable discovery", disabled=False),
-        dict(package_id="other", enabled=False, label="Enable discovery", disabled=True)]
-    assert view["disclosure"] == ("Discovery shows publisher text to the agent. "
-        "It does not authorize execution. "
-        "Executable packages run with your user permissions and are not sandboxed.")
+        dict(package_id="example", enabled=True, label="Stop the agent reading this package", disabled=False),
+        dict(package_id="readable", enabled=True, label="Stop the agent reading this package", disabled=False),
+        dict(package_id="other", enabled=False, label="Let the agent read this package", disabled=True)]
+    assert view["disclosure"] == (
+        "Installing a package lets the agent read its instructions; you can stop that here. "
+        "That never lets its code run: MicroClaw asks you each time, or once per session. "
+        "Package code runs with your user permissions and is not sandboxed.")
     html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     assert '$("skill-packages-disclosure").textContent = view.disclosure' in html
     assert 'JSON.stringify({enabled: !toggle.enabled})' in html

@@ -594,9 +594,13 @@ def install(intake, artifact_path, *, policy, now, uv_executable=None, retained_
     packages.check_release(intake, policy, purpose="admission", now=now, artifact=artifact_path)
     with package_lock(intake["package_id"]) as package:
         _recover(package, retained_digests=retained_digests)
-        return _transaction(package, intake, artifact_path, policy=policy, now=now,
-                            uv_executable=uv_executable, retained_digests=retained_digests,
-                            find_links=find_links, base_python=base_python)
+        record = _transaction(package, intake, artifact_path, policy=policy, now=now,
+                              uv_executable=uv_executable, retained_digests=retained_digests,
+                              find_links=find_links, base_python=base_python)
+        if not (package / "discovery.json").exists():
+            _write(package / "discovery.json",
+                   _discovery_decision(True, record["artifact_digest"], now=now, source="install"))
+        return record
 
 
 def _rollback(package, *, policy, now, retained_digests):
@@ -742,8 +746,9 @@ def _discovery_state(*, now):
             try:
                 discovery = _read(package / "discovery.json")
                 if discovery is not None:
-                    if (set(discovery) != {"enabled", "decided_at", "artifact_digest"}
-                            or type(discovery["enabled"]) is not bool):
+                    if (set(discovery) != {"enabled", "decided_at", "artifact_digest", "source"}
+                            or type(discovery["enabled"]) is not bool
+                            or discovery["source"] not in DISCOVERY_SOURCES):
                         raise PackageRefusal("discovery", "invalid discovery record")
                     packages._digest(discovery["artifact_digest"], "discovery.artifact_digest")
                     packages._expires(discovery["decided_at"])
@@ -762,7 +767,7 @@ def _discovery_state(*, now):
                     eligible=eligible and not broken and trust["verified"], reasons=reasons)
                 excluded = list(discovery_error)
                 if not discovery or not discovery["enabled"]:
-                    excluded.append(dict(field="discovery", detail="discovery is not enabled"))
+                    excluded.append(dict(field="discovery", detail="hidden from the agent"))
                 if not installed["active"]:
                     excluded.append(dict(field="active", detail="release is not active"))
                 if not installed["eligible"]:
@@ -797,6 +802,18 @@ def status():
     return _discovery_state(now=datetime.now(timezone.utc))[0]
 
 
+# Who made the decision. Installing is the decision to use a package, so a first
+# install records "on" (operator decision, 2026-09-28, reversing 83e-1 D2's
+# hidden-until-enabled); the panel can turn it off, and that "off" survives every
+# later install, update, rollback and repair because only a missing record is written.
+DISCOVERY_SOURCES = frozenset({"install", "panel"})
+
+
+def _discovery_decision(enabled, artifact_digest, *, now, source):
+    return dict(enabled=enabled, decided_at=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                artifact_digest=artifact_digest, source=source)
+
+
 def set_discovery(package_id, enabled, *, now):
     """Record the panel decision against the active digest, under the package lock."""
     if type(enabled) is not bool:
@@ -809,8 +826,7 @@ def set_discovery(package_id, enabled, *, now):
         if broken or not pointer or not pointer["active"]:
             raise PackageRefusal("active", "package has no readable active release")
         record = next(record for path, record, _ in records if path.name == pointer["active"])
-        decision = dict(enabled=enabled, decided_at=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        artifact_digest=record["artifact_digest"])
+        decision = _discovery_decision(enabled, record["artifact_digest"], now=now, source="panel")
         _write(package / "discovery.json", decision)
         return decision
 

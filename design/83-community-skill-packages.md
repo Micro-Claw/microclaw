@@ -80,7 +80,10 @@ would require a separate OS confinement design; v1 does not claim that guarantee
 
 Skill text also grants no authority: loading instructions cannot enable a
 trigger, approve execution, or bypass existing tool authorization. Installing,
-enabling discovery, and consenting to execution are distinct recorded decisions.
+letting the agent read a package, and consenting to execution are distinct
+recorded decisions. Since 2026-09-28 the first two are made by one click:
+installing records "the agent may read it", and the panel can withdraw that
+(operator decision; see 83e-2's settlement).
 
 **Markdown-only packages also require scrutiny.** Catalog metadata is presented
 to the agent; today `load_skill` returns the full skill body as a tool result,
@@ -89,7 +92,8 @@ be labelled with publisher and release provenance. Their instructions can still
 influence calls to tools already authorized at real hardware. The tool layer's
 refusals, envelopes, write budgets and confirmations remain the enforcement
 boundary, regardless of who wrote the prose. Both package kinds therefore take
-the same admission policy, and enabling discovery is a recorded user decision.
+the same admission policy, and whether the agent may read one is a recorded
+user decision.
 
 ## What a package can be
 
@@ -666,7 +670,10 @@ the coordinator's.
     lock. A held lock refuses at once with 409.
   - A whole-package `remove` deletes it with the directory.
   - A missing record means not discoverable. It is a user decision, not session
-    state.
+    state. **Reversed 2026-09-28** (operator decision): a first install now
+    writes `enabled: true, source: "install"`. The record gained `source`
+    (`install` or `panel`), and a missing one now arises only from a package
+    installed before this change.
 - **D3 — the panel only.** `POST /api/skill-packages/{id}/discovery`
   `{enabled}`.
   - The click is the recorded decision. There is no confirmation and no agent
@@ -897,6 +904,27 @@ the coordinator's).
       identical to every export's, so nothing was re-run for it.
   - Consent, grant, another digest, revoke and no-discovery all passed as
     scored. The operator reported that the prompts behaved as expected.
+- **Discovery is on at install** (operator decision, 2026-09-28, after round 1
+  of the gate stalled at a button labelled "Enable discovery" that the operator
+  could not interpret). Installing is the decision to use a package, as it is
+  for browser extensions.
+  - `skill_store.install` writes `{enabled: true, source: "install"}` only when
+    no record exists. So the panel's "off" survives every later update,
+    rollback and repair. Removing the whole package deletes the record, and a
+    new install turns it on again.
+  - A failed install writes nothing.
+  - The panel no longer says "discovery". The button reads "Let the agent read
+    this package" or "Stop the agent reading this package". The active row says
+    "agent can read it" or "hidden from the agent", with any other reason
+    after it.
+  - The disclosure now reads: "Installing a package lets the agent read its
+    instructions; you can stop that here. That never lets its code run:
+    MicroClaw asks you each time, or once per session. Package code runs with
+    your user permissions and is not sandboxed."
+  - Two mutants were run: always overwriting the record fails the update
+    assertion, and never writing it fails the first-install assertion.
+  - The gate's "jobs ran without discovery" evidence still stands: it ran
+    against a store with no record, before this change.
 - **Residuals.**
   - The job directory grows without bound, and every retention call reads all
     of it.
