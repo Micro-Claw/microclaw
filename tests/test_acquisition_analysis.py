@@ -109,7 +109,13 @@ def test_dispatch_cwd_precedes_submit_records_off_thread_and_real_teardown(live,
         handles.append(handle)
         return handle
     monkeypatch.setattr(pool, 'submit', submit)
-    result = live.run(name='collision_7')
+    constructor = tools.Acquisition
+    def collision(**kwargs):
+        backend = constructor(**kwargs)
+        backend._dataset_disk_location += '_7'
+        return backend
+    monkeypatch.setattr(tools, 'Acquisition', collision)
+    result = live.run(name='collision')
     assert 'error' not in result
     job = result['analysis']['jobs'][0]
     assert job['dataset'].endswith('collision_7')
