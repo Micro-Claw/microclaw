@@ -5610,3 +5610,30 @@ def test_f4_declined_analysis_exports_only_decline_and_preserves_later_step(tmp_
     assert 'nothing ran' in source
     assert 'not reproduced' not in source
     assert 'core.set_exposure(12)' in source
+
+
+@pytest.mark.parametrize('acquisition_failed', [False, True])
+def test_trigger_job_disclosure_executes_with_multiline_values_and_later_step(
+    tmp_path, hooked_engine, acquisition_failed,
+):
+    multiline = '\nraise RuntimeError("publisher escaped")\r\n'
+    job = dict(package='fixture-lab/package', digest='a' * 64, operation='observe_dataset',
+               parameters={'text': multiline}, dataset='dataset', output_dir='dataset/analysis/job',
+               job_id='b' * 32, job_record_path='jobs/job.json', state='failed',
+               failure={'detail': multiline})
+    result = {'analysis': {'jobs': [job, dict(job, job_id='c' * 32)]}}
+    if acquisition_failed:
+        result['error'] = 'engine refused\nstack trace'
+    records = completed_call('run_timelapse', dict(
+        n_frames=2, interval_s=0, save_dir=str(tmp_path), name='cells'), result)
+    records += completed_call('set_exposure', {'ms': 12}, {'ms': 12})
+    _, exported, source = export(tmp_path, records)
+    assert exported['complete'], exported
+    assert source.count('Package analysis not reproduced') == 2
+    assert ('# SKIPPED: run_timelapse' in source) == acquisition_failed
+    for line in source.splitlines():
+        if 'publisher escaped' in line:
+            assert line.lstrip().startswith('#')
+    hooked_engine.execute(source)
+    assert len(hooked_engine.core.captures) == (0 if acquisition_failed else 2)
+    assert hooked_engine.core.exposure == 12

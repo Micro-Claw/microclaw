@@ -633,92 +633,195 @@ def close_analysis_supervisor():
         thread.join(timeout=1)
 
 
+def prepare_package_analysis(adapter, release_digest, parameters, *, disclosure):
+    """Shared validation and consent. No lock is held over the human wait."""
+    from microclaw import skill_packages as packages, skill_store, tools
+    if not isinstance(adapter, str):
+        raise packages.PackageRefusal('adapter', 'expected publisher/package:operation')
+    if adapter.count(':') != 1:
+        raise packages.PackageRefusal('adapter', 'expected publisher/package:operation')
+    name, operation = adapter.split(':')
+    publisher, package_id, _ = packages.parse_qualified_name(name + '/analysis')
+    packages._digest(release_digest, 'release_digest')
+    now = datetime.now(timezone.utc)
+    policy = skill_store.load_trust_policy()
+    release = skill_store.resolve(package_id, release_digest, now=now, policy=policy)
+    manifest = release['manifest']
+    if manifest['publisher'] != publisher or release['intake']['publisher'] != publisher:
+        raise packages.PackageRefusal('publisher', 'resolved release belongs to another publisher')
+    packages.supported_executable(manifest)
+    declaration = next((op for op in manifest['operations'] if op['name'] == operation), None)
+    if declaration is None or operation == 'self_check':
+        raise packages.PackageRefusal('operation', 'expected a declared dataset analysis operation')
+    if not isinstance(parameters, dict):
+        raise packages.PackageRefusal('parameters', 'expected object')
+    packages.validate_parameters(declaration['input_schema'], parameters)
+    # Snapshot JSON data before publisher dispatch; defaults never mutate it.
+    parameters = json.loads(json.dumps(parameters, allow_nan=False))
+    subject = f'{publisher}/{package_id}@{release_digest}'
+    summary = '\n'.join([
+        f'Run analysis {tools.one_line(publisher)}/{tools.one_line(package_id)} '
+        f'version {tools.one_line(manifest["version"])}',
+        f'Digest: {tools.one_line(release_digest)}',
+        f'Operation: {tools.one_line(operation)}',
+        f'Parameters: {tools.one_line(parameters)}',
+        *disclosure,
+        'Publisher code runs with your user permissions; not sandboxed.',
+    ])
+    if not tools.CONFIRM_FN(summary, kind='analysis', subject=subject):
+        return None
+    with skill_store.package_lock(package_id):
+        policy = skill_store.load_trust_policy()
+        release = skill_store.resolve(package_id, release_digest,
+                                      now=datetime.now(timezone.utc), policy=policy)
+    return dict(release=release, policy=policy, package_id=package_id,
+                package=f'{publisher}/{package_id}', digest=release_digest,
+                operation=operation, parameters=parameters)
+
+
+def submit_package_analysis(prepared, dataset_path, output_dir, *, job_id=None):
+    """Create the worker cwd before making the job visible to dispatch threads."""
+    from microclaw import skill_store
+    Path(output_dir).mkdir(parents=True, exist_ok=False)
+    with skill_store.package_lock(prepared['package_id']):
+        release = prepared['release']
+        return analysis_supervisor().submit(
+            release, prepared['policy'], now=datetime.now(timezone.utc),
+            python=release['python'], operation=prepared['operation'],
+            parameters=prepared['parameters'], dataset=dataset_path,
+            output_dir=output_dir, **({'job_id': job_id} if job_id else {}))
+
+
 def run_package_analysis(guard, dataset_path, adapter, release_digest, parameters, output_dir):
     """Validate, authorize and submit; never wait for publisher execution."""
-    from microclaw import skill_packages as packages, skill_store, tools
-
+    from microclaw import skill_store, tools
     handle = None
     metadata = {}
     try:
-        if adapter.count(':') != 1:
-            raise packages.PackageRefusal('adapter', 'expected publisher/package:operation')
-        name, operation = adapter.split(':')
-        publisher, package_id, _ = packages.parse_qualified_name(name + '/analysis')
-        packages._digest(release_digest, 'release_digest')
         dataset_path = guard.resolve_readable_path(dataset_path)
         output_dir = guard.resolve_in_workspace(output_dir)
         if Path(output_dir).exists():
             raise FileExistsError(f'Output directory already exists: {output_dir}')
-        now = datetime.now(timezone.utc)
-        policy = skill_store.load_trust_policy()
-        release = skill_store.resolve(package_id, release_digest, now=now, policy=policy)
-        manifest = release['manifest']
-        if manifest['publisher'] != publisher or release['intake']['publisher'] != publisher:
-            raise packages.PackageRefusal('publisher', 'resolved release belongs to another publisher')
-        packages.supported_executable(manifest)
-        declaration = next((op for op in manifest['operations'] if op['name'] == operation), None)
-        if declaration is None or operation == 'self_check':
-            raise packages.PackageRefusal('operation', 'expected a declared dataset analysis operation')
-        if not isinstance(parameters, dict):
-            raise packages.PackageRefusal('parameters', 'expected object')
-        packages.validate_parameters(declaration['input_schema'], parameters)
-        # Snapshot JSON data before publisher dispatch; defaults never mutate it.
-        parameters = json.loads(json.dumps(parameters, allow_nan=False))
-        subject = f'{publisher}/{package_id}@{release_digest}'
-        summary = '\n'.join([
-            f'Run analysis {tools.one_line(publisher)}/{tools.one_line(package_id)} '
-            f'version {tools.one_line(manifest["version"])}',
-            f'Digest: {tools.one_line(release_digest)}',
-            f'Operation: {tools.one_line(operation)}',
-            f'Parameters: {tools.one_line(parameters)}',
+        prepared = prepare_package_analysis(adapter, release_digest, parameters, disclosure=[
             f'Dataset: {tools.one_line(dataset_path)}',
             f'Output directory: {tools.one_line(output_dir)}',
-            'Publisher code runs with your user permissions; not sandboxed.',
         ])
-        if not tools.CONFIRM_FN(summary, kind='analysis', subject=subject):
+        if prepared is None:
             return {'status': 'Analysis cancelled.', 'cancelled': True}
-        # Consent holds no package lock. The digest pins identity, so resolving
-        # it again under the lock is safe even if management ran during the prompt.
-        # A removed release refuses; it can never silently select a newer one.
-        # The policy is reloaded too: a person can take minutes to answer, and a
-        # trust change or expiry in that time must reach the submitted job.
-        with skill_store.package_lock(package_id):
-            policy = skill_store.load_trust_policy()
-            release = skill_store.resolve(package_id, release_digest,
-                                          now=datetime.now(timezone.utc), policy=policy)
-            supervisor = analysis_supervisor()
-            Path(output_dir).mkdir(parents=True, exist_ok=False)
-            handle = supervisor.submit(release, policy, now=datetime.now(timezone.utc), python=release['python'],
-                                       operation=operation, parameters=parameters,
-                                       dataset=dataset_path, output_dir=output_dir)
-            handle.notify_acquisition('completed', writer='finished')
-            path = skill_store.analysis_job_path(handle.job_id)
-            metadata = dict(package=f'{publisher}/{package_id}', digest=release_digest,
-                            owner=dict(pid=os.getpid(), nonce=skill_store.ANALYSIS_PROCESS_NONCE),
-                            parameters=parameters, dataset=dataset_path,
-                            output_dir=output_dir, job_record_path=str(path))
-            record = dict(handle.record(), **metadata)
+        parameters = prepared['parameters']
+        handle = submit_package_analysis(prepared, dataset_path, output_dir)
+        handle.notify_acquisition('completed', writer='finished')
+        path = skill_store.analysis_job_path(handle.job_id)
+        metadata = dict(package=prepared['package'], digest=release_digest,
+                        owner=dict(pid=os.getpid(), nonce=skill_store.ANALYSIS_PROCESS_NONCE),
+                        parameters=parameters, dataset=dataset_path,
+                        output_dir=output_dir, job_record_path=str(path))
+        record = dict(handle.record(), **metadata)
+        try:
+            skill_store._write(path, record)
+        except Exception as exc:
+            # Submission already happened: never let a persistence failure
+            # masquerade as a pre-submission refusal in session export.
+            record['record_failure'] = str(exc)
+
+        def persist_terminal():
             try:
-                skill_store._write(path, record)
-            except Exception as exc:
-                # Submission already happened: never let a persistence failure
-                # masquerade as a pre-submission refusal in session export.
-                record['record_failure'] = str(exc)
+                handle.wait()
+                skill_store._write(path, dict(handle.record(), **metadata))
+            finally:
+                with _analysis_lock:
+                    _analysis_recorders.discard(threading.current_thread())
 
-            def persist_terminal():
-                try:
-                    handle.wait()
-                    skill_store._write(path, dict(handle.record(), **metadata))
-                finally:
-                    with _analysis_lock:
-                        _analysis_recorders.discard(threading.current_thread())
-
-            thread = threading.Thread(target=persist_terminal, name=f'analysis-record-{handle.job_id}', daemon=True)
-            with _analysis_lock:
-                _analysis_recorders.add(thread)
-            thread.start()
-            return {'analysis': record}
+        thread = threading.Thread(target=persist_terminal, name=f'analysis-record-{handle.job_id}', daemon=True)
+        with _analysis_lock:
+            _analysis_recorders.add(thread)
+        thread.start()
+        return {'analysis': record}
     except Exception as exc:
         if handle is not None:
             return {'analysis': dict(handle.record(), **metadata, record_failure=str(exc))}
         return {'error': str(exc)}
+
+
+class AcquisitionAnalysisJob:
+    """One dataset's dispatch and lifecycle, retained independently of tool errors."""
+
+    def __init__(self, prepared, dataset):
+        from microclaw import skill_store
+        self.handle = None
+        self._lock = threading.Lock()
+        self._persistence_lock = threading.Lock()
+        self._writer_finished = False
+        self._outcome = None
+        job_id = uuid.uuid4().hex
+        self.metadata = dict(
+            package=prepared['package'], digest=prepared['digest'],
+            operation=prepared['operation'], parameters=prepared['parameters'],
+            dataset=str(dataset), output_dir=str(Path(dataset) / 'analysis' / job_id),
+            job_id=job_id, job_record_path=str(skill_store.analysis_job_path(job_id)),
+            owner=dict(pid=os.getpid(), nonce=skill_store.ANALYSIS_PROCESS_NONCE),
+        )
+        self.failure = None
+        try:
+            self.handle = submit_package_analysis(
+                prepared, str(dataset), self.metadata['output_dir'], job_id=job_id)
+        except Exception as exc:
+            self.failure = dict(reason='dispatch_failed', detail=str(exc))
+        self._persist(wait=True)
+
+    def record(self):
+        record = (self.handle.record() if self.handle is not None else
+                  dict(state='dispatch_failed', failure=self.failure))
+        if 'record_failure' in self.metadata:
+            # A recorder failure does not make a running worker terminal or
+            # release its retention pin. Report persistence independently.
+            record.update(failure=dict(
+                reason='record_write_failed', detail=self.metadata['record_failure']))
+        return dict(record, **self.metadata)
+
+    def _persist(self, *, wait=False):
+        # Disk I/O is never on the acquisition thread, including initial writes.
+        from microclaw import skill_store
+        def write():
+            try:
+                try:
+                    with self._persistence_lock:
+                        skill_store._write(Path(self.metadata['job_record_path']), self.record())
+                except Exception as exc:
+                    self.metadata['record_failure'] = str(exc)
+                if wait and self.handle is not None:
+                    self.handle.wait()
+                    try:
+                        with self._persistence_lock:
+                            skill_store._write(Path(self.metadata['job_record_path']), self.record())
+                    except Exception as exc:
+                        self.metadata['record_failure'] = str(exc)
+            finally:
+                with _analysis_lock:
+                    _analysis_recorders.discard(threading.current_thread())
+        thread = threading.Thread(target=write, name='analysis-record-' + self.metadata['job_id'], daemon=True)
+        with _analysis_lock:
+            _analysis_recorders.add(thread)
+        try:
+            thread.start()
+        except Exception as exc:
+            with _analysis_lock:
+                _analysis_recorders.discard(thread)
+            self.metadata['record_failure'] = str(exc)
+
+    def acquisition_finished(self, outcome):
+        with self._lock:
+            self._outcome = outcome
+            if self.handle is not None:
+                self.handle.notify_acquisition(
+                    outcome, writer='finished' if self._writer_finished and outcome != 'unterminated' else 'unknown')
+                if self._writer_finished and outcome == 'unterminated':
+                    self.handle.notify_writer_finished()
+        self._persist()
+
+    def writer_finished(self):
+        with self._lock:
+            self._writer_finished = True
+            if self._outcome is not None and self.handle is not None:
+                self.handle.notify_writer_finished()
+        self._persist()

@@ -153,8 +153,8 @@ def _write_pipe(pipe, line):
 
 
 class JobHandle:
-    def __init__(self, supervisor):
-        self.job_id = uuid4().hex
+    def __init__(self, supervisor, job_id=None):
+        self.job_id = job_id or uuid4().hex
         self._supervisor = supervisor
         self._lock = threading.Lock()
         self._done = threading.Event()
@@ -407,8 +407,8 @@ class Supervisor:
             thread.start()
 
     def submit(self, release, policy, *, now, python, operation, parameters,
-               dataset=None, output_dir=None, deadline_s=None):
-        handle = JobHandle(self)
+               dataset=None, output_dir=None, deadline_s=None, job_id=None):
+        handle = JobHandle(self, job_id=job_id)
         if isinstance(operation, str) and len(operation) <= packages.MAX_OPERATION_NAME_LENGTH:
             handle._record["operation"] = operation
         try:

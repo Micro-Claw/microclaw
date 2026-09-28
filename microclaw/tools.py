@@ -2305,6 +2305,10 @@ def export_session_script(
         renderer = getattr(fn, "_microclaw_emitter", None)
         body_lines.append("")
         body_lines.append(f"# RECORDED TOOL: {name}")
+        if isinstance(params.result, dict):
+            for job in params.result.get('analysis', {}).get('jobs', []):
+                body_lines.append('# Package analysis not reproduced: ' + one_line(job))
+                body_lines.append('# Rerun with run_analysis_on_saved_dataset using the recorded package, digest, operation and parameters.')
         if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
             body_lines.append(
                 f"# SKIPPED: {name} — excluded by tool_use id selection "
@@ -4861,6 +4865,7 @@ def _acquire_with_hooks(
                 failures.append(f"{label} restoration failed: {restore_exc}")
         return failures
 
+    analysis_job = None
     waiter_started = False
     cleanup_done = False
     waiter_must_close_reservation = False
@@ -4911,6 +4916,11 @@ def _acquire_with_hooks(
         # the UNSUFFIXED path — which is precisely the wrong guess design/38
         # F7 is about, so re-verify this on any pycro-manager upgrade.
         dataset_path = _acq_dataset_path(acq, save_dir, name)
+        prepared = getattr(_ACQUISITION_EVENT_CONTEXT, 'analysis_prepared', None)
+        if prepared is not None:
+            from microclaw.completed_dataset import AcquisitionAnalysisJob
+            analysis_job = AcquisitionAnalysisJob(prepared, dataset_path)
+            _ACQUISITION_EVENT_CONTEXT.analysis_jobs.append(analysis_job)
         _emit_acquisition_diagnostic({
             "type": "acquisition_construction",
             "dataset_path": dataset_path,
@@ -4974,6 +4984,8 @@ def _acquire_with_hooks(
                     flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
                     if isinstance(flag, dict):
                         flag["teardown_running"] = False
+                    if analysis_job is not None:
+                        analysis_job.writer_finished()
                     _emit_acquisition_diagnostic({
                         "type": "acquisition_teardown_completion",
                         "dataset_path": dataset_path,
@@ -5058,9 +5070,15 @@ def _acquire_with_hooks(
                 raise failure
         if "exc" in outcome:
             raise outcome["exc"]
+        if analysis_job is not None:
+            analysis_job.acquisition_finished('completed')
     except AcquisitionUnterminated:
+        if analysis_job is not None:
+            analysis_job.acquisition_finished('unterminated')
         raise
     except Exception as exc:
+        if analysis_job is not None:
+            analysis_job.acquisition_finished('failed')
         restoration_failures = [] if waiter_started else finish_owned_cleanup()
         if restoration_failures:
             exc.add_note("; ".join(restoration_failures))
@@ -5153,9 +5171,12 @@ def run_zstack(
     artifact_limits: dict | None = None,
     _reservation: Reservation | None = None,
     _events: list | None = None,
+    analysis: dict | None = None,
 ) -> dict:
     # Before set_exposure and before the sweep: an out-of-workspace save_dir
     # must not cost an acquisition to discover.
+    if analysis is not None:
+        raise ValueError("Pass analysis through execute_tool so consent precedes acquisition.")
     save_dir = guard.resolve_in_workspace(save_dir)
     carries_hardware_capability = any(
         value is not None for value in (
@@ -5404,7 +5425,10 @@ def run_timelapse(
     max_frames: int | None = None,
     _reservation: Reservation | None = None,
     _events: list | None = None,
+    analysis: dict | None = None,
 ) -> dict:
+    if analysis is not None:
+        raise ValueError("Pass analysis through execute_tool so consent precedes acquisition.")
     if (n_frames is None) == (max_frames is None):
         raise ValueError("Provide exactly one of n_frames or max_frames.")
     if max_frames is not None and hook_strategy is None:
@@ -7914,6 +7938,7 @@ def run_multiposition_acquisition(
     illumination_envelope: dict | None = None,
     artifact_limits: dict | None = None,
     acquisition_order: str = "position_then_time",
+    analysis: dict | None = None,
 ) -> dict:
     """Visit each position and run a per-position protocol.
 
@@ -7950,6 +7975,8 @@ def run_multiposition_acquisition(
     callback arrival times, not exposure timestamps. Hooks require acquisition
     images and cannot be attached to snap.
     """
+    if analysis is not None:
+        raise ValueError("Pass analysis through execute_tool so consent precedes acquisition.")
     composite_started = timing_clock()
     duration_accumulator = {}
     if position_names is not None and positions is not None:
@@ -8219,6 +8246,7 @@ def run_tile_acquisition(
     center_y_um: float | None = None,
     return_to_center: bool = True,
     acquisition_order: str = "position_then_time",
+    analysis: dict | None = None,
 ) -> dict:
     """Acquire a rows×cols tile grid centered on center_x_um/center_y_um.
 
@@ -8234,6 +8262,8 @@ def run_tile_acquisition(
     acquisition_order and hook_strategy follow run_multiposition_acquisition,
     including separate clocks and logs for spaced position-outer movies.
     """
+    if analysis is not None:
+        raise ValueError("Pass analysis through execute_tool so consent precedes acquisition.")
     try:
         _protocol_shape_kwargs(protocol, protocol_params or {}, acquisition_order)
     except (ValueError, KeyError) as exc:
@@ -8315,8 +8345,11 @@ def run_multiposition_with_autofocus(
     preserve_unsupported: bool = False,
     positions: list[dict] | None = None,
     acquisition_order: str = "position_then_time",
+    analysis: dict | None = None,
 ) -> dict:
     """Deprecated forwarding wrapper for composed multiposition acquisition."""
+    if analysis is not None:
+        raise ValueError("Pass analysis through execute_tool so consent precedes acquisition.")
     # Planning and authorization are deliberately delegated: the forwarded
     # path reaches _plan_protocol_repetitions/_authorize_acquisition for plain
     # runs and hook-aware authorization for this autofocus run.
@@ -9876,6 +9909,7 @@ def run_adaptive_survey(
     named_stage_envelope: dict | None = None,
     property_envelope: dict | None = None,
     hook_action_plan: list[dict] | None = None,
+    analysis: dict | None = None,
 ) -> dict:
     """Acquire positions one at a time; the hook decides whether the next
     position is acquired at all.
@@ -9906,6 +9940,8 @@ def run_adaptive_survey(
     with the runner state parent-side it has no way to ask for the next tile, so
     it would idle out max_idle_s at the seed and report a stall.
     """
+    if analysis is not None:
+        raise ValueError("Pass analysis through execute_tool so consent precedes acquisition.")
     if position_names is not None and positions is not None:
         return {"error": "Provide position_names or positions, not both."}
     if position_names is None and positions is None:
@@ -12215,7 +12251,10 @@ def execute_tool(
         # A registry whose advertised key has no callable is malformed. Keep
         # this model-visible and non-throwing like every other dispatch error.
         return json.dumps({"error": f"Tool '{name}' has no implementation."})
+    analysis_jobs = []
     context = {
+        "analysis_prepared": None,
+        "analysis_jobs": analysis_jobs,
         "sink": acquisition_event_sink,
         "diagnostic_writer": acquisition_diagnostic_writer,
         "session_id": acquisition_session_id,
@@ -12227,8 +12266,14 @@ def execute_tool(
         key: getattr(_ACQUISITION_EVENT_CONTEXT, key, missing) for key in names
     }
     for key, value in context.items():
-        if value is not None:
+        if value is not None or key.startswith("analysis_"):
             setattr(_ACQUISITION_EVENT_CONTEXT, key, value)
+
+    def encode_result(result):
+        if analysis_jobs and isinstance(result, dict):
+            result["analysis"] = {"jobs": [job.record() for job in analysis_jobs]}
+        return result if isinstance(result, list) else json.dumps(result)
+
     try:
         if getattr(fn, "_microclaw_acquisition_entry_point", False):
             pending = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
@@ -12260,17 +12305,32 @@ def execute_tool(
         ):
             from microclaw.authorization import authorize_path
             authorize_path(ctrl, f"acquisition-tool:{name}")
+        if 'analysis' in tool_input:
+            from microclaw.tools_schema import ANALYSIS_TOOLS, ANALYSIS_SCHEMA
+            from microclaw.skill_packages import validate_parameters
+            from microclaw.completed_dataset import prepare_package_analysis
+            if name not in ANALYSIS_TOOLS:
+                raise ValueError(f'{name} does not accept analysis')
+            validate_parameters(ANALYSIS_SCHEMA, tool_input['analysis'])
+            prepared = prepare_package_analysis(**tool_input['analysis'], disclosure=[
+                'Runs on each dataset this call creates, while it grows.',
+                'One job per dataset; overflow past workers and queue is recorded as an analysis failure.',
+            ])
+            if prepared is None:
+                return encode_result({'status': 'Acquisition cancelled: analysis declined', 'cancelled': True})
+            _ACQUISITION_EVENT_CONTEXT.analysis_prepared = prepared
+            tool_input = {key: value for key, value in tool_input.items() if key != 'analysis'}
         if name == "export_session_script":
             result = fn(ctrl, guard, records=records, **tool_input)
         elif name == "set_channel":
             result = fn(ctrl, guard, cancel=cancel, **tool_input)
         else:
             result = fn(ctrl, guard, **tool_input)
-        return result if isinstance(result, list) else json.dumps(result)
+        return encode_result(result)
     except AcquisitionUnterminated as e:
-        return json.dumps(_unterminated_result(e))
+        return encode_result(_unterminated_result(e))
     except SafetyViolation as e:
-        return json.dumps({"error": f"Safety constraint prevented this action: {e}"})
+        return encode_result({"error": f"Safety constraint prevented this action: {e}"})
     except Exception as e:
         # Translate rather than forward: a Java stack trace teaches the model
         # nothing (design/14 §7). Known errors get an actionable one-liner, and
@@ -12285,7 +12345,7 @@ def execute_tool(
                 record for item in e.positions_completed
                 if (record := _completed_position_record(item))
             ]
-        return json.dumps(result)
+        return encode_result(result)
     finally:
         for key, value in previous_context.items():
             if value is missing:

@@ -1,5 +1,20 @@
 from typing import Any
 
+ANALYSIS_TOOLS = frozenset({
+    'run_zstack', 'run_timelapse', 'run_multiposition_acquisition',
+    'run_tile_acquisition', 'run_multiposition_with_autofocus', 'run_adaptive_survey',
+})
+ANALYSIS_SCHEMA = {
+    'type': 'object', 'additionalProperties': False,
+    'properties': {
+        'adapter': {'type': 'string', 'description': 'publisher/package:operation; package route only.'},
+        'release_digest': {'type': 'string'},
+        'parameters': {'type': 'object'},
+    },
+    'required': ['adapter', 'release_digest', 'parameters'],
+    'description': 'Run confirmed package analysis on each dataset while it grows. Queue overflow records an analysis failure without delaying acquisition.',
+}
+
 _PROTOCOL_PARAMS_SCHEMA = {
     "type": "object",
     "description": (
@@ -2503,6 +2518,15 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
 ]
+
+for _tool in TOOLS:
+    if _tool['name'] in ANALYSIS_TOOLS:
+        _tool['input_schema']['properties']['analysis'] = ANALYSIS_SCHEMA
+    elif _tool['name'] == 'run_mda':
+        _tool['description'] += (
+            " Package analysis is unavailable: run_mda uses Micro-Manager's own engine "
+            "and creates no dataset MicroClaw can observe."
+        )
 
 # Add cache_control on the last tool so the entire tool list is cached.
 TOOLS_CACHED = [*TOOLS[:-1], {**TOOLS[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}}]

@@ -669,7 +669,7 @@ def remove(package_id, *, retained_digests, install_id=None):
         records = _records(package)
         targets = [(path, record) for path, record, _ in records if install_id is None or path.name == install_id]
         if any(record and record.get("artifact_digest") in retained_digests for _, record in targets):
-            raise PackageRefusal("retained", "release is referenced by a job or pinned receipt")
+            raise PackageRefusal("retained", "release is referenced by a live analysis job")
         if install_id is not None:
             path = _install_dir(package, install_id)
             pointer = _read(package / "pointer.json")
@@ -875,13 +875,20 @@ def resolve(package_id, artifact_digest, *, now, policy=None):
     refusal = None
     for directory, record, _ in _records(_package(package_id)):
         if record and record.get("state") == "ready" and record.get("artifact_digest") == artifact_digest:
-            eligible, reasons = _eligibility(directory, record)
-            if not eligible:
-                reason = reasons[0] if reasons else dict(field="unchecked", detail="not eligible")
-                refusal = PackageRefusal(reason["field"], reason["detail"])
-                continue
-            packages.check_release(record["intake"], policy, purpose="execution", now=now)
-            return dict(record, release_dir=str(directory / "release"))
+            try:
+                eligible, reasons = _eligibility(directory, record)
+                if not eligible:
+                    reason = reasons[0] if reasons else dict(field="unchecked", detail="not eligible")
+                    raise PackageRefusal(reason["field"], reason["detail"])
+                manifest = packages.validate_manifest(record["manifest"])
+                intake = packages.validate_intake(record["intake"])
+                packages._bound_release(manifest, intake)
+                packages.check_release(intake, policy, purpose="execution", now=now)
+                return dict(record, manifest=manifest, intake=intake,
+                            release_dir=str(directory / "release"))
+            except (PackageRefusal, KeyError, TypeError, ValueError, OSError) as exc:
+                # A damaged matching install must not hide another ready copy.
+                refusal = exc if isinstance(exc, PackageRefusal) else PackageRefusal("install", str(exc))
     if refusal is not None:
         raise refusal
     raise PackageRefusal("artifact_digest", "no ready install with requested digest")
@@ -928,7 +935,7 @@ def start_job(package_id, action, *, retained_digests):
 
 
 # Analysis records are outside worker-writable output directories. Only these
-# states retain a release; receipts will add another retention source in 83e-3.
+# states retain a release while its owning process is alive.
 ANALYSIS_NONTERMINAL = frozenset({'queued', 'starting', 'running'})
 ANALYSIS_PROCESS_NONCE = uuid.uuid4().hex
 
@@ -999,5 +1006,5 @@ def _analysis_retained_digests():
 
 
 def retained_digests():
-    """Retention sources for package management; receipts will join live jobs."""
+    """Digests retained by analysis jobs whose owning process is alive."""
     return _analysis_retained_digests()
