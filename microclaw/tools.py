@@ -1052,6 +1052,10 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
     return calls
 
 
+_JOB_DISCLOSURE_FIELDS = ('package', 'digest', 'operation', 'parameters', 'dataset',
+                          'output_dir', 'job_id', 'job_record_path')
+
+
 def _recorded_outcome(result: dict | None) -> tuple[str, str] | None:
     """How much of a recorded call completed: ``("nothing"|"partial", reason)``.
 
@@ -2310,7 +2314,13 @@ def export_session_script(
         for job in jobs if isinstance(jobs, list) else []:
             if not isinstance(job, dict):
                 continue
-            body_lines.append('# Package analysis not reproduced: ' + one_line(job))
+            # The fields a rerun needs, not the whole record: its `state` is a
+            # snapshot taken at return, and read "running" for jobs that
+            # succeeded a moment later. A dispatch failure is final, so it stays.
+            shown = [f"{key}={one_line(job.get(key))}" for key in _JOB_DISCLOSURE_FIELDS]
+            if job.get('state') == 'dispatch_failed':
+                shown.append(f"dispatch_failed={one_line(job.get('failure'))}")
+            body_lines.append('# Package analysis not reproduced: ' + '; '.join(shown))
             body_lines.append('# Rerun with run_analysis_on_saved_dataset using the recorded package, digest, operation and parameters.')
         if selected_ids is not None and params["_tool_use_id"] not in selected_ids:
             body_lines.append(

@@ -451,3 +451,27 @@ def test_declined_acquisition_exports_as_skipped_not_as_an_acquisition(live, mon
     assert '# SKIPPED: run_timelapse' in section
     assert 'Acquisition(' not in section and 'acquire(' not in section
     assert 'core.set_exposure(12)' in source
+
+
+def test_job_disclosure_names_the_rerun_fields_not_the_whole_record(live, monkeypatch, tmp_path):
+    # From a real dispatch, so the record carries everything the supervisor adds
+    # (notifications, status, result). A demo-machine export printed all of it,
+    # 2,167 characters on one comment line, including a snapshot `state` that
+    # read "running" for a job that succeeded moments later.
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *_, **__: True)
+    inputs = dict(n_frames=1, interval_s=0, save_dir=str(tmp_path), name='shown', analysis=live.analysis)
+    raw = tools.execute_tool('run_timelapse', inputs, live.ctrl, live.guard)
+    job = json.loads(raw)['analysis']['jobs'][0]
+    records = [
+        {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 't1', 'name': 'run_timelapse', 'input': inputs}]},
+        {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 't1', 'content': raw}]},
+    ]
+    from tests.test_session_script_export import export
+    _, _, source = export(tmp_path, records)
+    [line] = [l for l in source.splitlines() if l.startswith('# Package analysis not reproduced:')]
+    for key in ('package', 'digest', 'operation', 'parameters', 'dataset', 'output_dir',
+                'job_id', 'job_record_path'):
+        assert f'{key}=' in line, key
+    assert job['job_id'] in line and job['digest'] in line
+    for absent in ('notifications', 'status', 'state', 'owner', 'protocol'):
+        assert f'{absent}=' not in line and f"'{absent}'" not in line, absent
