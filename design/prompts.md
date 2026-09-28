@@ -11264,4 +11264,4 @@ measurement.
 
 **Counts.** Baseline `5cf5831`: 5342 passed, 99 skipped. After round 1
 (`f4aef5d`): 5388. After the D3 fix (`c4c7a2d`): 5389. After the export-comment
-fix: see the PR.
+fix (`4635816`): 5390 passed, 99 skipped.
