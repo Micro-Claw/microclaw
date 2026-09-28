@@ -948,6 +948,50 @@ the coordinator's).
   - The receipt design is kept, renamed **saved permission**, in `R140`.
     "Receipt" was the wrong word for it: it is a session grant that persists.
 
+- **D1 — the argument.** `analysis={"adapter": "publisher/package:operation",
+  "release_digest": ..., "parameters": {...}}`, package route only, on every
+  tool that reaches `_acquire_with_hooks`: `run_zstack`, `run_timelapse`,
+  `run_multiposition_acquisition`, `run_tile_acquisition`,
+  `run_multiposition_with_autofocus`, `run_adaptive_survey`. One shared schema
+  definition. `run_mda` does not take it; its description says why.
+- **D2 — consent is 83e-2's.** Validate (shape, digest, `resolve`, operation,
+  `input_schema`), then `CONFIRM_FN(kind="analysis", subject=pkg@digest)`; the
+  summary says it runs on each dataset this call creates, while it grows. The
+  session grant applies. No lock is held across the prompt; the digest is
+  resolved again and the policy reloaded after it. The resolved release is the
+  snapshot every dispatch in the call uses.
+- **D3 — a decline acquires nothing**: `{"status": "Acquisition cancelled:
+  analysis declined", "cancelled": true}`.
+- **D4 — the check runs once, in `execute_tool`, before the tool body**, so no
+  acquisition tool can drop it. A later preflight refusal after an approval
+  is an accepted cost; a tool that silently ignores `analysis` is not.
+- **D5 — dispatch at dataset creation.** At `acquisition_construction`, with
+  the collision-resolved `dataset_path`: create `<dataset>/analysis/<job_id>/`,
+  take the package lock without waiting, `submit`. A held lock, a full queue
+  or a refused submit is a recorded dispatch failure; the acquisition goes on.
+  The job record is written off the foreground thread. One job per dataset, so
+  a per-position run gets N; overflow past queue + workers is recorded, and the
+  confirmation says so. Nothing runs in a pycro-manager callback.
+- **D6 — lifecycle.** Normal return: `completed`/`finished`. Hooked or engine
+  failure: `failed`, with `finished` only if the teardown waiter did finish,
+  else `unknown`. `AcquisitionUnterminated`: `unterminated`/`unknown`, then
+  `notify_writer_finished` from the waiter at `acquisition_teardown_completion`.
+- **D7 — recording and export.** A per-call collector read by `execute_tool`
+  puts `{"analysis": {"jobs": [...]}}` on the recorded result, error results
+  included: package, digest, operation, parameters, dataset, output directory,
+  job ID, job record path, state, failure. Nested, so `_recorded_outcome`
+  stays blind to it. The exporter's loop, not each emitter, adds a folded
+  "not reproduced" comment for every recorded job, SKIPPED path included.
+  Closes `R84`.
+- **D8 — timing.** Zero cost without `analysis` (no store read); with it, the
+  added foreground time before `acquire()` is measured, and tests assert where
+  the work runs, not how long it takes.
+- **D9 — gate.** Demo machine: real `_dataset_disk_location` under a collision
+  suffix, the output directory's creation inside a live dataset, the fixture
+  artifact only after real teardown, N jobs for a per-position run, interval
+  gaps with and without `analysis`, the panel line, and the exported script
+  run. The unterminated path is settled off-rig with lifecycle fixtures.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
