@@ -236,6 +236,9 @@ def _delete(path, failures):
 
 
 def _retention(package, *, retained_digests, failures):
+    # Callers may have captured their snapshot before this package lock was
+    # acquired. Submission publishes its durable pin under that same lock.
+    retained_digests = retained_digests | _analysis_retained_digests()
     records = _records(package)
     pointer, broken = _pointer(package, records)
     if broken:
@@ -591,9 +594,13 @@ def install(intake, artifact_path, *, policy, now, uv_executable=None, retained_
     packages.check_release(intake, policy, purpose="admission", now=now, artifact=artifact_path)
     with package_lock(intake["package_id"]) as package:
         _recover(package, retained_digests=retained_digests)
-        return _transaction(package, intake, artifact_path, policy=policy, now=now,
-                            uv_executable=uv_executable, retained_digests=retained_digests,
-                            find_links=find_links, base_python=base_python)
+        record = _transaction(package, intake, artifact_path, policy=policy, now=now,
+                              uv_executable=uv_executable, retained_digests=retained_digests,
+                              find_links=find_links, base_python=base_python)
+        if not (package / "discovery.json").exists():
+            _write(package / "discovery.json",
+                   _discovery_decision(True, record["artifact_digest"], now=now, source="install"))
+        return record
 
 
 def _rollback(package, *, policy, now, retained_digests):
@@ -657,6 +664,7 @@ def repair(package_id, *, policy, now, uv_executable=None, retained_digests, ins
 
 def remove(package_id, *, retained_digests, install_id=None):
     with package_lock(package_id) as package:
+        retained_digests = retained_digests | _analysis_retained_digests()
         _recover(package, retained_digests=retained_digests)
         records = _records(package)
         targets = [(path, record) for path, record, _ in records if install_id is None or path.name == install_id]
@@ -738,8 +746,9 @@ def _discovery_state(*, now):
             try:
                 discovery = _read(package / "discovery.json")
                 if discovery is not None:
-                    if (set(discovery) != {"enabled", "decided_at", "artifact_digest"}
-                            or type(discovery["enabled"]) is not bool):
+                    if (set(discovery) != {"enabled", "decided_at", "artifact_digest", "source"}
+                            or type(discovery["enabled"]) is not bool
+                            or discovery["source"] not in DISCOVERY_SOURCES):
                         raise PackageRefusal("discovery", "invalid discovery record")
                     packages._digest(discovery["artifact_digest"], "discovery.artifact_digest")
                     packages._expires(discovery["decided_at"])
@@ -758,7 +767,7 @@ def _discovery_state(*, now):
                     eligible=eligible and not broken and trust["verified"], reasons=reasons)
                 excluded = list(discovery_error)
                 if not discovery or not discovery["enabled"]:
-                    excluded.append(dict(field="discovery", detail="discovery is not enabled"))
+                    excluded.append(dict(field="discovery", detail="hidden from the agent"))
                 if not installed["active"]:
                     excluded.append(dict(field="active", detail="release is not active"))
                 if not installed["eligible"]:
@@ -793,6 +802,18 @@ def status():
     return _discovery_state(now=datetime.now(timezone.utc))[0]
 
 
+# Who made the decision. Installing is the decision to use a package, so a first
+# install records "on" (operator decision, 2026-09-28, reversing 83e-1 D2's
+# hidden-until-enabled); the panel can turn it off, and that "off" survives every
+# later install, update, rollback and repair because only a missing record is written.
+DISCOVERY_SOURCES = frozenset({"install", "panel"})
+
+
+def _discovery_decision(enabled, artifact_digest, *, now, source):
+    return dict(enabled=enabled, decided_at=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                artifact_digest=artifact_digest, source=source)
+
+
 def set_discovery(package_id, enabled, *, now):
     """Record the panel decision against the active digest, under the package lock."""
     if type(enabled) is not bool:
@@ -805,8 +826,7 @@ def set_discovery(package_id, enabled, *, now):
         if broken or not pointer or not pointer["active"]:
             raise PackageRefusal("active", "package has no readable active release")
         record = next(record for path, record, _ in records if path.name == pointer["active"])
-        decision = dict(enabled=enabled, decided_at=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        artifact_digest=record["artifact_digest"])
+        decision = _discovery_decision(enabled, record["artifact_digest"], now=now, source="panel")
         _write(package / "discovery.json", decision)
         return decision
 
@@ -821,7 +841,7 @@ def _start_discovery_recheck(package_ids, *, now):
         if _discovery_recheck_thread is not None and _discovery_recheck_thread.is_alive():
             return
         _discovery_recheck_thread = threading.Thread(
-            target=recheck, kwargs=dict(now=now, retained_digests=frozenset(),
+            target=recheck, kwargs=dict(now=now, retained_digests=retained_digests(),
                                         package_ids=frozenset(package_ids)), daemon=True)
         _discovery_recheck_thread.start()
 
@@ -848,8 +868,10 @@ def load_discovered_skill(name):
     return packages.load_external_skill(name, records, policy, now=now)
 
 
-def resolve(package_id, artifact_digest, *, now):
-    policy = load_trust_policy()
+def resolve(package_id, artifact_digest, *, now, policy=None):
+    """Resolve a pin, optionally reusing the caller's verified policy snapshot."""
+    if policy is None:
+        policy = load_trust_policy()
     refusal = None
     for directory, record, _ in _records(_package(package_id)):
         if record and record.get("state") == "ready" and record.get("artifact_digest") == artifact_digest:
@@ -903,3 +925,79 @@ def start_job(package_id, action, *, retained_digests):
             lock.__exit__(None, None, None)
         raise
     return dict(package_id=package_id, operation=action)
+
+
+# Analysis records are outside worker-writable output directories. Only these
+# states retain a release; receipts will add another retention source in 83e-3.
+ANALYSIS_NONTERMINAL = frozenset({'queued', 'starting', 'running'})
+ANALYSIS_PROCESS_NONCE = uuid.uuid4().hex
+
+
+def analysis_job_path(job_id):
+    if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
+        raise PackageRefusal('job_id', 'expected 32 lowercase hex characters')
+    return store_dir() / 'jobs' / (job_id + '.json')
+
+
+def analysis_job_status(job_id):
+    path = analysis_job_path(job_id)
+    try:
+        record = _read(path)
+    except (OSError, updates.UpdateError) as exc:
+        raise PackageRefusal('job_id', f'analysis job record is unreadable: {exc}') from exc
+    if record is None:
+        raise PackageRefusal('job_id', 'unknown analysis job')
+    if not isinstance(record.get('state'), str):
+        raise PackageRefusal('job_id', 'analysis job record is unreadable: invalid state')
+    return record
+
+
+def _analysis_records():
+    for path in (store_dir() / 'jobs').glob('*.json'):
+        try:
+            record = _read(path)
+        except (OSError, updates.UpdateError):
+            continue  # Leave unreadable evidence in place; it cannot name a pin.
+        if record and isinstance(record.get('state'), str):
+            yield path, record
+
+
+def _analysis_owner_alive(record):
+    owner = record.get('owner')
+    pid = owner.get('pid') if isinstance(owner, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        return _alive(pid)
+    except OverflowError:
+        return False
+
+
+def abandon_analysis_jobs():
+    """Leave other live processes' jobs alone; abandon only dead owners' jobs."""
+    for path, record in _analysis_records():
+        if record.get('state') in ANALYSIS_NONTERMINAL and not _analysis_owner_alive(record):
+            try:
+                _write(path, dict(record, state='abandoned'))
+            except (OSError, updates.UpdateError):
+                continue  # One unwritable record must not block the others.
+
+
+def _analysis_retained_digests():
+    """Dead CLI owners stop pinning too: the terminal never runs the serve sweep.
+
+    PID reuse has the same accepted limitation as package locks; the nonce
+    records process identity but cannot prove whether a foreign PID was reused.
+    """
+    digests = set()
+    for _, record in _analysis_records():
+        if record.get('state') in ANALYSIS_NONTERMINAL and _analysis_owner_alive(record):
+            digest = record.get('digest')
+            if isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest):
+                digests.add(digest)
+    return frozenset(digests)
+
+
+def retained_digests():
+    """Retention sources for package management; receipts will join live jobs."""
+    return _analysis_retained_digests()

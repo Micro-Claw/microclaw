@@ -3015,7 +3015,7 @@ def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):
     effect to reproduce -- the same call 43h made for `generate_and_save_hook`.
     """
     from microclaw.tools import run_analysis_on_saved_dataset
-    assert run_analysis_on_saved_dataset._microclaw_emits_nothing is True
+    assert callable(run_analysis_on_saved_dataset._microclaw_emitter)
 
     _, result, source = export(tmp_path, [
         call("run_adaptive_survey", {
@@ -3033,7 +3033,8 @@ def test_offline_analysis_does_not_kill_the_script_it_follows(tmp_path):
     # Narrow on purpose: the inlined DeniedEventQueue raises a RuntimeError of
     # its own, and asserting on the bare class name matches that instead.
     assert "raise RuntimeError('NOT EMITTED" not in source
-    assert result["emitted_calls"] == 1
+    assert result["emitted_calls"] == 2
+    assert "Analysis was not reproduced" in source
     compile(source, "routine.py", "exec")
 
 
@@ -5555,3 +5556,57 @@ def test_emitted_acquire_on_hit_guards_generated_extrema(tmp_path, monkeypatch, 
             z_start=60., z_end=60.5, z_step=1.,
             xy_positions=[(0., 0.)], position_labels=['hit'],
         )
+
+
+@pytest.mark.parametrize('package', [True, False])
+def test_d5_analysis_comments_fold_values_and_preserve_later_step(tmp_path, package):
+    malicious = '\nraise RuntimeError("escaped comment")\r\n'
+    params = dict(adapter='fixture-lab/package:observe_dataset' if package else 'frame_statistics',
+                  dataset_path='dataset' + malicious, output_dir='out' + malicious,
+                  parameters={'text': malicious})
+    result = {'manifest_path': 'manifest.json'}
+    if package:
+        result = {'analysis': dict(package='fixture-lab/package' + malicious, digest='a'*64 + malicious,
+                    operation='observe_dataset' + malicious, parameters={'text': malicious},
+                    output_dir='out' + malicious, job_record_path='job.json' + malicious,
+                    failure={'detail': malicious}, state='failed')}
+    records = [call('run_timelapse', {'n_frames': 2, 'interval_s': 0,
+                                    'save_dir': '/data/session', 'name': 'cells'})]
+    records += completed_call('run_analysis_on_saved_dataset', params, result)
+    records += completed_call('set_exposure', {'ms': 12}, {'ms': 12})
+    _, exported, source = export(tmp_path, records)
+    ast.parse(source)
+    assert 'acq.acquire(events)' in source
+    assert 'Analysis was not reproduced' in source
+    assert 'run_analysis_on_saved_dataset in Microclaw' in source
+    assert 'core.set_exposure(12)' in source
+    assert not any(isinstance(node, ast.Raise) for node in ast.walk(ast.parse(source)))
+    for line in source.splitlines():
+        if 'escaped comment' in line:
+            assert line.lstrip().startswith('#')
+    if package:
+        assert 'job.json' in source and 'observe_dataset' in source and 'a'*64 in source
+
+
+def test_d5_presubmission_refusal_uses_existing_skipped_path(tmp_path):
+    records = completed_call('run_analysis_on_saved_dataset', {'adapter': 'p/q:op'},
+                             {'error': 'schema refusal\nsecond line'})
+    records += completed_call('set_exposure', {'ms': 12}, {'ms': 12})
+    _, result, source = export(tmp_path, records)
+    ast.parse(source)
+    assert '# SKIPPED: run_analysis_on_saved_dataset' in source
+    assert 'core.set_exposure(12)' in source
+    assert 'Analysis was not reproduced' not in source
+
+
+def test_f4_declined_analysis_exports_only_decline_and_preserves_later_step(tmp_path):
+    records = completed_call('run_analysis_on_saved_dataset',
+        {'adapter': 'p/q:op', 'dataset_path': 'data', 'output_dir': 'out'},
+        {'status': 'Analysis cancelled.', 'cancelled': True})
+    records += completed_call('set_exposure', {'ms': 12}, {'ms': 12})
+    _, _, source = export(tmp_path, records)
+    ast.parse(source)
+    assert 'declined at confirmation' in source
+    assert 'nothing ran' in source
+    assert 'not reproduced' not in source
+    assert 'core.set_exposure(12)' in source

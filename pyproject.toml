@@ -39,6 +39,10 @@ test = [
     "httpx>=0.27",
     # design/83 block 83d: skill-package install tests run a real uv offline.
     "uv>=0.8",
+    # design/83 block 83e-2: the differential test that proves the parameter
+    # schema subset means what JSON Schema 2020-12 means. Test-only on purpose:
+    # the product must never import it.
+    "jsonschema>=4.18",
 ]
 
 [project.scripts]

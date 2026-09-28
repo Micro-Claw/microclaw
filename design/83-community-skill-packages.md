@@ -80,7 +80,10 @@ would require a separate OS confinement design; v1 does not claim that guarantee
 
 Skill text also grants no authority: loading instructions cannot enable a
 trigger, approve execution, or bypass existing tool authorization. Installing,
-enabling discovery, and consenting to execution are distinct recorded decisions.
+letting the agent read a package, and consenting to execution are distinct
+recorded decisions. Since 2026-09-28 the first two are made by one click:
+installing records "the agent may read it", and the panel can withdraw that
+(operator decision; see 83e-2's settlement).
 
 **Markdown-only packages also require scrutiny.** Catalog metadata is presented
 to the agent; today `load_skill` returns the full skill body as a tool result,
@@ -89,7 +92,34 @@ be labelled with publisher and release provenance. Their instructions can still
 influence calls to tools already authorized at real hardware. The tool layer's
 refusals, envelopes, write budgets and confirmations remain the enforcement
 boundary, regardless of who wrote the prose. Both package kinds therefore take
-the same admission policy, and enabling discovery is a recorded user decision.
+the same admission policy, and whether the agent may read one is a recorded
+user decision.
+
+## What a package can be
+
+Three shapes, and every one of them leaves the tool layer as the enforcement
+boundary.
+
+- **Prose only** (Markdown-only kind). A skill that teaches the agent a workflow
+  — a light-sheet acquisition planned from the hardware the rig has, an htSMLM
+  mapping reference — with no code and no environment. Discovery (83e-1) shows
+  it; `load_skill("publisher/package/skill")` returns it; the agent carries it
+  out with existing tools, so it exports like any other session. **A skill can
+  only describe what MicroClaw can already do**: a capability MicroClaw lacks (a
+  galvo waveform locked to the camera trigger) is a first-party proposal, not a
+  package.
+- **A worker** (executable kind). Publisher code, out of process, over a saved
+  dataset (83e-2's package route in `run_analysis_on_saved_dataset`) or a growing
+  one (83e-3's trigger). A read-only observer, never a hook.
+- **Prose that teaches a hook.** SKILL.md may carry hook source as text; the agent
+  saves it through `generate_and_save_hook`, which lints it, shows it for review
+  and pins its hash. From then on it is an ordinary saved hook and exports as
+  one. It can use only MicroClaw's own environment, never the publisher's
+  locked dependencies — enough for a focus metric, not for SMAPpy's fitter.
+
+**Not a shape:** package code inside the hook runtime, or package results
+steering an acquisition. The second, if wanted, is a new typed MicroClaw
+capability under the normal authorization/envelope/write-budget rules — `R139`.
 
 ## Transport — follow the dataset, supervise over pipes
 
@@ -640,7 +670,10 @@ the coordinator's.
     lock. A held lock refuses at once with 409.
   - A whole-package `remove` deletes it with the directory.
   - A missing record means not discoverable. It is a user decision, not session
-    state.
+    state. **Reversed 2026-09-28** (operator decision): a first install now
+    writes `enabled: true, source: "install"`. The record gained `source`
+    (`install` or `panel`), and a missing one now arises only from a package
+    installed before this change.
 - **D3 — the panel only.** `POST /api/skill-packages/{id}/discovery`
   `{enabled}`.
   - The click is the recorded decision. There is no confirmation and no agent
@@ -697,6 +730,207 @@ the coordinator's.
     itself refuses. `start_job` has the same shape from 83d.
   - Render cost grows by about 1 ms per package per turn.
   - `retained_digests` is still `frozenset()`; 83e-2 and 83e-3 fill it.
+
+**83e-2 decisions** (operator decisions, 2026-09-24, except where marked as
+the coordinator's).
+
+- **D1 — fold into `run_analysis_on_saved_dataset`.** ilastik is already one
+  adapter name there (`BUILTIN_ADAPTERS`), so a package operation is another:
+  `adapter="publisher/package:operation"` plus a required `release_digest`.
+  - `axis_selection` and `input_kind` stop being schema-required; the builtin
+    route refuses their absence, the package route refuses their presence, and
+    likewise `calibration_ref`, `output_pixel_size_um`, `model_project_config`,
+    `artifact_limits` and `max_array_bytes`.
+  - Path policy is the builtin route's: `guard.resolve_readable_path` for the
+    dataset, `guard.resolve_in_workspace` for `output_dir`, which must not
+    exist. The tool creates it; it is the job's reserved output directory.
+  - `release_digest` is looked up with `skill_store.resolve`, which never
+    consults the active pointer: any ready retained release that passes
+    `check_release(purpose="execution")` runs, and an update between loading the
+    skill and calling never silently runs a different digest. Discovery is not
+    required; consent is the gate (coordinator).
+  - One process-wide analysis `Supervisor`, built lazily and closed at serve
+    shutdown — never one per call, and not 83d's `self_check` supervisor
+    (coordinator).
+- **D2 — consent is a confirmation per call, with a session grant keyed to
+  package + digest.** `CONFIRM_FN(summary, kind="analysis",
+  subject="publisher/package@<digest>")`, raised only on the package route and
+  before anything is created or submitted. The summary names publisher,
+  package, version, digest, operation, the folded parameters, dataset, output
+  directory, and "runs with your user permissions; not sandboxed".
+  - `SessionGrants` gains the kind `analysis`, whose subject is a
+    `publisher/package@digest` pattern rather than a fixed set. The class
+    docstring gains one sentence: analysis is workflow, not self-modification.
+  - An update or rollback changes the digest, so the grant stops applying.
+  - A decline returns `{"status": "Analysis cancelled."}`, the shape the other
+    cancelled confirmations use, and submits nothing.
+  - Builtin adapters stay unprompted; ilastik is MicroClaw code running a
+    program on inputs MicroClaw prepared, a package is publisher code.
+- **D3 — the call returns at submission; completion is a durable record**
+  (coordinator).
+  - Explicit runs are for a completed dataset: the tool sends
+    `acquisition {completed, writer: finished}` right after `submit`. A growing
+    dataset is 83e-3's.
+  - The result nests everything under `{"analysis": {...}}`: state, job ID,
+    package, digest, operation, parameters, output directory, job record path.
+    A refusal *before* submission (schema, eligibility, path, lock) is an
+    ordinary top-level `error`, because nothing ran; a dispatch or worker
+    failure *after* submission is nested, never top-level, never in a list.
+  - The job record is `user_data_dir()/skill-packages/jobs/<job_id>.json`,
+    written atomically at submit and at the terminal with the supervisor's
+    record. It never lives in the worker's output directory. A record still
+    non-terminal when serve starts reads `abandoned` (83d's `job.json` lesson).
+  - One read tool, `analysis_job_status(job_id)`, `@emits_nothing`, reads the
+    record and never queries a live worker. 83e-3's trigger jobs use the same
+    record and tool.
+  - `retained_digests` gets one source: `skill_store.retained_digests()`,
+    returning the digests of non-terminal jobs; every caller that passes
+    `frozenset()` today calls it instead. 83e-3 adds receipts to it.
+- **D4 — parameter validation is a closed JSON Schema 2020-12 subset, with no
+  new runtime dependency.** Keywords: `type` (one string), `properties`,
+  `required`, `additionalProperties` (boolean), `items`, `enum`, `minimum`,
+  `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`, and the
+  annotations `title`, `description`, `default`.
+  - Each keyword means exactly what it means in 2020-12. The traps:
+    `additionalProperties` defaults to allowed; `true` is not an integer; `1.0`
+    *is* an integer; `minimum`/`maximum` are inclusive; `default` is never
+    applied.
+  - Admission (`validate_manifest`) refuses any keyword outside the subset, in
+    both `input_schema` and `output_schema`. That is what makes a later move to
+    `jsonschema` backward compatible: every admitted schema means the same thing
+    afterwards, and adding a keyword only loosens admission.
+  - `input_schema` is enforced at call time. `output_schema` is admitted under
+    the same subset and not enforced in 83e-2.
+  - `jsonschema` joins the `[test]` extra only. A differential test runs both
+    validators over one corpus and requires them to agree; a test asserts the
+    product never imports it.
+- **D5 — export: `@emits` with a comment-only renderer, for every adapter**
+  (closes `R84`'s third item). The marker moves from `@emits_nothing`.
+  - Builtin routes: adapter, dataset, output directory, and a statement that
+    the analysis was not reproduced with how to rerun it. Package route: package
+    ID, digest, operation, parameters, output directory, job record path, and
+    the same statement. Existing exports start carrying this comment on purpose:
+    silence about an artifact the session produced is the defect.
+  - `one_line` is promoted from inside `export_session_script` (`tools.py:2270`)
+    to one module-level helper that the exporter and this renderer both call.
+    Every interpolated value is folded.
+  - Tests: a multiline publisher failure and multiline parameters stay inside
+    their comments; a session with an analysis call followed by another step
+    compiles and emits that later step; a pre-submission refusal takes the
+    exporter's existing skipped path.
+- **D6 — timing contract** (coordinator). The package route adds, on the turn
+  thread: the confirmation, `resolve` (one `check_release`, ~0.3 ms in 83c), a
+  directory create and `submit` (p50 0.5 ms in 83c). It never waits on the
+  worker. Tests: the tool returns while a slow fixture worker is still running,
+  and the builtin route constructs no supervisor and reads no store.
+- **Gate.** A demo-machine gate, added at the operator's request on
+  2026-09-25 because nobody had seen the browser prompt: the banner, its session
+  grant, a second release prompting under that grant, revoke, and the exported
+  script — which the gate also *runs*. `design/83-block83e2-demo-gate.{py,ps1,md}`,
+  built on 83d's gate plumbing; its `selftest` drives the real tool, supervisor
+  and exporter and proves each limb can fail. No SMAPpy needed: the fixture
+  package's `observe_dataset` is the path the prompt guards.
+
+**What 83e-2 settled** (PR #41):
+- **Code.** `completed_dataset.run_package_analysis`, behind
+  `run_analysis_on_saved_dataset`'s package route, and one lazily built
+  process-wide analysis `Supervisor` that serve closes at shutdown. In
+  `skill_packages`: `validate_parameter_schema` and `validate_parameters`. In
+  `skill_store`: job records, `_analysis_records`, `abandon_analysis_jobs` and
+  `retained_digests()`. The new tool `analysis_job_status` is `@emits_nothing`.
+  The tool count is now 82: 24 `@emits`, 54 `@emits_nothing`, 4 `@refuses`.
+- **Consent never holds a lock.** Everything that can be checked without the
+  lock runs first. The prompt then runs with no lock held. Under the lock, the
+  same digest is resolved again and the trust policy is reloaded, because a
+  person can take minutes to answer. A release removed while the prompt was
+  open refuses.
+- **A job record names its owner** (`pid` plus a per-process nonce). A sweep
+  abandons a job only when its owner is dead, and retention counts only jobs
+  whose owner is alive. So a second `serve` leaves the first one's jobs alone,
+  and a job left by a dead CLI process stops pinning its release without a
+  sweep. An unreadable record is skipped and pins nothing. PID reuse is
+  accepted, as for package locks.
+- **A declined call exports as a decline**
+  (`{"status": ..., "cancelled": true}`), not as an analysis that was not
+  reproduced.
+- **D6.** On the runner, n=5, with the real supervisor and a 300 ms fixture
+  worker: median 18.0 ms, max 21.6 ms. The tool returned before the worker's
+  sleep ended in every sample. Mean attributed phases: resolve 6.4 ms, atomic
+  writes 3.7 ms, submit 2.1 ms; about 5 ms is unattributed. Reusing one policy
+  snapshot measured no meaningful change (18.4 ms before). The pre-prompt
+  resolve is 6.4 ms, against 0.29 ms for `check_release` alone in 83c. Most of
+  it is file reads and the record glob, which has not been measured
+  separately.
+- **Review.** Round 1 rejected the first turn for six defects:
+  - the consent prompt held the package lock;
+  - a second process abandoned the first one's live jobs;
+  - one corrupt job record stopped serve starting and failed every package
+    operation;
+  - a declined call exported as an analysis;
+  - a bare `read_text()` failed the suite-integrity check;
+  - the no-import test walked a relative path, so from another directory it
+    visited nothing and passed.
+
+  All ten regression tests fail on the first turn's tree. The coordinator's
+  own fix, the policy reload, was mutation-checked. Removing the
+  `type`-length rows took 118 parametrized cases out of the suite, so the
+  count drop is explained.
+- **Gate.** The demo machine, 2026-09-28, two rounds, installed commit
+  `632536e`.
+  - **Round 1** stopped at the first launch. The launch message, reused from
+    83d's gate, sent the operator to the package panel, which offers **Enable
+    discovery**, and the runbook never mentioned it. This was a gate defect.
+    Round 2 says not to open the panel, and adds a limb that scores that the
+    jobs ran with no discovery record.
+  - **Round 2 scored 6 of 8.** Both FAILs were the gate's fixed counts ("3
+    jobs", "3 not-reproduced comments") meeting an operator slip. On turn 4 the
+    operator forgot to revoke first, so an extra call ran under the grant.
+    That is the grant working, not a defect.
+  - **Scored from the history and the exported script, both limbs are met.**
+    - Every call is accounted for: the unrevoked turn 4 was auto-approved and
+      wrote `-4`. The retry after revoking reused `-4` and was **refused before
+      any prompt** (the path check comes before consent). Then `-5` prompted
+      and was approved plainly.
+    - All 4 jobs `succeeded` with exit 0, one `final` artifact whose SHA-256
+      equals that of `dataset writer finished\n`, lifecycle
+      `completed`/`finished`, and one owner pid and nonce, serve's.
+      `accounted_s` ranged from 0.285 to 0.851 s.
+    - The export parses and carries 4 not-reproduced comments, 1 decline and 1
+      `SKIPPED` for the refused retry, all four output directories and the
+      digest, and no `NOT EMITTED`.
+    - It exits 0 under a stub `pycromanager`, run off-rig. **Its real
+      `Core()` connection on the demo machine was not exercised**, because the
+      limb failed at its count before running the script. That header is
+      identical to every export's, so nothing was re-run for it.
+  - Consent, grant, another digest, revoke and no-discovery all passed as
+    scored. The operator reported that the prompts behaved as expected.
+- **Discovery is on at install** (operator decision, 2026-09-28, after round 1
+  of the gate stalled at a button labelled "Enable discovery" that the operator
+  could not interpret). Installing is the decision to use a package, as it is
+  for browser extensions.
+  - `skill_store.install` writes `{enabled: true, source: "install"}` only when
+    no record exists. So the panel's "off" survives every later update,
+    rollback and repair. Removing the whole package deletes the record, and a
+    new install turns it on again.
+  - A failed install writes nothing.
+  - The panel no longer says "discovery". The button reads "Let the agent read
+    this package" or "Stop the agent reading this package". The active row says
+    "agent can read it" or "hidden from the agent", with any other reason
+    after it.
+  - The disclosure now reads: "Installing a package lets the agent read its
+    instructions; you can stop that here. That never lets its code run:
+    MicroClaw asks you each time, or once per session. Package code runs with
+    your user permissions and is not sandboxed."
+  - Two mutants were run: always overwriting the record fails the update
+    assertion, and never writing it fails the first-install assertion.
+  - The gate's "jobs ran without discovery" evidence still stands: it ran
+    against a store with no record, before this change.
+- **Residuals.**
+  - The job directory grows without bound, and every retention call reads all
+    of it.
+  - `output_schema` is admitted but not enforced.
+  - The terminal CLI never runs the startup sweep. Its dead jobs stop pinning
+    through the owner rule, but they read `running` until a serve starts.
 
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
@@ -757,7 +991,8 @@ and otherwise stays open.
 | 83b | `block-83b` | `d0a27a9` | **merged 2026-09-23** as `5936f3b`, PR #37 — local only, no gate |
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
-| 83e-1 | `block-83e-1` | `fce0188` | reviewed, PR #40 — local only, no gate |
+| 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
+| 83e-2 | `block-83e-2` | `2a1c42a` | reviewed, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

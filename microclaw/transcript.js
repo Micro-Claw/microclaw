@@ -281,6 +281,14 @@
 
   function skillPackagesView(state) {
     const reasons = values => (values || []).map(r => r.field + ": " + r.detail).join("; ");
+    // Only the active release can be read, so only its row says whether the agent can.
+    // The off switch is the clause itself; other exclusions (a name clash, a failed
+    // check) are the reasons after it.
+    const readable = install => {
+      if (install.discoverable) return " — agent can read it";
+      const other = (install.discovery_exclusions || []).filter(r => r.field !== "discovery" && r.field !== "active");
+      return " — hidden from the agent" + (other.length ? ": " + reasons(other) : "");
+    };
     const rows = [];
     for (const pkg of state.packages || []) {
       for (const install of pkg.installs || []) {
@@ -289,10 +297,9 @@
           (manifest.version || "unknown") + " " + (install.artifact_digest || "").slice(0, 12) +
           " — " + install.state + (install.active ? " (active)" : install.previous ? " (previous)" : "") +
           (install.eligible ? " — eligible" : " — disabled: " + reasons(install.reasons)) +
-          ((install.discovery_exclusions || []).length
-            ? " — discovery excluded: " + reasons(install.discovery_exclusions) : ""));
+          (install.active ? readable(install) : ""));
       }
-      if ((pkg.discovery_reasons || []).length) rows.push(pkg.package_id + " — discovery excluded: " + reasons(pkg.discovery_reasons));
+      if ((pkg.discovery_reasons || []).length) rows.push(pkg.package_id + " — hidden from the agent: " + reasons(pkg.discovery_reasons));
       if ((pkg.broken || []).length) rows.push(pkg.package_id + " — disabled: " + reasons(pkg.broken));
       for (const failure of pkg.deletion_failures || []) rows.push(pkg.package_id + " — deletion pending: " + failure.detail);
       if (pkg.job) rows.push(pkg.package_id + " — " + pkg.job.operation + ": " + pkg.job.phase +
@@ -302,12 +309,14 @@
     const discovery = (state.packages || []).map(pkg => ({
       package_id: pkg.package_id,
       enabled: !!(pkg.discovery && pkg.discovery.enabled),
-      label: (pkg.discovery && pkg.discovery.enabled ? "Disable" : "Enable") + " discovery",
+      label: pkg.discovery && pkg.discovery.enabled
+        ? "Stop the agent reading this package" : "Let the agent read this package",
       disabled: !!(pkg.job && pkg.job.running)
     }));
     return {rows, discovery,
-      disclosure: "Discovery shows publisher text to the agent. It does not authorize execution. " +
-        "Executable packages run with your user permissions and are not sandboxed.",
+      disclosure: "Installing a package lets the agent read its instructions; you can stop that here. " +
+        "That never lets its code run: MicroClaw asks you each time, or once per session. " +
+        "Package code runs with your user permissions and is not sandboxed.",
       trust: trust.test_roots_active
       ? "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
       : [trust.reason, reasons(trust.reasons)].filter(Boolean).join("; ")};

@@ -850,12 +850,14 @@ def test_discovery_refresh_load_and_no_unnecessary_work(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "rig_profile_gaps", lambda _: [])
     record = install(tmp_path, kind="markdown")
     name = "fixture-lab/markdown-fixture/workflow"
+    store.set_discovery("markdown-fixture", False, now=NOW)  # installing turned it on
     baseline = agent._system_blocks()
     assert len(baseline) == 2 and baseline[1]["text"] == "fixture KB"
     assert "error" in tools.load_skill(None, None, name)
     decision = store.set_discovery("markdown-fixture", True, now=NOW)
     assert read(package("markdown") / "discovery.json") == decision == dict(
-        enabled=True, decided_at="2026-09-23T00:00:00Z", artifact_digest=record["artifact_digest"])
+        enabled=True, decided_at="2026-09-23T00:00:00Z", artifact_digest=record["artifact_digest"],
+        source="panel")
     real_lock = store.package_lock
     for module, attr in [(subprocess, "run"), (subprocess, "Popen"), (store, "package_lock"),
                          (store, "_start_discovery_recheck")]:
@@ -896,6 +898,49 @@ def test_discovery_follows_active_release_and_whole_remove(tmp_path):
     store.remove("markdown-fixture", retained_digests=frozenset())
     assert not (package("markdown") / "discovery.json").exists()
     assert store.discovery_text() == ""
+
+
+def test_install_turns_discovery_on_and_an_explicit_off_survives(tmp_path):
+    # Operator decision 2026-09-28: installing is the decision to use a package.
+    # Only a missing record is ever written, so the panel's "off" is never undone.
+    first = install(tmp_path, kind="markdown")
+    record = read(package("markdown") / "discovery.json")
+    assert record == dict(enabled=True, decided_at="2026-09-23T00:00:00Z",
+                          artifact_digest=first["artifact_digest"], source="install")
+    assert first["artifact_digest"] in store.discovery_text()
+    assert state("markdown")["installs"][0]["discoverable"] is True
+    off = store.set_discovery("markdown-fixture", False, now=NOW)
+    assert off["source"] == "panel" and store.discovery_text() == ""
+    policy = store.load_trust_policy()
+    install(tmp_path, kind="markdown", version="2.0.0")  # an update
+    assert read(package("markdown") / "discovery.json") == off
+    store.rollback("markdown-fixture", policy=policy, now=NOW, retained_digests=frozenset())
+    assert read(package("markdown") / "discovery.json") == off
+    store.repair("markdown-fixture", policy=policy, now=NOW, retained_digests=frozenset())
+    assert read(package("markdown") / "discovery.json") == off
+    assert store.discovery_text() == ""
+    store.remove("markdown-fixture", retained_digests=frozenset())
+    again = install(tmp_path, kind="markdown", version="3.0.0")
+    assert read(package("markdown") / "discovery.json")["source"] == "install"
+    assert again["artifact_digest"] in store.discovery_text()
+
+
+def test_failed_install_records_no_discovery_decision(tmp_path):
+    source = mutate_source(tmp_path, lambda manifest: manifest.update(microclaw=">=99"))
+    with pytest.raises(store.PackageRefusal):
+        install(tmp_path, source=source)
+    assert not (package() / "discovery.json").exists()
+
+
+@pytest.mark.parametrize("change", [lambda d: d.pop("source"), lambda d: d.update(source="agent")])
+def test_discovery_record_without_a_known_source_is_invalid(tmp_path, change):
+    install(tmp_path, kind="markdown")
+    path = package("markdown") / "discovery.json"
+    record = read(path)
+    change(record)
+    write(path, record)
+    assert store.discovery_text() == ""
+    assert state("markdown")["discovery_reasons"][0]["field"] == "discovery"
 
 
 def test_unchecked_discovery_single_flight_and_later_render(tmp_path, monkeypatch):
@@ -1029,6 +1074,7 @@ def test_store_duplicates_exclude_all_carriers(tmp_path):
 def test_ineligible_and_disabled_unchecked_records_do_not_start_recheck(tmp_path, monkeypatch):
     from unittest.mock import Mock
     record = install(tmp_path, kind="markdown")
+    store.set_discovery("markdown-fixture", False, now=NOW)  # installing turned it on
     verdict_path = directory(record, "markdown") / "verdict.json"
     verdict = read(verdict_path)
     start = Mock(side_effect=AssertionError("unnecessary recheck"))
@@ -1041,3 +1087,51 @@ def test_ineligible_and_disabled_unchecked_records_do_not_start_recheck(tmp_path
     assert store.discovery_text() == ""
     assert dict(field="microclaw", detail="incompatible") in state("markdown")["installs"][0]["discovery_exclusions"]
     start.assert_not_called()
+
+
+@pytest.mark.parametrize('state,retained', [('queued', True), ('running', True),
+    ('succeeded', False), ('failed', False), ('dispatch_failed', False),
+    ('supervisor_failed', False), ('cancelled', False), ('refused', False), ('abandoned', False)])
+def test_d3_live_job_retention_and_startup_abandonment(state, retained):
+    record = dict(job_id='a'*32, state=state, digest='b'*64, parameters={'text': 'a\nb'},
+                  owner=dict(pid=os.getpid(), nonce='live-process'))
+    path = store.analysis_job_path(record['job_id'])
+    store._write(path, record)
+    assert store.retained_digests() == (frozenset({'b'*64}) if retained else frozenset())
+    store.abandon_analysis_jobs()
+    assert store.analysis_job_status(record['job_id']) == record
+    assert store.retained_digests() == (frozenset({'b'*64}) if retained else frozenset())
+
+
+def test_f2_live_owner_survives_sweep_dead_owner_stops_pinning():
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    child.wait()
+    assert not store._alive(child.pid)
+    live = dict(job_id='a'*32, state='running', digest='b'*64,
+                owner=dict(pid=os.getpid(), nonce='live-process'))
+    dead = dict(job_id='c'*32, state='queued', digest='d'*64,
+                owner=dict(pid=child.pid, nonce='dead-process'))
+    for record in (live, dead):
+        store._write(store.analysis_job_path(record['job_id']), record)
+    assert store.retained_digests() == frozenset({live['digest']})
+    store.abandon_analysis_jobs()
+    assert store.analysis_job_status(live['job_id']) == live
+    assert store.analysis_job_status(dead['job_id']) == dict(dead, state='abandoned')
+
+
+@pytest.mark.parametrize('content', ['{invalid', '[]', '{"state": []}'])
+def test_f3_unreadable_record_isolated_from_live_jobs_and_package_management(tmp_path, content):
+    bad = store.analysis_job_path('e'*32)
+    bad.parent.mkdir(parents=True)
+    bad.write_text(content, encoding='utf-8')
+    live = dict(job_id='a'*32, state='running', digest='b'*64,
+                owner=dict(pid=os.getpid(), nonce='live-process'))
+    store._write(store.analysis_job_path(live['job_id']), live)
+    store.abandon_analysis_jobs()
+    assert bad.read_text(encoding='utf-8') == content
+    assert store.retained_digests() == frozenset({live['digest']})
+    with pytest.raises(store.PackageRefusal, match='unreadable'):
+        store.analysis_job_status('e'*32)
+    install(tmp_path, kind='markdown')
+    store.remove('markdown-fixture', retained_digests=store.retained_digests())
+    assert not package('markdown').exists()

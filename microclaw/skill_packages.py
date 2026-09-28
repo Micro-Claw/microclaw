@@ -18,7 +18,7 @@ Verification is a pure function of the caller's policy snapshot, with no I/O
 except hashing a caller-named artifact. No refresh can block acquisition.
 
 Operations carry name/input_schema/output_schema. Structural manifest validation
-accepts type labels; supported_executable enforces v1 object schemas at execution.
+admits a closed JSON Schema 2020-12 subset; v1 execution requires object schemas.
 Wire validators are pure data checks; skill_supervisor owns processes and I/O.
 """
 from __future__ import annotations
@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import keyword
+import math
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
@@ -61,7 +62,6 @@ MAX_URL_LENGTH = 2048
 MAX_MODULE_LENGTH = 256
 MAX_OPERATION_NAME_LENGTH = 64
 MAX_PLATFORM_LENGTH = 64
-MAX_SCHEMA_TYPE_LENGTH = 64
 MAX_SPECIFIER_LENGTH = 256
 MAX_PATH_LENGTH = 1024
 MAX_REQUIREMENT_LENGTH = 512
@@ -246,6 +246,105 @@ def validate_intake(record):
     return deepcopy(record)
 
 
+_SCHEMA_TYPES = {'null', 'boolean', 'object', 'array', 'number', 'integer', 'string'}
+_SCHEMA_KEYWORDS = {
+    'type', 'properties', 'required', 'additionalProperties', 'items', 'enum',
+    'minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems',
+    'title', 'description', 'default',
+}
+
+
+def _json_equal(left, right):
+    # Python's True == 1 is not JSON equality, including inside containers.
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_equal(v, right[k]) for k, v in left.items())
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def validate_parameter_schema(schema, field='schema'):
+    """Admit only our closed 2020-12 vocabulary, recursively; never apply defaults."""
+    if isinstance(schema, bool):
+        return
+    if not isinstance(schema, dict):
+        raise PackageRefusal(field, 'expected schema object or boolean')
+    for key, value in schema.items():
+        where = f'{field}.{key}'
+        if key not in _SCHEMA_KEYWORDS:
+            raise PackageRefusal(where, 'unsupported schema keyword')
+        if key == 'type':
+            if not isinstance(value, str) or value not in _SCHEMA_TYPES:
+                raise PackageRefusal(where, 'expected one JSON Schema type')
+        elif key == 'properties':
+            if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
+                raise PackageRefusal(where, 'expected object with string keys')
+            for name, child in value.items():
+                validate_parameter_schema(child, f'{where}.{name}')
+        elif key == 'items':
+            validate_parameter_schema(value, where)
+        elif key == 'required':
+            if (not isinstance(value, list) or any(not isinstance(v, str) for v in value)
+                    or len(set(value)) != len(value)):
+                raise PackageRefusal(where, 'expected unique string array')
+        elif key == 'additionalProperties':
+            if not isinstance(value, bool):
+                raise PackageRefusal(where, 'expected boolean')
+        elif key == 'enum':
+            if not isinstance(value, list):
+                raise PackageRefusal(where, 'expected array')
+        elif key in {'minimum', 'maximum'}:
+            if type(value) not in (int, float) or (isinstance(value, float) and not math.isfinite(value)):
+                raise PackageRefusal(where, 'expected finite number')
+        elif key in {'minLength', 'maxLength', 'minItems', 'maxItems'}:
+            if (type(value) not in (int, float) or (isinstance(value, float) and not math.isfinite(value))
+                    or value < 0 or value != int(value)):
+                raise PackageRefusal(where, 'expected nonnegative integer')
+        elif key in {'title', 'description'} and not isinstance(value, str):
+            raise PackageRefusal(where, 'expected string')
+
+
+def validate_parameters(schema, value, field='parameters'):
+    """Validate JSON data against an admitted schema, with 2020-12 semantics."""
+    if schema is True:
+        return
+    if schema is False:
+        raise PackageRefusal(field, 'false schema')
+    number = type(value) in (int, float)
+    types = dict(null=value is None, boolean=isinstance(value, bool),
+                 object=isinstance(value, dict), array=isinstance(value, list),
+                 number=number, integer=number and value == int(value), string=isinstance(value, str))
+    if 'type' in schema and not types[schema['type']]:
+        raise PackageRefusal(field, f"expected {schema['type']}")
+    if 'enum' in schema and not any(_json_equal(value, item) for item in schema['enum']):
+        raise PackageRefusal(field, 'not in enum')
+    if isinstance(value, dict):
+        properties = schema.get('properties', {})
+        for name in schema.get('required', []):
+            if name not in value:
+                raise PackageRefusal(f'{field}.{name}', 'required property')
+        for name, item in value.items():
+            if name in properties:
+                validate_parameters(properties[name], item, f'{field}.{name}')
+            elif schema.get('additionalProperties', True) is False:
+                raise PackageRefusal(f'{field}.{name}', 'additional property forbidden')
+    if isinstance(value, list) and 'items' in schema:
+        for i, item in enumerate(value):
+            validate_parameters(schema['items'], item, f'{field}[{i}]')
+    bounds = []
+    if number:
+        bounds += [('minimum', value, True), ('maximum', value, False)]
+    if isinstance(value, str):
+        bounds += [('minLength', len(value), True), ('maxLength', len(value), False)]
+    if isinstance(value, list):
+        bounds += [('minItems', len(value), True), ('maxItems', len(value), False)]
+    for key, actual, lower in bounds:
+        if key in schema and (actual < schema[key] if lower else actual > schema[key]):
+            raise PackageRefusal(field, f'violates {key} {schema[key]}')
+
+
 def validate_manifest(manifest):
     """Validate both closed manifest kinds and return a detached data snapshot."""
     if not isinstance(manifest, dict):
@@ -303,7 +402,7 @@ def validate_manifest(manifest):
                 schema = operation[key]
                 if not isinstance(schema, dict) or "type" not in schema:
                     raise PackageRefusal(field + "." + key, "expected a schema object with type")
-                _text(schema["type"], field + "." + key + ".type", MAX_SCHEMA_TYPE_LENGTH)
+                validate_parameter_schema(schema, field + "." + key)
         _mapping(manifest["locks"], "locks", platforms)
         for platform, lock in manifest["locks"].items():
             field = f"locks.{platform}"

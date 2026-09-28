@@ -11145,3 +11145,69 @@ It now lives in conftest's `_isolate_microclaw_home`.
 
 **Counts.** Full suite 5396 passed, 99 skipped on `d56634f`, against a 5369
 baseline on `fce0188`.
+
+## design/83 block 83e-2 — package analysis route and execution consent (PR #41, 2026-09-25)
+
+**Three operator questions reshaped the block before any code, and each came
+from asking what already exists.** I brought three options for consent, the
+tool's shape and schema validation. The operator asked about
+"approve for this session", ilastik, and whether the schema subset could grow
+into `jsonschema` later. Each answer was already in the tree:
+- `SessionGrants` needed one kind whose subject is checked against a pattern;
+- ilastik is just one `BUILTIN_ADAPTERS` name inside
+  `run_analysis_on_saved_dataset`, so a second tool would have been the
+  "two functions that do almost the same thing" defect;
+- a closed subset with exact 2020-12 semantics can only loosen, so a later move
+  to `jsonschema` breaks nothing.
+
+My first recommendation for the tool's shape was the wrong one.
+**Grep for the precedent before offering a choice.**
+
+**All four product defects were concurrency or lifetime, and none were in the
+decisions.** The runner implemented D1–D6 as written, and its own tests passed:
+- the prompt held a lock that the panel refuses on;
+- a second `serve` swept the first one's live jobs;
+- one corrupt record broke startup and every package operation;
+- a declined call exported as an analysis.
+
+Every one came from reading the diff against CLAUDE.md's standing rules:
+"opens more than once", "a malformed record affects only itself", and
+"a confirmation is for our own action". **A prompt that states decisions should
+also list the standing rules the new state must survive.** This one did not,
+and the rules are what caught it.
+
+**A human wait inside a transaction invalidates what was read before it.**
+Round 1's cleanup asked for one policy snapshot per call. Applied across the
+prompt, that snapshot is minutes old by submit time. The coordinator fix
+reloads after consent. It was my own suggestion that produced the defect, so
+review your own findings as hard as the runner's.
+
+**A falling test count is a finding until it is explained.** The runner's tree
+collected 68 fewer tests than the baseline, while adding tests. A per-file
+comparison of collections against a temporary baseline worktree pinned it to
+two removed parametrized rows, 118 cases, which D4 had made meaningless.
+Correct, but invisible in a pass/fail line.
+
+**Counts.** Full suite on `b1f4aba`: 5338 passed, 99 skipped, against 5396 on
+`26e9978`; the difference is the 118 cases. The first turn's tree had one
+failure (a bare `read_text()`). All ten round-1 regression tests fail on
+`679d2a4`.
+
+**The gate's two defects were both inherited or fixed in advance, and neither
+was in the product.**
+- **An inherited sentence is an instruction nobody reread.** Round 1 died on
+  83d's launch message, which said "open the Community skill packages panel".
+  That was right for 83d and wrong here, because the panel offers exactly the
+  one action this gate must not take. Reusing a gate's plumbing is reuse of
+  its operator prompts too. Read every string the operator will see.
+- **A count fixed in advance is a limb an ordinary slip can fail.** Round 2's
+  operator sent one extra call under the grant, which is the grant working.
+  Two limbs failed on `== 3`, and the second one never reached the check it
+  existed for, running the exported script. Derive expected counts from the
+  session's own audit rows (approvals plus auto-approvals), and run the script
+  before counting what is in it. This is CLAUDE.md's "a limb must not score
+  supported operations as failure", met again from the other side.
+- **Scored from artifacts, the FAIL was a PASS.** The history accounted for
+  every call, including the refused retry, whose "already exists" came before
+  any prompt. That is evidence for the path-before-consent order, which no
+  limb had been written to look for.
