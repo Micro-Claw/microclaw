@@ -4,7 +4,22 @@
 is the authoritative external skill metadata; SKILL.md is opaque body text.
 The stdlib-only `fixture_worker.runner` implements microclaw.analysis.v1,
 self_check and observe_dataset. It reads lifecycle notifications, declares a
-partial observation and finishes on writer completion or cancellation.
+partial observation and finishes on writer completion or cancellation. It tails
+complete NDTiff index entries every 30 ms (responsive without busy-waiting),
+using `Full resolution/NDTiff.index` when that directory exists, otherwise
+`NDTiff.index`, as in ndstorage's `Dataset.__new__`. The stdlib parser follows
+`NDTiffIndexEntry.unpack_single_index_entry`; pixel byte sizes follow
+`SingleNDTiffReader.read_image`. It reads each indexed frame once, including
+rollover files, and preserves incomplete index entries for the next poll.
+Optional `cpu_threads` (1–256) hash the latest pixels, with a 1 MiB initial
+buffer, until writer completion, cancellation or `max_s` (strictly positive,
+up to 3600). Optional `priority: below_normal` lowers only the worker's process
+priority and reports its read-back. Results carry read and load measurements in
+`result.output`; `{}` preserves the original artifact bytes and lifecycle.
+The admitted schema vocabulary cannot express conditional `required`: the worker
+rejects missing `max_s` with `cpu_threads`. The manifest enforces closed properties
+and bounds; its positive minimum is the smallest positive float representable
+by the JSON runtime (`5e-324`).
 `conformance/` is a separate TEST-ONLY release of deliberately misbehaving
 subprocesses; tests re-sign its intake with the committed TEST-ONLY seed.
 Its pre-read stall cases use a `before-job.txt` file in the test output directory: a

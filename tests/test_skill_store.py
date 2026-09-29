@@ -1135,3 +1135,57 @@ def test_f3_unreadable_record_isolated_from_live_jobs_and_package_management(tmp
     install(tmp_path, kind='markdown')
     store.remove('markdown-fixture', retained_digests=store.retained_digests())
     assert not package('markdown').exists()
+
+
+def test_installed_observer_evidence_survives_durable_lifecycle_records(tmp_path, monkeypatch):
+    from ndstorage import NDTiffDataset
+    from microclaw import completed_dataset as cd, tools
+    from tests.test_skill_supervisor import write_frame, wait_observation, wait_status
+    record = install(tmp_path)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: True)
+    prepared = cd.prepare_package_analysis(
+        'fixture-lab/executable-fixture:observe_dataset', record['artifact_digest'],
+        {'cpu_threads': 2, 'max_s': 60}, disclosure=[])
+    dataset = tmp_path / 'dataset'
+    dataset.mkdir()
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    job = cd.AcquisitionAnalysisJob(prepared, str(dataset))
+    path = Path(job.metadata['job_record_path'])
+    assert read(path)['job_id'] == job.handle.job_id  # submit's initial pin
+    try:
+        wait_status(job.handle, 'load running: 2')
+        total = write_frame(writer, 0, sixteen=True)
+        wait_observation(job.handle, 1)
+        job.acquisition_finished('unterminated')
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            if read(path)['lifecycle']['writer'] == 'unknown':
+                break
+            # Persistence may precede delivery; a later lifecycle snapshot must
+            # copy the delivered state without changing the result's shape.
+            job._persist()
+            time.sleep(0.01)
+        else:
+            pytest.fail('lifecycle record was not published')
+        total += write_frame(writer, 1)
+        writer.finish()
+        job.writer_finished()
+        assert job.handle.wait(10), job.record()
+    finally:
+        writer.finish()
+        cd.close_analysis_supervisor()
+    saved = read(path)
+    assert saved['state'] == 'succeeded', saved
+    assert saved['lifecycle'] == {'acquisition': 'unterminated', 'writer': 'finished'}
+    evidence = saved['result']['output']
+    assert evidence == job.handle.record()['result']['output']
+    assert evidence['observed'] is True
+    assert evidence['frames_read'] == 2 and evidence['bytes_read'] == total
+    assert evidence['cpu_threads'] == 2 and evidence['load_stopped_by'] == 'writer'
+    assert evidence['frames_indexed_at_load_start'] == 0
+    assert evidence['read_errors'] == 0
+    # A subsequent lifecycle publication also preserves the terminal evidence.
+    job._persist()
+    cd.close_analysis_supervisor()
+    assert read(path)['result']['output'] == evidence
