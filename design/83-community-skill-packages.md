@@ -1116,6 +1116,55 @@ property of rigs.
   is rescheduled after each wait is exactly what worker priority governs. So a
   demo null does not settle priority for a rig; that number needs M2 or M5.
 
+**What 83e-4 settled** (PR #43):
+- **Code.** The fixture's `observe_dataset` tails `NDTiff.index` (stdlib, from
+  ndstorage's `Dataset.__new__` / `NDTiffIndexEntry` / `read_image`; polls at
+  30 ms; partial entries retried; rollover followed) and reads each frame once.
+  `cpu_threads`/`max_s` add the load, `priority` lowers its own class and
+  reports the read-back. `microclaw/` changed by one disclosure line.
+- **Review.** The runner's own targeted run skipped two failures the full suite
+  caught (an unnamed text encoding; a `5e-324` schema minimum). windows-latest
+  CI caught the third: "normal" was compared with `NORMAL_PRIORITY_CLASS`, but a
+  Windows child inherits a below-normal or idle parent's class — hence D4's
+  "same priority as MicroClaw". The gate review found the conditions compared
+  over different frame windows (loaded from its load start, none from frame 0)
+  and unqualified loaded runs feeding verdicts; both fixed before the gate.
+- **Gate.** The demo machine, 2026-09-29, one round, pinned at `acdc839`:
+  `RESULT: 0 failed or not exercised limbs / 8`, 42/42 runs, 12 minutes.
+  Scored from the artifacts: C = 24; every loaded run's CPU ratio 18.3–23.2
+  (threshold 18); read-backs 32 (normal) and 16384 (below normal); load began
+  by frame 3; 1000/1000 and 100/100 frames read, bytes = frames × 524,288.
+- **Measured** (n=6 per cell, repetitions 1–6, window from frame 3 / 2):
+
+  | | none | loaded (normal) | below-normal |
+  |---|---|---|---|
+  | burst duration | 15.3–16.4 s | **33.9–39.8 s** | 15.2–16.3 s |
+  | burst mean gap | 14.3–15.3 ms | **33.0–38.9 ms** | 14.3–15.5 ms |
+  | burst p95 gap | 21 ms | **45–56 ms** | 20–21 ms |
+  | spaced p95 gap | 144–157 ms | 113–115 ms | 111–114 ms |
+
+  Loaded bursts separate from both others on every gap and duration
+  statistic. Frames were produced late, not backlogged: camera
+  `ElapsedTime-ms` and saved-callback means agree (33.0 vs 32.9 ms). Tool start
+  to construction (0.25–1.0 s) does not separate. The spaced timelapse shows no
+  cost; its idle arm was the *least* punctual, cause not attributed (`R143`).
+  **A data point about the demo machine, whose camera makes frames on the CPU.**
+- **Residuals.** `R142` (the rig number: dropped frames, disk, starvation
+  boost), `R143`, `R144` (`duration_breakdown` has one `acquisition` phase).
+
+### 83e-5 — package workers run at below-normal priority
+
+**Decision** (operator, 2026-09-29, after 83e-4's measurement): the supervisor
+starts every package worker at below-normal priority — Windows
+`BELOW_NORMAL_PRIORITY_CLASS` at creation, POSIX `nice` — so it takes idle CPU
+and yields to acquisition. Not a cap: 83e-4's below-normal worker still used
+18.3–19.2 of 24 cores. It does **not** lower disk priority, so D4's line keeps
+"competes with it for CPU and disk" and changes only its priority clause. The
+fixture's own `priority` parameter then measures nothing new; decide whether to
+keep it. Gate: a short demo check that the supervisor-set class is what the
+worker reads back, and one loaded burst against none. Everything else about a
+rig is `R142`.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -1178,7 +1227,7 @@ and otherwise stays open.
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
 | 83e-2 | `block-83e-2` | `2a1c42a` | **merged 2026-09-28** as `3dde106`, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
 | 83e-3 | `block-83e-3` | `3dde106` | **merged 2026-09-29** as `6b4d11b`, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
-| 83e-4 | `block-83e-4` | `6b4d11b` | opened 2026-09-29 — `R141`, analysis cost under a loaded worker |
+| 83e-4 | `block-83e-4` | `6b4d11b` | reviewed, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

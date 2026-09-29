@@ -108,6 +108,7 @@ Rows added since the triage:
 | `R139` | `design/83` §"What a package can be", while scoping 83e-2, 2026-09-24 |
 | `R140` | `design/83` 83e-3's decisions, 2026-09-28 — the deferred "trigger receipt" |
 | `R141` | `design/83` 83e-3's demo gate, 2026-09-28 |
+| `R142`–`R144` | `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29 |
 
 
 ## The work queue
@@ -168,7 +169,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
 | `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE |  |
 | `R140` | [Automatic package analysis cannot outlast a session](#r140) | LOW | MEDIUM |  |
-| `R141` | [Package analysis cost during acquisition is unmeasured under a real worker](#r141) | MEDIUM | SMALL | **83e-4** |
+| ~~`R141`~~ | ~~[Package analysis cost during acquisition is unmeasured under a real worker](#r141)~~ | — | — | **CLOSED 2026-09-29 by `design/83` 83e-4** |
+| `R144` | [`duration_breakdown` cannot say where inside an acquisition the time went](#r144) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -228,12 +230,14 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R47` | [saturated_fraction reporting precision is ungated](#r47) | LOW | SMALL |  |
 | `R71` | [open_artifact's multi-channel caveat has never been checked on any rig](#r71) | LOW | SMALL |  |
 | `R75` | [Channel preset colliding with a typed actuator - rig coverage](#r75) | LOW | SMALL |  |
+| `R143` | [A spaced timelapse keeps time worse on an idle machine than beside a busy worker](#r143) | LOW | SMALL |  |
 
 **M2**
 
 | | row | importance | effort | block |
 |---|---|---|---|---|
 | `R80` | [Detect cross-plane non-response for sub-band Z steps](#r80) | HIGH | MEDIUM |  |
+| `R142` | [Package analysis cost on a real camera is unmeasured](#r142) | MEDIUM | SMALL |  |
 
 **M5**
 
@@ -3113,7 +3117,46 @@ the model" as the actual blast radius.
 - **Why it matters** — a worker that reads a growing NDTiff while fitting localisations competes with the writer for disk and with the engine for CPU. Where cadence or time under illumination matters (CLAUDE.md, "fastest correct approach"), the user needs the cost stated, not assumed away.
 - **What a fix would look like** — a CPU- and disk-loaded fixture operation (or SMAPpy once `R85` is met) run beside a hardware-sequenced burst and a spaced timelapse, reporting the run's `duration_breakdown` and gap summary with and without, n sized to the spread. If it costs, disclose the measured cost in the confirmation rather than cap the worker silently.
 - **Where** — DEMO MACHINE for a loaded fixture; a rig with a real camera for the number that matters.
-- **Block** — `design/83` 83e-4 (opened 2026-09-29).
+- **Block** — `design/83` 83e-4. **CLOSED 2026-09-29**: on the demo machine (C = 24, n=6 per cell), a worker loading every core at normal priority took a 1000-frame, 10 ms burst from 15.3–16.4 s to 33.9–39.8 s (mean gap 14.3–15.3 → 33.0–38.9 ms); at below-normal priority it was indistinguishable from no analysis (15.2–16.3 s). A spaced timelapse showed no cost. A data point about that machine, whose camera makes frames on the CPU; the rig number is `R142`, the default-priority change is 83e-5.
 - **Importance** — MEDIUM
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83e-3's demo gate, 2026-09-28.
+
+### R142 — Package analysis cost on a real camera is unmeasured
+
+**83e-4 measured a loaded worker on the demo machine, whose camera makes its frames on the CPU, so contention there showed up as frames produced late. On a rig the camera makes frames in hardware, and contention lands downstream — the circular buffer, the NDTiff writer, the notification thread — where the failure is a dropped frame, not a late one.**
+
+- **What happened** — `design/83` 83e-4's demo gate, 2026-09-29: normal priority doubled a burst; below-normal removed the cost. The operator's reading (2026-09-29): the demo machine runs artificially quick; on M2 or M5 hardware and serial calls take longer, and how promptly the acquisition thread is rescheduled after each wait is what priority governs.
+- **Why it matters** — below-normal CPU priority does not lower **disk** priority on Windows, and does not govern hyperthread sharing, memory bandwidth, all-core clock drop, or Windows' starvation boost (a below-normal thread starved ~4 s runs one quantum at high priority). None showed on the demo machine; its acquisition side is light, so that null does not carry.
+- **What a fix would look like** — 83e-4's gate program on M2 after 83e-5: the Andor at its full rate, a worker that also loads the disk (reads beyond the page cache or writes large output), camera-buffer overflow and dropped frames counted, not only gaps; record the core count and power plan.
+- **Where** — M2 (or M5).
+- **Block** — NONE; after `design/83` 83e-5.
+- **Importance** — MEDIUM
+- **Effort** — SMALL
+- **Provenance** — `design/83` 83e-4's demo gate and the operator's review of it, 2026-09-29.
+
+### R143 — A spaced timelapse keeps time worse on an idle machine than beside a busy worker
+
+**In 83e-4's gate the spaced timelapse (100 frames, `interval_s=0.1`) was *less* punctual with no analysis than with a worker loading every core.**
+
+- **What happened** — `design/83` 83e-4's demo gate, 2026-09-29, n=6 per cell, frames from 2: metadata-gap p95 144–157 ms with no analysis against 111–115 ms loaded and below-normal; lateness p95 55–73 ms against 1–57 ms loaded and 20–43 ms below-normal. Means were 100.0 ms in all three. Cause not attributed; idle-CPU wake-up latency (C-states, timer resolution, power plan) is a hypothesis nothing measured.
+- **Why it matters** — it is the idle baseline of every spaced acquisition on that machine: ~70 ms of lateness at p95 on a 100 ms interval, with nothing else running.
+- **What a fix would look like** — the same spaced run with an unrelated CPU load, and with the Windows power plan and timer resolution recorded; then decide whether it is a machine setting to document or an engine behaviour.
+- **Where** — DEMO MACHINE.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29.
+
+### R144 — `duration_breakdown` cannot say where inside an acquisition the time went
+
+**83e-4's loaded bursts took 18–24 s longer, and `duration_breakdown` put all of it in one `acquisition` phase (its phases are `acquisition` and `restoration`), so the run's own report could not say whether frames were produced late, drained late or written late.**
+
+- **What happened** — `design/83` 83e-4's demo gate, 2026-09-29. The attribution came from elsewhere: the camera's `ElapsedTime-ms` gaps and the saved-callback gaps had the same mean (33.0 vs 32.9 ms), so frames were produced late rather than backlogged. That reading needed two sources the breakdown does not carry.
+- **Why it matters** — CLAUDE.md's "fastest correct approach" asks a run to attribute its delays; on a rig (`R142`) the question is exactly which of those stages slowed.
+- **What a fix would look like** — split the acquisition phase at the engine milestones the diagnostics already record (construction, submission, first frame, planned-final frame, teardown completion), or report the frame-production vs saved-callback lag beside the breakdown. Decide which before `R142` runs.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29.
