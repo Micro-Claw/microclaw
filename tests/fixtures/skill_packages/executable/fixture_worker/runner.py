@@ -64,13 +64,14 @@ def priority(requested):
             kernel.GetPriorityClass.argtypes = [w.HANDLE]
             kernel.GetPriorityClass.restype = w.DWORD
             process = kernel.GetCurrentProcess()
+            before = kernel.GetPriorityClass(process)  # inherited; not always NORMAL
             if requested == "below_normal" and not kernel.SetPriorityClass(process, 0x4000):
                 evidence["reason"] = str(c.WinError(c.get_last_error()))
             value = kernel.GetPriorityClass(process)
             if not value:
                 raise c.WinError(c.get_last_error())
             evidence["read_back"] = value
-            evidence["applied"] = value == (0x4000 if requested == "below_normal" else 0x20)
+            evidence["applied"] = value == (0x4000 if requested == "below_normal" else before)
         else:
             before = os.getpriority(os.PRIO_PROCESS, 0)
             if requested == "below_normal":

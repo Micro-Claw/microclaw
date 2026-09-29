@@ -1013,7 +1013,10 @@ def test_observer_priority_read_back(supervisors, tmp_path, requested):
         return
     assert evidence['reason'] is None
     if os.name == 'nt':
-        assert evidence['read_back'] == (0x4000 if requested == 'below_normal' else 0x20)
+        # "normal" leaves the inherited class alone (applied, above); a CI host's
+        # is not always NORMAL, so only below_normal has a fixed read-back.
+        if requested == 'below_normal':
+            assert evidence['read_back'] == 0x4000
     else:
         assert evidence['read_back'] == (min(19, before + 10) if requested == 'below_normal' else before)
         assert os.getpriority(os.PRIO_PROCESS, 0) == before
