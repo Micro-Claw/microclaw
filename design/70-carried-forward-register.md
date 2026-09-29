@@ -168,7 +168,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
 | `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE |  |
 | `R140` | [Automatic package analysis cannot outlast a session](#r140) | LOW | MEDIUM |  |
-| `R141` | [Package analysis cost during acquisition is unmeasured under a real worker](#r141) | MEDIUM | SMALL |  |
+| `R141` | [Package analysis cost during acquisition is unmeasured under a real worker](#r141) | MEDIUM | SMALL | **83e-4** |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3113,7 +3113,7 @@ the model" as the actual blast radius.
 - **Why it matters** — a worker that reads a growing NDTiff while fitting localisations competes with the writer for disk and with the engine for CPU. Where cadence or time under illumination matters (CLAUDE.md, "fastest correct approach"), the user needs the cost stated, not assumed away.
 - **What a fix would look like** — a CPU- and disk-loaded fixture operation (or SMAPpy once `R85` is met) run beside a hardware-sequenced burst and a spaced timelapse, reporting the run's `duration_breakdown` and gap summary with and without, n sized to the spread. If it costs, disclose the measured cost in the confirmation rather than cap the worker silently.
 - **Where** — DEMO MACHINE for a loaded fixture; a rig with a real camera for the number that matters.
-- **Block** — NONE.
+- **Block** — `design/83` 83e-4 (opened 2026-09-29).
 - **Importance** — MEDIUM
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83e-3's demo gate, 2026-09-28.

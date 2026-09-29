@@ -1126,7 +1126,8 @@ and otherwise stays open.
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
 | 83e-2 | `block-83e-2` | `2a1c42a` | **merged 2026-09-28** as `3dde106`, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
-| 83e-3 | `block-83e-3` | `3dde106` | reviewed, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
+| 83e-3 | `block-83e-3` | `3dde106` | **merged 2026-09-29** as `6b4d11b`, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
+| 83e-4 | `block-83e-4` | `6b4d11b` | opened 2026-09-29 — `R141`, analysis cost under a loaded worker |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
