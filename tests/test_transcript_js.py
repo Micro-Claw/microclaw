@@ -470,7 +470,9 @@ def test_skill_discovery_toggle_exclusion_and_disclosure():
     assert view["disclosure"] == (
         "Installing a package lets the agent read its instructions; you can stop that here. "
         "That never lets its code run: MicroClaw asks you each time, or once per session. "
-        "Package code runs with your user permissions and is not sandboxed.")
+        "Package code runs with your user permissions and is not sandboxed. "
+        "run_mda uses Micro-Manager’s own engine; MicroClaw cannot see its dataset creation, so it cannot attach package analysis.")
+    assert "discovery" not in view["disclosure"]
     html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     assert '$("skill-packages-disclosure").textContent = view.disclosure' in html
     assert 'JSON.stringify({enabled: !toggle.enabled})' in html

@@ -284,9 +284,29 @@ LOOPING_COMPOSITES = {"run_multiposition_acquisition", "run_tile_acquisition"}
 
 
 @pytest.mark.parametrize("name", SUPERVISED_TOOL_NAMES)
+@pytest.mark.parametrize("with_analysis", [False, True])
 def test_every_supervised_entry_propagates_unterminated_without_continuing(
-    name, monkeypatch, tmp_path,
+    name, monkeypatch, tmp_path, with_analysis,
 ):
+    from microclaw import completed_dataset as cd
+    from microclaw.skill_supervisor import JobHandle
+    jobs = []
+    if with_analysis:
+        prepared = dict(package='fixture-lab/package', digest='a' * 64,
+                        operation='observe_dataset', parameters={})
+        monkeypatch.setattr(cd, 'prepare_package_analysis', lambda **_: prepared)
+        def submit(*args, **kwargs):
+            handle = JobHandle(SimpleNamespace(max_pending_notifications=8, max_retained_status=8),
+                               job_id=kwargs['job_id'])
+            handle._record['operation'] = 'observe_dataset'
+            return handle
+        monkeypatch.setattr(cd, 'submit_package_analysis', submit)
+        original_job = cd.AcquisitionAnalysisJob
+        def track(*args):
+            job = original_job(*args)
+            jobs.append(job)
+            return job
+        monkeypatch.setattr(cd, 'AcquisitionAnalysisJob', track)
     class FatalCountingAcquisition(BlockingAcquisition):
         constructions = 0
         def __init__(self, **kwargs):
@@ -375,6 +395,9 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
     ctrl.core.get_x_position.return_value = 0
     ctrl.core.get_y_position.return_value = 0
 
+    if with_analysis:
+        inputs[name]['analysis'] = dict(adapter='fixture-lab/package:observe_dataset',
+                                       release_digest='a' * 64, parameters={})
     result = json.loads(tools.execute_tool(name, inputs[name], ctrl, _guard()))
     assert result.get("acquisition") == "unterminated", result
     looping = name in LOOPING_COMPOSITES
@@ -399,6 +422,25 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
     assert reservations and reservations[0].ledger.in_flight is True
     assert FatalCountingAcquisition.constructions == (2 if looping else 1)
     BlockingAcquisition.release.set()
+    if with_analysis:
+        assert len(result['analysis']['jobs']) == (2 if looping else 1)
+        assert [job['dataset'] for job in result['analysis']['jobs']] == [
+            f'/data/run_{i + 1}' for i in range(len(jobs))]
+        ctrl._microclaw_unterminated_acquisition['waiter'].join(5)
+        assert not ctrl._microclaw_unterminated_acquisition['waiter'].is_alive()
+        messages = [entry['message'] for entry in jobs[-1].handle.record()['notifications']]
+        assert [(message['type'], message.get('outcome'), message.get('writer'), message.get('state'))
+                for message in messages] == [
+                    ('acquisition', 'unterminated', 'unknown', None),
+                    ('writer', None, None, 'finished')]
+        if looping:
+            message = jobs[0].handle.record()['notifications'][0]['message']
+            assert (message['outcome'], message['writer']) == ('completed', 'finished')
+        for job in jobs:
+            with job.handle._lock:
+                job.handle._finish('cancelled')
+        cd.close_analysis_supervisor()
+
 
 
 def test_completed_positions_are_projected_not_copied_so_the_report_survives():

@@ -637,9 +637,10 @@ notebook's own rule, six design areas make more than one block:
 - **83e-2:** the analysis tool, execution consent, parameter validation, the
   `@emits` comment renderer, and the shared `one_line`. It fills the live-job
   half of `retained_digests`.
-- **83e-3:** trigger receipts, dispatch at dataset creation, lifecycle and
-  writer state, the receipt half of `retained_digests`, the acquisition
-  emitters' disclosure, and the `R86` panel copy.
+- **83e-3:** ~~trigger receipts~~ a plan-time `analysis` argument (see 83e-3
+  decisions), dispatch at dataset creation, lifecycle and writer state,
+  ~~the receipt half of `retained_digests`~~, the acquisition emitters'
+  disclosure, and the `R86` copy.
 
 The paragraphs above remain the combined statement. Each block takes the
 acceptance items that belong to its own areas.
@@ -932,6 +933,138 @@ the coordinator's).
   - The terminal CLI never runs the startup sweep. Its dead jobs stop pinning
     through the owner rule, but they read `running` until a serve starts.
 
+**83e-3 decisions** (operator decision, 2026-09-28).
+
+- **D0 — no persisted consent; a plan-time argument instead.** The receipt
+  exists only so that consent can outlast a session, and nothing needs that
+  yet. Every tool that reaches `_acquire_with_hooks` (the one site in
+  `microclaw/` that constructs an `Acquisition`) takes an `analysis` argument,
+  confirmed before any hardware moves under 83e-2's `analysis` kind, so its
+  session grant covers repeats. Dispatch still happens at dataset creation;
+  the confirmation happens before the run starts, never during it.
+  - Dropped with it: the receipt store, a creation tool, receipt panel
+    controls, and the receipt half of `retained_digests()`. Live jobs already
+    retain their digest.
+  - The receipt design is kept, renamed **saved permission**, in `R140`.
+    "Receipt" was the wrong word for it: it is a session grant that persists.
+
+- **D1 — the argument.** `analysis={"adapter": "publisher/package:operation",
+  "release_digest": ..., "parameters": {...}}`, package route only, on every
+  tool that reaches `_acquire_with_hooks`: `run_zstack`, `run_timelapse`,
+  `run_multiposition_acquisition`, `run_tile_acquisition`,
+  `run_multiposition_with_autofocus`, `run_adaptive_survey`. One shared schema
+  definition. `run_mda` does not take it; its description says why.
+- **D2 — consent is 83e-2's.** Validate (shape, digest, `resolve`, operation,
+  `input_schema`), then `CONFIRM_FN(kind="analysis", subject=pkg@digest)`; the
+  summary says it runs on each dataset this call creates, while it grows. The
+  session grant applies. No lock is held across the prompt; the digest is
+  resolved again and the policy reloaded after it. The resolved release is the
+  snapshot every dispatch in the call uses.
+- **D3 — a decline acquires nothing**: `{"error": "Acquisition cancelled:
+  analysis declined; nothing was acquired.", "cancelled": true}`. A top-level
+  `error`, like every other declined acquisition, because it is the one signal
+  `_recorded_outcome` reads as "nothing ran". D3 first specified a `status`,
+  and the exporter rendered the declined call as a real timelapse; found by the
+  gate runner before the gate existed.
+- **D4 — the check runs once, in `execute_tool`, before the tool body**, so no
+  acquisition tool can drop it. A later preflight refusal after an approval
+  is an accepted cost; a tool that silently ignores `analysis` is not.
+- **D5 — dispatch at dataset creation.** At `acquisition_construction`, with
+  the collision-resolved `dataset_path`: create `<dataset>/analysis/<job_id>/`,
+  take the package lock without waiting, `submit`. A held lock, a full queue
+  or a refused submit is a recorded dispatch failure; the acquisition goes on.
+  The initial job record is written **under that lock, before it is released**
+  (foreground, before `acquire()`): it is the durable retention pin, and a
+  write deferred to a thread lets `remove` or an update prune a release whose
+  worker is starting — `_retention`'s own contract, found in 83e-3's review.
+  Later lifecycle and terminal writes are off-thread. One job per dataset, so
+  a per-position run gets N; overflow past queue + workers is recorded, and the
+  confirmation says so. Nothing runs in a pycro-manager callback.
+- **D6 — lifecycle.** Normal return: `completed`/`finished`. Hooked or engine
+  failure: `failed`, with `finished` only if the teardown waiter did finish,
+  else `unknown`. `AcquisitionUnterminated`: `unterminated`/`unknown`, then
+  `notify_writer_finished` from the waiter at `acquisition_teardown_completion`.
+- **D7 — recording and export.** A per-call collector read by `execute_tool`
+  puts `{"analysis": {"jobs": [...]}}` on the recorded result, error results
+  included: package, digest, operation, parameters, dataset, output directory,
+  job ID, job record path, state, failure. Nested, so `_recorded_outcome`
+  stays blind to it. The exporter's loop, not each emitter, adds a folded
+  "not reproduced" comment for every recorded job, SKIPPED path included.
+  Closes `R84`.
+- **D8 — timing.** Zero cost without `analysis` (no store read); with it, the
+  added foreground time before `acquire()` is measured, and tests assert where
+  the work runs, not how long it takes.
+- **D9 — gate.** Demo machine: real `_dataset_disk_location` under a collision
+  suffix, the output directory's creation inside a live dataset, the fixture
+  artifact only after real teardown, N jobs for a per-position run, interval
+  gaps with and without `analysis`, the panel line, and the exported script
+  run. The unterminated path is settled off-rig with lifecycle fixtures.
+
+**What 83e-3 settled** (PR #42):
+- **Code.** `completed_dataset.prepare_package_analysis` (validate, consent,
+  re-resolve) and `submit_package_analysis` (mkdir, lock, submit, initial
+  record), shared by `run_analysis_on_saved_dataset` and the new route.
+  `AcquisitionAnalysisJob` owns one dataset's dispatch and lifecycle.
+  `execute_tool` consumes `analysis` for the six tools in
+  `tools_schema.ANALYSIS_TOOLS` and attaches `{"analysis": {"jobs": [...]}}` to
+  every result, error results included. The exporter's loop writes one comment
+  per job naming the rerun fields (`_JOB_DISCLOSURE_FIELDS`). `JobHandle` takes
+  a caller-reserved job ID so the worker's cwd exists before it is enqueued.
+  `skill_store.resolve` now skips a damaged matching install rather than
+  refusing on it. The tool count is unchanged: 82.
+- **Review.** Round 1 rejected the first turn for one defect and seven smaller
+  findings. The defect: the initial job record, the retention pin, was written
+  after the package lock was released, on the explicit route as well as the new
+  one — so a `remove` or update could prune a release whose worker had just been
+  queued. That came from my own D5, which said "off the foreground"; D5 is
+  amended, and the test that the lock is held at the write fails both routes
+  when the write is moved out. The others: a record-write failure overwrote the
+  worker's failure; a malformed recorded `analysis` killed the whole export;
+  `analysis: null` refused the acquisition; the prompt did not say where output
+  goes; the export test did not record `analysis` in its input; a
+  `BaseException` left the worker with no acquisition message and no deadline;
+  the runner committed its own report.
+- **A product defect found by the gate runner, before the gate existed.** A
+  declined acquisition exported as a real timelapse, because D3 returned a
+  `status` and `_recorded_outcome` reads only a top-level `error` as "nothing
+  ran". Every other declined acquisition already returned an `error`. D3 is
+  amended; the test builds its record from the real `execute_tool` decline and
+  failed on the previous tree.
+- **Gate.** The demo machine, 2026-09-28, one round, pinned at `c4c7a2d`. The
+  exact installed commit is not in the evidence; the D3 `error` shape and the
+  panel sentence in the artifacts put it at or after `c4c7a2d`. `RESULT: 0 failed or not exercised limbs /
+  10; 1 operator-judged`, and every limb is met scored from the artifacts:
+  - 6 tool calls for 6 turns, none retried. One decline (top-level `error`,
+    `cancelled`, no construction, no dataset), one session grant, two
+    auto-approvals, each before its construction (the first 361 ms before).
+  - Collision: `e3movie_1`, `e3movie_2`; each job's dataset equals the
+    construction diagnostic and the result's `dataset_path`. The first run was
+    already suffixed (`R129`).
+  - 4 jobs, 4 datasets, each output at `<dataset>\analysis\<job_id>`; frames 20,
+    20, 2, 2, equal to planned and accounted. All `succeeded`,
+    `completed`/`finished`, final artifact by SHA, owner the pid on port 8000.
+  - The exported script's first real run against Micro-Manager exited 0 and
+    wrote 20/20/20/2/2 frames: the declined timelapse was not re-acquired. Four
+    not-reproduced comments, the digest only inside comments.
+  - The panel sentence matched `transcript.js` exactly.
+- **What the gate did not measure: analysis cost.** Frame gaps (mean 12.3 and
+  14.1 ms with analysis, 13.7 ms without) and tool start to construction (331
+  and 197 ms with, 396 ms without) show no difference, n=1 per arm. The fixture
+  worker writes one small file and exits, on a demo camera, so this measured
+  dispatch overhead and nothing about a real worker competing for CPU, memory or
+  disk. The operator expects real analysis to cost something (2026-09-28);
+  `R141` owns measuring it.
+- **The gate's export comment was unreadable, and no limb could say so.** Each
+  comment dumped the whole job record, 2,167 characters on one line, including a
+  `state` snapshot reading `running` for a job that succeeded moments later.
+  Fixed after the gate (operator decision): the comment names the rerun fields
+  only, plus a dispatch failure. The limbs it could touch are off-rig, so no
+  second round.
+- **Residuals.** `R140` (saved permission) and `R141` (cost under a real
+  worker). One job per dataset means a per-position run past queue + workers
+  records dispatch failures; nothing has run one that large. `run_mda` still
+  fires nothing (`R86`, now disclosed).
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -992,7 +1125,8 @@ and otherwise stays open.
 | 83c | `block-83c` | `5936f3b` | **merged 2026-09-23** as `a23b703`, PR #38 — local only, no gate; closes `R83` |
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
-| 83e-2 | `block-83e-2` | `2a1c42a` | reviewed, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
+| 83e-2 | `block-83e-2` | `2a1c42a` | **merged 2026-09-28** as `3dde106`, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
+| 83e-3 | `block-83e-3` | `3dde106` | reviewed, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
