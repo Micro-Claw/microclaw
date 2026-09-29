@@ -852,3 +852,242 @@ def test_unexpected_pipe_exception_fails_and_kills_tree(supervisors, tmp_path, m
     if pipe_name == "stdin":
         assert value["notifications"][0]["state"] == "undelivered"
         assert value["notifications"][0]["reason"] == "stdin_failed"
+
+
+def observe(sup, tmp_path, parameters=None):
+    dataset, output = tmp_path / 'dataset', tmp_path / 'output'
+    dataset.mkdir(exist_ok=True)
+    output.mkdir(exist_ok=True)
+    handle = sup.submit(release('executable'), policy(), now=NOW, python=sys.executable,
+                        operation='observe_dataset', parameters=parameters or {},
+                        dataset=dataset, output_dir=output)
+    wait_path(output / 'observation.txt')
+    assert (output / 'observation.txt').read_bytes() == b'observing dataset\n'
+    return handle, dataset, output
+
+
+def wait_observation(handle, frames, *, offset=None, size=None):
+    prefix = f'frames_read={frames}; index_offset='
+    expected = f'{prefix}{offset}; index_size={size}' if offset is not None else None
+    end = time.monotonic() + 8
+    while time.monotonic() < end:
+        statuses = handle.record()['status']
+        if any(value == expected if expected else value.startswith(prefix) for value in statuses):
+            return
+        assert not handle.wait(0.01), handle.record()
+    pytest.fail(f'no observation of {expected or prefix}: {handle.record()}')
+
+
+def write_frame(writer, index, *, sixteen=False):
+    import numpy as np
+    pixels = np.full((32, 48), index,
+                     dtype=np.uint16 if sixteen else np.uint8)
+    writer.put_image({'time': index}, pixels, {})
+    writer._index_file.flush()
+    return pixels.nbytes
+
+
+@pytest.mark.parametrize('subdir', ['', 'Full resolution'])
+@pytest.mark.parametrize('loaded', [False, True])
+def test_observer_growing_real_ndtiff_partial_index_and_rollover(supervisors, tmp_path, monkeypatch, subdir, loaded):
+    from ndstorage import NDTiffDataset
+    handle, dataset, output = observe(supervisors(), tmp_path,
+        {'cpu_threads': 2, 'max_s': 60} if loaded else {})
+    if loaded:
+        wait_status(handle, 'load running: 2')
+    directory = dataset / subdir
+    directory.mkdir(exist_ok=True)
+    writer = NDTiffDataset(str(directory), writable=True)
+    writer.initialize({})
+    try:
+        total = write_frame(writer, 0)
+        wait_observation(handle, 1)
+        index_path = directory / 'NDTiff.index'
+        offset = index_path.stat().st_size
+        # Real ndstorage writes the next entry through this file object. Hold
+        # its second half until the subprocess has observed the partial tail.
+        stream = writer._index_file
+        class SplitIndex:
+            def write(self, data):
+                split = len(data) // 2
+                stream.write(data[:split])
+                stream.flush()
+                wait_observation(handle, 1, offset=offset, size=offset + split)
+                stream.write(data[split:])
+            def flush(self):
+                stream.flush()
+        writer._index_file = SplitIndex()
+        # Exercise the real rollover branch without allocating a 4 GiB TIFF.
+        monkeypatch.setattr(writer.current_writer, 'has_space_to_write', lambda *a: False)
+        total += write_frame(writer, 1, sixteen=True)
+        writer._index_file = stream
+        wait_observation(handle, 2)
+        total += write_frame(writer, 2)
+        writer.finish()
+        assert len(list(directory.glob('*.tif'))) == 2
+        # Exercise both accepted writer-finished lifecycle shapes.
+        if subdir:
+            assert handle.notify_acquisition('unterminated', writer='unknown')
+            assert handle.notify_writer_finished()
+        else:
+            assert handle.notify_acquisition('completed', writer='finished')
+        record = finished(handle)
+        evidence = record['result']['output']
+        assert evidence['observed'] is True
+        assert evidence['frames_read'] == 3
+        assert evidence['bytes_read'] == total
+        assert evidence['read_errors'] == 0
+        assert 'last_read_error' not in evidence
+        assert evidence['index_path'] == (Path(subdir) / 'NDTiff.index').as_posix()
+        assert evidence['poll_interval_s'] == 0.03
+        assert (output / 'observation.txt').read_bytes() == b'dataset writer finished\n'
+        if loaded:
+            assert_load(evidence, 'writer')
+            assert evidence['frames_indexed_at_load_start'] == 0
+        else:
+            assert 'cpu_threads' not in evidence
+    finally:
+        if writer._index_file is not None and not hasattr(writer._index_file, 'close'):
+            writer._index_file = stream
+        writer.finish()
+
+
+def assert_load(evidence, reason):
+    assert evidence['cpu_threads'] == 2  # Reported after both hash threads rendezvous.
+    assert evidence['load_stopped_by'] == reason
+    assert evidence['load_process_cpu_s'] >= 0
+    assert evidence['load_wall_s'] >= 0
+    assert evidence['load_cpu_ratio'] == pytest.approx(
+        evidence['load_process_cpu_s'] / evidence['load_wall_s'])
+
+
+@pytest.mark.parametrize('stop', ['cancel', 'max_s'])
+def test_observer_load_stops_without_writer(supervisors, tmp_path, stop):
+    from ndstorage import NDTiffDataset
+    dataset = tmp_path / 'dataset'
+    dataset.mkdir()
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    total = write_frame(writer, 0, sixteen=True)
+    try:
+        handle, _, output = observe(supervisors(), tmp_path,
+            {'cpu_threads': 2, 'max_s': 0.05 if stop == 'max_s' else 60})
+        wait_status(handle, 'load running: 2')
+        wait_observation(handle, 1)
+        if stop == 'max_s':
+            wait_status(handle, 'load stopped: max_s')
+            assert not handle.wait(0)  # Only load ends; the observer still tails.
+            total += write_frame(writer, 1)
+            wait_observation(handle, 2)
+        assert handle.cancel()
+        record = finished(handle, 'cancelled')
+        evidence = record['result']['output']
+        assert_load(evidence, stop)
+        assert evidence['frames_indexed_at_load_start'] == 1
+        assert evidence['frames_read'] == (2 if stop == 'max_s' else 1)
+        assert evidence['bytes_read'] == total
+        assert record['result']['input_complete'] is False
+        assert record['artifacts'][0]['validity'] == 'partial'
+        assert (output / 'observation.txt').read_bytes() == b'observing dataset\n'
+    finally:
+        writer.finish()
+
+
+@pytest.mark.parametrize('requested', ['normal', 'below_normal'])
+def test_observer_priority_read_back(supervisors, tmp_path, requested):
+    before = os.getpriority(os.PRIO_PROCESS, 0) if os.name != 'nt' else None
+    handle, _, _ = observe(supervisors(), tmp_path, {'priority': requested})
+    assert handle.notify_acquisition('completed', writer='finished')
+    evidence = finished(handle)['result']['output']['priority']
+    assert evidence['requested'] == requested
+    if not evidence['applied']:
+        assert evidence['reason']
+        # macOS sandbox can deny even lowering one's own priority. Verify the
+        # same OS operation independently; a fabricated failure must not pass.
+        import subprocess
+        probe = subprocess.run([sys.executable, '-c',
+            'import os; os.nice(10)'], stdin=subprocess.DEVNULL, capture_output=True)
+        assert os.name != 'nt' and requested == 'below_normal'
+        assert probe.returncode != 0 and b'Operation not permitted' in probe.stderr
+        assert evidence['read_back'] == before
+        return
+    assert evidence['reason'] is None
+    if os.name == 'nt':
+        # "normal" leaves the inherited class alone (applied, above); a CI host's
+        # is not always NORMAL, so only below_normal has a fixed read-back.
+        if requested == 'below_normal':
+            assert evidence['read_back'] == 0x4000
+    else:
+        assert evidence['read_back'] == (min(19, before + 10) if requested == 'below_normal' else before)
+        assert os.getpriority(os.PRIO_PROCESS, 0) == before
+
+
+@pytest.mark.parametrize('parameters', [{'cpu_threads': 2}, {'cpu_threads': 2, 'max_s': 0}])
+def test_observer_worker_enforces_bounds_schema_cannot_express(supervisors, tmp_path, parameters):
+    handle = supervisors().submit(release('executable'), policy(), now=NOW, python=sys.executable,
+        operation='observe_dataset', parameters=parameters, dataset=tmp_path, output_dir=tmp_path)
+    record = finished(handle, 'failed', 'worker_failed')
+    assert 'max_s' in record['result']['failure']['message']
+    assert not (tmp_path / 'observation.txt').exists()
+
+
+def test_observer_bad_entry_does_not_hide_following_frames(supervisors, tmp_path):
+    from ndstorage import NDTiffDataset
+    dataset = tmp_path / 'dataset'
+    dataset.mkdir()
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    write_frame(writer, 0)
+    # Preserve real ndstorage's record framing but corrupt this record's axes.
+    index = dataset / 'NDTiff.index'
+    with index.open('r+b') as stream:
+        stream.seek(4)
+        stream.write(b'!')
+    total = write_frame(writer, 1, sixteen=True)
+    writer.finish()
+    handle, _, _ = observe(supervisors(), tmp_path)
+    assert handle.notify_acquisition('completed', writer='finished')
+    evidence = finished(handle)['result']['output']
+    assert evidence['frames_read'] == 1
+    assert evidence['bytes_read'] == total
+    assert evidence['read_errors'] == 1
+    assert evidence['last_read_error']
+
+
+def test_observer_empty_cancel_keeps_original_partial_artifact(supervisors, tmp_path):
+    handle, _, output = observe(supervisors(), tmp_path)
+    assert handle.cancel()
+    record = finished(handle, 'cancelled')
+    evidence = record['result']['output']
+    assert evidence['frames_read'] == evidence['bytes_read'] == evidence['read_errors'] == 0
+    assert evidence['index_path'] == 'NDTiff.index'
+    assert 'cpu_threads' not in evidence
+    assert record['result']['input_complete'] is False
+    assert (output / 'observation.txt').read_bytes() == b'observing dataset\n'
+
+
+@pytest.mark.parametrize("bad_messages", [False, True], ids=["clean", "malformed"])
+def test_observer_stdlib_only_and_bad_lifecycle_message_is_local(tmp_path, bad_messages):
+    import subprocess
+    from ndstorage import NDTiffDataset
+    dataset = tmp_path / 'dataset'
+    dataset.mkdir()
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    total = write_frame(writer, 0, sixteen=True)
+    writer.finish()
+    value = job('observe_dataset')
+    value.update(input={'dataset': str(dataset)}, output_dir=str(tmp_path))
+    end = dict(protocol=p.ANALYSIS_PROTOCOL, type='writer', job_id=value['job_id'], state='finished')
+    result = subprocess.run([
+        sys.executable, '-I', '-S', str(FIXTURES / 'executable' / 'fixture_worker' / 'runner.py')],
+        input=p.encode_message(value) + (b'{broken\n[]\n' if bad_messages else b'') + p.encode_message(end),
+        capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    messages = [json.loads(line) for line in result.stdout.splitlines()]
+    terminal = messages[-1]
+    assert terminal['state'] == 'succeeded'
+    assert terminal['output']['frames_read'] == 1
+    assert terminal['output']['bytes_read'] == total
+    assert sum(m['type'] == 'result' for m in messages) == 1
+    assert sum(m.get('message', '').startswith('ignored lifecycle') for m in messages) == (2 if bad_messages else 0)

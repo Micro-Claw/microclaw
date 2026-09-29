@@ -1065,6 +1065,106 @@ the coordinator's).
   records dispatch failures; nothing has run one that large. `run_mda` still
   fires nothing (`R86`, now disclosed).
 
+**83e-4 decisions** (operator decision, 2026-09-29). `R141`: can a worker that
+actually works disturb an acquisition at all, and by how much, on the demo
+machine? A demo-machine answer is a data point about that machine, not a
+property of rigs.
+
+- **D0 — no new tool, no new operation.** The loaded worker enters through
+  83e-3's `analysis` argument, i.e. `prepare_package_analysis` /
+  `submit_package_analysis`, which `run_analysis_on_saved_dataset`'s package
+  route already shares. `open_artifact` starts no worker and is not involved.
+- **D1 — `observe_dataset` observes.** The executable fixture's operation today
+  reads nothing. It now tails `NDTiff.index` and reads each frame's pixels once
+  as it lands, stdlib only (the worker's environment has no numpy or
+  ndstorage), reader written from ndstorage's source. `parameters: {}` keeps
+  today's artifacts and lifecycle. `{"cpu_threads": N, "max_s": S}` also keeps
+  N threads hashing the latest frame (`hashlib` releases the GIL) until the
+  writer finishes: saturation is the shape of a worker that cannot keep up, and
+  an upper bound independent of the camera. `{"priority": "below_normal"}`
+  lowers the worker's own priority. No added disk load: an observer reads each
+  frame once. The result reports CPU time ÷ wall time, frames and bytes read,
+  and the first frame index read while loaded; a loaded run whose worker was
+  not loaded is NOT EXERCISED.
+- **D2 — arms.** Burst (`interval_s=0`, 1000 frames at 10 ms) and spaced
+  timelapse (100 frames, `interval_s=0.1`, 10 ms), each under none / loaded /
+  loaded + below-normal. Per-position is out: one saturating worker already
+  holds every core. Per run, over frames at or after the loaded index: the
+  saved-notification gap summary, the `ElapsedTime-ms` gaps (and lateness
+  against deadline, spaced), `duration_breakdown`, tool start to construction,
+  frames planned against saved.
+- **D3 — n=6 per cell, alternating, one discarded warm-up per type.** 83e-3's
+  two same-arm runs differed by ~15%. A statistic "moved" only if all six runs
+  of one cell lie beyond all six of the other (chance ≈ 0.2%); every per-run
+  value is reported. ~9 GB of datasets, accepted.
+- **D4 — disclosure, not a cap.** The analysis confirmation gains one generic
+  line, whatever the result: *"The analysis runs at the same time as the
+  acquisition, at the same priority as MicroClaw, and competes with it for CPU and disk. It is
+  not throttled. Each result's frame-gap summary shows the effect."* No
+  demo-machine number in the product. Making below-normal the product default is
+  a separate decision, taken after the numbers. Worded "at the same priority
+  as MicroClaw", not "at normal priority" (operator, 2026-09-29): Windows
+  hands a child a below-normal or idle parent's class, which windows-latest CI
+  showed.
+- **D5 — gate.** The demo machine, as a standalone program: the real
+  `execute_tool` in slot Python against the real bridge, consent answered by the
+  program, MicroClaw closed. No chat turns: model latency is not the thing under
+  test.
+- **The demo machine is artificially quick** (operator, 2026-09-29). Its camera
+  synthesizes frames in software and it has no serial devices. On M2 or M5 the
+  acquisition thread waits on hardware and serial replies, and how promptly it
+  is rescheduled after each wait is exactly what worker priority governs. So a
+  demo null does not settle priority for a rig; that number needs M2 or M5.
+
+**What 83e-4 settled** (PR #43):
+- **Code.** The fixture's `observe_dataset` tails `NDTiff.index` (stdlib, from
+  ndstorage's `Dataset.__new__` / `NDTiffIndexEntry` / `read_image`; polls at
+  30 ms; partial entries retried; rollover followed) and reads each frame once.
+  `cpu_threads`/`max_s` add the load, `priority` lowers its own class and
+  reports the read-back. `microclaw/` changed by one disclosure line.
+- **Review.** The runner's own targeted run skipped two failures the full suite
+  caught (an unnamed text encoding; a `5e-324` schema minimum). windows-latest
+  CI caught the third: "normal" was compared with `NORMAL_PRIORITY_CLASS`, but a
+  Windows child inherits a below-normal or idle parent's class — hence D4's
+  "same priority as MicroClaw". The gate review found the conditions compared
+  over different frame windows (loaded from its load start, none from frame 0)
+  and unqualified loaded runs feeding verdicts; both fixed before the gate.
+- **Gate.** The demo machine, 2026-09-29, one round, pinned at `acdc839`:
+  `RESULT: 0 failed or not exercised limbs / 8`, 42/42 runs, 12 minutes.
+  Scored from the artifacts: C = 24; every loaded run's CPU ratio 18.3–23.2
+  (threshold 18); read-backs 32 (normal) and 16384 (below normal); load began
+  by frame 3; 1000/1000 and 100/100 frames read, bytes = frames × 524,288.
+- **Measured** (n=6 per cell, repetitions 1–6, window from frame 3 / 2):
+
+  | | none | loaded (normal) | below-normal |
+  |---|---|---|---|
+  | burst duration | 15.3–16.4 s | **33.9–39.8 s** | 15.2–16.3 s |
+  | burst mean gap | 14.3–15.3 ms | **33.0–38.9 ms** | 14.3–15.5 ms |
+  | burst p95 gap | 21 ms | **45–56 ms** | 20–21 ms |
+  | spaced p95 gap | 144–157 ms | 113–115 ms | 111–114 ms |
+
+  Loaded bursts separate from both others on every gap and duration
+  statistic. Frames were produced late, not backlogged: camera
+  `ElapsedTime-ms` and saved-callback means agree (33.0 vs 32.9 ms). Tool start
+  to construction (0.25–1.0 s) does not separate. The spaced timelapse shows no
+  cost; its idle arm was the *least* punctual, cause not attributed (`R143`).
+  **A data point about the demo machine, whose camera makes frames on the CPU.**
+- **Residuals.** `R142` (the rig number: dropped frames, disk, starvation
+  boost), `R143`, `R144` (`duration_breakdown` has one `acquisition` phase).
+
+### 83e-5 — package workers run at below-normal priority
+
+**Decision** (operator, 2026-09-29, after 83e-4's measurement): the supervisor
+starts every package worker at below-normal priority — Windows
+`BELOW_NORMAL_PRIORITY_CLASS` at creation, POSIX `nice` — so it takes idle CPU
+and yields to acquisition. Not a cap: 83e-4's below-normal worker still used
+18.3–19.2 of 24 cores. It does **not** lower disk priority, so D4's line keeps
+"competes with it for CPU and disk" and changes only its priority clause. The
+fixture's own `priority` parameter then measures nothing new; decide whether to
+keep it. Gate: a short demo check that the supervisor-set class is what the
+worker reads back, and one loaded burst against none. Everything else about a
+rig is `R142`.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -1126,7 +1226,8 @@ and otherwise stays open.
 | 83d | `block-83d` | `a23b703` | **merged 2026-09-24** as `fce0188`, PR #39 — demo gate 14/14 scored from artifacts |
 | 83e-1 | `block-83e-1` | `fce0188` | **merged 2026-09-24** as `2a1c42a`, PR #40 — local only, no gate |
 | 83e-2 | `block-83e-2` | `2a1c42a` | **merged 2026-09-28** as `3dde106`, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
-| 83e-3 | `block-83e-3` | `3dde106` | reviewed, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
+| 83e-3 | `block-83e-3` | `3dde106` | **merged 2026-09-29** as `6b4d11b`, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
+| 83e-4 | `block-83e-4` | `6b4d11b` | reviewed, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

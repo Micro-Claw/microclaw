@@ -23,7 +23,7 @@
     },
     {
       "path": "fixture_worker/runner.py",
-      "sha256": "b244218d0ec1ae9e3762dbe8874bb070d4651cd91601f1556eff11f160b265d8"
+      "sha256": "1eaebe2f573d8a090b1d2008abb7a77a983e56e4890943102f1444276cddbbb1"
     }
   ],
   "skills": [
@@ -56,7 +56,30 @@
     {
       "name": "observe_dataset",
       "input_schema": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "cpu_threads": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 256,
+            "description": "Hashing threads; requires max_s (checked by worker)."
+          },
+          "max_s": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 3600,
+            "description": "Load duration in seconds; required with cpu_threads (checked by worker)."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "below_normal"
+            ],
+            "default": "normal"
+          }
+        },
+        "additionalProperties": false
       },
       "output_schema": {
         "type": "object"

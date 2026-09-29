@@ -11265,3 +11265,51 @@ measurement.
 **Counts.** Baseline `5cf5831`: 5342 passed, 99 skipped. After round 1
 (`f4aef5d`): 5388. After the D3 fix (`c4c7a2d`): 5389. After the export-comment
 fix (`4635816`): 5390 passed, 99 skipped.
+
+## design/83 block 83e-4 — analysis cost under a loaded worker (PR #43, 2026-09-29)
+
+**The operator's reuse question removed a function before it was written.**
+Asked whether `run_analysis_on_saved_dataset` or `open_artifact` could serve,
+the honest answer was that no tool was proposed — but the *new operation* was a
+second function beside `observe_dataset`, which observed nothing. Folding the
+load into it made the name true. **When a decision says "new", say what it sits
+next to.**
+
+**A null under a dummy workload became a 2× cost under a real one.** 83e-3's
+fixture measured dispatch only; 83e-4's worker, proved loaded by its own CPU
+ratio (18–23 of 24 cores), doubled a demo burst at normal priority, and
+below-normal took it back to baseline. The priority cell was added at plan time
+on the argument that it would be the first question if a cost appeared; it was,
+and it saved a second rig round. **Measure the likely mitigation in the same
+run as the cost.**
+
+**Three defects the runner's targeted tests could not see.** An unnamed text
+encoding and a `5e-324` schema bound were caught by the coordinator's full
+suite (the runner had also dropped one of its five named files). The third was
+Windows-only: "normal" was checked against `NORMAL_PRIORITY_CLASS`, and a
+Windows child inherits a below-normal parent's class — windows-latest CI caught
+it, and the product's disclosure wording changed because of it. **Open the PR
+before the gate exists; CI is the only Windows you have off-rig.**
+
+**The gate review found a bias, not a bug.** The first program compared loaded
+runs from their load-start frame against unloaded runs from frame 0; start-up
+gaps would have made the unloaded arm look worse and hidden a cost. One shared
+window per acquisition type fixed it. **When conditions are compared, check
+they are measured over the same frames.**
+
+**Runner mechanics.**
+- Codex implemented the fixture in one turn, then hit its usage limit mid-way
+  through the gate, leaving three partial, uncommitted files. The operator
+  approved a Claude runner, which started from those files with the same
+  constraints and one revision round.
+- A standalone gate (no chat) ran 42 acquisitions in 12 minutes with zero
+  operator actions beyond four commands.
+
+**Scoring from artifacts.** 8/8 and 42/42. The raw files agreed with the table
+(r1-burst-loaded: 1000 frames, 524,288,000 bytes read, ratio 19.69, read-back
+32). What no limb could say: the spaced timelapse was *least* punctual with
+nothing running (`R143`), and `duration_breakdown` could not locate the burst's
+extra 18–24 s (`R144`); the camera-vs-saved-callback comparison did.
+
+**Counts.** Baseline `6b4d11b`: 5390 passed, 99 skipped. After the fixture,
+review fixes and gate (`d8baf05`): 5414 passed, 99 skipped.
