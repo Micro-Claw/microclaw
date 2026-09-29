@@ -12331,7 +12331,7 @@ def execute_tool(
             validate_parameters(ANALYSIS_SCHEMA, tool_input['analysis'])
             prepared = prepare_package_analysis(**tool_input['analysis'], disclosure=[
                 'Runs on each dataset this call creates, while it grows.',
-                "The analysis runs at the same time as the acquisition, at normal priority, and competes with it for CPU and disk. It is not throttled. Each result's frame-gap summary shows the effect.",
+                "The analysis runs at the same time as the acquisition, at the same priority as MicroClaw, and competes with it for CPU and disk. It is not throttled. Each result's frame-gap summary shows the effect.",
                 'Output goes to <dataset>/analysis/<job_id>/ inside each dataset.',
                 'One job per dataset; overflow past workers and queue is recorded as an analysis failure.',
             ])

@@ -1099,10 +1099,13 @@ property of rigs.
   value is reported. ~9 GB of datasets, accepted.
 - **D4 — disclosure, not a cap.** The analysis confirmation gains one generic
   line, whatever the result: *"The analysis runs at the same time as the
-  acquisition, at normal priority, and competes with it for CPU and disk. It is
+  acquisition, at the same priority as MicroClaw, and competes with it for CPU and disk. It is
   not throttled. Each result's frame-gap summary shows the effect."* No
   demo-machine number in the product. Making below-normal the product default is
-  a separate decision, taken after the numbers.
+  a separate decision, taken after the numbers. Worded "at the same priority
+  as MicroClaw", not "at normal priority" (operator, 2026-09-29): Windows
+  hands a child a below-normal or idle parent's class, which windows-latest CI
+  showed.
 - **D5 — gate.** The demo machine, as a standalone program: the real
   `execute_tool` in slot Python against the real bridge, consent answered by the
   program, MicroClaw closed. No chat turns: model latency is not the thing under
