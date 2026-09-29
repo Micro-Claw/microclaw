@@ -403,8 +403,8 @@ def _load(path):
     return read_json(path)
 
 
-def _window_gaps(folder, row):
-    """Metadata gaps (s) in time order, and the index of the first frame in the loaded window."""
+def _gaps(folder, row):
+    """Metadata gaps (s) in time order; gap i is between frames i and i + 1."""
     ds = _load(folder / "dataset.json")
     spacing = ds.get("observed_per_field_spacing")
     if not isinstance(spacing, dict) or len(spacing) != 1:
@@ -412,16 +412,59 @@ def _window_gaps(folder, row):
     gaps = [number(v, "metadata gap") for v in next(iter(spacing.values()))]
     if len(gaps) != row["input"]["n_frames"] - 1:
         raise NotExercised(f"{len(gaps)} metadata gaps for {row['input']['n_frames']} planned frames")
-    start = 0
-    if row["condition"] != "none":
-        start = _load(folder / "job-0.json")["result"]["output"]["frames_indexed_at_load_start"]
-        if type(start) is not int or not 0 <= start < len(gaps):
-            raise NotExercised(f"loaded window from frame {start!r} holds no gap")
-    return gaps, start
+    return gaps
 
 
-def measurements(out, row, diagnostics):
-    """Per-run statistics. Missing pieces are left out, never zero-filled."""
+def _load_start(folder):
+    index = _load(folder / "job-0.json")["result"]["output"].get("frames_indexed_at_load_start")
+    if type(index) is not int:
+        raise NotExercised(f"frames_indexed_at_load_start is {index!r}")
+    return index
+
+
+def load_status(output, cpu):
+    """Limb 3's rule for one loaded run: (status, detail). Also decides verdict qualification."""
+    if not all(k in output for k in ("cpu_threads", "load_stopped_by", "load_cpu_ratio")):
+        return "NOT EXERCISED", "the worker reported no load evidence"
+    if output["cpu_threads"] != cpu:
+        return "FAIL", f"cpu_threads {output['cpu_threads']}, C = {cpu}"
+    if output["load_stopped_by"] != "writer":
+        return "FAIL", f"load stopped by {output['load_stopped_by']}"
+    ratio = output["load_cpu_ratio"]
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not math.isfinite(ratio):
+        return "NOT EXERCISED", f"load_cpu_ratio is {ratio!r}"
+    detail = f"CPU ratio {ratio:.3f} vs {LOAD_FRACTION} x C = {LOAD_FRACTION * cpu:.2f}"
+    if ratio < LOAD_FRACTION * cpu:
+        return "NOT EXERCISED", detail + ": this run was not loaded"
+    return "PASS", detail
+
+
+def qualified(out, row, cpu):
+    try:
+        return load_status(_load(Path(out) / "runs" / row["id"] / "job-0.json")["result"]["output"], cpu)[0] == "PASS"
+    except Exception:
+        return False
+
+
+def window_starts(out, prep):
+    """One window per acquisition type, shared by every condition (repetitions 1+):
+    K = the latest frames_indexed_at_load_start over that type's loaded and below runs."""
+    starts = {}
+    for kind in TYPES:
+        seen = []
+        for row in prep["runs"]:
+            if row["type"] == kind and row["repetition"] and row["condition"] != "none":
+                try:
+                    seen.append(_load_start(Path(out) / "runs" / row["id"]))
+                except Exception:
+                    continue
+        starts[kind] = max(seen) if seen else None
+    return starts
+
+
+def measurements(out, row, diagnostics, k):
+    """Per-run statistics. Missing pieces are left out, never zero-filled.
+    k is the type's shared window start; None means the window is unavailable."""
     folder = Path(out) / "runs" / row["id"]
     result = _load(folder / "result.json")
     stats = {}
@@ -430,7 +473,7 @@ def measurements(out, row, diagnostics):
             stats[key] = number(fn(), key)
         except (KeyError, TypeError, ValueError, NotExercised, OSError):
             pass
-    put("duration_s", lambda: result["duration_s"])
+    put("duration_s (whole run)", lambda: result["duration_s"])
     for label in ("mean_s", "p95_le_s", "max_s"):
         put(f"saved_callback_gap_{label} (whole run)", lambda l=label: result["inter_frame_gap_summary"][l])
     breakdown = result.get("duration_breakdown") or {}
@@ -446,17 +489,21 @@ def measurements(out, row, diagnostics):
                                                          - datetime.fromisoformat(clock["start_utc"])).total_seconds())
     except (NotExercised, ValueError, KeyError):
         pass
+    if k is None:
+        return stats
     try:
-        gaps, start = _window_gaps(folder, row)
-        window = gaps[start:]                  # both frames of each gap at or after the first loaded frame
-        stats["metadata_gap_mean_s (window)"] = sum(window) / len(window)
-        stats["metadata_gap_p95_s (window)"] = p95(window)
-        stats["metadata_gap_max_s (window)"] = max(window)
-        if row["type"] == "spaced":
-            t = list(itertools.accumulate(gaps, initial=0.0))   # t_i - t_0, from the recorded gaps
-            late = [t[i] - i * row["input"]["interval_s"] for i in range(start, len(t))]
-            stats["lateness_p95_s (window)"] = p95(late)
-            stats["lateness_max_s (window)"] = max(late)
+        gaps = _gaps(folder, row)
+        window = gaps[k:]                      # both frames of each gap at or after frame k
+        if window:
+            label = f"(window from frame {k})"
+            stats[f"metadata_gap_mean_s {label}"] = sum(window) / len(window)
+            stats[f"metadata_gap_p95_s {label}"] = p95(window)
+            stats[f"metadata_gap_max_s {label}"] = max(window)
+            if row["type"] == "spaced":
+                t = list(itertools.accumulate(gaps, initial=0.0))   # t_i - t_0, from the recorded gaps
+                late = [t[i] - i * row["input"]["interval_s"] for i in range(k, len(t))]
+                stats[f"lateness_p95_s {label}"] = p95(late)
+                stats[f"lateness_max_s {label}"] = max(late)
     except (NotExercised, KeyError, TypeError, ValueError, OSError):
         pass
     return stats
@@ -556,15 +603,10 @@ def verify(gate, *, cleanup=True, echo=True, measure=True):
 
         if loaded:
             def load_evidence(output=output):
-                o = output()
-                if not all(k in o for k in ("cpu_threads", "load_stopped_by", "load_cpu_ratio")):
-                    raise NotExercised("the worker reported no load evidence")
-                need(o["cpu_threads"] == cpu, f"cpu_threads {o['cpu_threads']}, C = {cpu}")
-                need(o["load_stopped_by"] == "writer", f"load stopped by {o['load_stopped_by']}")
-                ratio = number(o["load_cpu_ratio"], "load_cpu_ratio")
-                detail = f"CPU ratio {ratio:.3f} vs {LOAD_FRACTION} x C = {LOAD_FRACTION * cpu:.2f}"
-                if ratio < LOAD_FRACTION * cpu:
-                    raise NotExercised(detail + ": this run was not loaded")
+                status, detail = load_status(output(), cpu)
+                if status == "NOT EXERCISED":
+                    raise NotExercised(detail)
+                need(status == "PASS", detail)
                 return detail
             check(3, row["id"], load_evidence)
 
@@ -591,14 +633,14 @@ def verify(gate, *, cleanup=True, echo=True, measure=True):
                 return f"{requested} applied, read back {p['read_back']}"
             check(5, row["id"], priority)
 
-            def window(row=row, folder=folder, n=n, output=output):
-                index = output().get("frames_indexed_at_load_start")
-                if type(index) is not int:
-                    raise NotExercised(f"frames_indexed_at_load_start is {index!r}")
+            def window(row=row, folder=folder, n=n):
+                index = _load_start(folder)
                 need(0 <= index <= n, f"frames_indexed_at_load_start {index} outside 0..{n}")
                 detail = f"load began at frame {index}; {(n - index) / n:.1%} of frames after it"
+                if n - index < 2:
+                    raise NotExercised(detail + "; no gap after it")
                 try:
-                    _window_gaps(folder, row)
+                    _gaps(folder, row)
                 except NotExercised as exc:
                     raise NotExercised(f"{detail}; {exc}") from None
                 return detail
@@ -674,33 +716,50 @@ def print_measurement(gate, prep, diagnostics, say):
     say("MEASUREMENT (printed, not pass/fail). " + CAVEAT)
     if prep.get("selftest"):
         say("SELFTEST PLAN: reduced sizes and fake acquisitions that cannot contend; these numbers mean nothing.")
-    say("Repetition 0 excluded. '(window)' = frames at or after the worker's frames_indexed_at_load_start "
-        "(all frames for 'none'); '(whole run)' = every frame; p95 is nearest rank. Lateness is "
+    say("Repetition 0 excluded. '(window from frame K)' = gaps between frames at or after frame K, the same K "
+        "for none, loaded and below of one type: the latest frames_indexed_at_load_start among that type's "
+        "loaded and below runs. '(whole run)' = every frame; p95 is nearest rank. Lateness is "
         "t_i - t_0 - i x interval_s from the recorded metadata gaps (rounded to 1 us by the product). "
         "A verdict names the second condition relative to the first; separated only if every run of one "
-        "lies strictly beyond every run of the other. Limbs 3 and 6 say which loaded runs qualified.")
-    stats = {}
+        "lies strictly beyond every run of the other; it is computed on all runs shown. A value marked * "
+        "is from a loaded run that limb 3 did not qualify as loaded.")
+    cpu = prep["cpu_count"]
+    starts = window_starts(gate.out, prep)
+    stats, ok = {}, {}
     for row in prep["runs"]:
         if row["repetition"]:
+            ok[row["id"]] = row["condition"] == "none" or qualified(gate.out, row, cpu)
             try:
-                stats[row["id"]] = measurements(gate.out, row, diagnostics)
+                stats[row["id"]] = measurements(gate.out, row, diagnostics, starts[row["type"]])
             except Exception as exc:
                 say(f"    MEASUREMENT UNAVAILABLE {row['id']}: {type(exc).__name__}: {exc}")
     expected = prep["sizes"][0] - 1 if prep.get("selftest") else PLAN_SIZES[0] - 1
-    fmt = lambda v: "--" if v is None else f"{v:.6g}"
+    fmt = lambda v, good: ("--" if v is None else f"{v:.6g}") + ("" if good else "*")
     for kind in TYPES:
         rows = [r for r in prep["runs"] if r["type"] == kind and r["repetition"]]
-        keys = sorted({k for r in rows for k in stats.get(r["id"], {})})
+        k = starts[kind]
+        if k is None:
+            say(f"{kind} | K unavailable: no loaded or below run reported a valid frames_indexed_at_load_start; "
+                "metadata gaps and lateness omitted")
+        else:
+            say(f"{kind} | K = {k}: metadata gaps and lateness use frames {k} to {rows[0]['input']['n_frames'] - 1} "
+                "for none, loaded and below alike")
+        good = {c: [ok.get(r["id"], False) for r in rows if r["condition"] == c] for c in CONDITIONS}
+        q = {c: sum(good[c]) for c in CONDITIONS}
+        keys = sorted({key for r in rows for key in stats.get(r["id"], {})})
         for key in keys:
             cells = {c: [stats.get(r["id"], {}).get(key) for r in rows if r["condition"] == c]
                      for c in CONDITIONS}
             say(f"{kind} | {key} | " + " | ".join(
-                f"{c}=[{', '.join(fmt(v) for v in cells[c])}]" for c in CONDITIONS))
+                f"{c}=[{', '.join(fmt(v, g) for v, g in zip(cells[c], good[c]))}]" for c in CONDITIONS))
             verdicts = []
             for a, b in itertools.combinations(CONDITIONS, 2):
                 complete = all(len(cells[c]) == expected and None not in cells[c] for c in (a, b))
-                verdicts.append(f"{a}/{b}: " + (separate(cells[a], cells[b]) if complete
-                                                  else "UNAVAILABLE (incomplete cell)"))
+                verdict = separate(cells[a], cells[b]) if complete else "UNAVAILABLE (incomplete cell)"
+                for c in (a, b):
+                    if c != "none":
+                        verdict += f" ({c}: {q[c]} of {expected} loaded runs qualified)"
+                verdicts.append(f"{a}/{b}: {verdict}")
             say(f"{kind} | {key} | " + "; ".join(verdicts))
     say(CAVEAT)
 
@@ -966,6 +1025,52 @@ def selftest(baseline_only=False, sizes=SELFTEST_SIZES):
             failures += not ok
             gate.say(f"SELFTEST {'ok' if ok else 'WRONG'}: a malformed job record fails its own run and every "
                      "other run is still scored")
+            # F1: one window per type, shared by every condition.
+            clean = base / "synthetic-control-clean"
+            measured = [r for r in prep["runs"] if r["repetition"]]
+            burst_loaded = next(r for r in measured if r["type"] == "burst" and r["condition"] == "loaded")
+            burst_none = next(r for r in measured if r["type"] == "burst" and r["condition"] == "none")
+            late_start = burst_loaded["input"]["n_frames"] - 3
+            before = window_starts(clean, prep)
+            shutil.rmtree(control)
+            shutil.copytree(clean, control)
+            path = control / "runs" / burst_loaded["id"] / "job-0.json"
+            job = read_json(path)
+            job["result"]["output"]["frames_indexed_at_load_start"] = late_start
+            write_json(path, job)
+            after = window_starts(control, prep)
+            gaps = _gaps(control / "runs" / burst_none["id"], burst_none)
+            none_stats = measurements(control, burst_none, [], after["burst"])
+            key = f"metadata_gap_mean_s (window from frame {late_start})"
+            ok = (before == {"burst": 0, "spaced": 0} and after == {"burst": late_start, "spaced": 0}
+                  and none_stats.get(key) == sum(gaps[late_start:]) / len(gaps[late_start:]))
+            failures += not ok
+            gate.say(f"SELFTEST {'ok' if ok else 'WRONG'}: one loaded burst starting at frame {late_start} moves "
+                     f"K for burst {before['burst']} -> {after['burst']} (spaced stays {after['spaced']}), and the "
+                     f"'none' run's window statistics are computed from frame {late_start}")
+            # F2: an unqualified loaded run is marked and counted, never dropped.
+            expected = prep["sizes"][0] - 1
+            def table(folder):
+                lines = []
+                print_measurement(Gate(root, folder, fake=fake), prep, _diagnostics(folder), lines.append)
+                return lines
+            clean_lines = table(clean)
+            shutil.rmtree(control)
+            shutil.copytree(clean, control)
+            path = control / "runs" / burst_loaded["id"] / "job-0.json"
+            job = read_json(path)
+            job["result"]["output"]["load_cpu_ratio"] = 0.1
+            write_json(path, job)
+            low_lines = table(control)
+            marked = [l for l in low_lines if l.startswith("burst |") and "loaded=[" in l
+                      and "*]" in l.split("loaded=[")[1].split("]")[0] + "]"]
+            ok = (bool(marked) and not any("*" in l.split(" | ", 2)[-1] for l in clean_lines if " | " in l
+                                           and "=[" in l)
+                  and any(f"(loaded: {expected - 1} of {expected} loaded runs qualified)" in l for l in low_lines)
+                  and any(f"(loaded: {expected} of {expected} loaded runs qualified)" in l for l in clean_lines))
+            failures += not ok
+            gate.say(f"SELFTEST {'ok' if ok else 'WRONG'}: a loaded run with ratio 0.1 is marked * and counted "
+                     f"'{expected - 1} of {expected} loaded runs qualified'; the clean table has no marker")
             gate.say(f"SELFTEST {'PASSED' if not failures else f'FAILED ({failures})'}; no wall-clock assertions")
     return failures
 
