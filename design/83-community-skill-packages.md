@@ -1065,6 +1065,54 @@ the coordinator's).
   records dispatch failures; nothing has run one that large. `run_mda` still
   fires nothing (`R86`, now disclosed).
 
+**83e-4 decisions** (operator decision, 2026-09-29). `R141`: can a worker that
+actually works disturb an acquisition at all, and by how much, on the demo
+machine? A demo-machine answer is a data point about that machine, not a
+property of rigs.
+
+- **D0 — no new tool, no new operation.** The loaded worker enters through
+  83e-3's `analysis` argument, i.e. `prepare_package_analysis` /
+  `submit_package_analysis`, which `run_analysis_on_saved_dataset`'s package
+  route already shares. `open_artifact` starts no worker and is not involved.
+- **D1 — `observe_dataset` observes.** The executable fixture's operation today
+  reads nothing. It now tails `NDTiff.index` and reads each frame's pixels once
+  as it lands, stdlib only (the worker's environment has no numpy or
+  ndstorage), reader written from ndstorage's source. `parameters: {}` keeps
+  today's artifacts and lifecycle. `{"cpu_threads": N, "max_s": S}` also keeps
+  N threads hashing the latest frame (`hashlib` releases the GIL) until the
+  writer finishes: saturation is the shape of a worker that cannot keep up, and
+  an upper bound independent of the camera. `{"priority": "below_normal"}`
+  lowers the worker's own priority. No added disk load: an observer reads each
+  frame once. The result reports CPU time ÷ wall time, frames and bytes read,
+  and the first frame index read while loaded; a loaded run whose worker was
+  not loaded is NOT EXERCISED.
+- **D2 — arms.** Burst (`interval_s=0`, 1000 frames at 10 ms) and spaced
+  timelapse (100 frames, `interval_s=0.1`, 10 ms), each under none / loaded /
+  loaded + below-normal. Per-position is out: one saturating worker already
+  holds every core. Per run, over frames at or after the loaded index: the
+  saved-notification gap summary, the `ElapsedTime-ms` gaps (and lateness
+  against deadline, spaced), `duration_breakdown`, tool start to construction,
+  frames planned against saved.
+- **D3 — n=6 per cell, alternating, one discarded warm-up per type.** 83e-3's
+  two same-arm runs differed by ~15%. A statistic "moved" only if all six runs
+  of one cell lie beyond all six of the other (chance ≈ 0.2%); every per-run
+  value is reported. ~9 GB of datasets, accepted.
+- **D4 — disclosure, not a cap.** The analysis confirmation gains one generic
+  line, whatever the result: *"The analysis runs at the same time as the
+  acquisition, at normal priority, and competes with it for CPU and disk. It is
+  not throttled. Each result's frame-gap summary shows the effect."* No
+  demo-machine number in the product. Making below-normal the product default is
+  a separate decision, taken after the numbers.
+- **D5 — gate.** The demo machine, as a standalone program: the real
+  `execute_tool` in slot Python against the real bridge, consent answered by the
+  program, MicroClaw closed. No chat turns: model latency is not the thing under
+  test.
+- **The demo machine is artificially quick** (operator, 2026-09-29). Its camera
+  synthesizes frames in software and it has no serial devices. On M2 or M5 the
+  acquisition thread waits on hardware and serial replies, and how promptly it
+  is rescheduled after each wait is exactly what worker priority governs. So a
+  demo null does not settle priority for a rig; that number needs M2 or M5.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
