@@ -66,9 +66,9 @@
           },
           "max_s": {
             "type": "number",
-            "minimum": 5e-324,
+            "minimum": 0.001,
             "maximum": 3600,
-            "description": "Positive load duration, up to 3600 seconds; minimum is the smallest positive JSON float representable by the runtime."
+            "description": "Load duration in seconds; required with cpu_threads (checked by worker)."
           },
           "priority": {
             "type": "string",

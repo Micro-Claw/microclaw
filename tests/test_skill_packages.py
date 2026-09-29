@@ -1107,15 +1107,15 @@ def test_d4_product_never_imports_jsonschema(tmp_path, monkeypatch):
     {'cpu_threads': 1.5, 'max_s': 1}, {'max_s': 0}, {'max_s': -1}, {'max_s': 3601}, {'priority': 'high'},
 ])
 def test_observer_parameter_schema_refuses_invalid_values(parameters):
-    schema = json.loads((FIXTURES / 'executable' / 'manifest.json').read_text())['operations'][1]['input_schema']
+    schema = json.loads((FIXTURES / 'executable' / 'manifest.json').read_text(encoding='utf-8'))['operations'][1]['input_schema']
     with pytest.raises(packages.PackageRefusal):
         packages.validate_parameters(schema, parameters)
 
 
 def test_observer_schema_preserves_optional_parameters_and_documents_subset_limit():
-    schema = json.loads((FIXTURES / 'executable' / 'manifest.json').read_text())['operations'][1]['input_schema']
+    schema = json.loads((FIXTURES / 'executable' / 'manifest.json').read_text(encoding='utf-8'))['operations'][1]['input_schema']
     packages.validate_parameter_schema(schema)
-    for parameters in ({}, {'priority': 'below_normal'}, {'cpu_threads': 2, 'max_s': 0.5}, {'max_s': 5e-324}):
+    for parameters in ({}, {'priority': 'below_normal'}, {'cpu_threads': 2, 'max_s': 0.5}, {'max_s': 0.001}):
         packages.validate_parameters(schema, parameters)
     # Conditional required is unavailable in admission. The subprocess test
     # proves that missing max_s is refused by the worker.

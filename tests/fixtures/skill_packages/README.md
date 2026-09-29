@@ -18,8 +18,7 @@ priority and reports its read-back. Results carry read and load measurements in
 `result.output`; `{}` preserves the original artifact bytes and lifecycle.
 The admitted schema vocabulary cannot express conditional `required`: the worker
 rejects missing `max_s` with `cpu_threads`. The manifest enforces closed properties
-and bounds; its positive minimum is the smallest positive float representable
-by the JSON runtime (`5e-324`).
+and bounds (`max_s` from 0.001 s).
 `conformance/` is a separate TEST-ONLY release of deliberately misbehaving
 subprocesses; tests re-sign its intake with the committed TEST-ONLY seed.
 Its pre-read stall cases use a `before-job.txt` file in the test output directory: a
