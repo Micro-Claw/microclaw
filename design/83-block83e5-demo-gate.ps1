@@ -11,10 +11,10 @@ if (-not $Out) {
     if ($Phase -eq 'prepare') {
         $Out = Join-Path $env:LOCALAPPDATA ('block83e5-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     } elseif (Test-Path -LiteralPath $pointer) {
-        $Out = (Get-Content -LiteralPath $pointer -Raw -Encoding UTF8).Trim()
+        $Out = (Get-Content -LiteralPath $pointer -Raw).Trim()
     } else { throw 'No evidence folder recorded. Run -Phase prepare first, or pass -Out.' }
 }
-$active = (Get-Content -LiteralPath (Join-Path $root 'active-slot.txt') -Raw -Encoding UTF8).Trim()
+$active = (Get-Content -LiteralPath (Join-Path $root 'active-slot.txt') -Raw).Trim()
 if ($active -notin @('a','b')) { throw 'active-slot.txt must name a or b.' }
 $python = Join-Path $root "env-$active\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python)) { throw "Gate interpreter missing: $python" }
@@ -29,7 +29,7 @@ if ($probe -ne 0) {
     exit 2
 }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
-if ($Phase -eq 'prepare') { Set-Content -LiteralPath $pointer -Value $Out -Encoding UTF8 }
+if ($Phase -eq 'prepare') { Set-Content -LiteralPath $pointer -Value $Out -Encoding ASCII }
 Write-Host "Gate interpreter: $python"
 $ErrorActionPreference = 'Continue'
 & $python (Join-Path $PSScriptRoot '83-block83e5-demo-gate.py') $Phase --out $Out
