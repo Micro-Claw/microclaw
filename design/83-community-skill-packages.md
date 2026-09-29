@@ -1165,6 +1165,40 @@ keep it. Gate: a short demo check that the supervisor-set class is what the
 worker reads back, and one loaded burst against none. Everything else about a
 rig is `R142`.
 
+**83e-5 decisions** (operator, 2026-09-29):
+- **D1 — mechanism.** Windows: `BELOW_NORMAL_PRIORITY_CLASS` in `creationflags`
+  beside `CREATE_SUSPENDED`, so it holds before any publisher code runs and
+  overrides inheritance. Not a Job Object priority limit: its documentation ties
+  it to `SE_INC_BASE_PRIORITY_NAME`, which elevated CI holds and a user may not.
+  POSIX (test-only): prefix `nice -n k`, which sets and then execs, so there is no
+  window and no `preexec_fn`. `os.setpriority(pid)` after `Popen` races the child
+  and on Linux reaches only its main thread. **Never above MicroClaw**: an idle
+  MicroClaw passes no flag (the worker inherits idle); POSIX
+  `k = max(0, 10 - os.nice(0))`. A publisher can still change its own class, as
+  it can do anything the user can; the record shows it (D3).
+- **D2 — scope.** Every job, `self_check` included; no opt-out. Acquisition never
+  waits on analysis, so a publisher asking for normal has nothing true to say.
+  Revisit only with feedback into acquisition (`R139`).
+- **D3 — evidence.** The supervisor reads the worker's class itself at its first
+  message (after `nice` has exec'd) and at its terminal result, and records both
+  in the job record with what it requested. A failed read records null and a
+  reason and never fails the job. The worker's own report is a cross-check, not
+  the record.
+- **D4 — fixture.** `priority` keeps a control: `"inherit"` (default) and
+  `"normal"` (raise back). `"below_normal"` is dropped — it now measures nothing.
+  Unprivileged POSIX cannot raise, so `"normal"` reports `applied: false` there.
+- **D5 — disclosure.** *"The analysis runs at the same time as the acquisition,
+  at below-normal CPU priority. It is not throttled, and it still competes with
+  the acquisition for CPU and disk."* The old last sentence is dropped: a single
+  result's gap summary cannot show an effect without a no-analysis baseline.
+  "Disk" stays: Windows' priority class does not lower I/O priority.
+- **D6 — gate.** 83e-4's program, burst only, three cells — none, loaded at the
+  supervisor's class, loaded with the fixture's `"normal"` control — n=4 plus a
+  warm-up (13 runs). "Every control run beyond every supervisor-loaded run" has
+  chance 2/70 ≈ 2.9%; supervisor-loaded against none is reported as ranges, not
+  scored as equality. CI settles class, inheritance, cap and read-back on both
+  platforms through the real supervisor.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
