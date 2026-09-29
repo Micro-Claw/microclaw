@@ -6,8 +6,9 @@ put_nowait; neither path launches, hashes assets, accesses the filesystem, write
 pipes, starts threads, or waits for a worker. Short locks protect in-memory
 transitions only, never I/O. Fixed dispatchers own launch, deadlines, verification
 and cleanup. Priority launch policy and the two worker priority samples run only
-in the dispatcher monitor, never on submit/notify or in pipe callbacks. Message
-bytes, pending stdin, retained stdout and stderr, queued
+in the dispatcher monitor, never on submit/notify or in pipe callbacks. Cleanup
+labels unsampled phases without further OS reads or waits. Message bytes, pending
+stdin, retained stdout and stderr, queued
 jobs and live workers have explicit bounds. Notification history retains the first
 32 attempts and counts subsequent attempts without retaining them. There is no
 total analysis deadline unless supplied. All timing uses perf_counter, including
@@ -147,7 +148,8 @@ def _windows_priority(handle=None):
 def _read_priority(process):
     """Best-effort evidence, including an explicit exited-before-read outcome."""
     try:
-        if process.poll() is not None:
+        # Windows retains query access through Popen's handle after exit.
+        if os.name != "nt" and process.poll() is not None:
             return None, "process exited before priority read"
         value = (_windows_priority(process._handle) if os.name == "nt" else
                  os.getpriority(os.PRIO_PROCESS, process.pid))
@@ -198,7 +200,7 @@ class JobHandle:
         self._stdin_unavailable_reason = None
         self._violation = None
         self._record = dict(job_id=self.job_id, release={}, operation=None, state="queued",
-                            priority=dict(requested=None, at_start=None, at_end=None, reason={}),
+                            priority=dict(requested=None, inherited=False, at_start=None, at_end=None, reason={}),
                             result=None, failure=None, artifacts=[], rejected_artifacts=[],
                             lifecycle=dict(acquisition=None, writer=None), notifications=[], notifications_dropped=0,
                             status=[], status_dropped=0, stderr_tail="", exit_code=None,
@@ -564,7 +566,7 @@ class Supervisor:
             if os.name == "nt":
                 idle = _windows_priority() == 0x40
                 kwargs = dict(creationflags=0x00000004 | 0x08000000 | (0 if idle else 0x4000))
-                requested = "IDLE_PRIORITY_CLASS (inherited)" if idle else "BELOW_NORMAL_PRIORITY_CLASS"
+                requested, inherited = (0x40 if idle else 0x4000), idle
             else:
                 try:
                     own = os.nice(0)
@@ -575,9 +577,9 @@ class Supervisor:
                 if increment:
                     argv = ["nice", "-n", str(increment), *argv]
                 kwargs = dict(start_new_session=True)
-                requested = dict(niceness=own + increment)
+                requested, inherited = own + increment, increment == 0
             with handle._lock:
-                handle._record["priority"]["requested"] = requested
+                handle._record["priority"].update(requested=requested, inherited=inherited)
             handle._spawned = time.perf_counter()
             process = subprocess.Popen(argv,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -592,9 +594,6 @@ class Supervisor:
                 thread.start()
             while True:
                 exited = process.poll() is not None
-                if exited:
-                    # Consume buffered arrivals before sampling an exited worker.
-                    threads[0].join(timeout=2)
                 sample_priority()
                 if exited:
                     break
@@ -649,6 +648,13 @@ class Supervisor:
                         job.close()
                     except OSError as exc:
                         failure = dict(reason="cleanup_failed", detail=str(exc))
+            with handle._lock:
+                for phase, arrived in (("at_start", handle._first is not None),
+                                       ("at_end", handle._record["result"] is not None)):
+                    if phase not in sampled:
+                        handle._record["priority"]["reason"][phase] = (
+                            "message arrived after priority monitoring ended" if arrived else
+                            "worker message never arrived")
             if temporary is not None:
                 try:
                     temporary.cleanup()

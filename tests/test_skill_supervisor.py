@@ -653,10 +653,9 @@ def test_stdin_stdout_explicit_launch_arguments(supervisors, tmp_path, monkeypat
         return original(argv, **kw)
     monkeypatch.setattr(s.subprocess, "Popen", launch)
     value = finished(submit(supervisors(), tmp_path))
-    requested = ("IDLE_PRIORITY_CLASS (inherited)" if s._windows_priority() == 0x40 else
-                 "BELOW_NORMAL_PRIORITY_CLASS") if os.name == "nt" else dict(
-                     niceness=max(10, os.getpriority(os.PRIO_PROCESS, 0)))
-    assert value["priority"]["requested"] == requested
+    assert value["priority"]["requested"] == expected_worker_priority()
+    inherited = s._windows_priority() == 0x40 if os.name == "nt" else os.getpriority(os.PRIO_PROCESS, 0) >= 10
+    assert value["priority"]["inherited"] is inherited
     argv, kw = seen[0]
     prefix = [] if os.name == "nt" or os.getpriority(os.PRIO_PROCESS, 0) >= 10 else ["nice", "-n", str(10 - os.getpriority(os.PRIO_PROCESS, 0))]
     assert argv == prefix + [sys.executable, "-u", "-m", "conformance_worker.runner"]
@@ -1039,13 +1038,15 @@ def test_observer_priority_read_back(supervisors, tmp_path):
     evidence = value['result']['output']['priority']
     assert evidence == dict(requested='inherit', applied=True, read_back=start, reason=None)
     end = value['priority']['at_end']
-    assert end == start or (end is None and 'exited' in value['priority']['reason']['at_end'])
+    assert end == start or (end is None and value['priority']['reason']['at_end'] in (
+        'process exited before priority read', 'message arrived after priority monitoring ended'))
 
 
 def test_self_check_priority(supervisors, tmp_path):
     value = finished(submit(supervisors(), tmp_path, source=release('executable')))
     assert_launch_priority(value['result']['output']['priority']['read_back'])
-    assert value['priority']['requested'] is not None
+    assert value['priority']['requested'] == expected_worker_priority()
+    assert isinstance(value['priority']['inherited'], bool)
 
 
 @pytest.mark.parametrize('failed', [False, True])
@@ -1066,6 +1067,7 @@ def test_priority_exactly_two_monitor_reads(supervisors, tmp_path, monkeypatch, 
         assert value['priority']['reason'] == dict(at_start='injected read refusal', at_end='injected read refusal')
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX cannot read a reaped process")
 def test_priority_exited_read():
     from types import SimpleNamespace
     assert s._read_priority(SimpleNamespace(poll=lambda: 0)) == (None, 'process exited before priority read')
@@ -1098,6 +1100,12 @@ finally:
     assert probe.returncode == 0, probe.stderr
     value = json.loads(probe.stdout)
     actual = value['result']['output']['priority']['read_back']
+    if os.name == 'nt':
+        assert value['priority']['requested'] == (0x40 if parent == 0x40 else 0x4000)
+        assert value['priority']['inherited'] is (parent == 0x40)
+    elif 'Operation not permitted' not in probe.stderr:
+        assert value['priority']['requested'] == max(15, os.getpriority(os.PRIO_PROCESS, 0))
+        assert value['priority']['inherited'] is True
     if os.name != 'nt' and 'Operation not permitted' in probe.stderr:
         assert_launch_priority(actual)
     else:
@@ -1259,4 +1267,76 @@ def test_priority_os_read_failure_is_nonfatal(supervisors, tmp_path, monkeypatch
     assert value['priority']['at_start'] is None
     assert value['priority']['reason']['at_start'] == 'priority access refused'
     assert value['priority']['at_end'] is None
-    assert value['priority']['reason']['at_end'] in ('priority access refused', 'process exited before priority read')
+    assert value['priority']['reason']['at_end'] in (
+        'priority access refused', 'process exited before priority read',
+        'message arrived after priority monitoring ended')
+
+
+@pytest.mark.parametrize('messages', ['success', 'no_terminal'])
+def test_cleanup_labels_unsampled_priority_without_reads_or_extra_joins(
+        supervisors, tmp_path, monkeypatch, messages):
+    cleanup = threading.Event()
+    original_stdout = s.JobHandle._stdout
+    original_join = threading.Thread.join
+    joins, reads = [], []
+
+    def stdout(handle, pipe):
+        assert cleanup.wait(10)
+        original_stdout(handle, pipe)
+
+    def join(thread, *args, **kwargs):
+        if thread.name.startswith('skill-pipe-'):
+            joins.append(thread.ident)
+            cleanup.set()
+        return original_join(thread, *args, **kwargs)
+
+    def read(process):
+        reads.append(process.pid)
+        return None, 'unexpected priority read'
+
+    monkeypatch.setattr(s.JobHandle, '_stdout', stdout)
+    monkeypatch.setattr(threading.Thread, 'join', join)
+    monkeypatch.setattr(s, '_read_priority', read)
+    handle = submit(supervisors(), tmp_path, 'no_terminal' if messages == 'no_terminal' else 'success')
+    value = finished(handle, 'succeeded' if messages == 'success' else 'supervisor_failed')
+    assert reads == []
+    assert len(joins) == len(set(joins)) == 3
+    priority = value['priority']
+    assert priority['at_start'] is priority['at_end'] is None
+    assert priority['reason'] == dict(
+        at_start='worker message never arrived' if messages == 'no_terminal' else
+                 'message arrived after priority monitoring ended',
+        at_end='message arrived after priority monitoring ended' if messages == 'success' else
+               'worker message never arrived')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows process handle priority read-back')
+@pytest.mark.parametrize('read_after_exit', [False, True], ids=['ordinary', 'exited-handle'])
+def test_windows_observer_terminal_priority(supervisors, tmp_path, monkeypatch, read_after_exit):
+    original = s._read_priority
+    reads = []
+
+    def read(process):
+        if read_after_exit and reads:
+            # Prove the real Windows API is queried through an exited handle.
+            # This wait belongs only to the test, not the supervisor.
+            process.wait(timeout=5)
+            assert process.returncode == 0
+        result = original(process)
+        reads.append(result)
+        return result
+
+    monkeypatch.setattr(s, '_read_priority', read)
+    handle, _, _ = observe(supervisors(), tmp_path)
+    for _ in range(800):
+        if handle.record()['priority']['at_start'] is not None:
+            break
+        assert not handle.wait(0.01)
+    assert handle.notify_acquisition('completed', writer='finished')
+    value = finished(handle)
+    priority = value['priority']
+    assert priority['at_start'] is not None
+    assert priority['at_end'] == priority['at_start']
+    assert priority['at_end'] == value['result']['output']['priority']['read_back']
+    assert priority['reason'] == {}
+    assert len(reads) == 2
