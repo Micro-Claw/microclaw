@@ -65,23 +65,23 @@ def priority(requested):
             kernel.GetPriorityClass.restype = w.DWORD
             process = kernel.GetCurrentProcess()
             before = kernel.GetPriorityClass(process)  # inherited; not always NORMAL
-            if requested == "below_normal" and not kernel.SetPriorityClass(process, 0x4000):
+            if requested == "normal" and not kernel.SetPriorityClass(process, 0x20):
                 evidence["reason"] = str(c.WinError(c.get_last_error()))
             value = kernel.GetPriorityClass(process)
             if not value:
                 raise c.WinError(c.get_last_error())
             evidence["read_back"] = value
-            evidence["applied"] = value == (0x4000 if requested == "below_normal" else before)
+            evidence["applied"] = evidence["reason"] is None and value == (0x20 if requested == "normal" else before)
         else:
             before = os.getpriority(os.PRIO_PROCESS, 0)
-            if requested == "below_normal":
+            if requested == "normal":
                 try:
-                    os.nice(10)
+                    os.setpriority(os.PRIO_PROCESS, 0, 0)
                 except OSError as exc:
                     evidence["reason"] = str(exc)
             value = os.getpriority(os.PRIO_PROCESS, 0)
             evidence["read_back"] = value
-            evidence["applied"] = value == (min(19, before + 10) if requested == "below_normal" else before)
+            evidence["applied"] = evidence["reason"] is None and value == (0 if requested == "normal" else before)
         if not evidence["applied"] and evidence["reason"] is None:
             evidence["reason"] = "priority read-back did not match"
     except (OSError, AttributeError) as exc:
@@ -239,7 +239,7 @@ def main():
         with emit_lock:
             print(json.dumps(dict(protocol=PROTOCOL, type=kind, job_id=job["job_id"], **fields)), flush=True)
 
-    output = {"observed": True}
+    output = {"observed": True, "priority": priority("inherit")}
 
     def result(state, artifacts, complete):
         fields = dict(state=state, output=output, artifacts=artifacts)
@@ -264,7 +264,7 @@ def main():
         emit("result", state="failed", output=output, artifacts=[], input_complete=False,
              failure={"message": "max_s must be > 0 and <= 3600"})
         return
-    output["priority"] = priority(params.get("priority", "normal"))
+    output["priority"] = priority(params.get("priority", "inherit"))
     load = Load(observer, int(params["cpu_threads"]), params["max_s"], emit) if "cpu_threads" in params else None
     observer.thread.start()
 

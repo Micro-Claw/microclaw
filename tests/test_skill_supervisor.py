@@ -652,13 +652,19 @@ def test_stdin_stdout_explicit_launch_arguments(supervisors, tmp_path, monkeypat
         seen.append((argv, kw))
         return original(argv, **kw)
     monkeypatch.setattr(s.subprocess, "Popen", launch)
-    finished(submit(supervisors(), tmp_path))
+    value = finished(submit(supervisors(), tmp_path))
+    requested = ("IDLE_PRIORITY_CLASS (inherited)" if s._windows_priority() == 0x40 else
+                 "BELOW_NORMAL_PRIORITY_CLASS") if os.name == "nt" else dict(
+                     niceness=max(10, os.getpriority(os.PRIO_PROCESS, 0)))
+    assert value["priority"]["requested"] == requested
     argv, kw = seen[0]
-    assert argv == [sys.executable, "-u", "-m", "conformance_worker.runner"]
+    prefix = [] if os.name == "nt" or os.getpriority(os.PRIO_PROCESS, 0) >= 10 else ["nice", "-n", str(10 - os.getpriority(os.PRIO_PROCESS, 0))]
+    assert argv == prefix + [sys.executable, "-u", "-m", "conformance_worker.runner"]
+    assert "preexec_fn" not in kw
     assert kw["stdin"] == kw["stdout"] == kw["stderr"] == s.subprocess.PIPE
     assert not kw.get("shell", False)
     if os.name == "nt":
-        assert kw["creationflags"] == 0x00000004 | 0x08000000
+        assert kw["creationflags"] == 0x00000004 | 0x08000000 | (0 if s._windows_priority() == 0x40 else 0x4000)
     else:
         assert kw["start_new_session"] is True
 
@@ -744,8 +750,14 @@ def test_worker_stdin_closure_does_not_gate_analysis(supervisors, tmp_path):
 def test_launch_failure_is_a_record(supervisors, tmp_path):
     handle = supervisors().submit(release(), policy(), now=NOW, python=str(tmp_path / "absent-python"),
                                   operation="self_check", parameters={})
-    value = finished(handle, "supervisor_failed", "launch_failed")
-    assert value["exit_code"] is None
+    if os.name != "nt" and os.getpriority(os.PRIO_PROCESS, 0) < 10:
+        # nice launched successfully, then could not exec the absent interpreter.
+        value = finished(handle, "supervisor_failed", "exit_without_terminal")
+        assert value["exit_code"] != 0
+        assert "absent-python" in value["stderr_tail"]
+    else:
+        value = finished(handle, "supervisor_failed", "launch_failed")
+        assert value["exit_code"] is None
 
 
 @pytest.mark.parametrize("deadline", [0, -1, float("nan"), float("inf"), "1"])
@@ -823,7 +835,10 @@ def test_unexpected_pipe_exception_fails_and_kills_tree(supervisors, tmp_path, m
     elif pipe_name == "stderr":
         class BrokenTail(bytearray):
             def extend(self, chunk):
-                raise KeyError(detail)
+                # nice can warn before the worker (and heartbeat) has started.
+                if heartbeat.exists():
+                    raise KeyError(detail)
+                super().extend(chunk)
         original = s.JobHandle._drain_stderr
 
         def drain(handle, pipe):
@@ -993,33 +1008,100 @@ def test_observer_load_stops_without_writer(supervisors, tmp_path, stop):
         writer.finish()
 
 
-@pytest.mark.parametrize('requested', ['normal', 'below_normal'])
-def test_observer_priority_read_back(supervisors, tmp_path, requested):
-    before = os.getpriority(os.PRIO_PROCESS, 0) if os.name != 'nt' else None
-    handle, _, _ = observe(supervisors(), tmp_path, {'priority': requested})
-    assert handle.notify_acquisition('completed', writer='finished')
-    evidence = finished(handle)['result']['output']['priority']
-    assert evidence['requested'] == requested
-    if not evidence['applied']:
-        assert evidence['reason']
-        # macOS sandbox can deny even lowering one's own priority. Verify the
-        # same OS operation independently; a fabricated failure must not pass.
-        import subprocess
-        probe = subprocess.run([sys.executable, '-c',
-            'import os; os.nice(10)'], stdin=subprocess.DEVNULL, capture_output=True)
-        assert os.name != 'nt' and requested == 'below_normal'
-        assert probe.returncode != 0 and b'Operation not permitted' in probe.stderr
-        assert evidence['read_back'] == before
+def expected_worker_priority():
+    return (0x40 if s._windows_priority() == 0x40 else 0x4000) if os.name == 'nt' else max(os.getpriority(os.PRIO_PROCESS, 0), 10)
+
+
+def assert_launch_priority(value):
+    expected = expected_worker_priority()
+    if value == expected:
         return
-    assert evidence['reason'] is None
+    assert os.name != 'nt'
+    # Independent real probe: GNU/BSD nice may warn and still exec successfully.
+    probe = s.subprocess.run(['nice', '-n', str(max(0, 10 - os.getpriority(os.PRIO_PROCESS, 0))),
+        sys.executable, '-c', 'import os; print(os.getpriority(os.PRIO_PROCESS, 0))'],
+        stdin=s.subprocess.DEVNULL, capture_output=True, text=True)
+    assert 'Operation not permitted' in probe.stderr
+    assert value == int(probe.stdout) == os.getpriority(os.PRIO_PROCESS, 0)
+
+
+def test_observer_priority_read_back(supervisors, tmp_path):
+    handle, _, _ = observe(supervisors(), tmp_path)
+    # Wait for monitor evidence, not merely the pipe reader's ready message.
+    for _ in range(800):
+        if handle.record()['priority']['at_start'] is not None:
+            break
+        assert not handle.wait(0.01)
+    start = handle.record()['priority']['at_start']
+    assert_launch_priority(start)
+    assert handle.notify_acquisition('completed', writer='finished')
+    value = finished(handle)
+    evidence = value['result']['output']['priority']
+    assert evidence == dict(requested='inherit', applied=True, read_back=start, reason=None)
+    end = value['priority']['at_end']
+    assert end == start or (end is None and 'exited' in value['priority']['reason']['at_end'])
+
+
+def test_self_check_priority(supervisors, tmp_path):
+    value = finished(submit(supervisors(), tmp_path, source=release('executable')))
+    assert_launch_priority(value['result']['output']['priority']['read_back'])
+    assert value['priority']['requested'] is not None
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_priority_exactly_two_monitor_reads(supervisors, tmp_path, monkeypatch, failed):
+    reads = []
+    original = s._read_priority
+    def read(process):
+        reads.append(threading.current_thread().name)
+        return (None, 'injected read refusal') if failed else original(process)
+    monkeypatch.setattr(s, '_read_priority', read)
+    handle, _, _ = observe(supervisors(), tmp_path)
+    assert handle.notify_acquisition('completed', writer='finished')
+    value = finished(handle)
+    assert len(reads) == 2
+    assert all(not name.startswith('skill-pipe-') and name != threading.current_thread().name for name in reads)
+    if failed:
+        assert value['priority']['at_start'] is value['priority']['at_end'] is None
+        assert value['priority']['reason'] == dict(at_start='injected read refusal', at_end='injected read refusal')
+
+
+def test_priority_exited_read():
+    from types import SimpleNamespace
+    assert s._read_priority(SimpleNamespace(poll=lambda: 0)) == (None, 'process exited before priority read')
+
+
+@pytest.mark.parametrize('parent', [15, 0x4000, 0x40, 0x20])
+def test_priority_in_parent_subprocess(tmp_path, parent):
+    if (parent == 15) != (os.name != 'nt'):
+        pytest.skip('platform-specific parent priority')
+    script = """
+import json, os, sys
+from pathlib import Path
+from tests.test_skill_supervisor import release, policy, NOW, finished
+from microclaw.skill_supervisor import Supervisor
+sup = Supervisor()
+try:
+    handle = sup.submit(release('executable'), policy(), now=NOW, python=sys.executable,
+                        operation='self_check', parameters={})
+    print(json.dumps(finished(handle)))
+finally:
+    sup.close()
+"""
+    argv = [sys.executable, '-c', script]
+    kw = {}
     if os.name == 'nt':
-        # "normal" leaves the inherited class alone (applied, above); a CI host's
-        # is not always NORMAL, so only below_normal has a fixed read-back.
-        if requested == 'below_normal':
-            assert evidence['read_back'] == 0x4000
+        kw['creationflags'] = parent
     else:
-        assert evidence['read_back'] == (min(19, before + 10) if requested == 'below_normal' else before)
-        assert os.getpriority(os.PRIO_PROCESS, 0) == before
+        argv = ['nice', '-n', str(max(0, 15 - os.getpriority(os.PRIO_PROCESS, 0))), *argv]
+    probe = s.subprocess.run(argv, stdin=s.subprocess.DEVNULL, capture_output=True, text=True, **kw)
+    assert probe.returncode == 0, probe.stderr
+    value = json.loads(probe.stdout)
+    actual = value['result']['output']['priority']['read_back']
+    if os.name != 'nt' and 'Operation not permitted' in probe.stderr:
+        assert_launch_priority(actual)
+    else:
+        assert actual == (max(15, os.getpriority(os.PRIO_PROCESS, 0)) if os.name != 'nt' else 0x40 if parent == 0x40 else 0x4000)
 
 
 @pytest.mark.parametrize('parameters', [{'cpu_threads': 2}, {'cpu_threads': 2, 'max_s': 0}])
@@ -1091,3 +1173,90 @@ def test_observer_stdlib_only_and_bad_lifecycle_message_is_local(tmp_path, bad_m
     assert terminal['output']['bytes_read'] == total
     assert sum(m['type'] == 'result' for m in messages) == 1
     assert sum(m.get('message', '').startswith('ignored lifecycle') for m in messages) == (2 if bad_messages else 0)
+
+
+def test_normal_control_priority_change(supervisors, tmp_path, monkeypatch):
+    # Rendezvous only in this copied test worker: let the monitor sample ready
+    # before the real fixture's normal control executes, and retain it at result.
+    import hashlib
+    import shutil
+    root = tmp_path / 'release'
+    shutil.copytree(FIXTURES / 'executable', root)
+    gate = tmp_path / 'start-sampled'
+    end_gate = tmp_path / 'end-sampled'
+    runner = root / 'fixture_worker' / 'runner.py'
+    source = runner.read_text(encoding='utf-8')
+    source = source.replace('def priority(requested):',
+        'def priority(requested):\n'
+        '    if requested == "normal":\n'
+        f'        while not Path({str(gate)!r}).exists():\n'
+        '            time.sleep(0.001)')
+    source = source.replace('emit("result", **fields)',
+        'emit("result", **fields)\n'
+        f'        while not Path({str(end_gate)!r}).exists():\n'
+        '            time.sleep(0.001)')
+    runner.write_text(source, encoding='utf-8')
+    rel = release('executable')
+    rel['release_dir'] = root
+    for asset in rel['manifest']['assets']:
+        asset['sha256'] = hashlib.sha256((root / asset['path']).read_bytes()).hexdigest()
+    original = s._read_priority
+    reads = []
+    def read(process):
+        value = original(process)
+        reads.append(value)
+        (gate if len(reads) == 1 else end_gate).write_text('sampled', encoding='utf-8')
+        return value
+    monkeypatch.setattr(s, '_read_priority', read)
+    handle = supervisors().submit(rel, policy(), now=NOW, python=sys.executable,
+        operation='observe_dataset', parameters={'priority': 'normal'}, dataset=tmp_path, output_dir=tmp_path)
+    wait_path(tmp_path / 'observation.txt')
+    assert handle.notify_acquisition('completed', writer='finished')
+    value = finished(handle)
+    evidence = value['result']['output']['priority']
+    start, end = value['priority']['at_start'], value['priority']['at_end']
+    assert_launch_priority(start)
+    assert end == evidence['read_back']
+    assert len(reads) == 2
+    if evidence['applied']:
+        assert end == (0x20 if os.name == 'nt' else 0)
+        if os.name == 'nt' or start != 0:
+            assert start != end
+        else:
+            assert_launch_priority(start)  # Independently prove launch lowering was denied.
+    else:
+        assert os.name != 'nt' and evidence['reason']
+        probe = s.subprocess.run(['nice', '-n', str(max(0, start - os.getpriority(os.PRIO_PROCESS, 0))),
+            sys.executable, '-c', 'import os; os.setpriority(os.PRIO_PROCESS, 0, 0)'],
+            stdin=s.subprocess.DEVNULL, capture_output=True, text=True)
+        assert probe.returncode != 0 and ('not permitted' in probe.stderr or 'Permission denied' in probe.stderr)
+        assert end == start
+
+
+def test_priority_os_read_failure_is_nonfatal(supervisors, tmp_path, monkeypatch):
+    if os.name == 'nt':
+        original = s._windows_priority
+        def read(handle=None):
+            if handle is not None:
+                raise OSError('priority access refused')
+            return original(handle)
+        monkeypatch.setattr(s, '_windows_priority', read)
+    else:
+        original = s.os.getpriority
+        def read(which, pid):
+            if pid:
+                raise OSError('priority access refused')
+            return original(which, pid)
+        monkeypatch.setattr(s.os, 'getpriority', read)
+    handle, _, _ = observe(supervisors(), tmp_path)
+    # Keep the real worker alive until the monitor has attempted the OS read.
+    for _ in range(800):
+        if 'at_start' in handle.record()['priority']['reason']:
+            break
+        assert not handle.wait(0.01)
+    assert handle.notify_acquisition('completed', writer='finished')
+    value = finished(handle)
+    assert value['priority']['at_start'] is None
+    assert value['priority']['reason']['at_start'] == 'priority access refused'
+    assert value['priority']['at_end'] is None
+    assert value['priority']['reason']['at_end'] in ('priority access refused', 'process exited before priority read')

@@ -5,7 +5,9 @@ signature verification and put_nowait. Notifications validate small messages and
 put_nowait; neither path launches, hashes assets, accesses the filesystem, writes
 pipes, starts threads, or waits for a worker. Short locks protect in-memory
 transitions only, never I/O. Fixed dispatchers own launch, deadlines, verification
-and cleanup. Message bytes, pending stdin, retained stdout and stderr, queued
+and cleanup. Priority launch policy and the two worker priority samples run only
+in the dispatcher monitor, never on submit/notify or in pipe callbacks. Message
+bytes, pending stdin, retained stdout and stderr, queued
 jobs and live workers have explicit bounds. Notification history retains the first
 32 attempts and counts subsequent attempts without retaining them. There is no
 total analysis deadline unless supplied. All timing uses perf_counter, including
@@ -129,6 +131,33 @@ class _WindowsJob:
             self.handle = None
 
 
+def _windows_priority(handle=None):
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.GetPriorityClass.argtypes = [w.HANDLE]
+    kernel.GetPriorityClass.restype = w.DWORD
+    value = kernel.GetPriorityClass(kernel.GetCurrentProcess() if handle is None else handle)
+    if not value:
+        raise c.WinError(c.get_last_error())
+    return value
+
+
+def _read_priority(process):
+    """Best-effort evidence, including an explicit exited-before-read outcome."""
+    try:
+        if process.poll() is not None:
+            return None, "process exited before priority read"
+        value = (_windows_priority(process._handle) if os.name == "nt" else
+                 os.getpriority(os.PRIO_PROCESS, process.pid))
+        return value, None
+    except ProcessLookupError:
+        return None, "process exited before priority read"
+    except (OSError, AttributeError) as exc:
+        return None, str(exc)
+
+
 def _kill_tree(process, job):
     if os.name == "nt":
         if job is not None:
@@ -169,6 +198,7 @@ class JobHandle:
         self._stdin_unavailable_reason = None
         self._violation = None
         self._record = dict(job_id=self.job_id, release={}, operation=None, state="queued",
+                            priority=dict(requested=None, at_start=None, at_end=None, reason={}),
                             result=None, failure=None, artifacts=[], rejected_artifacts=[],
                             lifecycle=dict(acquisition=None, writer=None), notifications=[], notifications_dropped=0,
                             status=[], status_dropped=0, stderr_tail="", exit_code=None,
@@ -500,6 +530,21 @@ class Supervisor:
         process = job = temporary = None
         threads = []
         failure = None
+        sampled = set()
+
+        def sample_priority():
+            with handle._lock:
+                arrivals = dict(at_start=handle._first is not None,
+                                at_end=handle._record["result"] is not None)
+            for phase, arrived in arrivals.items():
+                if arrived and phase not in sampled:
+                    sampled.add(phase)
+                    value, reason = _read_priority(process)
+                    with handle._lock:
+                        handle._record["priority"][phase] = value
+                        if reason:
+                            handle._record["priority"]["reason"][phase] = reason
+
         try:
             packages.verify_release_assets(handle._release_dir, handle._manifest)
             if self._closing.is_set():
@@ -515,9 +560,26 @@ class Supervisor:
                    if not key.upper().startswith("MICROCLAW_") and
                    key.upper() not in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"}}
             env.update(PYTHONPATH=os.path.abspath(handle._release_dir), PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-            kwargs = dict(creationflags=0x00000004 | 0x08000000) if os.name == "nt" else dict(start_new_session=True)
+            argv = [handle._python, "-u", "-m", handle._manifest["entry_point"]["module"]]
+            if os.name == "nt":
+                idle = _windows_priority() == 0x40
+                kwargs = dict(creationflags=0x00000004 | 0x08000000 | (0 if idle else 0x4000))
+                requested = "IDLE_PRIORITY_CLASS (inherited)" if idle else "BELOW_NORMAL_PRIORITY_CLASS"
+            else:
+                try:
+                    own = os.nice(0)
+                except OSError:
+                    # macOS sandbox can deny even nice(0); read without a write.
+                    own = os.getpriority(os.PRIO_PROCESS, 0)
+                increment = max(0, 10 - own)
+                if increment:
+                    argv = ["nice", "-n", str(increment), *argv]
+                kwargs = dict(start_new_session=True)
+                requested = dict(niceness=own + increment)
+            with handle._lock:
+                handle._record["priority"]["requested"] = requested
             handle._spawned = time.perf_counter()
-            process = subprocess.Popen([handle._python, "-u", "-m", handle._manifest["entry_point"]["module"]],
+            process = subprocess.Popen(argv,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        cwd=cwd, env=env, bufsize=0, **kwargs)
             if os.name == "nt":
@@ -528,7 +590,14 @@ class Supervisor:
                 thread = threading.Thread(target=target, args=args, daemon=True, name=f"skill-pipe-{handle.job_id}")
                 threads.append(thread)
                 thread.start()
-            while process.poll() is None:
+            while True:
+                exited = process.poll() is not None
+                if exited:
+                    # Consume buffered arrivals before sampling an exited worker.
+                    threads[0].join(timeout=2)
+                sample_priority()
+                if exited:
+                    break
                 now = time.perf_counter()
                 with handle._lock:
                     first, terminal = handle._first, handle._record["result"]
