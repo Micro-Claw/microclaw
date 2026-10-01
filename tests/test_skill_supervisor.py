@@ -25,6 +25,7 @@ def release(kind="conformance"):
     doc = intake()
     for key in doc.keys() & m.keys():
         doc[key] = deepcopy(m[key])
+    doc["skills"] = [{k: skill[k] for k in ("name", "description")} for skill in m["skills"]]
     return dict(manifest=m, intake=sign(doc), release_dir=root)
 
 

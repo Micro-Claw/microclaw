@@ -43,6 +43,14 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 RELEASE_TYPE = "microclaw.skill-release.v1"
+
+WITHDRAWAL_TYPE = "microclaw.skill-withdrawal.v1"
+CATALOG_TYPE = "microclaw.catalog.v1"
+MAX_POLICY_BYTES = 1024 * 1024
+MAX_CATALOG_BYTES = 16 * 1024 * 1024
+MAX_CATALOG_RELEASES = 16384
+MAX_CATALOG_WITHDRAWALS = 16384
+
 TRUST_POLICY_TYPE = "microclaw.trust-policy.v1"
 PRODUCTION_ROOTS = {"environment": "production", "keys": []}
 MAX_SIGNATURE_LENGTH = 88
@@ -228,7 +236,8 @@ def validate_intake(record):
     if not isinstance(record, dict):
         raise PackageRefusal("intake", "expected an object")
     required = {"type", "package_id", "publisher", "version", "artifact",
-                "artifact_digest", "kind", "microclaw", "signature"}
+                "artifact_digest", "kind", "microclaw", "signature",
+                "license", "source_url", "issues_url", "skills"}
     if record.get("kind") == "executable":
         required |= {"python", "platforms", "protocol_version"}
     _mapping(record, "", required)
@@ -242,6 +251,19 @@ def validate_intake(record):
     _url(record["artifact"], "artifact")
     _digest(record["artifact_digest"], "artifact_digest")
     _compatibility(record)
+    _text(record["license"], "license", MAX_LICENSE_LENGTH)
+    for field in ("source_url", "issues_url"):
+        _url(record[field], field)
+    _list(record["skills"], "skills", MAX_SKILLS)
+    names = set()
+    for i, skill in enumerate(record["skills"]):
+        field = f"skills[{i}]"
+        _mapping(skill, field, {"name", "description"})
+        _identifier(skill["name"], field + ".name", MAX_SKILL_NAME_LENGTH)
+        _text(skill["description"], field + ".description", MAX_DESCRIPTION_LENGTH)
+        if skill["name"] in names:
+            raise PackageRefusal(field + ".name", "duplicate skill name")
+        names.add(skill["name"])
     _signature(record["signature"])
     return deepcopy(record)
 
@@ -429,12 +451,17 @@ def validate_manifest(manifest):
 
 def _bound_release(manifest, intake):
     """Bind validated manifest and intake without I/O."""
-    fields = ["publisher", "package_id", "version", "artifact", "kind", "microclaw"]
+    fields = ["publisher", "package_id", "version", "artifact", "kind", "microclaw",
+              "license", "source_url", "issues_url"]
     if manifest["kind"] == "executable":
         fields += ["python", "platforms", "protocol_version"]
     for field in fields:
         if manifest[field] != intake[field]:
             raise PackageRefusal("intake." + field, "does not match verified manifest")
+
+    card = [{k: skill[k] for k in ("name", "description")} for skill in manifest["skills"]]
+    if card != intake["skills"]:
+        raise PackageRefusal("intake.skills", "does not match verified manifest")
 
 
 def _enabled_releases(records, policy, now, *, exclusions=None):
@@ -664,7 +691,8 @@ def verify_trust_policy(document, roots=None, *, previous=None):
     _list(document["revoked_releases"], "trust.revoked_releases", MAX_REVOKED_RELEASES, empty=True)
     for i, release in enumerate(document["revoked_releases"]):
         field = f"trust.revoked_releases[{i}]"
-        _mapping(release, field, {"package_id", "version", "artifact_digest"})
+        _mapping(release, field, {"package_id", "version", "artifact_digest", "reason"})
+        _text(release["reason"], field + ".reason", MAX_DESCRIPTION_LENGTH)
         _identifier(release["package_id"], field + ".package_id", MAX_PACKAGE_ID_LENGTH)
         _version(release["version"], field + ".version")
         _digest(release["artifact_digest"], field + ".artifact_digest")
@@ -705,9 +733,10 @@ def check_release(intake, policy, *, purpose, now, artifact=None):
     _verify_signature(intake, {key["key_id"]: base64.b64decode(key["public_key"])})
     if intake["kind"] == "executable" and intake["protocol_version"] not in SUPPORTED_PROTOCOLS:
         raise PackageRefusal("protocol_version", "unsupported executable protocol")
-    if any(release["artifact_digest"] == intake["artifact_digest"]
-           for release in policy["revoked_releases"]):
-        raise PackageRefusal("artifact_digest", "release revoked")
+    blocked = next((release for release in policy["revoked_releases"]
+                    if release["artifact_digest"] == intake["artifact_digest"]), None)
+    if blocked is not None:
+        raise PackageRefusal("artifact_digest", "release revoked: " + blocked["reason"])
     if purpose == "admission":
         if stale:
             raise PackageRefusal("trust.expires_at", "policy expired")
@@ -728,6 +757,67 @@ def check_release(intake, policy, *, purpose, now, artifact=None):
     return {"publisher": intake["publisher"], "key_id": key["key_id"],
             "key_state": key["state"], "revision": policy["revision"],
             "stale": stale, "purpose": purpose, "environment": policy["environment"]}
+
+
+def verify_withdrawal(document, policy):
+    """Verify publisher provenance, without I/O or freshness-derived state."""
+    _mapping(document, "withdrawal", {"type", "publisher", "package_id", "version",
+                                       "artifact_digest", "reason", "signature"})
+    if document["type"] != WITHDRAWAL_TYPE:
+        raise PackageRefusal("type", "expected skill withdrawal type")
+    _identifier(document["publisher"], "publisher", MAX_PUBLISHER_LENGTH)
+    _identifier(document["package_id"], "package_id", MAX_PACKAGE_ID_LENGTH)
+    _version(document["version"], "version")
+    _digest(document["artifact_digest"], "artifact_digest")
+    _text(document["reason"], "reason", MAX_DESCRIPTION_LENGTH)
+    _signature(document["signature"])
+    if policy is None:
+        raise PackageRefusal("trust", "no verified policy")
+    publisher = policy["publishers"].get(document["publisher"])
+    if publisher is None or publisher["state"] == "revoked":
+        raise PackageRefusal("publisher", "unknown or revoked publisher")
+    keys = {key["key_id"]: base64.b64decode(key["public_key"])
+            for key in publisher["keys"] if key["state"] != "revoked"}
+    _verify_signature(document, keys)
+    return deepcopy(document)
+
+
+def verify_catalog(document, policy, *, now, cached=False):
+    """Isolate every entry, including conflicting copies, in an unsigned envelope."""
+    _mapping(document, "catalog", {"type", "releases", "withdrawals"})
+    if document["type"] != CATALOG_TYPE:
+        raise PackageRefusal("catalog.type", "expected catalog type")
+    accepted, exclusions = {"type": CATALOG_TYPE, "releases": [], "withdrawals": []}, []
+    for collection, limit in (("releases", MAX_CATALOG_RELEASES),
+                              ("withdrawals", MAX_CATALOG_WITHDRAWALS)):
+        # Fetch bounds constrain each remote document. The permanent union may
+        # grow beyond one fetch's count; bounding it would silently forget history.
+        if cached and isinstance(document[collection], list):
+            limit = len(document[collection])
+        _list(document[collection], "catalog." + collection, limit, empty=True)
+        groups = {}
+        for i, entry in enumerate(document[collection]):
+            digest = entry.get("artifact_digest") if isinstance(entry, dict) else None
+            # Group only actual digest strings; malformed records remain isolated.
+            key = digest if isinstance(digest, str) else (i,)
+            groups.setdefault(key, []).append((i, entry))
+        for copies in groups.values():
+            conflict = any(entry != copies[0][1] for _, entry in copies)
+            for i, entry in copies:
+                try:
+                    if conflict:
+                        raise PackageRefusal("artifact_digest", "conflicting entries for one digest")
+                    if collection == "releases":
+                        check_release(entry, policy, purpose="execution", now=now)
+                    else:
+                        verify_withdrawal(entry, policy)
+                except PackageRefusal as exc:
+                    exclusions.append(dict(collection=collection, index=i, entry=deepcopy(entry),
+                                           reason=dict(field=exc.field, detail=str(exc).removeprefix(exc.field + ": "))))
+                else:
+                    if i == copies[0][0]:
+                        accepted[collection].append(deepcopy(entry))
+    return accepted, exclusions
 
 
 ANALYSIS_PROTOCOL = "microclaw.analysis.v1"

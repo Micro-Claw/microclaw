@@ -7,9 +7,18 @@
   "type": "microclaw.skill-release.v1",
   "kind": "markdown",
   "microclaw": ">=0.1,<2",
+  "license": "MIT",
+  "source_url": "https://github.com/fixture-lab/skills",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "skills": [
+    {
+      "name": "workflow",
+      "description": "A publisher-provided fixture workflow."
+    }
+  ],
   "signature": {
     "alg": "ed25519",
     "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
-    "value": "9Fd4QEu4D46jJZ2tfHm9cG0pBxu9NSENCp8SLWtm6WAWbW/f5C3b/vbxqM2Yooe4ePqbZY1hltNOykR4JsTiBw=="
+    "value": "sgkxQyUe7VDKsjK9CR0akgOnINPfN8CUT+PJUwTHz+BmzvbGiyeUb2G2eNKJ+QqL1eE2hgNihjfKfXA+hjGwBQ=="
   }
 }

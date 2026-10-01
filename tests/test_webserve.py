@@ -30,6 +30,9 @@ from microclaw.webserve import build_app, serve
 def _skill_store_workers(tmp_path, monkeypatch, _isolate_microclaw_home):
     # Store isolation is shared; keep subprocess caches and worker teardown local.
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
+    def offline(request, timeout):
+        raise OSError("test catalog is offline")
+    monkeypatch.setattr(updates, "_default_opener", offline)
     yield
     # Let startup finish while this test's redirected home still applies.
     for worker in threading.enumerate():
@@ -2992,7 +2995,7 @@ def test_skill_jobs_do_not_reserve_acquisition_and_report_conflicts(skill_client
         assert after["previous"] == pointer["previous"]
 
 
-def test_skill_startup_thread_does_not_delay_lifespan_or_get(session, monkeypatch):
+def test_skill_startup_thread_does_not_delay_lifespan_or_get(session, monkeypatch, capsys):
     from microclaw import skill_store
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     calls = []
@@ -3008,6 +3011,12 @@ def test_skill_startup_thread_does_not_delay_lifespan_or_get(session, monkeypatc
             finished.set()
     monkeypatch.setattr(skill_store, "recover", recover)
     monkeypatch.setattr(skill_store, "recheck", recheck)
+    refreshed = threading.Event()
+    def refresh(**kwargs):
+        calls.append(("refresh", threading.get_ident(), kwargs))
+        refreshed.set()
+        raise RuntimeError("test refresh failure")
+    monkeypatch.setattr(skill_store, "refresh_catalog", refresh)
     try:
         with TestClient(build_app(session)) as client:
             assert entered.wait(3)
@@ -3016,9 +3025,11 @@ def test_skill_startup_thread_does_not_delay_lifespan_or_get(session, monkeypatc
     finally:
         release.set()
         assert finished.wait(3)
-    assert [call[0] for call in calls] == ["recover", "recheck"]
-    assert calls[0][1] == calls[1][1] != main_thread
-    assert all(call[2]["retained_digests"] == frozenset() for call in calls)
+        assert refreshed.wait(3)
+    assert [call[0] for call in calls] == ["recover", "recheck", "refresh"]
+    assert "Could not refresh community catalog: test refresh failure" in capsys.readouterr().err
+    assert calls[0][1] == calls[1][1] == calls[2][1] != main_thread
+    assert all(call[2]["retained_digests"] == frozenset() for call in calls[:2])
 
 
 @pytest.mark.parametrize("action", ["rollback", "repair", "discovery"])

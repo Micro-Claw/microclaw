@@ -570,7 +570,7 @@ def test_missing_policy_and_revocation_refuse_without_deleting(tmp_path):
     record = install(tmp_path, kind="markdown")
     policy = store.load_trust_policy()
     policy["revision"] += 1
-    policy["revoked_releases"] = [{key: record["intake"][key] for key in ("package_id", "version", "artifact_digest")}]
+    policy["revoked_releases"] = [{key: record["intake"][key] for key in ("package_id", "version", "artifact_digest")} | {"reason": "Test block"}]
     store.store_trust_policy(builder.sign(policy, key="root"))
     with pytest.raises(store.PackageRefusal, match="revoked"):
         store.resolve("markdown-fixture", record["artifact_digest"], now=NOW)
@@ -1189,3 +1189,348 @@ def test_installed_observer_evidence_survives_durable_lifecycle_records(tmp_path
     job._persist()
     cd.close_analysis_supervisor()
     assert read(path)['result']['output'] == evidence
+
+
+# Catalog fakes implement the updater's Request/timeout/response contract.
+class CatalogResponse:
+    def __init__(self, document=None, *, status=200, headers=None, data=None):
+        import io
+        self.status, self.headers = status, headers or {}
+        self.stream = io.BytesIO(data if data is not None else json.dumps(document).encode())
+        self.closed = False
+
+    def read(self, n):
+        return self.stream.read(n)
+
+    def close(self):
+        self.closed = True
+
+
+def catalog(releases=(), withdrawals=()):
+    return dict(type=packages.CATALOG_TYPE, releases=list(releases), withdrawals=list(withdrawals))
+
+
+def release():
+    return read(FIXTURES / 'markdown-intake.json')
+
+
+def withdrawal():
+    return builder.sign(dict(type=packages.WITHDRAWAL_TYPE,
+                             **{k: release()[k] for k in ('publisher', 'package_id', 'version', 'artifact_digest')},
+                             reason='Publisher stopped offering this release'))
+
+
+def catalog_opener(document, *, policy=None):
+    def open(request, timeout):
+        assert timeout == updates.HTTP_TIMEOUT_SECONDS
+        return CatalogResponse(policy or read(FIXTURES / 'trust/policy-TEST-ONLY.json')
+                               if request.full_url.endswith('policy.json') else document)
+    return open
+
+
+def test_catalog_union_withdrawal_offline_and_read_time(monkeypatch):
+    first = catalog([release()], [withdrawal()])
+    assert store.refresh_catalog(opener=catalog_opener(first), now=NOW)['error'] is None
+    assert store.refresh_catalog(opener=catalog_opener(catalog()), now=NOW)['error'] is None
+    result = store.catalog_entries(now=NOW)
+    assert len(result['releases']) == len(result['withdrawals']) == 1
+    assert result['releases'][0]['withdrawn']
+    assert result['releases'][0]['withdrawal_reason'] == withdrawal()['reason']
+    before = (store.store_dir() / 'catalog/catalog.json').read_bytes()
+    def offline(request, timeout):
+        raise OSError('connection unavailable')
+    error = store.refresh_catalog(opener=offline, now=NOW)['error']['detail']
+    assert 'could not be reached' in error and 'policy.json' in error and 'catalog.json' in error
+    assert (store.store_dir() / 'catalog/catalog.json').read_bytes() == before
+    monkeypatch.setattr(store, 'current_build', lambda: dict(version='0.0.0', protocols=[]))
+    assert not store.catalog_entries(now=NOW)['releases'][0]['compatible']
+    assert store.status()['catalog']['state'] == 'offline'
+
+
+def test_catalog_entry_isolation_duplicates_and_tampering():
+    malformed = dict(release(), license='bad\nlicense')
+    different = builder.sign(dict(release(), artifact_digest='b'*64))
+    accepted, excluded = packages.verify_catalog(catalog([release(), release(), malformed, different]),
+                                                 store.load_trust_policy(), now=NOW)
+    assert accepted['releases'] == [different]
+    assert len(excluded) == 3
+    assert all(e['reason']['field'] == 'artifact_digest' for e in excluded)
+    accepted, excluded = packages.verify_catalog(catalog([None, release(), release()]),
+                                                 store.load_trust_policy(), now=NOW)
+    assert accepted['releases'] == [release()] and len(excluded) == 1
+    changed = dict(release(), license='changed')
+    accepted, excluded = packages.verify_catalog(catalog([changed, different]),
+                                                 store.load_trust_policy(), now=NOW)
+    assert accepted['releases'] == [different]
+    assert excluded[0]['reason']['field'] == 'signature.value'
+
+
+@pytest.mark.parametrize('change,field', [('reason', 'reason'), ('type', 'type'), ('signature', 'signature.value')])
+def test_withdrawal_fields_and_signature(change, field):
+    document = withdrawal()
+    if change == 'reason':
+        document['reason'] = 'bad\u2028reason'
+    elif change == 'type':
+        document['type'] = packages.RELEASE_TYPE
+    else:
+        document['signature'] = release()['signature']
+    with pytest.raises(packages.PackageRefusal) as exc:
+        packages.verify_withdrawal(document, store.load_trust_policy())
+    assert exc.value.field == field
+
+
+def test_catalog_rechecks_revocations_and_keeps_signed_cache():
+    store.refresh_catalog(opener=catalog_opener(catalog([release()], [withdrawal()])), now=NOW)
+    path = store.store_dir() / 'catalog/catalog.json'
+    before = path.read_bytes()
+    policy = store.load_trust_policy()
+    policy['revision'] += 1
+    policy['publishers']['fixture-lab']['state'] = 'revoked'
+    store.store_trust_policy(builder.sign(policy, 'root'))
+    result = store.catalog_entries(now=NOW)
+    assert not result['releases'] and not result['withdrawals'] and len(result['exclusions']) == 2
+    assert path.read_bytes() == before
+
+
+def test_catalog_envelope_refusal_preserves_cache_and_corruption_recovers():
+    store.refresh_catalog(opener=catalog_opener(catalog([release()])), now=NOW)
+    path = store.store_dir() / 'catalog/catalog.json'
+    before = path.read_bytes()
+    state = store.refresh_catalog(opener=catalog_opener(dict(type='wrong', releases=[], withdrawals=[])), now=NOW)
+    assert state['error'] and path.read_bytes() == before
+    path.write_text('{invalid')
+    (path.parent / 'state.json').write_text('{invalid')
+    assert store.refresh_catalog(opener=catalog_opener(catalog([release()])), now=NOW)['error'] is None
+    write(path, catalog([None, release()]))
+    assert len(store.catalog_entries(now=NOW)['releases']) == 1
+
+
+def test_catalog_unpublished_never_requests(monkeypatch):
+    (store.store_dir() / 'trust/roots.json').unlink()
+    def forbidden(*args):
+        pytest.fail('unpublished catalog attempted network')
+    result = store.refresh_catalog(opener=forbidden, now=NOW)
+    assert result['error']['detail'] == 'no community catalog is published yet'
+    assert store.status()['catalog']['state'] == 'unpublished'
+
+
+def test_catalog_single_flight():
+    assert store._catalog_refresh_lock.acquire(blocking=False)
+    try:
+        assert 'in progress' in store.refresh_catalog(opener=lambda *args: pytest.fail("concurrent refresh attempted network"), now=NOW)['error']['detail']
+    finally:
+        store._catalog_refresh_lock.release()
+
+
+def test_catalog_redirect_and_forbidden_redirect():
+    import urllib.error
+    roots = read(store.store_dir() / 'trust/roots.json')
+    roots['catalog_url'] = 'https://raw.githubusercontent.com/test/catalog/'
+    write(store.store_dir() / 'trust/roots.json', roots)
+    urls = []
+    def open(request, timeout):
+        urls.append(request.full_url)
+        if '/test/catalog/' in request.full_url:
+            raise urllib.error.HTTPError(request.full_url, 302, 'redirect',
+                                         {'Location': '/next/' + request.full_url.rsplit('/', 1)[-1]}, None)
+        return CatalogResponse(store.load_trust_policy() if request.full_url.endswith('policy.json') else catalog([release()]))
+    assert store.refresh_catalog(opener=open, now=NOW)['error'] is None
+    assert len(urls) == 4
+    def forbidden(request, timeout):
+        return CatalogResponse(status=302, headers={'Location': 'https://evil.example/catalog.json'})
+    result = store.refresh_catalog(opener=forbidden, now=NOW)
+    assert 'not allowlisted' in result['error']['detail']
+
+
+def test_catalog_failed_policy_can_merge_cached_policy_and_expired_refuses():
+    import urllib.error
+    def open(request, timeout):
+        if request.full_url.endswith('policy.json'):
+            raise urllib.error.HTTPError(request.full_url, 404, 'missing', {}, None)
+        return CatalogResponse(catalog([release()]))
+    result = store.refresh_catalog(opener=open, now=NOW)
+    assert 'HTTP 404' in result['error']['detail'] and 'repository is not public' not in result['error']['detail']
+    assert len(store.catalog_entries(now=NOW)['releases']) == 1
+    policy = store.load_trust_policy()
+    policy.update(revision=2, expires_at='2020-01-01T00:00:00Z')
+    result = store.refresh_catalog(opener=catalog_opener(catalog(), policy=builder.sign(policy, 'root')), now=NOW)
+    assert 'policy expired' in result['error']['detail']
+    assert len(store.catalog_entries(now=NOW)['releases']) == 1
+    assert store._catalog_status(now=NOW)['stale']
+
+
+@pytest.mark.parametrize('previous', ['verified', 'invalid_signature', 'corrupt', 'different_environment', 'missing'])
+def test_policy_recovery_branches(previous):
+    path = store.store_dir() / 'trust/policy.json'
+    policy = store.load_trust_policy()
+    if previous == 'invalid_signature':
+        write(path, dict(policy, signature=dict(policy['signature'], value='A'*86+'==')))
+        with pytest.raises(packages.PackageRefusal, match='strictly greater'):
+            store.store_trust_policy(policy)
+    elif previous == 'corrupt':
+        path.write_text('{broken')
+    elif previous == 'different_environment':
+        write(path, dict(policy, environment='production', revision=999))
+    elif previous == 'missing':
+        path.unlink()
+    else:
+        store.store_trust_policy(policy)
+        conflicting = builder.sign(dict(policy, expires_at='2029-01-01T00:00:00Z'), 'root')
+        with pytest.raises(packages.PackageRefusal, match='conflicting'):
+            store.store_trust_policy(conflicting)
+    next_policy = builder.sign(dict(policy, revision=2), 'root')
+    assert store.store_trust_policy(next_policy)['revision'] == 2
+
+
+def test_discovery_never_reads_catalog_or_requests(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail('per-turn discovery touched catalog or network')
+    monkeypatch.setattr(store, 'catalog_entries', forbidden)
+    monkeypatch.setattr(store, '_catalog_file', forbidden)
+    monkeypatch.setattr(updates, '_default_opener', forbidden)
+    assert store.discovery_text() == ''
+    with pytest.raises(packages.PackageRefusal):
+        store.load_discovered_skill('fixture-lab/markdown-fixture/workflow')
+
+
+def test_catalog_bounds_and_state_isolation(monkeypatch):
+    monkeypatch.setattr(packages, 'MAX_CATALOG_BYTES', 32)
+    result = store.refresh_catalog(opener=catalog_opener(catalog([release()])), now=NOW)
+    assert 'size limit' in result['error']['detail']
+    assert not (store.store_dir() / 'catalog/catalog.json').exists()
+    monkeypatch.setattr(packages, 'MAX_CATALOG_RELEASES', 1)
+    with pytest.raises(packages.PackageRefusal, match='exceeds 1'):
+        packages.verify_catalog(catalog([release(), release()]), store.load_trust_policy(), now=NOW)
+    write(store.store_dir() / 'catalog/state.json', {'error': [], 'exclusions': 'invalid'})
+    assert store.status()['catalog']['fetch_exclusions'] == []
+
+
+def test_catalog_installed_and_build_fields_are_not_cached(monkeypatch):
+    document = release()
+    write(store.store_dir() / 'catalog/catalog.json', catalog([document]))
+    path = store._package(document['package_id']) / 'installs' / ('a'*16 + '-aaaaaa')
+    write(path / 'install.json', dict(intake=document, state='ready'))
+    result = store.catalog_entries(now=NOW)['releases'][0]
+    assert result['installed'] and result['compatible']
+    (path / 'install.json').unlink()
+    assert not store.catalog_entries(now=NOW)['releases'][0]['installed']
+    assert set(read(store.store_dir() / 'catalog/catalog.json')['releases'][0]) == set(document)
+
+
+@pytest.mark.parametrize('state', ['retired', 'revoked'])
+def test_catalog_withdrawal_key_rotation(state):
+    policy = store.load_trust_policy()
+    policy['publishers']['fixture-lab']['keys'][0]['state'] = state
+    if state == 'retired':
+        assert packages.verify_withdrawal(withdrawal(), policy) == withdrawal()
+    else:
+        with pytest.raises(packages.PackageRefusal):
+            packages.verify_withdrawal(withdrawal(), policy)
+
+
+def test_catalog_root_rotation_recovery():
+    roots = read(store.store_dir() / 'trust/roots.json')
+    # A shipped replacement root; the previous root signature is no longer valid.
+    key = read(FIXTURES / 'trust/publisher-b-TEST-ONLY-public.json')
+    roots['keys'] = [key]
+    write(store.store_dir() / 'trust/roots.json', roots)
+    document = read(FIXTURES / 'trust/policy-TEST-ONLY.json')
+    with pytest.raises(packages.PackageRefusal, match='strictly greater'):
+        store.store_trust_policy(builder.sign(document, 'publisher-b'))
+    document['revision'] = 2
+    assert store.store_trust_policy(builder.sign(document, 'publisher-b'))['revision'] == 2
+
+
+def test_catalog_one_signature_per_entry_per_read(monkeypatch):
+    document = catalog([release(), builder.sign(dict(release(), artifact_digest='a'*64))], [withdrawal()])
+    write(store.store_dir() / 'catalog/catalog.json', document)
+    real = packages._verify_signature
+    calls = []
+    def verify(document, *args, **kwargs):
+        calls.append(document['type'])
+        return real(document, *args, **kwargs)
+    monkeypatch.setattr(packages, '_verify_signature', verify)
+    for reader in (lambda: store.catalog_entries(now=NOW), store.status):
+        calls.clear()
+        reader()
+        assert calls.count(packages.RELEASE_TYPE) == 2
+        assert calls.count(packages.WITHDRAWAL_TYPE) == 1
+
+
+def test_catalog_read_time_block_reason():
+    write(store.store_dir() / 'catalog/catalog.json', catalog([release()]))
+    policy = store.load_trust_policy()
+    policy.update(revision=2, revoked_releases=[{k: release()[k] for k in
+                  ('package_id', 'version', 'artifact_digest')} | {'reason': 'Unsafe publisher release'}])
+    store.store_trust_policy(builder.sign(policy, 'root'))
+    result = store.catalog_entries(now=NOW)
+    assert not result['releases']
+    assert result['exclusions'][0]['block_reason']['detail'] == 'Unsafe publisher release'
+
+
+def test_catalog_status_reports_last_fetch_exclusions():
+    document = dict(release(), license='tampered')
+    store.refresh_catalog(opener=catalog_opener(catalog([document])), now=NOW)
+    result = store.status()['catalog']
+    assert result['excluded'] == 1
+    assert result['exclusions'][0]['reason']['field'] == 'signature.value'
+
+
+def test_catalog_malformed_is_excluded_without_claiming_operator_block():
+    write(store.store_dir() / 'catalog/catalog.json', catalog([None, dict(release(), license='tampered')]))
+    result = store.catalog_entries(now=NOW)
+    assert all(not e.get('blocked', False) for e in result['exclusions'])
+
+
+def test_catalog_union_can_outgrow_one_fetch_bound(monkeypatch):
+    monkeypatch.setattr(packages, 'MAX_CATALOG_RELEASES', 1)
+    one, two = release(), builder.sign(dict(release(), artifact_digest='a'*64))
+    store.refresh_catalog(opener=catalog_opener(catalog([one])), now=NOW)
+    store.refresh_catalog(opener=catalog_opener(catalog([two])), now=NOW)
+    assert len(store.catalog_entries(now=NOW)['releases']) == 2
+
+
+def test_catalog_merge_re_reads_another_process_union():
+    other = builder.sign(dict(release(), artifact_digest='a'*64))
+    def open(request, timeout):
+        if request.full_url.endswith('policy.json'):
+            return CatalogResponse(store.load_trust_policy())
+        # Simulate another process publishing while this process fetches.
+        write(store.store_dir() / 'catalog/catalog.json', catalog([other]))
+        return CatalogResponse(catalog([release()]))
+    store.refresh_catalog(opener=open, now=NOW)
+    assert {r['artifact_digest'] for r in store.catalog_entries(now=NOW)['releases']} == {
+        release()['artifact_digest'], other['artifact_digest']}
+
+
+def test_catalog_verification_is_pure(monkeypatch):
+    policy = store.load_trust_policy()
+    document = catalog([release()], [withdrawal()])
+    def forbidden(*args, **kwargs):
+        pytest.fail('trust verification performed I/O')
+    import socket
+    monkeypatch.setattr(Path, 'open', forbidden)
+    monkeypatch.setattr(Path, 'read_text', forbidden)
+    monkeypatch.setattr(Path, 'read_bytes', forbidden)
+    monkeypatch.setattr(socket, 'socket', forbidden)
+    monkeypatch.setattr(store, '_write', forbidden)
+    verified, exclusions = packages.verify_catalog(document, policy, now=NOW)
+    assert len(verified['releases']) == len(verified['withdrawals']) == 1
+    assert not exclusions
+
+
+def test_catalog_malformed_cached_metadata_is_isolated():
+    write(store.store_dir() / 'catalog/catalog.json', catalog([
+        dict(release(), publisher=[], artifact_digest='b'*64), dict(release(), artifact_digest=[]), release()]))
+    result = store.catalog_entries(now=NOW)
+    assert len(result['releases']) == 1 and len(result['exclusions']) == 2
+
+
+def test_catalog_conflicting_history_cannot_unwithdraw():
+    store.refresh_catalog(opener=catalog_opener(catalog([release()], [withdrawal()])), now=NOW)
+    changed = builder.sign(dict(withdrawal(), reason='A changed withdrawal reason'))
+    state = store.refresh_catalog(opener=catalog_opener(catalog([release()], [changed])), now=NOW)
+    result = store.catalog_entries(now=NOW)
+    assert result['releases'][0]['withdrawn']
+    assert result['releases'][0]['withdrawal_reason'] == withdrawal()['reason']
+    assert state['exclusions'][0]['reason']['field'] == 'artifact_digest'
