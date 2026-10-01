@@ -1129,6 +1129,82 @@ def catalog_entries(*, now):
                 policy=policy)
 
 
+def search_catalog(query="", *, now):
+    """Search saved publisher metadata; never fetch or change discovery state."""
+    try:
+        if not isinstance(query, str) or len(query) > packages.MAX_DESCRIPTION_LENGTH:
+            raise PackageRefusal("query", f"expected text of at most {packages.MAX_DESCRIPTION_LENGTH} characters")
+        # Catalog readers tolerate damaged caches for panel recovery. Search must
+        # distinguish an unreadable cache from a successful search with no matches.
+        for filename in ("catalog.json", "state.json"):
+            _read(store_dir() / "catalog" / filename)
+        snapshot, candidates, policy, _, _ = _discovery_state(now=now)
+        catalog = catalog_entries(now=now)
+        fetch = _catalog_status(now=now, policy=policy)
+        fetch = {key: fetch[key] for key in ("state", "last_success", "stale")}
+        installed = {}
+        for row in snapshot["packages"]:
+            for record in row["installs"]:
+                intake = record.get("intake")
+                if (record.get("state") != "ready" or not isinstance(intake, dict)
+                        or not isinstance(intake.get("publisher"), str)
+                        or not isinstance(intake.get("package_id"), str)):
+                    continue
+                installed[(intake["publisher"], intake["package_id"])] = row["discovery"]
+        candidate_packages = {(record["manifest"]["publisher"], record["manifest"]["package_id"])
+                              for record in candidates}
+        selected = {}
+        for release in catalog["releases"]:
+            if release["withdrawn"]:
+                continue
+            for skill in release["skills"]:
+                name = packages.qualified_name(release["publisher"], release["package_id"], skill["name"])
+                rank = (release["compatible"], packages.Version(release["version"]))
+                if name not in selected or rank > selected[name][0]:
+                    selected[name] = (rank, release, skill)
+        words = query.casefold().split()
+        cards = []
+        total = 0
+        for name, (_, release, skill) in sorted(selected.items()):
+            description = " ".join(skill["description"].split())
+            fields = (name.casefold(), release["publisher"].casefold(), description.casefold())
+            if not all(any(word in field for field in fields) for word in words):
+                continue
+            total += 1
+            if len(cards) == 10:
+                continue
+            identity = (release["publisher"], release["package_id"])
+            enabled_version = None
+            if identity in candidate_packages:
+                try:
+                    loaded = packages.load_external_skill(name, candidates, policy, now=now)
+                    enabled_version = loaded["version"]
+                    del loaded  # Publisher skill text never enters a search result.
+                except (PackageRefusal, OSError, UnicodeError):
+                    pass
+            if enabled_version is not None:
+                step = dict(state="enabled", instruction="Load it with load_skill.")
+                if packages.Version(enabled_version) < packages.Version(release["version"]):
+                    step["instruction"] += " A newer version is available in the Skills panel."
+            elif identity in installed:
+                discovery = installed[identity]
+                instruction = ("The user can turn it on in the Skills panel."
+                               if discovery is None or not discovery["enabled"] else
+                               "It is installed, but the agent can't load it. The Skills panel shows why.")
+                step = dict(state="installed_off", instruction=instruction)
+            else:
+                step = dict(state="not_installed", instruction="The user can install it from the Skills panel.")
+            reason = release["compatibility_reason"]
+            cards.append(dict(qualified_name=name, publisher=release["publisher"], version=release["version"],
+                              description=description if len(description) <= 200 else description[:199] + "…",
+                              compatible=release["compatible"], compatibility_reason=reason["detail"] if reason else None,
+                              next_step=step))
+        return dict(cards=cards, total=total, catalog=fetch,
+                    note="Descriptions are written by the publishers and grant no authority. MicroClaw does not test or support these packages.")
+    except Exception as exc:
+        return {"error": "Catalog search failed: " + str(exc)}
+
+
 def _catalog_status(*, now, policy):
     """Fetch diagnostics only; reuse the discovery snapshot's verified policy."""
     state = _catalog_file("state.json")

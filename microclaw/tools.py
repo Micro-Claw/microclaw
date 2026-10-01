@@ -11281,6 +11281,14 @@ def list_mm_plugins(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
 
 
 @emits_nothing
+def search_skill_catalog(ctrl: MicroscopeController, guard: SafetyGuard, query: str = "") -> dict:
+    """Search the community catalog saved on this computer."""
+    from datetime import datetime, timezone
+    from microclaw.skill_store import search_catalog
+    return search_catalog(query, now=datetime.now(timezone.utc))
+
+
+@emits_nothing
 def load_skill(ctrl: MicroscopeController, guard: SafetyGuard, name: str) -> dict:
     """Load built-in or discovery-enabled publisher/package/skill guidance."""
     from microclaw.skill_packages import PackageRefusal, parse_qualified_name
@@ -12215,6 +12223,7 @@ TOOL_REGISTRY = {
     "describe_hook": describe_hook,
     "list_mm_plugins": list_mm_plugins,
     "load_skill": load_skill,
+    "search_skill_catalog": search_skill_catalog,
     "check_emu_installed": check_emu_installed,
     "get_emu_configuration": get_emu_configuration,
     "get_emu_laser_map": get_emu_laser_map,

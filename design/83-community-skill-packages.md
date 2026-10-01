@@ -1334,6 +1334,15 @@ publisher releases do not require copying files or hand-maintaining pins here.
   click**; no agent route installs. Which block carries the search tool is
   decided with 83f-1/2.
 
+- **D7 — five blocks, not four** (operator, 2026-10-01, after 83f-1). The
+  agent's catalog search (D6) is its own block, **83f-2**, before panel
+  delivery. It reads only 83f-1's `catalog_entries`, needs no demo machine, and
+  is the one change that decides what publisher text reaches the agent, so it
+  is reviewed alone. Panel delivery becomes **83f-3**, release intake
+  **83f-4**, production root and the end-to-end path **83f-5**. 83f-3's demo
+  gate then covers the whole journey: the agent finds a package, the user
+  installs it from the panel, and the agent can read it.
+
 Found while checking the tree: `store_trust_policy` verifies the cached
 previous policy against the *current* roots before accepting a new one, so
 after a root rotation — which ships in a MicroClaw update — every refresh
@@ -1374,13 +1383,59 @@ refuses for good. Unreachable until 83f adds a fetch; 83f-1 fixes it.
   no catalog file and makes no request.
 - **Not exercised:** a real fetch. `Micro-Claw/package-catalog` does not exist
   and no root does, so every fetch in this block is a fake opener. The first
-  real fetch is 83f-2's gate.
+  real fetch is 83f-3's gate (renumbered by D7).
 - **Review.** One start turn, one revision with seven findings: the withdrawal
   identity; `status()` cost; refused data reading as offline; a second copy of
   the compatibility check; failed installs counted as installed; startup
   ordering; a test without a text encoding (the coordinator's full suite).
   Runner mutations 25/25 killed; the coordinator re-ran the digest-only
   withdrawal mutant (3 identity tests fail).
+
+**83f-2 decisions** (operator, 2026-10-01). One agent tool, `@emits_nothing`,
+reading only `catalog_entries`; local only, no gate.
+
+- **E1 — the saved copy only.** A search never fetches. It reads the local
+  cache and says how old it is, or that there is none (`unpublished`,
+  `never_fetched`, `unreachable`, `refused` from `status()`).
+- **E2 — the newest installable version per skill.** Withdrawn and blocked
+  releases never appear. Releases that do not fit this build or platform do
+  appear, with their compatibility reason.
+- **E3 — one line, at most 200 characters.** Whitespace in the publisher's
+  description collapses to single spaces and the text is cut at 200 with `…`.
+  The panel keeps the full text.
+- **E4 — every word must match, at most 10 cards.** Case-insensitive, over
+  qualified name, publisher and description. The result gives the total
+  matched; an empty query lists the first 10 and the total.
+- **E5 — each card names the next step.** Not installed: install from the
+  Skills panel. Installed but not enabled for discovery: enable it in the
+  panel. Enabled: `load_skill` by qualified name. No card carries a skill body,
+  and no route installs.
+
+**What 83f-2 settled** (`skill_store.search_catalog`, tool
+`search_skill_catalog`; tests in `tests/test_skill_store.py`):
+- **The search reads files only.** One discovery snapshot, one
+  `catalog_entries` read, `_catalog_status` with the snapshot's policy. Tests
+  fail any request and any `refresh_catalog`. One search verifies each release
+  and withdrawal signature once.
+- **"Load it" comes from the loader.** `enabled` is decided by calling
+  `load_external_skill` on the snapshot's own candidates, for returned cards
+  only (at most 10), and the text is discarded. Round 1 re-implemented the
+  loader's asset and UTF-8 checks by hand, a second copy that would have drifted.
+- **The installed-but-not-loadable instruction says why.** "Turn it on" only
+  when the package's discovery decision is off or missing; otherwise "It is
+  installed, but the agent can't load it. The Skills panel shows why." That
+  covers a broken install and an installed version that lacks the card's skill.
+  Round 1 told the user to turn on something already on.
+- **A damaged install record is skipped, not fatal.** Round 1 failed the whole
+  search on one `ready` record with no intake.
+- **The query is bounded at 512 characters** (the description bound) and
+  refuses past it rather than truncating.
+- **Review.** One start turn, one revision with three findings (C1–C3). The
+  coordinator's mutants: 8/8 killed (withdrawn shown, enabled without loading,
+  unguarded intake, constant "turn it on", no 200-character cut, version-only
+  ranking, no 10-card limit, any-word matching); control 12/12.
+- **Not exercised:** a real catalog. As in 83f-1, every catalog here is a
+  fixture; the first real one is 83f-3's gate.
 
 ### Not a block — the SMAPpy conformance limb
 
@@ -1422,7 +1477,8 @@ and otherwise stays open.
 | 83e-4 | `block-83e-4` | `6b4d11b` | **merged 2026-09-29** as `f3d039c`, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
 | 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
-| 83f-1 | `block-83f-1` | `a7261f5` | reviewed 2026-10-01, PR #45 — local only, no gate |
+| 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
+| 83f-2 | `block-83f-2` | `225b6f2` | settled 2026-10-01, PR #46 — local only, no gate; decisions E1–E5 |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

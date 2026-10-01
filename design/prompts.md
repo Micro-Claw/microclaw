@@ -11386,3 +11386,27 @@ the referent's identity, not just the signer.**
 (`37d1a9c`): 5477 passed, 1 failed (an unencoded text write the runner's
 targeted run did not cover). Revision (`c23525a`): 5499 passed, 108 skipped.
 
+
+## design/83 block 83f-2 — the agent's catalog search (PR #46, 2026-10-01)
+
+**Five decisions, asked one at a time, took five short answers.** Each was a
+single plain question with a recommended option, and the operator took every
+recommendation. The questions were about what the agent sees, not how it is
+built: whether a search goes online, which versions show, how long a
+description may be, how matching works, and what each card tells the agent to
+do next.
+
+**"Don't re-derive it" in a prompt is not enough; name the function.** The
+prompt said `enabled` must come from the same path as `load_discovered_skill`.
+The runner wrote a faithful hand copy of `load_external_skill`'s checks
+instead. It was correct on the day and would have drifted with the loader's
+next check. Round 1 asked for the call itself, bounded to the returned page.
+
+**An instruction on a card is a claim about the machine, so check every state
+that reaches it.** E5's "installed but off" covered more than "off": a broken
+install and an installed version without the card's skill also landed there,
+and both were told to turn on something already on. The three states stayed;
+the wording now depends on why the skill can't load.
+
+**Counts.** Baseline `867cb6f`: 5499 passed, 108 skipped. Start turn
+(`d234f82`): 5507 passed, 108 skipped. Revision (`b60ba08`): 5513 passed, 108 skipped.
