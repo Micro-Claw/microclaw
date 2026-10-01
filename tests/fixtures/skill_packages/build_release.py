@@ -73,7 +73,8 @@ def build_release(fixture_dir, artifact_path, *, version=None):
     entries = {asset["path"]: (fixture_dir / asset["path"]).read_bytes() for asset in manifest["assets"]}
     entries["manifest.json"] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8") + b"\n"
     artifact_path.write_bytes(_archive(entries))
-    intake = {key: manifest[key] for key in ("package_id", "publisher", "version", "artifact", "kind", "microclaw")}
+    intake = {key: manifest[key] for key in ("package_id", "publisher", "version", "artifact", "kind", "microclaw", "license", "source_url", "issues_url")}
+    intake["skills"] = [{k: skill[k] for k in ("name", "description")} for skill in manifest["skills"]]
     if manifest["kind"] == "executable":
         intake.update({key: manifest[key] for key in ("python", "platforms", "protocol_version")})
     intake.update(type="microclaw.skill-release.v1", artifact_digest=hashlib.sha256(artifact_path.read_bytes()).hexdigest())

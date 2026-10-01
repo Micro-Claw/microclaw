@@ -158,7 +158,7 @@ def _roots():
     except (updates.UpdateError, OSError):
         roots = None
     if roots and roots.get("environment") == "test":
-        return roots, dict(test_roots_active=True, reason=None)
+        return {k: roots.get(k) for k in ("environment", "keys")}, dict(test_roots_active=True, reason=None)
     return packages.PRODUCTION_ROOTS, dict(
         test_roots_active=False,
         reason="production roots are not configurable" if roots_file.exists() else None)
@@ -177,10 +177,21 @@ def load_trust_policy():
 
 def store_trust_policy(document):
     roots, _ = _roots()
-    previous = _read(store_dir() / "trust" / "policy.json")
+    try:
+        previous = _read(store_dir() / "trust" / "policy.json")
+    except (updates.UpdateError, OSError):
+        previous = None
+    verified = packages.verify_trust_policy(document, roots)
     if previous is not None:
-        previous = packages.verify_trust_policy(previous, roots)
-    verified = packages.verify_trust_policy(document, roots, previous=previous)
+        try:
+            previous = packages.verify_trust_policy(previous, roots)
+        except PackageRefusal:
+            if (previous.get("environment") == verified["environment"]
+                    and type(previous.get("revision")) is int
+                    and verified["revision"] <= previous["revision"]):
+                raise PackageRefusal("trust.revision", "recovery requires a strictly greater revision")
+        else:
+            packages.verify_trust_policy(document, roots, previous=previous)
     _write(store_dir() / "trust" / "policy.json", verified)
     return verified
 
@@ -375,13 +386,21 @@ def _platform(identity, manifest):
     return tag
 
 
-def _compatibility(manifest, build, identity=None):
-    if build["version"] not in SpecifierSet(manifest["microclaw"]):
+def _intake_compatibility(record, build):
+    """Compatibility fields shared by listing cards and installed manifests."""
+    if build["version"] not in SpecifierSet(record["microclaw"]):
         raise PackageRefusal("microclaw", "incompatible with " + build["version"])
+    if record["kind"] == "executable":
+        if PINNED_PYTHON not in SpecifierSet(record["python"]):
+            raise PackageRefusal("python", "excludes pinned Python " + PINNED_PYTHON)
+        if record["protocol_version"] not in build["protocols"]:
+            raise PackageRefusal("protocol_version", "unsupported by running build")
+
+
+def _compatibility(manifest, build, identity=None):
+    _intake_compatibility(manifest, build)
     if manifest["kind"] == "executable":
         packages.supported_executable(manifest)
-        if PINNED_PYTHON not in SpecifierSet(manifest["python"]):
-            raise PackageRefusal("python", "excludes pinned Python " + PINNED_PYTHON)
         if identity is not None:
             if identity["version"].split()[0] not in SpecifierSet(manifest["python"]):
                 raise PackageRefusal("python", "environment version excluded by release")
@@ -799,7 +818,10 @@ def _discovery_state(*, now):
 
 def status():
     """Read files only, including discovery state and each exclusion reason."""
-    return _discovery_state(now=datetime.now(timezone.utc))[0]
+    now = datetime.now(timezone.utc)
+    result, _, policy, _, _ = _discovery_state(now=now)
+    result["catalog"] = _catalog_status(now=now, policy=policy)
+    return result
 
 
 # Who made the decision. Installing is the decision to use a package, so a first
@@ -1008,3 +1030,197 @@ def _analysis_retained_digests():
 def retained_digests():
     """Digests retained by analysis jobs whose owning process is alive."""
     return _analysis_retained_digests()
+
+
+CATALOG_URL = "https://raw.githubusercontent.com/Micro-Claw/package-catalog/main/"
+CATALOG_HOSTS = frozenset({"raw.githubusercontent.com"})
+_catalog_refresh_lock = threading.Lock()
+
+
+def _catalog_file(name):
+    try:
+        document = _read(store_dir() / "catalog" / name) or {}
+    except (updates.UpdateError, OSError):
+        return {}
+    if name == "state.json":
+        # A malformed diagnostic field cannot poison the independent cache.
+        document = {key: document.get(key) if isinstance(document.get(key), str) else None
+                    for key in ("last_attempt", "last_success")} | {
+            "error": document.get("error"), "exclusions": document.get("exclusions", [])}
+        error = document["error"]
+        if not (isinstance(error, dict) and {"field", "detail"} <= set(error) <= {"field", "detail", "kind", "errors"}
+                and all(isinstance(error[key], str) for key in ("field", "detail"))):
+            document["error"] = None
+        if not isinstance(document["exclusions"], list):
+            document["exclusions"] = []
+    return document
+
+
+def _empty_catalog():
+    return dict(type=packages.CATALOG_TYPE, releases=[], withdrawals=[])
+
+
+def catalog_entries(*, now):
+    """Pure file reads and verification; no derived state survives a read."""
+    try:
+        policy = load_trust_policy()
+    except PackageRefusal:
+        policy = None
+    document = _catalog_file("catalog.json") or _empty_catalog()
+    try:
+        verified, exclusions = packages.verify_catalog(document, policy, now=now, cached=True)
+    except PackageRefusal as exc:
+        verified, exclusions = _empty_catalog(), [dict(reason=_reason(exc))]
+    installed = set()
+    directory = store_dir() / "packages"
+    if directory.exists():
+        for package in directory.iterdir():
+            for _, record, _ in _records(package):
+                if record and record.get("state") == "ready" and isinstance(record.get("intake"), dict):
+                    digest = record["intake"].get("artifact_digest")
+                    if isinstance(digest, str):
+                        installed.add(digest)
+    identity_fields = ("publisher", "package_id", "version", "artifact_digest")
+    identities = {tuple(entry[field] for field in identity_fields) for entry in verified["releases"]}
+    withdrawals = {}
+    for i, entry in enumerate(verified["withdrawals"]):
+        identity = tuple(entry[field] for field in identity_fields)
+        if identity not in identities:
+            exclusions.append(dict(collection="withdrawals", index=i, entry=entry,
+                reason=dict(field="withdrawal.release", detail="no release matches publisher, package, version and digest")))
+        else:
+            withdrawals[identity] = entry
+    releases = []
+    build = current_build()
+    for entry in verified["releases"]:
+        reason = None
+        try:
+            _intake_compatibility(entry, build)
+        except PackageRefusal as exc:
+            reason = _reason(exc)
+        withdrawal = withdrawals.get(tuple(entry[field] for field in identity_fields))
+        releases.append(dict(entry, compatible=reason is None, compatibility_reason=reason,
+                             installed=entry["artifact_digest"] in installed,
+                             withdrawn=withdrawal is not None,
+                             withdrawal_reason=withdrawal["reason"] if withdrawal else None,
+                             blocked=False, block_reason=None))
+    # Blocked records are excluded from usable releases, but remain reviewable.
+    for excluded in exclusions:
+        entry = excluded.get("entry")
+        if isinstance(entry, dict) and excluded.get("collection") == "releases":
+            publisher_name = entry.get("publisher")
+            publisher = (policy["publishers"].get(publisher_name)
+                         if policy and isinstance(publisher_name, str) else None)
+            signature = entry.get("signature")
+            key = next((key for key in publisher["keys"]
+                        if isinstance(signature, dict) and key["key_id"] == signature.get("key_id")),
+                       None) if publisher else None
+            blocked_release = next((blocked for blocked in policy["revoked_releases"]
+                                    if blocked["artifact_digest"] == entry.get("artifact_digest")),
+                                   None) if policy else None
+            blocked = bool(blocked_release or (publisher and publisher["state"] == "revoked")
+                           or (key and key["state"] == "revoked"))
+            excluded["blocked"] = blocked
+            excluded["block_reason"] = (dict(field="artifact_digest", detail=blocked_release["reason"])
+                                        if blocked_release else excluded["reason"] if blocked else None)
+            digest = entry.get("artifact_digest")
+            excluded["installed"] = isinstance(digest, str) and digest in installed
+    return dict(releases=releases, withdrawals=list(withdrawals.values()), exclusions=exclusions,
+                policy=policy)
+
+
+def _catalog_status(*, now, policy):
+    """Fetch diagnostics only; reuse the discovery snapshot's verified policy."""
+    state = _catalog_file("state.json")
+    roots, _ = _roots()
+    unpublished = roots["environment"] != "test" and not roots["keys"]
+    error = state.get("error")
+    return dict(state="unpublished" if unpublished else
+                error.get("kind", "refused") if error else
+                "ok" if state.get("last_success") else "never_fetched",
+                last_attempt=state.get("last_attempt"), last_success=state.get("last_success"),
+                error=error, revision=policy["revision"] if policy else None,
+                expires_at=policy["expires_at"] if policy else None,
+                stale=now > packages._expires(policy["expires_at"]) if policy else False,
+                fetch_exclusions=state.get("exclusions", []))
+
+
+def refresh_catalog(*, opener=None, now):
+    """Single-flight startup refresh; never holds a package lock."""
+    if not _catalog_refresh_lock.acquire(blocking=False):
+        return dict(error=dict(field="catalog", detail="a catalog refresh is in progress"))
+    try:
+        state = _catalog_file("state.json")
+        state.update(last_attempt=now.isoformat(), error=None, exclusions=[])
+        roots, _ = _roots()
+        if roots["environment"] != "test" and not roots["keys"]:
+            state["error"] = dict(field="catalog", detail="no community catalog is published yet")
+            _write(store_dir() / "catalog" / "state.json", state)
+            return state
+        base = CATALOG_URL
+        if roots["environment"] == "test":
+            configured = _read(store_dir() / "trust" / "roots.json")
+            base = configured.get("catalog_url", base)
+        errors = []
+        try:
+            packages._url(base, "catalog_url")
+            updates._allowed_url(base, CATALOG_HOSTS)
+        except (PackageRefusal, updates.UpdateError) as exc:
+            error = dict(_reason(exc), kind="unreachable" if isinstance(exc, updates.UpdateError) else "refused")
+            state["error"] = dict(error, errors=[error])
+            _write(store_dir() / "catalog" / "state.json", state)
+            return state
+        opener = updates._default_opener if opener is None else opener
+        for name, limit in (("policy.json", packages.MAX_POLICY_BYTES),
+                            ("catalog.json", packages.MAX_CATALOG_BYTES)):
+            url = base.rstrip("/") + "/" + name
+            kind = "unreachable"
+            try:
+                data, _ = updates._open_manual(url, opener, max_bytes=limit,
+                                               allowed_hosts=CATALOG_HOSTS, label="Community catalog")
+                kind = "refused"
+                document = updates._json_object(data, "invalid community catalog document")
+                if name == "policy.json":
+                    store_trust_policy(document)
+                    continue
+                policy = load_trust_policy()
+                if now > packages._expires(policy["expires_at"]):
+                    raise PackageRefusal("trust.expires_at", "policy expired")
+                accepted, exclusions = packages.verify_catalog(document, policy, now=now)
+                state["exclusions"] = exclusions
+                # Re-read immediately before atomic replacement. Two processes may
+                # race: a lost update can only lose entries the next refresh re-adds;
+                # this is accepted, rather than adding an exclusive process lock.
+                previous = _catalog_file("catalog.json")
+                union = _empty_catalog()
+                for collection in ("releases", "withdrawals"):
+                    old = previous.get(collection, [])
+                    if not isinstance(old, list):
+                        old = []
+                    # Previously accepted history is immutable. A conflicting
+                    # incoming copy cannot make an accepted withdrawal disappear
+                    # through the reader's duplicate exclusion rule.
+                    incoming = []
+                    for i, entry in enumerate(accepted[collection]):
+                        if any(isinstance(prior, dict)
+                               and prior.get("artifact_digest") == entry["artifact_digest"]
+                               and prior != entry for prior in old):
+                            state["exclusions"].append(dict(collection=collection, index=i, entry=entry,
+                                reason=dict(field="artifact_digest", detail="conflicts with accepted history")))
+                        else:
+                            incoming.append(entry)
+                    for entry in old + incoming:
+                        if entry not in union[collection]:
+                            union[collection].append(entry)
+                _write(store_dir() / "catalog" / "catalog.json", union)
+                state["last_success"] = now.isoformat()
+            except (PackageRefusal, updates.UpdateError, OSError) as exc:
+                errors.append(dict(field=name, kind=kind,
+                                   detail=f"Community catalog could not be reached or verified at {url}: {exc}"))
+        state["error"] = dict(field="catalog", detail="; ".join(e["detail"] for e in errors),
+                              kind="refused" if any(e["kind"] == "refused" for e in errors) else "unreachable",
+                              errors=errors) if errors else None
+        _write(store_dir() / "catalog" / "state.json", state)
+        return state
+    finally:
+        _catalog_refresh_lock.release()

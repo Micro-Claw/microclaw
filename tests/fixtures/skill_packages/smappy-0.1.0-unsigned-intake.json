@@ -11,5 +11,14 @@
   "platforms": [
     "win_amd64"
   ],
-  "protocol_version": "1.0"
+  "protocol_version": "1.0",
+  "license": "MIT",
+  "source_url": "https://github.com/example/smappy",
+  "issues_url": "https://github.com/example/smappy/issues",
+  "skills": [
+    {
+      "name": "smappy",
+      "description": "SMAPpy analysis"
+    }
+  ]
 }

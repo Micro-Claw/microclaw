@@ -687,7 +687,7 @@ def test_rotation_and_revocation_across_revisions(purpose, change, field):
     else:
         # The digest is the revocation identity even if descriptive fields differ.
         document['revoked_releases'] = [dict(package_id='another', version='9.0',
-                                            artifact_digest=value['artifact_digest'])]
+                                            artifact_digest=value['artifact_digest'], reason='Test block')]
     current = policy(document, previous=previous)
     if change == 'retired' and purpose == 'execution':
         result = packages.check_release(value, current, purpose=purpose, now=NOW)
@@ -711,7 +711,7 @@ def test_stale_execution_still_applies_revocations(state, field):
         document['publishers']['fixture-lab']['state'] = 'revoked'
     elif state == 'release':
         document['revoked_releases'] = [{key: intake()[key] for key in
-                                        ('package_id', 'version', 'artifact_digest')}]
+                                        ('package_id', 'version', 'artifact_digest') } | {'reason': 'Test block'}]
     else:
         document['publishers']['fixture-lab']['keys'][0]['state'] = state
     snapshot = policy(document)
@@ -760,7 +760,7 @@ def test_policy_rollback_and_equal_revision_content():
 @pytest.mark.parametrize('field,replacement', [
     ('environment', 'production'), ('type', packages.RELEASE_TYPE),
     ('revision', 2), ('expires_at', '2031-01-01T00:00:00Z'),
-    ('publishers', {}), ('revoked_releases', [dict(package_id='a',version='1',artifact_digest='0'*64)]),
+    ('publishers', {}), ('revoked_releases', [dict(package_id='a',version='1',artifact_digest='0'*64,reason='Test block')]),
 ])
 def test_policy_signed_fields_cannot_change(field, replacement):
     document = trust_file('policy')
@@ -956,6 +956,7 @@ def test_root_structure_and_duplicate_key_refusals(field, value):
 def test_revoked_release_fields(field, value):
     document = trust_file('policy')
     revoked = {key: intake()[key] for key in ('package_id', 'version', 'artifact_digest')}
+    revoked['reason'] = 'Test block'
     revoked[field] = value
     document['revoked_releases'] = [revoked]
     refuses('trust.revoked_releases[0].' + field, policy, document)
@@ -1120,3 +1121,25 @@ def test_observer_schema_preserves_optional_parameters_and_documents_subset_limi
     # Conditional required is unavailable in admission. The subprocess test
     # proves that missing max_s is refused by the worker.
     packages.validate_parameters(schema, {'cpu_threads': 2})
+
+
+@pytest.mark.parametrize('field', ['license', 'source_url', 'issues_url', 'skills'])
+def test_listing_card_is_signed_and_bound(field):
+    document = intake('markdown')
+    m = manifest('markdown')
+    if field == 'skills':
+        document[field][0]['description'] = 'A different card'
+    else:
+        document[field] = 'https://example.com/changed' if field.endswith('url') else 'Different license'
+    refuses('intake.' + field, packages._bound_release, m, document)
+    refuses('signature.value', packages.check_release, document, policy(), purpose='execution', now=NOW)
+
+
+@pytest.mark.parametrize('reason', [None, '', 'bad\nreason', 'bad\u2029reason', 'x' * (packages.MAX_DESCRIPTION_LENGTH + 1)])
+def test_block_reason_is_required_bounded_single_line(reason):
+    document = trust_file('policy')
+    blocked = {key: intake()[key] for key in ('package_id', 'version', 'artifact_digest')}
+    if reason is not None:
+        blocked['reason'] = reason
+    document['revoked_releases'] = [blocked]
+    refuses('trust.revoked_releases[0].reason', policy, document)

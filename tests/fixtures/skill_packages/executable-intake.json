@@ -14,9 +14,18 @@
     "manylinux_x86_64"
   ],
   "protocol_version": "1.0",
+  "license": "MIT",
+  "source_url": "https://github.com/fixture-lab/skills",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "skills": [
+    {
+      "name": "workflow",
+      "description": "A publisher-provided fixture workflow."
+    }
+  ],
   "signature": {
     "alg": "ed25519",
     "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
-    "value": "VoLWTkNaWwNiWfexXEPDexOKj23nFVw2mYYHJBfB3lGayMR0y87YCu5+2lI9X7J4R/xWGM6XXhMN3FCmZKuWBA=="
+    "value": "wW6+EBsRPzaxG6dspDOChQhM0LhWpg/YIy9JT/ULKci2NOivpDeWioEQ4ST42jvIs0n9a06b4T+Urf3fBpzeDA=="
   }
 }

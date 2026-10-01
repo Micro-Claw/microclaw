@@ -835,16 +835,17 @@ def discover_clone(state: dict[str, Any], *, timeout: float = GIT_TIMEOUT_SECOND
     return Candidate(sha, subject_result.stdout.strip(), "clone", state.get("canonical_repo", REPO), warning)
 
 
-def _allowed_url(url: str) -> None:
+def _allowed_url(url: str, allowed_hosts=GITHUB_HOSTS) -> None:
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname not in GITHUB_HOSTS:
+    if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
         raise UpdateError(f"redirect host is not allowlisted: {parsed.hostname or url}")
 
 
-def _open_manual(url: str, opener: URLopener, *, max_bytes: int) -> tuple[bytes, str]:
+def _open_manual(url: str, opener: URLopener, *, max_bytes: int, allowed_hosts=GITHUB_HOSTS,
+                 label="GitHub") -> tuple[bytes, str]:
     current = url
     for redirects in range(MAX_REDIRECTS + 1):
-        _allowed_url(current)
+        _allowed_url(current, allowed_hosts)
         request = urllib.request.Request(
             current, headers={"Accept": "application/vnd.github+json", "User-Agent": "microclaw-updater"}
         )
@@ -860,11 +861,11 @@ def _open_manual(url: str, opener: URLopener, *, max_bytes: int) -> tuple[bytes,
                 current = urllib.parse.urljoin(current, location)
                 continue
             if exc.code == 404:
-                raise UpdateError("repository is not public (404)") from exc
-            raise UpdateError(f"GitHub request failed: HTTP {exc.code}") from exc
+                raise UpdateError("repository is not public (404)" if label == "GitHub" else f"{label} request failed: HTTP 404") from exc
+            raise UpdateError(f"{label} request failed: HTTP {exc.code}") from exc
         except (OSError, TimeoutError) as exc:
-            raise UpdateError(f"GitHub request failed: {exc}") from exc
-        status = getattr(response, "status", response.getcode())
+            raise UpdateError(f"{label} request failed: {exc}") from exc
+        status = response.status if hasattr(response, "status") else response.getcode()
         if status in {301, 302, 303, 307, 308}:
             location = response.headers.get("Location")
             response.close()
@@ -877,8 +878,8 @@ def _open_manual(url: str, opener: URLopener, *, max_bytes: int) -> tuple[bytes,
         if status != 200:
             response.close()
             if status == 404:
-                raise UpdateError("repository is not public (404)")
-            raise UpdateError(f"GitHub request failed: HTTP {status}")
+                raise UpdateError("repository is not public (404)" if label == "GitHub" else f"{label} request failed: HTTP 404")
+            raise UpdateError(f"{label} request failed: HTTP {status}")
         chunks, total = [], 0
         try:
             while True:
