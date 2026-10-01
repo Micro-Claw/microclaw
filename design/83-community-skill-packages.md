@@ -1282,6 +1282,63 @@ untrusted catalog updates, offline cache use, incompatible releases and yanking
 an installed release. This block completes the ownership promise: ordinary
 publisher releases do not require copying files or hand-maintaining pins here.
 
+**83f decisions** (operator, 2026-10-01).
+
+- **D1 — four blocks.** 83f-1: the signed catalog, its verified local cache,
+  freshness, rollback refusal and offline/stale state. 83f-2: panel delivery —
+  install and update from the catalog, the production index route
+  (`find_links=None`) run for the first time, compatibility, support links,
+  withdrawn and blocked rows. 83f-3: release intake into the catalog repository.
+  83f-4: the production root, the first production policy, and the end-to-end
+  path on the demo machine. Only 83f-4 waits on the key; 83f-1–3 use test roots.
+- **D2 — MicroClaw vouches for publishers, not packages.** The goal is that a
+  publisher, not MicroClaw, maintains their package. The root signs only the
+  policy: admitted publishers and their keys, and blocks. Each release is signed
+  by its publisher's key (83b), and an admitted publisher's release enters the
+  catalog **without operator action**. The panel says the package is the
+  publisher's: *"MicroClaw does not test or support this package. Report
+  problems to <publisher>"*, with the manifest's `issues_url`. Compatibility
+  breakage across a MicroClaw update stays 83d's disabled-and-why, fixed by the
+  publisher's next release.
+  **This removes the pre-promotion conformance run** from §83f: running each
+  release in a MicroClaw-operated worker is what would make the catalog read as
+  tested. Intake checks signature, admitted publisher, manifest and lock
+  structure, and that the published artifact's bytes match the signed digest.
+  It runs no publisher code. The release's `self_check` still runs at install
+  on the user's machine (83d), so a release that cannot start cannot be
+  installed. The operator keeps two duties: admitting a publisher once, and
+  blocking a publisher, key or release.
+- **D3 — key custody.** One offline root held by the operator, with a spare
+  root kept separately; both are in `PRODUCTION_ROOTS` (verification already
+  accepts any listed root). Used a few times a year. Policy expiry is long,
+  about six months, with a reminder before it lapses. A lapsed policy pauses
+  new installs and repairs; installed releases keep running (83b). Losing both
+  roots is recovered by a MicroClaw update carrying new ones.
+- **D4 — the catalog lives in a new public repository**,
+  `Micro-Claw/package-catalog`, created when 83f-3 needs it. Publishers add
+  releases there; artifacts stay on the publishers' own hosts and are pinned by
+  digest. Clients need no credentials.
+- **D5 — withdrawn vs blocked, as the panel says it.** Never "yanked".
+  - *"Withdrawn by its publisher: <reason>. It stays installed and keeps
+    working; new installs can't choose it."* plus any newer version on offer.
+  - *"Blocked by MicroClaw: <reason>. The agent can't read it and it can't run.
+    Nothing was deleted — its files and every result it produced are still on
+    this computer."* with install-newer and remove. A job already running
+    finishes. `revoked_releases` gains a reason.
+  - Package updates are never automatic.
+- **D6 — the agent may search the catalog** (reverses §83e's "remote catalog
+  entries remain absent until the user acts"). The search returns short cards
+  from admitted publishers only: qualified name, publisher, one-line
+  description, compatibility. They carry 83a's metadata bounds and are labelled
+  as publisher text. It never returns a skill body. **Installing stays a panel
+  click**; no agent route installs. Which block carries the search tool is
+  decided with 83f-1/2.
+
+Found while checking the tree: `store_trust_policy` verifies the cached
+previous policy against the *current* roots before accepting a new one, so
+after a root rotation — which ships in a MicroClaw update — every refresh
+refuses for good. Unreachable until 83f adds a fetch; 83f-1 fixes it.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1321,7 +1378,7 @@ and otherwise stays open.
 | 83e-3 | `block-83e-3` | `3dde106` | **merged 2026-09-29** as `6b4d11b`, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
 | 83e-4 | `block-83e-4` | `6b4d11b` | **merged 2026-09-29** as `f3d039c`, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
 | 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
-| 83f | `block-83f` | `17e4514` | opened 2026-10-01 — decisions pending with the operator |
+| 83f | `block-83f` | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
