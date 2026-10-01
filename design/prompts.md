@@ -11360,7 +11360,7 @@ production would not.**
 macOS 5434 / 108; windows-latest 5437 / 105; ubuntu 5434 / 108.
 Gate: round 1 13/13 runs; round 2 13/13 runs in ~5 min.
 
-## design/83 block 83f-1 — the signed catalog and its cache (2026-10-01)
+## design/83 block 83f-1 — the signed catalog and its cache (PR #45, 2026-10-01)
 
 **The operator's question changed the trust model before any code.** Asked in
 plain words who holds the key, the operator asked whether signing a list makes
