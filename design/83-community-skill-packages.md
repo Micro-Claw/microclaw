@@ -1383,13 +1383,33 @@ refuses for good. Unreachable until 83f adds a fetch; 83f-1 fixes it.
   no catalog file and makes no request.
 - **Not exercised:** a real fetch. `Micro-Claw/package-catalog` does not exist
   and no root does, so every fetch in this block is a fake opener. The first
-  real fetch is 83f-2's gate.
+  real fetch is 83f-3's gate (renumbered by D7).
 - **Review.** One start turn, one revision with seven findings: the withdrawal
   identity; `status()` cost; refused data reading as offline; a second copy of
   the compatibility check; failed installs counted as installed; startup
   ordering; a test without a text encoding (the coordinator's full suite).
   Runner mutations 25/25 killed; the coordinator re-ran the digest-only
   withdrawal mutant (3 identity tests fail).
+
+**83f-2 decisions** (operator, 2026-10-01). One agent tool, `@emits_nothing`,
+reading only `catalog_entries`; local only, no gate.
+
+- **E1 — the saved copy only.** A search never fetches. It reads the local
+  cache and says how old it is, or that there is none (`unpublished`,
+  `never_fetched`, `unreachable`, `refused` from `status()`).
+- **E2 — the newest installable version per skill.** Withdrawn and blocked
+  releases never appear. Releases that do not fit this build or platform do
+  appear, with their compatibility reason.
+- **E3 — one line, at most 200 characters.** Whitespace in the publisher's
+  description collapses to single spaces and the text is cut at 200 with `…`.
+  The panel keeps the full text.
+- **E4 — every word must match, at most 10 cards.** Case-insensitive, over
+  qualified name, publisher and description. The result gives the total
+  matched; an empty query lists the first 10 and the total.
+- **E5 — each card names the next step.** Not installed: install from the
+  Skills panel. Installed but not enabled for discovery: enable it in the
+  panel. Enabled: `load_skill` by qualified name. No card carries a skill body,
+  and no route installs.
 
 ### Not a block — the SMAPpy conformance limb
 
@@ -1432,7 +1452,7 @@ and otherwise stays open.
 | 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
-| 83f-2 | `block-83f-2` | `225b6f2` | opened 2026-10-01 — the agent's catalog search (D7) |
+| 83f-2 | `block-83f-2` | `225b6f2` | opened 2026-10-01 — the agent's catalog search (D7); decisions E1–E5 taken |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
