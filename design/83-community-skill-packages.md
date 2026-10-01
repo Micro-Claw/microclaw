@@ -1339,6 +1339,49 @@ previous policy against the *current* roots before accepting a new one, so
 after a root rotation — which ships in a MicroClaw update — every refresh
 refuses for good. Unreachable until 83f adds a fetch; 83f-1 fixes it.
 
+**What 83f-1 settled** (`microclaw/skill_packages.py`, `microclaw/skill_store.py`,
+`updates._open_manual`; tests in `tests/test_skill_store.py`):
+- **Two documents from one base URL.** `policy.json` is the only root-signed
+  document; `catalog.json` is an unsigned envelope of individually
+  publisher-signed releases and withdrawals (`microclaw.skill-withdrawal.v1`).
+  Each entry stands alone: a bad one is excluded with a field-named reason, and
+  differing copies of one digest exclude every copy.
+- **The cache is a monotonic union, and that is the rollback refusal.** Nothing
+  accepted is forgotten because a later catalog omits it, and a withdrawal is
+  permanent. Every read re-verifies every entry against the policy loaded now.
+  Compatibility, installed, withdrawn and blocked are computed at read time and
+  never stored.
+- **A withdrawal applies only to the release it names in full** — publisher,
+  package, version and digest. Round 1 matched on digest alone, so one admitted
+  publisher could withdraw another's release.
+- **The intake record carries the listing card** (`license`, `source_url`,
+  `issues_url`, `skills[{name, description}]`), each bound to the manifest at
+  install. Blocks carry a `reason`.
+- **No fetch while production roots are empty**; the state reads `unpublished`.
+  Test roots may name a `catalog_url`. The fetch reuses the updater's opener
+  with a host set and a label, so the updater's messages are unchanged and the
+  catalog never says "repository is not public". Serve's startup thread
+  refreshes once, even if the package recheck before it fails.
+- **The policy store survives a root rotation.** A cached policy the current
+  roots no longer verify keeps its revision as a floor (strictly greater
+  required); an unreadable or other-environment one sets no floor.
+- **`status()` reports fetch state only** (`unpublished`, `never_fetched`, `ok`,
+  `unreachable`, `refused`): one policy verification, shared with discovery,
+  and no catalog read. Round 1 verified every entry on every panel poll, which
+  was my C8. Measured (runner, n=30): 0.28 ms at 0 and at 1000 cached releases.
+  `catalog_entries()` verifies one signature per entry: medians 0.33, 0.54, 18.4
+  and 180 ms at 0, 1, 100 and 1000 (n=12). The per-turn discovery render reads
+  no catalog file and makes no request.
+- **Not exercised:** a real fetch. `Micro-Claw/package-catalog` does not exist
+  and no root does, so every fetch in this block is a fake opener. The first
+  real fetch is 83f-2's gate.
+- **Review.** One start turn, one revision with seven findings: the withdrawal
+  identity; `status()` cost; refused data reading as offline; a second copy of
+  the compatibility check; failed installs counted as installed; startup
+  ordering; a test without a text encoding (the coordinator's full suite).
+  Runner mutations 25/25 killed; the coordinator re-ran the digest-only
+  withdrawal mutant (3 identity tests fail).
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1379,7 +1422,7 @@ and otherwise stays open.
 | 83e-4 | `block-83e-4` | `6b4d11b` | **merged 2026-09-29** as `f3d039c`, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
 | 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
-| 83f-1 | `block-83f-1` | `a7261f5` | started 2026-10-01 — local only, no gate |
+| 83f-1 | `block-83f-1` | `a7261f5` | reviewed 2026-10-01, PR pending — local only, no gate |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

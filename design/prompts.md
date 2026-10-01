@@ -11359,3 +11359,30 @@ production would not.**
 **Counts.** Baseline `f3d039c`: 5414 passed, 99 skipped (macOS). At `ceb6a55`:
 macOS 5434 / 108; windows-latest 5437 / 105; ubuntu 5434 / 108.
 Gate: round 1 13/13 runs; round 2 13/13 runs in ~5 min.
+
+## design/83 block 83f-1 — the signed catalog and its cache (2026-10-01)
+
+**The operator's question changed the trust model before any code.** Asked in
+plain words who holds the key, the operator asked whether signing a list makes
+them responsible for every skill on it. It does, if MicroClaw tests packages
+before listing them, so that run was dropped. The root now vouches for
+publishers only, and an admitted publisher's release lists itself. My first
+brief to the operator was dense enough that this question could not be asked.
+**Bring decisions one at a time, in plain language. The jargon was hiding the
+operator's real concern.**
+
+**My C8 put a full catalog verification on the panel's 500 ms poll.** I asked for
+counts in `status()` without asking what calls `status()`. The runner's own
+timing table showed it, at 185 ms for 1000 entries. **Before putting work in a
+reader, grep its callers.**
+
+**The withdrawal defect was in the gap between two correct functions.** The
+verifier checked who signed a withdrawal, and the reader applied it by digest.
+Each function was right on its own; together, any publisher could withdraw
+another's release. **When a signed document refers to another document, check
+the referent's identity, not just the signer.**
+
+**Counts.** Baseline `17e4514`/`1e0df25`: 5434 passed, 108 skipped. Start turn
+(`37d1a9c`): 5477 passed, 1 failed (an unencoded text write the runner's
+targeted run did not cover). Revision (`c23525a`): 5499 passed, 108 skipped.
+
