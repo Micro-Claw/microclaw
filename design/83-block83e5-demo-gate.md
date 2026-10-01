@@ -27,7 +27,7 @@ git checkout block-83e-5
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor 1b12372789cf25be08ea527037bebe8b4eddf7a7 HEAD
+git merge-base --is-ancestor 5e85d42b3f13e3d05e06024fad9343011c9bd4e9 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 .\install.bat
 if ($LASTEXITCODE -ne 0) { throw 'install failed' }
@@ -75,12 +75,20 @@ normal/none/loaded, none/loaded/normal. They balance position over a complete
 three-repetition cycle; the fourth repeats the first. They are **not
 carry-over balanced** (a three-cell Williams design needs six sequences).
 
-Limb 5 reads the **job record and the fixture**. Loaded runs require requested =
-at_start = fixture read_back = 0x4000, unless the job inherited MicroClaw's class;
-in that case the class is reported without failing the loaded run. Normal
+Limb 5 reads the **job record and the fixture**. On Windows, each supervisor
+sample covers the processes in the worker's Job Object (including venv launchers
+and their interpreter children) and records the highest class by scheduling
+rank. Loaded runs require requested = at_start = at_end = fixture read_back =
+0x4000, unless the job inherited MicroClaw's class; then both samples must match
+that inherited class, which is reported without a below-normal failure. Normal
 controls require supervisor requested = 0x4000, fixture applied = true and
-read_back = 0x20. None runs must have no job. Every run's at_end and reason are
-reported; missing at_end with a reason is best-effort evidence, not a failure.
+at_end = fixture read_back = 0x20. None runs must have no job. Every run's
+`processes_read`, at_end and reason are reported. A missing at_end **fails limb
+5 for either loaded cell**, even with a reason: the control must demonstrate
+the raise, and the default run must demonstrate that its class stayed lowered.
+The product still treats the read as best-effort and does not fail the analysis
+job. An exited job with no readable processes records null, zero processes read,
+and a reason; a truncated list or vanished pid is reported in the reason.
 Limb 7 requires the below-normal CPU priority disclosure; the slot probe refuses
 an older installed product with NOT EXERCISED.
 
