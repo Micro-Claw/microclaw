@@ -1184,6 +1184,13 @@ rig is `R142`.
   in the job record with what it requested. A failed read records null and a
   reason and never fails the job. The worker's own report is a cross-check, not
   the record.
+  **Amended after the first gate** (operator, 2026-10-01): on Windows the read
+  covers every process in the worker's Job Object and records the highest
+  class found and how many processes were read. A uv or stdlib venv's
+  `Scripts\python.exe` is a launcher whose *child* is the worker, so the
+  launched handle is not the worker: round 1's control workers read back
+  `0x20` while the supervisor recorded `at_end = 0x4000` from the launcher.
+  POSIX keeps the launched pid (a venv python is a symlink; `nice` execs).
 - **D4 — fixture.** `priority` keeps a control: `"inherit"` (default) and
   `"normal"` (raise back). `"below_normal"` is dropped — it now measures nothing.
   Unprivileged POSIX cannot raise, so `"normal"` reports `applied: false` there.
