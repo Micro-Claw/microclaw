@@ -42,6 +42,13 @@ payload's "synthetic" note; on `9e9271a` it reported the synthetic numbers as
 "Current stage position" with no caveat. That is the *say only what a tool told
 you* rule, and it is what the gate scores — not a finding about the model.
 
+**At `-c 131072 -fa on --cache-type-k q8_0 --cache-type-v q8_0`** (operator
+restart, 2026-10-01; ~3 GB VRAM still free, KV size not printed): the same
+three calls with the same arguments, cold prefill 37.9 s, warm 0.19 / 0.29 s,
+generation **26.4 tok/s against 30.0** — 12 % slower, not attributed between
+the quantised KV, flash attention and the larger context. The reply relayed the
+synthetic note again, so that rule held in **2 of 3** runs.
+
 What the spike did **not** measure: streaming, a session near the context
 limit, compaction, the knowledge-base and skill-discovery blocks, images, and
 any prompt-level rule over a real session.
@@ -100,8 +107,15 @@ failure. `TRANSIENT_API_ERROR_MESSAGE` stops saying "Anthropic" on this path.
 overflow long before it compacted. Read `n_ctx` (llama.cpp `/props` or
 `/v1/models` `meta.n_ctx`; otherwise a stated default) and set
 `high = n_ctx − fixed_prefix − max_output`, low at 75 % of high. At the spike's
-numbers that is 65,536 − 33,592 − 8,192 ≈ **23.7k tokens of history**, which is
-small (see Q1).
+spike's numbers: at `n_ctx 65536` that is ≈ 23.7k tokens of history; at the
+operator's chosen `131072`, **≈ 89.3k**, low water ≈ 67k.
+
+A larger window is not free, and the cost moves rather than vanishing:
+compaction becomes rarer, but the round after it re-prefills the whole
+low-water prompt — ≈ 100k tokens, **≈ 110 s at the measured 900 tok/s**, and
+prefill rate falls with length, so likely more. 84b must measure that round
+rather than this estimate, and the operator should see it coming: a progress
+event saying the context is being rebuilt, not a silent two-minute pause.
 
 **D7 — Timing contract.** Prefix reuse is what makes this usable: 37 s cold
 against 0.2 s warm per round. Anything that rewrites the prompt's front pays the
@@ -140,12 +154,14 @@ model.
 
 ## Open questions for the operator
 
-- **Q1 — context size.** 23.7k of history at `-c 65536` means frequent
-  compaction, each a ~37 s cold round. The model trained at 262,144; does the
-  workstation have memory for `-c 131072` (≈ 89k of history)? Quantised KV
-  (`-fa on --cache-type-k q8_0 --cache-type-v q8_0`) roughly halves the cost.
-- **Q2 — gate machine.** Which machine runs gate 84: the demo machine (can it
-  reach the workstation on the JHU network?), M5 or M2?
+- **Q1 — context size. Settled, 2026-10-01:** `-c 131072` with q8_0 KV and
+  flash attention, ~3 GB VRAM spare. Not pushed to 262,144: a cold round after
+  compaction would then cost minutes (D6).
+- **Q2 — gate machine. Open.** The earlier gates ran at another site, which
+  cannot be assumed to reach `IIC-LLS-Wkstn`. Candidates: Micro-Manager's demo
+  config on a machine at this site (the workstation itself is the shortest
+  path); a llama.cpp server at the gate site; or a tunnel, which adds latency to
+  every timing the gate measures.
 
 ## Run ledger
 
