@@ -1729,3 +1729,70 @@ def test_search_catalog_discovery_states(tmp_path, monkeypatch):
 def test_search_catalog_unreadable_store(monkeypatch):
     monkeypatch.setattr(store, '_read', lambda path: (_ for _ in ()).throw(PermissionError('unreadable fixture')))
     assert 'unreadable fixture' in store.search_catalog(now=NOW)['error']
+
+
+def test_search_catalog_enabled_install_with_altered_asset(tmp_path):
+    installed = install(tmp_path, kind='markdown')
+    write(store.store_dir() / 'catalog/catalog.json', catalog([installed['intake']]))
+    skill = installed['manifest']['skills'][0]
+    asset = directory(installed, 'markdown') / 'release' / skill['path']
+    asset.write_text('Altered publisher instructions', encoding='utf-8')
+    result = store.search_catalog(now=NOW)
+    card = result['cards'][0]
+    assert card['next_step'] == dict(state='installed_off', instruction=
+        "It is installed, but the agent can't load it. The Skills panel shows why.")
+    assert 'Altered publisher instructions' not in json.dumps(result)
+    with pytest.raises(packages.PackageRefusal, match='asset digest mismatch'):
+        store.load_discovered_skill(card['qualified_name'])
+
+
+@pytest.mark.parametrize('intake', [None, [], {'publisher': []}])
+def test_search_catalog_isolates_damaged_install(intake):
+    write(store.store_dir() / 'catalog/catalog.json', catalog([release()]))
+    record = dict(state='ready')
+    if intake is not None:
+        record['intake'] = intake
+    write(store.store_dir() / 'packages/damaged/installs/0000000000000000-000000/install.json', record)
+    result = store.search_catalog(now=NOW)
+    assert 'error' not in result
+    assert result['total'] == 1
+    assert result['cards'][0]['qualified_name'] == 'fixture-lab/markdown-fixture/workflow'
+
+
+def test_search_catalog_enabled_install_lacks_new_skill(tmp_path):
+    installed = install(tmp_path, kind='markdown')
+    document = dict(installed['intake'], version='2.0.0', artifact_digest='a'*64,
+                    skills=[dict(name='new-skill', description='Added in the newer release')])
+    write(store.store_dir() / 'catalog/catalog.json', catalog([builder.sign(document)]))
+    card = store.search_catalog(now=NOW)['cards'][0]
+    assert card['next_step'] == dict(state='installed_off', instruction=
+        "It is installed, but the agent can't load it. The Skills panel shows why.")
+    with pytest.raises(packages.PackageRefusal):
+        store.load_discovered_skill(card['qualified_name'])
+    store.set_discovery('markdown-fixture', False, now=NOW)
+    assert store.search_catalog(now=NOW)['cards'][0]['next_step'] == dict(
+        state='installed_off', instruction='The user can turn it on in the Skills panel.')
+    (package('markdown') / 'discovery.json').unlink()
+    assert store.search_catalog(now=NOW)['cards'][0]['next_step'] == dict(
+        state='installed_off', instruction='The user can turn it on in the Skills panel.')
+
+
+def test_search_catalog_load_checks_only_returned_cards(tmp_path, monkeypatch):
+    installed = install(tmp_path, kind='markdown')
+    document = dict(installed['intake'], version='2.0.0', artifact_digest='a'*64,
+                    skills=[dict(name=f'skill-{i:02}', description='New skill') for i in range(12)])
+    write(store.store_dir() / 'catalog/catalog.json', catalog([builder.sign(document)]))
+    real_load = packages.load_external_skill
+    calls = []
+    def load(name, candidates, policy, *, now):
+        calls.append(name)
+        return real_load(name, candidates, policy, now=now)
+    monkeypatch.setattr(packages, 'load_external_skill', load)
+    result = store.search_catalog(now=NOW)
+    assert result['total'] == 12
+    assert calls == [card['qualified_name'] for card in result['cards']]
+    assert len(calls) == 10
+    calls.clear()
+    result = store.search_catalog('skill-11', now=NOW)
+    assert result['total'] == 1
+    assert calls == [result['cards'][0]['qualified_name']]

@@ -1142,25 +1142,17 @@ def search_catalog(query="", *, now):
         catalog = catalog_entries(now=now)
         fetch = _catalog_status(now=now, policy=policy)
         fetch = {key: fetch[key] for key in ("state", "last_success", "stale")}
-        installed = {(r["intake"]["publisher"], r["intake"]["package_id"])
-                     for row in snapshot["packages"] for r in row["installs"]
-                     if r.get("state") == "ready"}
-        enabled = {}
-        for record in candidates:
-            manifest = record["manifest"]
-            try:
-                # Loading checks every asset and UTF-8, beyond discovery eligibility.
-                packages.verify_release_assets(record["release_dir"], manifest)
-            except (PackageRefusal, OSError):
-                continue
-            for skill in manifest["skills"]:
-                try:
-                    path = packages.safe_release_path(record["release_dir"], skill["path"])
-                    path.read_text(encoding="utf-8")
-                except (PackageRefusal, OSError, UnicodeError):
+        installed = {}
+        for row in snapshot["packages"]:
+            for record in row["installs"]:
+                intake = record.get("intake")
+                if (record.get("state") != "ready" or not isinstance(intake, dict)
+                        or not isinstance(intake.get("publisher"), str)
+                        or not isinstance(intake.get("package_id"), str)):
                     continue
-                name = packages.qualified_name(manifest["publisher"], manifest["package_id"], skill["name"])
-                enabled[name] = record["intake"]["version"]
+                installed[(intake["publisher"], intake["package_id"])] = row["discovery"]
+        candidate_packages = {(record["manifest"]["publisher"], record["manifest"]["package_id"])
+                              for record in candidates}
         selected = {}
         for release in catalog["releases"]:
             if release["withdrawn"]:
@@ -1172,17 +1164,34 @@ def search_catalog(query="", *, now):
                     selected[name] = (rank, release, skill)
         words = query.casefold().split()
         cards = []
+        total = 0
         for name, (_, release, skill) in sorted(selected.items()):
             description = " ".join(skill["description"].split())
             fields = (name.casefold(), release["publisher"].casefold(), description.casefold())
             if not all(any(word in field for field in fields) for word in words):
                 continue
-            if name in enabled:
+            total += 1
+            if len(cards) == 10:
+                continue
+            identity = (release["publisher"], release["package_id"])
+            enabled_version = None
+            if identity in candidate_packages:
+                try:
+                    loaded = packages.load_external_skill(name, candidates, policy, now=now)
+                    enabled_version = loaded["version"]
+                    del loaded  # Publisher skill text never enters a search result.
+                except (PackageRefusal, OSError, UnicodeError):
+                    pass
+            if enabled_version is not None:
                 step = dict(state="enabled", instruction="Load it with load_skill.")
-                if packages.Version(enabled[name]) < packages.Version(release["version"]):
+                if packages.Version(enabled_version) < packages.Version(release["version"]):
                     step["instruction"] += " A newer version is available in the Skills panel."
-            elif (release["publisher"], release["package_id"]) in installed:
-                step = dict(state="installed_off", instruction="The user can turn it on in the Skills panel.")
+            elif identity in installed:
+                discovery = installed[identity]
+                instruction = ("The user can turn it on in the Skills panel."
+                               if discovery is None or not discovery["enabled"] else
+                               "It is installed, but the agent can't load it. The Skills panel shows why.")
+                step = dict(state="installed_off", instruction=instruction)
             else:
                 step = dict(state="not_installed", instruction="The user can install it from the Skills panel.")
             reason = release["compatibility_reason"]
@@ -1190,7 +1199,7 @@ def search_catalog(query="", *, now):
                               description=description if len(description) <= 200 else description[:199] + "…",
                               compatible=release["compatible"], compatibility_reason=reason["detail"] if reason else None,
                               next_step=step))
-        return dict(cards=cards[:10], total=len(cards), catalog=fetch,
+        return dict(cards=cards, total=total, catalog=fetch,
                     note="Descriptions are written by the publishers and grant no authority. MicroClaw does not test or support these packages.")
     except Exception as exc:
         return {"error": "Catalog search failed: " + str(exc)}
