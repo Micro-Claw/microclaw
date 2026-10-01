@@ -157,12 +157,17 @@ model.
 - **Q1 — context size. Settled, 2026-10-01:** `-c 131072` with q8_0 KV and
   flash attention, ~3 GB VRAM spare. Not pushed to 262,144: a cold round after
   compaction would then cost minutes (D6).
-- **Q2 — gate machine. Open.** The earlier gates ran at another site, which
-  cannot be assumed to reach `IIC-LLS-Wkstn`. Candidates: Micro-Manager's demo
-  config on a machine at this site (the workstation itself is the shortest
-  path); a llama.cpp server at the gate site; or a tunnel, which adds latency to
-  every timing the gate measures.
+- **Q2 — gate machine. Settled, 2026-10-01:** the llama.cpp workstation
+  itself, with Micro-Manager's demo config and Microclaw installed beside the
+  model (operator to install). No network path between the gate's Microclaw and
+  its server, so the timings are a local deployment's, not a tunnel's. The
+  earlier gate machines are at another site and are not assumed to reach it.
 
 ## Run ledger
 
-Notebook drafted on `Qwen-local-model` from `main` `9e9271a`. No block assigned.
+Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
+
+| block | branch | start | state |
+|---|---|---|---|
+| 84a | `design84/84a-backend` | `Qwen-local-model` tip at assignment | assigned 2026-10-01 |
+| 84b | — | — | not started |
