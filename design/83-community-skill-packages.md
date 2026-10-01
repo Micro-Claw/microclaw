@@ -1411,6 +1411,32 @@ reading only `catalog_entries`; local only, no gate.
   panel. Enabled: `load_skill` by qualified name. No card carries a skill body,
   and no route installs.
 
+**What 83f-2 settled** (`skill_store.search_catalog`, tool
+`search_skill_catalog`; tests in `tests/test_skill_store.py`):
+- **The search reads files only.** One discovery snapshot, one
+  `catalog_entries` read, `_catalog_status` with the snapshot's policy. Tests
+  fail any request and any `refresh_catalog`. One search verifies each release
+  and withdrawal signature once.
+- **"Load it" comes from the loader.** `enabled` is decided by calling
+  `load_external_skill` on the snapshot's own candidates, for returned cards
+  only (at most 10), and the text is discarded. Round 1 re-implemented the
+  loader's asset and UTF-8 checks by hand, a second copy that would have drifted.
+- **The installed-but-not-loadable instruction says why.** "Turn it on" only
+  when the package's discovery decision is off or missing; otherwise "It is
+  installed, but the agent can't load it. The Skills panel shows why." That
+  covers a broken install and an installed version that lacks the card's skill.
+  Round 1 told the user to turn on something already on.
+- **A damaged install record is skipped, not fatal.** Round 1 failed the whole
+  search on one `ready` record with no intake.
+- **The query is bounded at 512 characters** (the description bound) and
+  refuses past it rather than truncating.
+- **Review.** One start turn, one revision with three findings (C1–C3). The
+  coordinator's mutants: 8/8 killed (withdrawn shown, enabled without loading,
+  unguarded intake, constant "turn it on", no 200-character cut, version-only
+  ranking, no 10-card limit, any-word matching); control 12/12.
+- **Not exercised:** a real catalog. As in 83f-1, every catalog here is a
+  fixture; the first real one is 83f-3's gate.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1452,7 +1478,7 @@ and otherwise stays open.
 | 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
-| 83f-2 | `block-83f-2` | `225b6f2` | opened 2026-10-01 — the agent's catalog search (D7); decisions E1–E5 taken |
+| 83f-2 | `block-83f-2` | `225b6f2` | settled 2026-10-01, PR #PRNUM — local only, no gate; decisions E1–E5 |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
