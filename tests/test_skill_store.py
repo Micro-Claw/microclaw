@@ -1638,3 +1638,94 @@ def test_catalog_and_installed_compatibility_share_checks(monkeypatch, field, va
     catalog_reason = store.catalog_entries(now=NOW)['releases'][0]['compatibility_reason']
     assert catalog_reason == store._reason(exc.value)
     assert len(calls) == 2
+
+
+def test_search_catalog_cards_matching_and_cost(monkeypatch):
+    one = release()
+    one['skills'][0]['description'] = '  Alpha  \u00a0Beta ' + 'x' * 205 + ' tailword'
+    one = builder.sign(one)
+    newer = builder.sign(dict(one, version='2.0.0', artifact_digest='a'*64, microclaw='>=999'))
+    incompatible = builder.sign(dict(newer, package_id='incompatible', artifact_digest='b'*64))
+    withdrawn = builder.sign(dict(release(), package_id='withdrawn', artifact_digest='c'*64))
+    notice = builder.sign(dict(withdrawal(), **{k: withdrawn[k] for k in
+                         ('publisher', 'package_id', 'version', 'artifact_digest')}))
+    blocked = builder.sign(dict(release(), package_id='blocked', artifact_digest='d'*64))
+    policy = store.load_trust_policy()
+    policy.update(revision=2, revoked_releases=[{k: blocked[k] for k in
+                  ('package_id', 'version', 'artifact_digest')} | {'reason': 'Blocked fixture'}])
+    store.store_trust_policy(builder.sign(policy, 'root'))
+    write(store.store_dir() / 'catalog/catalog.json', catalog([one, newer, incompatible, withdrawn, blocked], [notice]))
+    monkeypatch.setattr(updates, '_open_manual', lambda *a, **kw: pytest.fail('search requested network'))
+    monkeypatch.setattr(store, 'refresh_catalog', lambda **kw: pytest.fail('search refreshed'))
+    real = packages._verify_signature
+    calls = []
+    def verify(document, *args, **kwargs):
+        calls.append(document['type'])
+        return real(document, *args, **kwargs)
+    monkeypatch.setattr(packages, '_verify_signature', verify)
+    result = store.search_catalog(now=NOW)
+    assert result['total'] == 2
+    assert calls.count(packages.RELEASE_TYPE) == 5
+    assert calls.count(packages.WITHDRAWAL_TYPE) == 1
+    cards = {c['qualified_name']: c for c in result['cards']}
+    card = cards['fixture-lab/markdown-fixture/workflow']
+    assert card['version'] == '1.0.0' and card['compatible']
+    assert card['description'].startswith('Alpha Beta ') and len(card['description']) == 200
+    assert card['description'].endswith('…')
+    bad = cards['fixture-lab/incompatible/workflow']
+    assert not bad['compatible'] and 'incompatible' in bad['compatibility_reason']
+    assert card['next_step'] == dict(state='not_installed', instruction='The user can install it from the Skills panel.')
+    assert all(set(c) == {'qualified_name', 'publisher', 'version', 'description', 'compatible',
+                          'compatibility_reason', 'next_step'} for c in result['cards'])
+    body = (FIXTURES / 'markdown/SKILL.md').read_text(encoding='utf-8')
+    assert json.dumps(body)[1:-1] not in json.dumps(result)
+    assert 'Publisher-owned instructions for a format test.' not in json.dumps(result)
+    assert store.search_catalog('FIXTURE-LAB markdown alpha tailword', now=NOW)['total'] == 1
+    assert store.search_catalog('alpha absent', now=NOW)['total'] == 0
+    assert 'error' in store.search_catalog('x' * 513, now=NOW)
+
+
+def test_search_catalog_limit_and_fetch_state():
+    entries = [builder.sign(dict(release(), package_id=f'package-{i:02}', artifact_digest=f'{i:064x}'))
+               for i in range(12)]
+    write(store.store_dir() / 'catalog/catalog.json', catalog(entries))
+    result = store.search_catalog(now=NOW)
+    assert len(result['cards']) == 10 and result['total'] == 12
+    assert [c['qualified_name'] for c in result['cards']] == sorted(c['qualified_name'] for c in result['cards'])
+    assert result['catalog']['state'] == 'never_fetched'
+    assert result['catalog']['last_success'] is None
+    assert 'stale' in result['catalog']
+
+
+@pytest.mark.parametrize('unpublished', [False, True])
+def test_search_catalog_without_saved_catalog(unpublished):
+    if unpublished:
+        write(store.store_dir() / 'trust/roots.json', packages.PRODUCTION_ROOTS)
+    result = store.search_catalog(now=NOW)
+    assert result['cards'] == [] and result['total'] == 0
+    assert result['catalog']['state'] == ('unpublished' if unpublished else 'never_fetched')
+
+
+def test_search_catalog_discovery_states(tmp_path, monkeypatch):
+    installed = install(tmp_path, kind='markdown')
+    document = builder.sign(dict(installed['intake'], version='2.0.0', artifact_digest='a'*64))
+    write(store.store_dir() / 'catalog/catalog.json', catalog([document]))
+    real_discovery = store._discovery_state
+    snapshot = real_discovery(now=NOW)
+    monkeypatch.setattr(store, '_discovery_state', lambda **kw: snapshot)
+    result = store.search_catalog(now=NOW)
+    step = result['cards'][0]['next_step']
+    assert step['state'] == 'enabled'
+    assert step['instruction'] == 'Load it with load_skill. A newer version is available in the Skills panel.'
+    assert store.load_discovered_skill(result['cards'][0]['qualified_name'])['version'] == '1.0.0'
+    monkeypatch.setattr(store, '_discovery_state', real_discovery)
+    store.set_discovery('markdown-fixture', False, now=NOW)
+    step = store.search_catalog(now=NOW)['cards'][0]['next_step']
+    assert step == dict(state='installed_off', instruction='The user can turn it on in the Skills panel.')
+    with pytest.raises(packages.PackageRefusal):
+        store.load_discovered_skill('fixture-lab/markdown-fixture/workflow')
+
+
+def test_search_catalog_unreadable_store(monkeypatch):
+    monkeypatch.setattr(store, '_read', lambda path: (_ for _ in ()).throw(PermissionError('unreadable fixture')))
+    assert 'unreadable fixture' in store.search_catalog(now=NOW)['error']

@@ -1129,6 +1129,73 @@ def catalog_entries(*, now):
                 policy=policy)
 
 
+def search_catalog(query="", *, now):
+    """Search saved publisher metadata; never fetch or change discovery state."""
+    try:
+        if not isinstance(query, str) or len(query) > packages.MAX_DESCRIPTION_LENGTH:
+            raise PackageRefusal("query", f"expected text of at most {packages.MAX_DESCRIPTION_LENGTH} characters")
+        # Catalog readers tolerate damaged caches for panel recovery. Search must
+        # distinguish an unreadable cache from a successful search with no matches.
+        for filename in ("catalog.json", "state.json"):
+            _read(store_dir() / "catalog" / filename)
+        snapshot, candidates, policy, _, _ = _discovery_state(now=now)
+        catalog = catalog_entries(now=now)
+        fetch = _catalog_status(now=now, policy=policy)
+        fetch = {key: fetch[key] for key in ("state", "last_success", "stale")}
+        installed = {(r["intake"]["publisher"], r["intake"]["package_id"])
+                     for row in snapshot["packages"] for r in row["installs"]
+                     if r.get("state") == "ready"}
+        enabled = {}
+        for record in candidates:
+            manifest = record["manifest"]
+            try:
+                # Loading checks every asset and UTF-8, beyond discovery eligibility.
+                packages.verify_release_assets(record["release_dir"], manifest)
+            except (PackageRefusal, OSError):
+                continue
+            for skill in manifest["skills"]:
+                try:
+                    path = packages.safe_release_path(record["release_dir"], skill["path"])
+                    path.read_text(encoding="utf-8")
+                except (PackageRefusal, OSError, UnicodeError):
+                    continue
+                name = packages.qualified_name(manifest["publisher"], manifest["package_id"], skill["name"])
+                enabled[name] = record["intake"]["version"]
+        selected = {}
+        for release in catalog["releases"]:
+            if release["withdrawn"]:
+                continue
+            for skill in release["skills"]:
+                name = packages.qualified_name(release["publisher"], release["package_id"], skill["name"])
+                rank = (release["compatible"], packages.Version(release["version"]))
+                if name not in selected or rank > selected[name][0]:
+                    selected[name] = (rank, release, skill)
+        words = query.casefold().split()
+        cards = []
+        for name, (_, release, skill) in sorted(selected.items()):
+            description = " ".join(skill["description"].split())
+            fields = (name.casefold(), release["publisher"].casefold(), description.casefold())
+            if not all(any(word in field for field in fields) for word in words):
+                continue
+            if name in enabled:
+                step = dict(state="enabled", instruction="Load it with load_skill.")
+                if packages.Version(enabled[name]) < packages.Version(release["version"]):
+                    step["instruction"] += " A newer version is available in the Skills panel."
+            elif (release["publisher"], release["package_id"]) in installed:
+                step = dict(state="installed_off", instruction="The user can turn it on in the Skills panel.")
+            else:
+                step = dict(state="not_installed", instruction="The user can install it from the Skills panel.")
+            reason = release["compatibility_reason"]
+            cards.append(dict(qualified_name=name, publisher=release["publisher"], version=release["version"],
+                              description=description if len(description) <= 200 else description[:199] + "…",
+                              compatible=release["compatible"], compatibility_reason=reason["detail"] if reason else None,
+                              next_step=step))
+        return dict(cards=cards[:10], total=len(cards), catalog=fetch,
+                    note="Descriptions are written by the publishers and grant no authority. MicroClaw does not test or support these packages.")
+    except Exception as exc:
+        return {"error": "Catalog search failed: " + str(exc)}
+
+
 def _catalog_status(*, now, policy):
     """Fetch diagnostics only; reuse the discovery snapshot's verified policy."""
     state = _catalog_file("state.json")

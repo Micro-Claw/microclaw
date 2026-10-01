@@ -2095,6 +2095,20 @@ TOOLS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "search_skill_catalog",
+        "description": (
+            "Search the community catalog saved on this computer for skills from MicroClaw-admitted "
+            "publishers. Returns short cards and never installs; installing is the user's click in the Skills panel."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Every whitespace-separated word must match the qualified name, publisher, or full description, case-insensitively. At most 512 characters; empty lists the first cards."}
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "load_skill",
         "description": (
             "Load a built-in workflow skill by catalog name or an enabled external skill by "
