@@ -478,3 +478,69 @@ def test_skill_discovery_toggle_exclusion_and_disclosure():
     assert 'JSON.stringify({enabled: !toggle.enabled})' in html
     assert 'encodeURIComponent(toggle.package_id) + "/discovery"' in html
     assert 'finally { await refreshSkillPackages(); }' in html
+
+
+def delivery_view(state, decision=None):
+    path = resources.files('microclaw').joinpath('transcript.js')
+    expression = ('window.Transcript.skillPackagesView(' + json.dumps(state) + ')' if decision is None else
+                  'window.Transcript.skillPackageRequest(' + ','.join(json.dumps(v) for v in decision) + ')')
+    script = 'global.window = {}; require(' + json.dumps(str(path)) + '); process.stdout.write(JSON.stringify(' + expression + '));'
+    return json.loads(subprocess.run(['node', '-e', script], capture_output=True, text=True,
+                                    encoding='utf-8', check=True).stdout)
+
+
+def test_catalog_view_order_actions_copy_and_text():
+    def row(name, installed=None, **kwargs):
+        release = dict(publisher='lab', package_id=name, version='2.0.0', artifact_digest='a'*64,
+                       compatible=True, license='MIT')
+        return dict(release, installed_version=installed, offered_release=release,
+                    update_available=installed == '1.0.0', skills=[{'name': 'skill', 'description': '<img src=x onerror=evil()>'}],
+                    issues_url='http://unsafe.example', source_url='https://source.example', **kwargs)
+    state = {'packages': [], 'catalogListing': {'packages': [row('z'), row('a'),
+        row('installed', '1.0.0', withdrawn=True, withdrawal_reason='stopped'),
+        row('blocked', '1.0.0', blocked=True, block_reason={'detail': 'unsafe'}), row('current', '2.0.0')]}}
+    view = delivery_view(state)
+    rows = view['catalogRows']
+    assert [r['package_id'] for r in rows] == ['blocked', 'current', 'installed', 'a', 'z']
+    assert [r['action'] for r in rows] == ['Update to 2.0.0', None, 'Update to 2.0.0', 'Install 2.0.0', 'Install 2.0.0']
+    assert rows[0]['warning'] == "Blocked by MicroClaw: unsafe. The agent can't read it and it can't run. Nothing was deleted — its files and every result it produced are still on this computer."
+    assert rows[2]['warning'] == "Withdrawn by its publisher: stopped. It stays installed and keeps working; new installs can't choose it."
+    assert rows[0]['notice'] == 'MicroClaw does not test or support this package. Report problems to lab'
+    assert all(r['issues'] is None and r['source'] == 'https://source.example' for r in rows)
+    assert rows[0]['skills'][0]['description'] == '<img src=x onerror=evil()>'
+    assert 'yanked' not in json.dumps(view).lower()
+    hostile = row('hostile')
+    hostile['publisher'] = '<img src=x onerror=evil()>'
+    result = delivery_view({'catalogListing': {'packages': [hostile]}})['catalogRows'][0]
+    assert result['notice'].endswith('<img src=x onerror=evil()>')
+    incompatible = row('incompatible')
+    incompatible['offered_release'].update(compatible=False, compatibility_reason={'detail': 'wrong build'})
+    result = delivery_view({'catalogListing': {'packages': [incompatible]}})['catalogRows'][0]
+    assert result['action'] is None and result['compatibility'] == 'wrong build'
+    html = resources.files('microclaw').joinpath('serve.html').read_text(encoding='utf-8')
+    wiring = html.split('for (const row of view.catalogRows)')[1].split('for (const row of view.rows)')[0]
+    assert 'description.textContent = skill.name + ": " + skill.description' in wiring
+    assert 'item.textContent = row.publisher' in wiring and 'innerHTML' not in wiring
+
+
+@pytest.mark.parametrize('state,expected', [('unpublished', 'No community catalog is published yet'),
+    ('unreachable', 'Offline — showing the copy saved '), ('ok', 'Catalog checked '),
+    ('never_fetched', 'Catalog has not been checked yet'), ('refused', 'Catalog check refused')])
+def test_catalog_freshness(state, expected):
+    assert delivery_view({'catalog': {'state': state, 'last_success': '2026-09-30T12:00:00Z'}})['freshness'].startswith(expected)
+
+
+@pytest.mark.parametrize('operation', ['install', 'remove'])
+def test_delivery_confirmation_cancel_sends_no_request(operation):
+    row = {'package_id': 'fixture', 'offered_release': {'publisher': '<img>', 'package_id': 'fixture',
+        'version': '2.0.0', 'artifact_digest': 'a'*64}}
+    assert delivery_view({}, [row, operation, False]) is None
+    request = delivery_view({}, [row, operation, True])
+    assert request['url'] == '/api/skill-packages/fixture/' + operation
+    assert request['body'] == (row['offered_release'] if operation == 'install' else None)
+    html = resources.files('microclaw').joinpath('serve.html').read_text(encoding='utf-8')
+    assert 'document.createElement("dialog")' in html
+    assert 'Transcript.skillPackageRequest(row, operation, accepted)' in html
+    assert 'if (!request) return;' in html
+    assert "Only the package's installed files are deleted. The results it produced are kept." in html
+    assert '["Cancel", false]' in html

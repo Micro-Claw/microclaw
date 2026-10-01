@@ -3157,3 +3157,54 @@ def test_catalog_startup_runs_after_package_check_failure(session, monkeypatch, 
         assert refreshed.wait(3)
     assert calls == (['recover', 'refresh'] if failure == 'recover' else ['recover', 'recheck', 'refresh'])
     assert 'Could not check skill packages' in capsys.readouterr().err
+
+
+def test_skill_remove_retained_and_lock_conflicts(skill_client, monkeypatch):
+    from microclaw import skill_store
+    from tests.test_skill_store import package, read
+    pointer = read(package('markdown') / 'pointer.json')
+    record = read(package('markdown') / 'installs' / pointer['active'] / 'install.json')
+    monkeypatch.setattr(skill_store, 'retained_digests', lambda: frozenset({record['artifact_digest']}))
+    response = skill_client.post('/api/skill-packages/markdown-fixture/remove')
+    assert response.status_code == 409 and 'live analysis' in response.json()['detail']
+    monkeypatch.setattr(skill_store, 'retained_digests', lambda: frozenset())
+    with skill_store.package_lock('markdown-fixture'):
+        assert skill_client.post('/api/skill-packages/markdown-fixture/remove').status_code == 409
+    assert skill_client.post('/api/skill-packages/markdown-fixture/remove').status_code == 200
+    assert not package('markdown').exists()
+
+
+def test_skill_catalog_routes_and_poll_cost(skill_client, monkeypatch):
+    from microclaw import skill_store, skill_packages
+    from tests.test_skill_store import release, catalog, write
+    write(skill_store.store_dir() / 'catalog/catalog.json', catalog([release()]))
+    calls = []
+    original = skill_packages.verify_catalog
+    def verify(*args, **kwargs):
+        calls.append(len(args[0]['releases']))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(skill_packages, 'verify_catalog', verify)
+    for _ in range(3):
+        assert skill_client.get('/api/skill-packages').status_code == 200
+    assert calls == []
+    response = skill_client.get('/api/skill-packages/catalog')
+    assert response.status_code == 200 and calls == [1]
+    assert response.json()['packages'][0]['installed_version'] == '2.0.0'
+    refreshes = []
+    monkeypatch.setattr(skill_store, 'refresh_catalog', lambda **k: refreshes.append(k) or {'state': 'ok'})
+    assert skill_client.post('/api/skill-packages/check').json() == {'state': 'ok'}
+    assert len(refreshes) == 1 and 'now' in refreshes[0]
+
+
+def test_skill_install_route_exact_identity(skill_client, monkeypatch):
+    from microclaw import skill_store
+    from tests.test_skill_store import release
+    identity = {k: release()[k] for k in ('publisher', 'package_id', 'version', 'artifact_digest')}
+    calls = []
+    monkeypatch.setattr(skill_store, 'start_job', lambda *a, **k: calls.append((a, k)) or {'operation': 'install'})
+    path = '/api/skill-packages/markdown-fixture/install'
+    assert skill_client.post(path, json=identity).status_code == 202
+    assert calls[0][0] == ('markdown-fixture', 'install') and calls[0][1]['release'] == identity
+    for body in [{}, dict(identity, extra=True), dict(identity, package_id='other'), dict(identity, publisher=[]), []]:
+        assert skill_client.post(path, json=body).status_code == 400
+    assert len(calls) == 1

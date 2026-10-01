@@ -7,8 +7,9 @@ supervisor records a launch failure. Startup never executes publisher code.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -609,10 +611,13 @@ def _transaction(package, intake, artifact_path, *, policy, now, uv_executable,
 
 
 def install(intake, artifact_path, *, policy, now, uv_executable=None, retained_digests,
-            find_links=None, base_python=None):
+            find_links=None, base_python=None, _locked_package=None):
     packages.check_release(intake, policy, purpose="admission", now=now, artifact=artifact_path)
-    with package_lock(intake["package_id"]) as package:
-        _recover(package, retained_digests=retained_digests)
+    # start_job already owns and recovered this package; never reacquire its lock
+    # or mark the live job interrupted during a second recovery.
+    with (nullcontext(_locked_package) if _locked_package is not None else package_lock(intake["package_id"])) as package:
+        if _locked_package is None:
+            _recover(package, retained_digests=retained_digests)
         record = _transaction(package, intake, artifact_path, policy=policy, now=now,
                               uv_executable=uv_executable, retained_digests=retained_digests,
                               find_links=find_links, base_python=base_python)
@@ -916,23 +921,40 @@ def resolve(package_id, artifact_digest, *, now, policy=None):
     raise PackageRefusal("artifact_digest", "no ready install with requested digest")
 
 
-def start_job(package_id, action, *, retained_digests):
+def start_job(package_id, action, *, retained_digests, release=None, opener=None):
     """Reserve the durable package lock before HTTP 202; report conflicts as 409."""
-    if action not in {"rollback", "repair"}:
+    if action not in {"rollback", "repair", "install"}:
         raise PackageRefusal("operation", "unknown store operation")
     lock = package_lock(package_id)
     package = lock.__enter__()
-    job = dict(operation=action, running=True, phase="recovering", started_at=time.time())
+    job = dict(operation=action, running=True,
+               phase="downloading" if action == "install" else "recovering", started_at=time.time())
     try:
+        _recover(package, retained_digests=retained_digests)
         _write(package / "job.json", job)
         def work():
             try:
-                _recover(package, retained_digests=retained_digests)
                 policy = load_trust_policy()
-                job["phase"] = action
+                job["phase"] = "downloading" if action == "install" else action
                 _write(package / "job.json", job)
                 kwargs = dict(policy=policy, now=datetime.now(timezone.utc), retained_digests=retained_digests)
-                if action == "repair":
+                if action == "install":
+                    catalog = catalog_entries(now=kwargs["now"])
+                    kwargs["policy"] = catalog["policy"]
+                    selected = select_catalog_releases(catalog)
+                    choice = selected.get((release.get("publisher"), package_id)) if isinstance(release, dict) else None
+                    fields = ("publisher", "package_id", "version", "artifact_digest")
+                    if (not choice or not choice[1]["compatible"] or
+                            any(release.get(f) != choice[1][f] for f in fields)):
+                        raise PackageRefusal("release", "requested release is not the newest installable catalog offer")
+                    job["phase"] = "downloading"
+                    _write(package / "job.json", job)
+                    def installing():
+                        job["phase"] = "installing"
+                        _write(package / "job.json", job)
+                    record = download_release(choice[1], package=package, opener=opener,
+                                              installing=installing, **kwargs)
+                elif action == "repair":
                     record = _repair(package, uv_executable=updates.locate_uv(), **kwargs)
                 else:
                     record = _rollback(package, **kwargs)
@@ -1129,6 +1151,92 @@ def catalog_entries(*, now):
                 policy=policy)
 
 
+def select_catalog_releases(catalog, *, per_skill=False):
+    """E2/G3: prefer compatibility, then version, excluding withdrawals and blocks."""
+    selected = {}
+    for release in catalog["releases"]:
+        if release["withdrawn"] or release.get("blocked"):
+            continue
+        for skill in release["skills"] if per_skill else [None]:
+            key = (packages.qualified_name(release["publisher"], release["package_id"], skill["name"])
+                   if per_skill else (release["publisher"], release["package_id"]))
+            rank = (release["compatible"], packages.Version(release["version"]))
+            if key not in selected or rank > selected[key][0]:
+                selected[key] = (rank, release, skill)
+    return selected
+
+
+def panel_catalog(*, now):
+    catalog = catalog_entries(now=now)
+    offered = select_catalog_releases(catalog)
+    rows = {}
+    entries = list(catalog["releases"])
+    for excluded in catalog["exclusions"]:
+        if not excluded.get("blocked"):
+            continue
+        try:
+            entry = packages.validate_intake(excluded.get("entry"))
+        except PackageRefusal:
+            continue
+        entries.append(dict(entry, blocked=True, block_reason=excluded["block_reason"],
+                            compatible=False, compatibility_reason=None,
+                            withdrawn=False, withdrawal_reason=None))
+    for entry in entries:
+        key = (entry["publisher"], entry["package_id"])
+        if key not in rows or packages.Version(entry["version"]) > packages.Version(rows[key]["version"]):
+            rows[key] = dict(entry, installed_version=None, offered_release=None)
+    # Active installs remain visible even if absent from the saved catalog.
+    for package in (store_dir() / "packages").glob("*"):
+        records = _records(package)
+        pointer, _ = _pointer(package, records)
+        for path, record, _ in records:
+            if not record or record.get("state") != "ready":
+                continue
+            if pointer and pointer.get("active") and path.name != pointer["active"]:
+                continue
+            try:
+                intake = packages.validate_intake(record.get("intake"))
+            except PackageRefusal:
+                continue
+            key = (intake["publisher"], intake["package_id"])
+            matching = next((e for e in entries if all(e[f] == intake[f] for f in
+                ("publisher", "package_id", "version", "artifact_digest"))), intake)
+            rows[key] = dict(matching, installed_version=intake["version"], offered_release=None)
+    for key, row in rows.items():
+        offer = offered[key][1] if key in offered else None
+        if row["installed_version"] is None and offer:
+            row.update(offer)
+        row["offered_release"] = offer
+        row["update_available"] = bool(offer and row["installed_version"] and
+            packages.Version(offer["version"]) > packages.Version(row["installed_version"]))
+    return {"packages": sorted(rows.values(), key=lambda r: (r["installed_version"] is None,
+                                                            r["publisher"], r["package_id"]))}
+
+
+def download_release(entry, *, package, policy, now, retained_digests, opener=None,
+                     installing=None):
+    """Bounded HTTPS download; discard temporary bytes on every outcome."""
+    opener = opener or updates._default_opener
+    with tempfile.NamedTemporaryFile(dir=package, prefix="artifact-", suffix=".zip", delete=False) as file:
+        path = Path(file.name)
+    try:
+        data, _ = updates._open_manual(entry["artifact"], opener,
+            max_bytes=packages.MAX_ARTIFACT_DOWNLOAD_BYTES, allowed_hosts=None,
+            label="package artifact", accept="application/octet-stream")
+        path.write_bytes(data)
+        if hashlib.sha256(data).hexdigest() != entry["artifact_digest"]:
+            raise PackageRefusal("artifact_digest", "download does not match signed digest")
+        if installing:
+            installing()
+        intake = {k: v for k, v in entry.items() if k not in {
+            "compatible", "compatibility_reason", "installed", "withdrawn", "withdrawal_reason",
+            "blocked", "block_reason"}}
+        return install(intake, path, policy=policy, now=now, retained_digests=retained_digests,
+                       uv_executable=updates.locate_uv(), find_links=None, _locked_package=package)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def search_catalog(query="", *, now):
     """Search saved publisher metadata; never fetch or change discovery state."""
     try:
@@ -1153,15 +1261,7 @@ def search_catalog(query="", *, now):
                 installed[(intake["publisher"], intake["package_id"])] = row["discovery"]
         candidate_packages = {(record["manifest"]["publisher"], record["manifest"]["package_id"])
                               for record in candidates}
-        selected = {}
-        for release in catalog["releases"]:
-            if release["withdrawn"]:
-                continue
-            for skill in release["skills"]:
-                name = packages.qualified_name(release["publisher"], release["package_id"], skill["name"])
-                rank = (release["compatible"], packages.Version(release["version"]))
-                if name not in selected or rank > selected[name][0]:
-                    selected[name] = (rank, release, skill)
+        selected = select_catalog_releases(catalog, per_skill=True)
         words = query.casefold().split()
         cards = []
         total = 0

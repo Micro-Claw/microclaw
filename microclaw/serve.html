@@ -288,6 +288,49 @@
   }
 
   let skillPackagesPollTimer;
+  let skillCatalog = {packages: []};
+  const skillFinishedJobs = new Map();
+  async function refreshSkillCatalog() {
+    const res = await apiFetch("/api/skill-packages/catalog");
+    if (res.ok) skillCatalog = await res.json();
+  }
+  $("skill-packages-panel").addEventListener("toggle", async () => {
+    if ($("skill-packages-panel").open) { await refreshSkillCatalog(); await refreshSkillPackages(); }
+  });
+  function confirmSkillPackage(row, operation) {
+    return new Promise(resolve => {
+      const dialog = document.createElement("dialog");
+      const text = document.createElement("p");
+      const release = row.offered_release || row;
+      text.textContent = operation === "remove" ? row.publisher + "/" + row.package_id +
+        ": Only the package's installed files are deleted. The results it produced are kept." :
+        row.publisher + "/" + row.package_id + " " + release.version + " — Publisher: " + release.publisher +
+        " — Licence: " + release.license + ". " + row.notice;
+      dialog.append(text);
+      if (operation === "install" && row.confirmIssues) {
+        const link = document.createElement("a"); link.href = row.confirmIssues; link.textContent = "Report problems"; dialog.append(link);
+      }
+      for (const [label, accepted] of [[operation === "remove" ? "Remove" : "Install", true], ["Cancel", false]]) {
+        const button = document.createElement("button"); button.textContent = label;
+        button.onclick = () => { dialog.close(); dialog.remove(); resolve(accepted); }; dialog.append(button);
+      }
+      dialog.addEventListener("cancel", () => { dialog.remove(); resolve(false); });
+      document.body.append(dialog); dialog.showModal();
+    });
+  }
+  async function skillPackageAction(row, operation) {
+    const accepted = ["install", "remove"].includes(operation) ? await confirmSkillPackage(row, operation) : true;
+    const request = Transcript.skillPackageRequest(row, operation, accepted);
+    if (!request) return;
+    try {
+      const res = await apiFetch(request.url, {method: "POST", headers: {"Content-Type": "application/json"},
+        body: request.body ? JSON.stringify(request.body) : undefined});
+      if (!res.ok) { const body = await res.json(); alert(body.detail || "Package operation failed."); }
+      if (operation === "remove") await refreshSkillCatalog();
+      await refreshSkillPackages();
+    } catch (err) { alert(err.message); }
+  }
+
   async function refreshSkillPackages() {
     clearTimeout(skillPackagesPollTimer);
     let fast = false;
@@ -295,11 +338,46 @@
       const res = await apiFetch("/api/skill-packages");
       if (!res.ok) return;
       const state = await res.json();
+      let finished = false;
+      for (const pkg of state.packages) if (pkg.job && !pkg.job.running &&
+          skillFinishedJobs.get(pkg.package_id) !== pkg.job.started_at) {
+        skillFinishedJobs.set(pkg.package_id, pkg.job.started_at); finished = true;
+      }
+      if (finished && $("skill-packages-panel").open) await refreshSkillCatalog();
+      state.catalogListing = skillCatalog;
       const view = Transcript.skillPackagesView(state);
       $("skill-packages-trust").textContent = view.trust;
       $("skill-packages-disclosure").textContent = view.disclosure;
       const list = $("skill-packages-list");
       list.replaceChildren();
+      const freshness = document.createElement("p"); freshness.textContent = view.freshness + " ";
+      const check = document.createElement("button"); check.textContent = "Check now";
+      check.onclick = async () => { check.disabled = true; try {
+        await apiFetch("/api/skill-packages/check", {method: "POST"});
+        await refreshSkillCatalog(); await refreshSkillPackages();
+      } catch (err) { alert(err.message); } finally { check.disabled = false; } };
+      freshness.append(check); list.append(freshness);
+      for (const row of view.catalogRows) {
+        const item = document.createElement("p");
+        if (row.compatibility) item.style.opacity = "0.55";
+        item.textContent = row.publisher + "/" + row.package_id + " " + (row.installed_version || row.version) +
+          " " + row.warning + " " + row.compatibility + " " + row.notice;
+        for (const skill of row.skills || []) {
+          const description = document.createElement("p"); description.textContent = skill.name + ": " + skill.description; item.append(description);
+        }
+        for (const [label, url] of [["Source", row.source], ["Report problems", row.issues]]) {
+          if (url) { const link = document.createElement("a"); link.textContent = label; link.href = url; item.append(link); }
+        }
+        const pkg = state.packages.find(p => p.package_id === row.package_id);
+        const actions = [[row.action, "install"], [row.remove ? "Remove" : null, "remove"]];
+        if (pkg) actions.push(["Roll back", "rollback"], ["Repair", "repair"]);
+        for (const [label, operation] of actions) if (label) {
+          const button = document.createElement("button"); button.textContent = label;
+          button.disabled = !!(pkg && pkg.job && pkg.job.running);
+          button.onclick = () => skillPackageAction(row, operation); item.append(button);
+        }
+        list.append(item);
+      }
       for (const row of view.rows) {
         const item = document.createElement("p");
         item.textContent = row;
@@ -326,6 +404,13 @@
           finally { await refreshSkillPackages(); }
         });
         item.append(button);
+        // A damaged install may have no catalog card, but remains removable.
+        if (!view.catalogRows.some(row => row.package_id === toggle.package_id && row.remove)) {
+          const remove = document.createElement("button"); remove.textContent = "Remove";
+          remove.disabled = toggle.disabled;
+          remove.onclick = () => skillPackageAction({package_id: toggle.package_id, publisher: "unknown"}, "remove");
+          item.append(remove);
+        }
         list.append(item);
       }
       fast = state.packages.some(p => p.job && p.job.running);
