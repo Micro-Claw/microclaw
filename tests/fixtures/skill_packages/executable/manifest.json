@@ -23,7 +23,7 @@
     },
     {
       "path": "fixture_worker/runner.py",
-      "sha256": "1eaebe2f573d8a090b1d2008abb7a77a983e56e4890943102f1444276cddbbb1"
+      "sha256": "bfb57f5a11fe0382ee4c698d1c0fdd452642f68d5af2e86acf7ee2761486a31d"
     }
   ],
   "skills": [
@@ -74,9 +74,9 @@
             "type": "string",
             "enum": [
               "normal",
-              "below_normal"
+              "inherit"
             ],
-            "default": "normal"
+            "default": "inherit"
           }
         },
         "additionalProperties": false

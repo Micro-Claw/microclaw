@@ -5,15 +5,21 @@ signature verification and put_nowait. Notifications validate small messages and
 put_nowait; neither path launches, hashes assets, accesses the filesystem, writes
 pipes, starts threads, or waits for a worker. Short locks protect in-memory
 transitions only, never I/O. Fixed dispatchers own launch, deadlines, verification
-and cleanup. Message bytes, pending stdin, retained stdout and stderr, queued
+and cleanup. Priority launch policy and at most two worker priority samples run only
+in the dispatcher monitor, never on submit/notify or in pipe callbacks. Cleanup
+labels unsampled phases without further OS reads or waits. Message bytes, pending
+stdin, retained stdout and stderr, queued
 jobs and live workers have explicit bounds. Notification history retains the first
 32 attempts and counts subsequent attempts without retaining them. There is no
 total analysis deadline unless supplied. All timing uses perf_counter, including
 deadlines. Measurements live in design/83-block83c-dispatch-timing.py.
 
 Workers have the user's permissions, not an OS sandbox. Windows uses a Job
-Object assigned before resume. POSIX uses a new session/process group; a POSIX
-descendant which calls setsid escapes (accepted off the shipping platform).
+Object assigned before resume. Each Windows priority sample reads up to 64 job
+members and records the highest scheduling class and number read; the launched
+process can be a venv launcher rather than the worker. Query handles stay open
+through the terminal sample so exited members remain readable. POSIX uses a new
+session/process group; a POSIX descendant which calls setsid escapes (accepted off the shipping platform).
 """
 from __future__ import annotations
 
@@ -44,6 +50,10 @@ MAX_CONCURRENT_WORKERS = 2
 STARTUP_DEADLINE_S = 60
 SELF_CHECK_DEADLINE_S = 120
 SHUTDOWN_GRACE_S = 10
+MAX_JOB_PRIORITY_PROCESSES = 64
+# Priority-class numbers are flags, not scheduling order.
+WINDOWS_PRIORITY_RANK = {value: rank for rank, value in enumerate(
+    (0x40, 0x4000, 0x20, 0x8000, 0x80, 0x100))}
 
 
 class _WindowsJob:
@@ -76,7 +86,9 @@ class _WindowsJob:
         signatures = {
             "CreateJobObjectW": ([c.c_void_p, w.LPCWSTR], w.HANDLE),
             "SetInformationJobObject": ([w.HANDLE, c.c_int, c.c_void_p, w.DWORD], w.BOOL),
+            "QueryInformationJobObject": ([w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.c_void_p], w.BOOL),
             "OpenProcess": ([w.DWORD, w.BOOL, w.DWORD], w.HANDLE),
+            "GetPriorityClass": ([w.HANDLE], w.DWORD),
             "AssignProcessToJobObject": ([w.HANDLE, w.HANDLE], w.BOOL),
             "TerminateJobObject": ([w.HANDLE, w.UINT], w.BOOL),
             "TerminateProcess": ([w.HANDLE, w.UINT], w.BOOL),
@@ -88,6 +100,7 @@ class _WindowsJob:
         ntdll.NtResumeProcess.argtypes = [w.HANDLE]
         ntdll.NtResumeProcess.restype = w.LONG
         self.handle = None
+        self._priority_handles = {}
         child = None
         try:
             self.handle = self.check(self.kernel.CreateJobObjectW(None, None))
@@ -123,10 +136,105 @@ class _WindowsJob:
     def kill(self):
         self.check(self.kernel.TerminateJobObject(self.handle, 1))
 
+    def _process_ids(self):
+        c = self.c
+
+        class ProcessIds(c.Structure):
+            _fields_ = [("NumberOfAssignedProcesses", c.c_uint32),
+                        ("NumberOfProcessIdsInList", c.c_uint32),
+                        ("ProcessIdList", c.c_size_t * MAX_JOB_PRIORITY_PROCESSES)]
+
+        info = ProcessIds()
+        result = self.kernel.QueryInformationJobObject(self.handle, 3, c.byref(info), c.sizeof(info), None)
+        more_data = not result and c.get_last_error() == 234  # ERROR_MORE_DATA
+        if not result and not more_data:
+            self.check(result)
+        count = min(info.NumberOfProcessIdsInList, MAX_JOB_PRIORITY_PROCESSES)
+        truncated = more_data or info.NumberOfAssignedProcesses > count
+        reason = (f"job pid list truncated: {info.NumberOfAssignedProcesses} assigned, {count} listed "
+                  f"(limit {MAX_JOB_PRIORITY_PROCESSES})") if truncated else None
+        return list(info.ProcessIdList[:count]), reason
+
+    def _pid_priority(self, pid):
+        if pid not in self._priority_handles:
+            self._priority_handles[pid] = self.check(
+                self.kernel.OpenProcess(0x1000, False, pid))  # QUERY_LIMITED_INFORMATION
+        return self.check(self.kernel.GetPriorityClass(self._priority_handles[pid]))
+
+    def read_priority(self):
+        """Read held members plus newly listed members, retaining at most 64 handles."""
+        pids, reason = self._process_ids()
+        reasons = [reason] if reason else []
+        new = [pid for pid in pids if pid not in self._priority_handles]
+        remaining = MAX_JOB_PRIORITY_PROCESSES - len(self._priority_handles)
+        if len(new) > remaining:
+            reasons.append(f"job priority handles truncated at {MAX_JOB_PRIORITY_PROCESSES}; "
+                           f"{len(new) - remaining} new members omitted")
+        reads = list(self._priority_handles) + new[:remaining]
+        classes = []
+        for pid in reads:
+            try:
+                value = self._pid_priority(pid)
+                if value not in WINDOWS_PRIORITY_RANK:
+                    reasons.append(f"pid {pid}: unknown priority class {value}")
+                    continue
+                classes.append(value)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) in (6, 87):  # invalid handle/pid after exit
+                    reasons.append(f"pid {pid} exited before priority read")
+                else:
+                    reasons.append(f"pid {pid}: {exc}")
+        if not classes:
+            reasons.append("job has no readable processes" if reads else "job has no processes (processes exited)")
+        value = max(classes, key=WINDOWS_PRIORITY_RANK.__getitem__) if classes else None
+        return value, "; ".join(reasons) or None, len(classes)
+
     def close(self):
+        failure = None
+        for pid, child in list(self._priority_handles.items()):
+            del self._priority_handles[pid]
+            try:
+                self.check(self.kernel.CloseHandle(child))
+            except OSError as exc:
+                failure = failure or exc
         if self.handle:
-            self.check(self.kernel.CloseHandle(self.handle))
-            self.handle = None
+            try:
+                self.check(self.kernel.CloseHandle(self.handle))
+            except OSError as exc:
+                failure = failure or exc
+            finally:
+                self.handle = None
+        if failure:
+            raise failure
+
+
+def _windows_priority(handle=None):
+    import ctypes as c
+    from ctypes import wintypes as w
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.GetPriorityClass.argtypes = [w.HANDLE]
+    kernel.GetPriorityClass.restype = w.DWORD
+    value = kernel.GetPriorityClass(kernel.GetCurrentProcess() if handle is None else handle)
+    if not value:
+        raise c.WinError(c.get_last_error())
+    return value
+
+
+def _read_priority(process, job=None):
+    """Best-effort evidence, including an explicit exited-before-read outcome."""
+    try:
+        if os.name == "nt":
+            # The launched handle may belong to a venv launcher, not the worker.
+            # The job remains queryable after launcher's exit until cleanup closes it.
+            return job.read_priority() if job is not None else (None, "worker job unavailable", 0)
+        if process.poll() is not None:
+            return None, "process exited before priority read", 0
+        return os.getpriority(os.PRIO_PROCESS, process.pid), None, 1
+    except ProcessLookupError:
+        return None, "process exited before priority read", 0
+    except (OSError, AttributeError) as exc:
+        return None, str(exc), 0
 
 
 def _kill_tree(process, job):
@@ -169,6 +277,8 @@ class JobHandle:
         self._stdin_unavailable_reason = None
         self._violation = None
         self._record = dict(job_id=self.job_id, release={}, operation=None, state="queued",
+                            priority=dict(requested=None, inherited=False, at_start=None, at_end=None,
+                                          processes_read=dict(at_start=0, at_end=0), reason={}),
                             result=None, failure=None, artifacts=[], rejected_artifacts=[],
                             lifecycle=dict(acquisition=None, writer=None), notifications=[], notifications_dropped=0,
                             status=[], status_dropped=0, stderr_tail="", exit_code=None,
@@ -500,6 +610,22 @@ class Supervisor:
         process = job = temporary = None
         threads = []
         failure = None
+        sampled = set()
+
+        def sample_priority():
+            with handle._lock:
+                arrivals = dict(at_start=handle._first is not None,
+                                at_end=handle._record["result"] is not None)
+            for phase, arrived in arrivals.items():
+                if arrived and phase not in sampled:
+                    sampled.add(phase)
+                    value, reason, count = _read_priority(process, job)
+                    with handle._lock:
+                        handle._record["priority"][phase] = value
+                        handle._record["priority"]["processes_read"][phase] = count
+                        if reason:
+                            handle._record["priority"]["reason"][phase] = reason
+
         try:
             packages.verify_release_assets(handle._release_dir, handle._manifest)
             if self._closing.is_set():
@@ -515,9 +641,26 @@ class Supervisor:
                    if not key.upper().startswith("MICROCLAW_") and
                    key.upper() not in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"}}
             env.update(PYTHONPATH=os.path.abspath(handle._release_dir), PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-            kwargs = dict(creationflags=0x00000004 | 0x08000000) if os.name == "nt" else dict(start_new_session=True)
+            argv = [handle._python, "-u", "-m", handle._manifest["entry_point"]["module"]]
+            if os.name == "nt":
+                idle = _windows_priority() == 0x40
+                kwargs = dict(creationflags=0x00000004 | 0x08000000 | (0 if idle else 0x4000))
+                requested, inherited = (0x40 if idle else 0x4000), idle
+            else:
+                try:
+                    own = os.nice(0)
+                except OSError:
+                    # macOS sandbox can deny even nice(0); read without a write.
+                    own = os.getpriority(os.PRIO_PROCESS, 0)
+                increment = max(0, 10 - own)
+                if increment:
+                    argv = ["nice", "-n", str(increment), *argv]
+                kwargs = dict(start_new_session=True)
+                requested, inherited = own + increment, increment == 0
+            with handle._lock:
+                handle._record["priority"].update(requested=requested, inherited=inherited)
             handle._spawned = time.perf_counter()
-            process = subprocess.Popen([handle._python, "-u", "-m", handle._manifest["entry_point"]["module"]],
+            process = subprocess.Popen(argv,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        cwd=cwd, env=env, bufsize=0, **kwargs)
             if os.name == "nt":
@@ -528,7 +671,11 @@ class Supervisor:
                 thread = threading.Thread(target=target, args=args, daemon=True, name=f"skill-pipe-{handle.job_id}")
                 threads.append(thread)
                 thread.start()
-            while process.poll() is None:
+            while True:
+                exited = process.poll() is not None
+                sample_priority()
+                if exited:
+                    break
                 now = time.perf_counter()
                 with handle._lock:
                     first, terminal = handle._first, handle._record["result"]
@@ -580,6 +727,13 @@ class Supervisor:
                         job.close()
                     except OSError as exc:
                         failure = dict(reason="cleanup_failed", detail=str(exc))
+            with handle._lock:
+                for phase, arrived in (("at_start", handle._first is not None),
+                                       ("at_end", handle._record["result"] is not None)):
+                    if phase not in sampled:
+                        handle._record["priority"]["reason"][phase] = (
+                            "message arrived after priority monitoring ended" if arrived else
+                            "worker message never arrived")
             if temporary is not None:
                 try:
                     temporary.cleanup()

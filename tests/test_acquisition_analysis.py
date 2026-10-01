@@ -60,7 +60,7 @@ def test_decline_precedes_every_real_tool_body(live, monkeypatch, name):
                       'cancelled': True}
     assert not live.engine.core.trace and not live.engine.backends
     assert prompts[0][1] == dict(kind='analysis', subject='fixture-lab/conformance-fixture@' + live.analysis['release_digest'])
-    assert "The analysis runs at the same time as the acquisition, at the same priority as MicroClaw, and competes with it for CPU and disk. It is not throttled. Each result's frame-gap summary shows the effect." in prompts[0][0]
+    assert "The analysis runs at the same time as the acquisition, at below-normal CPU priority. It is not throttled, and it still competes with the acquisition for CPU and disk." in prompts[0][0]
     assert 'each dataset' in prompts[0][0] and 'overflow' in prompts[0][0]
     assert 'Output goes to <dataset>/analysis/<job_id>/ inside each dataset.' in prompts[0][0]
 

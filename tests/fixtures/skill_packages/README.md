@@ -13,8 +13,11 @@ using `Full resolution/NDTiff.index` when that directory exists, otherwise
 rollover files, and preserves incomplete index entries for the next poll.
 Optional `cpu_threads` (1–256) hash the latest pixels, with a 1 MiB initial
 buffer, until writer completion, cancellation or `max_s` (strictly positive,
-up to 3600). Optional `priority: below_normal` lowers only the worker's process
-priority and reports its read-back. Results carry read and load measurements in
+up to 3600). Optional `priority: inherit` (default) touches nothing and reports
+the worker's priority read-back. `priority: normal` requests Windows
+NORMAL_PRIORITY_CLASS or POSIX niceness 0 and reports applied + reason;
+unprivileged POSIX refusal is expected. The supervisor lowers every worker at
+launch, including self-check. Results carry read and load measurements in
 `result.output`; `{}` preserves the original artifact bytes and lifecycle.
 The admitted schema vocabulary cannot express conditional `required`: the worker
 rejects missing `max_s` with `cpu_threads`. The manifest enforces closed properties
