@@ -1320,7 +1320,8 @@ and otherwise stays open.
 | 83e-2 | `block-83e-2` | `2a1c42a` | **merged 2026-09-28** as `3dde106`, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
 | 83e-3 | `block-83e-3` | `3dde106` | **merged 2026-09-29** as `6b4d11b`, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
 | 83e-4 | `block-83e-4` | `6b4d11b` | **merged 2026-09-29** as `f3d039c`, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
-| 83e-5 | `block-83e-5` | `f3d039c` | reviewed, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
+| 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
+| 83f | `block-83f` | `17e4514` | opened 2026-10-01 — decisions pending with the operator |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
