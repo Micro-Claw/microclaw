@@ -1,0 +1,133 @@
+{
+  "type": "microclaw.catalog.v1",
+  "releases": [
+    {
+      "package_id": "executable-fixture",
+      "publisher": "fixture-lab",
+      "version": "1.0.0",
+      "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-3/design/83f3-gate/artifacts/fixture-lab-executable-fixture-1.0.0.zip",
+      "kind": "executable",
+      "microclaw": ">=0.1,<2",
+      "license": "MIT",
+      "source_url": "https://github.com/fixture-lab/skills",
+      "issues_url": "https://github.com/fixture-lab/skills/issues",
+      "skills": [
+        {
+          "name": "workflow",
+          "description": "A publisher-provided fixture workflow."
+        }
+      ],
+      "python": ">=3.10,<4",
+      "platforms": [
+        "win_amd64",
+        "macosx_arm64",
+        "manylinux_x86_64"
+      ],
+      "protocol_version": "1.0",
+      "type": "microclaw.skill-release.v1",
+      "artifact_digest": "db9958469916efeaed1728040ff4f3855cdefbbced3602e7989fbb5ae956071a",
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+        "value": "FM5uaMVUzOQMeig6nWHD0cXrEzNDt4vb8hzPl+SiQOH9lBrf5+Byl/va77D8x+IA407x0JuINbdDsbvm317tCw=="
+      }
+    },
+    {
+      "package_id": "markdown-fixture",
+      "publisher": "fixture-lab",
+      "version": "1.0.0",
+      "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-3/design/83f3-gate/artifacts/fixture-lab-markdown-fixture-1.0.0.zip",
+      "kind": "markdown",
+      "microclaw": ">=0.1,<2",
+      "license": "MIT",
+      "source_url": "https://github.com/fixture-lab/skills",
+      "issues_url": "https://github.com/fixture-lab/skills/issues",
+      "skills": [
+        {
+          "name": "workflow",
+          "description": "A publisher-provided fixture workflow."
+        }
+      ],
+      "type": "microclaw.skill-release.v1",
+      "artifact_digest": "ac0bac5115579f6e7a62d6e87ab7ecc7fa24c3e46c568f296dd362501c3e5f58",
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+        "value": "GL2nQpmr2IMncW0Hww/87h7itElq2rQPrJGmALK/BjMgaoyJtfigMNXWhTRndLMTpsqvzoqNZVN0tlD6+CZmDw=="
+      }
+    },
+    {
+      "package_id": "incompatible-fixture",
+      "publisher": "fixture-lab",
+      "version": "1.0.0",
+      "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-3/design/83f3-gate/artifacts/fixture-lab-incompatible-fixture-1.0.0.zip",
+      "kind": "markdown",
+      "microclaw": ">=99",
+      "license": "MIT",
+      "source_url": "https://github.com/fixture-lab/skills",
+      "issues_url": "https://github.com/fixture-lab/skills/issues",
+      "skills": [
+        {
+          "name": "workflow",
+          "description": "A publisher-provided fixture workflow."
+        }
+      ],
+      "type": "microclaw.skill-release.v1",
+      "artifact_digest": "3e3ce6c355b4974a13395d5f6190a94aac4edf02ed8b776e54ea1ee25e630ca4",
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+        "value": "zGU/FywvLNbJlLA0W5S2viK6+zDi80AJqG4SqlqtgtQvuUkMnQqXRtYyQUXmzVZHPgx/xAL+l4z8tnablsNjCw=="
+      }
+    },
+    {
+      "package_id": "tampered-fixture",
+      "publisher": "fixture-lab",
+      "version": "1.0.0",
+      "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-3/design/83f3-gate/artifacts/fixture-lab-tampered-fixture-1.0.0.zip",
+      "kind": "markdown",
+      "microclaw": ">=0.1,<2",
+      "license": "MIT",
+      "source_url": "https://github.com/fixture-lab/skills",
+      "issues_url": "https://github.com/fixture-lab/skills/issues",
+      "skills": [
+        {
+          "name": "workflow",
+          "description": "A publisher-provided fixture workflow."
+        }
+      ],
+      "type": "microclaw.skill-release.v1",
+      "artifact_digest": "912a7fbe0d317bef15cebff16631b49945a1bd2563584a8f882db85543fc08c5",
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+        "value": "xN9SsH0YCun4kN4IitADUNZvuNVpqb8oFtBwqck4ZshMi/KxME6S7g8Bfo0R2e47d4baSiHh1AMzzp3gkFevDw=="
+      }
+    },
+    {
+      "package_id": "markdown-fixture",
+      "publisher": "fixture-two",
+      "version": "1.0.0",
+      "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-3/design/83f3-gate/artifacts/fixture-two-markdown-fixture-1.0.0.zip",
+      "kind": "markdown",
+      "microclaw": ">=0.1,<2",
+      "license": "MIT",
+      "source_url": "https://github.com/fixture-lab/skills",
+      "issues_url": "https://github.com/fixture-lab/skills/issues",
+      "skills": [
+        {
+          "name": "workflow",
+          "description": "A publisher-provided fixture workflow."
+        }
+      ],
+      "type": "microclaw.skill-release.v1",
+      "artifact_digest": "e4cc6f3d83a93f10c2c13937b72e3d4da34271bb82f792d932c35871c4f1f37a",
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "25f043787c106ddc55423ca57e4a3ab1e1eb491b22d97363ec8a3594041d2127",
+        "value": "wlnGcUtHRkPZ6oiWaDIsR1WppMD59L0xp3PsPdgsl8Iq6uPpMARGFyKU9rQdlTgD9qBGq+d/TY1FlEONJLevCQ=="
+      }
+    }
+  ],
+  "withdrawals": []
+}

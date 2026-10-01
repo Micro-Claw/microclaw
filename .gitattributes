@@ -16,3 +16,6 @@ tests/fixtures/hooks/m5_legacy/*.py binary
 # changes the digest and the package stops validating. `-text` rather than
 # `binary`, so these stay reviewable in a diff.
 tests/fixtures/skill_packages/** -text
+
+# Gate releases and signed documents must survive checkout byte-for-byte.
+design/83f3-gate/** binary
