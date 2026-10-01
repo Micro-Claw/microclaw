@@ -598,9 +598,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         except Exception as exc:
             print(f"[microclaw] Could not sweep analysis jobs: {exc}", file=sys.stderr)
         def check_skill_packages():
-            skill_store.recover(retained_digests=skill_store.retained_digests())
-            skill_store.recheck(now=datetime.datetime.now(datetime.timezone.utc),
-                                retained_digests=skill_store.retained_digests())
+            try:
+                skill_store.recover(retained_digests=skill_store.retained_digests())
+                skill_store.recheck(now=datetime.datetime.now(datetime.timezone.utc),
+                                    retained_digests=skill_store.retained_digests())
+            except Exception as exc:
+                print(f"[microclaw] Could not check skill packages: {exc}", file=sys.stderr)
             try:
                 skill_store.refresh_catalog(now=datetime.datetime.now(datetime.timezone.utc))
             except Exception as exc:

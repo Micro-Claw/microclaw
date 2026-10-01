@@ -386,13 +386,21 @@ def _platform(identity, manifest):
     return tag
 
 
-def _compatibility(manifest, build, identity=None):
-    if build["version"] not in SpecifierSet(manifest["microclaw"]):
+def _intake_compatibility(record, build):
+    """Compatibility fields shared by listing cards and installed manifests."""
+    if build["version"] not in SpecifierSet(record["microclaw"]):
         raise PackageRefusal("microclaw", "incompatible with " + build["version"])
+    if record["kind"] == "executable":
+        if PINNED_PYTHON not in SpecifierSet(record["python"]):
+            raise PackageRefusal("python", "excludes pinned Python " + PINNED_PYTHON)
+        if record["protocol_version"] not in build["protocols"]:
+            raise PackageRefusal("protocol_version", "unsupported by running build")
+
+
+def _compatibility(manifest, build, identity=None):
+    _intake_compatibility(manifest, build)
     if manifest["kind"] == "executable":
         packages.supported_executable(manifest)
-        if PINNED_PYTHON not in SpecifierSet(manifest["python"]):
-            raise PackageRefusal("python", "excludes pinned Python " + PINNED_PYTHON)
         if identity is not None:
             if identity["version"].split()[0] not in SpecifierSet(manifest["python"]):
                 raise PackageRefusal("python", "environment version excluded by release")
@@ -811,8 +819,8 @@ def _discovery_state(*, now):
 def status():
     """Read files only, including discovery state and each exclusion reason."""
     now = datetime.now(timezone.utc)
-    result = _discovery_state(now=now)[0]
-    result["catalog"] = _catalog_status(now=now)
+    result, _, policy, _, _ = _discovery_state(now=now)
+    result["catalog"] = _catalog_status(now=now, policy=policy)
     return result
 
 
@@ -1040,8 +1048,8 @@ def _catalog_file(name):
                     for key in ("last_attempt", "last_success")} | {
             "error": document.get("error"), "exclusions": document.get("exclusions", [])}
         error = document["error"]
-        if not (isinstance(error, dict) and set(error) == {"field", "detail"}
-                and all(isinstance(value, str) for value in error.values())):
+        if not (isinstance(error, dict) and {"field", "detail"} <= set(error) <= {"field", "detail", "kind", "errors"}
+                and all(isinstance(error[key], str) for key in ("field", "detail"))):
             document["error"] = None
         if not isinstance(document["exclusions"], list):
             document["exclusions"] = []
@@ -1068,26 +1076,29 @@ def catalog_entries(*, now):
     if directory.exists():
         for package in directory.iterdir():
             for _, record, _ in _records(package):
-                if record and isinstance(record.get("intake"), dict):
+                if record and record.get("state") == "ready" and isinstance(record.get("intake"), dict):
                     digest = record["intake"].get("artifact_digest")
                     if isinstance(digest, str):
                         installed.add(digest)
-    withdrawals = {entry["artifact_digest"]: entry for entry in verified["withdrawals"]}
+    identity_fields = ("publisher", "package_id", "version", "artifact_digest")
+    identities = {tuple(entry[field] for field in identity_fields) for entry in verified["releases"]}
+    withdrawals = {}
+    for i, entry in enumerate(verified["withdrawals"]):
+        identity = tuple(entry[field] for field in identity_fields)
+        if identity not in identities:
+            exclusions.append(dict(collection="withdrawals", index=i, entry=entry,
+                reason=dict(field="withdrawal.release", detail="no release matches publisher, package, version and digest")))
+        else:
+            withdrawals[identity] = entry
     releases = []
     build = current_build()
     for entry in verified["releases"]:
         reason = None
         try:
-            if build["version"] not in SpecifierSet(entry["microclaw"]):
-                raise PackageRefusal("microclaw", "incompatible with " + build["version"])
-            if entry["kind"] == "executable":
-                if PINNED_PYTHON not in SpecifierSet(entry["python"]):
-                    raise PackageRefusal("python", "excludes pinned Python " + PINNED_PYTHON)
-                if entry["protocol_version"] not in build["protocols"]:
-                    raise PackageRefusal("protocol_version", "unsupported by running build")
+            _intake_compatibility(entry, build)
         except PackageRefusal as exc:
             reason = _reason(exc)
-        withdrawal = withdrawals.get(entry["artifact_digest"])
+        withdrawal = withdrawals.get(tuple(entry[field] for field in identity_fields))
         releases.append(dict(entry, compatible=reason is None, compatibility_reason=reason,
                              installed=entry["artifact_digest"] in installed,
                              withdrawn=withdrawal is not None,
@@ -1114,32 +1125,23 @@ def catalog_entries(*, now):
                                         if blocked_release else excluded["reason"] if blocked else None)
             digest = entry.get("artifact_digest")
             excluded["installed"] = isinstance(digest, str) and digest in installed
-    return dict(releases=releases, withdrawals=verified["withdrawals"], exclusions=exclusions,
+    return dict(releases=releases, withdrawals=list(withdrawals.values()), exclusions=exclusions,
                 policy=policy)
 
 
-def _catalog_status(*, now):
-    entries = catalog_entries(now=now)
+def _catalog_status(*, now, policy):
+    """Fetch diagnostics only; reuse the discovery snapshot's verified policy."""
     state = _catalog_file("state.json")
     roots, _ = _roots()
-    policy = entries["policy"]
     unpublished = roots["environment"] != "test" and not roots["keys"]
-    exclusions = list(entries["exclusions"])
-    for exclusion in state.get("exclusions", []):
-        if (isinstance(exclusion, dict) and isinstance(exclusion.get("reason"), dict)
-                and exclusion not in exclusions):
-            exclusions.append(exclusion)
-    return dict(state="unpublished" if unpublished else "offline" if state.get("error") else
+    error = state.get("error")
+    return dict(state="unpublished" if unpublished else
+                error.get("kind", "refused") if error else
                 "ok" if state.get("last_success") else "never_fetched",
                 last_attempt=state.get("last_attempt"), last_success=state.get("last_success"),
-                error=state.get("error"), revision=policy["revision"] if policy else None,
+                error=error, revision=policy["revision"] if policy else None,
                 expires_at=policy["expires_at"] if policy else None,
                 stale=now > packages._expires(policy["expires_at"]) if policy else False,
-                releases=sum(r["compatible"] and not r["withdrawn"]
-                             and not (policy and now > packages._expires(policy["expires_at"]))
-                             for r in entries["releases"]),
-                withdrawals=len(entries["withdrawals"]),
-                excluded=len(exclusions), exclusions=exclusions,
                 fetch_exclusions=state.get("exclusions", []))
 
 
@@ -1164,16 +1166,19 @@ def refresh_catalog(*, opener=None, now):
             packages._url(base, "catalog_url")
             updates._allowed_url(base, CATALOG_HOSTS)
         except (PackageRefusal, updates.UpdateError) as exc:
-            state["error"] = _reason(exc)
+            error = dict(_reason(exc), kind="unreachable" if isinstance(exc, updates.UpdateError) else "refused")
+            state["error"] = dict(error, errors=[error])
             _write(store_dir() / "catalog" / "state.json", state)
             return state
         opener = updates._default_opener if opener is None else opener
         for name, limit in (("policy.json", packages.MAX_POLICY_BYTES),
                             ("catalog.json", packages.MAX_CATALOG_BYTES)):
             url = base.rstrip("/") + "/" + name
+            kind = "unreachable"
             try:
                 data, _ = updates._open_manual(url, opener, max_bytes=limit,
                                                allowed_hosts=CATALOG_HOSTS, label="Community catalog")
+                kind = "refused"
                 document = updates._json_object(data, "invalid community catalog document")
                 if name == "policy.json":
                     store_trust_policy(document)
@@ -1210,8 +1215,11 @@ def refresh_catalog(*, opener=None, now):
                 _write(store_dir() / "catalog" / "catalog.json", union)
                 state["last_success"] = now.isoformat()
             except (PackageRefusal, updates.UpdateError, OSError) as exc:
-                errors.append(dict(field=name, detail=f"Community catalog could not be reached or verified at {url}: {exc}"))
-        state["error"] = dict(field="catalog", detail="; ".join(e["detail"] for e in errors)) if errors else None
+                errors.append(dict(field=name, kind=kind,
+                                   detail=f"Community catalog could not be reached or verified at {url}: {exc}"))
+        state["error"] = dict(field="catalog", detail="; ".join(e["detail"] for e in errors),
+                              kind="refused" if any(e["kind"] == "refused" for e in errors) else "unreachable",
+                              errors=errors) if errors else None
         _write(store_dir() / "catalog" / "state.json", state)
         return state
     finally:

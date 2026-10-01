@@ -1244,7 +1244,7 @@ def test_catalog_union_withdrawal_offline_and_read_time(monkeypatch):
     assert (store.store_dir() / 'catalog/catalog.json').read_bytes() == before
     monkeypatch.setattr(store, 'current_build', lambda: dict(version='0.0.0', protocols=[]))
     assert not store.catalog_entries(now=NOW)['releases'][0]['compatible']
-    assert store.status()['catalog']['state'] == 'offline'
+    assert store.status()['catalog']['state'] == 'unreachable'
 
 
 def test_catalog_entry_isolation_duplicates_and_tampering():
@@ -1298,8 +1298,8 @@ def test_catalog_envelope_refusal_preserves_cache_and_corruption_recovers():
     before = path.read_bytes()
     state = store.refresh_catalog(opener=catalog_opener(dict(type='wrong', releases=[], withdrawals=[])), now=NOW)
     assert state['error'] and path.read_bytes() == before
-    path.write_text('{invalid')
-    (path.parent / 'state.json').write_text('{invalid')
+    path.write_text('{invalid', encoding='utf-8')
+    (path.parent / 'state.json').write_text('{invalid', encoding='utf-8')
     assert store.refresh_catalog(opener=catalog_opener(catalog([release()])), now=NOW)['error'] is None
     write(path, catalog([None, release()]))
     assert len(store.catalog_entries(now=NOW)['releases']) == 1
@@ -1356,7 +1356,7 @@ def test_catalog_failed_policy_can_merge_cached_policy_and_expired_refuses():
     result = store.refresh_catalog(opener=catalog_opener(catalog(), policy=builder.sign(policy, 'root')), now=NOW)
     assert 'policy expired' in result['error']['detail']
     assert len(store.catalog_entries(now=NOW)['releases']) == 1
-    assert store._catalog_status(now=NOW)['stale']
+    assert store._catalog_status(now=NOW, policy=store.load_trust_policy())['stale']
 
 
 @pytest.mark.parametrize('previous', ['verified', 'invalid_signature', 'corrupt', 'different_environment', 'missing'])
@@ -1368,7 +1368,7 @@ def test_policy_recovery_branches(previous):
         with pytest.raises(packages.PackageRefusal, match='strictly greater'):
             store.store_trust_policy(policy)
     elif previous == 'corrupt':
-        path.write_text('{broken')
+        path.write_text('{broken', encoding='utf-8')
     elif previous == 'different_environment':
         write(path, dict(policy, environment='production', revision=999))
     elif previous == 'missing':
@@ -1450,11 +1450,9 @@ def test_catalog_one_signature_per_entry_per_read(monkeypatch):
         calls.append(document['type'])
         return real(document, *args, **kwargs)
     monkeypatch.setattr(packages, '_verify_signature', verify)
-    for reader in (lambda: store.catalog_entries(now=NOW), store.status):
-        calls.clear()
-        reader()
-        assert calls.count(packages.RELEASE_TYPE) == 2
-        assert calls.count(packages.WITHDRAWAL_TYPE) == 1
+    store.catalog_entries(now=NOW)
+    assert calls.count(packages.RELEASE_TYPE) == 2
+    assert calls.count(packages.WITHDRAWAL_TYPE) == 1
 
 
 def test_catalog_read_time_block_reason():
@@ -1472,8 +1470,8 @@ def test_catalog_status_reports_last_fetch_exclusions():
     document = dict(release(), license='tampered')
     store.refresh_catalog(opener=catalog_opener(catalog([document])), now=NOW)
     result = store.status()['catalog']
-    assert result['excluded'] == 1
-    assert result['exclusions'][0]['reason']['field'] == 'signature.value'
+    assert len(result['fetch_exclusions']) == 1
+    assert result['fetch_exclusions'][0]['reason']['field'] == 'signature.value'
 
 
 def test_catalog_malformed_is_excluded_without_claiming_operator_block():
@@ -1534,3 +1532,109 @@ def test_catalog_conflicting_history_cannot_unwithdraw():
     assert result['releases'][0]['withdrawn']
     assert result['releases'][0]['withdrawal_reason'] == withdrawal()['reason']
     assert state['exclusions'][0]['reason']['field'] == 'artifact_digest'
+
+
+@pytest.mark.parametrize('field', ['publisher', 'package_id', 'version', 'artifact_digest', 'absent_release'])
+def test_withdrawal_matches_entire_release_identity(field):
+    target = release()
+    policy = store.load_trust_policy()
+    # Give B its own admitted key, distinct from A's existing key.
+    key_b = policy['publishers']['fixture-lab']['keys'].pop()
+    policy['publishers']['other-lab'] = dict(state='active', keys=[key_b])
+    policy['revision'] += 1
+    store.store_trust_policy(builder.sign(policy, 'root'))
+    if field == 'publisher':
+        target = builder.sign(dict(target, publisher='other-lab'), 'publisher-b')
+    attempted = withdrawal()
+    if field == 'package_id':
+        attempted = builder.sign(dict(attempted, package_id='another-package'))
+    elif field == 'version':
+        attempted = builder.sign(dict(attempted, version='2.0.0'))
+    elif field == 'artifact_digest':
+        attempted = builder.sign(dict(attempted, artifact_digest='a'*64))
+    write(store.store_dir() / 'catalog/catalog.json', catalog(
+        [] if field == 'absent_release' else [target], [attempted]))
+    result = store.catalog_entries(now=NOW)
+    assert not result['withdrawals']
+    assert len(result['exclusions']) == 1
+    assert result['exclusions'][0]['reason']['field'] == 'withdrawal.release'
+    if result['releases']:
+        assert not result['releases'][0]['withdrawn']
+
+
+@pytest.mark.parametrize('attempt_state', ['failed', 'staged'])
+def test_catalog_failed_attempt_is_not_installed(attempt_state):
+    document = release()
+    write(store.store_dir() / 'catalog/catalog.json', catalog([document]))
+    path = store._package(document['package_id']) / 'installs' / ('a'*16 + '-aaaaaa')
+    write(path / 'install.json', dict(intake=document, state=attempt_state))
+    assert not store.catalog_entries(now=NOW)['releases'][0]['installed']
+
+
+@pytest.mark.parametrize('count', [0, 1, 100, 1000])
+def test_status_never_verifies_or_reads_catalog_entries(monkeypatch, count):
+    write(store.store_dir() / 'catalog/catalog.json', catalog(
+        [builder.sign(dict(release(), artifact_digest=f'{i:064x}')) for i in range(count)]))
+    real_verify, real_read = packages._verify_signature, store._catalog_file
+    calls = []
+    def verify(document, *args, **kwargs):
+        calls.append(document['type'])
+        return real_verify(document, *args, **kwargs)
+    def read_catalog(name):
+        assert name == 'state.json', 'status read catalog entries'
+        return real_read(name)
+    monkeypatch.setattr(packages, '_verify_signature', verify)
+    monkeypatch.setattr(store, '_catalog_file', read_catalog)
+    result = store.status()['catalog']
+    assert calls == [packages.TRUST_POLICY_TYPE]
+    assert set(result) == {'state', 'last_attempt', 'last_success', 'error', 'revision',
+                           'expires_at', 'stale', 'fetch_exclusions'}
+
+
+@pytest.mark.parametrize('failure', ['transport', 'bad_policy_and_transport', 'bad_envelope', 'expired', 'bad_json', 'rollback'])
+def test_catalog_failure_kind_is_recorded(failure):
+    policy = store.load_trust_policy()
+    if failure == 'rollback':
+        store.store_trust_policy(builder.sign(dict(policy, revision=2), 'root'))
+    def open(request, timeout):
+        if failure == 'transport' or (failure == 'bad_policy_and_transport' and request.full_url.endswith('catalog.json')):
+            raise OSError('connection unavailable')
+        if request.full_url.endswith('policy.json'):
+            if failure == 'bad_policy_and_transport':
+                return CatalogResponse(dict(policy, expires_at='2029-01-01T00:00:00Z'))
+            if failure == 'expired':
+                return CatalogResponse(builder.sign(dict(policy, revision=2, expires_at='2020-01-01T00:00:00Z'), 'root'))
+            return CatalogResponse(policy)
+        if failure == 'bad_json':
+            return CatalogResponse(data=b'{invalid')
+        return CatalogResponse(dict(type='wrong', releases=[], withdrawals=[])
+                               if failure == 'bad_envelope' else catalog())
+    state = store.refresh_catalog(opener=open, now=NOW)
+    expected = 'unreachable' if failure == 'transport' else 'refused'
+    assert state['error']['kind'] == expected
+    assert store.status()['catalog']['state'] == expected
+    kinds = [error['kind'] for error in state['error']['errors']]
+    assert kinds == (['refused', 'unreachable'] if failure == 'bad_policy_and_transport' else
+                     ['unreachable', 'unreachable'] if failure == 'transport' else ['refused'])
+
+
+@pytest.mark.parametrize('field,value', [('microclaw', '>=999'), ('python', '>=999')])
+def test_catalog_and_installed_compatibility_share_checks(monkeypatch, field, value):
+    document = read(FIXTURES / 'executable-intake.json')
+    document[field] = value
+    document = builder.sign(document)
+    manifest = read(FIXTURES / 'executable/manifest.json')
+    manifest[field] = value
+    build = store.current_build()
+    write(store.store_dir() / 'catalog/catalog.json', catalog([document]))
+    calls = []
+    real = store._intake_compatibility
+    def shared(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(store, '_intake_compatibility', shared)
+    with pytest.raises(packages.PackageRefusal) as exc:
+        store._compatibility(manifest, build)
+    catalog_reason = store.catalog_entries(now=NOW)['releases'][0]['compatibility_reason']
+    assert catalog_reason == store._reason(exc.value)
+    assert len(calls) == 2

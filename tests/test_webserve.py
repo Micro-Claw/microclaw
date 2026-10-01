@@ -3134,3 +3134,26 @@ def test_f3_startup_sweep_failure_cannot_prevent_serve(session, monkeypatch):
     monkeypatch.setattr(skill_store, 'abandon_analysis_jobs', fail)
     with TestClient(build_app(session)):
         pass
+
+
+@pytest.mark.parametrize('failure', ['recover', 'recheck'])
+def test_catalog_startup_runs_after_package_check_failure(session, monkeypatch, capsys, failure):
+    from microclaw import skill_store
+    calls, refreshed = [], threading.Event()
+    def recover(**kwargs):
+        calls.append('recover')
+        if failure == 'recover':
+            raise RuntimeError('recovery failed')
+    def recheck(**kwargs):
+        calls.append('recheck')
+        raise RuntimeError('recheck failed')
+    def refresh(**kwargs):
+        calls.append('refresh')
+        refreshed.set()
+    monkeypatch.setattr(skill_store, 'recover', recover)
+    monkeypatch.setattr(skill_store, 'recheck', recheck)
+    monkeypatch.setattr(skill_store, 'refresh_catalog', refresh)
+    with TestClient(build_app(session)):
+        assert refreshed.wait(3)
+    assert calls == (['recover', 'refresh'] if failure == 'recover' else ['recover', 'recheck', 'refresh'])
+    assert 'Could not check skill packages' in capsys.readouterr().err
