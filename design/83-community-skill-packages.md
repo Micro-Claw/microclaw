@@ -1437,6 +1437,35 @@ reading only `catalog_entries`; local only, no gate.
 - **Not exercised:** a real catalog. As in 83f-1, every catalog here is a
   fixture; the first real one is 83f-3's gate.
 
+**83f-3 decisions** (operator, 2026-10-01). Panel delivery: download,
+install, update and remove from the catalog, with a demo gate covering the
+whole journey (D7).
+
+- **G1 — download from any https host.** The signed digest is what admits the
+  artifact, so no host list is kept. The download carries a size cap and a
+  timeout; a digest mismatch discards the file.
+- **G2 — the panel lists everything, installed first.** Then every other
+  package from an admitted publisher at its newest version. Incompatible ones
+  show greyed with their reason.
+- **G3 — newest version only, plus rollback.** One button per row: "Install
+  <v>", or "Update to <v>" over an older install. Going back is the existing
+  rollback. Same rule as E2.
+- **G4 — refresh at startup and on a "Check now" button.** The panel says when
+  the catalog was last checked, or that it is offline and showing the saved
+  copy. No background checks, and install does not refetch.
+- **G5 — the gate's catalog lives on this block's branch.** A test-root-signed
+  policy, catalog and package in `design/`, fetched from
+  `raw.githubusercontent.com` (the production catalog host), with the
+  package's locked wheels from PyPI: the first real run of `find_links=None`.
+  `Micro-Claw/package-catalog` is still created by intake (83f-4). The gate
+  restores the machine's trust roots afterwards.
+- **G6 — Remove on every installed package**, behind a confirm step that says
+  only the package's installed files go and its results stay. Refused while an
+  analysis using it is running.
+- **G7 — Install and Update confirm first.** Package and version, publisher,
+  licence, D2's notice with the issues link, Install / Cancel. Cancel downloads
+  nothing.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1479,7 +1508,7 @@ and otherwise stays open.
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
-| 83f-3 | `block-83f-3` | `9e9271a` | opened 2026-10-01 — panel delivery; decisions pending |
+| 83f-3 | `block-83f-3` | `9e9271a` | opened 2026-10-01 — panel delivery; decisions G1–G7 |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
