@@ -370,19 +370,21 @@ def verify(gate, *, cleanup=True):
     def installs():
         after_install = snapshot(gate, 3)
         ready(after_install, expected['E1'])
-        assert len(list((after_install / 'packages' / expected['E1']['package_id']).glob('installs/*/install.json'))) == 1, 'more than one install after Cancel/Install'
+        assert len(list((after_install / 'packages' / expected['E1']['package_id']).glob('installs/*/install.json'))) == 1, 'more than one E1 install record'
         directory = snapshot(gate, 4)
         ready(directory, expected['M1'])
         assert read_json(directory / 'packages/markdown-fixture/discovery.json')['enabled']
-        return 'one E1 install after Cancel/Install; M1 ready with discovery on'
+        # Cancel sending nothing is not visible in the store (a stray request would
+        # leave the same single record); tests/test_transcript_js.py and the
+        # operator's step-3 answer (limb 10) carry it.
+        return 'exactly one E1 install record, ready; M1 ready with discovery on'
     def tampered():
         directory = snapshot(gate, 5)
         assert any(r['field'] == 'artifact_digest' for r in job(directory, expected['T1']).get('reasons', []))
         assert not any(r['state'] == 'ready' for r in records(directory, expected['T1']))
         assert not list(directory.rglob('.download-*')), 'temporary download survived'
-        text = answer(5).casefold()
-        assert 'digest' in text and ('match' in text or 'mismatch' in text), text
-        return 'digest refusal; no ready install or download debris; panel text names mismatch'
+        # The operator's typed text is judged in limb 10, never scored by wording.
+        return 'digest refusal; no ready install or download debris'
     def collision():
         before, after = snapshot(gate, 4), snapshot(gate, 6)
         assert ready(before, expected['M1']) == ready(after, expected['M1']), 'M1 changed'
@@ -422,20 +424,23 @@ def verify(gate, *, cleanup=True):
         e1, e2 = ready(directory, expected['E1']), ready(directory, expected['E2'])
         pointer = read_json(directory / 'packages/executable-fixture/pointer.json')
         assert pointer == dict(active=e2['install_id'], previous=e1['install_id']), pointer
-        text = answer(9)
-        copy = sentences()
+        # A typed copy of a long sentence is not scored verbatim (em dashes and
+        # console code pages); the signed reasons prove which state the panel
+        # showed, and limb 10 carries the full sentences for judgement.
+        text = answer(9).casefold()
+        sentences()  # the installed panel still carries both D5 sentences
         policy = read_json(FIXTURES / 'catalog-2/policy.json')
         withdrawal = read_json(FIXTURES / 'catalog-2/catalog.json')['withdrawals'][0]
         for kind, reason in [('blocked', policy['revoked_releases'][0]['reason']), ('withdrawn', withdrawal['reason'])]:
-            assert copy[kind][0] + reason + copy[kind][1] in text, kind + ' sentence absent'
-        return 'E2 active/E1 previous; installed-source blocked and withdrawn sentences present'
+            assert reason.casefold() in text, kind + ' reason absent from the typed panel text'
+        return 'E2 active/E1 previous; both signed reasons in the typed panel text'
     def removed():
         directory = snapshot(gate, 11)
         assert not (directory / 'packages' / expected['M1']['package_id']).exists(), 'package directory remains'
         assert not (gate.store_root / 'packages' / expected['M1']['package_id']).exists(), 'live package directory remains'
         return 'M1 package directory absent in snapshot and live store'
     def copy():
-        return JUDGED, {str(step): answer(step) for step in (2, 3, 7, 9, 11)}
+        return JUDGED, {str(step): answer(step) for step in (2, 3, 5, 6, 7, 9, 11)}
     for name, fn in [('1 Real fetch', real_fetch), ('2 PyPI route', pypi), ('3 Install from panel', installs),
                      ('4 Tampered', tampered), ('5 Other publisher', collision), ('6 Agent journey', journey),
                      ('7 Blocked, update, withdrawn', update), ('8 Remove', removed), ('9 Offline', lambda: offline(gate)),
