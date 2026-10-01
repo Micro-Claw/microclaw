@@ -5,7 +5,7 @@ signature verification and put_nowait. Notifications validate small messages and
 put_nowait; neither path launches, hashes assets, accesses the filesystem, writes
 pipes, starts threads, or waits for a worker. Short locks protect in-memory
 transitions only, never I/O. Fixed dispatchers own launch, deadlines, verification
-and cleanup. Priority launch policy and the two worker priority samples run only
+and cleanup. Priority launch policy and at most two worker priority samples run only
 in the dispatcher monitor, never on submit/notify or in pipe callbacks. Cleanup
 labels unsampled phases without further OS reads or waits. Message bytes, pending
 stdin, retained stdout and stderr, queued
@@ -15,8 +15,10 @@ total analysis deadline unless supplied. All timing uses perf_counter, including
 deadlines. Measurements live in design/83-block83c-dispatch-timing.py.
 
 Workers have the user's permissions, not an OS sandbox. Windows uses a Job
-Object assigned before resume. POSIX uses a new session/process group; a POSIX
-descendant which calls setsid escapes (accepted off the shipping platform).
+Object assigned before resume. Each Windows priority sample reads up to 64 job
+members and records the highest scheduling class and number read; the launched
+process can be a venv launcher rather than the worker. POSIX uses a new
+session/process group; a POSIX descendant which calls setsid escapes (accepted off the shipping platform).
 """
 from __future__ import annotations
 
@@ -47,6 +49,10 @@ MAX_CONCURRENT_WORKERS = 2
 STARTUP_DEADLINE_S = 60
 SELF_CHECK_DEADLINE_S = 120
 SHUTDOWN_GRACE_S = 10
+MAX_JOB_PRIORITY_PROCESSES = 64
+# Priority-class numbers are flags, not scheduling order.
+WINDOWS_PRIORITY_RANK = {value: rank for rank, value in enumerate(
+    (0x40, 0x4000, 0x20, 0x8000, 0x80, 0x100))}
 
 
 class _WindowsJob:
@@ -79,7 +85,9 @@ class _WindowsJob:
         signatures = {
             "CreateJobObjectW": ([c.c_void_p, w.LPCWSTR], w.HANDLE),
             "SetInformationJobObject": ([w.HANDLE, c.c_int, c.c_void_p, w.DWORD], w.BOOL),
+            "QueryInformationJobObject": ([w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.c_void_p], w.BOOL),
             "OpenProcess": ([w.DWORD, w.BOOL, w.DWORD], w.HANDLE),
+            "GetPriorityClass": ([w.HANDLE], w.DWORD),
             "AssignProcessToJobObject": ([w.HANDLE, w.HANDLE], w.BOOL),
             "TerminateJobObject": ([w.HANDLE, w.UINT], w.BOOL),
             "TerminateProcess": ([w.HANDLE, w.UINT], w.BOOL),
@@ -126,6 +134,54 @@ class _WindowsJob:
     def kill(self):
         self.check(self.kernel.TerminateJobObject(self.handle, 1))
 
+    def _process_ids(self):
+        c = self.c
+
+        class ProcessIds(c.Structure):
+            _fields_ = [("NumberOfAssignedProcesses", c.c_uint32),
+                        ("NumberOfProcessIdsInList", c.c_uint32),
+                        ("ProcessIdList", c.c_size_t * MAX_JOB_PRIORITY_PROCESSES)]
+
+        info = ProcessIds()
+        result = self.kernel.QueryInformationJobObject(self.handle, 3, c.byref(info), c.sizeof(info), None)
+        more_data = not result and c.get_last_error() == 234  # ERROR_MORE_DATA
+        if not result and not more_data:
+            self.check(result)
+        count = min(info.NumberOfProcessIdsInList, MAX_JOB_PRIORITY_PROCESSES)
+        truncated = more_data or info.NumberOfAssignedProcesses > count
+        reason = (f"job pid list truncated: {info.NumberOfAssignedProcesses} assigned, {count} listed "
+                  f"(limit {MAX_JOB_PRIORITY_PROCESSES})") if truncated else None
+        return list(info.ProcessIdList[:count]), reason
+
+    def _pid_priority(self, pid):
+        child = self.check(self.kernel.OpenProcess(0x1000, False, pid))  # QUERY_LIMITED_INFORMATION
+        try:
+            return self.check(self.kernel.GetPriorityClass(child))
+        finally:
+            self.check(self.kernel.CloseHandle(child))
+
+    def read_priority(self):
+        """One bounded snapshot of the owned tree, including venv launchers' children."""
+        pids, reason = self._process_ids()
+        reasons = [reason] if reason else []
+        classes = []
+        for pid in pids:
+            try:
+                value = self._pid_priority(pid)
+                if value not in WINDOWS_PRIORITY_RANK:
+                    reasons.append(f"pid {pid}: unknown priority class {value}")
+                    continue
+                classes.append(value)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) in (6, 87):  # invalid handle/pid after exit
+                    reasons.append(f"pid {pid} exited before priority read")
+                else:
+                    reasons.append(f"pid {pid}: {exc}")
+        if not classes:
+            reasons.append("job has no readable processes" if pids else "job has no processes (processes exited)")
+        value = max(classes, key=WINDOWS_PRIORITY_RANK.__getitem__) if classes else None
+        return value, "; ".join(reasons) or None, len(classes)
+
     def close(self):
         if self.handle:
             self.check(self.kernel.CloseHandle(self.handle))
@@ -145,19 +201,20 @@ def _windows_priority(handle=None):
     return value
 
 
-def _read_priority(process):
+def _read_priority(process, job=None):
     """Best-effort evidence, including an explicit exited-before-read outcome."""
     try:
-        # Windows retains query access through Popen's handle after exit.
-        if os.name != "nt" and process.poll() is not None:
-            return None, "process exited before priority read"
-        value = (_windows_priority(process._handle) if os.name == "nt" else
-                 os.getpriority(os.PRIO_PROCESS, process.pid))
-        return value, None
+        if os.name == "nt":
+            # The launched handle may belong to a venv launcher, not the worker.
+            # The job remains queryable after launcher's exit until cleanup closes it.
+            return job.read_priority() if job is not None else (None, "worker job unavailable", 0)
+        if process.poll() is not None:
+            return None, "process exited before priority read", 0
+        return os.getpriority(os.PRIO_PROCESS, process.pid), None, 1
     except ProcessLookupError:
-        return None, "process exited before priority read"
+        return None, "process exited before priority read", 0
     except (OSError, AttributeError) as exc:
-        return None, str(exc)
+        return None, str(exc), 0
 
 
 def _kill_tree(process, job):
@@ -200,7 +257,8 @@ class JobHandle:
         self._stdin_unavailable_reason = None
         self._violation = None
         self._record = dict(job_id=self.job_id, release={}, operation=None, state="queued",
-                            priority=dict(requested=None, inherited=False, at_start=None, at_end=None, reason={}),
+                            priority=dict(requested=None, inherited=False, at_start=None, at_end=None,
+                                          processes_read=dict(at_start=0, at_end=0), reason={}),
                             result=None, failure=None, artifacts=[], rejected_artifacts=[],
                             lifecycle=dict(acquisition=None, writer=None), notifications=[], notifications_dropped=0,
                             status=[], status_dropped=0, stderr_tail="", exit_code=None,
@@ -541,9 +599,10 @@ class Supervisor:
             for phase, arrived in arrivals.items():
                 if arrived and phase not in sampled:
                     sampled.add(phase)
-                    value, reason = _read_priority(process)
+                    value, reason, count = _read_priority(process, job)
                     with handle._lock:
                         handle._record["priority"][phase] = value
+                        handle._record["priority"]["processes_read"][phase] = count
                         if reason:
                             handle._record["priority"]["reason"][phase] = reason
 

@@ -12,6 +12,10 @@ strict separation rule; loaded versus none is ranges only, with no equality clai
 Selftest uses the real product and reduced acquisitions. POSIX priority evidence
 is cross-checked with an independent subprocess probe; it is not Windows evidence.
 Synthetic controls are labelled and used only to prove scorer discrimination.
+The Windows priority limb cross-checks both highest-class Job Object snapshots
+for loaded runs, and requires the normal control's terminal class to equal its
+fixture read-back. Missing terminal evidence fails the gate, with processes_read
+and reasons retained in the report.
 """
 from __future__ import annotations
 
@@ -142,8 +146,14 @@ def priority_detail(gate, row, prep, info):
         "missing at_end without its recorded reason: " + detail)
     probe = info.get("posix_selftest_probe") if prep.get("selftest") and info.get("priority_platform") != "nt" else None
     expected = probe["requested"] if probe else 0x4000
+    counts = p.get("processes_read")
+    if not probe:
+        assert isinstance(counts, dict) and all(type(counts.get(phase)) is int and counts[phase] > 0
+                                               for phase in ("at_start", "at_end")), detail
     if row["condition"] == "loaded":
         assert p.get("at_start") == fixture.get("read_back") and p.get("at_start") is not None, detail
+        if not probe or p.get("at_end") is not None:
+            assert p.get("at_end") == fixture["read_back"], detail
         if p["inherited"]:
             assert p["requested"] == p["at_start"] == info.get("microclaw_priority"), detail
             return "inherited MicroClaw's class (reported, not a below-normal failure); " + detail
@@ -154,6 +164,8 @@ def priority_detail(gate, row, prep, info):
         assert fixture.get("requested") == "normal", detail
         assert fixture.get("applied") is (probe["applied"] if probe else True), detail
         assert fixture.get("read_back") == (probe["normal"] if probe else 0x20), detail
+        if not probe or p.get("at_end") is not None:
+            assert p.get("at_end") == fixture["read_back"], detail
         if not fixture["applied"]:
             assert fixture.get("reason") and probe["reason"], detail
     return ("POSIX selftest only, independently probed; " if probe else "") + detail
@@ -297,9 +309,10 @@ def mutations(control, prep):
     rows = [(limb, label.replace("below", "normal").replace("D4", "D5"), mutate, *extra)
             for limb, label, mutate, *extra in inherited]
     loaded = next(r for r in prep["runs"] if r["condition"] == "loaded")
+    normal = next(r for r in prep["runs"] if r["condition"] == "normal")
 
-    def job_change(change):
-        path = control / "runs" / loaded["id"] / "job-0.json"
+    def job_change(change, row=loaded):
+        path = control / "runs" / row["id"] / "job-0.json"
         job = read_json(path)
         change(job)
         write_json(path, job)
@@ -321,6 +334,11 @@ def mutations(control, prep):
         (5, "supervisor requested normal", lambda: job_change(lambda j: j["priority"].update(requested=0x20))),
         (5, "supervisor start disagrees with fixture", lambda: job_change(lambda j: j["priority"].update(at_start=0x20))),
         (5, "missing end without reason", lambda: job_change(lambda j: j["priority"].update(at_end=None, reason={}))),
+        (5, "round 1: launcher end 0x4000, control fixture 0x20",
+         lambda: job_change(lambda j: j["priority"].update(at_end=0x4000), normal)),
+        (5, "control end missing with reason", lambda: job_change(
+            lambda j: j["priority"].update(at_end=None, processes_read=dict(at_start=2, at_end=0),
+                                           reason={"at_end": "job has no processes (processes exited)"}), normal)),
         (7, "old product disclosure also present in prompts", old_disclosure),
     ]
     return rows
@@ -432,7 +450,8 @@ def selftest(baseline_only=False, sizes=SELFTEST_SIZES):
             end = 0x20 if normal else 0x4000
             output.update(load_cpu_ratio=float(prep["cpu_count"]), frames_indexed_at_load_start=0,
                           priority=dict(requested="normal" if normal else "inherit", applied=True, read_back=end, reason=None))
-            job["priority"] = dict(requested=0x4000, inherited=False, at_start=0x4000, at_end=end, reason={})
+            job["priority"] = dict(requested=0x4000, inherited=False, at_start=0x4000, at_end=end,
+                                   processes_read=dict(at_start=2, at_end=2), reason={})
             write_json(path, job)
         control = base / "synthetic-control"
 
@@ -456,10 +475,14 @@ def selftest(baseline_only=False, sizes=SELFTEST_SIZES):
         loaded = next(r for r in prep["runs"] if r["condition"] == "loaded")
         path = control / "runs" / loaded["id"] / "job-0.json"
         job = read_json(path)
-        job["priority"].update(at_end=None, reason={"at_end": "process exited before priority read"})
+        job["priority"].update(at_end=None, processes_read=dict(at_start=2, at_end=0),
+                               reason={"at_end": "job has no processes (processes exited)"})
         write_json(path, job)
-        check(verify(arm, cleanup=False, echo=False, measure=False) == 0, "missing at_end with a reason is reported, not failed")
-        job["priority"].update(requested=0x40, inherited=True, at_start=0x40)
+        verify(arm, cleanup=False, echo=False, measure=False)
+        check(arm.last_results[5] == "FAIL" and all(v == "PASS" for k, v in arm.last_results.items() if k != 5),
+              "missing loaded at_end with a reason fails only limb 5")
+        job["priority"].update(requested=0x40, inherited=True, at_start=0x40, at_end=0x40,
+                               processes_read=dict(at_start=2, at_end=2), reason={})
         job["result"]["output"]["priority"]["read_back"] = 0x40
         write_json(path, job)
         info = read_json(control / "run.json")

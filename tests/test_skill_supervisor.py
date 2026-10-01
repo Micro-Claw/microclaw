@@ -1053,9 +1053,9 @@ def test_self_check_priority(supervisors, tmp_path):
 def test_priority_exactly_two_monitor_reads(supervisors, tmp_path, monkeypatch, failed):
     reads = []
     original = s._read_priority
-    def read(process):
+    def read(process, job=None):
         reads.append(threading.current_thread().name)
-        return (None, 'injected read refusal') if failed else original(process)
+        return (None, 'injected read refusal', 0) if failed else original(process, job)
     monkeypatch.setattr(s, '_read_priority', read)
     handle, _, _ = observe(supervisors(), tmp_path)
     assert handle.notify_acquisition('completed', writer='finished')
@@ -1070,7 +1070,7 @@ def test_priority_exactly_two_monitor_reads(supervisors, tmp_path, monkeypatch, 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX cannot read a reaped process")
 def test_priority_exited_read():
     from types import SimpleNamespace
-    assert s._read_priority(SimpleNamespace(poll=lambda: 0)) == (None, 'process exited before priority read')
+    assert s._read_priority(SimpleNamespace(poll=lambda: 0)) == (None, 'process exited before priority read', 0)
 
 
 @pytest.mark.parametrize('parent', [15, 0x4000, 0x40, 0x20])
@@ -1183,7 +1183,7 @@ def test_observer_stdlib_only_and_bad_lifecycle_message_is_local(tmp_path, bad_m
     assert sum(m.get('message', '').startswith('ignored lifecycle') for m in messages) == (2 if bad_messages else 0)
 
 
-def test_normal_control_priority_change(supervisors, tmp_path, monkeypatch):
+def priority_rendezvous_release(tmp_path):
     # Rendezvous only in this copied test worker: let the monitor sample ready
     # before the real fixture's normal control executes, and retain it at result.
     import hashlib
@@ -1194,11 +1194,11 @@ def test_normal_control_priority_change(supervisors, tmp_path, monkeypatch):
     end_gate = tmp_path / 'end-sampled'
     runner = root / 'fixture_worker' / 'runner.py'
     source = runner.read_text(encoding='utf-8')
-    source = source.replace('def priority(requested):',
-        'def priority(requested):\n'
-        '    if requested == "normal":\n'
-        f'        while not Path({str(gate)!r}).exists():\n'
-        '            time.sleep(0.001)')
+    line = '    output["priority"] = priority(params.get("priority", "inherit"))'
+    assert line in source
+    source = source.replace(line,
+        f'    while not Path({str(gate)!r}).exists():\n'
+        '        time.sleep(0.001)\n' + line)
     source = source.replace('emit("result", **fields)',
         'emit("result", **fields)\n'
         f'        while not Path({str(end_gate)!r}).exists():\n'
@@ -1208,10 +1208,15 @@ def test_normal_control_priority_change(supervisors, tmp_path, monkeypatch):
     rel['release_dir'] = root
     for asset in rel['manifest']['assets']:
         asset['sha256'] = hashlib.sha256((root / asset['path']).read_bytes()).hexdigest()
+    return rel, gate, end_gate
+
+
+def test_normal_control_priority_change(supervisors, tmp_path, monkeypatch):
+    rel, gate, end_gate = priority_rendezvous_release(tmp_path)
     original = s._read_priority
     reads = []
-    def read(process):
-        value = original(process)
+    def read(process, job=None):
+        value = original(process, job)
         reads.append(value)
         (gate if len(reads) == 1 else end_gate).write_text('sampled', encoding='utf-8')
         return value
@@ -1243,12 +1248,9 @@ def test_normal_control_priority_change(supervisors, tmp_path, monkeypatch):
 
 def test_priority_os_read_failure_is_nonfatal(supervisors, tmp_path, monkeypatch):
     if os.name == 'nt':
-        original = s._windows_priority
-        def read(handle=None):
-            if handle is not None:
-                raise OSError('priority access refused')
-            return original(handle)
-        monkeypatch.setattr(s, '_windows_priority', read)
+        def read(job, pid):
+            raise OSError('priority access refused')
+        monkeypatch.setattr(s._WindowsJob, '_pid_priority', read)
     else:
         original = s.os.getpriority
         def read(which, pid):
@@ -1265,11 +1267,11 @@ def test_priority_os_read_failure_is_nonfatal(supervisors, tmp_path, monkeypatch
     assert handle.notify_acquisition('completed', writer='finished')
     value = finished(handle)
     assert value['priority']['at_start'] is None
-    assert value['priority']['reason']['at_start'] == 'priority access refused'
+    assert 'priority access refused' in value['priority']['reason']['at_start']
     assert value['priority']['at_end'] is None
-    assert value['priority']['reason']['at_end'] in (
+    assert any(reason in value['priority']['reason']['at_end'] for reason in (
         'priority access refused', 'process exited before priority read',
-        'message arrived after priority monitoring ended')
+        'message arrived after priority monitoring ended', 'job has no processes (processes exited)'))
 
 
 @pytest.mark.parametrize('messages', ['success', 'no_terminal'])
@@ -1290,9 +1292,9 @@ def test_cleanup_labels_unsampled_priority_without_reads_or_extra_joins(
             cleanup.set()
         return original_join(thread, *args, **kwargs)
 
-    def read(process):
+    def read(process, job=None):
         reads.append(process.pid)
-        return None, 'unexpected priority read'
+        return None, 'unexpected priority read', 0
 
     monkeypatch.setattr(s.JobHandle, '_stdout', stdout)
     monkeypatch.setattr(threading.Thread, 'join', join)
@@ -1310,33 +1312,195 @@ def test_cleanup_labels_unsampled_priority_without_reads_or_extra_joins(
                'worker message never arrived')
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='Windows process handle priority read-back')
-@pytest.mark.parametrize('read_after_exit', [False, True], ids=['ordinary', 'exited-handle'])
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job Object priority read-back')
+@pytest.mark.parametrize('read_after_exit', [False, True], ids=['ordinary', 'exited-job'])
 def test_windows_observer_terminal_priority(supervisors, tmp_path, monkeypatch, read_after_exit):
+    rel, gate, end_gate = priority_rendezvous_release(tmp_path)
     original = s._read_priority
     reads = []
 
-    def read(process):
+    def read(process, job=None):
         if read_after_exit and reads:
-            # Prove the real Windows API is queried through an exited handle.
-            # This wait belongs only to the test, not the supervisor.
+            # Query the still-open Job Object after its last process has exited.
+            end_gate.write_text('exit before read', encoding='utf-8')
             process.wait(timeout=5)
             assert process.returncode == 0
-        result = original(process)
+        result = original(process, job)
         reads.append(result)
+        (gate if len(reads) == 1 else end_gate).write_text('sampled', encoding='utf-8')
         return result
 
     monkeypatch.setattr(s, '_read_priority', read)
-    handle, _, _ = observe(supervisors(), tmp_path)
-    for _ in range(800):
-        if handle.record()['priority']['at_start'] is not None:
-            break
-        assert not handle.wait(0.01)
+    handle = supervisors().submit(rel, policy(), now=NOW, python=sys.executable,
+        operation='observe_dataset', parameters={}, dataset=tmp_path, output_dir=tmp_path)
+    wait_path(tmp_path / 'observation.txt')
     assert handle.notify_acquisition('completed', writer='finished')
     value = finished(handle)
     priority = value['priority']
-    assert priority['at_start'] is not None
-    assert priority['at_end'] == priority['at_start']
-    assert priority['at_end'] == value['result']['output']['priority']['read_back']
-    assert priority['reason'] == {}
+    assert priority['at_start'] == value['result']['output']['priority']['read_back']
+    assert priority['processes_read']['at_start'] >= 1
+    if read_after_exit:
+        assert priority['at_end'] is None
+        assert priority['processes_read']['at_end'] == 0
+        assert 'no processes' in priority['reason']['at_end']
+    else:
+        assert priority['at_end'] == priority['at_start']
+        assert priority['processes_read']['at_end'] >= 1
+        assert priority['reason'] == {}
     assert len(reads) == 2
+
+
+def venv_priority_record(tmp_path, python, requested):
+    """Run in a NORMAL-class test subprocess so host inheritance cannot mask the rule."""
+    rel, gate, end_gate = priority_rendezvous_release(tmp_path)
+    original = s._read_priority
+    reads = []
+
+    def read(process, job=None):
+        value = original(process, job)
+        reads.append(value)
+        (gate if len(reads) == 1 else end_gate).write_text('sampled', encoding='utf-8')
+        return value
+
+    sup = s.Supervisor(startup_deadline_s=3, shutdown_grace_s=0.5)
+    s._read_priority = read
+    try:
+        handle = sup.submit(rel, policy(), now=NOW, python=python,
+            operation='observe_dataset', parameters={'priority': 'normal'} if requested == 'normal' else {},
+            dataset=tmp_path, output_dir=tmp_path)
+        wait_path(tmp_path / 'observation.txt')
+        assert handle.notify_acquisition('completed', writer='finished')
+        value = finished(handle)
+        assert len(reads) == 2
+        return value
+    finally:
+        sup.close(timeout=10)
+        s._read_priority = original
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows stdlib venv launcher')
+@pytest.mark.parametrize('requested', ['inherit', 'normal'])
+def test_windows_venv_launcher_priority(tmp_path, requested):
+    venv = tmp_path / 'venv'
+    created = s.subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(venv)],
+                              stdin=s.subprocess.DEVNULL, capture_output=True, text=True)
+    assert created.returncode == 0, created.stderr
+    script = """
+import json, sys
+from pathlib import Path
+from tests.test_skill_supervisor import venv_priority_record
+print(json.dumps(venv_priority_record(Path(sys.argv[1]), sys.argv[2], sys.argv[3])))
+"""
+    run = s.subprocess.run([sys.executable, '-c', script, str(tmp_path),
+                           str(venv / 'Scripts' / 'python.exe'), requested],
+                          creationflags=0x20, stdin=s.subprocess.DEVNULL, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    value = json.loads(run.stdout)
+    priority = value['priority']
+    fixture = value['result']['output']['priority']
+    assert priority['requested'] == priority['at_start'] == 0x4000
+    assert priority['inherited'] is False
+    assert priority['processes_read']['at_start'] > 1  # Launcher plus the real interpreter.
+    assert priority['processes_read']['at_end'] > 1
+    assert priority['at_end'] == fixture['read_back'] == (0x20 if requested == 'normal' else 0x4000)
+    assert fixture['applied'] is True
+
+
+def windows_priority_job(pids, priorities, *, query_error=None):
+    """Native-layout fake: exercise class-3 buffer decoding and each handle's lifetime."""
+    import ctypes as c
+    from types import SimpleNamespace
+    last_error = [0]
+    calls = dict(queries=0, opened=[], closed=[])
+
+    def win_error(code):
+        exc = OSError(f'Windows error {code}')
+        exc.winerror = code
+        return exc
+
+    class Kernel:
+        def QueryInformationJobObject(self, handle, kind, pointer, size, returned):
+            assert handle == 123 and kind == 3 and returned is None
+            info = pointer._obj
+            assert size == c.sizeof(info)
+            assert len(info.ProcessIdList) == s.MAX_JOB_PRIORITY_PROCESSES
+            calls['queries'] += 1
+            if query_error:
+                last_error[0] = query_error
+                return 0
+            info.NumberOfAssignedProcesses = len(pids)
+            info.NumberOfProcessIdsInList = min(len(pids), s.MAX_JOB_PRIORITY_PROCESSES)
+            for index, pid in enumerate(pids[:s.MAX_JOB_PRIORITY_PROCESSES]):
+                info.ProcessIdList[index] = pid
+            last_error[0] = 234 if len(pids) > s.MAX_JOB_PRIORITY_PROCESSES else 0
+            return int(last_error[0] == 0)
+
+        def OpenProcess(self, access, inherit, pid):
+            assert access == 0x1000 and inherit is False
+            calls['opened'].append(pid)
+            if pid not in priorities:
+                last_error[0] = 87
+                return 0
+            return pid
+
+        def GetPriorityClass(self, handle):
+            return priorities[handle]
+
+        def CloseHandle(self, handle):
+            calls['closed'].append(handle)
+            return 1
+
+    job = s._WindowsJob.__new__(s._WindowsJob)
+    job.handle = 123
+    job.kernel = Kernel()
+    job.c = SimpleNamespace(**{name: getattr(c, name) for name in (
+        'Structure', 'c_uint32', 'c_size_t', 'sizeof', 'byref')},
+        get_last_error=lambda: last_error[0], WinError=win_error)
+    return job, calls
+
+
+@pytest.mark.parametrize('classes,expected', [
+    ([0x4000, 0x20], 0x20), ([0x20, 0x80], 0x80),
+    ([0x40, 0x4000, 0x20, 0x8000, 0x80, 0x100], 0x100)])
+def test_windows_job_priority_uses_scheduling_rank(classes, expected):
+    priorities = dict(enumerate(classes, start=1))
+    job, calls = windows_priority_job(list(priorities), priorities)
+    assert job.read_priority() == (expected, None, len(classes))
+    assert calls['queries'] == 1
+    assert calls['opened'] == calls['closed'] == list(priorities)
+
+
+def test_windows_job_priority_truncates_without_retry():
+    pids = list(range(1, s.MAX_JOB_PRIORITY_PROCESSES + 3))
+    job, calls = windows_priority_job(pids, {pid: 0x4000 for pid in pids})
+    value, reason, count = job.read_priority()
+    assert value == 0x4000 and count == s.MAX_JOB_PRIORITY_PROCESSES
+    assert 'truncated' in reason and str(len(pids)) in reason
+    assert calls['queries'] == 1
+    assert calls['opened'] == calls['closed'] == pids[:s.MAX_JOB_PRIORITY_PROCESSES]
+
+
+def test_windows_job_priority_skips_vanished_pid():
+    job, calls = windows_priority_job([1, 2], {2: 0x20})
+    assert job.read_priority() == (0x20, 'pid 1 exited before priority read', 1)
+    assert calls['opened'] == [1, 2] and calls['closed'] == [2]
+
+
+@pytest.mark.parametrize('pids', [[], [1]])
+def test_windows_job_priority_no_readable_processes(pids):
+    job, calls = windows_priority_job(pids, {})
+    value, reason, count = job.read_priority()
+    assert value is None and count == 0
+    assert ('no readable processes' if pids else 'no processes') in reason
+    assert calls['closed'] == []
+
+
+def test_windows_job_priority_query_failure_is_nonfatal():
+    job, calls = windows_priority_job([], {}, query_error=5)
+    # _read_priority owns the best-effort boundary; exercise its Windows branch
+    # without changing os.name globally (which would affect pathlib on POSIX).
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    with patch.object(s, 'os', SimpleNamespace(name='nt')):
+        assert s._read_priority(None, job) == (None, 'Windows error 5', 0)
+    assert calls['queries'] == 1 and calls['opened'] == []
