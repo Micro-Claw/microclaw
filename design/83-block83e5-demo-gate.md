@@ -27,7 +27,7 @@ git checkout block-83e-5
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor 5e85d42b3f13e3d05e06024fad9343011c9bd4e9 HEAD
+git merge-base --is-ancestor c6f3a56 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 .\install.bat
 if ($LASTEXITCODE -ne 0) { throw 'install failed' }
