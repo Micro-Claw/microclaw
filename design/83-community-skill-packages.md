@@ -1508,7 +1508,7 @@ and otherwise stays open.
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
-| 83f-3 | `block-83f-3` | `9e9271a` | opened 2026-10-01 — panel delivery; decisions G1–G7 |
+| 83f-3 | `block-83f-3` | `9e9271a` | opened 2026-10-01, PR #47 — panel delivery; decisions G1–G7; demo gate pending |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
