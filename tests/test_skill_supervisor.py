@@ -1183,7 +1183,7 @@ def test_observer_stdlib_only_and_bad_lifecycle_message_is_local(tmp_path, bad_m
     assert sum(m.get('message', '').startswith('ignored lifecycle') for m in messages) == (2 if bad_messages else 0)
 
 
-def priority_rendezvous_release(tmp_path):
+def priority_rendezvous_release(tmp_path, *, hold_end=True):
     # Rendezvous only in this copied test worker: let the monitor sample ready
     # before the real fixture's normal control executes, and retain it at result.
     import hashlib
@@ -1199,10 +1199,11 @@ def priority_rendezvous_release(tmp_path):
     source = source.replace(line,
         f'    while not Path({str(gate)!r}).exists():\n'
         '        time.sleep(0.001)\n' + line)
-    source = source.replace('emit("result", **fields)',
-        'emit("result", **fields)\n'
-        f'        while not Path({str(end_gate)!r}).exists():\n'
-        '            time.sleep(0.001)')
+    if hold_end:
+        source = source.replace('emit("result", **fields)',
+            'emit("result", **fields)\n'
+            f'        while not Path({str(end_gate)!r}).exists():\n'
+            '            time.sleep(0.001)')
     runner.write_text(source, encoding='utf-8')
     rel = release('executable')
     rel['release_dir'] = root
@@ -1339,27 +1340,32 @@ def test_windows_observer_terminal_priority(supervisors, tmp_path, monkeypatch, 
     priority = value['priority']
     assert priority['at_start'] == value['result']['output']['priority']['read_back']
     assert priority['processes_read']['at_start'] >= 1
-    if read_after_exit:
-        assert priority['at_end'] is None
-        assert priority['processes_read']['at_end'] == 0
-        assert 'no processes' in priority['reason']['at_end']
-    else:
-        assert priority['at_end'] == priority['at_start']
-        assert priority['processes_read']['at_end'] >= 1
-        assert priority['reason'] == {}
+    assert priority['at_end'] == priority['at_start']
+    assert priority['processes_read']['at_end'] >= 1
+    assert priority['reason'] == {}
     assert len(reads) == 2
 
 
-def venv_priority_record(tmp_path, python, requested):
+def venv_priority_record(tmp_path, python, requested, after_exit=False):
     """Run in a NORMAL-class test subprocess so host inheritance cannot mask the rule."""
-    rel, gate, end_gate = priority_rendezvous_release(tmp_path)
+    rel, gate, end_gate = priority_rendezvous_release(tmp_path, hold_end=not after_exit)
     original = s._read_priority
     reads = []
 
     def read(process, job=None):
+        if after_exit and reads:
+            process.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while job._process_ids()[0]:
+                assert time.monotonic() < deadline, 'worker job still has live processes'
+                time.sleep(0.001)
+            assert process.returncode == 0
         value = original(process, job)
         reads.append(value)
-        (gate if len(reads) == 1 else end_gate).write_text('sampled', encoding='utf-8')
+        if len(reads) == 1:
+            gate.write_text('sampled', encoding='utf-8')
+        elif not after_exit:
+            end_gate.write_text('sampled', encoding='utf-8')
         return value
 
     sup = s.Supervisor(startup_deadline_s=3, shutdown_grace_s=0.5)
@@ -1380,7 +1386,8 @@ def venv_priority_record(tmp_path, python, requested):
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows stdlib venv launcher')
 @pytest.mark.parametrize('requested', ['inherit', 'normal'])
-def test_windows_venv_launcher_priority(tmp_path, requested):
+@pytest.mark.parametrize('after_exit', [False, True], ids=['held-at-result', 'exited-tree'])
+def test_windows_venv_launcher_priority(tmp_path, requested, after_exit):
     venv = tmp_path / 'venv'
     created = s.subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(venv)],
                               stdin=s.subprocess.DEVNULL, capture_output=True, text=True)
@@ -1389,10 +1396,10 @@ def test_windows_venv_launcher_priority(tmp_path, requested):
 import json, sys
 from pathlib import Path
 from tests.test_skill_supervisor import venv_priority_record
-print(json.dumps(venv_priority_record(Path(sys.argv[1]), sys.argv[2], sys.argv[3])))
+print(json.dumps(venv_priority_record(Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4] == 'True')))
 """
     run = s.subprocess.run([sys.executable, '-c', script, str(tmp_path),
-                           str(venv / 'Scripts' / 'python.exe'), requested],
+                           str(venv / 'Scripts' / 'python.exe'), requested, str(after_exit)],
                           creationflags=0x20, stdin=s.subprocess.DEVNULL, capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     value = json.loads(run.stdout)
@@ -1452,6 +1459,7 @@ def windows_priority_job(pids, priorities, *, query_error=None):
 
     job = s._WindowsJob.__new__(s._WindowsJob)
     job.handle = 123
+    job._priority_handles = {}
     job.kernel = Kernel()
     job.c = SimpleNamespace(**{name: getattr(c, name) for name in (
         'Structure', 'c_uint32', 'c_size_t', 'sizeof', 'byref')},
@@ -1467,7 +1475,9 @@ def test_windows_job_priority_uses_scheduling_rank(classes, expected):
     job, calls = windows_priority_job(list(priorities), priorities)
     assert job.read_priority() == (expected, None, len(classes))
     assert calls['queries'] == 1
-    assert calls['opened'] == calls['closed'] == list(priorities)
+    assert calls['opened'] == list(priorities) and calls['closed'] == []
+    job.close()
+    assert calls['closed'] == list(priorities) + [123]
 
 
 def test_windows_job_priority_truncates_without_retry():
@@ -1477,13 +1487,17 @@ def test_windows_job_priority_truncates_without_retry():
     assert value == 0x4000 and count == s.MAX_JOB_PRIORITY_PROCESSES
     assert 'truncated' in reason and str(len(pids)) in reason
     assert calls['queries'] == 1
-    assert calls['opened'] == calls['closed'] == pids[:s.MAX_JOB_PRIORITY_PROCESSES]
+    assert calls['opened'] == pids[:s.MAX_JOB_PRIORITY_PROCESSES] and calls['closed'] == []
+    job.close()
+    assert calls['closed'] == pids[:s.MAX_JOB_PRIORITY_PROCESSES] + [123]
 
 
 def test_windows_job_priority_skips_vanished_pid():
     job, calls = windows_priority_job([1, 2], {2: 0x20})
     assert job.read_priority() == (0x20, 'pid 1 exited before priority read', 1)
-    assert calls['opened'] == [1, 2] and calls['closed'] == [2]
+    assert calls['opened'] == [1, 2] and calls['closed'] == []
+    job.close()
+    assert calls['closed'] == [2, 123]
 
 
 @pytest.mark.parametrize('pids', [[], [1]])
@@ -1504,3 +1518,48 @@ def test_windows_job_priority_query_failure_is_nonfatal():
     with patch.object(s, 'os', SimpleNamespace(name='nt')):
         assert s._read_priority(None, job) == (None, 'Windows error 5', 0)
     assert calls['queries'] == 1 and calls['opened'] == []
+
+
+def test_windows_job_priority_retains_exited_and_new_members():
+    pids, priorities = [1, 2], {1: 0x4000, 2: 0x4000}
+    job, calls = windows_priority_job(pids, priorities)
+    assert job.read_priority() == (0x4000, None, 2)
+    priorities[2] = 0x20
+    pids[:] = [3]
+    priorities[3] = 0x80
+    assert job.read_priority() == (0x80, None, 3)
+    pids.clear()
+    assert job.read_priority() == (0x80, None, 3)
+    assert calls['opened'] == [1, 2, 3] and calls['closed'] == []
+    job.close()
+    job.close()  # Cleanup is idempotent.
+    assert calls['closed'] == [1, 2, 3, 123]
+
+
+def test_windows_job_priority_retained_handles_stay_bounded():
+    pids = list(range(1, s.MAX_JOB_PRIORITY_PROCESSES + 1))
+    priorities = {pid: 0x4000 for pid in pids}
+    job, calls = windows_priority_job(pids, priorities)
+    assert job.read_priority() == (0x4000, None, s.MAX_JOB_PRIORITY_PROCESSES)
+    pids[:] = [1000]
+    priorities[1000] = 0x20
+    value, reason, count = job.read_priority()
+    assert value == 0x4000 and count == s.MAX_JOB_PRIORITY_PROCESSES
+    assert 'handles truncated' in reason and '1 new members omitted' in reason
+    assert len(calls['opened']) == s.MAX_JOB_PRIORITY_PROCESSES
+    job.close()
+    assert len(calls['closed']) == s.MAX_JOB_PRIORITY_PROCESSES + 1
+
+
+def test_windows_job_priority_cleanup_attempts_every_handle_on_failure():
+    job, calls = windows_priority_job([1, 2], {1: 0x4000, 2: 0x20})
+    assert job.read_priority() == (0x20, None, 2)
+    close = job.kernel.CloseHandle
+    def failing_close(handle):
+        close(handle)
+        return handle != 1
+    job.kernel.CloseHandle = failing_close
+    with pytest.raises(OSError):
+        job.close()
+    assert calls['closed'] == [1, 2, 123]
+    assert job.handle is None and job._priority_handles == {}

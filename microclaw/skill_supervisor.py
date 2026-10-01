@@ -17,7 +17,8 @@ deadlines. Measurements live in design/83-block83c-dispatch-timing.py.
 Workers have the user's permissions, not an OS sandbox. Windows uses a Job
 Object assigned before resume. Each Windows priority sample reads up to 64 job
 members and records the highest scheduling class and number read; the launched
-process can be a venv launcher rather than the worker. POSIX uses a new
+process can be a venv launcher rather than the worker. Query handles stay open
+through the terminal sample so exited members remain readable. POSIX uses a new
 session/process group; a POSIX descendant which calls setsid escapes (accepted off the shipping platform).
 """
 from __future__ import annotations
@@ -99,6 +100,7 @@ class _WindowsJob:
         ntdll.NtResumeProcess.argtypes = [w.HANDLE]
         ntdll.NtResumeProcess.restype = w.LONG
         self.handle = None
+        self._priority_handles = {}
         child = None
         try:
             self.handle = self.check(self.kernel.CreateJobObjectW(None, None))
@@ -154,18 +156,23 @@ class _WindowsJob:
         return list(info.ProcessIdList[:count]), reason
 
     def _pid_priority(self, pid):
-        child = self.check(self.kernel.OpenProcess(0x1000, False, pid))  # QUERY_LIMITED_INFORMATION
-        try:
-            return self.check(self.kernel.GetPriorityClass(child))
-        finally:
-            self.check(self.kernel.CloseHandle(child))
+        if pid not in self._priority_handles:
+            self._priority_handles[pid] = self.check(
+                self.kernel.OpenProcess(0x1000, False, pid))  # QUERY_LIMITED_INFORMATION
+        return self.check(self.kernel.GetPriorityClass(self._priority_handles[pid]))
 
     def read_priority(self):
-        """One bounded snapshot of the owned tree, including venv launchers' children."""
+        """Read held members plus newly listed members, retaining at most 64 handles."""
         pids, reason = self._process_ids()
         reasons = [reason] if reason else []
+        new = [pid for pid in pids if pid not in self._priority_handles]
+        remaining = MAX_JOB_PRIORITY_PROCESSES - len(self._priority_handles)
+        if len(new) > remaining:
+            reasons.append(f"job priority handles truncated at {MAX_JOB_PRIORITY_PROCESSES}; "
+                           f"{len(new) - remaining} new members omitted")
+        reads = list(self._priority_handles) + new[:remaining]
         classes = []
-        for pid in pids:
+        for pid in reads:
             try:
                 value = self._pid_priority(pid)
                 if value not in WINDOWS_PRIORITY_RANK:
@@ -178,14 +185,27 @@ class _WindowsJob:
                 else:
                     reasons.append(f"pid {pid}: {exc}")
         if not classes:
-            reasons.append("job has no readable processes" if pids else "job has no processes (processes exited)")
+            reasons.append("job has no readable processes" if reads else "job has no processes (processes exited)")
         value = max(classes, key=WINDOWS_PRIORITY_RANK.__getitem__) if classes else None
         return value, "; ".join(reasons) or None, len(classes)
 
     def close(self):
+        failure = None
+        for pid, child in list(self._priority_handles.items()):
+            del self._priority_handles[pid]
+            try:
+                self.check(self.kernel.CloseHandle(child))
+            except OSError as exc:
+                failure = failure or exc
         if self.handle:
-            self.check(self.kernel.CloseHandle(self.handle))
-            self.handle = None
+            try:
+                self.check(self.kernel.CloseHandle(self.handle))
+            except OSError as exc:
+                failure = failure or exc
+            finally:
+                self.handle = None
+        if failure:
+            raise failure
 
 
 def _windows_priority(handle=None):
