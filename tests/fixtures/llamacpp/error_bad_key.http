@@ -1,0 +1,4 @@
+HTTP 401
+{"Server": "llama.cpp", "Access-Control-Allow-Origin": "", "Content-Type": "application/json; charset=utf-8", "Content-Length": "80", "Connection": "close"}
+
+{"error":{"message":"Invalid API Key","type":"authentication_error","code":401}}
