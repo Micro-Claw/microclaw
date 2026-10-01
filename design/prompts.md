@@ -11387,7 +11387,7 @@ the referent's identity, not just the signer.**
 targeted run did not cover). Revision (`c23525a`): 5499 passed, 108 skipped.
 
 
-## design/83 block 83f-2 — the agent's catalog search (PR #PRNUM, 2026-10-01)
+## design/83 block 83f-2 — the agent's catalog search (PR #46, 2026-10-01)
 
 **Five decisions, asked one at a time, took five short answers.** Each was a
 single plain question with a recommended option, and the operator took every
