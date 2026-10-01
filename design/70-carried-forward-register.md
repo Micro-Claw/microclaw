@@ -3128,9 +3128,9 @@ the model" as the actual blast radius.
 
 - **What happened** — `design/83` 83e-4's demo gate, 2026-09-29: normal priority doubled a burst; below-normal removed the cost. The operator's reading (2026-09-29): the demo machine runs artificially quick; on M2 or M5 hardware and serial calls take longer, and how promptly the acquisition thread is rescheduled after each wait is what priority governs.
 - **Why it matters** — below-normal CPU priority does not lower **disk** priority on Windows, and does not govern hyperthread sharing, memory bandwidth, all-core clock drop, or Windows' starvation boost (a below-normal thread starved ~4 s runs one quantum at high priority). None showed on the demo machine; its acquisition side is light, so that null does not carry.
-- **What a fix would look like** — 83e-4's gate program on M2 after 83e-5: the Andor at its full rate, a worker that also loads the disk (reads beyond the page cache or writes large output), camera-buffer overflow and dropped frames counted, not only gaps; record the core count and power plan.
+- **What a fix would look like** — 83e-5's gate program (83e-4's targets a fixture parameter 83e-5 removed) on M2: the Andor at its full rate, a worker that also loads the disk (reads beyond the page cache or writes large output), camera-buffer overflow and dropped frames counted, not only gaps; record the core count and power plan.
 - **Where** — M2 (or M5).
-- **Block** — NONE; after `design/83` 83e-5.
+- **Block** — NONE. Unblocked by `design/83` 83e-5 (PR #44), which makes below-normal the supervisor's default; on the demo machine that default left a loaded burst at 15.4–16.1 s against 32.6–34.3 s for a normal-priority control (n=4).
 - **Importance** — MEDIUM
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83e-4's demo gate and the operator's review of it, 2026-09-29.

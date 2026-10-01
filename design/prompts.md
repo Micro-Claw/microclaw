@@ -11313,3 +11313,49 @@ extra 18–24 s (`R144`); the camera-vs-saved-callback comparison did.
 
 **Counts.** Baseline `6b4d11b`: 5390 passed, 99 skipped. After the fixture,
 review fixes and gate (`d8baf05`): 5414 passed, 99 skipped.
+
+## design/83 block 83e-5 — package workers run at below-normal priority (PR #44, 2026-10-01)
+
+**The operator struck a sentence nobody could read.** The disclosure ended "Each
+result's frame-gap summary shows the effect". Asked what it meant, the
+coordinator found the summary existed but could not show an effect without a
+no-analysis baseline the user does not have. **Before a disclosure promises
+that a number diagnoses something, say what the reader would compare it with.**
+
+**A passing gate hid the defect its own control existed to catch.** Round 1
+returned 8/8 while every `normal` control's job record said the worker ran at
+`0x4000` and the worker said `0x20`. The supervisor was reading the venv
+launcher, not the worker. design/58 had already recorded that a uv
+`python.exe` is a launcher onto a child. CI could not see it (a real
+`python.exe`), and limb 5 could not either: the coordinator's prompt had asked
+it to check the control against the worker, never against the supervisor's
+record, and to report a missing `at_end` rather than fail it. **When the
+product records a claim and the fixture reports the truth, the limb must
+compare the two, and above all on the control.** Raw job records found this.
+The RESULT line did not.
+
+**A rendezvous in a test can remove the race it is meant to cover.** The first
+Job Object fix read the pid list at the terminal sample. Its venv test held the
+worker alive until that sample had been taken, so it passed, while a real
+worker exiting inside the monitor's 10 ms poll would have recorded `at_end`
+null and failed the new limb on the rig. Retaining the query handles fixed it.
+The test that proves it waits for the worker to exit before the read, which is
+the shape the rig produces. **Ask what the rendezvous holds still that
+production would not.**
+
+**Runner and coordinator mechanics.**
+- Codex ran a start turn and four revisions with no quota failure.
+- The coordinator pushed a `.ps1` change while the product's CI run was in
+  flight. CI cancelled that run mid-suite, and its Windows job's
+  `4313 passed` was an interrupted summary, not a result. **Do not push while
+  a Windows run you need is unfinished, and read for `KeyboardInterrupt`
+  before believing a count.**
+- `git checkout <sha> --` with no path detaches HEAD. It cost nothing, but
+  only because it was noticed at once.
+- A runner pin named the commit *before* the fix the rerun depended on. The
+  coordinator re-pinned it. Check that the pin covers the product commit,
+  not just the gate's.
+
+**Counts.** Baseline `f3d039c`: 5414 passed, 99 skipped (macOS). At `ceb6a55`:
+macOS 5434 / 108; windows-latest 5437 / 105; ubuntu 5434 / 108.
+Gate: round 1 13/13 runs; round 2 13/13 runs in ~5 min.

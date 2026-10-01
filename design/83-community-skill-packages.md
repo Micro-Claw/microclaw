@@ -1206,6 +1206,57 @@ rig is `R142`.
   scored as equality. CI settles class, inheritance, cap and read-back on both
   platforms through the real supervisor.
 
+**What 83e-5 settled** (PR #44):
+- **Code.** `skill_supervisor._run` adds `BELOW_NORMAL_PRIORITY_CLASS` to the
+  suspended launch (none when MicroClaw is idle) or prefixes `nice -n k`. The
+  job record's `priority` holds `requested`, `inherited`, `at_start`, `at_end`,
+  `processes_read` and per-phase `reason`. On Windows each sample reads every
+  Job Object member (≤ 64) and keeps the highest class by scheduling rank; the
+  query handles are held until the job closes, so the terminal sample still
+  reads a worker that has exited. The fixture's `priority` is `inherit` /
+  `normal`. 83e-4's gate program now targets a fixture parameter that no longer
+  exists: it is a record; rerun its measurement with 83e-5's.
+- **Review.** Four revision rounds. Two came from the coordinator's diff reading
+  (a 2 s exit-path join; `requested` in two shapes) and two from the gate (below).
+- **Gate round 1** (demo machine, 2026-10-01, pinned `1b12372`): 8/8, but the
+  raw job records contradicted D3. All four `normal` controls' workers read back
+  `0x20` while the supervisor recorded `at_end = 0x4000`: the slot's
+  `env-a\Scripts\python.exe` is a uv launcher, so `Popen`'s handle was the
+  launcher and the worker its child. Loaded runs only agreed through
+  inheritance. CI could not see it because it launches a real `python.exe`;
+  limb 5 passed because it compared the control with the worker only. Hence
+  D3's amendment, a stdlib-venv launcher test in CI, and a limb that requires
+  the control's `at_end` to equal its read-back. The first fix read the job's
+  pid list and would have lost `at_end` to a worker that exits within the
+  monitor's 10 ms poll; its test's rendezvous hid that, so the handles are now
+  retained.
+- **Gate round 2** (demo machine, 2026-10-01, pinned `c6f3a56`, 13/13 runs,
+  ~5 min): `RESULT: 0 failed or not exercised limbs / 8`. Scored from the job
+  records: MicroClaw `0x20`, nothing inherited. Every loaded run recorded
+  `0x4000` at both samples, equal to the worker's read-back. Every control
+  recorded `0x20` at both, equal to its read-back; it raises itself before its
+  first message, so `at_start` already sees it. `processes_read` = 3 at both
+  samples in all 8 jobs: the launcher and the interpreter account for two, and
+  the third is **not attributed**. CPU ratio 18.4–18.5 loaded, 19.4–19.6
+  control. Load began by frame 3, and every job read 1000/1000 frames,
+  524,288,000 bytes.
+- **Measured** (round 2, n=4 per cell, from frame 3):
+
+  | | none | loaded (supervisor's class) | normal control |
+  |---|---|---|---|
+  | burst duration | 15.66–16.29 s | 15.36–16.07 s | **32.62–34.31 s** |
+  | burst mean gap | 15.0–15.3 ms | 14.3–15.1 ms | **31.7–33.4 ms** |
+  | burst p95 gap | 21 ms | 21 ms | **45–48 ms** |
+
+  The control separates from the loaded cell on every gap and duration
+  statistic in both rounds (all 4 beyond all 4; chance 2/70 ≈ 2.9%). Round 1
+  agrees: 15.14–16.28 s loaded against 31.82–33.60 s control. Loaded against
+  none is ranges only, and nothing here claims they are equal. **A data point
+  about the demo machine, whose camera makes frames on the CPU.**
+- **Not shown.** The new Windows tests were never watched failing on the
+  pre-fix code; CI ran only the fixed tree. Round 1's artifacts are the evidence
+  that the defect existed. The rig question is still `R142`.
+
 ### 83f — publisher intake, trusted catalog and user-facing delivery
 
 Implement the admission path specified in 83a and 83b: authenticated
@@ -1269,7 +1320,7 @@ and otherwise stays open.
 | 83e-2 | `block-83e-2` | `2a1c42a` | **merged 2026-09-28** as `3dde106`, PR #41 — demo gate 2026-09-28, 6/8 as scored, both FAILs the gate's fixed counts, artifacts meet them; closes `R84`'s third item |
 | 83e-3 | `block-83e-3` | `3dde106` | **merged 2026-09-29** as `6b4d11b`, PR #42 — demo gate 2026-09-28, 10/10 scored from artifacts, 1 operator-judged; closes `R84` |
 | 83e-4 | `block-83e-4` | `6b4d11b` | **merged 2026-09-29** as `f3d039c`, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
-| 83e-5 | `block-83e-5` | `f3d039c` | started 2026-09-29 |
+| 83e-5 | `block-83e-5` | `f3d039c` | reviewed, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
