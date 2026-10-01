@@ -1334,6 +1334,15 @@ publisher releases do not require copying files or hand-maintaining pins here.
   click**; no agent route installs. Which block carries the search tool is
   decided with 83f-1/2.
 
+- **D7 — five blocks, not four** (operator, 2026-10-01, after 83f-1). The
+  agent's catalog search (D6) is its own block, **83f-2**, before panel
+  delivery. It reads only 83f-1's `catalog_entries`, needs no demo machine, and
+  is the one change that decides what publisher text reaches the agent, so it
+  is reviewed alone. Panel delivery becomes **83f-3**, release intake
+  **83f-4**, production root and the end-to-end path **83f-5**. 83f-3's demo
+  gate then covers the whole journey: the agent finds a package, the user
+  installs it from the panel, and the agent can read it.
+
 Found while checking the tree: `store_trust_policy` verifies the cached
 previous policy against the *current* roots before accepting a new one, so
 after a root rotation — which ships in a MicroClaw update — every refresh
@@ -1422,7 +1431,8 @@ and otherwise stays open.
 | 83e-4 | `block-83e-4` | `6b4d11b` | **merged 2026-09-29** as `f3d039c`, PR #43 — demo gate 2026-09-29, 8/8 scored from artifacts; closes `R141`, opens `R142`–`R144` |
 | 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
-| 83f-1 | `block-83f-1` | `a7261f5` | reviewed 2026-10-01, PR #45 — local only, no gate |
+| 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
+| 83f-2 | `block-83f-2` | `225b6f2` | opened 2026-10-01 — the agent's catalog search (D7) |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
