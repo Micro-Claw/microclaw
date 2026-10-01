@@ -7,7 +7,7 @@ supervisor records a launch failure. Startup never executes publisher code.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -283,8 +283,9 @@ def _recover(package, *, retained_digests):
         for path in package.glob(".pointer.json.*"):
             _delete(path, failures)
         _retention(package, retained_digests=retained_digests, failures=failures)
-    for path in package.glob(".lock-stale-*"):
-        _delete(path, failures)
+    for pattern in (".lock-stale-*", ".download-*"):
+        for path in package.glob(pattern):
+            _delete(path, failures)
     # Recovery holds the package lock, so no job can be live: a `running` record
     # was left by a serve that exited mid-job, and would otherwise read as
     # running (and keep the panel polling fast) forever.
@@ -550,6 +551,10 @@ def _verify_assets(directory, record):
 def _transaction(package, intake, artifact_path, *, policy, now, uv_executable,
                  retained_digests, find_links=None, base_python=None, repairing=None):
     records = _records(package)
+    for _, record, _ in records:
+        stored_intake = record.get("intake") if isinstance(record, dict) else None
+        if isinstance(stored_intake, dict) and stored_intake.get("publisher") != intake["publisher"]:
+            raise PackageRefusal("publisher", "another publisher's package with this name is installed; remove it first")
     pointer, broken = _pointer(package, records)
     if repairing is None and any(record and record.get("state") == "ready"
                                  and record.get("artifact_digest") == intake["artifact_digest"]
@@ -611,20 +616,25 @@ def _transaction(package, intake, artifact_path, *, policy, now, uv_executable,
 
 
 def install(intake, artifact_path, *, policy, now, uv_executable=None, retained_digests,
-            find_links=None, base_python=None, _locked_package=None):
+            find_links=None, base_python=None):
     packages.check_release(intake, policy, purpose="admission", now=now, artifact=artifact_path)
-    # start_job already owns and recovered this package; never reacquire its lock
-    # or mark the live job interrupted during a second recovery.
-    with (nullcontext(_locked_package) if _locked_package is not None else package_lock(intake["package_id"])) as package:
-        if _locked_package is None:
-            _recover(package, retained_digests=retained_digests)
-        record = _transaction(package, intake, artifact_path, policy=policy, now=now,
-                              uv_executable=uv_executable, retained_digests=retained_digests,
-                              find_links=find_links, base_python=base_python)
-        if not (package / "discovery.json").exists():
-            _write(package / "discovery.json",
-                   _discovery_decision(True, record["artifact_digest"], now=now, source="install"))
-        return record
+    with package_lock(intake["package_id"]) as package:
+        _recover(package, retained_digests=retained_digests)
+        return _install(package, intake, artifact_path, policy=policy, now=now,
+                        uv_executable=uv_executable, retained_digests=retained_digests,
+                        find_links=find_links, base_python=base_python)
+
+
+def _install(package, intake, artifact_path, *, policy, now, uv_executable=None,
+             retained_digests, find_links=None, base_python=None):
+    """Install under the caller's already recovered package lock."""
+    record = _transaction(package, intake, artifact_path, policy=policy, now=now,
+                          uv_executable=uv_executable, retained_digests=retained_digests,
+                          find_links=find_links, base_python=base_python)
+    if not (package / "discovery.json").exists():
+        _write(package / "discovery.json",
+               _discovery_decision(True, record["artifact_digest"], now=now, source="install"))
+    return record
 
 
 def _rollback(package, *, policy, now, retained_digests):
@@ -949,11 +959,16 @@ def start_job(package_id, action, *, retained_digests, release=None, opener=None
                         raise PackageRefusal("release", "requested release is not the newest installable catalog offer")
                     job["phase"] = "downloading"
                     _write(package / "job.json", job)
-                    def installing():
+                    with download_release(choice[1], package=package, opener=opener) as artifact:
                         job["phase"] = "installing"
                         _write(package / "job.json", job)
-                    record = download_release(choice[1], package=package, opener=opener,
-                                              installing=installing, **kwargs)
+                        intake = {k: v for k, v in choice[1].items() if k not in {
+                            "compatible", "compatibility_reason", "installed", "withdrawn",
+                            "withdrawal_reason", "blocked", "block_reason"}}
+                        packages.check_release(intake, kwargs["policy"], purpose="admission",
+                                               now=kwargs["now"], artifact=artifact)
+                        record = _install(package, intake, artifact, uv_executable=updates.locate_uv(),
+                                          find_links=None, **kwargs)
                 elif action == "repair":
                     record = _repair(package, uv_executable=updates.locate_uv(), **kwargs)
                 else:
@@ -1186,13 +1201,12 @@ def panel_catalog(*, now):
         if key not in rows or packages.Version(entry["version"]) > packages.Version(rows[key]["version"]):
             rows[key] = dict(entry, installed_version=None, offered_release=None)
     # Active installs remain visible even if absent from the saved catalog.
-    for package in (store_dir() / "packages").glob("*"):
-        records = _records(package)
-        pointer, _ = _pointer(package, records)
-        for path, record, _ in records:
-            if not record or record.get("state") != "ready":
-                continue
-            if pointer and pointer.get("active") and path.name != pointer["active"]:
+    snapshot, _, _, _, _ = _discovery_state(now=now)
+    for package in snapshot["packages"]:
+        records = package["installs"]
+        has_active = any(record["active"] for record in records)
+        for record in records:
+            if record.get("state") != "ready" or (has_active and not record["active"]):
                 continue
             try:
                 intake = packages.validate_intake(record.get("intake"))
@@ -1213,11 +1227,11 @@ def panel_catalog(*, now):
                                                             r["publisher"], r["package_id"]))}
 
 
-def download_release(entry, *, package, policy, now, retained_digests, opener=None,
-                     installing=None):
-    """Bounded HTTPS download; discard temporary bytes on every outcome."""
+@contextmanager
+def download_release(entry, *, package, opener=None):
+    """Yield verified temporary bytes; discard them on every normal exit."""
     opener = opener or updates._default_opener
-    with tempfile.NamedTemporaryFile(dir=package, prefix="artifact-", suffix=".zip", delete=False) as file:
+    with tempfile.NamedTemporaryFile(dir=package, prefix=".download-", suffix=".zip", delete=False) as file:
         path = Path(file.name)
     try:
         data, _ = updates._open_manual(entry["artifact"], opener,
@@ -1226,13 +1240,7 @@ def download_release(entry, *, package, policy, now, retained_digests, opener=No
         path.write_bytes(data)
         if hashlib.sha256(data).hexdigest() != entry["artifact_digest"]:
             raise PackageRefusal("artifact_digest", "download does not match signed digest")
-        if installing:
-            installing()
-        intake = {k: v for k, v in entry.items() if k not in {
-            "compatible", "compatibility_reason", "installed", "withdrawn", "withdrawal_reason",
-            "blocked", "block_reason"}}
-        return install(intake, path, policy=policy, now=now, retained_digests=retained_digests,
-                       uv_executable=updates.locate_uv(), find_links=None, _locked_package=package)
+        yield path
     finally:
         path.unlink(missing_ok=True)
 

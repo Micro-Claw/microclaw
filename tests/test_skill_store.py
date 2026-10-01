@@ -1819,7 +1819,7 @@ def test_artifact_download_bounds_redirects_and_cleanup(monkeypatch, mode):
     calls, installs = [], []
     monkeypatch.setattr(packages, 'MAX_ARTIFACT_DOWNLOAD_BYTES', 20)
     monkeypatch.setattr(updates, 'locate_uv', lambda: 'fixture-uv')
-    monkeypatch.setattr(store, 'install', lambda *a, **k: installs.append((a, k)) or {'install_id': 'ok'})
+    monkeypatch.setattr(store, '_install', lambda *a, **k: installs.append((a, k)) or {'install_id': 'ok'})
     def open(request, timeout):
         calls.append(request)
         assert timeout == updates.HTTP_TIMEOUT_SECONDS
@@ -1829,21 +1829,23 @@ def test_artifact_download_bounds_redirects_and_cleanup(monkeypatch, mode):
                 ('https' if mode == 'redirect' else 'http') + '://another.example/artifact'})
         return CatalogResponse(data=b'wrong' if mode == 'mismatch' else b'x'*21 if mode == 'oversize' else data)
     with store.package_lock(entry['package_id']) as path:
-        kwargs = dict(package=path, policy=store.load_trust_policy(), now=NOW,
-                      retained_digests=frozenset(), opener=open)
+        kwargs = dict(package=path, opener=open)
         if mode == 'redirect':
-            assert store.download_release(entry, **kwargs)['install_id'] == 'ok'
+            with store.download_release(entry, **kwargs) as artifact:
+                assert artifact.read_bytes() == data
+                assert store._install(path, entry, artifact, find_links=None)['install_id'] == 'ok'
             assert calls[-1].full_url == 'https://another.example/artifact'
             assert installs[0][1]['find_links'] is None
         else:
             with pytest.raises((packages.PackageRefusal, updates.UpdateError)) as exc:
-                store.download_release(entry, **kwargs)
+                with store.download_release(entry, **kwargs) as artifact:
+                    store._install(path, entry, artifact)
             assert not installs
             if mode == 'mismatch':
                 assert exc.value.field == 'artifact_digest'
             if mode == 'http':
                 assert len(calls) == 1
-        assert not list(path.glob('artifact-*'))
+        assert not list(path.glob('.download-*'))
 
 
 @pytest.mark.parametrize('kind', ['withdrawn', 'blocked', 'incompatible', 'older', 'unknown'])
@@ -1888,12 +1890,12 @@ def test_install_job_production_route_and_previous(tmp_path, monkeypatch, kind):
         monkeypatch.setattr(store, '_run', run)
         monkeypatch.setattr(store, '_self_check', lambda *a: None)
     write(store.store_dir() / 'catalog/catalog.json', catalog([old['intake'], entry]))
-    original = store.install
+    original = store._install
     calls = []
     def installing(*args, **kwargs):
         calls.append(kwargs)
         return original(*args, **kwargs)
-    monkeypatch.setattr(store, 'install', installing)
+    monkeypatch.setattr(store, '_install', installing)
     monkeypatch.setattr(updates, 'locate_uv', lambda: 'fixture-uv')
     monkeypatch.setattr(store, 'refresh_catalog', lambda **k: pytest.fail('refetch'))
     phases = []
@@ -1917,7 +1919,7 @@ def test_install_job_production_route_and_previous(tmp_path, monkeypatch, kind):
     assert phases[-3:] == ['downloading', 'installing', 'finished']
     pointer = read(package(kind) / 'pointer.json')
     assert pointer == {'active': job['install_id'], 'previous': old['install_id']}
-    assert not list(package(kind).glob('artifact-*'))
+    assert not list(package(kind).glob('.download-*'))
     if kind == 'executable':
         argv = next(argv for argv in argv_calls if 'pip' in argv)
         assert '--find-links' not in argv and '--no-index' not in argv
@@ -1972,3 +1974,64 @@ def test_panel_withdrawn_blocked_installed_offer(tmp_path):
     row = store.panel_catalog(now=NOW)['packages'][0]
     assert row['blocked'] and row['block_reason']['detail'] == 'unsafe'
     assert row['installed_version'] == '1.0.0' and row['offered_release']['version'] == '2.0.0'
+
+
+def test_install_job_refuses_other_publisher_without_replacing_pointer(tmp_path, monkeypatch):
+    policy = store.load_trust_policy()
+    keys = policy['publishers'].pop('fixture-lab')['keys']
+    policy['publishers'].update({
+        'publisher-a': dict(state='active', keys=[keys[0]]),
+        'publisher-b': dict(state='active', keys=[keys[1]])})
+    policy['revision'] += 1
+    store.store_trust_policy(builder.sign(policy, 'root'))
+    entries, artifacts = {}, {}
+    for publisher in ('publisher-a', 'publisher-b'):
+        source = tmp_path / publisher
+        shutil.copytree(FIXTURES / 'markdown', source)
+        manifest = read(source / 'manifest.json')
+        manifest.update(publisher=publisher, package_id='analysis-tools')
+        write(source / 'manifest.json', manifest)
+        artifact = tmp_path / (publisher + '.zip')
+        entries[publisher] = builder.sign(builder.build_release(source, artifact), publisher)
+        artifacts[publisher] = artifact.read_bytes()
+    a = entries['publisher-a']
+    installed = store.install(a, tmp_path / 'publisher-a.zip', policy=store.load_trust_policy(),
+                              now=NOW, retained_digests=frozenset())
+    directory = store._package('analysis-tools')
+    pointer = read(directory / 'pointer.json')
+    assert pointer['active'] == installed['install_id']
+    write(store.store_dir() / 'catalog/catalog.json', catalog(entries.values()))
+    monkeypatch.setattr(updates, 'locate_uv', lambda: 'fixture-uv')
+    b = entries['publisher-b']
+    identity = {k: b[k] for k in ('publisher', 'package_id', 'version', 'artifact_digest')}
+    downloads = []
+    def open(request, timeout):
+        downloads.append(request.full_url)
+        return CatalogResponse(data=artifacts['publisher-b'])
+    store.start_job('analysis-tools', 'install', release=identity,
+                    retained_digests=frozenset(), opener=open)
+    job = wait_delivery('analysis-tools')
+    assert downloads == [b['artifact']]
+    assert job['reasons'] == [dict(field='publisher', detail=
+        "another publisher's package with this name is installed; remove it first")]
+    assert read(directory / 'pointer.json') == pointer
+    assert len(store._records(directory)) == 1
+    rows = store.panel_catalog(now=NOW)['packages']
+    assert [(r['publisher'], r['installed_version']) for r in rows] == [
+        ('publisher-a', '1.0.0'), ('publisher-b', None)]
+    assert not list(directory.glob('.download-*'))
+
+
+@pytest.mark.parametrize('broken_pointer', [False, True])
+def test_recovery_deletes_interrupted_download(tmp_path, broken_pointer):
+    installed = install(tmp_path, kind='markdown')
+    directory = package('markdown')
+    temporary = directory / '.download-interrupted.zip'
+    temporary.write_bytes(b'partial artifact')
+    if broken_pointer:
+        (directory / 'pointer.json').write_text('{', encoding='utf-8')
+    with store.package_lock('markdown-fixture'):
+        result = store._recover(directory, retained_digests=frozenset())
+    assert not temporary.exists()
+    assert not result['deletion_failures']
+    assert store._install_dir(directory, installed['install_id']).is_dir()
