@@ -1543,6 +1543,11 @@ root is 83f-5's.
   gate is a script the operator runs from a fork, the shape a real publisher
   has, and it is scored from the PRs, their comments and the served
   `catalog.json`.
+- **H6 — publishers get a signing tool, in this block.** The same module makes
+  a publisher key pair and prints the public key to admit. It also writes the
+  signed release file for a zip and its download URL, filled from the zip's own
+  manifest, and the signed withdrawal file. The gate's fixture publisher uses
+  these commands, so the publisher's side is tested as well as intake.
 
 ### Not a block — the SMAPpy conformance limb
 
