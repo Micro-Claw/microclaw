@@ -1631,6 +1631,18 @@ def test_session_loads_local_key_before_computing_context_budget(session, monkey
     assert all(authorized for _path, authorized in requests)
 
 
+def test_a_stored_local_key_is_redacted_from_the_history_audit(session, monkeypatch):
+    # Building the store after loading the key (so the budget probe is
+    # authenticated) must not leave the history audit without that secret:
+    # `_add_audit_secret` skips a store that does not exist yet.
+    _install_keyed_llamacpp(monkeypatch)
+    monkeypatch.setattr(credentials, "load_api_key",
+                        lambda kind="anthropic": ("local-test-key", "file")
+                        if kind == "llm" else (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    assert "local-test-key" in session.store.audit.secrets
+
+
 def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatch):
     requests = _install_keyed_llamacpp(monkeypatch, vision=True)
     monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))

@@ -397,7 +397,12 @@ class Session:
             if llm_base_url():
                 print("No local LLM API key set; none is needed unless the server was started with --api-key.")
             else: print("No Anthropic API key found — set one from the browser.")
+        # Built after the key is applied so a keyed local server answers the
+        # budget probe; the key then has to be registered with this audit too,
+        # because _add_audit_secret above found no store to register it with.
         self.store = make_conversation_store(AuditLog(self.history_fn, enabled=self.save))
+        if key:
+            _add_audit_secret(self, key)
 
 
     def _audit_confirmation(
