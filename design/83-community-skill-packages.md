@@ -1516,6 +1516,34 @@ whole journey (D7).
 - `Micro-Claw/package-catalog` (D4) is still created by release intake, now
   **83f-4** under D7; this block's catalog lived on its own branch.
 
+**83f-4 decisions** (operator, 2026-10-02). Release intake into
+`Micro-Claw/package-catalog` (D4), still under the test root; the production
+root is 83f-5's.
+
+- **H1 — a release enters by pull request.** The publisher's PR adds one
+  publisher-signed file: a release record or a withdrawal. Nothing polls
+  publishers' hosts.
+- **H2 — a robot merges it.** An Action runs intake. If it passes, the Action
+  merges the PR and rebuilds `catalog.json`. If it fails, the Action comments
+  the failing field and leaves the PR open. A PR that touches anything but one
+  new release or withdrawal file is refused, `policy.json` and `catalog.json`
+  included. The policy is the operator's and is pushed directly. The signature
+  is the publisher identity, not the GitHub account that opened the PR.
+- **H3 — the rules are MicroClaw's, at a pinned commit.** The Action checks out
+  MicroClaw at a pinned commit and runs an intake command with only
+  `cryptography` and `packaging` installed. That command reuses the client's
+  admission check, download digest and pre-execution archive/manifest checks,
+  and runs no publisher code. Moving the pin is a one-line PR.
+- **H4 — test traffic goes to a `test` branch.** `main` carries the Action and
+  an empty catalog, kept clean for 83f-5's production policy. `test` carries a
+  test-root policy, and intake there verifies against the test root only.
+- **H5 — the repository is created after review, before the gate.** The
+  runner writes its contents on this block's branch. The coordinator creates
+  the repository and pushes the reviewed files once the operator approves. The
+  gate is a script the operator runs from a fork, the shape a real publisher
+  has, and it is scored from the PRs, their comments and the served
+  `catalog.json`.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
