@@ -34,7 +34,7 @@ NotExercised = gate83d.NotExercised
 BASE = 'https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-3/design/83f3-gate/'
 FIXTURES = HERE / '83f3-gate'
 POINTER = '83f3-gate-evidence.txt'
-PHASES = ('fixtures', 'prepare', 'session', 'verify', 'selftest')
+PHASES = ('fixtures', 'prepare', 'session', 'verify', 'cleanup', 'selftest')
 IDENTITY = ('publisher', 'package_id', 'version', 'artifact_digest')
 JUDGED = gate83e3.OPERATOR_JUDGED
 CHAT = {
@@ -44,13 +44,13 @@ CHAT = {
 }
 PROMPTS = {
     2: 'Open Community skill packages. Type the line starting Catalog / Offline / No community exactly as shown.',
-    3: 'Click Install 1.0.0 on fixture-lab/executable-fixture. Does the box show the publisher, licence, and "MicroClaw does not test or support this package"? Answer yes/no plus anything missing. Click Cancel; click Install again, then Install. Wait until the row shows installed before answering.',
+    3: 'Click Install on fixture-lab/executable-fixture. Does the box show the publisher, licence, and "MicroClaw does not test or support this package"? Answer yes/no plus anything missing. Click Cancel; click Install again, then Install. Wait until the row shows installed before answering.',
     4: 'Install fixture-lab/markdown-fixture: Install, then Install. Type DONE when installed.',
     5: 'Install fixture-lab/tampered-fixture: Install, then Install. Type the error shown by the panel.',
     6: 'Install fixture-two/markdown-fixture: Install, then Install. Type the error shown by the panel.',
     7: 'Type the reason on fixture-lab/incompatible-fixture and whether its row has an Install button (yes/no).',
-    9: 'Click Check now. Wait for it to finish. Type the text shown on fixture-lab/executable-fixture and fixture-lab/markdown-fixture, including both warning sentences.',
-    10: 'Click Update to 1.1.0 on executable-fixture, then Install. Type DONE when finished.',
+    9: 'Click Check now. Wait for it to finish. Type the text shown on fixture-lab/executable-fixture and fixture-lab/markdown-fixture, including executable-fixture’s version row (1.0.0 — 1.1.0 available) and both warning sentences.',
+    10: 'Click Update on fixture-lab/executable-fixture, then Install. Type DONE when finished.',
     11: 'Click Remove on fixture-lab/markdown-fixture. Did the box say only installed files go and results stay (yes/no plus anything missing)? Click Remove, wait for completion, then answer.',
 }
 
@@ -189,6 +189,39 @@ def fixtures(destination=FIXTURES):
 
 
 class Gate(gate83e3.Gate):
+    def discard_pending_input(self):
+        """Drain Windows console characters before displaying each prompt."""
+        if sys.platform != 'win32':
+            return 0
+        import msvcrt
+        discarded = 0
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+            discarded += 1
+        return discarded
+
+    def ask(self, prompt, key, kind='done'):
+        """Only validated answers enter session evidence; inherited launch/close
+        prompts default to DONE. Rejected paste lines remain visible in the log."""
+        if kind not in ('done', 'text'):
+            raise ValueError('unknown answer kind: ' + kind)
+        while True:
+            discarded = self.discard_pending_input()
+            if discarded:
+                self.say(f'DISCARDED: {discarded} pending console input characters')
+            self.say('OPERATOR: ' + prompt)
+            answer = (self.fake.answer(key) if self.fake else input('> ')).strip()
+            if answer.upper() == 'STOP':
+                self.say(f'ANSWER[{key}]: {answer}')
+                raise NotExercised('operator stopped the gate')
+            if (kind == 'done' and answer.upper() != 'DONE') or not answer:
+                self.say(f'REJECTED[{key}]: {answer!r}')
+                self.say("Type DONE here when finished (or STOP). Your message goes in MicroClaw's chat box, not here."
+                         if kind == 'done' else 'Type a non-empty answer here (or STOP).')
+                continue
+            self.say(f'ANSWER[{key}]: {answer}')
+            return answer
+
     def prepare(self):
         if self.store_root.exists():
             raise NotExercised(f'{self.store_root} already exists; gate owns and removes its store. Do not delete existing user packages.')
@@ -221,11 +254,12 @@ class Gate(gate83e3.Gate):
                 write_json(self.store_root / 'trust/roots.json', roots('catalog-2'))
             self.say(f'STEP {step}')
             if step in CHAT:
-                self.say(CHAT[step])
-            prompt = 'Copy the printed chat message exactly. Type DONE when the agent finishes.' if step in CHAT else PROMPTS[step]
+                self.say('\n' + CHAT[step] + '\n')
+            prompt = ("Paste the message above into MicroClaw's chat box in Firefox (not here). "
+                      "When the agent's reply has finished, type DONE here.") if step in CHAT else PROMPTS[step]
             began = time.perf_counter()
             try:
-                answer = self.ask(prompt, str(step))
+                answer = self.ask(prompt, str(step), kind='text' if step in (2, 3, 5, 6, 7, 9, 11) else 'done')
             except NotExercised:
                 session['stopped_at'] = step
                 self.save('session', session)
@@ -252,7 +286,17 @@ class Gate(gate83e3.Gate):
     def cleanup(self):
         # Reuse 83d's roots-first removal; its extra bin/registry probes are only
         # measurements. Avoid importing winreg on non-Windows selftest hosts.
-        self.need('prepare')  # A refused prepare never grants ownership of a user store.
+        roots_file = self.store_root / 'trust/roots.json'
+        if not self.store_root.exists():
+            self.say(f'Nothing to clean up: {self.store_root} is absent.')
+            (self.root / POINTER).unlink(missing_ok=True)
+            return dict(roots_present=False, store_present=False, evidence=str(self.out))
+        try:
+            document = read_json(roots_file)
+        except (OSError, ValueError) as exc:
+            raise NotExercised(f'refusing cleanup: found store {self.store_root}, but {roots_file} is missing or unreadable: {exc}') from exc
+        if not isinstance(document, dict) or document.get('environment') != 'test':
+            raise NotExercised(f'refusing cleanup: {roots_file} has environment {document.get("environment") if isinstance(document, dict) else "non-object JSON"!r}; expected "test"')
         result = gate83d.Gate.cleanup(self)
         (self.root / POINTER).unlink(missing_ok=True)
         result['evidence'] = str(self.out)
@@ -557,7 +601,10 @@ class ScriptedOperator:
             copy = sentences()
             policy = read_json(FIXTURES / 'catalog-2/policy.json')
             notice = read_json(FIXTURES / 'catalog-2/catalog.json')['withdrawals'][0]
-            return copy['blocked'][0] + policy['revoked_releases'][0]['reason'] + copy['blocked'][1] + '\n' + copy['withdrawn'][0] + notice['reason'] + copy['withdrawn'][1]
+            row = next(p for p in self.client.get('/api/skill-packages/catalog').json()['packages']
+                       if p['publisher'] == entries()['E1']['publisher'] and p['package_id'] == entries()['E1']['package_id'])
+            version_line = row['installed_version'] + ' — ' + row['offered_release']['version'] + ' available'
+            return version_line + '\n' + copy['blocked'][0] + policy['revoked_releases'][0]['reason'] + copy['blocked'][1] + '\n' + copy['withdrawn'][0] + notice['reason'] + copy['withdrawn'][1]
         if step == 10:
             assert not self.install('E2').get('reasons')
             return 'DONE'
@@ -609,6 +656,107 @@ def mutation_cases(gate):
             (update, '7 Blocked, update, withdrawn'), (remove, '8 Remove'), (offline_damage, '9 Offline')]
 
 
+def check_operator_input(base):
+    """Exercise the real ask with raw input lines, without ScriptedOperator."""
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    from collections import deque
+    root = Path(base) / 'microclaw'
+    root.mkdir(parents=True)
+    with isolated_store(root):
+        gate = Gate(root, Path(base) / 'evidence')
+        paste = [f'agent reply line {i}' for i in range(1, 13)]
+        source = iter(paste + ['DONE'])
+        with patch('builtins.input', lambda _: next(source)):
+            result = gate.ask('Finish the chat turn.', 'paste', kind='done')
+        assert result == 'DONE', 'unvalidated pasted text was accepted as DONE'
+        log = (gate.out / 'gate.log').read_text(encoding='utf-8')
+        assert log.count('REJECTED[paste]:') == len(paste), 'paste lines were not rejected'
+        assert log.count('ANSWER[paste]:') == 1 and 'ANSWER[paste]: DONE' in log
+        assert not any('ANSWER[paste]: ' + line in log for line in paste), 'reply became an answer'
+        for key, kind, lines, expected in [
+            ('launched', 'done', ['', 'done'], 'done'),
+            ('text', 'text', ['', 'the panel text'], 'the panel text'),
+        ]:
+            reads = []
+            source = iter(lines)
+            def input_line(_):
+                line = next(source)
+                reads.append(line)
+                return line
+            with patch('builtins.input', input_line):
+                assert gate.ask('Read the prompt.', key, kind=kind) == expected
+            assert reads == lines, 'empty input was accepted'
+        for kind in ('done', 'text'):
+            with patch('builtins.input', lambda _: 'sToP'):
+                try:
+                    gate.ask('Stop control.', 'stop', kind=kind)
+                except NotExercised:
+                    pass
+                else:
+                    raise AssertionError('STOP did not abandon the prompt')
+        # Exercise the real Windows drain implementation against msvcrt's exact
+        # kbhit/getwch interface. Only platform/console I/O is substituted.
+        pending = deque('leftover paste\r\n')
+        count = len(pending)
+        console = SimpleNamespace(kbhit=lambda: bool(pending), getwch=pending.popleft)
+        native_discard = gate.discard_pending_input
+        def windows_discard():
+            with patch.object(sys, 'platform', 'win32'), patch.dict(sys.modules, msvcrt=console):
+                return native_discard()
+        with patch.object(gate, 'discard_pending_input', windows_discard), \
+             patch('builtins.input', lambda _: 'fresh operator text'):
+            assert gate.ask('Next panel step.', 'drain', kind='text') == 'fresh operator text'
+        assert not pending, 'pending Windows console input survived the prompt'
+        log = (gate.out / 'gate.log').read_text(encoding='utf-8')
+        assert f'DISCARDED: {count} pending console input characters' in log
+        assert 'REJECTED[text]:' in log and 'REJECTED[launched]:' in log
+
+
+def check_cleanup_phase(base):
+    """Invoke main's cleanup dispatch with planted stores, including a refusal."""
+    from unittest.mock import patch
+    from microclaw import paths
+    root = Path(base) / 'microclaw'
+    root.mkdir(parents=True)
+    out = Path(base) / 'evidence'
+    store = root / 'skill-packages'
+    pointer = root / POINTER
+    close_calls = []
+    actual_rmtree = shutil.rmtree
+    removals = []
+    def roots_first(path, *args, **kwargs):
+        if Path(path) == store:
+            assert not (store / 'trust/roots.json').exists(), 'cleanup removed store before roots'
+            removals.append(str(path))
+        return actual_rmtree(path, *args, **kwargs)
+    with isolated_store(root), patch.object(paths, 'user_data_dir', lambda: root), \
+         patch.object(sys, 'argv', [__file__, 'cleanup', '--out', str(out)]), \
+         patch.object(Gate, 'close_microclaw', lambda self, why: close_calls.append(why)), \
+         patch.object(Gate, 'bin', lambda self: {}), patch.object(Gate, 'registry', lambda self: []), \
+         patch.object(shutil, 'rmtree', roots_first):
+        write_json(store / 'trust/roots.json', roots())
+        (store / 'leftover.txt').write_text('failed gate', encoding='utf-8')
+        pointer.write_text(str(out), encoding='utf-8')
+        assert main() == 0, 'TEST-ONLY cleanup failed'
+        assert not store.exists() and not pointer.exists()
+        assert len(removals) == len(close_calls) == 1, 'roots-first removal not exercised'
+        for document in (dict(environment='production'), None):
+            store.mkdir()
+            if document is not None:
+                write_json(store / 'trust/roots.json', document)
+            (store / 'user-package.txt').write_text('keep me', encoding='utf-8')
+            pointer.write_text(str(out), encoding='utf-8')
+            before = {p.relative_to(store): p.read_bytes() for p in store.rglob('*') if p.is_file()}
+            assert main() == 2, 'non-test or rootless store was not refused'
+            after = {p.relative_to(store): p.read_bytes() for p in store.rglob('*') if p.is_file()}
+            assert before == after and pointer.read_text(encoding='utf-8') == str(out), 'refusal changed user files'
+            assert len(removals) == len(close_calls) == 1, 'refusal attempted close or deletion'
+            actual_rmtree(store)  # remove only the isolated selftest planting
+        assert main() == 0, 'absent store was not an idempotent success'
+        assert not pointer.exists(), 'absent-store cleanup left the evidence pointer'
+
+
 def selftest():
     from unittest.mock import patch
     from types import SimpleNamespace
@@ -619,6 +767,20 @@ def selftest():
     print('SELFTEST build_environment boundary FAKE: real uv creates a local venv; empty local find-links cannot supply iniconfig, and managed Python/PyPI would require network. Synthetic dist-info metadata stands in for wheel installation; no PyPI or interpreter provisioning claim.', flush=True)
     with tempfile.TemporaryDirectory() as temporary:
         base = Path(temporary)
+        check_operator_input(base / 'input-baseline')
+        print('SELFTEST input: 12 paste lines rejected; DONE accepted; empty DONE/text re-asked; STOP accepted; Windows pending input drained and logged', flush=True)
+        def accepts_any_line(self, prompt, key, kind='done'):
+            return gate83d.Gate.ask(self, prompt, key)
+        with patch.object(Gate, 'ask', accepts_any_line):
+            try:
+                check_operator_input(base / 'input-mutant')
+            except AssertionError as exc:
+                assert 'unvalidated pasted text' in str(exc), exc
+                print('SELFTEST mutation killed: ask_accepts_any_line -> input validation FAIL', flush=True)
+            else:
+                raise AssertionError('accept-any-line ask mutation survived')
+        check_cleanup_phase(base / 'cleanup-phase')
+        print('SELFTEST cleanup phase: TEST-ONLY store removed roots first; non-test/rootless stores refused untouched; absent store exits 0; evidence pointer removed', flush=True)
         generated = base / 'generated'
         fixtures(generated)
         file_bytes = lambda directory: {p.relative_to(directory).as_posix(): p.read_bytes()
@@ -704,7 +866,7 @@ def selftest():
                     final_bad = verify(clean, cleanup=True)
                 assert final_bad == 0 and not clean.store_root.exists(), 'cleanup failed'
                 assert not (root / POINTER).exists()
-                print(f'SELFTEST SUMMARY: 10 limbs (9 measured, 1 operator-judged); baseline 0 failed/not exercised; mutations killed {killed}/9; roots-first cleanup passed. Live network and visual confirmations NOT EXERCISED by selftest.', flush=True)
+                print(f'SELFTEST SUMMARY: 10 limbs (9 measured, 1 operator-judged); baseline 0 failed/not exercised; mutations killed {killed + 1}/10 (9 limb mutations + input mutation); input and cleanup-phase checks passed; roots-first cleanup passed. Live network and visual confirmations NOT EXERCISED by selftest.', flush=True)
     return 0
 
 
@@ -723,7 +885,7 @@ def main():
     pointer = root / POINTER
     out = args.out or (pointer.read_text(encoding='utf-8-sig').strip() if pointer.exists() else None)
     if not out:
-        if args.phase != 'prepare':
+        if args.phase not in ('prepare', 'cleanup'):
             raise SystemExit('NOT EXERCISED: no evidence pointer; run prepare or supply --out')
         out = root.parent / ('block83f3-' + datetime.now().strftime('%Y%m%d-%H%M%S'))
     gate = Gate(root, out)
@@ -733,7 +895,12 @@ def main():
     try:
         if args.phase == 'verify':
             return 1 if verify(gate) else 0
-        getattr(gate, args.phase)()
+        result = getattr(gate, args.phase)()
+        if args.phase == 'cleanup':
+            gate.save('cleanup', result)
+            gate.say('CLEANUP: ' + json.dumps(result))
+            if result['roots_present'] or result['store_present']:
+                return 1
         gate.say('RECORDED: ' + args.phase)
         return 0
     except NotExercised as exc:

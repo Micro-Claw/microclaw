@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('fixtures','prepare','session','verify','selftest')]
+    [ValidateSet('fixtures','prepare','session','verify','cleanup','selftest')]
     [string]$Phase,
     [string]$Out
 )
@@ -12,6 +12,8 @@ if (-not $Out) {
         $Out = Join-Path $env:LOCALAPPDATA ('block83f3-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     } elseif (Test-Path -LiteralPath $pointer) {
         $Out = (Get-Content -LiteralPath $pointer -Raw).Trim()
+    } elseif ($Phase -eq 'cleanup') {
+        $Out = Join-Path $env:LOCALAPPDATA ('block83f3-cleanup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     } else { throw 'No evidence folder recorded. Run -Phase prepare first, or pass -Out.' }
 }
 $active = (Get-Content -LiteralPath (Join-Path $root 'active-slot.txt') -Raw).Trim()
