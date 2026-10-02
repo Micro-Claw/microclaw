@@ -3403,3 +3403,14 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM. Recommended before 89b, not required: 89b's own M2 gate compares cadence with feedback on and off, so this would only find a problem earlier and more cheaply (operator decision, 2026-10-19).
 - **Effort** — SMALL
 - **Provenance** — `design/89` 89a, 2026-10-19.
+
+
+### R160 — `estimate_tokens` counts a thumbnail's base64 bytes as text
+
+**One 512 px PNG thumbnail of a noisy field estimates at 121,748 tokens — above the Anthropic path's 120k high-water on its own.**
+
+- **What happened** — measured 2026-10-02 (design/84, coordinator): `make_thumbnail` of a 2048² uint16 noise frame is 287,144 base64 bytes, and `estimate_tokens` over one `tool_result` holding it returns 121,748; the same call on a smooth ramp is 6,040 bytes and 2,636. `estimate_tokens` divides the JSON of the whole history by 2.36, image data included. Real camera frames are noise-dominated, so their thumbnails are the large case.
+- **Why it matters** — a single `snap_and_analyze` that keeps its thumbnail can push `ConversationStore` past high-water and fold every older turn into a checkpoint on the next round, rewriting the cached prefix (design/82's cost lever) for an image the API bills at a few hundred tokens. Not observed in a recorded session yet: no artifact has been checked for a thumbnail-triggered compaction.
+- **What a fix would look like** — estimate an image block at its billed size (a per-image constant from the API's image-token rule) rather than its byte length; check an archived design/82 history for a compaction that followed a thumbnail. design/84 84b fixes the local text-only path only, where the image is never sent.
+- **Provenance** — design/84 84b planning, 2026-10-02.
+
