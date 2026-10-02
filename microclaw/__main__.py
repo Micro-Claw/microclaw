@@ -150,9 +150,12 @@ def run_session(args):
         )
     # Keep the agent import lazy for restricted commands, but use the same key
     # injection path as the browser server before any hardware contact.
-    from microclaw.agent import set_api_key
-    set_api_key(key)
-    print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
+    if not llm_base_url():
+        from microclaw.agent import set_api_key
+        set_api_key(key)
+        print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
+    elif key:
+        print(f"Local LLM API key: {credentials.mask(key)} (from {source})")
 
     print("Connecting to Micro-Manager...")
     ctrl = MicroscopeController(port=args.port, guard=guard)

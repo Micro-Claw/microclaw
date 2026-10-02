@@ -57,6 +57,7 @@ def set_llm_api_key(key: str) -> None:
     os.environ[LLM_API_KEY_ENV] = key
     global _local_models
     _local_models = None
+    _local_vision.clear()
 
 
 def _local_get(path: str):
@@ -71,43 +72,63 @@ def _local_vision_enabled(base=None):
         return False
     if base not in _local_vision:
         try:
-            _local_vision[base] = bool(
-                _local_get("/props").json().get("modalities", {}).get("vision")
-            )
+            response = _local_get("/props")
+            response.raise_for_status()
+            vision = bool(response.json().get("modalities", {}).get("vision"))
         except Exception:
-            _local_vision[base] = False
+            return False
+        _local_vision[base] = vision
     return _local_vision[base]
 
 MAX_OUTPUT_TOKENS = 8192
 LOCAL_CONTEXT_DEFAULT = 32768
+# When authentication or reachability prevents budget probes, keep 4,096
+# history tokens available: enough to avoid compacting every round, while the
+# reported provisional budget is replaced as soon as the probes can answer.
+LOCAL_CONTEXT_UNPROBED_HIGH_WATER = 4096
 # 4,096 tokens is a 12% cushion over the measured 33,864-token fixed prompt.
 # It covers turn-to-turn knowledge/rig-interview changes and history-estimate
 # error; the small measured history error was 3 tokens on a 2,716-token sample.
 LOCAL_CONTEXT_MARGIN = 4096
 
 
-def make_conversation_store(audit):
-    """Build the appropriate history budget for the selected backend."""
-    if not llm_base_url():
-        return ConversationStore(audit)
+def local_context_budget():
+    """Read the local server budget and vision support, using a provisional budget on failure."""
+    failures = []
     n_ctx = None
     try:
-        n_ctx = _local_get("/props").json().get("default_generation_settings", {}).get("n_ctx")
-    except Exception:
-        pass
+        response = _local_get("/props")
+        response.raise_for_status()
+        n_ctx = response.json().get("default_generation_settings", {}).get("n_ctx")
+        if not n_ctx:
+            failures.append("/props did not report n_ctx")
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        failures.append(f"/props HTTP {response.status_code}" if response is not None
+                        else f"/props {type(exc).__name__}")
     if not n_ctx:
         try:
-            models = _local_get("/v1/models").json().get("data", [])
+            response = _local_get("/v1/models")
+            response.raise_for_status()
+            models = response.json().get("data", [])
             n_ctx = next((model.get("meta", {}).get("n_ctx") for model in models
                           if model.get("meta", {}).get("n_ctx")), None)
-        except Exception:
-            pass
+            if not n_ctx:
+                failures.append("/v1/models did not report n_ctx")
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            failures.append(f"/v1/models HTTP {response.status_code}" if response is not None
+                            else f"/v1/models {type(exc).__name__}")
     used_default = not n_ctx
     n_ctx = int(n_ctx or LOCAL_CONTEXT_DEFAULT)
+    vision = _local_vision_enabled()
+    if llm_base_url() not in _local_vision:
+        failures.append("/props vision probe did not answer")
     body = _local_request_body(
         [{"role": "user", "content": "hi"}], _system_blocks(), TOOLS_CACHED,
-        "budget", _local_vision_enabled(),
+        "budget", vision,
     )
+    probe_path = "/apply-template"
     try:
         headers = ({"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"}
                    if os.environ.get(LLM_API_KEY_ENV) else {})
@@ -115,6 +136,7 @@ def make_conversation_store(audit):
             llm_base_url() + "/apply-template", json=body, timeout=30, headers=headers,
         )
         rendered_response.raise_for_status()
+        probe_path = "/tokenize"
         tokenize_response = _get_local_http().post(
             llm_base_url() + "/tokenize",
             json={"content": rendered_response.json()["prompt"]}, timeout=30,
@@ -122,18 +144,36 @@ def make_conversation_store(audit):
         )
         tokenize_response.raise_for_status()
         fixed = len(tokenize_response.json()["tokens"])
-    except Exception:
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        failures.append(f"{probe_path} HTTP {response.status_code}" if response is not None
+                        else f"{probe_path} {type(exc).__name__}")
         # Raw request JSON measured against the 33,864-token rendered prompt;
         # 2.36 bytes/token is deliberately conservative for this fallback.
         fixed = math.ceil(len(json.dumps(body, ensure_ascii=False,
                                         separators=(",", ":")).encode("utf-8")) / 2.36)
-    high = max(2, n_ctx - fixed - MAX_OUTPUT_TOKENS - LOCAL_CONTEXT_MARGIN)
+    computed_high = n_ctx - fixed - MAX_OUTPUT_TOKENS - LOCAL_CONTEXT_MARGIN
+    floor_used = bool(failures) and computed_high < LOCAL_CONTEXT_UNPROBED_HIGH_WATER
+    high = (
+        max(LOCAL_CONTEXT_UNPROBED_HIGH_WATER, computed_high)
+        if failures else max(2, computed_high)
+    )
     low = max(1, int(high * 0.75))
     print(f"[microclaw] Local context budget: n_ctx={n_ctx}"
           f"{' (default; server did not report n_ctx)' if used_default else ''}, "
-          f"fixed={fixed}, high={high}, low={low}")
+          f"fixed={fixed}, high={high}, low={low}"
+          f"{' (provisional 4096-token history floor)' if floor_used else ''}"
+          f"{'; probe failures: ' + ', '.join(failures) if failures else ''}")
+    return high, low, vision
+
+
+def make_conversation_store(audit):
+    """Build the appropriate history budget for the selected backend."""
+    if not llm_base_url():
+        return ConversationStore(audit)
+    high, low, vision = local_context_budget()
     return ConversationStore(audit, high_water_tokens=high,
-                             low_water_tokens=low, text_only=not _local_vision_enabled())
+                             low_water_tokens=low, text_only=not vision)
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -175,9 +215,11 @@ def known_models() -> list[str]:
     if llm_base_url():
         if _local_models is None:
             try:
-                _local_models = [m["id"] for m in _local_get("/v1/models").json().get("data", [])]
+                response = _local_get("/v1/models")
+                response.raise_for_status()
+                _local_models = [m["id"] for m in response.json().get("data", [])]
             except Exception:
-                _local_models = []
+                return []
         return _local_models
     if _known_models is None:
         try:

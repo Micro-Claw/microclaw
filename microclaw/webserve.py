@@ -63,6 +63,7 @@ from microclaw.agent import (
     set_api_key,
     llm_base_url,
     make_conversation_store,
+    local_context_budget,
     set_llm_api_key,
 )
 from microclaw.assets import icon_bytes, load_page
@@ -355,7 +356,6 @@ class Session:
         removed = prune_transcripts(".", getattr(args, "history_retention_days", None))
         for path in removed:
             print(f"[microclaw] Pruned transcript: {path}")
-        self.store = make_conversation_store(AuditLog(self.history_fn, enabled=self.save))
         # Editing credentials from a browser is offered only on loopback, the
         # same rule design/15 sets for the safety-config editor (v2).
         self.editable = args.host in LOCAL_HOSTS
@@ -397,6 +397,7 @@ class Session:
             if llm_base_url():
                 print("No local LLM API key set; none is needed unless the server was started with --api-key.")
             else: print("No Anthropic API key found — set one from the browser.")
+        self.store = make_conversation_store(AuditLog(self.history_fn, enabled=self.save))
 
 
     def _audit_confirmation(
@@ -1527,6 +1528,11 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         credential_kind = "llm" if local_path else "anthropic"
         if local_path: set_llm_api_key(key)
         else: set_api_key(key)
+        if local_path and getattr(session, "store", None) is not None:
+            high, low, vision = await run_in_threadpool(local_context_budget)
+            session.store.high_water_tokens = high
+            session.store.low_water_tokens = low
+            session.store.text_only = not vision
         stored_in = stored_at = None
         stale_store = False
         if k.persist:

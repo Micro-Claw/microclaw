@@ -16,14 +16,23 @@ import time
 import types
 from pathlib import Path
 
+import httpx
 import pytest
 
 from fastapi.testclient import TestClient
 
-from microclaw import config, credentials, tools, updates, webserve
+from microclaw import agent, config, credentials, tools, updates, webserve
 from microclaw.conversation import AuditLog, ConversationStore, load_history
 from microclaw.tools_schema import TOOLS_CACHED
 from microclaw.webserve import build_app, serve
+
+LLAMACPP_FIXTURES = Path(__file__).parent / "fixtures" / "llamacpp"
+
+
+def _llamacpp_recording(name):
+    head, body = (LLAMACPP_FIXTURES / f"{name}.http").read_bytes().split(b"\n\n", 1)
+    status, headers = head.split(b"\n", 1)
+    return httpx.Response(int(status.split()[1]), headers=json.loads(headers), content=body)
 
 
 @pytest.fixture(autouse=True)
@@ -1567,6 +1576,136 @@ def test_local_get_key_without_key_reports_optional_local_label(client, monkeypa
     assert body["has_key"] is False
     assert body["key_required"] is False
     assert body["key_label"] == "local model server key"
+
+
+def _install_keyed_llamacpp(monkeypatch, *, vision=False):
+    requests = []
+
+    def handle(request):
+        authorized = request.headers.get("authorization") == "Bearer local-test-key"
+        requests.append((request.url.path, authorized))
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if not authorized:
+            return _llamacpp_recording("error_bad_key")
+        if request.url.path == "/props":
+            response = _llamacpp_recording("get_props")
+            if vision:
+                return httpx.Response(response.status_code, headers=response.headers,
+                                      content=response.content.replace(
+                                          b'"vision":false', b'"vision":true'))
+            return response
+        if request.url.path == "/v1/models":
+            return _llamacpp_recording("get_v1_models")
+        if request.url.path == "/apply-template":
+            return _llamacpp_recording("post_apply_template")
+        if request.url.path == "/tokenize":
+            return _llamacpp_recording("post_tokenize")
+        return httpx.Response(404, json={})
+
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://keyed-llama")
+    monkeypatch.delenv("MICROCLAW_LLM_API_KEY", raising=False)
+    monkeypatch.setattr(agent, "_local_http", httpx.Client(transport=httpx.MockTransport(handle)))
+    agent._local_models = None
+    agent._local_vision.clear()
+    return requests
+
+
+def test_session_loads_local_key_before_computing_context_budget(session, monkeypatch):
+    requests = _install_keyed_llamacpp(monkeypatch)
+    monkeypatch.setattr(credentials, "load_api_key",
+                        lambda kind="anthropic": ("local-test-key", "file")
+                        if kind == "llm" else (None, None))
+    make_store = webserve.make_conversation_store
+
+    def assert_keyed_store(audit):
+        assert os.environ[agent.LLM_API_KEY_ENV] == "local-test-key"
+        return make_store(audit)
+
+    monkeypatch.setattr(webserve, "make_conversation_store", assert_keyed_store)
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    assert session.store.high_water_tokens == 131072 - 8 - agent.MAX_OUTPUT_TOKENS - 4096
+    assert session.store.low_water_tokens == int(session.store.high_water_tokens * .75)
+    assert ("/apply-template", True) in requests
+    assert ("/tokenize", True) in requests
+    assert all(authorized for _path, authorized in requests)
+
+
+def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatch):
+    requests = _install_keyed_llamacpp(monkeypatch, vision=True)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    monkeypatch.setattr(credentials, "load_stored_key",
+                        lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+
+    base = "http://keyed-llama"
+    history = []
+    for index in range(30):
+        history.extend([
+            {"role": "user", "content": f"question {index} " + "x" * 600},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "answer " + "y" * 500}]},
+        ])
+    session.store.model_messages(history)
+    assert session.store.compaction_count > 0
+    checkpoint = session.store._checkpoint
+    cut = session.store._cut
+    previous_props_probes = sum(path == "/props" for path, _ok in requests)
+
+    response = TestClient(build_app(session)).post(
+        "/api/key", json={"key": "local-test-key", "persist": False}
+    )
+    assert response.status_code == 200
+    assert response.json()["key_required"] is False
+    assert response.json()["key_label"] == "local model server key"
+    assert session.store.high_water_tokens == 131072 - 8 - agent.MAX_OUTPUT_TOKENS - 4096
+    assert session.store.low_water_tokens == int(session.store.high_water_tokens * .75)
+    assert session.store._checkpoint is checkpoint
+    assert session.store._cut == cut
+    assert session.store.text_only is False
+    assert sum(path == "/props" for path, _ok in requests) > previous_props_probes
+    assert agent.resolve_model() == "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    assert agent._local_vision[base] is True
+    assert agent._local_models == ["Qwen3.8-27B-UD-Q4_K_XL.gguf"]
+    assert any(path == "/v1/models" and not ok for path, ok in requests)
+    assert any(path == "/v1/models" and ok for path, ok in requests)
+
+
+def test_unauthenticated_local_model_probe_is_not_cached(session, monkeypatch):
+    _install_keyed_llamacpp(monkeypatch, vision=True)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    base = "http://keyed-llama"
+    http = agent._get_local_http()
+    assert http.get(base + "/health").status_code == 200
+    assert http.get(base + "/props").status_code == 401
+    assert http.get(base + "/v1/models").status_code == 401
+    assert http.post(base + "/tokenize", json={"content": "hi"}).status_code == 401
+    assert http.post(base + "/apply-template", json={"messages": []}).status_code == 401
+    assert agent._local_models is None
+    assert agent.known_models() == []
+    assert agent._local_models is None
+
+
+def test_unauthenticated_local_vision_probe_is_not_cached(session, monkeypatch):
+    _install_keyed_llamacpp(monkeypatch, vision=True)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    base = "http://keyed-llama"
+    assert base not in agent._local_vision
+
+
+def test_unprobed_local_budget_reports_useful_floor(session, monkeypatch, capsys):
+    _install_keyed_llamacpp(monkeypatch)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    output = capsys.readouterr().out
+    assert session.store.high_water_tokens == 4096
+    assert session.store.low_water_tokens == 3072
+    assert "provisional 4096-token history floor" in output
+    assert "/props HTTP 401" in output
+    assert "/v1/models HTTP 401" in output
+    assert "/apply-template HTTP 401" in output
 
 
 def test_post_key_sets_and_persists(client, monkeypatch):
