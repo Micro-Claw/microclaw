@@ -1473,6 +1473,13 @@ whole journey (D7).
   support these packages. Each one is its publisher's."), and each row links
   "Source" and "Report problems to <publisher>". The full D2 sentence stays in
   the Install/Update confirm box.
+- **G9 — one box per package** (operator, 2026-10-02, after round 2: the
+  tampered install's error appeared in a separate list at the bottom of the
+  panel and was missed). Each package's card carries its install state, the
+  agent-access toggle and its last action's result or error. The separate list
+  goes away; an installed package absent from the catalog gets a card of its
+  own. An install job's result belongs to the card of the publisher whose
+  release was requested.
 
 ### Not a block — the SMAPpy conformance limb
 
