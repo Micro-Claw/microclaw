@@ -8,3 +8,5 @@ SYSTEM_PROMPT and all TOOLS, streamed with `stream_options.include_usage`,
 except `error_bad_key` (wrong key) and `error_context_exceeded` (a 140k-token
 user message, no tools). `get_props` / `get_v1_models` are the GET endpoints.
 Replay these; do not hand-write SSE.
+
+`post_tokenize` is `POST /tokenize` with body `{"content": "Microclaw measures the focus_metric."}`.
