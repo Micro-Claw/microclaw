@@ -305,7 +305,7 @@
       text.textContent = operation === "remove" ? row.publisher + "/" + row.package_id +
         ": Only the package's installed files are deleted. The results it produced are kept." :
         row.publisher + "/" + row.package_id + " " + release.version + " — Publisher: " + release.publisher +
-        " — Licence: " + release.license + ". " + row.notice;
+        " — Licence: " + release.license + ". " + row.confirmNotice;
       dialog.append(text);
       if (operation === "install" && row.confirmIssues) {
         const link = document.createElement("a"); link.href = row.confirmIssues; link.textContent = "Report problems"; dialog.append(link);
@@ -357,25 +357,33 @@
         await refreshSkillCatalog(); await refreshSkillPackages();
       } catch (err) { alert(err.message); } finally { check.disabled = false; } };
       freshness.append(check); list.append(freshness);
+      const notice = document.createElement("p"); notice.textContent = view.catalogNotice;
+      list.append(notice);
       for (const row of view.catalogRows) {
-        const item = document.createElement("p");
+        const item = document.createElement("section"); item.className = "banner";
         if (row.compatibility) item.style.opacity = "0.55";
-        item.textContent = row.publisher + "/" + row.package_id + " " + (row.installed_version || row.version) +
-          " " + row.warning + " " + row.compatibility + " " + row.notice;
-        for (const skill of row.skills || []) {
-          const description = document.createElement("p"); description.textContent = skill.name + ": " + skill.description; item.append(description);
-        }
-        for (const [label, url] of [["Source", row.source], ["Report problems", row.issues]]) {
-          if (url) { const link = document.createElement("a"); link.textContent = label; link.href = url; item.append(link); }
-        }
+        const heading = document.createElement("p"); heading.className = "row";
+        const name = document.createElement("strong"); name.textContent = row.heading; heading.append(name);
         const pkg = state.packages.find(p => p.package_id === row.package_id);
         const actions = [[row.action, "install"], [row.remove ? "Remove" : null, "remove"]];
         if (pkg) actions.push(["Roll back", "rollback"], ["Repair", "repair"]);
         for (const [label, operation] of actions) if (label) {
           const button = document.createElement("button"); button.textContent = label;
           button.disabled = !!(pkg && pkg.job && pkg.job.running);
-          button.onclick = () => skillPackageAction(row, operation); item.append(button);
+          button.onclick = () => skillPackageAction(row, operation); heading.append(button);
         }
+        item.append(heading);
+        for (const text of [row.warning, row.compatibility].filter(Boolean)) {
+          const message = document.createElement("p"); message.textContent = text; item.append(message);
+        }
+        for (const text of row.skillLines) {
+          const description = document.createElement("p"); description.textContent = text; item.append(description);
+        }
+        const links = document.createElement("p"); links.className = "row";
+        for (const [label, url] of [["Source", row.source], [row.issuesLabel, row.issues]]) {
+          if (url) { const link = document.createElement("a"); link.textContent = label; link.href = url; links.append(link); }
+        }
+        item.append(links);
         list.append(item);
       }
       for (const row of view.rows) {

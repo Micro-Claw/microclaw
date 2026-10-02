@@ -424,12 +424,12 @@ def test_skill_packages_view_keeps_disabled_release_and_test_banner():
     state = {"trust": {"test_roots_active": True}, "packages": [{
         "package_id": "example", "installs": [{"manifest": {"publisher": "lab", "version": "1.0.0"},
         "artifact_digest": "abcdef1234567890", "state": "ready", "eligible": False,
-        "reasons": [{"field": "microclaw", "detail": "incompatible with 2.0.0"}]}]}]}
+        "reasons": [{"field": "microclaw", "detail": "needs MicroClaw <2; this is 2.0.0"}]}]}]}
     script = ("global.window = {};\n" + f"require({json.dumps(str(path))});\n" +
               f"process.stdout.write(JSON.stringify(window.Transcript.skillPackagesView({json.dumps(state)})));\n")
     view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
                                     encoding="utf-8", check=True).stdout)
-    assert view["rows"] == ["lab/example 1.0.0 abcdef123456 — ready — disabled: microclaw: incompatible with 2.0.0"]
+    assert view["rows"] == ["lab/example 1.0.0 abcdef123456 — ready — disabled: microclaw: needs MicroClaw <2; this is 2.0.0"]
     assert view["trust"] == "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
     html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     assert '<details id="skill-packages-panel"' in html
@@ -502,25 +502,40 @@ def test_catalog_view_order_actions_copy_and_text():
     view = delivery_view(state)
     rows = view['catalogRows']
     assert [r['package_id'] for r in rows] == ['blocked', 'current', 'installed', 'a', 'z']
-    assert [r['action'] for r in rows] == ['Update to 2.0.0', None, 'Update to 2.0.0', 'Install 2.0.0', 'Install 2.0.0']
+    assert [r['action'] for r in rows] == ['Update', None, 'Update', 'Install', 'Install']
     assert rows[0]['warning'] == "Blocked by MicroClaw: unsafe. The agent can't read it and it can't run. Nothing was deleted — its files and every result it produced are still on this computer."
     assert rows[2]['warning'] == "Withdrawn by its publisher: stopped. It stays installed and keeps working; new installs can't choose it."
-    assert rows[0]['notice'] == 'MicroClaw does not test or support this package. Report problems to lab'
+    assert rows[0]['confirmNotice'] == 'MicroClaw does not test or support this package. Report problems to lab'
     assert all(r['issues'] is None and r['source'] == 'https://source.example' for r in rows)
     assert rows[0]['skills'][0]['description'] == '<img src=x onerror=evil()>'
+    assert rows[0]['skillLines'] == ['skill — <img src=x onerror=evil()>']
+    assert rows[0]['heading'] == 'lab/blocked 1.0.0 — 2.0.0 available'
+    assert rows[3]['heading'] == 'lab/a 2.0.0'
+    assert rows[1]['heading'] == 'lab/current 2.0.0'
+    assert rows[2]['heading'] == 'lab/installed 1.0.0 — 2.0.0 available'
+    assert rows[0]['issuesLabel'] == 'Report problems to lab'
+    assert view['catalogNotice'] == "MicroClaw does not test or support these packages. Each one is its publisher's."
+
     assert 'yanked' not in json.dumps(view).lower()
     hostile = row('hostile')
     hostile['publisher'] = '<img src=x onerror=evil()>'
     result = delivery_view({'catalogListing': {'packages': [hostile]}})['catalogRows'][0]
-    assert result['notice'].endswith('<img src=x onerror=evil()>')
+    assert result['confirmNotice'].endswith('<img src=x onerror=evil()>')
     incompatible = row('incompatible')
-    incompatible['offered_release'].update(compatible=False, compatibility_reason={'detail': 'wrong build'})
+    incompatible['offered_release'].update(compatible=False, compatibility_reason={'detail': 'needs MicroClaw >=99; this is 0.1.0'})
     result = delivery_view({'catalogListing': {'packages': [incompatible]}})['catalogRows'][0]
-    assert result['action'] is None and result['compatibility'] == 'wrong build'
+    assert result['action'] is None and result['compatibility'] == "Can't be installed here: needs MicroClaw >=99; this is 0.1.0"
     html = resources.files('microclaw').joinpath('serve.html').read_text(encoding='utf-8')
     wiring = html.split('for (const row of view.catalogRows)')[1].split('for (const row of view.rows)')[0]
-    assert 'description.textContent = skill.name + ": " + skill.description' in wiring
-    assert 'item.textContent = row.publisher' in wiring and 'innerHTML' not in wiring
+    assert 'description.textContent = text' in wiring
+    assert 'name.textContent = row.heading' in wiring and 'innerHTML' not in wiring
+    assert 'document.createElement("section")' in wiring
+    assert 'heading.className = "row"' in wiring and 'links.className = "row"' in wiring
+    assert 'heading.append(button)' in wiring and 'links.append(link)' in wiring
+    assert 'row.confirmNotice' not in wiring
+    assert 'notice.textContent = view.catalogNotice' in html
+    assert 'release.version' in html.split('function confirmSkillPackage')[1].split('async function skillPackageAction')[0]
+    assert 'release.license' in html and 'row.confirmNotice' in html
 
 
 @pytest.mark.parametrize('state,expected', [('unpublished', 'No community catalog is published yet'),

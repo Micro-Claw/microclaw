@@ -392,7 +392,7 @@ def _platform(identity, manifest):
 def _intake_compatibility(record, build):
     """Compatibility fields shared by listing cards and installed manifests."""
     if build["version"] not in SpecifierSet(record["microclaw"]):
-        raise PackageRefusal("microclaw", "incompatible with " + build["version"])
+        raise PackageRefusal("microclaw", "needs MicroClaw " + record["microclaw"] + "; this is " + build["version"])
     if record["kind"] == "executable":
         if PINNED_PYTHON not in SpecifierSet(record["python"]):
             raise PackageRefusal("python", "excludes pinned Python " + PINNED_PYTHON)

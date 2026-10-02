@@ -325,7 +325,7 @@
     const catalogRows = ((state.catalogListing || {}).packages || []).map(row => {
       const release = row.offered_release;
       const detail = reason => typeof reason === "string" ? reason : (reason || {}).detail || "unknown";
-      const notice = "MicroClaw does not test or support this package. Report problems to " + row.publisher;
+      const confirmNotice = "MicroClaw does not test or support this package. Report problems to " + row.publisher;
       let warning = "";
       if (row.withdrawn) warning = "Withdrawn by its publisher: " + detail(row.withdrawal_reason) +
         ". It stays installed and keeps working; new installs can't choose it.";
@@ -333,9 +333,13 @@
         ". The agent can't read it and it can't run. Nothing was deleted — its files and every result it produced are still on this computer.";
       const canInstall = release && release.compatible && !release.blocked && !release.withdrawn &&
         (!row.installed_version || row.update_available);
-      return {...row, notice, warning, issues: https(row.issues_url), source: https(row.source_url), confirmIssues: https((release || row).issues_url),
-        compatibility: (release || row).compatible === false ? detail((release || row).compatibility_reason) : "",
-        action: canInstall ? (row.installed_version ? "Update to " : "Install ") + release.version : null,
+      const heading = row.publisher + "/" + row.package_id + " " + (row.installed_version || row.version) +
+        (row.update_available && release ? " — " + release.version + " available" : "");
+      return {...row, heading, confirmNotice, warning,
+        skillLines: (row.skills || []).map(skill => skill.name + " — " + skill.description),
+        issuesLabel: "Report problems to " + row.publisher, issues: https(row.issues_url), source: https(row.source_url), confirmIssues: https((release || row).issues_url),
+        compatibility: (release || row).compatible === false ? "Can't be installed here: " + detail((release || row).compatibility_reason) : "",
+        action: canInstall ? (row.installed_version ? "Update" : "Install") : null,
         remove: !!row.installed_version};
     }).sort((a, b) => Number(!a.installed_version) - Number(!b.installed_version) ||
       (a.publisher + "/" + a.package_id).localeCompare(b.publisher + "/" + b.package_id));
@@ -347,6 +351,7 @@
       catalog.state === "ok" ? "Catalog checked " + (hours ? hours + " hours ago" : "less than an hour ago") :
       catalog.state === "refused" ? "Catalog check refused — showing the copy saved " + saved : "Catalog has not been checked yet";
     return {rows, discovery, catalogRows, freshness,
+      catalogNotice: "MicroClaw does not test or support these packages. Each one is its publisher's.",
       disclosure: "Installing a package lets the agent read its instructions; you can stop that here. " +
         "That never lets its code run: MicroClaw asks you each time, or once per session. " +
         "Package code runs with your user permissions and is not sandboxed. " +

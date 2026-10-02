@@ -1673,7 +1673,8 @@ def test_search_catalog_cards_matching_and_cost(monkeypatch):
     assert card['description'].startswith('Alpha Beta ') and len(card['description']) == 200
     assert card['description'].endswith('…')
     bad = cards['fixture-lab/incompatible/workflow']
-    assert not bad['compatible'] and 'incompatible' in bad['compatibility_reason']
+    assert not bad['compatible'] and bad['compatibility_reason'] == (
+        'needs MicroClaw >=999; this is ' + store.current_build()['version'])
     assert card['next_step'] == dict(state='not_installed', instruction='The user can install it from the Skills panel.')
     assert all(set(c) == {'qualified_name', 'publisher', 'version', 'description', 'compatible',
                           'compatibility_reason', 'next_step'} for c in result['cards'])
