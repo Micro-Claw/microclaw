@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from typing import Any
 import json
+import math
 import sys
 from datetime import datetime, timezone
 import os
@@ -63,10 +64,25 @@ def _local_get(path: str):
     headers = {"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"} if os.environ.get(LLM_API_KEY_ENV) else {}
     return _get_local_http().get(url + path, headers=headers, timeout=30)
 
+
+def _local_vision_enabled(base=None):
+    base = base or llm_base_url()
+    if not base:
+        return False
+    if base not in _local_vision:
+        try:
+            _local_vision[base] = bool(
+                _local_get("/props").json().get("modalities", {}).get("vision")
+            )
+        except Exception:
+            _local_vision[base] = False
+    return _local_vision[base]
+
 MAX_OUTPUT_TOKENS = 8192
 LOCAL_CONTEXT_DEFAULT = 32768
-# 4,096 tokens is a 12% cushion over the measured 33,889-token fixed prefix,
-# leaving room for knowledge-base and rig-interview text to change between turns.
+# 4,096 tokens is a 12% cushion over the measured 33,864-token fixed prompt.
+# It covers turn-to-turn knowledge/rig-interview changes and history-estimate
+# error; the small measured history error was 3 tokens on a 2,716-token sample.
 LOCAL_CONTEXT_MARGIN = 4096
 
 
@@ -88,32 +104,36 @@ def make_conversation_store(audit):
             pass
     used_default = not n_ctx
     n_ctx = int(n_ctx or LOCAL_CONTEXT_DEFAULT)
-    system_text = "\n\n".join(block.get("text", "") for block in _system_blocks()
-                                if block.get("type") == "text")
-    translated_tools = [{"type": "function", "function": {
-        "name": tool["name"], "description": tool.get("description", ""),
-        "parameters": tool["input_schema"]}} for tool in TOOLS_CACHED]
-    fixed_text = system_text + json.dumps(translated_tools, ensure_ascii=False,
-                                         separators=(",", ":"))
+    body = _local_request_body(
+        [{"role": "user", "content": "hi"}], _system_blocks(), TOOLS_CACHED,
+        "budget", _local_vision_enabled(),
+    )
     try:
-        response = _get_local_http().post(
-            llm_base_url() + "/tokenize", json={"content": fixed_text}, timeout=30,
-            headers=({"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"}
-                     if os.environ.get(LLM_API_KEY_ENV) else {}),
+        headers = ({"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"}
+                   if os.environ.get(LLM_API_KEY_ENV) else {})
+        rendered_response = _get_local_http().post(
+            llm_base_url() + "/apply-template", json=body, timeout=30, headers=headers,
         )
-        response.raise_for_status()
-        fixed = len(response.json()["tokens"])
+        rendered_response.raise_for_status()
+        tokenize_response = _get_local_http().post(
+            llm_base_url() + "/tokenize",
+            json={"content": rendered_response.json()["prompt"]}, timeout=30,
+            headers=headers,
+        )
+        tokenize_response.raise_for_status()
+        fixed = len(tokenize_response.json()["tokens"])
     except Exception:
-        # The measured fixed prompt is 4.18–4.75 bytes/token. Three bytes/token
-        # intentionally overcounts unknown servers to keep the guard conservative.
-        fixed = (len(fixed_text.encode("utf-8")) + 2) // 3
+        # Raw request JSON measured against the 33,864-token rendered prompt;
+        # 2.36 bytes/token is deliberately conservative for this fallback.
+        fixed = math.ceil(len(json.dumps(body, ensure_ascii=False,
+                                        separators=(",", ":")).encode("utf-8")) / 2.36)
     high = max(2, n_ctx - fixed - MAX_OUTPUT_TOKENS - LOCAL_CONTEXT_MARGIN)
     low = max(1, int(high * 0.75))
     print(f"[microclaw] Local context budget: n_ctx={n_ctx}"
           f"{' (default; server did not report n_ctx)' if used_default else ''}, "
           f"fixed={fixed}, high={high}, low={low}")
     return ConversationStore(audit, high_water_tokens=high,
-                             low_water_tokens=low, text_only=True)
+                             low_water_tokens=low, text_only=not _local_vision_enabled())
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -1008,7 +1028,13 @@ def _local_request_body(model_messages, system_blocks, tool_schemas, model, visi
         else:
             raise ValueError(f"Cannot translate message role {role!r} to the local chat API")
 
-    payload = {"model": model}
+    payload = {
+        "model": model,
+        "messages": wire,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
     if tool_schemas:
         payload["tools"] = [
             {
@@ -1021,12 +1047,6 @@ def _local_request_body(model_messages, system_blocks, tool_schemas, model, visi
             }
             for tool in tool_schemas
         ]
-    payload.update({
-        "messages": wire,
-        "max_tokens": MAX_OUTPUT_TOKENS,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    })
     return payload
 
 
@@ -1160,13 +1180,7 @@ def _read_local_stream(response, base, model, iteration, usage_sink):
 def _stream_local_round(messages, system_blocks, model, tool_schemas,
                         context_provider, iteration, usage_sink):
     base = llm_base_url()
-    if base not in _local_vision:
-        try:
-            _local_vision[base] = bool(
-                _local_get("/props").json().get("modalities", {}).get("vision")
-            )
-        except Exception:
-            _local_vision[base] = False
+    vision = _local_vision_enabled(base)
     store = getattr(context_provider, "__self__", None)
     compactions_before = getattr(store, "compaction_count", 0)
     model_messages = context_provider(messages) if context_provider else messages
@@ -1174,7 +1188,7 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
         yield {"type": "compaction", "estimated_tokens": getattr(
             store, "last_estimated_tokens", None)}
     payload = _local_request_body(
-        model_messages, system_blocks, tool_schemas, model, _local_vision[base]
+        model_messages, system_blocks, tool_schemas, model, vision
     )
     headers = {}
     key = os.environ.get(LLM_API_KEY_ENV)
@@ -1217,8 +1231,11 @@ def run_agent_iter(
     to say so whether or not anyone was listening.
 
     `context_provider` maps the full history to the bounded view sent to the
-    model; identity is the default. `on_message` runs immediately after each
-    append, allowing a durable audit to flush records as they are produced.
+    model; identity is the default. Local compaction notices detect a changed
+    `ConversationStore.compaction_count` through `context_provider.__self__`, so
+    that provider must be the store's bound `model_messages` method.
+    `on_message` runs immediately after each append, allowing a durable audit
+    to flush records as they are produced.
     `confirmation_records`, when supplied by the browser session, is sampled
     around each dispatch so that tool results report their human decisions.
 
