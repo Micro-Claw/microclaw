@@ -10,3 +10,5 @@ user message, no tools). `get_props` / `get_v1_models` are the GET endpoints.
 Replay these; do not hand-write SSE.
 
 `post_tokenize` is `POST /tokenize` with body `{"content": "Microclaw measures the focus_metric."}`.
+
+`post_apply_template` is `POST /apply-template` with body `{"messages": [{"role": "system", "content": "S"}, {"role": "user", "content": "hi"}], "tools": [{"type": "function", "fu...` (one system message "S", one user message "hi", the first translated tool). On the real 83-tool prompt, `/apply-template` then `/tokenize` gave 33,864 tokens, equal to the server's own `prompt_tokens` for that request; tokenizing system text + tool JSON without the template gave 30,118.
