@@ -21,6 +21,7 @@ from microclaw.safety import SafetyGuard
 from microclaw.skills import catalog_text
 from microclaw.tools import TOOL_REGISTRY, execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
+from microclaw.conversation import ConversationStore
 
 # Latest available Opus at time of writing (verified against the Claude API
 # model reference). Override per-run with --model or the MICROCLAW_MODEL env var.
@@ -63,6 +64,56 @@ def _local_get(path: str):
     return _get_local_http().get(url + path, headers=headers, timeout=30)
 
 MAX_OUTPUT_TOKENS = 8192
+LOCAL_CONTEXT_DEFAULT = 32768
+# 4,096 tokens is a 12% cushion over the measured 33,889-token fixed prefix,
+# leaving room for knowledge-base and rig-interview text to change between turns.
+LOCAL_CONTEXT_MARGIN = 4096
+
+
+def make_conversation_store(audit):
+    """Build the appropriate history budget for the selected backend."""
+    if not llm_base_url():
+        return ConversationStore(audit)
+    n_ctx = None
+    try:
+        n_ctx = _local_get("/props").json().get("default_generation_settings", {}).get("n_ctx")
+    except Exception:
+        pass
+    if not n_ctx:
+        try:
+            models = _local_get("/v1/models").json().get("data", [])
+            n_ctx = next((model.get("meta", {}).get("n_ctx") for model in models
+                          if model.get("meta", {}).get("n_ctx")), None)
+        except Exception:
+            pass
+    used_default = not n_ctx
+    n_ctx = int(n_ctx or LOCAL_CONTEXT_DEFAULT)
+    system_text = "\n\n".join(block.get("text", "") for block in _system_blocks()
+                                if block.get("type") == "text")
+    translated_tools = [{"type": "function", "function": {
+        "name": tool["name"], "description": tool.get("description", ""),
+        "parameters": tool["input_schema"]}} for tool in TOOLS_CACHED]
+    fixed_text = system_text + json.dumps(translated_tools, ensure_ascii=False,
+                                         separators=(",", ":"))
+    try:
+        response = _get_local_http().post(
+            llm_base_url() + "/tokenize", json={"content": fixed_text}, timeout=30,
+            headers=({"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"}
+                     if os.environ.get(LLM_API_KEY_ENV) else {}),
+        )
+        response.raise_for_status()
+        fixed = len(response.json()["tokens"])
+    except Exception:
+        # The measured fixed prompt is 4.18–4.75 bytes/token. Three bytes/token
+        # intentionally overcounts unknown servers to keep the guard conservative.
+        fixed = (len(fixed_text.encode("utf-8")) + 2) // 3
+    high = max(2, n_ctx - fixed - MAX_OUTPUT_TOKENS - LOCAL_CONTEXT_MARGIN)
+    low = max(1, int(high * 0.75))
+    print(f"[microclaw] Local context budget: n_ctx={n_ctx}"
+          f"{' (default; server did not report n_ctx)' if used_default else ''}, "
+          f"fixed={fixed}, high={high}, low={low}")
+    return ConversationStore(audit, high_water_tokens=high,
+                             low_water_tokens=low, text_only=True)
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -771,7 +822,8 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
     for attempt, delay in enumerate([0, *_RETRY_DELAYS]):
         delay = max(delay, retry_after)
         if delay:
-            yield {"type": "retry", "delay": delay, "attempt": attempt}
+            yield {"type": "retry", "delay": delay, "attempt": attempt,
+                   "service": "Local server" if llm_base_url() else "API"}
             time.sleep(delay)
         try:
             if llm_base_url():
@@ -956,13 +1008,7 @@ def _local_request_body(model_messages, system_blocks, tool_schemas, model, visi
         else:
             raise ValueError(f"Cannot translate message role {role!r} to the local chat API")
 
-    payload = {
-        "model": model,
-        "messages": wire,
-        "max_tokens": MAX_OUTPUT_TOKENS,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    }
+    payload = {"model": model}
     if tool_schemas:
         payload["tools"] = [
             {
@@ -975,6 +1021,12 @@ def _local_request_body(model_messages, system_blocks, tool_schemas, model, visi
             }
             for tool in tool_schemas
         ]
+    payload.update({
+        "messages": wire,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    })
     return payload
 
 
@@ -1115,7 +1167,12 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
             )
         except Exception:
             _local_vision[base] = False
+    store = getattr(context_provider, "__self__", None)
+    compactions_before = getattr(store, "compaction_count", 0)
     model_messages = context_provider(messages) if context_provider else messages
+    if getattr(store, "compaction_count", 0) > compactions_before:
+        yield {"type": "compaction", "estimated_tokens": getattr(
+            store, "last_estimated_tokens", None)}
     payload = _local_request_body(
         model_messages, system_blocks, tool_schemas, model, _local_vision[base]
     )
@@ -1375,8 +1432,11 @@ def run_agent(
         elif event["type"] == "cancelled":
             reply = event["reason"]
         elif event["type"] == "retry":
+            service = f"{event.get('service', 'API')}"
             print(
-                f"Anthropic API overloaded — retrying in {event['delay']}s "
+                f"{service} unavailable — retrying in {event['delay']}s "
                 f"(attempt {event['attempt']}/{len(_RETRY_DELAYS)})..."
             )
+        elif event["type"] == "compaction":
+            print("[microclaw] Rebuilding conversation context; the next model request may take longer.")
     return reply, messages

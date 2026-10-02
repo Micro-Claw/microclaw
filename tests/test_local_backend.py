@@ -50,6 +50,8 @@ def install(monkeypatch, name, *, extra=None, stream_chunks=False, vision=False)
             return prop
         if request.url.path.endswith("/models"):
             return replay("get_v1_models")
+        if request.url.path.endswith("/tokenize"):
+            return replay("post_tokenize")
         return replay("stream_text_reply")
     client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(agent, "_local_http", client)
@@ -172,7 +174,8 @@ def test_retry_after_503_then_tool_calls(monkeypatch):
     install(monkeypatch, [response, "stream_tool_calls"])
     monkeypatch.setattr(agent.time, "sleep", lambda _: None)
     gen = agent._stream_one_round([], [], "m", [])
-    assert next(gen) == {"type": "retry", "delay": 5, "attempt": 1}
+    assert next(gen) == {"type": "retry", "delay": 5, "attempt": 1,
+                         "service": "Local server"}
     while True:
         try: next(gen)
         except StopIteration as stop:

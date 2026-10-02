@@ -24,7 +24,6 @@ from microclaw.config import (
 from microclaw.conversation import (
     AcquisitionDiagnosticWriter,
     AuditLog,
-    ConversationStore,
     atomic_write_text,
     json_default,
     load_history,
@@ -193,7 +192,8 @@ def run_session(args):
     # run_agent returns a fresh list each turn; _repl mutates this one in place
     # (history[:] = ...) so the finally block always sees the latest turns.
     history = []
-    store = ConversationStore(AuditLog(history_fn_name, enabled=args.save_history))
+    from microclaw.agent import make_conversation_store
+    store = make_conversation_store(AuditLog(history_fn_name, enabled=args.save_history))
     confirmation_fn_name = history_fn_name.replace("_history.jsonl", "_confirmations.jsonl")
     confirmation_audit = AuditLog(confirmation_fn_name, enabled=args.save_history)
     usage_fn_name = history_fn_name.replace("_history.jsonl", "_usage.jsonl")

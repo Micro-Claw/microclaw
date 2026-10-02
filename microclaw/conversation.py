@@ -391,13 +391,16 @@ def prune_transcripts(directory: str | os.PathLike[str], retention_days: int | N
     return removed
 
 
-def estimate_tokens(messages: list[dict]) -> int:
+def estimate_tokens(messages: list[dict], *, text_only: bool = False) -> int:
     """Return a local deterministic token *estimate*, never an exact count."""
     # 2.36 UTF-8 bytes per token, measured against the API's own accounting on a
     # live session (design/82, block 82a's gate): billed history tokens ran 1.69x
     # the old bytes/4 estimate, stable at 1.67-1.71 over 59 calls.
     # Four was optimistic in the one direction a context guard must not be.
-    payload = json.dumps(jsonable(messages), ensure_ascii=False, separators=(",", ":"))
+    serializable = jsonable(messages)
+    if text_only:
+        serializable = _without_images(serializable)
+    payload = json.dumps(serializable, ensure_ascii=False, separators=(",", ":"))
     return math.ceil(len(payload.encode("utf-8")) / 2.36) + 8 * len(messages)
 
 
@@ -543,12 +546,14 @@ class ConversationStore:
 
     def __init__(self, audit: AuditLog, *,
                  high_water_tokens: int = DEFAULT_CONTEXT_HIGH_WATER_TOKENS,
-                 low_water_tokens: int = DEFAULT_CONTEXT_LOW_WATER_TOKENS):
+                 low_water_tokens: int = DEFAULT_CONTEXT_LOW_WATER_TOKENS,
+                 text_only: bool = False):
         if not 0 < low_water_tokens < high_water_tokens:
             raise ValueError("context low-water must be positive and below high-water")
         self.audit = audit
         self.high_water_tokens = high_water_tokens
         self.low_water_tokens = low_water_tokens
+        self.text_only = text_only
         self._cut = 0
         self._checkpoint: dict | None = None
         self.compaction_count = 0
@@ -559,7 +564,7 @@ class ConversationStore:
 
     def model_messages(self, full_history: list[dict]) -> list[dict]:
         current = ([self._checkpoint] if self._checkpoint else []) + full_history[self._cut:]
-        self.last_estimated_tokens = estimate_tokens(current)
+        self.last_estimated_tokens = estimate_tokens(current, text_only=self.text_only)
         if self.last_estimated_tokens <= self.high_water_tokens:
             return current
 
@@ -578,7 +583,7 @@ class ConversationStore:
             candidate_checkpoint = _checkpoint(full_history[:end], self.audit.secrets)
             candidate = [candidate_checkpoint, *full_history[end:]]
             chosen = end
-            if estimate_tokens(candidate) <= self.low_water_tokens:
+            if estimate_tokens(candidate, text_only=self.text_only) <= self.low_water_tokens:
                 break
         if chosen == self._cut:
             # The in-flight/recent turn alone is over budget. Splitting it would
@@ -589,5 +594,5 @@ class ConversationStore:
         self._checkpoint = _checkpoint(full_history[:chosen], self.audit.secrets)
         self.compaction_count += 1
         compacted = [self._checkpoint, *full_history[chosen:]]
-        self.last_estimated_tokens = estimate_tokens(compacted)
+        self.last_estimated_tokens = estimate_tokens(compacted, text_only=self.text_only)
         return compacted

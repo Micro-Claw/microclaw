@@ -53,7 +53,7 @@ from starlette.concurrency import run_in_threadpool
 from microclaw import config, credentials, shortcut, tools, updates, extensions, skill_store
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import (
-    AcquisitionDiagnosticWriter, AuditLog, ConversationStore, prune_transcripts,
+    AcquisitionDiagnosticWriter, AuditLog, prune_transcripts,
 )
 from microclaw.agent import (
     DEFAULT_MODEL,
@@ -62,6 +62,7 @@ from microclaw.agent import (
     run_agent_iter,
     set_api_key,
     llm_base_url,
+    make_conversation_store,
     set_llm_api_key,
 )
 from microclaw.assets import icon_bytes, load_page
@@ -354,7 +355,7 @@ class Session:
         removed = prune_transcripts(".", getattr(args, "history_retention_days", None))
         for path in removed:
             print(f"[microclaw] Pruned transcript: {path}")
-        self.store = ConversationStore(AuditLog(self.history_fn, enabled=self.save))
+        self.store = make_conversation_store(AuditLog(self.history_fn, enabled=self.save))
         # Editing credentials from a browser is offered only on loopback, the
         # same rule design/15 sets for the safety-config editor (v2).
         self.editable = args.host in LOCAL_HOSTS

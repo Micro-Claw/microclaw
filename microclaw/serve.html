@@ -743,7 +743,8 @@
         live.push({ role: "user", content: [{ type: "tool_result",
           tool_use_id: ev.tool_use_id, content: ev.content, is_error: ev.is_error }] });
         break;
-      case "retry": toast("API overloaded — retrying in " + ev.delay + "s…"); break;
+      case "retry": toast(ev.service + " unavailable — retrying in " + ev.delay + "s…"); break;
+      case "compaction": toast("Rebuilding conversation context; the next model request may take longer."); break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;
       case "acquisition_progress": {
