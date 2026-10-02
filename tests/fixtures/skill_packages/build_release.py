@@ -14,6 +14,7 @@ import zipfile
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from microclaw.skill_packages import validate_manifest
+from microclaw.catalog_intake import sign as product_sign, intake_from_manifest
 
 FIXTURES = Path(__file__).resolve().parent
 WHEEL_NAME = "fixture_dependency-1.2.3-py3-none-any.whl"
@@ -57,10 +58,7 @@ def sign(document, key="publisher-a"):
     document.pop("signature", None)
     seed = json.loads((FIXTURES / "trust" / (key + "-TEST-ONLY-seed.json")).read_text(encoding="utf-8"))
     private = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed["seed"]))
-    payload = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-    document["signature"] = dict(alg="ed25519", key_id=hashlib.sha256(private.public_key().public_bytes_raw()).hexdigest(),
-                                 value=base64.b64encode(private.sign(payload)).decode("ascii"))
-    return document
+    return product_sign(document, private)
 
 
 def build_release(fixture_dir, artifact_path, *, version=None):
@@ -73,12 +71,7 @@ def build_release(fixture_dir, artifact_path, *, version=None):
     entries = {asset["path"]: (fixture_dir / asset["path"]).read_bytes() for asset in manifest["assets"]}
     entries["manifest.json"] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8") + b"\n"
     artifact_path.write_bytes(_archive(entries))
-    intake = {key: manifest[key] for key in ("package_id", "publisher", "version", "artifact", "kind", "microclaw", "license", "source_url", "issues_url")}
-    intake["skills"] = [{k: skill[k] for k in ("name", "description")} for skill in manifest["skills"]]
-    if manifest["kind"] == "executable":
-        intake.update({key: manifest[key] for key in ("python", "platforms", "protocol_version")})
-    intake.update(type="microclaw.skill-release.v1", artifact_digest=hashlib.sha256(artifact_path.read_bytes()).hexdigest())
-    return sign(intake)
+    return sign(intake_from_manifest(manifest, hashlib.sha256(artifact_path.read_bytes()).hexdigest()))
 
 
 if __name__ == "__main__":

@@ -760,8 +760,8 @@ def check_release(intake, policy, *, purpose, now, artifact=None):
             "stale": stale, "purpose": purpose, "environment": policy["environment"]}
 
 
-def verify_withdrawal(document, policy):
-    """Verify publisher provenance, without I/O or freshness-derived state."""
+def validate_withdrawal(document):
+    """Validate withdrawal shape only, including its full release identity."""
     _mapping(document, "withdrawal", {"type", "publisher", "package_id", "version",
                                        "artifact_digest", "reason", "signature"})
     if document["type"] != WITHDRAWAL_TYPE:
@@ -772,6 +772,12 @@ def verify_withdrawal(document, policy):
     _digest(document["artifact_digest"], "artifact_digest")
     _text(document["reason"], "reason", MAX_DESCRIPTION_LENGTH)
     _signature(document["signature"])
+    return deepcopy(document)
+
+
+def verify_withdrawal(document, policy):
+    """Verify publisher provenance, without I/O or freshness-derived state."""
+    document = validate_withdrawal(document)
     if policy is None:
         raise PackageRefusal("trust", "no verified policy")
     publisher = policy["publishers"].get(document["publisher"])

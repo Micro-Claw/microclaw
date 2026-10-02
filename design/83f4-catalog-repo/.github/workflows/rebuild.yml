@@ -1,0 +1,56 @@
+name: Rebuild catalog after policy change
+on:
+  push:
+    branches: [main, test]
+    paths: [policy.json]
+permissions:
+  contents: write
+concurrency:
+  group: catalog-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.ref_name }}
+          path: catalog
+          fetch-depth: 0
+      - name: Read the single reviewed pin from the base intake workflow
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          workflow = pathlib.Path('catalog/.github/workflows/intake.yml').read_text()
+          pins = re.findall(r'^  MICROCLAW_COMMIT: (\S+)$', workflow, re.MULTILINE)
+          if len(pins) != 1 or not re.fullmatch(r'[0-9a-f]{40}', pins[0]):
+              raise SystemExit('Set intake.yml MICROCLAW_COMMIT to a reviewed full SHA; placeholder is forbidden.')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('MICROCLAW_COMMIT=' + pins[0] + '\n')
+          PY
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: Micro-Claw/microclaw
+          ref: ${{ env.MICROCLAW_COMMIT }}
+          path: microclaw-rules
+          persist-credentials: false
+      - run: python -m pip install cryptography==44.0.2 packaging==24.2
+      - name: Rebuild from the current trusted branch
+        env:
+          BASE_REF: ${{ github.ref_name }}
+          PYTHONPATH: ${{ github.workspace }}/microclaw-rules
+        run: |
+          set -euo pipefail
+          cd catalog
+          git fetch origin "$BASE_REF"
+          git reset --hard "origin/$BASE_REF"
+          args=(--environment production)
+          if [[ "$BASE_REF" == test ]]; then args=(--environment test --roots "$PWD/roots-TEST-ONLY.json"); fi
+          python -m microclaw.catalog_intake build --root "$PWD" "${args[@]}"
+          git config user.name 'catalog intake'
+          git config user.email 'catalog-intake@users.noreply.github.com'
+          git add catalog.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Rebuild verified package catalog after policy change'
+            git push origin "HEAD:$BASE_REF"
+          fi

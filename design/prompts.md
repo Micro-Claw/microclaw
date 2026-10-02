@@ -11452,3 +11452,40 @@ The rig then had only the Windows-specific questions left.
 checkout's stale venv lacked `jsonschema` and showed one false failure). After
 the revisions: 5541, then 5550 passed, 108 skipped. Runner turns: one start
 and five product revisions; one gate start and two gate revisions.
+
+
+## design/83 block 83f-4 — release intake into the package catalog (PR #48, 2026-10-02)
+
+**Six decisions, one at a time; the sixth came from reading the code.** H1–H5
+were planned. H6 (a signing tool) surfaced while I checked how a publisher
+would actually make a release file: only our test fixtures could sign one.
+**Before writing a publisher README, check that the publisher's first command
+exists.**
+
+**Both review findings were the shape this notebook keeps producing.** C1: two
+correct checks composed badly. Admission was right for a new release and wrong
+for history, so the operator's block bricked intake. C2: the gate synced the
+fork before every case, so it could never build the stale fork that broke
+intake. That is a fixture that cannot reach the code, so case I now builds it.
+**When a gate prepares its own inputs, ask which real input shape that
+preparation removes.**
+
+**My own review missed the pre-download order until revision 1 moved
+admission.** Moving the eligibility check to after the download was a side
+effect of fixing C1. Re-read the order of I/O after any fix that moves a check.
+
+**The gate's first round died on a missing tool, and so did my answer.**
+`WinError 2` was `gh` absent. The gate had never checked for it. Then a fresh
+shell and a `PATH` refresh both failed to find the newly installed `gh` and only
+a restart did (n=1). **A gate that shells out to a tool checks for it first and
+says how to get it.**
+
+**A limb's PASS hid a wording defect.** D passed on `field == path`; its comment
+told the publisher to do something they had already done. **Read the comments a
+gate collects, not only its scores.**
+
+**Counts.** Baseline `42770ab`: 5550 passed, 108 skipped. Start turn
+(`8d6b9c6`): 5610 passed, 108 skipped. Revision 1 (`59e59fb`): 5628 passed,
+1 failed (a test text read without an encoding). After the coordinator's fixes (`14d5bbf`): 5633 passed,
+108 skipped. Runner turns: one start, one revision.
+

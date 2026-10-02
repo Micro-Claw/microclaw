@@ -1,0 +1,24 @@
+{
+  "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-4/design/83f4-gate/artifacts/B.zip",
+  "artifact_digest": "74e6ec18a95c1863ee90806240c8265e174c85b7f61095d28f0c6c9eada1ccc2",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "kind": "markdown",
+  "license": "MIT",
+  "microclaw": ">=0.1,<2",
+  "package_id": "gate-tamper",
+  "publisher": "fixture-lab",
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+    "value": "CLl7YHb7WjvKx3uFdsrSOQB6l1GygFwbihtQ6CMebGWDpIRL3RClwbS9TOqy0vT9li5IDJbZXMUEK5qPBg72DQ=="
+  },
+  "skills": [
+    {
+      "description": "A publisher-provided fixture workflow.",
+      "name": "workflow"
+    }
+  ],
+  "source_url": "https://github.com/fixture-lab/skills",
+  "type": "microclaw.skill-release.v1",
+  "version": "1.0.0"
+}
