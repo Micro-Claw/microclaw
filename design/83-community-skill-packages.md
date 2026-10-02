@@ -1549,6 +1549,45 @@ root is 83f-5's.
   manifest, and the signed withdrawal file. The gate's fixture publisher uses
   these commands, so the publisher's side is tested as well as intake.
 
+**What 83f-4 settled** (`microclaw/catalog_intake.py`; the catalog repository's
+seed in `design/83f4-catalog-repo/`; tests in `tests/test_catalog_intake.py`;
+gate `design/83-block83f4-gate.py`):
+- **`Micro-Claw/package-catalog` exists** (created 2026-10-02): `main` holds
+  the two workflows, the publisher README and an empty catalog, and refuses
+  every submission until 83f-5 publishes a production policy. `test` adds the
+  TEST-ONLY roots and policy.
+- **The trusted base is not re-judged; only the submission is admitted.**
+  Review finding C1, reproduced before it went back: `build` and `check`
+  re-verified every committed entry against the current policy, so the
+  operator's first block (D2's duty) stopped every rebuild and every later
+  intake. History now gets structure, path, uniqueness, bounds and monotonicity
+  checks. Blocked entries stay in `catalog.json`, which clients need to show
+  "Blocked by MicroClaw" (D5).
+- **A PR is judged by its own change since its merge-base**, overlaid on today's
+  base (`materialize`). C2: comparing the whole head tree refused any fork
+  created before the last merge. The gate's case I, branched from the pre-A
+  commit and opened after A merged, is the limb that reaches it.
+- **An ineligible release is refused before anything is downloaded.** Publisher,
+  key and block are checked with no I/O first, so an unadmitted submitter
+  cannot make intake fetch a URL of its choosing.
+- **Publisher tools** (H6): `keygen`, `sign-release` (built from the zip's own
+  manifest, with the same archive checks intake runs) and `sign-withdrawal`.
+  The test fixtures now sign through them.
+- **Gate:** 2026-10-02, two rounds, run from the operator's fork on Windows. Round 1
+  measured nothing: `gh` was not installed and the gate did not check for it (it
+  now does, first). Round 2 scored 14/14 from artifacts. Three PRs merged (A,
+  E, I), each followed by exactly one rebuild commit. Six refused with the
+  expected field, and the workflow-editing PR posted no marker. The served
+  `catalog.json` and an isolated client fetch agree: A withdrawn, I present,
+  zero exclusions. Run start to finish including merge and rebuild: 22 s (A)
+  and 20 s (I), n=2.
+- **D's refusal named the rule, not the fix.** A resubmitted version is an edit
+  of an existing file, so it refused on `path` with "add exactly one … file".
+  It now says to publish a new version. Found in the gate's comments, not by a
+  limb.
+- **Not exercised:** a production submission (no production policy until
+  83f-5), and a publisher other than the operator's own account.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1592,7 +1631,7 @@ and otherwise stays open.
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
 | 83f-3 | `block-83f-3` | `9e9271a` | **merged 2026-10-02** as `42770ab`, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
-| 83f-4 | `block-83f-4` | `42770ab` | PR #48 — decisions H1–H6; `Micro-Claw/package-catalog` created 2026-10-02 (main `096b844`, test `8be5cb9`, intake pinned to `01ac803`); fork gate pending |
+| 83f-4 | `block-83f-4` | `42770ab` | settled 2026-10-02, PR #48 — decisions H1–H6; `Micro-Claw/package-catalog` created; fork gate round 2 14/14 scored from artifacts (round 1 had no `gh`) |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
