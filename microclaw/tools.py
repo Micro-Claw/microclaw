@@ -1049,12 +1049,7 @@ def _recorded_tool_calls(records: list[dict]) -> list[tuple[str, RecordedParams]
             name = block.get("name") if isinstance(block, dict) else block.name
             params = block.get("input", {}) if isinstance(block, dict) else block.input
             block_id = block.get("id") if isinstance(block, dict) else block.id
-            recorded_result = results.get(str(block_id))
-            if isinstance(params, dict) and "_microclaw_parse_error" in params:
-                # Balance the invalid tool_use in history, then report it as a
-                # skipped failed call. Never pass its raw arguments to an emitter.
-                recorded_result = {"error": params["_microclaw_parse_error"]}
-            recorded_params = RecordedParams(dict(params), recorded_result)
+            recorded_params = RecordedParams(dict(params), results.get(str(block_id)))
             recorded_params["_tool_use_id"] = str(block_id)
             calls.append((str(name), recorded_params))
     return calls

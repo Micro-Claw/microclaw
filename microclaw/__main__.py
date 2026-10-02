@@ -139,7 +139,7 @@ def run_session(args):
 
     from microclaw.agent import llm_base_url
     if llm_base_url():
-        key, source = credentials.load_llm_api_key()
+        key, source = credentials.load_api_key("llm")
         from microclaw.agent import set_llm_api_key
         if key: set_llm_api_key(key)
     else:

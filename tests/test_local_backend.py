@@ -26,7 +26,7 @@ def install(monkeypatch, name, *, extra=None, stream_chunks=False, vision=False)
         if request.url.path.endswith("chat/completions"):
             captured.append(json.loads(request.content))
             captured.timeouts.append(request.extensions.get("timeout"))
-            selected = remaining.pop(0)
+            selected = remaining.pop(0) if remaining else "stream_text_reply"
             if isinstance(selected, httpx.Response): return selected
             response = replay(selected)
             if extra: response = extra(response)
@@ -72,6 +72,8 @@ def test_recorded_stream_tool_translation_and_usage(monkeypatch):
         except StopIteration as stop:
             msg = stop.value; break
     assert msg.stop_reason == "tool_use"
+    assert msg.usage.input_tokens == 33600
+    assert msg.usage.cache_read_input_tokens == 33574
     tools = [b for b in msg.content if b.type == "tool_use"]
     assert [(b.name, b.id, b.input) for b in tools] == [
         ("set_exposure", "ipQX5BPZX3xG7RuJKJYFu18DrcORALAD", {"ms": 50}),
@@ -143,8 +145,13 @@ def test_request_translation_includes_checkpoint_and_all_d2_rows(monkeypatch):
         {"id": "b", "type": "function", "function": {"name": "beta", "arguments": "{}"}},
     ]}
     tools_wire = [m for m in body["messages"] if m["role"] == "tool"]
-    assert tools_wire[-2]["content"] == "Error: bad"
-    assert tools_wire[-1]["content"].endswith('{"image_omitted": "this model does not accept images"}')
+    calls_by_id = {call["id"]: call for call in assistant["tool_calls"]}
+    results_by_id = {message["tool_call_id"]: message for message in tools_wire}
+    assert set(calls_by_id) == set(results_by_id) == {"a", "b"}
+    assert results_by_id["a"]["content"] == "Error: bad"
+    assert results_by_id["b"]["content"].endswith(
+        '{"image_omitted": "this model does not accept images"}'
+    )
     assert body["tools"][0]["function"]["parameters"] == {"type": "object"}
     assert "cache_control" not in str(body)
 
@@ -239,6 +246,32 @@ def test_local_http_errors_become_agent_error_events(monkeypatch):
         assert history == []
 
 
+def test_midstream_error_chunk_becomes_agent_error_event(monkeypatch):
+    # Minimal derivative of the recorded tool-call stream: insert one error
+    # event immediately before the recorded final usage-only chunk.
+    body = replay("stream_tool_calls").content
+    usage_start = body.rfind(b'data: {"choices":[]')
+    assert usage_start >= 0
+    body = (
+        body[:usage_start]
+        + b'data: {"error":{"message":"stream interrupted"}}\n\n'
+        + body[usage_start:]
+    )
+    response = httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=body
+    )
+    install(monkeypatch, response)
+    from microclaw.agent import run_agent_iter
+
+    history = []
+    events = list(run_agent_iter("hello", None, None, history, model="m", tool_schemas=[]))
+    assert events[-1] == {
+        "type": "error",
+        "message": "Local server http://recorded-server returned a stream error: stream interrupted",
+    }
+    assert history == []
+
+
 def test_serve_accepts_llm_url_before_or_after_subcommand(monkeypatch):
     from microclaw import __main__ as cli, webserve
     monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "")
@@ -316,23 +349,36 @@ def test_export_is_identical_for_anthropic_and_local_replies(monkeypatch, tmp_pa
     for index, message in enumerate((anthropic_message, local_message)):
         path = f"script{index}.py"
         tools.export_session_script(None, Guard(tmp_path), path, history(message))
-        outputs.append((tmp_path / path).read_text())
+        outputs.append((tmp_path / path).read_text(encoding="utf-8"))
     assert outputs[0] == outputs[1]
 
     bad_body = replay("stream_tool_calls").content.replace(b'"arguments":"0"', b'"arguments":"?"')
     bad = httpx.Response(200, headers={"content-type": "text/event-stream"}, content=bad_body)
-    install(monkeypatch, bad)
-    bad_gen = agent._stream_one_round([], [], "m", [])
-    while True:
-        try: next(bad_gen)
-        except StopIteration as stop:
-            malformed = stop.value
-            break
-    bad_history = history(malformed)
-    failed = next(b for b in malformed.content if b.type == "tool_use" and "_microclaw_parse_error" in b.input)
-    bad_history[1]["content"] = [{"type": "tool_result", "tool_use_id": failed.id,
-                                  "is_error": True, "content": json.dumps({"error": failed.input["_microclaw_parse_error"]})}]
+    install(monkeypatch, [bad, "stream_text_reply"])
+    from microclaw.agent import run_agent_iter
+
+    def set_exposure(ctrl, guard, ms):
+        return {"ok": True, "ms": ms}
+
+    def get_z_position(ctrl, guard):
+        return {"z_um": 12.5}
+
+    bad_history = []
+    list(run_agent_iter(
+        "set exposure", None, None, bad_history, model="m", tool_schemas=[],
+        tool_registry={"set_exposure": set_exposure, "get_z_position": get_z_position},
+    ))
+    failed = next(
+        b for m in bad_history if m["role"] == "assistant" for b in m["content"]
+        if b.type == "tool_use" and "_microclaw_parse_error" in b.input
+    )
+    failure_result = next(
+        b for m in bad_history if m["role"] == "user" and isinstance(m["content"], list)
+        for b in m["content"] if b.get("tool_use_id") == failed.id
+    )
+    assert failure_result["is_error"] is True
+    assert "Invalid tool arguments JSON" in failure_result["content"]
     tools.export_session_script(None, Guard(tmp_path), "bad.py", bad_history)
-    bad_script = (tmp_path / "bad.py").read_text()
+    bad_script = (tmp_path / "bad.py").read_text(encoding="utf-8")
     assert "core.set_exposure" not in bad_script
     assert "SKIPPED: set_exposure" in bad_script

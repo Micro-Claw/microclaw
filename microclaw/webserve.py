@@ -385,7 +385,7 @@ class Session:
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
-        key, source = (credentials.load_llm_api_key() if llm_base_url()
+        key, source = (credentials.load_api_key("llm") if llm_base_url()
                        else credentials.load_api_key())
         if key:
             _add_audit_secret(self, key)
@@ -1495,7 +1495,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     @app.get("/api/key")
     async def get_key():
-        key, source = (credentials.load_llm_api_key() if llm_base_url()
+        key, source = (credentials.load_api_key("llm") if llm_base_url()
                        else credentials.load_api_key())
         return JSONResponse(
             {
@@ -1518,18 +1518,23 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         # Overwrites whatever was set, so a key can be swapped mid-session.
         _add_audit_secret(session, key)
         local_path = bool(llm_base_url())
-        store = credentials.store_llm_api_key if local_path else credentials.store_api_key
-        load_stored = credentials.load_llm_api_key if local_path else credentials.load_stored_key
+        credential_kind = "llm" if local_path else "anthropic"
         if local_path: set_llm_api_key(key)
         else: set_api_key(key)
         stored_in = stored_at = None
         stale_store = False
         if k.persist:
-            stored_in, stored_at = store(key)
+            if local_path:
+                stored_in, stored_at = credentials.store_api_key(key, credential_kind)
+            else:
+                stored_in, stored_at = credentials.store_api_key(key)
         else:
             # A key held for this process only doesn't displace an older one in
             # the credential store — that one comes back on the next start.
-            stored, _ = load_stored()
+            if local_path:
+                stored, _ = credentials.load_stored_key(credential_kind)
+            else:
+                stored, _ = credentials.load_stored_key()
             stale_store = stored is not None and stored != key
         # Never echo the key: a suffix is enough to confirm which one is set.
         return JSONResponse(

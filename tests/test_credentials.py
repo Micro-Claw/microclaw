@@ -71,6 +71,23 @@ def test_keyring_failure_falls_back_to_the_file(monkeypatch, config_home):
     assert where == "file"
 
 
+def test_local_key_uses_separate_environment_and_stored_value(monkeypatch, no_keyring, config_home):
+    credentials.store_api_key("anthropic-key")
+    credentials.store_api_key("local-key", "llm")
+    monkeypatch.setenv(credentials.LLM_ENV_VAR, "process-local-key")
+    assert credentials.load_api_key("llm") == ("process-local-key", "env")
+    assert credentials.load_stored_key("llm") == ("local-key", "file")
+    assert credentials.load_api_key() == ("anthropic-key", "file")
+    assert credentials.load_stored_key() == ("anthropic-key", "file")
+
+
+def test_storing_either_key_preserves_both_toml_entries(no_keyring, config_home):
+    credentials.store_api_key("anthropic-key")
+    credentials.store_api_key("local-key", "llm")
+    assert credentials.load_api_key() == ("anthropic-key", "file")
+    assert credentials.load_api_key("llm") == ("local-key", "file")
+
+
 def test_mask_shows_only_a_suffix():
     assert credentials.mask("sk-ant-api03-AA8f") == "…AA8f"
     assert credentials.mask("abc") == "…"

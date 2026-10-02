@@ -1573,12 +1573,28 @@ def test_post_key_uses_local_credential_store_when_local_backend_selected(client
     state = {}
     monkeypatch.setattr(webserve, "set_llm_api_key", lambda key: state.update(live=key))
     monkeypatch.setattr(webserve, "set_api_key", lambda key: pytest.fail("set Anthropic key"))
-    monkeypatch.setattr(credentials, "store_llm_api_key", lambda key: ("file", "/tmp/local-config"))
-    monkeypatch.setattr(credentials, "store_api_key", lambda key: pytest.fail("stored Anthropic key"))
+    monkeypatch.setattr(
+        credentials, "store_api_key",
+        lambda key, kind="anthropic": ("file", "/tmp/local-config")
+        if kind == "llm" else pytest.fail("stored Anthropic key"),
+    )
     body = client.post("/api/key", json={"key": "local-secret-xyz", "persist": True}).json()
     assert state["live"] == "local-secret-xyz"
     assert body["stored_in"] == "file"
     assert body["suffix"] == "…-xyz"
+
+
+def test_local_session_key_checks_stored_key_without_environment_value(client, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    monkeypatch.setattr(webserve, "set_llm_api_key", lambda key: None)
+    monkeypatch.setattr(webserve, "set_api_key", lambda key: pytest.fail("set Anthropic key"))
+    monkeypatch.setattr(
+        credentials, "load_stored_key",
+        lambda kind="anthropic": ("older-local-key", "file")
+        if kind == "llm" else (None, None),
+    )
+    body = client.post("/api/key", json={"key": "current-local-key", "persist": False}).json()
+    assert body["stale_store"] is True
 
 
 def test_post_key_can_replace_a_key_already_set(client, monkeypatch):
