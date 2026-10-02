@@ -65,9 +65,16 @@ def test_local_watermarks_fallback_when_server_reports_neither(monkeypatch, caps
     store = agent.make_conversation_store(conversation.AuditLog(None, enabled=False))
     fixed_fallback = math.ceil(len(json.dumps(applied[0], ensure_ascii=False,
                                               separators=(",", ":")).encode("utf-8")) / 2.36)
-    assert store.high_water_tokens == max(2, 32768 - fixed_fallback - 8192 - 4096)
+    # The fallback estimate leaves nothing for history at the 32768 default, so
+    # the announced provisional floor applies (0ecbbcc, L4) instead of a clamp
+    # to 2 that would compact every round.
+    computed = 32768 - fixed_fallback - 8192 - 4096
+    assert computed < agent.LOCAL_CONTEXT_UNPROBED_HIGH_WATER
+    assert store.high_water_tokens == agent.LOCAL_CONTEXT_UNPROBED_HIGH_WATER
     assert store.low_water_tokens == int(store.high_water_tokens * .75)
-    assert "n_ctx=32768 (default; server did not report n_ctx)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "n_ctx=32768 (default; server did not report n_ctx)" in out
+    assert "provisional 4096-token history floor" in out
 
 
 def test_anthropic_store_retains_120k_90k_watermarks(monkeypatch):
