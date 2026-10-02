@@ -360,6 +360,8 @@ def check(base, head, *, environment, roots=None, now=None, opener=None):
         document[collection].append(value)
         verify_all(document)
         if collection == 'releases':
+            # Publisher, key and block need no bytes; refuse before fetching a stranger's URL.
+            packages.check_release(value, policy, purpose='execution', now=now)
             with tempfile.TemporaryDirectory() as temporary:
                 with store.download_release(value, package=Path(temporary), opener=opener) as artifact:
                     packages.check_release(value, policy, purpose='admission', artifact=artifact, now=now)

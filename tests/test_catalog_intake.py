@@ -244,6 +244,28 @@ def test_duplicates_refuse_before_download(setup, duplicate, monkeypatch):
     assert_field(setup['check'](), duplicate)
 
 
+@pytest.mark.parametrize('change,field', [('publisher', 'publisher'), ('key', 'signature.key_id'),
+                                          ('blocked', 'artifact_digest')])
+def test_ineligible_release_refuses_before_download(setup, change, field, monkeypatch):
+    # An unadmitted or blocked submitter must not make intake fetch its URL.
+    record = deepcopy(setup['record'])
+    if change == 'publisher':
+        record['publisher'] = 'unknown-publisher'
+        record = intake.sign(record, private())
+    elif change == 'key':
+        record = intake.sign(record, private('publisher-b'))
+    else:
+        policy = intake.read(setup['base'] / 'policy.json')
+        policy['revoked_releases'] = [{k: record[k] for k in ('package_id', 'version', 'artifact_digest')} | dict(reason='block')]
+        policy = builder.sign(policy, 'root')
+        write(setup['base'] / 'policy.json', policy)
+        write(setup['head'] / 'policy.json', policy)
+    (setup['head'] / setup['path']).unlink()
+    write(setup['head'] / intake.record_path('releases', record), record)
+    monkeypatch.setattr(store, 'download_release', lambda *a, **k: pytest.fail('ineligible release fetched'))
+    assert_field(setup['check'](), field)
+
+
 def test_same_version_different_digest_in_catalog(setup):
     # A base catalog may carry a release whose source file was lost; intake must
     # still reject a second release of that identity rather than forget history.
@@ -705,7 +727,7 @@ elif tool == 'python':
     result = subprocess.run(['bash', '-c', script], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True)
     assert result.returncode == exit_code, result.stdout + result.stderr
-    calls = [json.loads(line) for line in (tmp_path / 'calls.jsonl').read_text().splitlines()]
+    calls = [json.loads(line) for line in (tmp_path / 'calls.jsonl').read_text(encoding='utf-8').splitlines()]
     checks = [c for c in calls if c['tool'] == 'python' and c['args'][:3] == ['-m', 'microclaw.catalog_intake', 'check']]
     assert len(checks) == attempts
     comments = [c['args'][c['args'].index('--body') + 1] for c in calls if c['tool'] == 'gh' and c['args'][:2] == ['pr', 'comment']]
