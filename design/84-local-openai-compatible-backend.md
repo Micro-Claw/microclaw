@@ -169,5 +169,25 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 
 | block | branch | start | state |
 |---|---|---|---|
-| 84a | `design84/84a-backend` | `Qwen-local-model` tip at assignment | assigned 2026-10-01 |
+| 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | reviewed 2026-10-02, gate not run |
 | 84b | — | — | not started |
+
+**84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
+1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
+alone; ran during a network drop). Three runner turns: `f6917b3` (incomplete
+by its own report), `ec16e85` (round 1: eleven defects F1–F11, among them the
+compaction checkpoint silently dropped and `--llm-base-url` lost before
+`serve`), `64065e6` (round 2: G1–G7; turn killed by the coordinator's 2-hour
+background limit during its final check, committed as found, then reviewed).
+Coordinator full suite on `64065e6`: **5532 passed, 108 skipped**. Mutation
+check, each D2 row and error mapping broken in turn: 11/14 caught on
+`ec16e85`, **19/19** on `64065e6`. Live against the workstation through
+`_stream_one_round` with `_system_blocks()` (33,889 tokens): 124 streamed
+deltas, first at 8.1 s, `end_turn`; second round `get_z_position {}` with
+`cache_n 33853`, `prompt_ms 174`. Known nits left: one-line `if`s and a
+redundant `kind` branch in `webserve.py`'s key route.
+
+**Runner lesson.** A revision turn outlived Claude Code's 2-hour background cap
+when the network dropped mid-turn. Launch long runner turns under `nohup`
+(CLAUDE.md step 2) rather than as session background tasks.
+
