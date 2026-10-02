@@ -878,6 +878,37 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def get_skill_packages():
         return JSONResponse(await run_in_threadpool(skill_store.status))
 
+    @app.get("/api/skill-packages/catalog")
+    async def get_skill_catalog():
+        return JSONResponse(await run_in_threadpool(skill_store.panel_catalog,
+            now=datetime.datetime.now(datetime.timezone.utc)))
+
+    @app.post("/api/skill-packages/check")
+    async def check_skill_catalog():
+        return JSONResponse(await run_in_threadpool(skill_store.refresh_catalog,
+            now=datetime.datetime.now(datetime.timezone.utc)))
+
+    @app.post("/api/skill-packages/{package_id}/remove")
+    async def remove_skill_package(package_id: str):
+        try:
+            result = await run_in_threadpool(skill_store.remove, package_id,
+                retained_digests=skill_store.retained_digests())
+        except skill_store.PackageRefusal as exc:
+            raise HTTPException(409 if exc.field in {"lock", "retained"} else 400, str(exc)) from None
+        return JSONResponse(result)
+
+    @app.post("/api/skill-packages/{package_id}/install")
+    async def install_skill_package(package_id: str, request: Request):
+        try:
+            release = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Expected release identity.") from None
+        if (not isinstance(release, dict) or set(release) !=
+                {"publisher", "package_id", "version", "artifact_digest"} or
+                any(not isinstance(v, str) for v in release.values()) or release["package_id"] != package_id):
+            raise HTTPException(400, "Expected exact release identity.")
+        return await start_skill_job(package_id, "install", release=release)
+
     @app.post("/api/skill-packages/{package_id}/discovery")
     async def set_skill_discovery(package_id: str, request: Request):
         try:
@@ -893,10 +924,10 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(409 if exc.field == "lock" else 400, str(exc)) from None
         return JSONResponse(decision)
 
-    async def start_skill_job(package_id, operation):
+    async def start_skill_job(package_id, operation, **kwargs):
         try:
             job = await run_in_threadpool(skill_store.start_job, package_id, operation,
-                                          retained_digests=skill_store.retained_digests())
+                                          retained_digests=skill_store.retained_digests(), **kwargs)
         except skill_store.PackageRefusal as exc:
             raise HTTPException(409 if exc.field == "lock" else 400, str(exc)) from None
         return JSONResponse(job, status_code=202)

@@ -1,0 +1,41 @@
+{
+  "type": "microclaw.trust-policy.v1",
+  "environment": "test",
+  "revision": 2,
+  "expires_at": "2027-04-01T00:00:00Z",
+  "publishers": {
+    "fixture-lab": {
+      "state": "active",
+      "keys": [
+        {
+          "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+          "public_key": "uD7a2vIzZaM68Xgu2ijx67wGDRLtDVwZaJx8BoQBYGQ=",
+          "state": "active"
+        }
+      ]
+    },
+    "fixture-two": {
+      "state": "active",
+      "keys": [
+        {
+          "key_id": "25f043787c106ddc55423ca57e4a3ab1e1eb491b22d97363ec8a3594041d2127",
+          "public_key": "IBOR4hShqAu47PDt6RBIf7H3wdS5sG8qKUOGEGcugRY=",
+          "state": "active"
+        }
+      ]
+    }
+  },
+  "revoked_releases": [
+    {
+      "package_id": "executable-fixture",
+      "version": "1.0.0",
+      "artifact_digest": "db9958469916efeaed1728040ff4f3855cdefbbced3602e7989fbb5ae956071a",
+      "reason": "Gate: blocked by MicroClaw"
+    }
+  ],
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "3a8bfac181947de6966ceaf2bdafc61d2589c2e420059df09867a9abc4b8b86d",
+    "value": "OXV8Lr5tvz6ftFxw/GAwCGxJcFpBCnJUuG6b0ZFiYF9tPJ+9trhTnqiSSIKEoNegIXS5/UCaRTD2cfq6pBJ3Bw=="
+  }
+}

@@ -423,17 +423,17 @@ def test_skill_packages_view_keeps_disabled_release_and_test_banner():
     path = resources.files("microclaw").joinpath("transcript.js")
     state = {"trust": {"test_roots_active": True}, "packages": [{
         "package_id": "example", "installs": [{"manifest": {"publisher": "lab", "version": "1.0.0"},
-        "artifact_digest": "abcdef1234567890", "state": "ready", "eligible": False,
-        "reasons": [{"field": "microclaw", "detail": "incompatible with 2.0.0"}]}]}]}
+        "artifact_digest": "abcdef1234567890", "state": "ready", "active": True, "eligible": False,
+        "reasons": [{"field": "microclaw", "detail": "needs MicroClaw <2; this is 2.0.0"}]}]}]}
     script = ("global.window = {};\n" + f"require({json.dumps(str(path))});\n" +
               f"process.stdout.write(JSON.stringify(window.Transcript.skillPackagesView({json.dumps(state)})));\n")
     view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
                                     encoding="utf-8", check=True).stdout)
-    assert view["rows"] == ["lab/example 1.0.0 abcdef123456 — ready — disabled: microclaw: incompatible with 2.0.0"]
+    assert view["catalogRows"][0]["statusLines"] == ["Installed, but disabled: needs MicroClaw <2; this is 2.0.0"]
     assert view["trust"] == "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
     html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     assert '<details id="skill-packages-panel"' in html
-    assert "Transcript.skillPackagesView(state)" in html and "item.textContent = row" in html
+    assert "Transcript.skillPackagesView(state)" in html and "status.textContent = text" in html
     panel = html.split('<details id="skill-packages-panel"')[1].split("</details>")[0]
     assert "<button" not in panel
 
@@ -458,15 +458,18 @@ def test_skill_discovery_toggle_exclusion_and_disclosure():
               f"process.stdout.write(JSON.stringify(window.Transcript.skillPackagesView({json.dumps(state)})));\n")
     view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
                                     encoding="utf-8", check=True).stdout)
-    assert view["rows"][0].endswith("(active) — eligible — hidden from the agent: name: ambiguous enabled external skill")
-    assert view["rows"][1].endswith("(previous) — eligible")
-    assert view["rows"][2].endswith("(active) — eligible — agent can read it")
-    assert view["rows"][3].endswith("(active) — eligible — hidden from the agent")
-    assert not any("discovery" in row for row in view["rows"])
-    assert view["discovery"] == [
-        dict(package_id="example", enabled=True, label="Stop the agent reading this package", disabled=False),
-        dict(package_id="readable", enabled=True, label="Stop the agent reading this package", disabled=False),
-        dict(package_id="other", enabled=False, label="Let the agent read this package", disabled=True)]
+    cards = {row["package_id"]: row for row in view["catalogRows"]}
+    assert cards["example"]["statusLines"][0] == "Installed — hidden from the agent: ambiguous enabled external skill"
+    assert cards["example"]["statusLines"][1] == "Version unknown is kept for Roll back"
+    assert cards["readable"]["statusLines"] == ["Installed — the agent can read it"]
+    assert cards["other"]["statusLines"] == ["Installed — hidden from the agent"]
+    assert not any("discovery" in line for row in cards.values() for line in row["statusLines"])
+    assert cards["example"]["toggle"] == dict(package_id="example", enabled=True,
+        label="Stop the agent reading this package", disabled=False)
+    assert cards["readable"]["toggle"]["enabled"]
+    assert cards["other"]["toggle"] == dict(package_id="other", enabled=False,
+        label="Let the agent read this package", disabled=True)
+    assert "rows" not in view and "discovery" not in view
     assert view["disclosure"] == (
         "Installing a package lets the agent read its instructions; you can stop that here. "
         "That never lets its code run: MicroClaw asks you each time, or once per session. "
@@ -478,3 +481,224 @@ def test_skill_discovery_toggle_exclusion_and_disclosure():
     assert 'JSON.stringify({enabled: !toggle.enabled})' in html
     assert 'encodeURIComponent(toggle.package_id) + "/discovery"' in html
     assert 'finally { await refreshSkillPackages(); }' in html
+
+
+def delivery_view(state, decision=None):
+    path = resources.files('microclaw').joinpath('transcript.js')
+    expression = ('window.Transcript.skillPackagesView(' + json.dumps(state) + ')' if decision is None else
+                  'window.Transcript.skillPackageRequest(' + ','.join(json.dumps(v) for v in decision) + ')')
+    script = 'global.window = {}; require(' + json.dumps(str(path)) + '); process.stdout.write(JSON.stringify(' + expression + '));'
+    return json.loads(subprocess.run(['node', '-e', script], capture_output=True, text=True,
+                                    encoding='utf-8', check=True).stdout)
+
+
+def test_catalog_view_order_actions_copy_and_text():
+    def row(name, installed=None, **kwargs):
+        release = dict(publisher='lab', package_id=name, version='2.0.0', artifact_digest='a'*64,
+                       compatible=True, license='MIT')
+        return dict(release, installed_version=installed, offered_release=release,
+                    update_available=installed == '1.0.0', skills=[{'name': 'skill', 'description': '<img src=x onerror=evil()>'}],
+                    issues_url='http://unsafe.example', source_url='https://source.example', **kwargs)
+    state = {'packages': [], 'catalogListing': {'packages': [row('z'), row('a'),
+        row('installed', '1.0.0', withdrawn=True, withdrawal_reason='stopped'),
+        row('blocked', '1.0.0', blocked=True, block_reason={'detail': 'unsafe'}), row('current', '2.0.0')]}}
+    view = delivery_view(state)
+    rows = view['catalogRows']
+    assert [r['package_id'] for r in rows] == ['blocked', 'current', 'installed', 'a', 'z']
+    assert [r['action'] for r in rows] == ['Update', None, 'Update', 'Install', 'Install']
+    assert rows[0]['warning'] == "Blocked by MicroClaw: unsafe. The agent can't read it and it can't run. Nothing was deleted — its files and every result it produced are still on this computer."
+    assert rows[2]['warning'] == "Withdrawn by its publisher: stopped. It stays installed and keeps working; new installs can't choose it."
+    assert rows[0]['confirmNotice'] == 'MicroClaw does not test or support this package. Report problems to lab'
+    assert all(r['issues'] is None and r['source'] == 'https://source.example' for r in rows)
+    assert rows[0]['skills'][0]['description'] == '<img src=x onerror=evil()>'
+    assert rows[0]['skillLines'] == ['skill — <img src=x onerror=evil()>']
+    assert rows[0]['heading'] == 'lab/blocked 1.0.0 — 2.0.0 available'
+    assert rows[3]['heading'] == 'lab/a 2.0.0'
+    assert rows[1]['heading'] == 'lab/current 2.0.0'
+    assert rows[2]['heading'] == 'lab/installed 1.0.0 — 2.0.0 available'
+    assert rows[0]['issuesLabel'] == 'Report problems to lab'
+    assert view['catalogNotice'] == "MicroClaw does not test or support these packages. Each one is its publisher's."
+
+    assert 'yanked' not in json.dumps(view).lower()
+    hostile = row('hostile')
+    hostile['publisher'] = '<img src=x onerror=evil()>'
+    result = delivery_view({'catalogListing': {'packages': [hostile]}})['catalogRows'][0]
+    assert result['confirmNotice'].endswith('<img src=x onerror=evil()>')
+    incompatible = row('incompatible')
+    incompatible['offered_release'].update(compatible=False, compatibility_reason={'detail': 'needs MicroClaw >=99; this is 0.1.0'})
+    result = delivery_view({'catalogListing': {'packages': [incompatible]}})['catalogRows'][0]
+    assert result['action'] is None and result['compatibility'] == "Can't be installed here: needs MicroClaw >=99; this is 0.1.0"
+    html = resources.files('microclaw').joinpath('serve.html').read_text(encoding='utf-8')
+    wiring = html.split('for (const row of view.catalogRows)')[1].split('fast = state.packages.some')[0]
+    assert 'description.textContent = text' in wiring
+    assert 'name.textContent = row.heading' in wiring and 'innerHTML' not in wiring
+    assert 'document.createElement("section")' in wiring
+    assert 'heading.className = "row"' in wiring and 'links.className = "row"' in wiring
+    assert 'heading.append(button)' in wiring and 'links.append(link)' in wiring
+    assert 'row.confirmNotice' not in wiring
+    assert 'notice.textContent = view.catalogNotice' in html
+    assert 'release.version' in html.split('function confirmSkillPackage')[1].split('async function skillPackageAction')[0]
+    assert 'release.license' in html and 'row.confirmNotice' in html
+
+
+@pytest.mark.parametrize('state,expected', [('unpublished', 'No community catalog is published yet'),
+    ('unreachable', 'Offline — showing the copy saved '), ('ok', 'Catalog checked '),
+    ('never_fetched', 'Catalog has not been checked yet'), ('refused', 'Catalog check refused')])
+def test_catalog_freshness(state, expected):
+    assert delivery_view({'catalog': {'state': state, 'last_success': '2026-09-30T12:00:00Z'}})['freshness'].startswith(expected)
+
+
+@pytest.mark.parametrize('operation', ['install', 'remove'])
+def test_delivery_confirmation_cancel_sends_no_request(operation):
+    row = {'package_id': 'fixture', 'offered_release': {'publisher': '<img>', 'package_id': 'fixture',
+        'version': '2.0.0', 'artifact_digest': 'a'*64}}
+    assert delivery_view({}, [row, operation, False]) is None
+    request = delivery_view({}, [row, operation, True])
+    assert request['url'] == '/api/skill-packages/fixture/' + operation
+    assert request['body'] == (row['offered_release'] if operation == 'install' else None)
+    html = resources.files('microclaw').joinpath('serve.html').read_text(encoding='utf-8')
+    assert 'document.createElement("dialog")' in html
+    assert 'Transcript.skillPackageRequest(row, operation, accepted)' in html
+    assert 'if (!request) return;' in html
+    assert "Only the package's installed files are deleted. The results it produced are kept." in html
+    assert '["Cancel", false]' in html
+
+
+def test_package_card_job_attribution_and_missing_catalog():
+    identity = dict(publisher='fixture-two', package_id='shared', version='2.0.0', artifact_digest='a'*64)
+    state = {'catalogListing': {'packages': [
+        dict(publisher='fixture-lab', package_id='shared', version='1.0.0', installed_version='1.0.0'),
+        dict(identity, offered_release=dict(identity, compatible=True))]},
+        'packages': [{'package_id': 'shared', 'discovery': {'enabled': True}, 'installs': [
+            {'intake': {'publisher': 'fixture-lab', 'version': '1.0.0'}, 'state': 'ready',
+             'active': True, 'eligible': True, 'discoverable': True}],
+            'job': {'operation': 'install', 'release': identity, 'phase': 'finished', 'running': False,
+                    'reasons': [{'field': 'publisher', 'detail': "another publisher's package with this name is installed; remove it first"}]}}]}
+    rows = {r['publisher']: r for r in delivery_view(state)['catalogRows']}
+    assert rows['fixture-two']['jobText'] == "Install failed: another publisher's package with this name is installed; remove it first"
+    assert rows['fixture-two']['jobFailed'] and rows['fixture-two']['toggle'] is None
+    assert not rows['fixture-two']['remove'] and not rows['fixture-two']['recoverable']
+    assert rows['fixture-lab']['jobText'] == '' and not rows['fixture-lab']['jobFailed']
+    assert rows['fixture-lab']['toggle']['enabled'] and rows['fixture-lab']['remove']
+    assert 'agent can read it' in rows['fixture-lab']['statusLines'][0]
+    # Installed metadata and damaged evidence remain in cards without a catalog.
+    state.pop('catalogListing')
+    state['packages'].append({'package_id': 'damaged', 'installs': [],
+                              'broken': [{'field': 'pointer', 'detail': 'unreadable'}]})
+    rows = {r['package_id']: r for r in delivery_view(state)['catalogRows']}
+    assert rows['shared']['heading'] == 'fixture-lab/shared 1.0.0'
+    assert rows['shared']['remove'] and rows['shared']['toggle']['enabled']
+    assert rows['damaged']['remove'] and rows['damaged']['recoverable']
+    assert 'Disabled: unreadable' in rows['damaged']['statusLines']
+
+
+@pytest.mark.parametrize('operation,installed,label,running_label', [
+    ('install', False, 'Install', 'Installing'), ('install', True, 'Update', 'Updating'),
+    ('rollback', True, 'Roll back', 'Rolling back'), ('repair', True, 'Repair', 'Repairing'),
+    ('remove', True, 'Remove', 'Removing')])
+def test_package_card_job_words(operation, installed, label, running_label):
+    identity = dict(publisher='lab', package_id='example', version='2.0.0', artifact_digest='a'*64)
+    row = dict(identity, installed_version='1.0.0' if installed else None)
+    job = {'operation': operation, 'release': identity, 'phase': 'downloading', 'running': True}
+    state = {'catalogListing': {'packages': [row]}, 'packages': [
+        {'package_id': 'example', 'installs': [], 'job': job}]}
+    card = delivery_view(state)['catalogRows'][0]
+    assert card['jobText'] == running_label + '… (downloading)' and not card['jobFailed']
+    job.update(running=False, phase='finished', reasons=[{'field': 'artifact_digest', 'detail': 'bad bytes'}])
+    card = delivery_view(state)['catalogRows'][0]
+    assert card['jobText'] == label + ' failed: bad bytes' and card['jobFailed']
+    job['reasons'] = []
+    assert delivery_view(state)['catalogRows'][0]['jobText'] == ''
+
+
+def test_package_card_dialog_and_outcome_wiring():
+    html = resources.files('microclaw').joinpath('serve.html').read_text(encoding='utf-8')
+    assert '.banner .row, dialog .row {' in html
+    dialog = html.split('function confirmSkillPackage')[1].split('async function skillPackageAction')[0]
+    assert 'controls.className = "row"' in dialog
+    assert 'controls.append(link)' in dialog and 'controls.append(button)' in dialog
+    assert 'dialog.append(controls)' in dialog
+    panel = html.split('for (const row of view.catalogRows)')[1].split('fast = state.packages.some')[0]
+    assert 'row.statusLines' in panel and 'row.toggle' in panel and 'row.jobText' in panel
+    assert 'text.className = "err-badge"' in panel
+    assert 'for (const row of view.rows)' not in html and 'view.discovery' not in html
+
+
+def g9_fixture_state():
+    rows, packages = [], []
+    def add(publisher, name, installed=False, **flags):
+        release = dict(publisher=publisher, package_id=name, version='1.0.0', artifact_digest='a'*64,
+                       compatible=True, skills=[{'name': 'workflow', 'description': 'A publisher-provided fixture workflow.'}])
+        row = dict(release, installed_version='1.0.0' if installed else None,
+                   offered_release=release, **flags)
+        rows.append(row)
+        return row, release
+    blocked, _ = add('fixture-lab', 'blocked-fixture', True, blocked=True,
+                     block_reason={'detail': 'Operator blocked this fixture'}, update_available=True)
+    blocked['offered_release'] = dict(blocked['offered_release'], version='2.0.0')
+    add('fixture-lab', 'withdrawn-fixture', True, withdrawn=True,
+        withdrawal_reason='Publisher stopped offering this release')
+    tampered, release = add('fixture-lab', 'tampered-fixture')
+    packages.append({'package_id': 'tampered-fixture', 'installs': [], 'job': {
+        'operation': 'install', 'release': release, 'running': False, 'phase': 'finished',
+        'reasons': [{'field': 'artifact_digest', 'detail': 'download does not match signed digest'}]}})
+    add('fixture-lab', 'markdown-fixture', True)
+    collision, release = add('fixture-two', 'markdown-fixture')
+    for row in rows:
+        if not row.get('installed_version'):
+            continue
+        install = {'intake': {'publisher': row['publisher'], 'version': '1.0.0'},
+                   'active': True, 'state': 'ready', 'eligible': not row.get('blocked'),
+                   'discoverable': not row.get('blocked'),
+                   'reasons': [{'field': 'artifact_digest', 'detail': row['block_reason']['detail']}] if row.get('blocked') else [],
+                   'discovery_exclusions': []}
+        pkg = {'package_id': row['package_id'], 'installs': [install], 'discovery': {'enabled': True}}
+        if row['package_id'] == 'markdown-fixture':
+            pkg['job'] = {'operation': 'install', 'release': release, 'running': False, 'phase': 'finished',
+                          'reasons': [{'field': 'publisher', 'detail': "another publisher's package with this name is installed; remove it first"}]}
+        packages.append(pkg)
+    return {'packages': packages, 'catalogListing': {'packages': rows}}
+
+
+def test_g9_demo_outcomes_are_inside_the_correct_cards():
+    rows = {(r['publisher'], r['package_id']): r for r in delivery_view(g9_fixture_state())['catalogRows']}
+    blocked = rows['fixture-lab', 'blocked-fixture']
+    assert blocked['heading'].endswith('1.0.0 — 2.0.0 available')
+    assert blocked['action'] == 'Update' and blocked['remove'] and blocked['toggle']
+    assert blocked['warning'].startswith('Blocked by MicroClaw: Operator blocked this fixture.')
+    assert rows['fixture-lab', 'withdrawn-fixture']['warning'].startswith('Withdrawn by its publisher:')
+    assert rows['fixture-lab', 'tampered-fixture']['jobText'] == 'Install failed: download does not match signed digest'
+    assert rows['fixture-two', 'markdown-fixture']['jobText'] == "Install failed: another publisher's package with this name is installed; remove it first"
+    assert rows['fixture-lab', 'markdown-fixture']['jobText'] == ''
+
+
+def test_package_status_sentences_active_first_and_no_digests():
+    def record(version, state='ready', **flags):
+        return {'intake': {'publisher': 'lab', 'version': version}, 'artifact_digest': 'd'*64,
+                'state': state, 'eligible': True, **flags}
+    state = {'packages': [{'package_id': 'example', 'installs': [
+        record('0.5.0', previous=True),
+        record('0.7.0', 'failed', reasons=[{'field': 'self_check', 'detail': 'worker stopped'}]),
+        record('0.8.0', 'staged', reasons=[{'field': 'interrupted', 'detail': 'serve exited'}]),
+        record('0.9.0', 'failed', reasons=[]),
+        record('1.0.0', active=True, discoverable=True)],
+        'discovery_reasons': [{'field': 'discovery', 'detail': 'decision is unreadable'}],
+        'broken': [{'field': 'pointer', 'detail': 'pointer is unreadable'}],
+        'deletion_failures': [{'detail': 'file is busy'}]}]}
+    row = delivery_view(state)['catalogRows'][0]
+    assert row['statusLines'] == [
+        'Installed — the agent can read it',
+        'Version 0.5.0 is kept for Roll back',
+        'An earlier install of 0.7.0 did not finish: worker stopped',
+        'An earlier install of 0.8.0 did not finish: serve exited',
+        'Hidden from the agent: decision is unreadable',
+        'Disabled: pointer is unreadable',
+        'Deletion pending: file is busy']
+    assert 'd'*12 not in '\n'.join([row['heading'], *row['statusLines'], row['jobText']])
+    state['packages'][0]['installs'][-1].update(eligible=False, reasons=[
+        {'field': 'microclaw', 'detail': 'needs MicroClaw >=99; this is 0.1.0'},
+        {'field': 'interpreter', 'detail': 'interpreter is missing'}])
+    assert delivery_view(state)['catalogRows'][0]['statusLines'][0] == (
+        'Installed, but disabled: needs MicroClaw >=99; this is 0.1.0; interpreter is missing')
+    assert delivery_view({'packages': [{'package_id': 'damaged', 'installs': []}]})['catalogRows'][0]['statusLines'] == ['Install state is unknown']
+    assert delivery_view({'catalogListing': {'packages': [{'package_id': 'new', 'publisher': 'lab', 'version': '1.0.0'}]}})['catalogRows'][0]['statusLines'] == ['Not installed']

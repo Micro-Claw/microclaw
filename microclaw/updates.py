@@ -837,17 +837,17 @@ def discover_clone(state: dict[str, Any], *, timeout: float = GIT_TIMEOUT_SECOND
 
 def _allowed_url(url: str, allowed_hosts=GITHUB_HOSTS) -> None:
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+    if parsed.scheme != "https" or (not parsed.hostname or (allowed_hosts is not None and parsed.hostname not in allowed_hosts)):
         raise UpdateError(f"redirect host is not allowlisted: {parsed.hostname or url}")
 
 
 def _open_manual(url: str, opener: URLopener, *, max_bytes: int, allowed_hosts=GITHUB_HOSTS,
-                 label="GitHub") -> tuple[bytes, str]:
+                 label="GitHub", accept="application/vnd.github+json") -> tuple[bytes, str]:
     current = url
     for redirects in range(MAX_REDIRECTS + 1):
         _allowed_url(current, allowed_hosts)
         request = urllib.request.Request(
-            current, headers={"Accept": "application/vnd.github+json", "User-Agent": "microclaw-updater"}
+            current, headers={"Accept": accept, "User-Agent": "microclaw-updater"}
         )
         try:
             response = opener(request, HTTP_TIMEOUT_SECONDS)

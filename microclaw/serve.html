@@ -61,7 +61,7 @@
   }
   .banner h2 { margin: 0 0 6px; font-size: 14px; font-weight: 650; }
   .banner p { margin: 0 0 10px; font-size: 13px; color: var(--ink-soft); }
-  .banner .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .banner .row, dialog .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .banner input[type=password] {
     flex: 1; min-width: 240px; font-family: var(--mono); font-size: 13px; color: var(--ink);
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
@@ -288,6 +288,51 @@
   }
 
   let skillPackagesPollTimer;
+  let skillCatalog = {packages: []};
+  const skillFinishedJobs = new Map();
+  async function refreshSkillCatalog() {
+    const res = await apiFetch("/api/skill-packages/catalog");
+    if (res.ok) skillCatalog = await res.json();
+  }
+  $("skill-packages-panel").addEventListener("toggle", async () => {
+    if ($("skill-packages-panel").open) { await refreshSkillCatalog(); await refreshSkillPackages(); }
+  });
+  function confirmSkillPackage(row, operation) {
+    return new Promise(resolve => {
+      const dialog = document.createElement("dialog");
+      const text = document.createElement("p");
+      const release = row.offered_release || row;
+      text.textContent = operation === "remove" ? row.publisher + "/" + row.package_id +
+        ": Only the package's installed files are deleted. The results it produced are kept." :
+        row.publisher + "/" + row.package_id + " " + release.version + " — Publisher: " + release.publisher +
+        " — Licence: " + release.license + ". " + row.confirmNotice;
+      dialog.append(text);
+      const controls = document.createElement("div"); controls.className = "row";
+      if (operation === "install" && row.confirmIssues) {
+        const link = document.createElement("a"); link.href = row.confirmIssues; link.textContent = "Report problems"; controls.append(link);
+      }
+      for (const [label, accepted] of [[operation === "remove" ? "Remove" : "Install", true], ["Cancel", false]]) {
+        const button = document.createElement("button"); button.textContent = label;
+        button.onclick = () => { dialog.close(); dialog.remove(); resolve(accepted); }; controls.append(button);
+      }
+      dialog.append(controls);
+      dialog.addEventListener("cancel", () => { dialog.remove(); resolve(false); });
+      document.body.append(dialog); dialog.showModal();
+    });
+  }
+  async function skillPackageAction(row, operation) {
+    const accepted = ["install", "remove"].includes(operation) ? await confirmSkillPackage(row, operation) : true;
+    const request = Transcript.skillPackageRequest(row, operation, accepted);
+    if (!request) return;
+    try {
+      const res = await apiFetch(request.url, {method: "POST", headers: {"Content-Type": "application/json"},
+        body: request.body ? JSON.stringify(request.body) : undefined});
+      if (!res.ok) { const body = await res.json(); alert(body.detail || "Package operation failed."); }
+      if (operation === "remove") await refreshSkillCatalog();
+      await refreshSkillPackages();
+    } catch (err) { alert(err.message); }
+  }
+
   async function refreshSkillPackages() {
     clearTimeout(skillPackagesPollTimer);
     let fast = false;
@@ -295,37 +340,82 @@
       const res = await apiFetch("/api/skill-packages");
       if (!res.ok) return;
       const state = await res.json();
+      let finished = false;
+      for (const pkg of state.packages) if (pkg.job && !pkg.job.running &&
+          skillFinishedJobs.get(pkg.package_id) !== pkg.job.started_at) {
+        skillFinishedJobs.set(pkg.package_id, pkg.job.started_at); finished = true;
+      }
+      if (finished && $("skill-packages-panel").open) await refreshSkillCatalog();
+      state.catalogListing = skillCatalog;
       const view = Transcript.skillPackagesView(state);
       $("skill-packages-trust").textContent = view.trust;
       $("skill-packages-disclosure").textContent = view.disclosure;
       const list = $("skill-packages-list");
       list.replaceChildren();
-      for (const row of view.rows) {
-        const item = document.createElement("p");
-        item.textContent = row;
-        list.append(item);
-      }
-      for (const toggle of view.discovery) {
-        const item = document.createElement("p");
-        item.textContent = toggle.package_id + " ";
-        const button = document.createElement("button");
-        button.textContent = toggle.label;
-        button.disabled = toggle.disabled;
-        button.addEventListener("click", async () => {
-          button.disabled = true;
-          try {
-            const res = await apiFetch("/api/skill-packages/" + encodeURIComponent(toggle.package_id) + "/discovery", {
-              method: "POST", headers: {"Content-Type": "application/json"},
-              body: JSON.stringify({enabled: !toggle.enabled})
-            });
-            if (!res.ok) {
-              const body = await res.json();
-              alert(body.detail || "Could not change discovery.");
-            }
-          } catch (err) { alert(err.message); }
-          finally { await refreshSkillPackages(); }
-        });
-        item.append(button);
+      const freshness = document.createElement("p"); freshness.textContent = view.freshness + " ";
+      const check = document.createElement("button"); check.textContent = "Check now";
+      check.onclick = async () => { check.disabled = true; try {
+        await apiFetch("/api/skill-packages/check", {method: "POST"});
+        await refreshSkillCatalog(); await refreshSkillPackages();
+      } catch (err) { alert(err.message); } finally { check.disabled = false; } };
+      freshness.append(check); list.append(freshness);
+      const notice = document.createElement("p"); notice.textContent = view.catalogNotice;
+      list.append(notice);
+      for (const row of view.catalogRows) {
+        const item = document.createElement("section"); item.className = "banner";
+        if (row.compatibility) item.style.opacity = "0.55";
+        const heading = document.createElement("p"); heading.className = "row";
+        const name = document.createElement("strong"); name.textContent = row.heading; heading.append(name);
+        const actions = [[row.action, "install"], [row.remove ? "Remove" : null, "remove"]];
+        if (row.recoverable) actions.push(["Roll back", "rollback"], ["Repair", "repair"]);
+        for (const [label, operation] of actions) if (label) {
+          const button = document.createElement("button"); button.textContent = label;
+          button.disabled = row.disabled;
+          button.onclick = () => skillPackageAction(row, operation); heading.append(button);
+        }
+        item.append(heading);
+        for (const text of [row.warning, row.compatibility].filter(Boolean)) {
+          const message = document.createElement("p"); message.textContent = text; item.append(message);
+        }
+        for (const text of row.statusLines) {
+          const status = document.createElement("p"); status.textContent = text; item.append(status);
+        }
+        if (row.jobText) {
+          const outcome = document.createElement("p");
+          const text = document.createElement("strong"); text.textContent = row.jobText;
+          if (row.jobFailed) text.className = "err-badge";
+          outcome.append(text); item.append(outcome);
+        }
+        if (row.toggle) {
+          const toggle = row.toggle;
+          const controls = document.createElement("p"); controls.className = "row";
+          const button = document.createElement("button");
+          button.textContent = toggle.label;
+          button.disabled = toggle.disabled;
+          button.addEventListener("click", async () => {
+            button.disabled = true;
+            try {
+              const res = await apiFetch("/api/skill-packages/" + encodeURIComponent(toggle.package_id) + "/discovery", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled: !toggle.enabled})
+              });
+              if (!res.ok) {
+                const body = await res.json();
+                alert(body.detail || "Could not change discovery.");
+              }
+            } catch (err) { alert(err.message); }
+            finally { await refreshSkillPackages(); }
+          });
+          controls.append(button); item.append(controls);
+        }
+        for (const text of row.skillLines) {
+          const description = document.createElement("p"); description.textContent = text; item.append(description);
+        }
+        const links = document.createElement("p"); links.className = "row";
+        for (const [label, url] of [["Source", row.source], [row.issuesLabel, row.issues]]) {
+          if (url) { const link = document.createElement("a"); link.textContent = label; link.href = url; links.append(link); }
+        }
+        item.append(links);
         list.append(item);
       }
       fast = state.packages.some(p => p.job && p.job.running);

@@ -434,6 +434,7 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False, extension_pending=
               contains(name) {{ return classes.has(name); }}
             }},
             focus() {{}}, querySelectorAll() {{ return []; }},
+            addEventListener() {{}},
           }});
         }}
         return elements.get(id);

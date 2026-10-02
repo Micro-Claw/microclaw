@@ -1437,6 +1437,85 @@ reading only `catalog_entries`; local only, no gate.
 - **Not exercised:** a real catalog. As in 83f-1, every catalog here is a
   fixture; the first real one is 83f-3's gate.
 
+**83f-3 decisions** (operator, 2026-10-01). Panel delivery: download,
+install, update and remove from the catalog, with a demo gate covering the
+whole journey (D7).
+
+- **G1 — download from any https host.** The signed digest is what admits the
+  artifact, so no host list is kept. The download carries a size cap and a
+  timeout; a digest mismatch discards the file.
+- **G2 — the panel lists everything, installed first.** Then every other
+  package from an admitted publisher at its newest version. Incompatible ones
+  show greyed with their reason.
+- **G3 — newest version only, plus rollback.** One button per row: "Install
+  <v>", or "Update to <v>" over an older install. Going back is the existing
+  rollback. Same rule as E2.
+- **G4 — refresh at startup and on a "Check now" button.** The panel says when
+  the catalog was last checked, or that it is offline and showing the saved
+  copy. No background checks, and install does not refetch.
+- **G5 — the gate's catalog lives on this block's branch.** A test-root-signed
+  policy, catalog and package in `design/`, fetched from
+  `raw.githubusercontent.com` (the production catalog host), with the
+  package's locked wheels from PyPI: the first real run of `find_links=None`.
+  `Micro-Claw/package-catalog` is still created by intake (83f-4). The gate
+  restores the machine's trust roots afterwards.
+- **G6 — Remove on every installed package**, behind a confirm step that says
+  only the package's installed files go and its results stay. Refused while an
+  analysis using it is running.
+- **G7 — Install and Update confirm first.** Package and version, publisher,
+  licence, D2's notice with the issues link, Install / Cancel. Cancel downloads
+  nothing.
+- **G8 — after the first demo gate's screenshot** (operator, 2026-10-02).
+  Buttons are plain verbs: Install, Update, Remove. The version lives on the
+  row, which reads "<installed> — <newer> available" when an update is offered,
+  and the confirm box names the version it installs. This amends G3's button
+  text. D2's notice appears **once above the list** ("MicroClaw does not test or
+  support these packages. Each one is its publisher's."), and each row links
+  "Source" and "Report problems to <publisher>". The full D2 sentence stays in
+  the Install/Update confirm box.
+- **G9 — one box per package** (operator, 2026-10-02, after round 2: the
+  tampered install's error appeared in a separate list at the bottom of the
+  panel and was missed). Each package's card carries its install state, the
+  agent-access toggle and its last action's result or error. The separate list
+  goes away; an installed package absent from the catalog gets a card of its
+  own. An install job's result belongs to the card of the publisher whose
+  release was requested.
+
+**What 83f-3 settled** (`skill_store.download_release`, `start_job(...,
+"install")`, `select_catalog_releases`, `panel_catalog`; routes
+`/api/skill-packages/{catalog,check,<id>/install,<id>/remove}`; the panel in
+`transcript.js`/`serve.html`; tests in `tests/test_skill_store.py`,
+`test_webserve.py`, `test_transcript_js.py`):
+- **The production index route ran for the first time.** Demo machine, round 3:
+  1.0.0 and 1.1.0 each built their own Python 3.12.13 environment with
+  `find_links: null`, and `iniconfig 2.0.0` came from PyPI under the signed
+  hash. The first real catalog fetch also ran there, from
+  `raw.githubusercontent.com` at serve's startup and on Check now
+  (0.54–0.57 s from `last_attempt` to the state write, n=2 rounds).
+- **One selection rule.** `select_catalog_releases` serves both the agent's
+  search (per skill) and the panel (per package). The install job refuses
+  anything but the offer it would show, reading the saved catalog only.
+- **The store is keyed by package id, the catalog by publisher and package id.**
+  Review finding C1: an admitted publisher's same-named package replaced
+  another's, with Roll back then running the first publisher's code. `_transaction`
+  now refuses a different publisher, and an install job records the release it
+  was asked for, so its outcome is shown on that publisher's card.
+- **A download that dies leaves `.download-*`, which recovery deletes.**
+- **The panel is one card per package (G8, G9)**, from the operator's two
+  screenshots: plain-verb buttons, one D2 notice above the list, state, toggle
+  and last result inside the card. Round 2's tampered-install error was in a
+  separate bottom list and was missed.
+- **Gate:** three rounds. Round 1 measured nothing: "Copy the printed chat
+  message" was read as "paste the reply here", and 83d's `ask` took a 12-line
+  paste as twelve answers. 83f-3's `ask` accepts only `DONE` where it asks for
+  it, refuses empty text and drains Windows console input before every prompt.
+  Round 2 scored 9/10, and the one FAIL scored the operator's typing. Round 3
+  scored 10/10 from artifacts, plus one operator-judged limb that was all yes.
+- **Not measured:** install duration to completion. `job.json` records no finish
+  time (`R145`).
+- `Micro-Claw/package-catalog` (D4) is still created by release intake, now
+  **83f-4** under D7; this block's catalog lived on its own branch.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1478,7 +1557,8 @@ and otherwise stays open.
 | 83e-5 | `block-83e-5` | `f3d039c` | **merged 2026-10-01** as `17e4514`, PR #44 — demo gate 2026-10-01, round 1 8/8 with a priority-record defect found in the job records, round 2 8/8 scored from artifacts |
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
-| 83f-2 | `block-83f-2` | `225b6f2` | settled 2026-10-01, PR #46 — local only, no gate; decisions E1–E5 |
+| 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
+| 83f-3 | `block-83f-3` | `9e9271a` | settled 2026-10-02, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

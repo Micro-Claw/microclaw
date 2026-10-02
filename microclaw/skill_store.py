@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -281,8 +283,9 @@ def _recover(package, *, retained_digests):
         for path in package.glob(".pointer.json.*"):
             _delete(path, failures)
         _retention(package, retained_digests=retained_digests, failures=failures)
-    for path in package.glob(".lock-stale-*"):
-        _delete(path, failures)
+    for pattern in (".lock-stale-*", ".download-*"):
+        for path in package.glob(pattern):
+            _delete(path, failures)
     # Recovery holds the package lock, so no job can be live: a `running` record
     # was left by a serve that exited mid-job, and would otherwise read as
     # running (and keep the panel polling fast) forever.
@@ -389,7 +392,7 @@ def _platform(identity, manifest):
 def _intake_compatibility(record, build):
     """Compatibility fields shared by listing cards and installed manifests."""
     if build["version"] not in SpecifierSet(record["microclaw"]):
-        raise PackageRefusal("microclaw", "incompatible with " + build["version"])
+        raise PackageRefusal("microclaw", "needs MicroClaw " + record["microclaw"] + "; this is " + build["version"])
     if record["kind"] == "executable":
         if PINNED_PYTHON not in SpecifierSet(record["python"]):
             raise PackageRefusal("python", "excludes pinned Python " + PINNED_PYTHON)
@@ -548,6 +551,10 @@ def _verify_assets(directory, record):
 def _transaction(package, intake, artifact_path, *, policy, now, uv_executable,
                  retained_digests, find_links=None, base_python=None, repairing=None):
     records = _records(package)
+    for _, record, _ in records:
+        stored_intake = record.get("intake") if isinstance(record, dict) else None
+        if isinstance(stored_intake, dict) and stored_intake.get("publisher") != intake["publisher"]:
+            raise PackageRefusal("publisher", "another publisher's package with this name is installed; remove it first")
     pointer, broken = _pointer(package, records)
     if repairing is None and any(record and record.get("state") == "ready"
                                  and record.get("artifact_digest") == intake["artifact_digest"]
@@ -613,13 +620,21 @@ def install(intake, artifact_path, *, policy, now, uv_executable=None, retained_
     packages.check_release(intake, policy, purpose="admission", now=now, artifact=artifact_path)
     with package_lock(intake["package_id"]) as package:
         _recover(package, retained_digests=retained_digests)
-        record = _transaction(package, intake, artifact_path, policy=policy, now=now,
-                              uv_executable=uv_executable, retained_digests=retained_digests,
-                              find_links=find_links, base_python=base_python)
-        if not (package / "discovery.json").exists():
-            _write(package / "discovery.json",
-                   _discovery_decision(True, record["artifact_digest"], now=now, source="install"))
-        return record
+        return _install(package, intake, artifact_path, policy=policy, now=now,
+                        uv_executable=uv_executable, retained_digests=retained_digests,
+                        find_links=find_links, base_python=base_python)
+
+
+def _install(package, intake, artifact_path, *, policy, now, uv_executable=None,
+             retained_digests, find_links=None, base_python=None):
+    """Install under the caller's already recovered package lock."""
+    record = _transaction(package, intake, artifact_path, policy=policy, now=now,
+                          uv_executable=uv_executable, retained_digests=retained_digests,
+                          find_links=find_links, base_python=base_python)
+    if not (package / "discovery.json").exists():
+        _write(package / "discovery.json",
+               _discovery_decision(True, record["artifact_digest"], now=now, source="install"))
+    return record
 
 
 def _rollback(package, *, policy, now, retained_digests):
@@ -916,23 +931,47 @@ def resolve(package_id, artifact_digest, *, now, policy=None):
     raise PackageRefusal("artifact_digest", "no ready install with requested digest")
 
 
-def start_job(package_id, action, *, retained_digests):
+def start_job(package_id, action, *, retained_digests, release=None, opener=None):
     """Reserve the durable package lock before HTTP 202; report conflicts as 409."""
-    if action not in {"rollback", "repair"}:
+    if action not in {"rollback", "repair", "install"}:
         raise PackageRefusal("operation", "unknown store operation")
     lock = package_lock(package_id)
     package = lock.__enter__()
-    job = dict(operation=action, running=True, phase="recovering", started_at=time.time())
+    job = dict(operation=action, running=True,
+               phase="downloading" if action == "install" else "recovering", started_at=time.time())
+    if action == "install":
+        job["release"] = dict(release) if isinstance(release, dict) else None
     try:
+        _recover(package, retained_digests=retained_digests)
         _write(package / "job.json", job)
         def work():
             try:
-                _recover(package, retained_digests=retained_digests)
                 policy = load_trust_policy()
-                job["phase"] = action
+                job["phase"] = "downloading" if action == "install" else action
                 _write(package / "job.json", job)
                 kwargs = dict(policy=policy, now=datetime.now(timezone.utc), retained_digests=retained_digests)
-                if action == "repair":
+                if action == "install":
+                    catalog = catalog_entries(now=kwargs["now"])
+                    kwargs["policy"] = catalog["policy"]
+                    selected = select_catalog_releases(catalog)
+                    choice = selected.get((release.get("publisher"), package_id)) if isinstance(release, dict) else None
+                    fields = ("publisher", "package_id", "version", "artifact_digest")
+                    if (not choice or not choice[1]["compatible"] or
+                            any(release.get(f) != choice[1][f] for f in fields)):
+                        raise PackageRefusal("release", "requested release is not the newest installable catalog offer")
+                    job["phase"] = "downloading"
+                    _write(package / "job.json", job)
+                    with download_release(choice[1], package=package, opener=opener) as artifact:
+                        job["phase"] = "installing"
+                        _write(package / "job.json", job)
+                        intake = {k: v for k, v in choice[1].items() if k not in {
+                            "compatible", "compatibility_reason", "installed", "withdrawn",
+                            "withdrawal_reason", "blocked", "block_reason"}}
+                        packages.check_release(intake, kwargs["policy"], purpose="admission",
+                                               now=kwargs["now"], artifact=artifact)
+                        record = _install(package, intake, artifact, uv_executable=updates.locate_uv(),
+                                          find_links=None, **kwargs)
+                elif action == "repair":
                     record = _repair(package, uv_executable=updates.locate_uv(), **kwargs)
                 else:
                     record = _rollback(package, **kwargs)
@@ -1129,6 +1168,85 @@ def catalog_entries(*, now):
                 policy=policy)
 
 
+def select_catalog_releases(catalog, *, per_skill=False):
+    """E2/G3: prefer compatibility, then version, excluding withdrawals and blocks."""
+    selected = {}
+    for release in catalog["releases"]:
+        if release["withdrawn"] or release.get("blocked"):
+            continue
+        for skill in release["skills"] if per_skill else [None]:
+            key = (packages.qualified_name(release["publisher"], release["package_id"], skill["name"])
+                   if per_skill else (release["publisher"], release["package_id"]))
+            rank = (release["compatible"], packages.Version(release["version"]))
+            if key not in selected or rank > selected[key][0]:
+                selected[key] = (rank, release, skill)
+    return selected
+
+
+def panel_catalog(*, now):
+    catalog = catalog_entries(now=now)
+    offered = select_catalog_releases(catalog)
+    rows = {}
+    entries = list(catalog["releases"])
+    for excluded in catalog["exclusions"]:
+        if not excluded.get("blocked"):
+            continue
+        try:
+            entry = packages.validate_intake(excluded.get("entry"))
+        except PackageRefusal:
+            continue
+        entries.append(dict(entry, blocked=True, block_reason=excluded["block_reason"],
+                            compatible=False, compatibility_reason=None,
+                            withdrawn=False, withdrawal_reason=None))
+    for entry in entries:
+        key = (entry["publisher"], entry["package_id"])
+        if key not in rows or packages.Version(entry["version"]) > packages.Version(rows[key]["version"]):
+            rows[key] = dict(entry, installed_version=None, offered_release=None)
+    # Active installs remain visible even if absent from the saved catalog.
+    snapshot, _, _, _, _ = _discovery_state(now=now)
+    for package in snapshot["packages"]:
+        records = package["installs"]
+        has_active = any(record["active"] for record in records)
+        for record in records:
+            if record.get("state") != "ready" or (has_active and not record["active"]):
+                continue
+            try:
+                intake = packages.validate_intake(record.get("intake"))
+            except PackageRefusal:
+                continue
+            key = (intake["publisher"], intake["package_id"])
+            matching = next((e for e in entries if all(e[f] == intake[f] for f in
+                ("publisher", "package_id", "version", "artifact_digest"))), intake)
+            rows[key] = dict(matching, installed_version=intake["version"], offered_release=None)
+    for key, row in rows.items():
+        offer = offered[key][1] if key in offered else None
+        if row["installed_version"] is None and offer:
+            row.update(offer)
+        row["offered_release"] = offer
+        row["update_available"] = bool(offer and row["installed_version"] and
+            packages.Version(offer["version"]) > packages.Version(row["installed_version"]))
+    return {"packages": sorted(rows.values(), key=lambda r: (r["installed_version"] is None,
+                                                            r["publisher"], r["package_id"]))}
+
+
+@contextmanager
+def download_release(entry, *, package, opener=None):
+    """Yield verified temporary bytes; discard them on every normal exit."""
+    opener = opener or updates._default_opener
+    with tempfile.NamedTemporaryFile(dir=package, prefix=".download-", suffix=".zip", delete=False) as file:
+        path = Path(file.name)
+    try:
+        data, _ = updates._open_manual(entry["artifact"], opener,
+            max_bytes=packages.MAX_ARTIFACT_DOWNLOAD_BYTES, allowed_hosts=None,
+            label="package artifact", accept="application/octet-stream")
+        path.write_bytes(data)
+        if hashlib.sha256(data).hexdigest() != entry["artifact_digest"]:
+            raise PackageRefusal("artifact_digest", "download does not match signed digest")
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def search_catalog(query="", *, now):
     """Search saved publisher metadata; never fetch or change discovery state."""
     try:
@@ -1153,15 +1271,7 @@ def search_catalog(query="", *, now):
                 installed[(intake["publisher"], intake["package_id"])] = row["discovery"]
         candidate_packages = {(record["manifest"]["publisher"], record["manifest"]["package_id"])
                               for record in candidates}
-        selected = {}
-        for release in catalog["releases"]:
-            if release["withdrawn"]:
-                continue
-            for skill in release["skills"]:
-                name = packages.qualified_name(release["publisher"], release["package_id"], skill["name"])
-                rank = (release["compatible"], packages.Version(release["version"]))
-                if name not in selected or rank > selected[name][0]:
-                    selected[name] = (rank, release, skill)
+        selected = select_catalog_releases(catalog, per_skill=True)
         words = query.casefold().split()
         cards = []
         total = 0

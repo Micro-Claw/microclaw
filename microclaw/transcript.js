@@ -279,41 +279,112 @@
     });
   }
 
+  function skillPackageRequest(row, operation, accepted) {
+    if (!accepted) return null;
+    const release = row.offered_release;
+    return {url: "/api/skill-packages/" + encodeURIComponent(row.package_id) + "/" + operation,
+      body: operation === "install" ? Object.fromEntries(
+        ["publisher", "package_id", "version", "artifact_digest"].map(k => [k, release[k]])) : null};
+  }
+
   function skillPackagesView(state) {
     const reasons = values => (values || []).map(r => r.field + ": " + r.detail).join("; ");
+    const details = values => (values || []).map(r => r.detail).filter(Boolean).join("; ");
     // Only the active release can be read, so only its row says whether the agent can.
     // The off switch is the clause itself; other exclusions (a name clash, a failed
     // check) are the reasons after it.
     const readable = install => {
-      if (install.discoverable) return " — agent can read it";
+      if (install.discoverable) return " — the agent can read it";
       const other = (install.discovery_exclusions || []).filter(r => r.field !== "discovery" && r.field !== "active");
-      return " — hidden from the agent" + (other.length ? ": " + reasons(other) : "");
+      return " — hidden from the agent" + (other.length ? ": " + details(other) : "");
     };
-    const rows = [];
-    for (const pkg of state.packages || []) {
-      for (const install of pkg.installs || []) {
-        const manifest = install.manifest || install.intake || {};
-        rows.push((manifest.publisher || "unknown") + "/" + pkg.package_id + " " +
-          (manifest.version || "unknown") + " " + (install.artifact_digest || "").slice(0, 12) +
-          " — " + install.state + (install.active ? " (active)" : install.previous ? " (previous)" : "") +
-          (install.eligible ? " — eligible" : " — disabled: " + reasons(install.reasons)) +
-          (install.active ? readable(install) : ""));
-      }
-      if ((pkg.discovery_reasons || []).length) rows.push(pkg.package_id + " — hidden from the agent: " + reasons(pkg.discovery_reasons));
-      if ((pkg.broken || []).length) rows.push(pkg.package_id + " — disabled: " + reasons(pkg.broken));
-      for (const failure of pkg.deletion_failures || []) rows.push(pkg.package_id + " — deletion pending: " + failure.detail);
-      if (pkg.job) rows.push(pkg.package_id + " — " + pkg.job.operation + ": " + pkg.job.phase +
-        ((pkg.job.reasons || []).length ? " — " + reasons(pkg.job.reasons) : ""));
-    }
     const trust = state.trust || {};
-    const discovery = (state.packages || []).map(pkg => ({
-      package_id: pkg.package_id,
-      enabled: !!(pkg.discovery && pkg.discovery.enabled),
-      label: pkg.discovery && pkg.discovery.enabled
-        ? "Stop the agent reading this package" : "Let the agent read this package",
-      disabled: !!(pkg.job && pkg.job.running)
-    }));
-    return {rows, discovery,
+    const identity = install => install.manifest || install.intake || {};
+    const statusPackages = state.packages || [];
+    const listing = [...((state.catalogListing || {}).packages || [])];
+    for (const pkg of statusPackages) {
+      const installs = pkg.installs || [];
+      const owner = installs.find(i => i.active) || installs.find(i => i.state === "ready") || installs[0];
+      const installedCard = listing.find(row => row.package_id === pkg.package_id && row.installed_version);
+      const known = owner && identity(owner).publisher ? identity(owner) : installedCard || (pkg.job || {}).release || {};
+      const publisher = known.publisher || "unknown";
+      if (!listing.some(row => row.package_id === pkg.package_id && row.publisher === publisher)) {
+        listing.push({...known, publisher, package_id: pkg.package_id, version: known.version || "unknown",
+          installed_version: owner && owner.state === "ready" ? known.version : null,
+          offered_release: null, storeOnly: true});
+      }
+    }
+    const https = url => { try { return new URL(url).protocol === "https:" ? url : null; } catch (_) { return null; } };
+    const catalogRows = listing.map(row => {
+      const pkg = statusPackages.find(pkg => pkg.package_id === row.package_id);
+      const installs = pkg ? (pkg.installs || []).filter(i => (identity(i).publisher || "unknown") === row.publisher) : [];
+      const active = installs.find(i => i.active);
+      const ownsPackage = !!(installs.length || row.installed_version || row.storeOnly);
+      const job = pkg && pkg.job;
+      const jobBelongs = job && (job.operation === "install"
+        ? job.release && job.release.publisher === row.publisher && job.release.package_id === row.package_id
+        : ownsPackage);
+      const installedVersion = active && active.state === "ready" ? identity(active).version : row.installed_version;
+      const statusLines = [...installs].sort((a, b) => Number(!!b.active) - Number(!!a.active)).map(install => {
+        const version = identity(install).version || "unknown";
+        const reason = details(install.reasons);
+        if (install.active && install.state === "ready") {
+          return install.eligible ? "Installed" + readable(install) :
+            "Installed, but disabled" + (reason ? ": " + reason : "");
+        }
+        if (install.previous) return "Version " + version + " is kept for Roll back";
+        if (["failed", "staged"].includes(install.state) && reason) {
+          return "An earlier install of " + version + " did not finish: " + reason;
+        }
+        return null;
+      }).filter(Boolean);
+      if (!statusLines.length) statusLines.push(installedVersion ? "Installed" : row.storeOnly ? "Install state is unknown" : "Not installed");
+      if (pkg && ownsPackage) {
+        if ((pkg.discovery_reasons || []).length) statusLines.push("Hidden from the agent: " + details(pkg.discovery_reasons));
+        if ((pkg.broken || []).length) statusLines.push("Disabled: " + details(pkg.broken));
+        for (const failure of pkg.deletion_failures || []) statusLines.push("Deletion pending: " + failure.detail);
+      }
+      const toggle = pkg && ownsPackage ? {
+        package_id: row.package_id, enabled: !!(pkg.discovery && pkg.discovery.enabled),
+        label: pkg.discovery && pkg.discovery.enabled ? "Stop the agent reading this package" : "Let the agent read this package",
+        disabled: !!(job && job.running)
+      } : null;
+      const operation = job && job.operation === "install" && installedVersion ? "Update" :
+        ({install: "Install", rollback: "Roll back", repair: "Repair", remove: "Remove"}[job && job.operation] || "Install");
+      const jobFailed = !!(jobBelongs && !job.running && (job.reasons || []).length);
+      const jobText = !jobBelongs ? "" : job.running ?
+        ({Install: "Installing", Update: "Updating", Remove: "Removing", "Roll back": "Rolling back", Repair: "Repairing"}[operation] +
+          "… (" + job.phase + ")") : jobFailed ? operation + " failed: " + job.reasons.map(r => r.detail).join("; ") : "";
+      const release = row.offered_release;
+      const detail = reason => typeof reason === "string" ? reason : (reason || {}).detail || "unknown";
+      const confirmNotice = "MicroClaw does not test or support this package. Report problems to " + row.publisher;
+      let warning = "";
+      if (row.withdrawn) warning = "Withdrawn by its publisher: " + detail(row.withdrawal_reason) +
+        ". It stays installed and keeps working; new installs can't choose it.";
+      if (row.blocked) warning = "Blocked by MicroClaw: " + detail(row.block_reason) +
+        ". The agent can't read it and it can't run. Nothing was deleted — its files and every result it produced are still on this computer.";
+      const canInstall = release && release.compatible && !release.blocked && !release.withdrawn &&
+        (!installedVersion || row.update_available);
+      const heading = row.publisher + "/" + row.package_id + " " + (installedVersion || row.version) +
+        (row.update_available && release ? " — " + release.version + " available" : "");
+      return {...row, installed_version: installedVersion, heading, confirmNotice, warning, statusLines, toggle, jobText, jobFailed,
+        disabled: !!(pkg && pkg.job && pkg.job.running), recoverable: ownsPackage,
+        skillLines: (row.skills || []).map(skill => skill.name + " — " + skill.description),
+        issuesLabel: "Report problems to " + row.publisher, issues: https(row.issues_url), source: https(row.source_url), confirmIssues: https((release || row).issues_url),
+        compatibility: (release || row).compatible === false ? "Can't be installed here: " + detail((release || row).compatibility_reason) : "",
+        action: canInstall ? (installedVersion ? "Update" : "Install") : null,
+        remove: ownsPackage};
+    }).sort((a, b) => Number(!a.recoverable) - Number(!b.recoverable) ||
+      (a.publisher + "/" + a.package_id).localeCompare(b.publisher + "/" + b.package_id));
+    const catalog = state.catalog || {};
+    const saved = catalog.last_success ? new Date(catalog.last_success).toLocaleString() : "unknown date";
+    const hours = Math.max(0, Math.floor((Date.now() - Date.parse(catalog.last_success)) / 3600000));
+    const freshness = catalog.state === "unpublished" ? "No community catalog is published yet" :
+      catalog.state === "unreachable" ? "Offline — showing the copy saved " + saved :
+      catalog.state === "ok" ? "Catalog checked " + (hours ? hours + " hours ago" : "less than an hour ago") :
+      catalog.state === "refused" ? "Catalog check refused — showing the copy saved " + saved : "Catalog has not been checked yet";
+    return {catalogRows, freshness,
+      catalogNotice: "MicroClaw does not test or support these packages. Each one is its publisher's.",
       disclosure: "Installing a package lets the agent read its instructions; you can stop that here. " +
         "That never lets its code run: MicroClaw asks you each time, or once per session. " +
         "Package code runs with your user permissions and is not sandboxed. " +
@@ -411,7 +482,7 @@
 
   global.Transcript = {
     esc, escAttr, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
-    updateBannerView, extensionsView, skillPackagesView,
+    updateBannerView, extensionsView, skillPackagesView, skillPackageRequest,
     artifactOf, artifactChip, parseHistoryText,
     expandAll: (tx) => setOpen(tx, true),
     collapseAll: (tx) => setOpen(tx, false),
