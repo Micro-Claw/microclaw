@@ -1592,7 +1592,7 @@ and otherwise stays open.
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
 | 83f-3 | `block-83f-3` | `9e9271a` | **merged 2026-10-02** as `42770ab`, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
-| 83f-4 | `block-83f-4` | `42770ab` | opened 2026-10-02 — release intake into `Micro-Claw/package-catalog` |
+| 83f-4 | `block-83f-4` | `42770ab` | PR #48 — decisions H1–H6; `Micro-Claw/package-catalog` created 2026-10-02 (main `096b844`, test `8be5cb9`, intake pinned to `01ac803`); fork gate pending |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
