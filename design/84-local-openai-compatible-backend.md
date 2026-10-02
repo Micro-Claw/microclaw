@@ -170,7 +170,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | block | branch | start | state |
 |---|---|---|---|
 | 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | reviewed 2026-10-02, gate not run |
-| 84b | — | — | not started |
+| 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | reviewed 2026-10-02; gate 84 pushed, not run |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -190,4 +190,30 @@ redundant `kind` branch in `webserve.py`'s key route.
 **Runner lesson.** A revision turn outlived Claude Code's 2-hour background cap
 when the network dropped mid-turn. Launch long runner turns under `nohup`
 (CLAUDE.md step 2) rather than as session background tasks.
+
+**84b review, 2026-10-02.** Four runner turns: `246a72f` (budget from the
+server), `1dcb5b1` (H1: fixed prompt counted through `/apply-template` +
+`/tokenize` = **33,864**, equal to the server's own `prompt_tokens`; the
+untemplated count was 30,118), `befe1a7` (K1: the browser locked Send without a
+key on a keyless local server), `0ecbbcc` (L1–L4: with `--api-key` every
+llama.cpp endpoint but `/health` 401s, the store was built before the key was
+loaded, and failed probes were cached — the budget clamped to **2**).
+Coordinator fixes: `55af3bb` (a stored key was no longer registered with the
+history audit's redaction after that reorder), `2780191` (`keyRequired`
+declared with the page state; an absent `key_required` reads as required),
+`557200f` (a stale round-1 test). Live on the workstation: budget 84,920 /
+63,690 with the key; without it a stated provisional 4,096 / 3,072 and every
+401 named, re-read exactly when the key is entered. Prefix reuse measured over
+a 5-round tool loop: each round reused all but 4–56 tokens of the previous.
+Full suite on `a8c4f81`: **5547 passed, 108 skipped, 1 failed** —
+`test_built_wheel_contains_the_source_tree_skill_catalog`, which passes alone
+and failed the same way at 84a's baseline (2 of 6 full runs this session).
+
+**D6 correction.** After compaction the system+tools prefix stays cached, so
+the slow round re-processes the history only: ≈ low-water (63,690) at
+~900 tok/s, about 70 s, not the whole prompt. Gate 84 measures it.
+
+**For later, not a block yet.** The model's chat template renders "Reasoning
+effort is set to xhigh" by default; a lower per-request effort may cut reply
+latency substantially. Measure against gate 84's baseline before changing it.
 
