@@ -164,6 +164,11 @@ def tree(root):
 
 def one_added_path(changes):
     """Enforce H2 on either a tree comparison or the PR's declared Git diff."""
+    if (len(changes) == 1 and changes[0][0] == 'M'
+            and changes[0][1].split('/')[0] in ('releases', 'withdrawals')):
+        # A resubmitted version edits the existing file; say what to do, not what H2 forbids.
+        raise Refusal('path', 'this publisher/package/version is already in the catalog and cannot change; '
+                      'publish a new version: ' + changes[0][1][:240])
     if len(changes) != 1 or changes[0][0] != 'A':
         paths = ', '.join(path for _, path in changes)[:240] or 'no file added'
         raise Refusal('path', 'add exactly one release or withdrawal file; no other changes: ' + paths)

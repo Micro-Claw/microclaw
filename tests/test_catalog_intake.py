@@ -818,3 +818,14 @@ def test_materialize_refuses_pr_edit_even_if_current_base_already_matches(setup,
     assert caught.value.field == 'path'
     assert 'README.md' in str(caught.value)
     assert (out / 'README.md').read_bytes() == (repo / 'README.md').read_bytes()
+
+
+def test_resubmitted_version_says_publish_a_new_version(setup, monkeypatch):
+    # Gate case D on 2026-10-02: the refusal named H2's rule, not the publisher's fix.
+    earlier = deepcopy(setup['record'])
+    earlier['artifact_digest'] = '0' * 64
+    write(setup['base'] / setup['path'], intake.sign(earlier, private()))
+    monkeypatch.setattr(store, 'download_release', lambda *a, **k: pytest.fail('resubmission fetched'))
+    result = setup['check']()
+    assert_field(result, 'path')
+    assert 'publish a new version' in result['detail']

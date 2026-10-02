@@ -64,8 +64,10 @@ jobs:
             fi
             # Overlay only the PR's merge-base diff on this fresh base, as blobs.
             set +e
-            python -m microclaw.catalog_intake materialize --git-dir "$PWD" --base-ref "$checked_base" --head-sha "$HEAD_SHA" --out "$DATA_HEAD" > "$RUNNER_TEMP/verdict.md"
+            python -m microclaw.catalog_intake materialize --git-dir "$PWD" --base-ref "$checked_base" --head-sha "$HEAD_SHA" --out "$DATA_HEAD" --json > "$RUNNER_TEMP/verdict.md"
             verdict=$?
+            # Record the change set intake judged, so the run log is evidence on its own.
+            cat "$RUNNER_TEMP/verdict.md"
             if [[ "$verdict" == 0 ]]; then
               python -m microclaw.catalog_intake check --base "$PWD" --head "$DATA_HEAD" "${args[@]}" > "$RUNNER_TEMP/verdict.md"
               verdict=$?
