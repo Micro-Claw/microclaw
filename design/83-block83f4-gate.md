@@ -10,7 +10,9 @@ Use **uv's Python interpreter**, in PowerShell or a POSIX shell, from the
 MicroClaw checkout. `gh` (https://cli.github.com; Windows:
 `winget install --id GitHub.cli`, then reopen PowerShell and run
 `gh auth login`) must be installed and logged in to the operator's account;
-`run`, `verify` and `cleanup` refuse first if it is not. The reviewed fixtures must be on `block-83f-4` before the run so the
+`run`, `verify` and `cleanup` refuse first if it is not.
+If a new PowerShell still says `gh` is not recognized, restart Windows. On
+2026-10-02 nothing short of a restart worked (new shell, `PATH` refresh; n=1). The reviewed fixtures must be on `block-83f-4` before the run so the
 artifact URLs resolve.
 
 ```powershell
