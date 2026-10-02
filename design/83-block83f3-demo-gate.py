@@ -14,7 +14,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -46,12 +45,12 @@ PROMPTS = {
     2: 'Open Community skill packages. Type the line starting Catalog / Offline / No community exactly as shown.',
     3: 'Click Install on fixture-lab/executable-fixture. Does the box show the publisher, licence, and "MicroClaw does not test or support this package"? Answer yes/no plus anything missing. Click Cancel; click Install again, then Install. Wait until the row shows installed before answering.',
     4: 'Install fixture-lab/markdown-fixture: Install, then Install. Type DONE when installed.',
-    5: 'Install fixture-lab/tampered-fixture: Install, then Install. Type the error shown by the panel.',
-    6: 'Install fixture-two/markdown-fixture: Install, then Install. Type the error shown by the panel.',
+    5: 'Install fixture-lab/tampered-fixture (Install, then Install). Does its card now show an install failure? Type yes/no and the text shown.',
+    6: 'Install fixture-two/markdown-fixture (Install, then Install). Does its card now show an install failure? Type yes/no and the text shown. Is the error on fixture-two’s card and not on fixture-lab’s? (yes/no)',
     7: 'Type the reason on fixture-lab/incompatible-fixture and whether its row has an Install button (yes/no).',
-    9: 'Click Check now. Wait for it to finish. Type the text shown on fixture-lab/executable-fixture and fixture-lab/markdown-fixture, including executable-fixture’s version row (1.0.0 — 1.1.0 available) and both warning sentences.',
+    9: 'Click Check now. Does executable-fixture’s card say "Blocked by MicroClaw" and markdown-fixture’s say "Withdrawn by its publisher"? Type yes/no for each.',
     10: 'Click Update on fixture-lab/executable-fixture, then Install. Type DONE when finished.',
-    11: 'Click Remove on fixture-lab/markdown-fixture. Did the box say only installed files go and results stay (yes/no plus anything missing)? Click Remove, wait for completion, then answer.',
+    11: 'Click Remove on fixture-lab/markdown-fixture. Keep the box open and read it: does it say only the installed files go and the results stay? Type yes/no here.',
 }
 
 
@@ -260,6 +259,14 @@ class Gate(gate83e3.Gate):
             began = time.perf_counter()
             try:
                 answer = self.ask(prompt, str(step), kind='text' if step in (2, 3, 5, 6, 7, 9, 11) else 'done')
+                if step == 11:
+                    # Save the box-reading judgement before asking the operator
+                    # to dismiss it, including when they STOP at the next prompt.
+                    session['answers']['11'] = answer
+                    self.save('session', session)
+                    session['answers']['11_removed'] = self.ask(
+                        'Now click Remove in the box. Type DONE when the card shows it removed.',
+                        '11_removed', kind='done')
             except NotExercised:
                 session['stopped_at'] = step
                 self.save('session', session)
@@ -325,19 +332,6 @@ def ready(directory, entry):
 
 def job(directory, entry):
     return read_json(Path(directory) / 'packages' / entry['package_id'] / 'job.json')
-
-
-def sentences():
-    """Read installed transcript.js, not this checkout or a retyped copy."""
-    from microclaw import skill_store
-    source = (Path(skill_store.__file__).parent / 'transcript.js').read_text(encoding='utf-8')
-    result = {}
-    for name in ('withdrawn', 'blocked'):
-        match = re.search(r'if \(row\.' + name + r'\) warning = "([^"]*)" \+ detail\(row\.\w+\) \+\s*"([^"]*)";', source)
-        if not match:
-            raise NotExercised('installed transcript.js warning not found: ' + name)
-        result[name] = match.groups()
-    return result
 
 
 def offline(gate):
@@ -434,8 +428,10 @@ def verify(gate, *, cleanup=True):
         assert ready(before, expected['M1']) == ready(after, expected['M1']), 'M1 changed'
         pointer = Path('packages/markdown-fixture/pointer.json')
         assert read_json(before / pointer) == read_json(after / pointer)
-        assert any(r['field'] == 'publisher' for r in job(after, expected['B1']).get('reasons', []))
-        return 'other publisher refused; M1 record and active pointer unchanged'
+        collision_job = job(after, expected['B1'])
+        assert any(r['field'] == 'publisher' for r in collision_job.get('reasons', []))
+        assert collision_job.get('release') == {k: expected['B1'][k] for k in IDENTITY}, collision_job
+        return 'fixture-two release refused; M1 record and active pointer unchanged'
     def journey():
         from microclaw.skill_packages import qualified_name
         name = qualified_name(expected['E1']['publisher'], expected['E1']['package_id'], expected['E1']['skills'][0]['name'])
@@ -468,16 +464,27 @@ def verify(gate, *, cleanup=True):
         e1, e2 = ready(directory, expected['E1']), ready(directory, expected['E2'])
         pointer = read_json(directory / 'packages/executable-fixture/pointer.json')
         assert pointer == dict(active=e2['install_id'], previous=e1['install_id']), pointer
-        # A typed copy of a long sentence is not scored verbatim (em dashes and
-        # console code pages); the signed reasons prove which state the panel
-        # showed, and limb 10 carries the full sentences for judgement.
-        text = answer(9).casefold()
-        sentences()  # the installed panel still carries both D5 sentences
+        captured = snapshot(gate, 9)
         policy = read_json(FIXTURES / 'catalog-2/policy.json')
         withdrawal = read_json(FIXTURES / 'catalog-2/catalog.json')['withdrawals'][0]
-        for kind, reason in [('blocked', policy['revoked_releases'][0]['reason']), ('withdrawn', withdrawal['reason'])]:
-            assert reason.casefold() in text, kind + ' reason absent from the typed panel text'
-        return 'E2 active/E1 previous; both signed reasons in the typed panel text'
+        # Replay the real listing against a disposable snapshot copy. Panel
+        # listing uses durable install metadata, not the excluded environments.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'microclaw'
+            shutil.copytree(captured, root / 'skill-packages')
+            assert not list((root / 'skill-packages').rglob('env')), 'snapshot unexpectedly includes environments'
+            with isolated_store(root) as store:
+                listing = store.panel_catalog(now=datetime.fromisoformat(read_json(captured / 'snapshot.json')['captured_at']))
+        rows = {(r['publisher'], r['package_id']): r for r in listing['packages']}
+        executable = rows[expected['E1']['publisher'], expected['E1']['package_id']]
+        markdown = rows[expected['M1']['publisher'], expected['M1']['package_id']]
+        assert executable['installed_version'] == expected['E1']['version'], executable
+        assert executable.get('blocked'), executable
+        assert executable['block_reason']['detail'] == policy['revoked_releases'][0]['reason'], executable
+        assert executable['offered_release']['version'] == expected['E2']['version'] and executable['update_available'], executable
+        assert markdown['installed_version'] == expected['M1']['version'] and markdown.get('withdrawn'), markdown
+        assert markdown['withdrawal_reason'] == withdrawal['reason'], markdown
+        return 'E2 active/E1 previous; step-9 listing has E1 installed/blocked with E2 update and M1 installed/withdrawn, with signed reasons'
     def removed():
         directory = snapshot(gate, 11)
         assert not (directory / 'packages' / expected['M1']['package_id']).exists(), 'package directory remains'
@@ -569,6 +576,11 @@ class ScriptedOperator:
         self.messages.append(message)
 
     def answer(self, key):
+        if key == '11_removed':
+            assert (self.gate.store_root / 'packages/markdown-fixture').is_dir(), 'Remove happened before the box-reading answer'
+            response = self.client.post('/api/skill-packages/markdown-fixture/remove')
+            assert response.status_code == 200, response.text
+            return 'DONE'
         step = int(key)
         if step in CHAT:
             self.call(step)
@@ -588,7 +600,8 @@ class ScriptedOperator:
             return 'DONE'
         if step in (5, 6):
             result = self.install('T1' if step == 5 else 'B1')
-            return '; '.join(r['field'] + ': ' + r['detail'] for r in result.get('reasons', []))
+            text = '; '.join(r['field'] + ': ' + r['detail'] for r in result.get('reasons', []))
+            return 'yes; ' + text + ('; error on fixture-two only: yes (scripted)' if step == 6 else '')
         if step == 7:
             row = next(p for p in self.client.get('/api/skill-packages/catalog').json()['packages'] if p['package_id'] == entries()['I1']['package_id'])
             assert not row['compatible']
@@ -598,19 +611,12 @@ class ScriptedOperator:
             response = self.client.post('/api/skill-packages/check')
             self.refresh_wall_s = time.perf_counter() - began
             assert response.status_code == 200 and not response.json()['error'], response.text
-            copy = sentences()
-            policy = read_json(FIXTURES / 'catalog-2/policy.json')
-            notice = read_json(FIXTURES / 'catalog-2/catalog.json')['withdrawals'][0]
-            row = next(p for p in self.client.get('/api/skill-packages/catalog').json()['packages']
-                       if p['publisher'] == entries()['E1']['publisher'] and p['package_id'] == entries()['E1']['package_id'])
-            version_line = row['installed_version'] + ' — ' + row['offered_release']['version'] + ' available'
-            return version_line + '\n' + copy['blocked'][0] + policy['revoked_releases'][0]['reason'] + copy['blocked'][1] + '\n' + copy['withdrawn'][0] + notice['reason'] + copy['withdrawn'][1]
+            return 'executable-fixture blocked: yes; markdown-fixture withdrawn: yes (scripted)'
         if step == 10:
             assert not self.install('E2').get('reasons')
             return 'DONE'
         if step == 11:
-            response = self.client.post('/api/skill-packages/markdown-fixture/remove')
-            assert response.status_code == 200, response.text
+            assert (self.gate.store_root / 'packages/markdown-fixture').is_dir(), 'package removed before reading the box'
             return 'yes (scripted; confirmation copy needs human judgement)'
         raise AssertionError(key)
 
@@ -641,6 +647,10 @@ def mutation_cases(gate):
         gate83e3._edit_result(root, 'toolu_selftest08', lambda r: r.clear())
     def update():
         edit(10, 'packages/executable-fixture/pointer.json', lambda d: d.update(previous=None))
+    def revocation_missing():
+        edit(9, 'trust/policy.json', lambda d: d.update(revoked_releases=[]))
+    def collision_identity():
+        edit(6, 'packages/markdown-fixture/job.json', lambda d: d['release'].update(publisher='fixture-lab'))
     def remove():
         (snapshot(gate, 11) / 'packages/markdown-fixture').mkdir()
     def offline_damage():
@@ -653,7 +663,8 @@ def mutation_cases(gate):
         updates._default_opener = corrupt
     return [(fetch, '1 Real fetch'), (pypi, '2 PyPI route'), (panel, '3 Install from panel'),
             (tamper, '4 Tampered'), (publisher, '5 Other publisher'), (agent, '6 Agent journey'),
-            (update, '7 Blocked, update, withdrawn'), (remove, '8 Remove'), (offline_damage, '9 Offline')]
+            (update, '7 Blocked, update, withdrawn'), (revocation_missing, '7 Blocked, update, withdrawn'),
+            (collision_identity, '5 Other publisher'), (remove, '8 Remove'), (offline_damage, '9 Offline')]
 
 
 def check_operator_input(base):
@@ -866,7 +877,7 @@ def selftest():
                     final_bad = verify(clean, cleanup=True)
                 assert final_bad == 0 and not clean.store_root.exists(), 'cleanup failed'
                 assert not (root / POINTER).exists()
-                print(f'SELFTEST SUMMARY: 10 limbs (9 measured, 1 operator-judged); baseline 0 failed/not exercised; mutations killed {killed + 1}/10 (9 limb mutations + input mutation); input and cleanup-phase checks passed; roots-first cleanup passed. Live network and visual confirmations NOT EXERCISED by selftest.', flush=True)
+                print(f'SELFTEST SUMMARY: 10 limbs (9 measured, 1 operator-judged); baseline 0 failed/not exercised; mutations killed {killed + 1}/12 (11 limb mutations + input mutation); input and cleanup-phase checks passed; roots-first cleanup passed. Live network and visual confirmations NOT EXERCISED by selftest.', flush=True)
     return 0
 
 
