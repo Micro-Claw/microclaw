@@ -20,7 +20,7 @@ git checkout block-83f-3
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor ed25d8f HEAD
+git merge-base --is-ancestor 17e6a5a HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 .\install.bat
 if ($LASTEXITCODE -ne 0) { throw 'install failed' }
@@ -33,8 +33,8 @@ MicroClaw's console and launcher windows.
 
 ## 1. Clean up, then prepare
 
-Round 1 left its TEST-ONLY store behind. The first command removes it (and
-only a store carrying TEST-ONLY roots). It may ask you to close MicroClaw.
+The first command removes any TEST-ONLY store an earlier round left behind
+(and only a store carrying TEST-ONLY roots). With nothing to remove it says so.
 
 ```powershell
 .\design\83-block83f3-demo-gate.ps1 -Phase cleanup
@@ -64,16 +64,16 @@ one line. The panel is
 | 2 | panel | open it; type the `Catalog …` line |
 | 3 | panel | executable-fixture: **Install** → **Cancel**, then **Install** → **Install**; describe the box |
 | 4 | panel | markdown-fixture (fixture-lab): Install → Install |
-| 5 | panel | tampered-fixture: Install → Install; type the error |
-| 6 | panel | markdown-fixture (**fixture-two**): Install → Install; type the error |
+| 5 | panel | tampered-fixture: Install → Install; does **its box** show the failure? |
+| 6 | panel | markdown-fixture (**fixture-two**): Install → Install; failure on **fixture-two's** box only? |
 | 7 | panel | incompatible-fixture: type its reason; is there an Install button? |
 | 8 | chat | load the skill |
-| 9 | panel | **Check now**; type the text on executable-fixture (incl. `1.0.0 — 1.1.0 available`) and markdown-fixture |
+| 9 | panel | **Check now**; blocked / withdrawn shown on the two boxes? (yes/no each) |
 | 10 | panel | executable-fixture: **Update** → Install |
-| 11 | panel | markdown-fixture (fixture-lab): **Remove** → describe the box → Remove |
+| 11 | panel | markdown-fixture (fixture-lab): **Remove**, **read the box first** and answer, then Remove |
 | 12 | chat | search again |
 
-Steps 5 and 6 are **supposed to fail**: type the error exactly as shown. The
+Steps 5 and 6 are **supposed to fail**; the error should appear inside that package's box. The
 first install (step 3) builds a Python environment, so it may take a minute or
 two. Wait until the row shows it installed. If the agent asks whether to go
 ahead, answer `yes, go ahead`. Type `STOP` to abandon, then run step 3 anyway.
