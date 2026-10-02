@@ -40,11 +40,20 @@ cd C:\code\microclaw
 git fetch origin
 git checkout design84/84b-budget
 git pull
-git merge-base --is-ancestor 557200f HEAD
+git merge-base --is-ancestor 988abea HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" } else { "STOP - wrong tree, do not run the gate" }
 ```
 
 Expect `PIN OK`.
+
+If this clone existed before `988abea`, its recorded fixtures were checked out
+with Windows line endings and every replay fails; `git pull` does not rewrite
+them. Refresh them once (harmless on a fresh clone):
+
+```powershell
+Remove-Item -Recurse -Force tests\fixtures\llamacpp
+git checkout -- tests/fixtures/llamacpp
+```
 
 ## 2 — the environment
 
