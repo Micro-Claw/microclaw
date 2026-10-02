@@ -109,6 +109,7 @@ Rows added since the triage:
 | `R140` | `design/83` 83e-3's decisions, 2026-09-28 — the deferred "trigger receipt" |
 | `R141` | `design/83` 83e-3's demo gate, 2026-09-28 |
 | `R142`–`R144` | `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29 |
+| `R145` | `design/83` 83f-3's demo gate, scored from artifacts 2026-10-02 |
 
 
 ## The work queue
@@ -171,6 +172,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R140` | [Automatic package analysis cannot outlast a session](#r140) | LOW | MEDIUM |  |
 | ~~`R141`~~ | ~~[Package analysis cost during acquisition is unmeasured under a real worker](#r141)~~ | — | — | **CLOSED 2026-09-29 by `design/83` 83e-4** |
 | `R144` | [`duration_breakdown` cannot say where inside an acquisition the time went](#r144) | LOW | SMALL |  |
+| `R145` | [A package install records no finish time](#r145) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3160,3 +3162,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29.
+
+### R145 — A package install records no finish time
+
+**`job.json` carries `started_at` and nothing when it finishes, so a package install's duration cannot be read from the store.**
+
+- **What happened** — `design/83` 83f-3's demo gate, 2026-10-02. The gate could report only "job start to install record creation" (0.30–0.70 s over two rounds), which is before the environment build and `self_check`, plus an operator-inclusive upper bound. The first real PyPI install's cost is therefore unmeasured.
+- **Why it matters** — CLAUDE.md's timing rule asks repeated operations to state and measure their timing, and an install's environment build is the slow step a user waits on.
+- **What a fix would look like** — record `finished_at` in `job.json` when the job ends (and, optionally, per-phase durations for download, environment build and `self_check`, in the `duration_breakdown` shape design/79 uses).
+- **Where** — LOCAL to fix; one demo-machine install to measure.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — `design/83` 83f-3's demo gate, scored from artifacts 2026-10-02.

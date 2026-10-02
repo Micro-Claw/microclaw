@@ -1481,6 +1481,41 @@ whole journey (D7).
   own. An install job's result belongs to the card of the publisher whose
   release was requested.
 
+**What 83f-3 settled** (`skill_store.download_release`, `start_job(...,
+"install")`, `select_catalog_releases`, `panel_catalog`; routes
+`/api/skill-packages/{catalog,check,<id>/install,<id>/remove}`; the panel in
+`transcript.js`/`serve.html`; tests in `tests/test_skill_store.py`,
+`test_webserve.py`, `test_transcript_js.py`):
+- **The production index route ran for the first time.** Demo machine, round 3:
+  1.0.0 and 1.1.0 each built their own Python 3.12.13 environment with
+  `find_links: null`, and `iniconfig 2.0.0` came from PyPI under the signed
+  hash. The first real catalog fetch also ran there, from
+  `raw.githubusercontent.com` at serve's startup and on Check now
+  (0.54–0.57 s from `last_attempt` to the state write, n=2 rounds).
+- **One selection rule.** `select_catalog_releases` serves both the agent's
+  search (per skill) and the panel (per package). The install job refuses
+  anything but the offer it would show, reading the saved catalog only.
+- **The store is keyed by package id, the catalog by publisher and package id.**
+  Review finding C1: an admitted publisher's same-named package replaced
+  another's, with Roll back then running the first publisher's code. `_transaction`
+  now refuses a different publisher, and an install job records the release it
+  was asked for, so its outcome is shown on that publisher's card.
+- **A download that dies leaves `.download-*`, which recovery deletes.**
+- **The panel is one card per package (G8, G9)**, from the operator's two
+  screenshots: plain-verb buttons, one D2 notice above the list, state, toggle
+  and last result inside the card. Round 2's tampered-install error was in a
+  separate bottom list and was missed.
+- **Gate:** three rounds. Round 1 measured nothing: "Copy the printed chat
+  message" was read as "paste the reply here", and 83d's `ask` took a 12-line
+  paste as twelve answers. 83f-3's `ask` accepts only `DONE` where it asks for
+  it, refuses empty text and drains Windows console input before every prompt.
+  Round 2 scored 9/10, and the one FAIL scored the operator's typing. Round 3
+  scored 10/10 from artifacts, plus one operator-judged limb that was all yes.
+- **Not measured:** install duration to completion. `job.json` records no finish
+  time (`R145`).
+- `Micro-Claw/package-catalog` (D4) is still created by release intake, now
+  **83f-4** under D7; this block's catalog lived on its own branch.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1523,7 +1558,7 @@ and otherwise stays open.
 | 83f | — | `17e4514` | opened 2026-10-01 — decisions D1–D6 taken; split into 83f-1…83f-4 |
 | 83f-1 | `block-83f-1` | `a7261f5` | **merged 2026-10-01** as `225b6f2`, PR #45 — local only, no gate |
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
-| 83f-3 | `block-83f-3` | `9e9271a` | opened 2026-10-01, PR #47 — panel delivery; decisions G1–G7; demo gate pending |
+| 83f-3 | `block-83f-3` | `9e9271a` | settled 2026-10-02, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

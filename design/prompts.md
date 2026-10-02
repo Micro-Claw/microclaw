@@ -11410,3 +11410,45 @@ the wording now depends on why the skill can't load.
 
 **Counts.** Baseline `867cb6f`: 5499 passed, 108 skipped. Start turn
 (`d234f82`): 5507 passed, 108 skipped. Revision (`b60ba08`): 5513 passed, 108 skipped.
+
+
+## design/83 block 83f-3 — panel delivery from the catalog (PR #47, 2026-10-02)
+
+**The operator's eye found what no limb could.** Seven decisions (G1–G7) went
+in before delegation. Two more (G8, G9) came out of the gate, from a screenshot
+and a missed error: buttons and links ran together, the D2 sentence repeated
+on every row, and a failed install's error rendered in a list at the bottom
+of the panel. Every view test passed throughout; they asserted strings, not
+where a person looks. **A panel's first gate is also its first design review.
+Ask for a screenshot.**
+
+**Two of three rounds failed on the gate, not the product.** Round 1:
+"Copy the printed chat message exactly" was read as "paste the reply here",
+and the inherited 83d `ask` accepted any line, so a 12-line paste answered
+twelve steps in one second. Round 2: limb 7 still scored the operator's
+transcription. I had weakened that limb in review instead of removing it, and
+an artifact-only replay of `panel_catalog` on the step-9 snapshot was
+available from the start. **An interactive prompt must validate what it
+accepts and say where text goes. Never score what a human typed when the
+artifact exists.**
+
+**The defect worth the block was in the gap between two keys.** The store was
+keyed by package id, the catalog by publisher and package id. Each was right
+alone; together, one admitted publisher's install replaced another's, and
+Roll back then ran the other's code (C1). Same shape as 83f-1's withdrawal
+defect. **When two layers name the same thing, check that they name it the
+same way.**
+
+**The runner shortened the one thing I needed to see.** Revision 4's sketch
+said "install-detail lines shortened", and the shortened lines were the
+technical rows G9 existed to remove. Asking for the output "unshortened" got
+it.
+
+**Settle off-rig what can be.** Before round 1, a probe from the Mac against
+the live branch showed the real fetch (0.37 s) and a real PyPI install (2.3 s).
+The rig then had only the Windows-specific questions left.
+
+**Counts.** Baseline `9e9271a`: 5513 passed, 108 skipped (the primary
+checkout's stale venv lacked `jsonschema` and showed one false failure). After
+the revisions: 5541, then 5550 passed, 108 skipped. Runner turns: one start
+and five product revisions; one gate start and two gate revisions.
