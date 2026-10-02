@@ -1465,6 +1465,14 @@ whole journey (D7).
 - **G7 — Install and Update confirm first.** Package and version, publisher,
   licence, D2's notice with the issues link, Install / Cancel. Cancel downloads
   nothing.
+- **G8 — after the first demo gate's screenshot** (operator, 2026-10-02).
+  Buttons are plain verbs: Install, Update, Remove. The version lives on the
+  row, which reads "<installed> — <newer> available" when an update is offered,
+  and the confirm box names the version it installs. This amends G3's button
+  text. D2's notice appears **once above the list** ("MicroClaw does not test or
+  support these packages. Each one is its publisher's."), and each row links
+  "Source" and "Report problems to <publisher>". The full D2 sentence stays in
+  the Install/Update confirm box.
 
 ### Not a block — the SMAPpy conformance limb
 
