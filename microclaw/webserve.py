@@ -394,7 +394,8 @@ class Session:
             else: set_api_key(key)
             print(f"LLM API key: {credentials.mask(key)} (from {source})")
         else:
-            if llm_base_url(): print("No local LLM API key set.")
+            if llm_base_url():
+                print("No local LLM API key set; none is needed unless the server was started with --api-key.")
             else: print("No Anthropic API key found — set one from the browser.")
 
 
@@ -1496,7 +1497,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     @app.get("/api/key")
     async def get_key():
-        key, source = (credentials.load_api_key("llm") if llm_base_url()
+        local_path = bool(llm_base_url())
+        key, source = (credentials.load_api_key("llm") if local_path
                        else credentials.load_api_key())
         return JSONResponse(
             {
@@ -1504,21 +1506,24 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 "suffix": credentials.mask(key) if key else None,
                 "source": source,
                 "editable": session.editable,
+                "key_required": not local_path,
+                "key_label": "local model server key" if local_path else "Anthropic API key",
             }
         )
 
     @app.post("/api/key")
     async def post_key(k: Key):
+        local_path = bool(llm_base_url())
         if not session.editable:
+            key_env = "MICROCLAW_LLM_API_KEY" if local_path else "ANTHROPIC_API_KEY"
             raise HTTPException(
-                403, "Bound beyond localhost: set ANTHROPIC_API_KEY and restart."
+                403, f"Bound beyond localhost: set {key_env} and restart."
             )
         key = k.key.strip()
         if not key:
             raise HTTPException(400, "Empty key.")
         # Overwrites whatever was set, so a key can be swapped mid-session.
         _add_audit_secret(session, key)
-        local_path = bool(llm_base_url())
         credential_kind = "llm" if local_path else "anthropic"
         if local_path: set_llm_api_key(key)
         else: set_api_key(key)
@@ -1547,6 +1552,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 "stored_in": stored_in,
                 "stored_at": stored_at,
                 "stale_store": stale_store,
+                "key_required": not local_path,
+                "key_label": "local model server key" if local_path else "Anthropic API key",
             }
         )
 

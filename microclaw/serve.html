@@ -162,7 +162,7 @@
   </div>
 
   <div class="banner hidden" id="key-banner">
-    <h2 id="key-title">No Anthropic API key</h2>
+    <h2 id="key-title">API key</h2>
     <p id="key-help">MicroClaw needs a key before it can run a turn. It is sent to this
       local server only, never echoed back, and never written to
       <code>safety_config.yaml</code>.</p>
@@ -684,7 +684,7 @@
     $("pending").classList.toggle("hidden", !on);
     $("stop").classList.toggle("hidden", !on);
     $("stop").disabled = false;
-    send.disabled = on || !hasKey;
+    send.disabled = on || (keyRequired && !hasKey);
     msg.disabled = on;
     if (!on) msg.focus();
   }
@@ -1028,10 +1028,14 @@
 
   // ---- API key ----
   let editable = true;
+  let keyRequired = true;
+  let keyLabel = "Anthropic API key";
+  let keyEnv = "ANTHROPIC_API_KEY";
 
   function openKeyBanner(replacing) {
     $("key-title").textContent = replacing
-      ? "Replace the Anthropic API key" : "No Anthropic API key";
+      ? "Replace the " + keyLabel
+      : keyRequired ? "No " + keyLabel : "Set the " + keyLabel;
     $("key-cancel").classList.toggle("hidden", !replacing);
     $("key-banner").classList.remove("hidden");
     // Bring it into view before focusing. In setup mode this banner sits below
@@ -1051,31 +1055,41 @@
   function showKey(state) {
     hasKey = !!state.has_key;
     editable = !!state.editable;
-    send.disabled = busy || !hasKey;
+    keyRequired = !!state.key_required;
+    keyLabel = state.key_label;
+    keyEnv = keyRequired ? "ANTHROPIC_API_KEY" : "MICROCLAW_LLM_API_KEY";
+    send.disabled = busy || (keyRequired && !hasKey);
 
     // The chip doubles as the entry point for swapping a key mid-session:
     // POST /api/key overwrites whatever is set, so no restart is needed.
     const btn = $("key-btn");
-    btn.classList.toggle("hidden", !hasKey);
-    btn.textContent = hasKey ? "key " + state.suffix : "";
+    btn.classList.toggle("hidden", !hasKey && keyRequired);
+    btn.textContent = hasKey ? "key " + state.suffix : "key";
     btn.disabled = !editable;
     btn.title = editable
-      ? "Click to replace the Anthropic API key"
-      : "Bound beyond localhost — set ANTHROPIC_API_KEY and restart";
+      ? hasKey ? "Click to replace the " + keyLabel : "Click to set the " + keyLabel
+      : "Bound beyond localhost — set " + keyEnv + " and restart";
+    $("key-input").placeholder = keyRequired ? "sk-ant-..." : "API key";
 
-    if (hasKey) closeKeyBanner();
+    if (hasKey || !keyRequired) closeKeyBanner();
     else openKeyBanner(false);
 
     if (!hasKey && !editable) {
-      $("key-help").textContent =
-        "MicroClaw needs a key. This server is bound beyond localhost, so the key " +
-        "cannot be set from the browser — set ANTHROPIC_API_KEY and restart.";
+      $("key-help").textContent = keyRequired
+        ? "MicroClaw needs a key. This server is bound beyond localhost, so the key " +
+          "cannot be set from the browser — set ANTHROPIC_API_KEY and restart."
+        : "This local model server may require a key. This server is bound beyond localhost, " +
+          "so set MICROCLAW_LLM_API_KEY and restart if it was started with --api-key.";
       $("key-form").classList.add("hidden");
+    } else if (!keyRequired && editable) {
+      $("key-help").textContent =
+        "This local model server may require a key. Enter one if it was started with --api-key.";
+      $("key-form").classList.remove("hidden");
     }
   }
 
   $("key-btn").addEventListener("click", () => {
-    if ($("key-banner").classList.contains("hidden")) openKeyBanner(true);
+    if ($("key-banner").classList.contains("hidden")) openKeyBanner(hasKey);
     else closeKeyBanner();
   });
   $("key-cancel").addEventListener("click", closeKeyBanner);

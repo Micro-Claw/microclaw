@@ -1553,7 +1553,20 @@ def test_get_key_reports_a_suffix_never_the_key(client):
 def test_get_key_when_unset(client, monkeypatch):
     monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
     body = client.get("/api/key").json()
-    assert body == {"has_key": False, "suffix": None, "source": None, "editable": True}
+    assert body == {
+        "has_key": False, "suffix": None, "source": None, "editable": True,
+        "key_required": True, "key_label": "Anthropic API key",
+    }
+
+
+def test_local_get_key_without_key_reports_optional_local_label(client, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    monkeypatch.setattr(credentials, "load_api_key",
+                        lambda kind="anthropic": (None, None))
+    body = client.get("/api/key").json()
+    assert body["has_key"] is False
+    assert body["key_required"] is False
+    assert body["key_label"] == "local model server key"
 
 
 def test_post_key_sets_and_persists(client, monkeypatch):
@@ -1565,6 +1578,8 @@ def test_post_key_sets_and_persists(client, monkeypatch):
     assert stored["live"] == "sk-ant-xyzXYZW"
     assert body["stored_in"] == "keyring"
     assert body["suffix"] == "…XYZW"
+    assert body["key_required"] is True
+    assert body["key_label"] == "Anthropic API key"
     assert "sk-ant-xyzXYZW" not in json.dumps(body)
 
 
@@ -1582,6 +1597,18 @@ def test_post_key_uses_local_credential_store_when_local_backend_selected(client
     assert state["live"] == "local-secret-xyz"
     assert body["stored_in"] == "file"
     assert body["suffix"] == "…-xyz"
+    assert body["key_required"] is False
+    assert body["key_label"] == "local model server key"
+
+
+def test_local_post_key_is_refused_with_local_environment_name(session, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    session.editable = False
+    response = TestClient(build_app(session)).post("/api/key", json={"key": "local-secret"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Bound beyond localhost: set MICROCLAW_LLM_API_KEY and restart."
+    )
 
 
 def test_local_session_key_checks_stored_key_without_environment_value(client, monkeypatch):
@@ -1643,6 +1670,15 @@ def test_post_key_is_refused_when_bound_beyond_localhost(session, monkeypatch):
     session.editable = False
     res = TestClient(build_app(session)).post("/api/key", json={"key": "sk-ant-1234"})
     assert res.status_code == 403
+    assert res.json()["detail"] == "Bound beyond localhost: set ANTHROPIC_API_KEY and restart."
+
+
+def test_serve_key_controls_come_from_key_endpoint_payload(client):
+    page = client.get("/").text
+    assert "keyRequired = !!state.key_required" in page
+    assert "keyLabel = state.key_label" in page
+    assert "send.disabled = busy || (keyRequired && !hasKey)" in page
+    assert 'btn.classList.toggle("hidden", !hasKey && keyRequired)' in page
 
 
 # ---- binding ----
