@@ -30,6 +30,9 @@ _KEYRING_SERVICE = "microclaw"
 _KEYRING_USERNAME = "anthropic-api-key"
 
 _TOML_KEY = "anthropic_api_key"
+LLM_ENV_VAR = "MICROCLAW_LLM_API_KEY"
+_LLM_KEYRING_USERNAME = "local-llm-api-key"
+_LLM_TOML_KEY = "llm_api_key"
 
 
 def config_path() -> Path:
@@ -53,6 +56,10 @@ def _keyring():
 
 
 def _read_config_key() -> str | None:
+    return _read_toml_key(_TOML_KEY)
+
+
+def _read_toml_key(name: str) -> str | None:
     path = config_path()
     try:
         text = path.read_text(encoding="utf-8")
@@ -60,7 +67,7 @@ def _read_config_key() -> str | None:
         return None
     import tomllib
     try:
-        return tomllib.loads(text).get(_TOML_KEY) or None
+        return tomllib.loads(text).get(name) or None
     except Exception:
         return None
 
@@ -111,9 +118,48 @@ def store_api_key(key: str) -> tuple[str, str | None]:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # json.dumps gives us a correctly-escaped TOML basic string.
-    path.write_text(f"{_TOML_KEY} = {json.dumps(key)}\n", encoding="utf-8")
+    _write_config_key(_TOML_KEY, key)
     if os.name != "nt":
-        # Meaningful on POSIX; a no-op worth skipping on Windows (see module docstring).
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    return "file", str(path)
+
+
+def _write_config_key(name: str, key: str) -> None:
+    path = config_path()
+    import tomllib
+    try:
+        values = tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        values = {}
+    values[name] = key
+    path.write_text("\n".join(f"{k} = {json.dumps(v)}" for k, v in values.items()) + "\n", encoding="utf-8")
+
+
+def load_llm_api_key() -> tuple[str | None, str | None]:
+    env = os.environ.get(LLM_ENV_VAR)
+    if env:
+        return env, "env"
+    kr = _keyring()
+    if kr is not None:
+        try:
+            key = kr.get_password(_KEYRING_SERVICE, _LLM_KEYRING_USERNAME)
+            if key: return key, "keyring"
+        except Exception: pass
+    key = _read_toml_key(_LLM_TOML_KEY)
+    return (key, "file") if key else (None, None)
+
+
+def store_llm_api_key(key: str) -> tuple[str, str | None]:
+    kr = _keyring()
+    if kr is not None:
+        try:
+            kr.set_password(_KEYRING_SERVICE, _LLM_KEYRING_USERNAME, key)
+            return "keyring", None
+        except Exception: pass
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_config_key(_LLM_TOML_KEY, key)
+    if os.name != "nt":
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     return "file", str(path)
 

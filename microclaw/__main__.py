@@ -137,8 +137,14 @@ def run_session(args):
     parsed_safety = load_safety_config_or_exit(args.safety_config)
     guard = SafetyGuard(parsed_safety.constraints)
 
-    key, source = credentials.load_api_key()
-    if key is None:
+    from microclaw.agent import llm_base_url
+    if llm_base_url():
+        key, source = credentials.load_llm_api_key()
+        from microclaw.agent import set_llm_api_key
+        if key: set_llm_api_key(key)
+    else:
+        key, source = credentials.load_api_key()
+    if key is None and not llm_base_url():
         sys.exit(
             "No Anthropic API key found. Looked in the ANTHROPIC_API_KEY "
             "environment variable, the system keyring, and the Microclaw credential file."
@@ -465,6 +471,7 @@ def main():
         help="Skip this launch's managed-install update check.",
     )
     parser.add_argument("--port", type=int, default=4827)
+    parser.add_argument("--llm-base-url", default=None, help="OpenAI-compatible local server base URL (also MICROCLAW_LLM_BASE_URL).")
     parser.add_argument(
         "--setup-write-security-config", action="store_true",
         help="Permit one confirmed write of setup security bounds (serve on loopback only).",
@@ -511,6 +518,7 @@ def main():
         ),
     )
     sv.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")
+    sv.add_argument("--llm-base-url", default=None, help="OpenAI-compatible local server base URL (also MICROCLAW_LLM_BASE_URL).")
     sv.add_argument("--web-port", type=int, default=8000, help="HTTP port (default: 8000).")
     sv.add_argument(
         "--no-browser",
@@ -591,6 +599,8 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.llm_base_url:
+        os.environ["MICROCLAW_LLM_BASE_URL"] = args.llm_base_url
 
     if args.setup_write_security_config and args.command != "serve":
         parser.error("--setup-write-security-config is valid only with serve")

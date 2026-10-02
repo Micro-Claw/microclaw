@@ -61,6 +61,8 @@ from microclaw.agent import (
     resolve_model,
     run_agent_iter,
     set_api_key,
+    llm_base_url,
+    set_llm_api_key,
 )
 from microclaw.assets import icon_bytes, load_page
 from microclaw.config import ConfigValidationResult, ParsedSafetyConfig
@@ -383,13 +385,16 @@ class Session:
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
-        key, source = credentials.load_api_key()
+        key, source = (credentials.load_llm_api_key() if llm_base_url()
+                       else credentials.load_api_key())
         if key:
             _add_audit_secret(self, key)
-            set_api_key(key)
-            print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
+            if llm_base_url(): set_llm_api_key(key)
+            else: set_api_key(key)
+            print(f"LLM API key: {credentials.mask(key)} (from {source})")
         else:
-            print("No Anthropic API key found — set one from the browser.")
+            if llm_base_url(): print("No local LLM API key set.")
+            else: print("No Anthropic API key found — set one from the browser.")
 
 
     def _audit_confirmation(
@@ -1161,7 +1166,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         msg = p.message.strip()
         if not msg:
             raise HTTPException(400, "Empty message.")
-        if credentials.load_api_key()[0] is None:
+        if ((credentials.load_llm_api_key()[0] if llm_base_url() else credentials.load_api_key()[0]) is None
+                and not llm_base_url()):
             raise HTTPException(400, "No Anthropic API key is set.")
         with update_job_lock:
             refuse_extension_install()
@@ -1574,6 +1580,8 @@ def _open_when_ready(
 
 
 def serve(args):
+    if getattr(args, "llm_base_url", None):
+        os.environ["MICROCLAW_LLM_BASE_URL"] = args.llm_base_url
     """Entry point for the `serve` subcommand."""
     if getattr(args, "setup_write_security_config", False):
         if args.host not in LOCAL_HOSTS:

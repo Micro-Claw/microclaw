@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timezone
 import os
 import time
+import httpx
 
 import anthropic
 
@@ -31,6 +32,27 @@ DEFAULT_MAX_ITERATIONS = 50
 
 _client: anthropic.Anthropic | None = None
 _known_models: list[str] | None = None
+LLM_BASE_URL_ENV = "MICROCLAW_LLM_BASE_URL"
+LLM_API_KEY_ENV = "MICROCLAW_LLM_API_KEY"
+_local_models: list[str] | None = None
+_local_vision: dict[str, bool] = {}
+_local_http = httpx.Client(timeout=120)
+
+
+def llm_base_url() -> str | None:
+    return os.environ.get(LLM_BASE_URL_ENV, "").rstrip("/") or None
+
+
+def set_llm_api_key(key: str) -> None:
+    os.environ[LLM_API_KEY_ENV] = key
+    global _local_models
+    _local_models = None
+
+
+def _local_get(path: str):
+    url = llm_base_url()
+    headers = {"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"} if os.environ.get(LLM_API_KEY_ENV) else {}
+    return _local_http.get(url + path, headers=headers, timeout=30)
 
 MAX_OUTPUT_TOKENS = 8192
 
@@ -60,7 +82,7 @@ def set_api_key(key: str) -> None:
 
 def resolve_model(model: str | None = None) -> str:
     """Pick the model: explicit arg > MICROCLAW_MODEL env > DEFAULT_MODEL."""
-    return model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
+    return model or os.environ.get(MODEL_ENV) or (known_models()[0] if llm_base_url() and known_models() else DEFAULT_MODEL)
 
 
 def known_models() -> list[str]:
@@ -70,7 +92,14 @@ def known_models() -> list[str]:
     populated must still be usable, so callers keep the field free-text. An
     unreachable API is not an error here — it just means no suggestions.
     """
-    global _known_models
+    global _known_models, _local_models
+    if llm_base_url():
+        if _local_models is None:
+            try:
+                _local_models = [m["id"] for m in _local_get("/v1/models").json().get("data", [])]
+            except Exception:
+                _local_models = []
+        return _local_models
     if _known_models is None:
         try:
             _known_models = [m.id for m in _get_client().models.list(limit=100).data]
@@ -721,6 +750,9 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
     `_TransientAPIError` once the transient-failure backoff is spent.
     """
     retry_after = 0.0
+    if llm_base_url():
+        return (yield from _stream_local_round(messages, system_blocks, model, tool_schemas,
+                                               context_provider, iteration, usage_sink))
     for attempt, delay in enumerate([0, *_RETRY_DELAYS]):
         delay = max(delay, retry_after)
         if delay:
@@ -800,6 +832,91 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
                         "to hold this turn open. Please try again later."
                     ) from e
     raise RuntimeError("unexpected loop exit")  # pragma: no cover
+
+
+def _stream_local_round(messages, system_blocks, model, tool_schemas,
+                        context_provider, iteration, usage_sink):
+    base = llm_base_url()
+    headers = {"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"} if os.environ.get(LLM_API_KEY_ENV) else {}
+    try:
+        if base not in _local_vision:
+            try:
+                _local_vision[base] = bool(_local_get("/props").json().get("modalities", {}).get("vision"))
+            except Exception:
+                _local_vision[base] = False
+        model_messages = context_provider(messages) if context_provider else messages
+        wire = [{"role": "system", "content": "\n\n".join(
+            b.get("text", "") for b in system_blocks if b.get("type") == "text") }]
+        for msg in model_messages:
+            role = msg["role"]
+            content = msg["content"]
+            if isinstance(content, str):
+                wire.append({"role": role, "content": content}); continue
+            if role == "assistant":
+                texts, calls = [], []
+                for block in content:
+                    typ = getattr(block, "type", None) or block.get("type")
+                    get = (lambda k: getattr(block, k)) if not isinstance(block, dict) else block.get
+                    if typ == "text": texts.append(get("text"))
+                    elif typ == "tool_use": calls.append({"id": get("id"), "type": "function", "function": {"name": get("name"), "arguments": json.dumps(get("input"), separators=(",", ":"))}})
+                entry = {"role": "assistant", "content": "".join(texts) or None}
+                if calls: entry["tool_calls"] = calls
+                wire.append(entry)
+            else:
+                for block in content:
+                    if block.get("type") != "tool_result": continue
+                    parts = block.get("content", "")
+                    text = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text") if isinstance(parts, list) else str(parts)
+                    if isinstance(parts, list) and any(p.get("type") == "image" for p in parts):
+                        if _local_vision[base]:
+                            for p in parts:
+                                if p.get("type") == "image":
+                                    src = p["source"]; wire.append({"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{src['media_type']};base64,{src['data']}"}}]})
+                        else: text += ('\n' if text else '') + '{"image_omitted": "this model does not accept images"}'
+                    if block.get("is_error"): text = "Error: " + text
+                    wire.append({"role": "tool", "tool_call_id": block["tool_use_id"], "content": text})
+        payload = {"model": model, "messages": wire, "max_tokens": MAX_OUTPUT_TOKENS, "stream": True, "stream_options": {"include_usage": True}}
+        if tool_schemas:
+            payload["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t["input_schema"]}} for t in tool_schemas]
+        response = _local_http.post(base + "/v1/chat/completions", json=payload, headers=headers, timeout=120)
+        if response.status_code >= 400:
+            try: err = response.json().get("error", {})
+            except Exception: err = {}
+            if response.status_code == 404: raise _BadModel(f"Local server {base} does not know model {model!r}.")
+            if response.status_code == 400 and err.get("n_ctx"):
+                raise RuntimeError(f"Local server {base} context limit is {err['n_ctx']} tokens; request uses {err.get('n_prompt_tokens', 'an unknown number of')} tokens.")
+            if response.status_code in (429, 503): raise _TransientAPIError(f"Local server {base} is still unavailable after retrying.")
+            raise RuntimeError(f"Local server {base} returned HTTP {response.status_code}: {err.get('message', response.text)}")
+        text, calls, finish, usage, timings = [], {}, None, {}, {}
+        for line in response.text.splitlines():
+            if not line.startswith("data: "): continue
+            data = line[6:]
+            if data == "[DONE]": continue
+            chunk = json.loads(data)
+            if not chunk.get("choices"):
+                usage = chunk.get("usage", {}); timings = chunk.get("timings", {}); continue
+            choice = chunk["choices"][0]; delta = choice.get("delta", {})
+            if delta.get("content"):
+                text.append(delta["content"]); yield {"type": "text_delta", "text": delta["content"]}
+            for call in delta.get("tool_calls", []):
+                item = calls.setdefault(call["index"], {"id": "", "name": "", "arguments": ""})
+                item["id"] += call.get("id", "")
+                fn = call.get("function", {}); item["name"] += fn.get("name", ""); item["arguments"] += fn.get("arguments", "")
+            if choice.get("finish_reason"): finish = choice["finish_reason"]
+        blocks = ([{"type": "text", "text": "".join(text)}] if text else [])
+        for item in calls.values():
+            try: inp = json.loads(item["arguments"] or "{}")
+            except json.JSONDecodeError as exc: inp = {"_microclaw_parse_error": f"Invalid tool arguments JSON: {exc}", "raw": item["arguments"]}
+            blocks.append({"type": "tool_use", "id": item["id"], "name": item["name"], "input": inp})
+        stop = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}.get(finish, "end_turn")
+        result = anthropic.types.Message.model_validate({"id": "local", "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": None, "usage": {"input_tokens": usage.get("prompt_tokens", 0), "output_tokens": usage.get("completion_tokens", 0), "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)}})
+        if usage_sink:
+            record = {"timestamp": datetime.now(timezone.utc).isoformat(), "model": model, "iteration": iteration, "stop_reason": stop, "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"), "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens")}
+            record.update({k: timings[k] for k in ("prompt_n", "cache_n", "prompt_ms", "predicted_n", "predicted_ms") if k in timings})
+            usage_sink(record)
+        return result
+    except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as exc:
+        raise _TransientAPIError(f"Local server {base} is unavailable after retrying: {exc}") from exc
 
 
 def run_agent_iter(
@@ -933,6 +1050,14 @@ def run_agent_iter(
                 confirmation_start = (
                     len(confirmation_records) if confirmation_records is not None else 0
                 )
+                if isinstance(block.input, dict) and "_microclaw_parse_error" in block.input:
+                    result_json = json.dumps({"error": block.input["_microclaw_parse_error"]})
+                    result_block = {"type": "tool_result", "tool_use_id": block.id,
+                                    "is_error": True, "content": result_json}
+                    tool_results.append(result_block)
+                    yield {"type": "tool_result", "tool_use_id": block.id,
+                           "content": result_json, "is_error": True}
+                    continue
                 result_json = execute_tool(
                     block.name, block.input, ctrl, guard, tool_registry,
                     setup_mode=setup_mode,
