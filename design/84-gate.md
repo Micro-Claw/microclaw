@@ -40,7 +40,7 @@ cd C:\code\microclaw
 git fetch origin
 git checkout design84/84b-budget
 git pull
-git merge-base --is-ancestor 55af3bb HEAD
+git merge-base --is-ancestor 557200f HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" } else { "STOP - wrong tree, do not run the gate" }
 ```
 
