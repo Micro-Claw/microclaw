@@ -49,8 +49,25 @@ def write(path, value):
 
 
 def command(args, *, cwd=None, input=None):
-    return subprocess.run(args, cwd=cwd, input=input, stdin=subprocess.DEVNULL if input is None else None,
-                          capture_output=True, text=True, check=True).stdout.strip()
+    result = subprocess.run(args, cwd=cwd, input=input, stdin=subprocess.DEVNULL if input is None else None,
+                            capture_output=True, text=True, encoding='utf-8')
+    if result.returncode:
+        # Name the tool's own complaint (e.g. "not logged in"), not just its exit code.
+        raise RuntimeError(f'{args[0]} {" ".join(args[1:3])} failed ({result.returncode}): '
+                           + (result.stderr or result.stdout).strip()[:500])
+    return result.stdout.strip()
+
+
+def require_gh():
+    """Refuse before any GitHub step if gh is missing or not logged in."""
+    if shutil.which('gh') is None:
+        raise RuntimeError('the GitHub CLI `gh` is not installed or not on PATH. Install it from '
+                           'https://cli.github.com (Windows: winget install --id GitHub.cli), reopen the '
+                           'shell, run `gh auth login`, then re-run this phase.')
+    try:
+        command(['gh', 'auth', 'status'])
+    except RuntimeError as exc:
+        raise RuntimeError('`gh` is installed but not logged in; run `gh auth login`. ' + str(exc)) from exc
 
 
 def gh(*args, payload=None):
@@ -158,7 +175,7 @@ def run(gate, deadline_seconds):
     owner = api('user')['login']
     try:
         gh('repo', 'view', owner + '/package-catalog', '--json', 'nameWithOwner')
-    except subprocess.CalledProcessError:
+    except RuntimeError:
         gh('repo', 'fork', REPO, '--clone=false')
     fork = owner + '/package-catalog'
     info = api('repos/' + fork)
@@ -353,8 +370,8 @@ def cleanup(gate):
     for branch in sorted(branches):
         try:
             gh('api', '--method', 'DELETE', f'repos/{state["fork"]}/git/refs/heads/{branch}')
-        except subprocess.CalledProcessError as exc:
-            if '404' not in exc.stderr and '422' not in exc.stderr:
+        except RuntimeError as exc:
+            if '404' not in str(exc) and '422' not in str(exc):
                 raise
         gate.log(branch + ': fork branch removed')
 
@@ -445,6 +462,7 @@ def main():
         return selftest()
     gate = Gate(args.evidence)
     try:
+        require_gh()
         if args.phase == 'run':
             return run(gate, args.deadline)
         if args.phase == 'verify':
