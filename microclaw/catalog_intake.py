@@ -1,0 +1,360 @@
+"""Publisher signing and data-only catalog intake (stdlib, cryptography, packaging)."""
+from __future__ import annotations
+
+import argparse
+import base64
+from copy import deepcopy
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import tempfile
+import zipfile
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from microclaw import skill_packages as packages, skill_store as store
+
+Refusal = packages.PackageRefusal
+IDENTITY = ('publisher', 'package_id', 'version', 'artifact_digest')
+
+
+def encode(value):
+    return (json.dumps(value, sort_keys=True, indent=2, ensure_ascii=True) + '\n').encode('ascii')
+
+
+def read(path, limit=packages.MAX_POLICY_BYTES):
+    path = Path(path)
+    try:
+        with path.open('rb') as stream:
+            data = stream.read(limit + 1)
+        if len(data) > limit:
+            raise Refusal('document', 'document exceeds byte limit')
+        return json.loads(data)
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, Refusal):
+            raise
+        raise Refusal('document', 'expected a readable JSON document') from exc
+
+
+def public_entry(private):
+    raw = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return dict(key_id=hashlib.sha256(raw).hexdigest(), public_key=base64.b64encode(raw).decode('ascii'), state='active')
+
+
+def sign(document, private):
+    value = deepcopy(document)
+    value.pop('signature', None)
+    value['signature'] = dict(alg='ed25519', key_id=public_entry(private)['key_id'],
+                             value=base64.b64encode(private.sign(packages._canonical(value))).decode('ascii'))
+    return value
+
+
+def load_key(path):
+    try:
+        key = serialization.load_pem_private_key(Path(path).read_bytes(), password=None)
+        if not isinstance(key, Ed25519PrivateKey):
+            raise ValueError('not ed25519')
+        return key
+    except (OSError, ValueError, TypeError) as exc:
+        raise Refusal('key', 'expected an unencrypted Ed25519 PEM private key') from exc
+
+
+def archive_checks(artifact, record):
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = store._extract(artifact, Path(temporary), record)
+            if manifest['kind'] == 'executable':
+                packages.supported_executable(manifest)
+            return manifest
+    except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+        raise Refusal('artifact', 'expected a readable, valid release zip') from exc
+
+
+def sign_release(private, artifact, url):
+    artifact = Path(artifact)
+    try:
+        if artifact.stat().st_size > packages.MAX_ARTIFACT_DOWNLOAD_BYTES:
+            raise Refusal('artifact', 'zip exceeds download byte limit')
+        with zipfile.ZipFile(artifact) as archive:
+            info = archive.getinfo('manifest.json')
+            if info.file_size > store.MAX_MANIFEST_BYTES:
+                raise Refusal('manifest.json', 'manifest exceeds byte limit')
+            manifest = packages.validate_manifest(json.loads(archive.read(info)))
+    except (OSError, KeyError, zipfile.BadZipFile, ValueError) as exc:
+        if isinstance(exc, Refusal):
+            raise
+        raise Refusal('manifest.json', 'expected a valid zip manifest') from exc
+    if url != manifest['artifact']:
+        raise Refusal('artifact', 'URL must equal the manifest artifact field; fix the manifest or URL')
+    record = packages.validate_intake(sign(intake_from_manifest(manifest, hashlib.sha256(artifact.read_bytes()).hexdigest()), private))
+    archive_checks(artifact, record)
+    return record
+
+
+def intake_from_manifest(manifest, digest):
+    """One listing projection, also used by fixtures that intentionally make bad zips."""
+    fields = ('package_id', 'publisher', 'version', 'artifact', 'kind', 'microclaw',
+              'license', 'source_url', 'issues_url')
+    record = {k: manifest[k] for k in fields}
+    record['skills'] = [{k: skill[k] for k in ('name', 'description')} for skill in manifest['skills']]
+    if manifest['kind'] == 'executable':
+        record.update({k: manifest[k] for k in ('python', 'platforms', 'protocol_version')})
+    record.update(type=packages.RELEASE_TYPE, artifact_digest=digest)
+    return record
+
+
+def sign_withdrawal(private, release, reason):
+    release = packages.validate_intake(release)
+    value = sign(dict(type=packages.WITHDRAWAL_TYPE, **{k: release[k] for k in IDENTITY}, reason=reason), private)
+    policy = dict(publishers={release['publisher']: dict(state='active', keys=[public_entry(private)])})
+    return packages.verify_withdrawal(value, policy)
+
+
+def record_path(collection, record):
+    return f"{collection}/{record['publisher']}/{record['package_id']}/{record['version']}.json"
+
+
+def policy_at(root, environment, roots_file, now):
+    if environment == 'production':
+        if roots_file is not None:
+            raise Refusal('roots', 'production uses the roots shipped with MicroClaw; remove --roots')
+        roots = packages.PRODUCTION_ROOTS
+        if not roots['keys']:
+            raise Refusal('trust', 'no verified policy: production roots have not been published')
+    else:
+        if roots_file is None:
+            raise Refusal('roots', 'test requires --roots from the trusted base checkout')
+        roots = read(roots_file)
+        if not isinstance(roots, dict) or roots.get('environment') != 'test':
+            raise Refusal('roots.environment', 'test requires a test roots document')
+    policy = packages.verify_trust_policy(read(Path(root) / 'policy.json'), roots)
+    if now > packages._expires(policy['expires_at']):
+        raise Refusal('trust.expires_at', 'policy expired; ask the catalog operator to renew it')
+    return policy
+
+
+def tree(root):
+    """Compare files as bytes; never follow links or execute head content."""
+    root = Path(root)
+    result = {}
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        if Path(directory) == root and '.git' in dirs:
+            dirs.remove('.git')
+        for name in dirs + files:
+            path = Path(directory) / name
+            relative = path.relative_to(root).as_posix()
+            if relative == '.git':
+                continue
+            if path.is_symlink():
+                raise Refusal('path', f'links are forbidden: {relative[:240]}')
+            if name in files:
+                # Stream hashes: even an unrelated hostile file need not fit in RAM.
+                digest = hashlib.sha256()
+                with path.open('rb') as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                        digest.update(chunk)
+                result[relative] = (digest.digest(), bool(path.stat().st_mode & 0o111))
+    return result
+
+
+def records(root):
+    result = dict(type=packages.CATALOG_TYPE, releases=[], withdrawals=[])
+    for collection in ('releases', 'withdrawals'):
+        folder = Path(root) / collection
+        if not folder.exists():
+            continue
+        for path in sorted(folder.rglob('*')):
+            if path.is_symlink():
+                raise Refusal('path', 'release trees may not contain links')
+            if path.is_file():
+                value = read(path)
+                validate_path(path.relative_to(root).as_posix(), collection, value)
+                result[collection].append(value)
+    return result
+
+
+def validate_path(path, collection, record):
+    if collection == 'releases':
+        packages.validate_intake(record)
+    # Withdrawal structure is checked by verify_withdrawal before use.
+    try:
+        expected = record_path(collection, record)
+    except (KeyError, TypeError) as exc:
+        raise Refusal('path', 'record must name publisher, package_id and version') from exc
+    if path != expected:
+        raise Refusal('path', 'path components must equal publisher, package_id and version in the record')
+    if len(path.split('/')) != 4 or not path.endswith('.json'):
+        raise Refusal('path', 'use releases/<publisher>/<package_id>/<version>.json or withdrawals equivalent')
+
+
+def identity(record):
+    return tuple(record[k] for k in IDENTITY)
+
+
+def verify_all(document, policy, now):
+    _, exclusions = packages.verify_catalog(document, policy, now=now)
+    if exclusions:
+        reason = exclusions[0]['reason']
+        raise Refusal(reason['field'], reason['detail'])
+    versions, digests = set(), set()
+    for record in document['releases']:
+        key = identity(record)[:3]
+        if key in versions:
+            raise Refusal('version', 'this publisher/package/version already exists; publish a new version')
+        if record['artifact_digest'] in digests:
+            raise Refusal('artifact_digest', 'this digest already appears; submit a distinct release')
+        versions.add(key)
+        digests.add(record['artifact_digest'])
+    for record in document['withdrawals']:
+        packages.verify_withdrawal(record, policy)
+        if identity(record) not in {identity(r) for r in document['releases']}:
+            field = 'publisher' if any(r['artifact_digest'] == record['artifact_digest'] and r['publisher'] != record['publisher'] for r in document['releases']) else 'artifact_digest'
+            raise Refusal(field, 'withdrawal must name an existing release in full, belonging to its publisher')
+    if len(encode(document)) > packages.MAX_CATALOG_BYTES:
+        raise Refusal('catalog', 'rebuilt catalog exceeds byte limit')
+    return document
+
+
+def build(root, *, environment='production', roots=None, now=None):
+    root = Path(root)
+    now = now or datetime.now(timezone.utc)
+    policy = policy_at(root, environment, roots, now)
+    document = verify_all(records(root), policy, now)
+    target = root / 'catalog.json'
+    if target.exists():
+        previous = read(target, packages.MAX_CATALOG_BYTES)
+        verify_all(previous, policy, now)
+        for collection in ('releases', 'withdrawals'):
+            for entry in previous.get(collection, []):
+                if entry not in document[collection]:
+                    raise Refusal('catalog.' + collection, 'rebuild would drop a previous entry; restore its source file')
+    data = encode(document)
+    if not target.exists() or target.read_bytes() != data:
+        # Replace atomically, after every verification has passed.
+        with tempfile.NamedTemporaryFile(dir=root, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(data)
+        temporary.replace(target)
+    return document
+
+
+def check(base, head, *, environment, roots=None, now=None, opener=None):
+    path = None
+    try:
+        before, after = tree(base), tree(head)
+        changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
+        if len(changed) != 1 or (changed and changed[0] in before):
+            path = ', '.join(changed)[:240] or None
+            raise Refusal('path', 'add exactly one release or withdrawal file; no other changes: ' + (path or 'no file added'))
+        path = changed[0]
+        collection = path.split('/')[0]
+        if collection not in ('releases', 'withdrawals'):
+            raise Refusal('path', 'only a new release or withdrawal file is allowed: ' + path[:240])
+        now = now or datetime.now(timezone.utc)
+        policy = policy_at(base, environment, roots, now)
+        value = read(Path(head) / path)
+        if collection == 'withdrawals':
+            packages.verify_withdrawal(value, policy)
+        validate_path(path, collection, value)
+        document = records(base)
+        previous_path = Path(base) / 'catalog.json'
+        if previous_path.exists():
+            previous = read(previous_path, packages.MAX_CATALOG_BYTES)
+            verify_all(previous, policy, now)
+            for bucket in ('releases', 'withdrawals'):
+                for entry in previous[bucket]:
+                    if entry not in document[bucket]:
+                        document[bucket].append(entry)
+        # Duplicate checks precede fetch, so an existing version cannot cause network work.
+        document[collection].append(value)
+        verify_all(document, policy, now)
+        if collection == 'releases':
+            with tempfile.TemporaryDirectory() as temporary:
+                with store.download_release(value, package=Path(temporary), opener=opener) as artifact:
+                    packages.check_release(value, policy, purpose='admission', artifact=artifact, now=now)
+                    archive_checks(artifact, value)
+        return dict(accepted=True, path=path, field=None, detail='Verified. The catalog can include this record.')
+    except store.updates.UpdateError as exc:
+        return dict(accepted=False, path=path[:240] if path else None, field='artifact', detail=('Download refused: ' + str(exc))[:700])
+    except Refusal as exc:
+        detail = str(exc).removeprefix(exc.field + ': ')
+        return dict(accepted=False, path=path[:240] if path else None, field=exc.field[:240], detail=detail[:700])
+
+
+def human(verdict):
+    if verdict['accepted']:
+        return f"Accepted `{verdict['path']}`. Signature, policy and release data checks passed."
+    # Escape publisher-controlled Markdown and control characters, keep one paragraph.
+    def plain(text):
+        return ''.join(c if c.isprintable() and c not in '`<>[]\\*_' else ' ' for c in str(text))
+    field = ''.join(c if c.isascii() and (c.isalnum() or c in '._[]-') else ' ' for c in str(verdict['field']))
+    return f"Refused {plain(verdict['path'] or 'submission')}: field **{field}**. {plain(verdict['detail'])}. Correct this field and update the PR."
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    keygen = commands.add_parser('keygen')
+    keygen.add_argument('--out', required=True)
+    release = commands.add_parser('sign-release')
+    for flag in ('key', 'artifact', 'url', 'out'):
+        release.add_argument('--' + flag, required=True)
+    withdrawal = commands.add_parser('sign-withdrawal')
+    for flag in ('key', 'release', 'reason', 'out'):
+        withdrawal.add_argument('--' + flag, required=True)
+    for name in ('check', 'build'):
+        command = commands.add_parser(name)
+        if name == 'check':
+            command.add_argument('--base', required=True)
+            command.add_argument('--head', required=True)
+            command.add_argument('--json', action='store_true')
+        else:
+            command.add_argument('--root', required=True)
+        command.add_argument('--environment', choices=('production', 'test'), default='production', required=name == 'check')
+        command.add_argument('--roots')
+    args = parser.parse_args(argv)
+    try:
+        if args.command == 'keygen':
+            key = Ed25519PrivateKey.generate()
+            data = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+            try:
+                fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError as exc:
+                raise Refusal('out', 'private key file exists; choose a new filename') from exc
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(data)
+            print(encode(public_entry(key)).decode('ascii'), end='')
+            print('Keep the private key file secret.')
+        elif args.command in ('sign-release', 'sign-withdrawal'):
+            key = load_key(args.key)
+            if args.command == 'sign-release':
+                value = sign_release(key, args.artifact, args.url)
+                collection = 'releases'
+            else:
+                value = sign_withdrawal(key, read(args.release), args.reason)
+                collection = 'withdrawals'
+            Path(args.out).write_bytes(encode(value))
+            print('Repository path: ' + record_path(collection, value))
+        elif args.command == 'build':
+            build(args.root, environment=args.environment, roots=args.roots)
+            print('catalog.json verified and rebuilt.')
+        else:
+            verdict = check(args.base, args.head, environment=args.environment, roots=args.roots)
+            print(json.dumps(verdict) if args.json else human(verdict))
+            return 0 if verdict['accepted'] else 1
+        return 0
+    except Refusal as exc:
+        verdict = dict(accepted=False, path=None, field=exc.field[:240], detail=str(exc)[:700])
+        print(json.dumps(verdict) if getattr(args, 'json', False) else human(verdict))
+        return 1
+    except Exception:
+        verdict = dict(accepted=False, path=None, field='internal', detail='Internal intake error; ask the catalog operator to inspect the job log.')
+        print(json.dumps(verdict) if getattr(args, 'json', False) else human(verdict))
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

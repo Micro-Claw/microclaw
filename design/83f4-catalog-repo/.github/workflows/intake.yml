@@ -1,0 +1,114 @@
+name: Catalog intake
+run-name: ${{ github.event.pull_request.title }}
+on:
+  pull_request_target:
+    branches: [main, test]
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: catalog-${{ github.event.pull_request.base.ref }}
+  cancel-in-progress: false
+env:
+  MICROCLAW_COMMIT: REPLACE_WITH_PINNED_COMMIT
+jobs:
+  intake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the reviewed MicroClaw pin
+        run: |
+          if ! [[ "$MICROCLAW_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Set MICROCLAW_COMMIT to a reviewed full commit SHA; placeholder is forbidden.' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: catalog
+          fetch-depth: 0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: Micro-Claw/microclaw
+          ref: ${{ env.MICROCLAW_COMMIT }}
+          path: microclaw-rules
+          persist-credentials: false
+      - name: Install intake dependencies
+        run: python -m pip install cryptography==44.0.2 packaging==24.2
+      - name: Read submission as data, check, merge and rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+          PYTHONPATH: ${{ github.workspace }}/microclaw-rules
+        run: |
+          set -euo pipefail
+          cd catalog
+          git fetch origin "$BASE_REF"
+          git reset --hard "origin/$BASE_REF"
+          checked_base=$(git rev-parse HEAD)
+          git fetch origin "$HEAD_SHA"
+          export DATA_HEAD="$RUNNER_TEMP/intake-head"
+          mkdir "$DATA_HEAD"
+          # No checkout, hooks, installs or scripts from the PR. Only ordinary blobs.
+          set +e
+          python - <<'PY' 2> "$RUNNER_TEMP/data-error.txt"
+          import os, pathlib, subprocess
+          root = pathlib.Path(os.environ['DATA_HEAD'])
+          listing = subprocess.check_output(['git', 'ls-tree', '-rz', os.environ['HEAD_SHA']])
+          for item in listing.split(b'\0'):
+              if not item:
+                  continue
+              meta, raw = item.split(b'\t', 1)
+              mode, kind, oid = meta.decode('ascii').split()
+              path = raw.decode('utf-8')
+              parts = path.split('/')
+              if mode not in ('100644', '100755') or kind != 'blob' or any(p in ('', '.', '..', '.git') for p in parts):
+                  raise SystemExit('Unsafe PR data path or file mode: ' + path[:240])
+              destination = root.joinpath(*parts)
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              with destination.open('xb') as stream:
+                  subprocess.run(['git', 'cat-file', 'blob', oid], stdout=stream, check=True, stdin=subprocess.DEVNULL)
+              destination.chmod(0o755 if mode == '100755' else 0o644)
+          PY
+          materialized=$?
+          set -e
+          if [[ "$materialized" != 0 ]]; then
+            python -c 'import os,pathlib; text=(pathlib.Path(os.environ["RUNNER_TEMP"])/"data-error.txt").read_text()[:240]; text="".join(c if c.isprintable() and c not in "`<>[]\\*_" else " " for c in text); print("Refused submission: field **path**. "+text+". Use one ordinary release or withdrawal JSON file.")' > "$RUNNER_TEMP/verdict.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/verdict.md"
+            exit 0
+          fi
+          args=(--environment production)
+          if [[ "$BASE_REF" == test ]]; then
+            args=(--environment test --roots "$PWD/roots-TEST-ONLY.json")
+          fi
+          set +e
+          python -m microclaw.catalog_intake check --base "$PWD" --head "$DATA_HEAD" "${args[@]}" > "$RUNNER_TEMP/verdict.md"
+          verdict=$?
+          set -e
+          if [[ "$verdict" != 0 ]]; then
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/verdict.md"
+            if [[ "$verdict" == 2 ]]; then exit 2; fi
+            exit 0
+          fi
+          # A direct operator push must not invalidate the base we checked.
+          git fetch origin "$BASE_REF"
+          if [[ "$(git rev-parse "origin/$BASE_REF")" != "$checked_base" ]]; then
+            echo 'Base moved during intake; rerun this job against the new base.' >&2
+            exit 1
+          fi
+          # SHA precondition prevents a synchronize race from merging an unchecked head.
+          gh api --method PUT "repos/$GH_REPO/pulls/$PR_NUMBER/merge" -f merge_method=squash -f sha="$HEAD_SHA" > "$RUNNER_TEMP/merge.json"
+          python -c 'import json,sys; assert json.load(open(sys.argv[1]))["merged"], "PR was not merged"' "$RUNNER_TEMP/merge.json"
+          git fetch origin "$BASE_REF"
+          git reset --hard "origin/$BASE_REF"
+          python -m microclaw.catalog_intake build --root "$PWD" "${args[@]}"
+          git config user.name 'catalog intake'
+          git config user.email 'catalog-intake@users.noreply.github.com'
+          git add catalog.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Rebuild verified package catalog'
+            git push origin "HEAD:$BASE_REF"
+          fi

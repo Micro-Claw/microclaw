@@ -1,0 +1,13 @@
+{
+  "artifact_digest": "241065555abfdda88e7bbb8308b17a04ca09c8d80af52b9d2e1cf6c979b65f72",
+  "package_id": "gate-good",
+  "publisher": "fixture-lab",
+  "reason": "Gate withdrawal",
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+    "value": "r94520TmEqSwNI8Zrbz6QEbPRZn+1fP/3r7RACZo4GCJlnUkI3G63plaP6G0tHTlxzHmd1PteCyWFugVWVyqBQ=="
+  },
+  "type": "microclaw.skill-withdrawal.v1",
+  "version": "1.0.0"
+}
