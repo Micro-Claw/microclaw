@@ -1166,8 +1166,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         msg = p.message.strip()
         if not msg:
             raise HTTPException(400, "Empty message.")
-        if ((credentials.load_llm_api_key()[0] if llm_base_url() else credentials.load_api_key()[0]) is None
-                and not llm_base_url()):
+        if not llm_base_url() and credentials.load_api_key()[0] is None:
             raise HTTPException(400, "No Anthropic API key is set.")
         with update_job_lock:
             refuse_extension_install()
@@ -1496,7 +1495,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     @app.get("/api/key")
     async def get_key():
-        key, source = credentials.load_api_key()
+        key, source = (credentials.load_llm_api_key() if llm_base_url()
+                       else credentials.load_api_key())
         return JSONResponse(
             {
                 "has_key": key is not None,
@@ -1517,15 +1517,19 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             raise HTTPException(400, "Empty key.")
         # Overwrites whatever was set, so a key can be swapped mid-session.
         _add_audit_secret(session, key)
-        set_api_key(key)
+        local_path = bool(llm_base_url())
+        store = credentials.store_llm_api_key if local_path else credentials.store_api_key
+        load_stored = credentials.load_llm_api_key if local_path else credentials.load_stored_key
+        if local_path: set_llm_api_key(key)
+        else: set_api_key(key)
         stored_in = stored_at = None
         stale_store = False
         if k.persist:
-            stored_in, stored_at = credentials.store_api_key(key)
+            stored_in, stored_at = store(key)
         else:
             # A key held for this process only doesn't displace an older one in
             # the credential store — that one comes back on the next start.
-            stored, _ = credentials.load_stored_key()
+            stored, _ = load_stored()
             stale_store = stored is not None and stored != key
         # Never echo the key: a suffix is enough to confirm which one is set.
         return JSONResponse(
@@ -1580,8 +1584,6 @@ def _open_when_ready(
 
 
 def serve(args):
-    if getattr(args, "llm_base_url", None):
-        os.environ["MICROCLAW_LLM_BASE_URL"] = args.llm_base_url
     """Entry point for the `serve` subcommand."""
     if getattr(args, "setup_write_security_config", False):
         if args.host not in LOCAL_HOSTS:

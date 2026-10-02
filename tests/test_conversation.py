@@ -75,6 +75,11 @@ def test_audit_redacts_credentials_but_keeps_images_and_scientific_values(tmp_pa
     assert "IMAGEBYTES" in raw
 
 
+def test_llm_api_key_field_is_redacted():
+    from microclaw.conversation import redact_credentials
+    assert redact_credentials({"llm_api_key": "local-secret-value"})["llm_api_key"] == "[REDACTED]"
+
+
 def test_atomic_write_interruption_leaves_previous_file_intact(tmp_path, monkeypatch):
     path = tmp_path / "history.json"
     path.write_text("previous", encoding="utf-8")

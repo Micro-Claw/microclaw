@@ -1568,6 +1568,19 @@ def test_post_key_sets_and_persists(client, monkeypatch):
     assert "sk-ant-xyzXYZW" not in json.dumps(body)
 
 
+def test_post_key_uses_local_credential_store_when_local_backend_selected(client, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    state = {}
+    monkeypatch.setattr(webserve, "set_llm_api_key", lambda key: state.update(live=key))
+    monkeypatch.setattr(webserve, "set_api_key", lambda key: pytest.fail("set Anthropic key"))
+    monkeypatch.setattr(credentials, "store_llm_api_key", lambda key: ("file", "/tmp/local-config"))
+    monkeypatch.setattr(credentials, "store_api_key", lambda key: pytest.fail("stored Anthropic key"))
+    body = client.post("/api/key", json={"key": "local-secret-xyz", "persist": True}).json()
+    assert state["live"] == "local-secret-xyz"
+    assert body["stored_in"] == "file"
+    assert body["suffix"] == "…-xyz"
+
+
 def test_post_key_can_replace_a_key_already_set(client, monkeypatch):
     """The chip in the header reopens the banner; the endpoint overwrites."""
     stored = {}

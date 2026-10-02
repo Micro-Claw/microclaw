@@ -36,7 +36,14 @@ LLM_BASE_URL_ENV = "MICROCLAW_LLM_BASE_URL"
 LLM_API_KEY_ENV = "MICROCLAW_LLM_API_KEY"
 _local_models: list[str] | None = None
 _local_vision: dict[str, bool] = {}
-_local_http = httpx.Client(timeout=120)
+_local_http: httpx.Client | None = None
+
+
+def _get_local_http() -> httpx.Client:
+    global _local_http
+    if _local_http is None:
+        _local_http = httpx.Client()
+    return _local_http
 
 
 def llm_base_url() -> str | None:
@@ -52,7 +59,7 @@ def set_llm_api_key(key: str) -> None:
 def _local_get(path: str):
     url = llm_base_url()
     headers = {"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"} if os.environ.get(LLM_API_KEY_ENV) else {}
-    return _local_http.get(url + path, headers=headers, timeout=30)
+    return _get_local_http().get(url + path, headers=headers, timeout=30)
 
 MAX_OUTPUT_TOKENS = 8192
 
@@ -648,6 +655,16 @@ class _BadModel(Exception):
     """The API does not know this model id. Internal to this module."""
 
 
+class _LocalAPIError(Exception):
+    """A non-retryable local server response suitable for a user error event."""
+
+
+class _LocalTransient(Exception):
+    def __init__(self, message: str, retry_after: float = 0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def _cancelled(cancel) -> bool:
     return cancel is not None and cancel.is_set()
 
@@ -750,15 +767,15 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
     `_TransientAPIError` once the transient-failure backoff is spent.
     """
     retry_after = 0.0
-    if llm_base_url():
-        return (yield from _stream_local_round(messages, system_blocks, model, tool_schemas,
-                                               context_provider, iteration, usage_sink))
     for attempt, delay in enumerate([0, *_RETRY_DELAYS]):
         delay = max(delay, retry_after)
         if delay:
             yield {"type": "retry", "delay": delay, "attempt": attempt}
             time.sleep(delay)
         try:
+            if llm_base_url():
+                return (yield from _stream_local_round(messages, system_blocks, model, tool_schemas,
+                                                       context_provider, iteration, usage_sink))
             model_messages = (
                 context_provider(messages) if context_provider is not None else messages
             )
@@ -813,6 +830,23 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
             # A free-text model picker (v4c) can hold an id the API rejects.
             # Without this it escapes run_agent_iter as a 500 on the SSE stream.
             raise _BadModel(str(e)) from None
+        except _LocalTransient as e:
+            if attempt == len(_RETRY_DELAYS):
+                raise _TransientAPIError(str(e)) from e
+            retry_after = e.retry_after
+            if retry_after > MAX_RETRY_AFTER_SECONDS:
+                raise _TransientAPIError(
+                    f"Local server {llm_base_url()} requested a {retry_after:g} second retry delay, "
+                    "which is too long to hold this turn open. Please try again later."
+                ) from e
+        except _LocalAPIError:
+            raise
+        except httpx.TransportError as e:
+            if attempt == len(_RETRY_DELAYS):
+                raise _TransientAPIError(
+                    f"Local server {llm_base_url()} is still unavailable after retrying."
+                ) from e
+            retry_after = 0.0
         except (anthropic.RateLimitError, anthropic.InternalServerError,
                 anthropic._exceptions.OverloadedError,
                 anthropic.APIConnectionError) as e:
@@ -855,40 +889,58 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
             if role == "assistant":
                 texts, calls = [], []
                 for block in content:
-                    typ = getattr(block, "type", None) or block.get("type")
+                    typ = getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)
                     get = (lambda k: getattr(block, k)) if not isinstance(block, dict) else block.get
                     if typ == "text": texts.append(get("text"))
                     elif typ == "tool_use": calls.append({"id": get("id"), "type": "function", "function": {"name": get("name"), "arguments": json.dumps(get("input"), separators=(",", ":"))}})
                 entry = {"role": "assistant", "content": "".join(texts) or None}
                 if calls: entry["tool_calls"] = calls
                 wire.append(entry)
-            else:
+            elif role == "user":
+                images = []
                 for block in content:
-                    if block.get("type") != "tool_result": continue
+                    if block.get("type") == "text":
+                        wire.append({"role": "user", "content": block.get("text", "")})
+                        continue
+                    if block.get("type") != "tool_result":
+                        raise ValueError(f"Cannot translate user content block {block.get('type')!r} to the local chat API")
                     parts = block.get("content", "")
                     text = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text") if isinstance(parts, list) else str(parts)
                     if isinstance(parts, list) and any(p.get("type") == "image" for p in parts):
                         if _local_vision[base]:
                             for p in parts:
                                 if p.get("type") == "image":
-                                    src = p["source"]; wire.append({"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{src['media_type']};base64,{src['data']}"}}]})
+                                    src = p["source"]; images.append({"type": "image_url", "image_url": {"url": f"data:{src['media_type']};base64,{src['data']}"}})
                         else: text += ('\n' if text else '') + '{"image_omitted": "this model does not accept images"}'
                     if block.get("is_error"): text = "Error: " + text
                     wire.append({"role": "tool", "tool_call_id": block["tool_use_id"], "content": text})
+                if images:
+                    wire.append({"role": "user", "content": images})
+            else:
+                raise ValueError(f"Cannot translate message role {role!r} to the local chat API")
         payload = {"model": model, "messages": wire, "max_tokens": MAX_OUTPUT_TOKENS, "stream": True, "stream_options": {"include_usage": True}}
         if tool_schemas:
             payload["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t["input_schema"]}} for t in tool_schemas]
-        response = _local_http.post(base + "/v1/chat/completions", json=payload, headers=headers, timeout=120)
-        if response.status_code >= 400:
+        text, calls, finish, usage, timings = [], {}, None, {}, {}
+        reason_length = 0
+        timeout = httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0)
+        with _get_local_http().stream("POST", base + "/v1/chat/completions", json=payload,
+                                      headers=headers, timeout=timeout) as response:
+          if response.status_code >= 400:
+            response.read()
             try: err = response.json().get("error", {})
             except Exception: err = {}
             if response.status_code == 404: raise _BadModel(f"Local server {base} does not know model {model!r}.")
+            if response.status_code in (429, 503):
+                try: retry_after = float(response.headers.get("retry-after", 0))
+                except ValueError: retry_after = 0
+                raise _LocalTransient(f"Local server {base} is still unavailable after retrying.", retry_after)
             if response.status_code == 400 and err.get("n_ctx"):
-                raise RuntimeError(f"Local server {base} context limit is {err['n_ctx']} tokens; request uses {err.get('n_prompt_tokens', 'an unknown number of')} tokens.")
-            if response.status_code in (429, 503): raise _TransientAPIError(f"Local server {base} is still unavailable after retrying.")
-            raise RuntimeError(f"Local server {base} returned HTTP {response.status_code}: {err.get('message', response.text)}")
-        text, calls, finish, usage, timings = [], {}, None, {}, {}
-        for line in response.text.splitlines():
+                raise _LocalAPIError(f"Local server {base} context limit is {err['n_ctx']} tokens; request uses {err.get('n_prompt_tokens', 'an unknown number of')} tokens.")
+            if response.status_code == 401:
+                raise _LocalAPIError(f"Local server {base} rejected its API key. Set {LLM_API_KEY_ENV} or enter the local key in the browser.")
+            raise _LocalAPIError(f"Local server {base} returned HTTP {response.status_code}: {err.get('message', response.read().decode(errors='replace'))}")
+          for line in response.iter_lines():
             if not line.startswith("data: "): continue
             data = line[6:]
             if data == "[DONE]": continue
@@ -896,6 +948,7 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
             if not chunk.get("choices"):
                 usage = chunk.get("usage", {}); timings = chunk.get("timings", {}); continue
             choice = chunk["choices"][0]; delta = choice.get("delta", {})
+            reason_length += len(delta.get("reasoning_content") or "")
             if delta.get("content"):
                 text.append(delta["content"]); yield {"type": "text_delta", "text": delta["content"]}
             for call in delta.get("tool_calls", []):
@@ -905,18 +958,25 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
             if choice.get("finish_reason"): finish = choice["finish_reason"]
         blocks = ([{"type": "text", "text": "".join(text)}] if text else [])
         for item in calls.values():
+            if not item["id"]:
+                import uuid
+                item["id"] = "call_" + uuid.uuid4().hex
             try: inp = json.loads(item["arguments"] or "{}")
             except json.JSONDecodeError as exc: inp = {"_microclaw_parse_error": f"Invalid tool arguments JSON: {exc}", "raw": item["arguments"]}
             blocks.append({"type": "tool_use", "id": item["id"], "name": item["name"], "input": inp})
-        stop = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}.get(finish, "end_turn")
+        stop = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}.get(finish)
         result = anthropic.types.Message.model_validate({"id": "local", "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": None, "usage": {"input_tokens": usage.get("prompt_tokens", 0), "output_tokens": usage.get("completion_tokens", 0), "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)}})
         if usage_sink:
             record = {"timestamp": datetime.now(timezone.utc).isoformat(), "model": model, "iteration": iteration, "stop_reason": stop, "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"), "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens")}
             record.update({k: timings[k] for k in ("prompt_n", "cache_n", "prompt_ms", "predicted_n", "predicted_ms") if k in timings})
-            usage_sink(record)
+            record["reasoning_characters"] = reason_length
+            try:
+                usage_sink(record)
+            except Exception as exc:
+                print(f"[microclaw] Could not record usage: {exc}", file=sys.stderr)
         return result
-    except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as exc:
-        raise _TransientAPIError(f"Local server {base} is unavailable after retrying: {exc}") from exc
+    except httpx.TransportError:
+        raise
 
 
 def run_agent_iter(
@@ -994,6 +1054,9 @@ def run_agent_iter(
             if isinstance(e, _BadModel):
                 yield {"type": "error",
                        "message": f"The API rejected the model '{model}': {e}"}
+                return
+            if isinstance(e, _LocalAPIError):
+                yield {"type": "error", "message": str(e)}
                 return
             raise
 

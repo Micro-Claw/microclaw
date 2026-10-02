@@ -454,7 +454,14 @@ def _positive_seconds(value: str) -> float:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
+    llm_url_option = argparse.ArgumentParser(add_help=False)
+    llm_url_option.add_argument(
+        "--llm-base-url", default=argparse.SUPPRESS,
+        help="OpenAI-compatible local server base URL (also MICROCLAW_LLM_BASE_URL).",
+    )
+    parser = argparse.ArgumentParser(
+        description="Microclaw: AI agent for Micro-Manager", parents=[llm_url_option]
+    )
     # Agent-session options stay on the top-level parser so `microclaw --port ...`
     # (no subcommand) keeps launching a session, as before.
     parser.add_argument(
@@ -471,7 +478,6 @@ def main():
         help="Skip this launch's managed-install update check.",
     )
     parser.add_argument("--port", type=int, default=4827)
-    parser.add_argument("--llm-base-url", default=None, help="OpenAI-compatible local server base URL (also MICROCLAW_LLM_BASE_URL).")
     parser.add_argument(
         "--setup-write-security-config", action="store_true",
         help="Permit one confirmed write of setup security bounds (serve on loopback only).",
@@ -516,9 +522,9 @@ def main():
             "Drive Microclaw from a browser. Binds 127.0.0.1 only — this "
             "endpoint moves real hardware."
         ),
+        parents=[llm_url_option],
     )
     sv.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")
-    sv.add_argument("--llm-base-url", default=None, help="OpenAI-compatible local server base URL (also MICROCLAW_LLM_BASE_URL).")
     sv.add_argument("--web-port", type=int, default=8000, help="HTTP port (default: 8000).")
     sv.add_argument(
         "--no-browser",
@@ -599,7 +605,7 @@ def main():
     )
 
     args = parser.parse_args()
-    if args.llm_base_url:
+    if getattr(args, "llm_base_url", None):
         os.environ["MICROCLAW_LLM_BASE_URL"] = args.llm_base_url
 
     if args.setup_write_security_config and args.command != "serve":

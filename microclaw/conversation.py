@@ -33,7 +33,7 @@ CHECKPOINT_ELISION = "[...ELIDED {count} CHARS...]"
 _API_KEY_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{12,}\b")
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{12,}")
 _SECRET_KEYS = {
-    "api_key", "anthropic_api_key", "authorization", "bearer_token",
+    "api_key", "anthropic_api_key", "llm_api_key", "authorization", "bearer_token",
     "remote_token", "pairing_code", "session_token",
 }
 
