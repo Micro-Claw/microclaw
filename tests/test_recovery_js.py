@@ -442,7 +442,7 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False, extension_pending=
       }}
       function $(id) {{ return element(id); }}
       const msg = element('msg'), send = element('send');
-      let busy = false, hasKey = true, history = [];
+      let busy = false, hasKey = true, keyRequired = true, history = [];
       const steps = {json.dumps(confirm_steps)};
       async function apiFetch(url) {{
         if (url === '/api/extensions') {{
@@ -625,7 +625,7 @@ def run_browser_turn(*, unrelated_abort=False):
       }}
       function $(id) {{ return element(id); }}
       const msg = element('msg'), send = element('send');
-      let busy = false, hasKey = true, history = [];
+      let busy = false, hasKey = true, keyRequired = true, history = [];
       function toast(value) {{ toasts.push(value); }}
       function autogrow() {{}}
       function paint() {{ paints += 1; }}

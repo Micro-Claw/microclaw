@@ -233,7 +233,10 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const tx = $("transcript"), msg = $("msg"), send = $("send");
-  let busy = false, hasKey = false;
+  // keyRequired lives with hasKey because setBusy reads both. A payload without
+  // key_required is treated as required: that is the Anthropic path's rule and
+  // the page's behaviour before the local backend existed.
+  let busy = false, hasKey = false, keyRequired = true;
 
   Transcript.initTheme($("theme"));
 
@@ -1028,7 +1031,6 @@
 
   // ---- API key ----
   let editable = true;
-  let keyRequired = true;
   let keyLabel = "Anthropic API key";
   let keyEnv = "ANTHROPIC_API_KEY";
 
@@ -1055,8 +1057,8 @@
   function showKey(state) {
     hasKey = !!state.has_key;
     editable = !!state.editable;
-    keyRequired = !!state.key_required;
-    keyLabel = state.key_label;
+    keyRequired = state.key_required !== false;
+    keyLabel = state.key_label || "Anthropic API key";
     keyEnv = keyRequired ? "ANTHROPIC_API_KEY" : "MICROCLAW_LLM_API_KEY";
     send.disabled = busy || (keyRequired && !hasKey);
 

@@ -1826,8 +1826,8 @@ def test_post_key_is_refused_when_bound_beyond_localhost(session, monkeypatch):
 
 def test_serve_key_controls_come_from_key_endpoint_payload(client):
     page = client.get("/").text
-    assert "keyRequired = !!state.key_required" in page
-    assert "keyLabel = state.key_label" in page
+    assert "keyRequired = state.key_required !== false" in page
+    assert "keyLabel = state.key_label ||" in page
     assert "send.disabled = busy || (keyRequired && !hasKey)" in page
     assert 'btn.classList.toggle("hidden", !hasKey && keyRequired)' in page
 
