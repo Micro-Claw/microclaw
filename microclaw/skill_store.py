@@ -939,6 +939,8 @@ def start_job(package_id, action, *, retained_digests, release=None, opener=None
     package = lock.__enter__()
     job = dict(operation=action, running=True,
                phase="downloading" if action == "install" else "recovering", started_at=time.time())
+    if action == "install":
+        job["release"] = dict(release) if isinstance(release, dict) else None
     try:
         _recover(package, retained_digests=retained_digests)
         _write(package / "job.json", job)

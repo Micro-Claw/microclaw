@@ -2013,6 +2013,7 @@ def test_install_job_refuses_other_publisher_without_replacing_pointer(tmp_path,
                     retained_digests=frozenset(), opener=open)
     job = wait_delivery('analysis-tools')
     assert downloads == [b['artifact']]
+    assert job['release'] == identity
     assert job['reasons'] == [dict(field='publisher', detail=
         "another publisher's package with this name is installed; remove it first")]
     assert read(directory / 'pointer.json') == pointer

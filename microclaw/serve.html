@@ -61,7 +61,7 @@
   }
   .banner h2 { margin: 0 0 6px; font-size: 14px; font-weight: 650; }
   .banner p { margin: 0 0 10px; font-size: 13px; color: var(--ink-soft); }
-  .banner .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .banner .row, dialog .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .banner input[type=password] {
     flex: 1; min-width: 240px; font-family: var(--mono); font-size: 13px; color: var(--ink);
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
@@ -307,13 +307,15 @@
         row.publisher + "/" + row.package_id + " " + release.version + " — Publisher: " + release.publisher +
         " — Licence: " + release.license + ". " + row.confirmNotice;
       dialog.append(text);
+      const controls = document.createElement("div"); controls.className = "row";
       if (operation === "install" && row.confirmIssues) {
-        const link = document.createElement("a"); link.href = row.confirmIssues; link.textContent = "Report problems"; dialog.append(link);
+        const link = document.createElement("a"); link.href = row.confirmIssues; link.textContent = "Report problems"; controls.append(link);
       }
       for (const [label, accepted] of [[operation === "remove" ? "Remove" : "Install", true], ["Cancel", false]]) {
         const button = document.createElement("button"); button.textContent = label;
-        button.onclick = () => { dialog.close(); dialog.remove(); resolve(accepted); }; dialog.append(button);
+        button.onclick = () => { dialog.close(); dialog.remove(); resolve(accepted); }; controls.append(button);
       }
+      dialog.append(controls);
       dialog.addEventListener("cancel", () => { dialog.remove(); resolve(false); });
       document.body.append(dialog); dialog.showModal();
     });
@@ -364,17 +366,47 @@
         if (row.compatibility) item.style.opacity = "0.55";
         const heading = document.createElement("p"); heading.className = "row";
         const name = document.createElement("strong"); name.textContent = row.heading; heading.append(name);
-        const pkg = state.packages.find(p => p.package_id === row.package_id);
         const actions = [[row.action, "install"], [row.remove ? "Remove" : null, "remove"]];
-        if (pkg) actions.push(["Roll back", "rollback"], ["Repair", "repair"]);
+        if (row.recoverable) actions.push(["Roll back", "rollback"], ["Repair", "repair"]);
         for (const [label, operation] of actions) if (label) {
           const button = document.createElement("button"); button.textContent = label;
-          button.disabled = !!(pkg && pkg.job && pkg.job.running);
+          button.disabled = row.disabled;
           button.onclick = () => skillPackageAction(row, operation); heading.append(button);
         }
         item.append(heading);
         for (const text of [row.warning, row.compatibility].filter(Boolean)) {
           const message = document.createElement("p"); message.textContent = text; item.append(message);
+        }
+        for (const text of row.statusLines) {
+          const status = document.createElement("p"); status.textContent = text; item.append(status);
+        }
+        if (row.jobText) {
+          const outcome = document.createElement("p");
+          const text = document.createElement("strong"); text.textContent = row.jobText;
+          if (row.jobFailed) text.className = "err-badge";
+          outcome.append(text); item.append(outcome);
+        }
+        if (row.toggle) {
+          const toggle = row.toggle;
+          const controls = document.createElement("p"); controls.className = "row";
+          const button = document.createElement("button");
+          button.textContent = toggle.label;
+          button.disabled = toggle.disabled;
+          button.addEventListener("click", async () => {
+            button.disabled = true;
+            try {
+              const res = await apiFetch("/api/skill-packages/" + encodeURIComponent(toggle.package_id) + "/discovery", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled: !toggle.enabled})
+              });
+              if (!res.ok) {
+                const body = await res.json();
+                alert(body.detail || "Could not change discovery.");
+              }
+            } catch (err) { alert(err.message); }
+            finally { await refreshSkillPackages(); }
+          });
+          controls.append(button); item.append(controls);
         }
         for (const text of row.skillLines) {
           const description = document.createElement("p"); description.textContent = text; item.append(description);
@@ -384,41 +416,6 @@
           if (url) { const link = document.createElement("a"); link.textContent = label; link.href = url; links.append(link); }
         }
         item.append(links);
-        list.append(item);
-      }
-      for (const row of view.rows) {
-        const item = document.createElement("p");
-        item.textContent = row;
-        list.append(item);
-      }
-      for (const toggle of view.discovery) {
-        const item = document.createElement("p");
-        item.textContent = toggle.package_id + " ";
-        const button = document.createElement("button");
-        button.textContent = toggle.label;
-        button.disabled = toggle.disabled;
-        button.addEventListener("click", async () => {
-          button.disabled = true;
-          try {
-            const res = await apiFetch("/api/skill-packages/" + encodeURIComponent(toggle.package_id) + "/discovery", {
-              method: "POST", headers: {"Content-Type": "application/json"},
-              body: JSON.stringify({enabled: !toggle.enabled})
-            });
-            if (!res.ok) {
-              const body = await res.json();
-              alert(body.detail || "Could not change discovery.");
-            }
-          } catch (err) { alert(err.message); }
-          finally { await refreshSkillPackages(); }
-        });
-        item.append(button);
-        // A damaged install may have no catalog card, but remains removable.
-        if (!view.catalogRows.some(row => row.package_id === toggle.package_id && row.remove)) {
-          const remove = document.createElement("button"); remove.textContent = "Remove";
-          remove.disabled = toggle.disabled;
-          remove.onclick = () => skillPackageAction({package_id: toggle.package_id, publisher: "unknown"}, "remove");
-          item.append(remove);
-        }
         list.append(item);
       }
       fast = state.packages.some(p => p.job && p.job.running);
