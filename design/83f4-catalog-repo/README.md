@@ -4,8 +4,17 @@ MicroClaw does not test or support packages. Each package is its publisher's;
 report problems using its issues URL. Intake checks provenance and release data
 without executing publisher code.
 
-Use Python from a MicroClaw checkout on PYTHONPATH, with cryptography and
-packaging installed. These single-line commands work in PowerShell too.
+The commands below come with MicroClaw. Clone it, install the two libraries
+they need, and run them from inside that folder (PowerShell or any shell):
+
+```powershell
+git clone https://github.com/Micro-Claw/microclaw
+cd microclaw
+python -m pip install cryptography packaging
+```
+
+**Not open yet:** the catalog's production policy is not published, so every
+submission to `main` is refused until it is.
 
 Generate your private key, keep it secret, and send the printed public key entry
 and your publisher name to the catalog operator for admission:
