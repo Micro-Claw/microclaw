@@ -20,7 +20,7 @@ git checkout block-83f-3
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor 9efc9b5 HEAD
+git merge-base --is-ancestor ed25d8f HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 .\install.bat
 if ($LASTEXITCODE -ne 0) { throw 'install failed' }
@@ -31,11 +31,13 @@ puts this branch in the slot.** If the installer pauses for bridge or setup,
 cancel with Ctrl+C (Y); the install has already completed. Then close
 MicroClaw's console and launcher windows.
 
-## 1. Prepare
+## 1. Clean up, then prepare
 
-Keep **MicroClaw closed**, then run:
+Round 1 left its TEST-ONLY store behind. The first command removes it (and
+only a store carrying TEST-ONLY roots). It may ask you to close MicroClaw.
 
 ```powershell
+.\design\83-block83f3-demo-gate.ps1 -Phase cleanup
 .\design\83-block83f3-demo-gate.ps1 -Phase prepare
 ```
 
@@ -49,23 +51,25 @@ downloaded yet: MicroClaw's own startup is the first fetch.
 ```
 
 It asks you to launch the **desktop icon**. Wait for Firefox, then type `DONE`.
-It then prints twelve steps, one at a time. For a chat step, copy the printed
-message into MicroClaw unchanged and type `DONE` when the reply has finished.
-For a panel step, do what it says and type what it asks for. The panel is
+It then prints twelve steps, one at a time. For a chat step, paste the printed
+message into **MicroClaw's chat box in Firefox**. Do not paste the agent's
+reply here. Type `DONE` in PowerShell when the reply has finished; nothing else
+is accepted. For a panel step, do what it says and type what it asks for, on
+one line. The panel is
 **Community skill packages**; leave it open after step 2.
 
 | Step | Where | What |
 |---|---|---|
 | 1 | chat | search the catalog |
 | 2 | panel | open it; type the `Catalog …` line |
-| 3 | panel | executable-fixture: Install → **Cancel**, then Install → **Install**; describe the box |
+| 3 | panel | executable-fixture: **Install** → **Cancel**, then **Install** → **Install**; describe the box |
 | 4 | panel | markdown-fixture (fixture-lab): Install → Install |
 | 5 | panel | tampered-fixture: Install → Install; type the error |
 | 6 | panel | markdown-fixture (**fixture-two**): Install → Install; type the error |
 | 7 | panel | incompatible-fixture: type its reason; is there an Install button? |
 | 8 | chat | load the skill |
-| 9 | panel | **Check now**; type the text on executable-fixture and markdown-fixture |
-| 10 | panel | executable-fixture: **Update to 1.1.0** → Install |
+| 9 | panel | **Check now**; type the text on executable-fixture (incl. `1.0.0 — 1.1.0 available`) and markdown-fixture |
+| 10 | panel | executable-fixture: **Update** → Install |
 | 11 | panel | markdown-fixture (fixture-lab): **Remove** → describe the box → Remove |
 | 12 | chat | search again |
 
