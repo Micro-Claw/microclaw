@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'tests/fixtures/skill_packages'
 SEED = ROOT / 'design/83f4-catalog-repo'
 NOW = datetime(2026, 10, 2, tzinfo=timezone.utc)
+# Intake runs only in the catalog's Action, on ubuntu-latest: Windows has no executable
+# bit and no bash to run the workflow's script with.
+LINUX_ONLY = 'catalog intake runs on the Action\'s Linux runner only'
 _spec = importlib.util.spec_from_file_location('intake_fixture_builder', FIXTURES / 'build_release.py')
 builder = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(builder)
@@ -112,7 +115,8 @@ def test_one_file_rule_names_every_forbidden_extra(setup, extra):
     assert extra in result['path']
 
 
-@pytest.mark.parametrize('operation', ['delete', 'rename', 'modify', 'mode', 'none'])
+@pytest.mark.parametrize('operation', ['delete', 'rename', 'modify',
+    pytest.param('mode', marks=pytest.mark.skipif(sys.platform == 'win32', reason=LINUX_ONLY)), 'none'])
 def test_one_file_rule_delete_rename_modify_none(setup, operation):
     (setup['head'] / setup['path']).unlink()
     target = setup['head'] / 'catalog.json'
@@ -573,7 +577,9 @@ def test_trusted_history_still_requires_structural_validation(setup, collection,
 
 
 def git(repo, *args):
-    return subprocess.run(['git', '-C', str(repo), *args], stdin=subprocess.DEVNULL,
+    # Windows git converts LF to CRLF on checkout; the Action's Linux checkout does not,
+    # and intake compares the working tree with raw blobs.
+    return subprocess.run(['git', '-c', 'core.autocrlf=false', '-C', str(repo), *args], stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, check=True).stdout.strip()
 
 
@@ -669,6 +675,7 @@ def test_materialize_refuses_nonordinary_git_objects(setup, tmp_path, mode):
     assert setup['path'] in str(caught.value)
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason=LINUX_ONLY)
 @pytest.mark.parametrize('moves,attempts,exit_code', [(1, 2, 0), (5, 3, 1)])
 def test_workflow_comments_and_rechecks_when_base_moves(tmp_path, moves, attempts, exit_code):
     workflow = yaml.safe_load((SEED / '.github/workflows/intake.yml').read_text(encoding='utf-8'))
