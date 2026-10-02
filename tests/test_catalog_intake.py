@@ -631,7 +631,8 @@ def test_materialize_stale_fork_addition_against_current_base(setup, tmp_path):
     assert verdict['accepted'], verdict
 
 
-@pytest.mark.parametrize('change', ['delete', 'modify', 'rename', 'mode'])
+@pytest.mark.parametrize('change', ['delete', 'modify', 'rename',
+    pytest.param('mode', marks=pytest.mark.skipif(sys.platform == 'win32', reason=LINUX_ONLY))])
 def test_materialize_applies_prs_own_forbidden_changes(setup, tmp_path, change):
     repo, ancestor = stale_repo(setup, tmp_path)
     readme = repo / 'README.md'
