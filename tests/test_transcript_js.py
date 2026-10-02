@@ -423,13 +423,13 @@ def test_skill_packages_view_keeps_disabled_release_and_test_banner():
     path = resources.files("microclaw").joinpath("transcript.js")
     state = {"trust": {"test_roots_active": True}, "packages": [{
         "package_id": "example", "installs": [{"manifest": {"publisher": "lab", "version": "1.0.0"},
-        "artifact_digest": "abcdef1234567890", "state": "ready", "eligible": False,
+        "artifact_digest": "abcdef1234567890", "state": "ready", "active": True, "eligible": False,
         "reasons": [{"field": "microclaw", "detail": "needs MicroClaw <2; this is 2.0.0"}]}]}]}
     script = ("global.window = {};\n" + f"require({json.dumps(str(path))});\n" +
               f"process.stdout.write(JSON.stringify(window.Transcript.skillPackagesView({json.dumps(state)})));\n")
     view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
                                     encoding="utf-8", check=True).stdout)
-    assert view["catalogRows"][0]["statusLines"] == ["lab/example 1.0.0 abcdef123456 — installed — disabled: microclaw: needs MicroClaw <2; this is 2.0.0"]
+    assert view["catalogRows"][0]["statusLines"] == ["Installed, but disabled: needs MicroClaw <2; this is 2.0.0"]
     assert view["trust"] == "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
     html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     assert '<details id="skill-packages-panel"' in html
@@ -459,10 +459,10 @@ def test_skill_discovery_toggle_exclusion_and_disclosure():
     view = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True,
                                     encoding="utf-8", check=True).stdout)
     cards = {row["package_id"]: row for row in view["catalogRows"]}
-    assert cards["example"]["statusLines"][0].endswith("(active) — eligible — hidden from the agent: name: ambiguous enabled external skill")
-    assert cards["example"]["statusLines"][1].endswith("(previous) — eligible")
-    assert cards["readable"]["statusLines"][0].endswith("(active) — eligible — agent can read it")
-    assert cards["other"]["statusLines"][0].endswith("(active) — eligible — hidden from the agent")
+    assert cards["example"]["statusLines"][0] == "Installed — hidden from the agent: ambiguous enabled external skill"
+    assert cards["example"]["statusLines"][1] == "Version unknown is kept for Roll back"
+    assert cards["readable"]["statusLines"] == ["Installed — the agent can read it"]
+    assert cards["other"]["statusLines"] == ["Installed — hidden from the agent"]
     assert not any("discovery" in line for row in cards.values() for line in row["statusLines"])
     assert cards["example"]["toggle"] == dict(package_id="example", enabled=True,
         label="Stop the agent reading this package", disabled=False)
@@ -589,7 +589,7 @@ def test_package_card_job_attribution_and_missing_catalog():
     assert rows['shared']['heading'] == 'fixture-lab/shared 1.0.0'
     assert rows['shared']['remove'] and rows['shared']['toggle']['enabled']
     assert rows['damaged']['remove'] and rows['damaged']['recoverable']
-    assert 'Disabled: pointer: unreadable' in rows['damaged']['statusLines']
+    assert 'Disabled: unreadable' in rows['damaged']['statusLines']
 
 
 @pytest.mark.parametrize('operation,installed,label,running_label', [
@@ -649,7 +649,9 @@ def g9_fixture_state():
             continue
         install = {'intake': {'publisher': row['publisher'], 'version': '1.0.0'},
                    'active': True, 'state': 'ready', 'eligible': not row.get('blocked'),
-                   'discoverable': not row.get('blocked'), 'reasons': [], 'discovery_exclusions': []}
+                   'discoverable': not row.get('blocked'),
+                   'reasons': [{'field': 'artifact_digest', 'detail': row['block_reason']['detail']}] if row.get('blocked') else [],
+                   'discovery_exclusions': []}
         pkg = {'package_id': row['package_id'], 'installs': [install], 'discovery': {'enabled': True}}
         if row['package_id'] == 'markdown-fixture':
             pkg['job'] = {'operation': 'install', 'release': release, 'running': False, 'phase': 'finished',
@@ -668,3 +670,35 @@ def test_g9_demo_outcomes_are_inside_the_correct_cards():
     assert rows['fixture-lab', 'tampered-fixture']['jobText'] == 'Install failed: download does not match signed digest'
     assert rows['fixture-two', 'markdown-fixture']['jobText'] == "Install failed: another publisher's package with this name is installed; remove it first"
     assert rows['fixture-lab', 'markdown-fixture']['jobText'] == ''
+
+
+def test_package_status_sentences_active_first_and_no_digests():
+    def record(version, state='ready', **flags):
+        return {'intake': {'publisher': 'lab', 'version': version}, 'artifact_digest': 'd'*64,
+                'state': state, 'eligible': True, **flags}
+    state = {'packages': [{'package_id': 'example', 'installs': [
+        record('0.5.0', previous=True),
+        record('0.7.0', 'failed', reasons=[{'field': 'self_check', 'detail': 'worker stopped'}]),
+        record('0.8.0', 'staged', reasons=[{'field': 'interrupted', 'detail': 'serve exited'}]),
+        record('0.9.0', 'failed', reasons=[]),
+        record('1.0.0', active=True, discoverable=True)],
+        'discovery_reasons': [{'field': 'discovery', 'detail': 'decision is unreadable'}],
+        'broken': [{'field': 'pointer', 'detail': 'pointer is unreadable'}],
+        'deletion_failures': [{'detail': 'file is busy'}]}]}
+    row = delivery_view(state)['catalogRows'][0]
+    assert row['statusLines'] == [
+        'Installed — the agent can read it',
+        'Version 0.5.0 is kept for Roll back',
+        'An earlier install of 0.7.0 did not finish: worker stopped',
+        'An earlier install of 0.8.0 did not finish: serve exited',
+        'Hidden from the agent: decision is unreadable',
+        'Disabled: pointer is unreadable',
+        'Deletion pending: file is busy']
+    assert 'd'*12 not in '\n'.join([row['heading'], *row['statusLines'], row['jobText']])
+    state['packages'][0]['installs'][-1].update(eligible=False, reasons=[
+        {'field': 'microclaw', 'detail': 'needs MicroClaw >=99; this is 0.1.0'},
+        {'field': 'interpreter', 'detail': 'interpreter is missing'}])
+    assert delivery_view(state)['catalogRows'][0]['statusLines'][0] == (
+        'Installed, but disabled: needs MicroClaw >=99; this is 0.1.0; interpreter is missing')
+    assert delivery_view({'packages': [{'package_id': 'damaged', 'installs': []}]})['catalogRows'][0]['statusLines'] == ['Install state is unknown']
+    assert delivery_view({'catalogListing': {'packages': [{'package_id': 'new', 'publisher': 'lab', 'version': '1.0.0'}]}})['catalogRows'][0]['statusLines'] == ['Not installed']

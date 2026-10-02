@@ -289,13 +289,14 @@
 
   function skillPackagesView(state) {
     const reasons = values => (values || []).map(r => r.field + ": " + r.detail).join("; ");
+    const details = values => (values || []).map(r => r.detail).filter(Boolean).join("; ");
     // Only the active release can be read, so only its row says whether the agent can.
     // The off switch is the clause itself; other exclusions (a name clash, a failed
     // check) are the reasons after it.
     const readable = install => {
-      if (install.discoverable) return " — agent can read it";
+      if (install.discoverable) return " — the agent can read it";
       const other = (install.discovery_exclusions || []).filter(r => r.field !== "discovery" && r.field !== "active");
-      return " — hidden from the agent" + (other.length ? ": " + reasons(other) : "");
+      return " — hidden from the agent" + (other.length ? ": " + details(other) : "");
     };
     const trust = state.trust || {};
     const identity = install => install.manifest || install.intake || {};
@@ -324,19 +325,23 @@
         ? job.release && job.release.publisher === row.publisher && job.release.package_id === row.package_id
         : ownsPackage);
       const installedVersion = active && active.state === "ready" ? identity(active).version : row.installed_version;
-      const statusLines = installs.map(install => {
-        const manifest = identity(install);
-        return (manifest.publisher || "unknown") + "/" + row.package_id + " " +
-          (manifest.version || "unknown") + " " + (install.artifact_digest || "").slice(0, 12) +
-          " — " + (install.state === "ready" ? "installed" : install.state) +
-          (install.active ? " (active)" : install.previous ? " (previous)" : "") +
-          (install.eligible ? " — eligible" : " — disabled: " + reasons(install.reasons)) +
-          (install.active ? readable(install) : "");
-      });
+      const statusLines = [...installs].sort((a, b) => Number(!!b.active) - Number(!!a.active)).map(install => {
+        const version = identity(install).version || "unknown";
+        const reason = details(install.reasons);
+        if (install.active && install.state === "ready") {
+          return install.eligible ? "Installed" + readable(install) :
+            "Installed, but disabled" + (reason ? ": " + reason : "");
+        }
+        if (install.previous) return "Version " + version + " is kept for Roll back";
+        if (["failed", "staged"].includes(install.state) && reason) {
+          return "An earlier install of " + version + " did not finish: " + reason;
+        }
+        return null;
+      }).filter(Boolean);
       if (!statusLines.length) statusLines.push(installedVersion ? "Installed" : row.storeOnly ? "Install state is unknown" : "Not installed");
       if (pkg && ownsPackage) {
-        if ((pkg.discovery_reasons || []).length) statusLines.push("Hidden from the agent: " + reasons(pkg.discovery_reasons));
-        if ((pkg.broken || []).length) statusLines.push("Disabled: " + reasons(pkg.broken));
+        if ((pkg.discovery_reasons || []).length) statusLines.push("Hidden from the agent: " + details(pkg.discovery_reasons));
+        if ((pkg.broken || []).length) statusLines.push("Disabled: " + details(pkg.broken));
         for (const failure of pkg.deletion_failures || []) statusLines.push("Deletion pending: " + failure.detail);
       }
       const toggle = pkg && ownsPackage ? {
