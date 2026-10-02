@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 import tempfile
 import zipfile
@@ -160,6 +162,83 @@ def tree(root):
     return result
 
 
+def one_added_path(changes):
+    """Enforce H2 on either a tree comparison or the PR's declared Git diff."""
+    if len(changes) != 1 or changes[0][0] != 'A':
+        paths = ', '.join(path for _, path in changes)[:240] or 'no file added'
+        raise Refusal('path', 'add exactly one release or withdrawal file; no other changes: ' + paths)
+    return changes[0][1]
+
+
+def materialize(git_dir, base_ref, head_sha, out):
+    """Overlay this PR's merge-base diff on the current base, using blobs only."""
+    def git(*args):
+        return subprocess.run(['git', '-C', str(git_dir), *args], stdin=subprocess.DEVNULL,
+                              capture_output=True, check=True).stdout
+
+    def listing(commit):
+        result = {}
+        for item in git('ls-tree', '-rz', commit).split(b'\0'):
+            if item:
+                meta, raw = item.split(b'\t', 1)
+                result[raw.decode('utf-8')] = meta.decode('ascii').split()
+        return result
+
+    root = Path(out)
+    if root.exists() or root.is_symlink():
+        raise Refusal('path', 'materialized head directory must not already exist')
+    if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', head_sha):
+        raise Refusal('head_sha', 'expected the full PR head commit SHA')
+    try:
+        base = git('rev-parse', '--verify', '--end-of-options', base_ref + '^{commit}').decode('ascii').strip()
+        git('rev-parse', '--verify', '--end-of-options', head_sha + '^{commit}')
+        merge_base = git('merge-base', base, head_sha).decode('ascii').strip()
+        changes = git('diff', '--no-renames', '-z', '--name-status', merge_base, head_sha, '--').split(b'\0')
+        changed = []
+        for index in range(0, len(changes) - 1, 2):
+            status, path = changes[index].decode('ascii'), changes[index + 1].decode('utf-8')
+            if status not in ('A', 'M', 'D'):
+                raise Refusal('path', 'unsupported PR file change: ' + path[:240])
+            changed.append((status, path))
+        base_files, head_files = listing(base), listing(head_sha)
+        root.mkdir(parents=True)
+
+        def destination(path):
+            if '.git' in path.split('/'):
+                raise Refusal('path', 'Git metadata is forbidden in submission data')
+            return packages.safe_release_path(root, path, field='path')
+
+        def write_blob(path, entry):
+            target = destination(path)
+            mode, kind, oid = entry
+            if mode not in ('100644', '100755') or kind != 'blob':
+                raise Refusal('path', 'only ordinary blobs are allowed: ' + path[:240])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('wb') as stream:
+                subprocess.run(['git', '-C', str(git_dir), 'cat-file', 'blob', oid],
+                               stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.PIPE, check=True)
+            target.chmod(0o755 if mode == '100755' else 0o644)
+
+        for path, entry in base_files.items():
+            write_blob(path, entry)
+        # Deletions first also handle file-to-directory renames without following links.
+        for status, path in changed:
+            target = destination(path)
+            if status == 'D':
+                target.unlink(missing_ok=True)
+        for status, path in changed:
+            if status != 'D':
+                write_blob(path, head_files[path])
+        # An M/D may already match today's base, but it is still this PR's change.
+        one_added_path(changed)
+        return dict(base=base, head=head_sha, merge_base=merge_base,
+                    changes=[dict(status=status, path=path) for status, path in changed])
+    except (subprocess.CalledProcessError, UnicodeError) as exc:
+        raise Refusal('git', 'could not read the base, merge-base and PR blobs') from exc
+    except OSError as exc:
+        raise Refusal('path', 'PR changes conflict with current base paths') from exc
+
+
 def records(root):
     result = dict(type=packages.CATALOG_TYPE, releases=[], withdrawals=[])
     for collection in ('releases', 'withdrawals'):
@@ -179,7 +258,8 @@ def records(root):
 def validate_path(path, collection, record):
     if collection == 'releases':
         packages.validate_intake(record)
-    # Withdrawal structure is checked by verify_withdrawal before use.
+    else:
+        packages.validate_withdrawal(record)
     try:
         expected = record_path(collection, record)
     except (KeyError, TypeError) as exc:
@@ -194,11 +274,17 @@ def identity(record):
     return tuple(record[k] for k in IDENTITY)
 
 
-def verify_all(document, policy, now):
-    _, exclusions = packages.verify_catalog(document, policy, now=now)
-    if exclusions:
-        reason = exclusions[0]['reason']
-        raise Refusal(reason['field'], reason['detail'])
+def verify_all(document):
+    """Check trusted history as data; current eligibility belongs to admission."""
+    packages._mapping(document, 'catalog', {'type', 'releases', 'withdrawals'})
+    if document['type'] != packages.CATALOG_TYPE:
+        raise Refusal('catalog.type', 'expected catalog type')
+    for collection, limit, validator in (
+            ('releases', packages.MAX_CATALOG_RELEASES, packages.validate_intake),
+            ('withdrawals', packages.MAX_CATALOG_WITHDRAWALS, packages.validate_withdrawal)):
+        packages._list(document[collection], 'catalog.' + collection, limit, empty=True)
+        for record in document[collection]:
+            validator(record)
     versions, digests = set(), set()
     for record in document['releases']:
         key = identity(record)[:3]
@@ -208,8 +294,12 @@ def verify_all(document, policy, now):
             raise Refusal('artifact_digest', 'this digest already appears; submit a distinct release')
         versions.add(key)
         digests.add(record['artifact_digest'])
+    withdrawn = set()
     for record in document['withdrawals']:
-        packages.verify_withdrawal(record, policy)
+        key = identity(record)[:3]
+        if key in withdrawn:
+            raise Refusal('version', 'a withdrawal already exists for this publisher/package/version')
+        withdrawn.add(key)
         if identity(record) not in {identity(r) for r in document['releases']}:
             field = 'publisher' if any(r['artifact_digest'] == record['artifact_digest'] and r['publisher'] != record['publisher'] for r in document['releases']) else 'artifact_digest'
             raise Refusal(field, 'withdrawal must name an existing release in full, belonging to its publisher')
@@ -221,12 +311,12 @@ def verify_all(document, policy, now):
 def build(root, *, environment='production', roots=None, now=None):
     root = Path(root)
     now = now or datetime.now(timezone.utc)
-    policy = policy_at(root, environment, roots, now)
-    document = verify_all(records(root), policy, now)
+    policy_at(root, environment, roots, now)
+    document = verify_all(records(root))
     target = root / 'catalog.json'
     if target.exists():
         previous = read(target, packages.MAX_CATALOG_BYTES)
-        verify_all(previous, policy, now)
+        verify_all(previous)
         for collection in ('releases', 'withdrawals'):
             for entry in previous.get(collection, []):
                 if entry not in document[collection]:
@@ -246,10 +336,8 @@ def check(base, head, *, environment, roots=None, now=None, opener=None):
     try:
         before, after = tree(base), tree(head)
         changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
-        if len(changed) != 1 or (changed and changed[0] in before):
-            path = ', '.join(changed)[:240] or None
-            raise Refusal('path', 'add exactly one release or withdrawal file; no other changes: ' + (path or 'no file added'))
-        path = changed[0]
+        path = ', '.join(changed)[:240] or None
+        path = one_added_path([('D' if p not in after else 'M' if p in before else 'A', p) for p in changed])
         collection = path.split('/')[0]
         if collection not in ('releases', 'withdrawals'):
             raise Refusal('path', 'only a new release or withdrawal file is allowed: ' + path[:240])
@@ -263,14 +351,14 @@ def check(base, head, *, environment, roots=None, now=None, opener=None):
         previous_path = Path(base) / 'catalog.json'
         if previous_path.exists():
             previous = read(previous_path, packages.MAX_CATALOG_BYTES)
-            verify_all(previous, policy, now)
+            verify_all(previous)
             for bucket in ('releases', 'withdrawals'):
                 for entry in previous[bucket]:
                     if entry not in document[bucket]:
                         document[bucket].append(entry)
         # Duplicate checks precede fetch, so an existing version cannot cause network work.
         document[collection].append(value)
-        verify_all(document, policy, now)
+        verify_all(document)
         if collection == 'releases':
             with tempfile.TemporaryDirectory() as temporary:
                 with store.download_release(value, package=Path(temporary), opener=opener) as artifact:
@@ -305,6 +393,10 @@ def main(argv=None):
     withdrawal = commands.add_parser('sign-withdrawal')
     for flag in ('key', 'release', 'reason', 'out'):
         withdrawal.add_argument('--' + flag, required=True)
+    materializer = commands.add_parser('materialize')
+    for flag in ('git-dir', 'base-ref', 'head-sha', 'out'):
+        materializer.add_argument('--' + flag, required=True)
+    materializer.add_argument('--json', action='store_true')
     for name in ('check', 'build'):
         command = commands.add_parser(name)
         if name == 'check':
@@ -338,6 +430,9 @@ def main(argv=None):
                 collection = 'withdrawals'
             Path(args.out).write_bytes(encode(value))
             print('Repository path: ' + record_path(collection, value))
+        elif args.command == 'materialize':
+            result = materialize(args.git_dir, args.base_ref, args.head_sha, args.out)
+            print(json.dumps(result) if args.json else 'PR changes materialized as data against the current base.')
         elif args.command == 'build':
             build(args.root, environment=args.environment, roots=args.roots)
             print('catalog.json verified and rebuilt.')

@@ -35,7 +35,7 @@ PREFIX = '83f-4 gate:'
 MARKER = '83F4_HEAD_WORKFLOW_EXECUTED'
 CASES = {'A': (True, None), 'B': (False, 'artifact_digest'), 'C': (False, 'publisher'),
          'D': (False, 'path'), 'E': (True, None), 'F': (False, 'publisher'),
-         'G': (False, 'path'), 'H': (False, 'path')}
+         'G': (False, 'path'), 'H': (False, 'path'), 'I': (True, None)}
 
 
 def read(path):
@@ -82,7 +82,8 @@ def fixtures():
             keys[name].write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         releases = {}
         for label, publisher, package in [('A', 'fixture-lab', 'gate-good'), ('B', 'fixture-lab', 'gate-tamper'),
-                                          ('C', 'unknown-lab', 'gate-unknown'), ('D', 'fixture-lab', 'gate-good')]:
+                                          ('C', 'unknown-lab', 'gate-unknown'), ('D', 'fixture-lab', 'gate-good'),
+                                          ('I', 'fixture-lab', 'gate-stale')]:
             source = temporary / label
             shutil.copytree(previous.gate83d.FIXTURES / 'markdown', source)
             manifest = read(source / 'manifest.json')
@@ -142,6 +143,15 @@ class Gate:
         return pr, runs
 
 
+def create_branch(fork, base, branch, title, path, content):
+    base_tree = api(f'repos/{fork}/git/commits/{base}')['tree']['sha']
+    tree = api(f'repos/{fork}/git/trees', dict(base_tree=base_tree,
+               tree=[dict(path=path, mode='100644', type='blob', content=content)]))
+    commit = api(f'repos/{fork}/git/commits', dict(message=title, tree=tree['sha'], parents=[base]))
+    api(f'repos/{fork}/git/refs', dict(ref='refs/heads/' + branch, sha=commit['sha']))
+    return commit
+
+
 def run(gate, deadline_seconds):
     if (gate.directory / 'state.json').exists():
         raise RuntimeError('Evidence folder already has a run; choose a fresh --evidence folder')
@@ -157,18 +167,27 @@ def run(gate, deadline_seconds):
     nonce = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
     state = dict(fork=fork, nonce=nonce, prs={})
     gate.save('state.json', state)
+    # Create I now, from the pre-A base. Opening it later must not rebuild its tree.
+    gh('repo', 'sync', fork, '--branch', 'test')
+    initial_base = api(f'repos/{REPO}/git/ref/heads/test')['object']['sha']
+    stale = read(FIXTURES / 'I.json')
+    stale_branch = f'83f4-{nonce}-I'
+    stale_commit = create_branch(fork, initial_base, stale_branch, f'{PREFIX} {nonce} I',
+                                 intake.record_path('releases', stale), intake.encode(stale).decode('ascii'))
+    state['prepared'] = dict(branch=stale_branch, sha=stale_commit['sha'], base=initial_base)
+    gate.save('I-creation.json', stale_commit)
+    gate.save('state.json', state)
     a_completed = False
     for case, (accepted, field) in CASES.items():
-        if case in ('D', 'E') and not a_completed:
+        if case in ('D', 'E', 'I') and not a_completed:
             gate.log(f'{case}: A did not merge; NOT EXERCISED')
             continue
         # E and D follow A; every other refusal is independent of prior traffic.
         gh('repo', 'sync', fork, '--branch', 'test')
         base = api(f'repos/{REPO}/git/ref/heads/test')['object']['sha']
-        base_tree = api(f'repos/{fork}/git/commits/{base}')['tree']['sha']
         branch = f'83f4-{nonce}-{case}'
         title = f'{PREFIX} {nonce} {case}'
-        if case in 'ABCDEF':
+        if case in 'ABCDEFI':
             value = read(FIXTURES / f'{case}.json')
             collection = 'withdrawals' if case in 'EF' else 'releases'
             path = intake.record_path(collection, value)
@@ -181,9 +200,11 @@ def run(gate, deadline_seconds):
                        '  marker:\n    runs-on: ubuntu-latest\n    steps:\n      - env:\n'
                        '          GH_TOKEN: ${{ github.token }}\n        run: gh pr comment ${{ github.event.pull_request.number }} '
                        '--repo ${{ github.repository }} --body ' + MARKER + '\n')
-        tree = api(f'repos/{fork}/git/trees', dict(base_tree=base_tree, tree=[dict(path=path, mode='100644', type='blob', content=content)]))
-        commit = api(f'repos/{fork}/git/commits', dict(message=title, tree=tree['sha'], parents=[base]))
-        api(f'repos/{fork}/git/refs', dict(ref='refs/heads/' + branch, sha=commit['sha']))
+        if case == 'I':
+            commit = stale_commit
+        else:
+            commit = create_branch(fork, base, branch, title, path, content)
+            gate.save(f'{case}-creation.json', commit)
         pr = api(f'repos/{REPO}/pulls', dict(title=title, head=owner + ':' + branch, base='test', body='Automated 83f-4 fixture gate.'))
         state['prs'][case] = dict(number=pr['number'], title=title, branch=branch, sha=commit['sha'])
         gate.save('state.json', state)
@@ -201,20 +222,20 @@ def run(gate, deadline_seconds):
         # Rebuild happens after merging; wait for the whole run, not just mergedAt.
         if case == 'A':
             if not observed.get('mergedAt') or not any(r['status'] == 'completed' and r['conclusion'] == 'success' for r in runs):
-                gate.log('A did not complete; dependent D/E will be NOT EXERCISED')
+                gate.log('A did not complete; dependent D/E/I will be NOT EXERCISED')
             else:
                 a_completed = True
     # Raw GitHub can lag the completed merge/rebuild. Wait for the actual bytes.
     expected = {}
-    for label, bucket in (('A', 'releases'), ('E', 'withdrawals')):
+    for label, bucket in (('A', 'releases'), ('E', 'withdrawals'), ('I', 'releases')):
         pr_path = gate.directory / f'{label}-pr.json'
         if pr_path.exists() and read(pr_path).get('mergedAt'):
-            expected[bucket] = read(FIXTURES / f'{label}.json')
+            expected.setdefault(bucket, []).append(read(FIXTURES / f'{label}.json'))
     deadline = time.monotonic() + deadline_seconds
     while True:
         collect_served(gate)
         served = gate.directory / 'served-catalog.json'
-        if served.exists() and all(entry in read(served).get(bucket, []) for bucket, entry in expected.items()):
+        if served.exists() and all(entry in read(served).get(bucket, []) for bucket, entries in expected.items() for entry in entries):
             break
         if not expected or time.monotonic() >= deadline:
             gate.log('Served catalog deadline reached; scoring captured bytes')
@@ -257,6 +278,8 @@ def score(prs, runs, catalog, expected):
                           'PASS' if expected['A'] in catalog.get('releases', []) else 'FAIL')
     result['E-served'] = ('NOT EXERCISED' if catalog is None or result['E'] == 'NOT EXERCISED' else
                           'PASS' if expected['E'] in catalog.get('withdrawals', []) else 'FAIL')
+    result['I-served'] = ('NOT EXERCISED' if catalog is None or result['I'] == 'NOT EXERCISED' else
+                          'PASS' if expected['I'] in catalog.get('releases', []) else 'FAIL')
     h = prs.get('H')
     result['H-base-workflow'] = 'NOT EXERCISED'
     if h and any(r.get('status') == 'completed' for r in runs.get('H', [])):
@@ -277,6 +300,8 @@ def client_fetch(gate, *, opener=None):
         expected = read(FIXTURES / 'A.json')
         good = bool(state.get('last_success')) and not state.get('error') and not catalog['exclusions']
         good = good and any(all(r[k] == expected[k] for k in intake.IDENTITY) and r['withdrawn'] for r in catalog['releases'])
+        stale = read(FIXTURES / 'I.json')
+        good = good and any(all(r[k] == stale[k] for k in intake.IDENTITY) for r in catalog['releases'])
         return 'PASS' if good else 'FAIL'
 
 
@@ -301,7 +326,7 @@ def verify(gate, *, collect=False, opener=None):
             runs[case] = read(path)
     catalog_path = gate.directory / 'served-catalog.json'
     catalog = read(catalog_path) if catalog_path.exists() else None
-    result = score(prs, runs, catalog, {c: read(FIXTURES / f'{c}.json') for c in ('A', 'E')})
+    result = score(prs, runs, catalog, {c: read(FIXTURES / f'{c}.json') for c in ('A', 'E', 'I')})
     result['client-fetch'] = 'NOT EXERCISED'
     if catalog is not None:
         try:
@@ -321,20 +346,24 @@ def cleanup(gate):
         current = json.loads(gh('pr', 'view', str(pr['number']), '--repo', REPO, '--json', 'state'))
         if current['state'] == 'OPEN':
             gh('pr', 'close', str(pr['number']), '--repo', REPO)
+        gate.log(f'{case}: closed if open')
+    branches = {pr['branch'] for pr in state['prs'].values()}
+    if 'prepared' in state:
+        branches.add(state['prepared']['branch'])
+    for branch in sorted(branches):
         try:
-            gh('api', '--method', 'DELETE', f'repos/{state["fork"]}/git/refs/heads/{pr["branch"]}')
+            gh('api', '--method', 'DELETE', f'repos/{state["fork"]}/git/refs/heads/{branch}')
         except subprocess.CalledProcessError as exc:
-            # Only a documented missing ref is harmless; auth/transport errors remain errors.
             if '404' not in exc.stderr and '422' not in exc.stderr:
                 raise
-        gate.log(f'{case}: closed if open; fork branch removed')
+        gate.log(branch + ': fork branch removed')
 
 
 def selftest():
     # gh documented output: state is OPEN/MERGED, mergedAt ISO timestamp/null,
     # comments are nodes with body; run list uses status/conclusion/displayTitle.
     fixtures()
-    expected = {c: read(FIXTURES / f'{c}.json') for c in ('A', 'E')}
+    expected = {c: read(FIXTURES / f'{c}.json') for c in ('A', 'E', 'I')}
     prs, runs = {}, {}
     for case, (accepted, field) in CASES.items():
         prs[case] = dict(number=100 + ord(case), title=PREFIX + ' fake ' + case,
@@ -346,7 +375,7 @@ def selftest():
         runs[case] = [dict(databaseId=100 + ord(case), displayTitle=prs[case]['title'], status='completed',
                            conclusion='success', headSha='0' * 40, createdAt='2026-10-02T10:00:00Z',
                            url='https://github.com/Micro-Claw/package-catalog/actions/runs/1')]
-    catalog = dict(type='microclaw.catalog.v1', releases=[expected['A']], withdrawals=[expected['E']])
+    catalog = dict(type='microclaw.catalog.v1', releases=[expected['A'], expected['I']], withdrawals=[expected['E']])
     control = score(prs, runs, catalog, expected)
     assert all(v == 'PASS' for v in control.values()), control
     mutations = 0
@@ -359,6 +388,8 @@ def selftest():
                 p[limb]['comments'] = []
         elif limb == 'A-served':
             c['releases'] = []
+        elif limb == 'I-served':
+            c['releases'] = [expected['A']]
         elif limb == 'E-served':
             c['withdrawals'] = []
         else:
@@ -370,7 +401,7 @@ def selftest():
         missing[case] = []
         absent = score(prs, missing, catalog, expected)
         assert absent[case] == 'NOT EXERCISED'
-        if case in ('A', 'E'):
+        if case in ('A', 'E', 'I'):
             assert absent[case + '-served'] == 'NOT EXERCISED'
         failed = deepcopy(runs)
         failed[case][0]['conclusion'] = 'failure'

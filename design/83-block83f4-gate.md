@@ -18,11 +18,12 @@ uv run python design/83-block83f4-gate.py verify --evidence 83f4-evidence
 uv run python design/83-block83f4-gate.py cleanup --evidence 83f4-evidence
 ```
 
-`run` creates or reuses your fork and opens eight PRs against `test`, each on its
+`run` creates or reuses your fork and opens nine PRs against `test`, each on its
 own fork branch. It waits up to 15 minutes per case, records PR JSON and workflow
 conclusions, fetches the served catalog, and performs an isolated client fetch.
-A good release and its withdrawal merge; the other six stay open with field
-comments. The hostile workflow PR must not post its marker. Missing mechanisms
+A good release, its withdrawal, and the stale-fork release I merge; the other
+six stay open with field comments. I is created from the pre-A base and opened
+after A merges, retaining that old parent. The hostile workflow PR must not post its marker. Missing mechanisms
 score NOT EXERCISED. Every FAIL or NOT EXERCISED exits nonzero.
 
 `verify` refreshes evidence and scores each limb independently. `cleanup` closes

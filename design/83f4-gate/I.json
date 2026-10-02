@@ -1,0 +1,24 @@
+{
+  "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-4/design/83f4-gate/artifacts/I.zip",
+  "artifact_digest": "d37c7af2a26f8dd6bb178b5f2f101729d9971f0a6e491228e955c9afce633ee2",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "kind": "markdown",
+  "license": "MIT",
+  "microclaw": ">=0.1,<2",
+  "package_id": "gate-stale",
+  "publisher": "fixture-lab",
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+    "value": "rOcaE3kmfN0uY9OGemUOVwHlhnN7vCTQyzT5juTfGzcjnjLp0dFLf2FoxFzg+jMIUSnPV8LPBoTimXusav3rBw=="
+  },
+  "skills": [
+    {
+      "description": "A publisher-provided fixture workflow.",
+      "name": "workflow"
+    }
+  ],
+  "source_url": "https://github.com/fixture-lab/skills",
+  "type": "microclaw.skill-release.v1",
+  "version": "1.0.0"
+}

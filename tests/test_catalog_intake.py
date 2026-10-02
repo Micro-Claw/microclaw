@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import importlib.util
 import io
+import os
 import json
 from pathlib import Path
 import shutil
@@ -177,7 +178,8 @@ def test_policy_refusals(setup, change, field):
 
 @pytest.mark.parametrize('change,field', [('publisher', 'publisher'), ('signature', 'signature.value'),
                                        ('key', 'signature.key_id'), ('blocked', 'artifact_digest'),
-                                       ('retired', 'signature.key_id'), ('revoked-publisher', 'publisher'),
+                                       ('retired', 'signature.key_id'), ('revoked-key', 'signature.key_id'),
+                                       ('revoked-publisher', 'publisher'),
                                        ('malformed', 'license')])
 def test_release_refusals(setup, change, field):
     record = deepcopy(setup['record'])
@@ -194,8 +196,8 @@ def test_release_refusals(setup, change, field):
         policy = intake.read(setup['base'] / 'policy.json')
         if change == 'blocked':
             policy['revoked_releases'] = [{k: record[k] for k in ('package_id', 'version', 'artifact_digest')} | dict(reason='Gate block')]
-        elif change == 'retired':
-            policy['publishers']['fixture-lab']['keys'][0]['state'] = 'retired'
+        elif change in ('retired', 'revoked-key'):
+            policy['publishers']['fixture-lab']['keys'][0]['state'] = 'retired' if change == 'retired' else 'revoked'
         else:
             policy['publishers']['fixture-lab']['state'] = 'revoked'
         policy = builder.sign(policy, 'root')
@@ -483,11 +485,314 @@ def test_workflow_structure():
         assert 'git checkout' not in script and 'git switch' not in script
         assert not re.search(r'''(?:python|bash|sh|source|\.)(?:\s+-[a-zA-Z]+)*\s+["']?\$DATA_HEAD''', script)
     script = steps[-1]['run']
-    for required in ('git fetch origin "$BASE_REF"', 'git ls-tree', "'ls-tree'", "'cat-file'", 'catalog_intake check', 'catalog_intake build',
-                     'merge_method=squash', '-f sha="$HEAD_SHA"', '--body-file', 'git add catalog.json', 'roots-TEST-ONLY.json'):
-        if required == 'git ls-tree':
-            continue  # subprocess argv spelling checked below
+    for required in ('git fetch origin "$BASE_REF"', 'git fetch origin "pull/$PR_NUMBER/head"',
+                     'git rev-parse FETCH_HEAD', 'catalog_intake materialize', 'catalog_intake check',
+                     'catalog_intake build', 'merge_method=squash', '-f sha="$HEAD_SHA"',
+                     '--body-file', 'git add catalog.json', 'roots-TEST-ONLY.json'):
         assert required in script
+    assert 'git fetch origin "$HEAD_SHA"' not in script
+    assert "python - <<" not in script
     rebuild = yaml.safe_load((SEED / '.github/workflows/rebuild.yml').read_text(encoding='utf-8'))
     assert rebuild.get('on', rebuild.get(True))['push']['paths'] == ['policy.json']
     assert rebuild['permissions'] == {'contents': 'write'}
+
+
+@pytest.mark.parametrize('change', ['blocked', 'revoked-publisher', 'revoked-key', 'retired-key'])
+def test_trusted_history_survives_policy_changes_and_unrelated_intake(setup, tmp_path, change):
+    base, head = setup['base'], setup['head']
+    write(base / setup['path'], setup['record'])
+    withdrawal = intake.sign_withdrawal(private(), setup['record'], 'Previously admitted withdrawal')
+    write(base / intake.record_path('withdrawals', withdrawal), withdrawal)
+    kwargs = dict(environment='test', roots=base / 'roots-TEST-ONLY.json', now=NOW)
+    intake.build(base, **kwargs)
+    catalog_before = (base / 'catalog.json').read_bytes()
+    release_before = (base / setup['path']).read_bytes()
+    policy = intake.read(base / 'policy.json')
+    if change == 'blocked':
+        policy['revoked_releases'] = [{k: setup['record'][k] for k in ('package_id', 'version', 'artifact_digest')}
+                                     | dict(reason='Operator block')]
+    elif change == 'revoked-publisher':
+        policy['publishers']['fixture-lab']['state'] = 'revoked'
+    else:
+        policy['publishers']['fixture-lab']['keys'][0]['state'] = 'retired' if change == 'retired-key' else 'revoked'
+    write(base / 'policy.json', builder.sign(policy, 'root'))
+    rebuilt = intake.build(base, **kwargs)
+    assert rebuilt['releases'] == [setup['record']]
+    assert rebuilt['withdrawals'] == [withdrawal]
+    assert (base / 'catalog.json').read_bytes() == catalog_before
+    assert (base / setup['path']).read_bytes() == release_before
+
+    source = tmp_path / 'unrelated'
+    shutil.copytree(FIXTURES / 'markdown', source)
+    manifest = intake.read(source / 'manifest.json')
+    manifest.update(publisher='fixture-two', package_id='unrelated')
+    write(source / 'manifest.json', manifest)
+    artifact = tmp_path / 'unrelated.zip'
+    builder.build_release(source, artifact)
+    record = intake.sign_release(private('publisher-b'), artifact, manifest['artifact'])
+    shutil.rmtree(head)
+    shutil.copytree(base, head)
+    write(head / intake.record_path('releases', record), record)
+    result = intake.check(base, head, opener=lambda *a, **k: Response(artifact.read_bytes()), **kwargs)
+    assert result['accepted'], result
+
+
+@pytest.mark.parametrize('collection,field', [('releases', 'license'), ('withdrawals', 'reason')])
+def test_trusted_history_still_requires_structural_validation(setup, collection, field):
+    write(setup['base'] / setup['path'], setup['record'])
+    if collection == 'releases':
+        value = dict(setup['record'], license='')
+    else:
+        value = dict(intake.sign_withdrawal(private(), setup['record'], 'Withdrawn'), reason='x' * 513)
+    write(setup['base'] / intake.record_path(collection, value), value)
+    with pytest.raises(packages.PackageRefusal) as caught:
+        intake.build(setup['base'], environment='test', roots=setup['base'] / 'roots-TEST-ONLY.json', now=NOW)
+    assert caught.value.field == field
+
+
+def git(repo, *args):
+    return subprocess.run(['git', '-C', str(repo), *args], stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def stale_repo(setup, tmp_path):
+    repo = tmp_path / 'git-repo'
+    shutil.copytree(setup['base'], repo)
+    (repo / 'README.md').write_text('Trusted publisher README\n', encoding='utf-8')
+    git(repo, 'init', '-b', 'main')
+    git(repo, 'config', 'user.name', 'Offline intake test')
+    git(repo, 'config', 'user.email', 'intake-test@example.invalid')
+    git(repo, 'add', 'README.md', 'policy.json', 'roots-TEST-ONLY.json', 'catalog.json')
+    git(repo, 'commit', '-m', 'Trusted seed')
+    ancestor = git(repo, 'rev-parse', 'HEAD')
+    # The PR branch starts here, before somebody else's release and rebuilt catalog.
+    git(repo, 'switch', '-c', 'publisher')
+    write(repo / setup['path'], setup['record'])
+    git(repo, 'add', setup['path'])
+    git(repo, 'commit', '-m', 'Publisher release')
+    return repo, ancestor
+
+
+def advance_base(repo, ancestor, *, readme=None):
+    head = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'switch', 'main')
+    if readme is not None:
+        (repo / 'README.md').write_text(readme, encoding='utf-8')
+        git(repo, 'add', 'README.md')
+    record = deepcopy(intake.read(ROOT / 'design/83f4-gate/I.json'))
+    path = intake.record_path('releases', record)
+    write(repo / path, record)
+    intake.build(repo, environment='test', roots=repo / 'roots-TEST-ONLY.json', now=NOW)
+    git(repo, 'add', path, 'catalog.json')
+    git(repo, 'commit', '-m', 'Another publisher merged; bot rebuilt catalog')
+    assert git(repo, 'rev-parse', 'HEAD') != ancestor
+    return head
+
+
+def test_materialize_stale_fork_addition_against_current_base(setup, tmp_path):
+    repo, ancestor = stale_repo(setup, tmp_path)
+    head = advance_base(repo, ancestor)
+    out = tmp_path / 'materialized'
+    result = intake.materialize(repo, 'main', head, out)
+    assert result['merge_base'] == ancestor
+    assert result['changes'] == [dict(status='A', path=setup['path'])]
+    assert (out / 'catalog.json').read_bytes() == (repo / 'catalog.json').read_bytes()
+    assert (out / 'releases/fixture-lab/gate-stale/1.0.0.json').is_file()
+    verdict = intake.check(repo, out, environment='test', roots=repo / 'roots-TEST-ONLY.json', now=NOW,
+                           opener=setup['opener'])
+    assert verdict['accepted'], verdict
+
+
+@pytest.mark.parametrize('change', ['delete', 'modify', 'rename', 'mode'])
+def test_materialize_applies_prs_own_forbidden_changes(setup, tmp_path, change):
+    repo, ancestor = stale_repo(setup, tmp_path)
+    readme = repo / 'README.md'
+    if change == 'delete':
+        readme.unlink()
+        git(repo, 'add', 'README.md')
+    elif change == 'modify':
+        readme.write_text('PR changed this\n', encoding='utf-8')
+        git(repo, 'add', 'README.md')
+    elif change == 'mode':
+        readme.chmod(0o755)
+        git(repo, 'update-index', '--chmod=+x', 'README.md')
+    else:
+        git(repo, 'mv', 'README.md', 'renamed.md')
+    git(repo, 'commit', '-m', 'Forbidden extra publisher change')
+    head = advance_base(repo, ancestor)
+    out = tmp_path / 'materialized'
+    with pytest.raises(packages.PackageRefusal) as caught:
+        intake.materialize(repo, 'main', head, out)
+    assert caught.value.field == 'path'
+    assert 'README.md' in str(caught.value)
+    assert_field(intake.check(repo, out, environment='test', roots=repo / 'roots-TEST-ONLY.json',
+                             now=NOW, opener=setup['opener']), 'path')
+
+
+@pytest.mark.parametrize('mode', ['symlink', 'gitlink'])
+def test_materialize_refuses_nonordinary_git_objects(setup, tmp_path, mode):
+    repo, ancestor = stale_repo(setup, tmp_path)
+    candidate = repo / setup['path']
+    candidate.unlink()
+    if mode == 'symlink':
+        candidate.symlink_to('../outside')
+        git(repo, 'add', setup['path'])
+    else:
+        git(repo, 'update-index', '--cacheinfo', '160000,' + ancestor + ',' + setup['path'])
+    git(repo, 'commit', '-m', 'Hostile PR file type')
+    head = advance_base(repo, ancestor)
+    with pytest.raises(packages.PackageRefusal) as caught:
+        intake.materialize(repo, 'main', head, tmp_path / 'materialized')
+    assert caught.value.field == 'path'
+    assert setup['path'] in str(caught.value)
+
+
+@pytest.mark.parametrize('moves,attempts,exit_code', [(1, 2, 0), (5, 3, 1)])
+def test_workflow_comments_and_rechecks_when_base_moves(tmp_path, moves, attempts, exit_code):
+    workflow = yaml.safe_load((SEED / '.github/workflows/intake.yml').read_text(encoding='utf-8'))
+    script = workflow['jobs']['intake']['steps'][-1]['run']
+    (tmp_path / 'catalog').mkdir()
+    runner_temp = tmp_path / 'runner-temp'
+    runner_temp.mkdir()
+    tools = tmp_path / 'bin'
+    tools.mkdir()
+    fake = tools / 'command.py'
+    # Git argv and gh merge JSON are their actual interfaces. No network or head code.
+    fake.write_text(f'#!{sys.executable}\n' + '''
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['FAKE_STATE'])
+tool, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
+with (root / 'calls.jsonl').open('a') as stream:
+    stream.write(json.dumps(dict(tool=tool, args=args)) + '\\n')
+if tool == 'git':
+    if args[:2] == ['rev-parse', 'FETCH_HEAD']:
+        print(os.environ['HEAD_SHA'])
+    elif args[:2] == ['rev-parse', 'HEAD']:
+        path = root / 'attempt.txt'
+        attempt = int(path.read_text()) + 1 if path.exists() else 1
+        path.write_text(str(attempt))
+        print(f'{attempt:040x}')
+    elif args[:2] == ['rev-parse', 'origin/test']:
+        attempt = int((root / 'attempt.txt').read_text())
+        print(f'{attempt + (attempt <= int(os.environ["FAKE_MOVES"])):040x}')
+    elif args[0] not in ('fetch', 'reset', 'config', 'add', 'diff'):
+        raise SystemExit('Unexpected git call: ' + repr(args))
+elif tool == 'gh':
+    if args[:2] == ['pr', 'comment']:
+        pass
+    elif args[:3] == ['api', '--method', 'PUT']:
+        print(json.dumps(dict(merged=True)))
+    else:
+        raise SystemExit('Unexpected gh call: ' + repr(args))
+elif tool == 'python':
+    if args[:2] == ['-m', 'microclaw.catalog_intake']:
+        if args[2] == 'materialize':
+            pathlib.Path(args[args.index('--out') + 1]).mkdir()
+        elif args[2] not in ('check', 'build'):
+            raise SystemExit('Unexpected intake command: ' + repr(args))
+        print('Accepted offline workflow control')
+    elif args[0] == '-c':
+        os.execv(sys.executable, [sys.executable, *args])
+    else:
+        raise SystemExit('Unexpected Python call: ' + repr(args))
+''', encoding='utf-8')
+    fake.chmod(0o755)
+    for name in ('git', 'gh', 'python'):
+        (tools / name).symlink_to(fake)
+    env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'], FAKE_STATE=str(tmp_path),
+               FAKE_MOVES=str(moves), RUNNER_TEMP=str(runner_temp), BASE_REF='test', HEAD_SHA='a' * 40,
+               PR_NUMBER='1', GH_REPO='Micro-Claw/package-catalog', GH_TOKEN='offline-control')
+    result = subprocess.run(['bash', '-c', script], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True)
+    assert result.returncode == exit_code, result.stdout + result.stderr
+    calls = [json.loads(line) for line in (tmp_path / 'calls.jsonl').read_text().splitlines()]
+    checks = [c for c in calls if c['tool'] == 'python' and c['args'][:3] == ['-m', 'microclaw.catalog_intake', 'check']]
+    assert len(checks) == attempts
+    comments = [c['args'][c['args'].index('--body') + 1] for c in calls if c['tool'] == 'gh' and c['args'][:2] == ['pr', 'comment']]
+    assert len(comments) == min(moves, 3)
+    assert all('base branch moved' in c.lower() for c in comments)
+    assert all('re-run' in c for c in comments)
+    merges = [c for c in calls if c['tool'] == 'gh' and c['args'][:3] == ['api', '--method', 'PUT']]
+    assert len(merges) == (1 if exit_code == 0 else 0)
+
+
+def load_gate():
+    spec = importlib.util.spec_from_file_location('intake_revision_gate', ROOT / 'design/83-block83f4-gate.py')
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    return gate
+
+
+def test_gate_prepares_stale_i_before_a_then_opens_after_merge(tmp_path, monkeypatch):
+    module = load_gate()
+    monkeypatch.setattr(module, 'CASES', {'A': (True, None), 'I': (True, None)})
+    base = ['1' * 40]
+    events, commits = [], {}
+    def api(endpoint, payload=None):
+        if endpoint == 'user':
+            return dict(login='offline-operator')
+        if endpoint == 'repos/offline-operator/package-catalog':
+            return dict(fork=True, parent=dict(full_name=module.REPO))
+        if endpoint.endswith('/git/ref/heads/test'):
+            return dict(object=dict(sha=base[0]))
+        if '/git/commits/' in endpoint:
+            return dict(tree=dict(sha=endpoint.rsplit('/', 1)[-1]))
+        if endpoint.endswith('/git/trees'):
+            return dict(sha='3' * 40)
+        if endpoint.endswith('/git/commits'):
+            label = payload['message'].rsplit(' ', 1)[-1]
+            commit = dict(sha=f'{len(commits) + 10:040x}', parents=[dict(sha=p) for p in payload['parents']])
+            events.append('create-' + label)
+            commits[label] = commit
+            return commit
+        if endpoint.endswith('/git/refs'):
+            return dict(ref=payload['ref'], object=dict(sha=payload['sha']))
+        if endpoint.endswith('/pulls'):
+            label = payload['title'].rsplit(' ', 1)[-1]
+            events.append('open-' + label)
+            return dict(number=ord(label), html_url='https://github.com/' + module.REPO + '/pull/' + str(ord(label)))
+        raise AssertionError(endpoint)
+    monkeypatch.setattr(module, 'api', api)
+    monkeypatch.setattr(module, 'gh', lambda *args, **kwargs: '')
+    def capture(gate, case):
+        if case == 'A':
+            base[0] = '2' * 40
+        pr = dict(state='MERGED', mergedAt='2026-10-02T10:00:00Z', comments=[])
+        runs = [dict(status='completed', conclusion='success')]
+        gate.save(f'{case}-pr.json', pr)
+        gate.save(f'{case}-runs.json', runs)
+        return pr, runs
+    monkeypatch.setattr(module.Gate, 'capture', capture)
+    def served(gate):
+        gate.save('served-catalog.json', dict(type=packages.CATALOG_TYPE,
+                  releases=[intake.read(module.FIXTURES / f'{c}.json') for c in ('A', 'I')], withdrawals=[]))
+    monkeypatch.setattr(module, 'collect_served', served)
+    monkeypatch.setattr(module, 'verify', lambda gate: 0)
+    assert module.run(module.Gate(tmp_path / 'evidence'), 5) == 0
+    assert events.index('create-I') < events.index('open-A') < events.index('open-I')
+    assert commits['I']['parents'] == [dict(sha='1' * 40)]
+    state = intake.read(tmp_path / 'evidence/state.json')
+    assert state['prs']['I']['sha'] == state['prepared']['sha'] == commits['I']['sha']
+
+
+def test_design_keeps_fixtures_but_no_handoff_outputs():
+    for name in ('83-block83f4-report.md', '83-block83f4-mutations.py', '83f4-gate/mutation-output.txt',
+                 '83f4-gate/mutations.json', '83f4-gate/selftest.txt', '83f4-gate/targeted-tests.txt'):
+        assert not (ROOT / 'design' / name).exists()
+    assert (ROOT / 'design/83f4-gate/I.json').is_file()
+    assert (ROOT / 'design/83f4-gate/artifacts/I.zip').is_file()
+
+
+def test_materialize_refuses_pr_edit_even_if_current_base_already_matches(setup, tmp_path):
+    repo, ancestor = stale_repo(setup, tmp_path)
+    text = 'Same edit made independently by operator and PR\n'
+    (repo / 'README.md').write_text(text, encoding='utf-8')
+    git(repo, 'add', 'README.md')
+    git(repo, 'commit', '-m', 'Publisher edits README too')
+    head = advance_base(repo, ancestor, readme=text)
+    out = tmp_path / 'materialized'
+    with pytest.raises(packages.PackageRefusal) as caught:
+        intake.materialize(repo, 'main', head, out)
+    assert caught.value.field == 'path'
+    assert 'README.md' in str(caught.value)
+    assert (out / 'README.md').read_bytes() == (repo / 'README.md').read_bytes()

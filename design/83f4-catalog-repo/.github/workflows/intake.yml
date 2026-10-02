@@ -46,59 +46,50 @@ jobs:
         run: |
           set -euo pipefail
           cd catalog
-          git fetch origin "$BASE_REF"
-          git reset --hard "origin/$BASE_REF"
-          checked_base=$(git rev-parse HEAD)
-          git fetch origin "$HEAD_SHA"
-          export DATA_HEAD="$RUNNER_TEMP/intake-head"
-          mkdir "$DATA_HEAD"
-          # No checkout, hooks, installs or scripts from the PR. Only ordinary blobs.
-          set +e
-          python - <<'PY' 2> "$RUNNER_TEMP/data-error.txt"
-          import os, pathlib, subprocess
-          root = pathlib.Path(os.environ['DATA_HEAD'])
-          listing = subprocess.check_output(['git', 'ls-tree', '-rz', os.environ['HEAD_SHA']])
-          for item in listing.split(b'\0'):
-              if not item:
-                  continue
-              meta, raw = item.split(b'\t', 1)
-              mode, kind, oid = meta.decode('ascii').split()
-              path = raw.decode('utf-8')
-              parts = path.split('/')
-              if mode not in ('100644', '100755') or kind != 'blob' or any(p in ('', '.', '..', '.git') for p in parts):
-                  raise SystemExit('Unsafe PR data path or file mode: ' + path[:240])
-              destination = root.joinpath(*parts)
-              destination.parent.mkdir(parents=True, exist_ok=True)
-              with destination.open('xb') as stream:
-                  subprocess.run(['git', 'cat-file', 'blob', oid], stdout=stream, check=True, stdin=subprocess.DEVNULL)
-              destination.chmod(0o755 if mode == '100755' else 0o644)
-          PY
-          materialized=$?
-          set -e
-          if [[ "$materialized" != 0 ]]; then
-            python -c 'import os,pathlib; text=(pathlib.Path(os.environ["RUNNER_TEMP"])/"data-error.txt").read_text()[:240]; text="".join(c if c.isprintable() and c not in "`<>[]\\*_" else " " for c in text); print("Refused submission: field **path**. "+text+". Use one ordinary release or withdrawal JSON file.")' > "$RUNNER_TEMP/verdict.md"
-            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/verdict.md"
+          git fetch origin "pull/$PR_NUMBER/head"
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$HEAD_SHA" ]]; then
+            gh pr comment "$PR_NUMBER" --body 'Refused submission: field **head_sha**. The PR head changed while intake started; its new event will check the current head.'
             exit 0
           fi
-          args=(--environment production)
-          if [[ "$BASE_REF" == test ]]; then
-            args=(--environment test --roots "$PWD/roots-TEST-ONLY.json")
-          fi
-          set +e
-          python -m microclaw.catalog_intake check --base "$PWD" --head "$DATA_HEAD" "${args[@]}" > "$RUNNER_TEMP/verdict.md"
-          verdict=$?
-          set -e
-          if [[ "$verdict" != 0 ]]; then
-            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/verdict.md"
-            if [[ "$verdict" == 2 ]]; then exit 2; fi
-            exit 0
-          fi
-          # A direct operator push must not invalidate the base we checked.
-          git fetch origin "$BASE_REF"
-          if [[ "$(git rev-parse "origin/$BASE_REF")" != "$checked_base" ]]; then
-            echo 'Base moved during intake; rerun this job against the new base.' >&2
-            exit 1
-          fi
+          DATA_HEAD="$RUNNER_TEMP/intake-head"
+          ready=false
+          for attempt in 1 2 3; do
+            git fetch origin "$BASE_REF"
+            git reset --hard "origin/$BASE_REF"
+            checked_base=$(git rev-parse HEAD)
+            rm -rf "$DATA_HEAD"
+            args=(--environment production)
+            if [[ "$BASE_REF" == test ]]; then
+              args=(--environment test --roots "$PWD/roots-TEST-ONLY.json")
+            fi
+            # Overlay only the PR's merge-base diff on this fresh base, as blobs.
+            set +e
+            python -m microclaw.catalog_intake materialize --git-dir "$PWD" --base-ref "$checked_base" --head-sha "$HEAD_SHA" --out "$DATA_HEAD" > "$RUNNER_TEMP/verdict.md"
+            verdict=$?
+            if [[ "$verdict" == 0 ]]; then
+              python -m microclaw.catalog_intake check --base "$PWD" --head "$DATA_HEAD" "${args[@]}" > "$RUNNER_TEMP/verdict.md"
+              verdict=$?
+            fi
+            set -e
+            # Recheck movement even on refusal: the new policy/base may change the verdict.
+            git fetch origin "$BASE_REF"
+            if [[ "$(git rev-parse "origin/$BASE_REF")" != "$checked_base" ]]; then
+              if [[ "$attempt" == 3 ]]; then
+                gh pr comment "$PR_NUMBER" --body 'The base branch moved again. Intake stopped after three tries; re-run this job once the base is stable.'
+                exit 1
+              fi
+              gh pr comment "$PR_NUMBER" --body "The base branch moved. Intake will be re-run against the updated base (attempt $((attempt + 1)) of 3)."
+              continue
+            fi
+            if [[ "$verdict" != 0 ]]; then
+              gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/verdict.md"
+              if [[ "$verdict" == 2 ]]; then exit 2; fi
+              exit 0
+            fi
+            ready=true
+            break
+          done
+          if [[ "$ready" != true ]]; then exit 1; fi
           # SHA precondition prevents a synchronize race from merging an unchecked head.
           gh api --method PUT "repos/$GH_REPO/pulls/$PR_NUMBER/merge" -f merge_method=squash -f sha="$HEAD_SHA" > "$RUNNER_TEMP/merge.json"
           python -c 'import json,sys; assert json.load(open(sys.argv[1]))["merged"], "PR was not merged"' "$RUNNER_TEMP/merge.json"
