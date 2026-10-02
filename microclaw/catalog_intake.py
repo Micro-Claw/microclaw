@@ -439,7 +439,8 @@ def main(argv=None):
             print('Repository path: ' + record_path(collection, value))
         elif args.command == 'materialize':
             result = materialize(args.git_dir, args.base_ref, args.head_sha, args.out)
-            print(json.dumps(result) if args.json else 'PR changes materialized as data against the current base.')
+            print(json.dumps(result) if args.json else 'PR changes materialized as data against the current base: '
+                  + ', '.join(f"{c['status']} {c['path']}" for c in result['changes'])[:500])
         elif args.command == 'build':
             build(args.root, environment=args.environment, roots=args.roots)
             print('catalog.json verified and rebuilt.')

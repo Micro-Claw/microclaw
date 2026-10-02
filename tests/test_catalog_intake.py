@@ -837,3 +837,20 @@ def test_resubmitted_version_says_publish_a_new_version(setup, monkeypatch):
     result = setup['check']()
     assert_field(result, 'path')
     assert 'publish a new version' in result['detail']
+
+
+def test_materialize_text_output_names_the_change_and_stays_a_comment(setup, tmp_path, capsys):
+    # The workflow logs materialize's output and posts the same file as the PR comment
+    # on a refusal, so both outputs must be plain text, never JSON.
+    repo, ancestor = stale_repo(setup, tmp_path)
+    head = advance_base(repo, ancestor)
+    assert intake.main(['materialize', '--git-dir', str(repo), '--base-ref', 'main',
+                        '--head-sha', head, '--out', str(tmp_path / 'ok')]) == 0
+    assert 'A ' + setup['path'] in capsys.readouterr().out
+    assert intake.main(['materialize', '--git-dir', str(repo), '--base-ref', 'main',
+                        '--head-sha', 'not-a-sha', '--out', str(tmp_path / 'refused')]) == 1
+    comment = capsys.readouterr().out
+    assert comment.startswith('Refused') and 'field **head_sha**' in comment
+    workflow = (SEED / '.github/workflows/intake.yml').read_text(encoding='utf-8')
+    line = next(l for l in workflow.splitlines() if 'catalog_intake materialize' in l)
+    assert '--json' not in line and 'verdict.md' in line
