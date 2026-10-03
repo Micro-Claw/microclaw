@@ -1,0 +1,44 @@
+name: Policy renewal reminder
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+permissions:
+  issues: write
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Remind the catalog operator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          import json
+          from pathlib import Path
+          import subprocess
+
+          def remind(now):
+              path = Path('policy.json')
+              if not path.exists():
+                  return
+              expiry = datetime.strptime(json.loads(path.read_text())['expires_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+              if expiry - now > timedelta(days=30):
+                  return
+              prefix = 'Renew catalog trust policy'
+              issues = subprocess.run(['gh', 'issue', 'list', '--state', 'open', '--search', prefix + ' in:title', '--limit', '1000', '--json', 'title'],
+                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True)
+              if any(issue['title'].startswith(prefix) for issue in json.loads(issues.stdout)):
+                  return
+              body = (f'The catalog policy expires at {expiry:%Y-%m-%dT%H:%M:%SZ}. '
+                      'New installs and repairs pause then; installed packages keep running. '
+                      'Run sign-policy and push policy.json to main to renew it.')
+              subprocess.run(['gh', 'issue', 'create', '--title', prefix, '--body', body],
+                             stdin=subprocess.DEVNULL, check=True)
+
+          remind(datetime.now(timezone.utc))
+          PY

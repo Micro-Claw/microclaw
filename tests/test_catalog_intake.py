@@ -363,7 +363,7 @@ def test_executable_checks_without_importing_publisher(setup, tmp_path):
     assert not marker.exists()
     manifest['operations'] = [op for op in manifest['operations'] if op['name'] != 'self_check']
     write(source / 'manifest.json', manifest)
-    builder.build_release(source, setup['artifact'])
+    builder.build_release(source, setup['artifact'], invalid=True)
     with pytest.raises(packages.PackageRefusal) as caught:
         intake.sign_release(private(), setup['artifact'], manifest['artifact'])
     assert caught.value.field == 'operations'
@@ -419,11 +419,18 @@ def test_catalog_bounds(setup, monkeypatch, bound, field):
 def test_fixture_builder_uses_product_signer_and_projection(tmp_path, monkeypatch):
     calls = []
     original = builder.product_sign
+    packing = []
+    original_pack = builder.pack
+    def pack_spy(*args):
+        packing.append(args)
+        return original_pack(*args)
+    monkeypatch.setattr(builder, 'pack', pack_spy)
     def spy(value, key):
         calls.append(value)
         return original(value, key)
     monkeypatch.setattr(builder, 'product_sign', spy)
     result = builder.build_release(FIXTURES / 'markdown', tmp_path / 'fixture.zip')
+    assert len(packing) == 1
     assert len(calls) == 1 and calls[0]['artifact_digest'] == result['artifact_digest']
     assert result == intake.sign_release(private(), tmp_path / 'fixture.zip', result['artifact'])
 
@@ -854,3 +861,251 @@ def test_materialize_text_output_names_the_change_and_stays_a_comment(setup, tmp
     workflow = (SEED / '.github/workflows/intake.yml').read_text(encoding='utf-8')
     line = next(l for l in workflow.splitlines() if 'catalog_intake materialize' in l)
     assert '--json' not in line and 'verdict.md' in line
+
+
+def test_root_key_passphrase_and_shape(tmp_path, monkeypatch, capsys):
+    path = tmp_path / 'root.pem'
+    answers = iter(['offline-password', 'offline-password'])
+    monkeypatch.setattr(intake.getpass, 'getpass', lambda prompt: next(answers))
+    assert intake.main(['keygen', '--root', '--out', str(path)]) == 0
+    output = capsys.readouterr().out
+    entry, tail = json.JSONDecoder().raw_decode(output)
+    assert set(entry) == {'key_id', 'public_key'}
+    assert 'PRODUCTION_ROOTS["keys"]' in output and 'offline' in output
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert b'ENCRYPTED PRIVATE KEY' in path.read_bytes()
+    calls = []
+    monkeypatch.setattr(intake.getpass, 'getpass', lambda prompt: calls.append(prompt) or 'offline-password')
+    assert intake.public_entry(intake.load_key(path))['key_id'] == entry['key_id']
+    assert len(calls) == 1
+    monkeypatch.setattr(intake.getpass, 'getpass', lambda prompt: 'wrong')
+    with pytest.raises(intake.Refusal, match='key:.*correct passphrase'):
+        intake.load_key(path)
+
+
+@pytest.mark.parametrize('answers', [('', ''), ('one', 'two')])
+def test_root_key_refuses_bad_confirmation(tmp_path, monkeypatch, answers):
+    answers = iter(answers)
+    monkeypatch.setattr(intake.getpass, 'getpass', lambda prompt: next(answers))
+    path = tmp_path / 'root.pem'
+    assert intake.main(['keygen', '--root', '--out', str(path)]) == 1
+    assert not path.exists()
+
+
+def test_plain_key_never_prompts(tmp_path, monkeypatch):
+    monkeypatch.setattr(intake.getpass, 'getpass', lambda prompt: pytest.fail('unencrypted key prompted'))
+    path = tmp_path / 'publisher.pem'
+    assert intake.main(['keygen', '--out', str(path)]) == 0
+    intake.load_key(path)
+
+
+def policy_key(tmp_path, monkeypatch):
+    key = Ed25519PrivateKey.generate()
+    entry = intake.public_entry(key)
+    entry.pop('state')
+    monkeypatch.setattr(packages, 'PRODUCTION_ROOTS', dict(environment='production', keys=[entry]))
+    path = tmp_path / 'key.pem'
+    path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    return path
+
+
+def test_sign_policy_production_renewal(tmp_path, monkeypatch, capsys):
+    key = policy_key(tmp_path, monkeypatch)
+    path = tmp_path / 'policy.json'
+    args = ['sign-policy', '--key', str(key), '--policy', str(path), '--environment', 'production']
+    before = datetime.now(timezone.utc)
+    assert intake.main(args) == 0
+    value = intake.read(path)
+    assert value['revision'] == 1
+    assert abs((packages._expires(value['expires_at']) - before).total_seconds() - 182 * 86400) < 5
+    value['publishers'] = {'new-lab': dict(state='active', keys=[intake.public_entry(private())])}
+    value['expires_at'] = '2000-01-01T00:00:00Z'
+    write(path, value)
+    assert intake.main(args) == 0
+    result = packages.verify_trust_policy(intake.read(path))
+    assert result['revision'] == 2
+    assert result['publishers'] == value['publishers']
+    assert result['expires_at'] != value['expires_at']
+    output = capsys.readouterr().out
+    from datetime import timedelta
+    assert (packages._expires(result['expires_at']) - timedelta(days=30)).strftime('%Y-%m-%d') in output
+    saved = path.read_bytes()
+    assert intake.main(args + ['--roots', str(path)]) == 1
+    assert path.read_bytes() == saved
+
+
+@pytest.mark.parametrize('exists', [False, True])
+def test_sign_policy_nonroot_writes_nothing(tmp_path, monkeypatch, capsys, exists):
+    policy_key(tmp_path, monkeypatch)
+    key = tmp_path / 'stranger.pem'
+    key.write_bytes(private().private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    path = tmp_path / 'policy.json'
+    if exists:
+        write(path, dict(type=packages.TRUST_POLICY_TYPE, environment='production', revision=3,
+                         publishers={}, revoked_releases=[]))
+    before = path.read_bytes() if exists else None
+    assert intake.main(['sign-policy', '--key', str(key), '--policy', str(path)]) == 1
+    assert 'trust.signature.key_id' in capsys.readouterr().out
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
+@pytest.mark.parametrize('revision', [0, -1, True, '1', None])
+def test_sign_policy_bad_revision_unchanged(tmp_path, monkeypatch, revision, capsys):
+    key = policy_key(tmp_path, monkeypatch)
+    path = tmp_path / 'policy.json'
+    write(path, {'revision': revision})
+    before = path.read_bytes()
+    assert intake.main(['sign-policy', '--key', str(key), '--policy', str(path)]) == 1
+    assert 'trust.revision' in capsys.readouterr().out
+    assert path.read_bytes() == before
+
+
+def test_sign_policy_test_roots_and_verification(tmp_path, monkeypatch, capsys):
+    key = policy_key(tmp_path, monkeypatch)
+    roots = deepcopy(packages.PRODUCTION_ROOTS)
+    roots['environment'] = 'test'
+    rootfile = tmp_path / 'roots.json'
+    write(rootfile, roots)
+    path = tmp_path / 'policy.json'
+    args = ['sign-policy', '--key', str(key), '--policy', str(path), '--environment', 'test']
+    assert intake.main(args) == 1
+    assert not path.exists()
+    assert intake.main(args + ['--roots', str(rootfile)]) == 0
+    value = packages.verify_trust_policy(intake.read(path), roots)
+    value['extra'] = 'operator mistake'
+    write(path, value)
+    before = path.read_bytes()
+    assert intake.main(args + ['--roots', str(rootfile)]) == 1
+    assert path.read_bytes() == before
+    assert 'trust' in capsys.readouterr().out
+
+
+def test_pack_hashes_dotfiles_and_determinism(tmp_path, capsys):
+    source = tmp_path / 'package'
+    shutil.copytree(FIXTURES / 'markdown', source)
+    (source / '.secret').write_text('skip')
+    (source / '.hidden').mkdir()
+    (source / '.hidden/secret').write_text('skip')
+    (source / 'nested').mkdir()
+    (source / 'nested/.secret').write_text('skip')
+    (source / 'nested/data.txt').write_text('included')
+    before = (source / 'manifest.json').read_bytes()
+    out = tmp_path / 'package.zip'
+    url = 'https://any-host.example/release.zip'
+    assert intake.main(['pack', '--dir', str(source), '--url', url, '--out', str(out)]) == 0
+    first = out.read_bytes()
+    with zipfile.ZipFile(out) as archive:
+        manifest = packages.validate_manifest(json.loads(archive.read('manifest.json')))
+        assert manifest['artifact'] == url
+        assert {a['path'] for a in manifest['assets']} == {'SKILL.md', 'notes.txt', 'nested/data.txt'}
+        for asset in manifest['assets']:
+            assert asset['sha256'] == __import__('hashlib').sha256(archive.read(asset['path'])).hexdigest()
+        assert archive.namelist() == sorted(archive.namelist())
+        for info in archive.infolist():
+            assert info.date_time == (1980, 1, 1, 0, 0, 0)
+            assert info.compress_type == zipfile.ZIP_STORED
+            assert info.external_attr >> 16 == 0o100644
+    assert intake.pack(source, url, out)[0] == manifest
+    assert out.read_bytes() == first
+    assert (source / 'manifest.json').read_bytes() == before
+    output = capsys.readouterr().out
+    for text in ('.secret', '.hidden/secret', 'nested/.secret', 'sign-release', url, str(out)):
+        assert text in output
+    intake.sign_release(private(), out, url)
+
+
+@pytest.mark.parametrize('name,kind', [('link', 'file'), ('folder', 'dir'), ('.link', 'file'), ('pipe', 'fifo'), ('manifest.json', 'file')])
+def test_pack_refuses_links_and_nonregular(tmp_path, name, kind):
+    source = tmp_path / 'package'
+    shutil.copytree(FIXTURES / 'markdown', source)
+    path = source / name
+    path.unlink(missing_ok=True)
+    if kind == 'fifo':
+        if not hasattr(os, 'mkfifo'):
+            pytest.skip('FIFO unavailable')
+        os.mkfifo(path)
+    else:
+        path.symlink_to(FIXTURES / ('markdown' if kind == 'dir' else 'markdown/SKILL.md'), target_is_directory=kind == 'dir')
+    out = tmp_path / 'package.zip'
+    with pytest.raises(intake.Refusal, match=name):
+        intake.pack(source, 'https://example.org/p.zip', out)
+    assert not out.exists()
+
+
+def workflow(path):
+    return yaml.safe_load(path.read_text())
+
+
+def workflow_python(script):
+    return script.split("python - <<'PY'\n", 1)[1].split('\nPY', 1)[0]
+
+
+@pytest.mark.parametrize('days,duplicate,creates', [(None, False, False), (31, False, False), (30, False, True), (5, False, True), (-1, False, True), (5, True, False)])
+def test_policy_reminder_execution(tmp_path, days, duplicate, creates):
+    from datetime import timedelta
+    script = workflow_python(workflow(SEED / '.github/workflows/policy-reminder.yml')['jobs']['remind']['steps'][-1]['run'])
+    script = script.replace('remind(datetime.now(timezone.utc))', "remind(datetime(2026, 10, 2, tzinfo=timezone.utc))")
+    if days is not None:
+        write(tmp_path / 'policy.json', {'expires_at': (NOW + timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')})
+    fake = tmp_path / 'gh'
+    fake.write_text(f'#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\nwith Path("calls.jsonl").open("a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\nif sys.argv[2] == "list": print({json.dumps([{"title": "Renew catalog trust policy old"}] if duplicate else [])!r})\n')
+    fake.chmod(0o755)
+    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH']}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in (tmp_path / 'calls.jsonl').read_text().splitlines()] if (tmp_path / 'calls.jsonl').exists() else []
+    new = [args for args in calls if args[1] == 'create']
+    assert bool(new) == creates
+    if days is None or days == 31:
+        assert calls == [] and result.stdout == ''
+    if creates:
+        body = new[0][new[0].index('--body') + 1]
+        assert 'installed packages keep running' in body and 'sign-policy' in body and 'repairs pause' in body
+
+
+def test_publishing_and_reminder_structure():
+    reminder = workflow(SEED / '.github/workflows/policy-reminder.yml')
+    assert reminder['permissions'] == {'issues': 'write'}
+    assert set(reminder.get('on', reminder.get(True))) == {'schedule', 'workflow_dispatch'}
+    assert 'Micro-Claw/microclaw' not in json.dumps(reminder)
+    template = workflow(SEED / 'publishing/release.yml')
+    example = workflow(ROOT / 'design/83f5-example-package/.github/workflows/microclaw-release.yml')
+    assert template['env'].keys() == {'PACKAGE_DIR', 'ZIP_NAME', 'MICROCLAW_COMMIT'}
+    assert example['env'] == dict(PACKAGE_DIR='package', ZIP_NAME='session-start.zip', MICROCLAW_COMMIT='REPLACE_WITH_PINNED_COMMIT')
+    assert {k: v for k, v in template.items() if k != 'env'} == {k: v for k, v in example.items() if k != 'env'}
+    assert template.get('on', template.get(True)) == {'push': {'tags': ['v*']}}
+    assert template['permissions'] == {'contents': 'write'}
+    steps = template['jobs']['release']['steps']
+    assert '^[0-9a-f]{40}$' in steps[0]['run'] and 'exit 1' in steps[0]['run']
+    checkout = [step for step in steps if step.get('with', {}).get('repository') == 'Micro-Claw/microclaw'][0]
+    assert checkout['with']['persist-credentials'] is False
+    assert any(step.get('run') == 'python -m pip install cryptography==44.0.2 packaging==24.2' for step in steps)
+    script = next(step['run'] for step in steps if step.get('name') == 'Pack, sign and publish')
+    for required in ("os.environ['TAG'] != 'v' + manifest['version']", '0o600', 'catalog_intake pack', 'catalog_intake sign-release', 'gh release create', 'Micro-Claw/package-catalog', '$GITHUB_REPOSITORY/releases/download/$TAG/$ZIP_NAME'):
+        assert required in script
+    assert 'gh pr create' not in script
+    assert steps[-1]['if'] == 'always()' and 'rm -f "$RUNNER_TEMP/publisher.pem"' == steps[-1]['run']
+    for step in steps:
+        assert '${{' not in step.get('run', '')
+
+
+def test_release_tag_check_executes_before_key_write(tmp_path):
+    source = tmp_path / 'package'
+    source.mkdir()
+    write(source / 'manifest.json', {'version': '1.0.0'})
+    script = next(step['run'] for step in workflow(SEED / 'publishing/release.yml')['jobs']['release']['steps'] if step.get('name') == 'Pack, sign and publish')
+    env = {**os.environ, 'PACKAGE_DIR': str(source), 'RUNNER_TEMP': str(tmp_path), 'MICROCLAW_PUBLISHER_KEY': 'test key', 'TAG': 'v2.0.0'}
+    result = subprocess.run([sys.executable, '-c', workflow_python(script)], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    assert result.returncode != 0 and 'Tag must equal' in result.stderr
+    assert not (tmp_path / 'publisher.pem').exists()
+    result = subprocess.run([sys.executable, '-c', workflow_python(script)], env={**env, 'TAG': 'v1.0.0'}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'publisher.pem').stat().st_mode & 0o777 == 0o600
+
+
+def test_example_manifest_and_pack(tmp_path):
+    source = ROOT / 'design/83f5-example-package/package'
+    packages.validate_manifest(intake.read(source / 'manifest.json'))
+    value, _ = intake.pack(source, 'https://test.example/package.zip', tmp_path / 'example.zip')
+    assert value['package_id'] == 'session-start'
+    assert value['publisher'] == 'microclaw-examples'
+    assert value['skills'][0]['name'] == 'open-unfamiliar-system'

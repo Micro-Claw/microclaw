@@ -44,9 +44,9 @@ def isolated_store(tmp_path, monkeypatch):
     store.store_trust_policy(read(FIXTURES / "trust" / "policy-TEST-ONLY.json"))
 
 
-def install(tmp_path, *, kind="executable", version="1.0.0", source=None, **kwargs):
+def install(tmp_path, *, kind="executable", version="1.0.0", source=None, prepared=None, **kwargs):
     artifact = tmp_path / (kind + "-" + version + ".zip")
-    intake = builder.build_release(source or FIXTURES / kind, artifact, version=version)
+    intake = prepared or builder.build_release(source or FIXTURES / kind, artifact, version=version)
     return store.install(intake, artifact, policy=store.load_trust_policy(), now=NOW,
                          uv_executable=uv.find_uv_bin(), retained_digests=frozenset(),
                          find_links=WHEELS.resolve(), base_python=BASE, **kwargs)
@@ -237,6 +237,7 @@ class Crash(BaseException):
 @pytest.mark.parametrize("point", ["extraction", "staged", "temporary", "ready", "activated"])
 def test_interrupted_transaction_recovery_rows(tmp_path, monkeypatch, point):
     old = install(tmp_path, kind="markdown")
+    prepared = builder.build_release(FIXTURES / "markdown", tmp_path / "markdown-2.0.0.zip", version="2.0.0")
     real_extract, real_write = store._extract, store._write
     candidate = []
     def extract(artifact, target, intake):
@@ -259,7 +260,7 @@ def test_interrupted_transaction_recovery_rows(tmp_path, monkeypatch, point):
         m.setattr(store, "_extract", extract)
         m.setattr(store, "_write", writing)
         with pytest.raises(Crash):
-            install(tmp_path, kind="markdown", version="2.0.0")
+            install(tmp_path, kind="markdown", version="2.0.0", prepared=prepared)
     store.recover(retained_digests=frozenset())
     pointer = read(package("markdown") / "pointer.json")
     if point == "activated":
@@ -497,10 +498,12 @@ def test_only_latest_failed_attempt_is_retained(tmp_path, monkeypatch):
     active = install(tmp_path, kind="markdown")
     def fail(*args):
         raise store.PackageRefusal("assets", "fixture extraction failed")
+    prepared = {version: builder.build_release(FIXTURES / "markdown", tmp_path / ("markdown-" + version + ".zip"), version=version)
+                for version in ["2.0.0", "3.0.0"]}
     monkeypatch.setattr(store, "_extract", fail)
     for version in ["2.0.0", "3.0.0"]:
         with pytest.raises(store.PackageRefusal):
-            install(tmp_path, kind="markdown", version=version)
+            install(tmp_path, kind="markdown", version=version, prepared=prepared[version])
     failures = [row for row in state("markdown")["installs"] if row["state"] == "failed"]
     assert len(failures) == 1
     assert read(directory(failures[0], "markdown") / "install.json")["intake"]["version"] == "3.0.0"

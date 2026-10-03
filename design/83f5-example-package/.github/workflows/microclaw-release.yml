@@ -1,0 +1,56 @@
+name: Publish MicroClaw package
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+env:
+  PACKAGE_DIR: package
+  ZIP_NAME: session-start.zip
+  MICROCLAW_COMMIT: REPLACE_WITH_PINNED_COMMIT
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the reviewed MicroClaw pin
+        run: |
+          if ! [[ "$MICROCLAW_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Set MICROCLAW_COMMIT to a reviewed full commit SHA; placeholder is forbidden.' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: Micro-Claw/microclaw
+          ref: ${{ env.MICROCLAW_COMMIT }}
+          path: microclaw-rules
+          persist-credentials: false
+      - name: Install intake dependencies
+        run: python -m pip install cryptography==44.0.2 packaging==24.2
+      - name: Pack, sign and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MICROCLAW_PUBLISHER_KEY: ${{ secrets.MICROCLAW_PUBLISHER_KEY }}
+          TAG: ${{ github.ref_name }}
+          PYTHONPATH: ${{ github.workspace }}/microclaw-rules
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          manifest = json.loads((Path(os.environ['PACKAGE_DIR']) / 'manifest.json').read_text())
+          if os.environ['TAG'] != 'v' + manifest['version']:
+              raise SystemExit('Tag must equal v plus the manifest version.')
+          path = Path(os.environ['RUNNER_TEMP']) / 'publisher.pem'
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, 'w') as stream:
+              stream.write(os.environ['MICROCLAW_PUBLISHER_KEY'])
+          PY
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$ZIP_NAME"
+          python -m microclaw.catalog_intake pack --dir "$PACKAGE_DIR" --url "$URL" --out "$RUNNER_TEMP/$ZIP_NAME"
+          python -m microclaw.catalog_intake sign-release --key "$RUNNER_TEMP/publisher.pem" --artifact "$RUNNER_TEMP/$ZIP_NAME" --url "$URL" --out "$RUNNER_TEMP/release.json"
+          gh release create "$TAG" "$RUNNER_TEMP/$ZIP_NAME" "$RUNNER_TEMP/release.json" --title "$TAG"
+          echo 'Add release.json at the Repository path printed above to Micro-Claw/package-catalog by PR.'
+      - name: Delete publisher key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/publisher.pem"
