@@ -1214,3 +1214,11 @@ def test_production_cli_publisher_to_client_round_trip(tmp_path, monkeypatch, ca
                                                   now=datetime.now(timezone.utc))
     assert catalog['releases'] == [record] and catalog['withdrawals'] == []
     assert exclusions == []
+
+
+def test_desk_commands_refuse_in_plain_text_not_pr_wording(tmp_path, capsys):
+    """Only check and materialize output becomes a PR comment; a publisher at a desk gets no PR advice."""
+    assert intake.main(['pack', '--dir', str(tmp_path / 'missing'), '--url', 'https://example.org/p.zip',
+                        '--out', str(tmp_path / 'p.zip')]) == 1
+    output = capsys.readouterr().out
+    assert output.startswith('Refused: path:') and 'PR' not in output

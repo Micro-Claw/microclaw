@@ -563,10 +563,10 @@ def main(argv=None):
         return 0
     except Refusal as exc:
         verdict = dict(accepted=False, path=None, field=exc.field[:240], detail=str(exc)[:700])
-        if args.command == 'sign-policy':
-            print(str(exc))
-        else:
+        if args.command in ('check', 'materialize'):  # posted as the PR's refusal comment
             print(json.dumps(verdict) if getattr(args, 'json', False) else human(verdict))
+        else:
+            print('Refused: ' + str(exc))
         return 1
     except Exception:
         verdict = dict(accepted=False, path=None, field='internal', detail='Internal intake error; ask the catalog operator to inspect the job log.')
