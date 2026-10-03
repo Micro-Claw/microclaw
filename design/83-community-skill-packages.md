@@ -1624,6 +1624,19 @@ production policy, and the end-to-end path (D1 as renumbered by D7).
 - **J7 — the release PR comes from the operator's account.** The gate reaches
   a production submission and a publisher identity that is not the operator's,
   but not a second GitHub account. The settlement says so.
+- **J8 — `pack` builds the release zip** (operator, 2026-10-03, after asking
+  why not pip). Dependencies already are standard wheels under hashes; only the
+  outer zip — `manifest.json` plus `SKILL.md` prose — is ours, and only test
+  fixtures could build it. `pack --dir <folder> --url <https> --out <zip>` fills
+  the asset hashes and the artifact URL and runs `sign-release`'s checks. It
+  works for any HTTPS host, by hand; the catalog points at an exact release,
+  never at a repository, because a branch is code nobody signed.
+- **J9 — a copy-paste release workflow for GitHub publishers.** On a version
+  tag it packs, signs with the key stored as a repository secret, publishes the
+  zip and attaches the signed `release.json` to the GitHub release. It stops
+  there: the publisher adds that one file to the catalog by PR, because opening
+  the PR from Actions needs a second, broader credential. The example
+  publisher's repository uses it.
 
 ### Not a block — the SMAPpy conformance limb
 
@@ -1669,7 +1682,7 @@ and otherwise stays open.
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
 | 83f-3 | `block-83f-3` | `9e9271a` | **merged 2026-10-02** as `42770ab`, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
 | 83f-4 | `block-83f-4` | `42770ab` | **merged 2026-10-02** as `fac6cfb`, PR #48 (follow-up PR #49) — decisions H1–H6; `Micro-Claw/package-catalog` created; fork gate round 2 14/14 scored from artifacts (round 1 had no `gh`) |
-| 83f-5 | `block-83f-5` | `7383323` | opened 2026-10-02 — production root, first production policy, end-to-end path; decisions J1–J7 |
+| 83f-5 | `block-83f-5` | `7383323` | opened 2026-10-02 — production root, first production policy, end-to-end path; decisions J1–J9 |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
