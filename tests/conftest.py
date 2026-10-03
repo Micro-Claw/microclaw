@@ -74,9 +74,13 @@ def _isolate_microclaw_home(tmp_path, monkeypatch):
     A test that wants a saved hook, a knowledge base or an EMU map monkeypatches
     over this; function-scoped patches applied in the test body win.
     """
-    from microclaw import hook_manager, knowledge_manager, skill_store
+    from microclaw import hook_manager, knowledge_manager, skill_packages, skill_store
 
     monkeypatch.setattr(skill_store, "store_dir", lambda: tmp_path / "microclaw_home" / "skill-packages")
+    # The shipped production roots point serve's startup thread at the live
+    # catalog. Every test runs against an explicit root set instead; the
+    # shipped value is checked once, by test_shipped_production_roots.
+    monkeypatch.setattr(skill_packages, "PRODUCTION_ROOTS", {"environment": "production", "keys": []})
 
     hooks = tmp_path / "microclaw_home" / "hooks"
     hooks.mkdir(parents=True)
