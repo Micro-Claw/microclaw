@@ -18,5 +18,5 @@ python -m microclaw.catalog_intake sign-release --key publisher-private.pem --ar
 ```
 
 Upload the zip to that exact URL, then submit the signed file by catalog PR.
-The source manifest stays unchanged; the packed manifest contains the URL and
-asset hashes. The publisher must first be admitted by the catalog operator.
+`pack` writes both the artifact URL and asset hashes into the packed manifest,
+leaving the source manifest unchanged. The publisher must first be admitted by the catalog operator.

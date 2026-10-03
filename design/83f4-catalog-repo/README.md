@@ -31,17 +31,20 @@ Upload the zip at that exact URL. For executable packages, the publisher writes
 `locks`; `pack` does not generate them, and every exact dependency pin requires
 wheel SHA-256 hashes (see the manifest `locks.<platform>[].hashes` requirement).
 
-On GitHub, copy `publishing/release.yml` to `.github/workflows/microclaw-release.yml`
-in your repository, edit its configuration and pin, and set the repository secret
-`MICROCLAW_PUBLISHER_KEY` to your unencrypted publisher PEM. Push a version tag.
-The workflow publishes the zip and signed `release.json`; it does not open a PR.
-
-The command prints the repository path: `releases/<publisher>/<package_id>/<version>.json`.
+`sign-release` prints the repository path: `releases/<publisher>/<package_id>/<version>.json`.
 Fork this repository and open a PR adding just that file. Intake verifies the
 signature, current policy, downloaded digest, zip structure, declared assets,
 manifest binding and supported executable format. It does not run the worker.
 A new version is required for a second release. Accepted PRs merge automatically;
 refused PRs receive a comment naming the field to correct.
+
+On GitHub, copy `publishing/release.yml` to `.github/workflows/microclaw-release.yml`
+in your repository and edit its configuration. Use the `MICROCLAW_COMMIT` from
+this repository's `.github/workflows/intake.yml` so signing uses the same rules
+as intake. Set the repository secret
+`MICROCLAW_PUBLISHER_KEY` to your unencrypted publisher PEM. Push a version tag.
+This shortcut packs, signs and uploads the release; add its `release.json` by PR
+as above. The workflow does not open the PR.
 
 To permanently withdraw a release, sign its full identity:
 
@@ -62,6 +65,9 @@ Run `git pull`, edit `policy.json` by hand, then renew and push directly to `mai
 python -m microclaw.catalog_intake sign-policy --key /offline/root.pem --policy policy.json
 git push origin main
 ```
+
+With no `policy.json`, `sign-policy` creates an empty one.
+Add publishers and sign again before pushing.
 
 Commit the signed policy before pushing. A PR touching policy.json is refused.
 Paste publisher entries under `publishers.<name>.keys`; set publisher/key states

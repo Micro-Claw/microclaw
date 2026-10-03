@@ -4,6 +4,7 @@ on:
     - cron: '0 9 * * 1'
   workflow_dispatch:
 permissions:
+  contents: read
   issues: write
 jobs:
   remind:
@@ -26,7 +27,7 @@ jobs:
               path = Path('policy.json')
               if not path.exists():
                   return
-              expiry = datetime.strptime(json.loads(path.read_text())['expires_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+              expiry = datetime.strptime(json.loads(path.read_text(encoding='utf-8'))['expires_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
               if expiry - now > timedelta(days=30):
                   return
               prefix = 'Renew catalog trust policy'

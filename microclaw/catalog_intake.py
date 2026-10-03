@@ -94,12 +94,14 @@ def pack(directory, url, out):
         for name in sorted(dirs + files):
             path = Path(folder) / name
             relative = path.relative_to(directory).as_posix()
+            if name.startswith('.'):
+                skipped.append(relative)
+                if name in dirs:
+                    dirs.remove(name)
+                continue
             mode = path.lstat().st_mode
             if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
                 raise Refusal('path', 'expected a regular file or directory: ' + relative)
-            if any(part.startswith('.') for part in path.relative_to(directory).parts):
-                skipped.append(relative)
-                continue
             if stat.S_ISREG(mode) and relative != 'manifest.json':
                 entries[relative] = path.read_bytes()
     manifest['artifact'] = url
@@ -170,43 +172,53 @@ def record_path(collection, record):
     return f"{collection}/{record['publisher']}/{record['package_id']}/{record['version']}.json"
 
 
-def policy_at(root, environment, roots_file, now, *, private=None):
+def roots_at(environment, roots_file):
     if environment == 'production':
         if roots_file is not None:
             raise Refusal('roots', 'production uses the roots shipped with MicroClaw; remove --roots')
-        roots = packages.PRODUCTION_ROOTS
-        if not roots['keys']:
-            raise Refusal('trust', 'no verified policy: production roots have not been published')
-    else:
-        if roots_file is None:
-            raise Refusal('roots', 'test requires --roots from the trusted base checkout')
-        roots = read(roots_file)
-        if not isinstance(roots, dict) or roots.get('environment') != 'test':
-            raise Refusal('roots.environment', 'test requires a test roots document')
-    target = Path(root) if private is not None else Path(root) / 'policy.json'
-    if private is not None:
-        if target.exists():
-            value = read(target)
-            revision = value.get('revision') if isinstance(value, dict) else None
-            if type(revision) is not int or revision < 1:
-                raise Refusal('trust.revision', 'expected positive integer')
-        else:
-            value = dict(type=packages.TRUST_POLICY_TYPE, environment=roots['environment'],
-                         revision=0, publishers={}, revoked_releases=[])
-        value['revision'] += 1
-        value['expires_at'] = (now + timedelta(days=182)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        policy = packages.verify_trust_policy(sign(value, private), roots)
-        with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(encode(policy))
-        try:
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return policy
-    policy = packages.verify_trust_policy(read(target), roots)
+        return packages.PRODUCTION_ROOTS
+    if roots_file is None:
+        raise Refusal('roots', 'test requires --roots from the trusted base checkout')
+    roots = read(roots_file)
+    if not isinstance(roots, dict) or roots.get('environment') != 'test':
+        raise Refusal('roots.environment', 'test requires a test roots document')
+    return roots
+
+
+def policy_at(root, environment, roots_file, now):
+    roots = roots_at(environment, roots_file)
+    if environment == 'production' and not roots['keys']:
+        raise Refusal('trust', 'no verified policy: production roots have not been published')
+    policy = packages.verify_trust_policy(read(Path(root) / 'policy.json'), roots)
     if now > packages._expires(policy['expires_at']):
         raise Refusal('trust.expires_at', 'policy expired; ask the catalog operator to renew it')
+    return policy
+
+
+def sign_policy(path, *, environment, roots_file, private, now):
+    roots = roots_at(environment, roots_file)
+    if environment == 'production' and not roots['keys']:
+        raise Refusal('roots', 'no production root is listed in this MicroClaw build; '
+                      'add the root entry to skill_packages.PRODUCTION_ROOTS')
+    target = Path(path)
+    if target.exists():
+        value = read(target)
+        revision = value.get('revision') if isinstance(value, dict) else None
+        if type(revision) is not int or revision < 1:
+            raise Refusal('trust.revision', 'expected positive integer')
+    else:
+        value = dict(type=packages.TRUST_POLICY_TYPE, environment=roots['environment'],
+                     revision=0, publishers={}, revoked_releases=[])
+    value['revision'] += 1
+    value['expires_at'] = (now + timedelta(days=182)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    policy = packages.verify_trust_policy(sign(value, private), roots)
+    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(encode(policy))
+    try:
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
     return policy
 
 
@@ -518,8 +530,8 @@ def main(argv=None):
             print('Put this entry into skill_packages.PRODUCTION_ROOTS["keys"]; keep the file and passphrase offline.'
                   if args.root else 'Keep the private key file secret.')
         elif args.command == 'sign-policy':
-            policy = policy_at(args.policy, args.environment, args.roots, datetime.now(timezone.utc),
-                               private=load_key(args.key))
+            policy = sign_policy(args.policy, environment=args.environment, roots_file=args.roots,
+                                 private=load_key(args.key), now=datetime.now(timezone.utc))
             renew = packages._expires(policy['expires_at']) - timedelta(days=30)
             print(f"Revision: {policy['revision']}\nexpires_at: {policy['expires_at']}\nRenew by: {renew:%Y-%m-%d}")
         elif args.command == 'pack':
@@ -551,7 +563,10 @@ def main(argv=None):
         return 0
     except Refusal as exc:
         verdict = dict(accepted=False, path=None, field=exc.field[:240], detail=str(exc)[:700])
-        print(json.dumps(verdict) if getattr(args, 'json', False) else human(verdict))
+        if args.command == 'sign-policy':
+            print(str(exc))
+        else:
+            print(json.dumps(verdict) if getattr(args, 'json', False) else human(verdict))
         return 1
     except Exception:
         verdict = dict(accepted=False, path=None, field='internal', detail='Internal intake error; ask the catalog operator to inspect the job log.')

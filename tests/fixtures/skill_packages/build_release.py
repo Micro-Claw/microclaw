@@ -80,7 +80,7 @@ def build_release(fixture_dir, artifact_path, *, version=None, invalid=False):
                 target = source / asset['path']
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes((fixture_dir / asset['path']).read_bytes())
-            (source / 'manifest.json').write_text(json.dumps(manifest))
+            (source / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
             manifest, _ = pack(source, manifest['artifact'], artifact_path)
     return sign(intake_from_manifest(manifest, hashlib.sha256(artifact_path.read_bytes()).hexdigest()))
 

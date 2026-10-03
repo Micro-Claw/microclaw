@@ -1,11 +1,4 @@
 {
-  "artifact": "https://github.com/Micro-Claw/example-skill-package/releases/download/v1.0.0/session-start.zip",
-  "assets": [
-    {
-      "path": "SKILL.md",
-      "sha256": "0eda3ef76435868eecccea4e21a8358f79d87bda9a1a715f63e0137d3d0a55f4"
-    }
-  ],
   "issues_url": "https://github.com/Micro-Claw/example-skill-package/issues",
   "kind": "markdown",
   "license": "MIT",
