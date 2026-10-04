@@ -1070,7 +1070,9 @@ def test_publishing_and_reminder_structure():
     template = workflow(SEED / 'publishing/release.yml')
     example = workflow(ROOT / 'design/83f5-example-package/.github/workflows/microclaw-release.yml')
     assert template['env'].keys() == {'PACKAGE_DIR', 'ZIP_NAME', 'MICROCLAW_COMMIT'}
-    assert example['env'] == dict(PACKAGE_DIR='package', ZIP_NAME='session-start.zip', MICROCLAW_COMMIT='REPLACE_WITH_PINNED_COMMIT')
+    pin = example['env'].pop('MICROCLAW_COMMIT')
+    assert re.fullmatch(r'[0-9a-f]{40}', pin), 'the example publishes, so it carries a real pin'
+    assert example['env'] == dict(PACKAGE_DIR='package', ZIP_NAME='session-start.zip')
     assert {k: v for k, v in template.items() if k != 'env'} == {k: v for k, v in example.items() if k != 'env'}
     assert template.get('on', template.get(True)) == {'push': {'tags': ['v*']}}
     assert template['permissions'] == {'contents': 'write'}

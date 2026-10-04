@@ -7,7 +7,7 @@ permissions:
 env:
   PACKAGE_DIR: package
   ZIP_NAME: session-start.zip
-  MICROCLAW_COMMIT: REPLACE_WITH_PINNED_COMMIT
+  MICROCLAW_COMMIT: 7579be11cf3314fae920e3cd19f5e6667a5d370d
 jobs:
   release:
     runs-on: ubuntu-latest
