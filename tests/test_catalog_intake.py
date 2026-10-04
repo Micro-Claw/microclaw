@@ -1224,3 +1224,39 @@ def test_desk_commands_refuse_in_plain_text_not_pr_wording(tmp_path, capsys):
                         '--out', str(tmp_path / 'p.zip')]) == 1
     output = capsys.readouterr().out
     assert output.startswith('Refused: path:') and 'PR' not in output
+
+
+def load_production_gate():
+    spec = importlib.util.spec_from_file_location('production_catalog_gate', ROOT / 'design/83-block83f5-gate.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_production_gate_selftest_is_offline_and_discriminates(capsys):
+    module = load_production_gate()
+    assert module.selftest() == 0
+    output = capsys.readouterr().out
+    assert '11 per-limb mutations killed' in output
+    assert 'pre-root slot and trust override refused' in output
+    assert 'created no duplicate PRs' in output
+
+
+def test_production_gate_launcher_and_runbook():
+    launcher = (ROOT / 'design/83-block83f5-gate.ps1').read_text(encoding='utf-8')
+    runbook = (ROOT / 'design/83-block83f5-gate.md').read_text(encoding='utf-8')
+    assert 'active-slot.txt' in launcher and 'env-$active\\Scripts\\python.exe' in launcher
+    assert '& $python -I' in launcher and 'exit $code' in launcher
+    assert 'Start-Transcript' not in launcher and 'uv run' not in launcher
+    assert 'git merge-base --is-ancestor f903fa3 HEAD' in runbook
+    assert 'PowerShell 5.1' in runbook and 'Firefox' in runbook
+    for phase in ('publish', 'prepare', 'session', 'verify', 'cleanup'):
+        assert f'.\\design\\83-block83f5-gate.ps1 -Phase {phase}' in runbook
+    assert 'gh workflow run policy-reminder.yml -R Micro-Claw/package-catalog --ref main' in runbook
+    for name in ('screenshot-catalog.png', 'screenshot-installed.png'):
+        assert name in runbook
+    assert 'first step only' in runbook and 'OPERATOR-JUDGED' in runbook
+    assert 'whole evidence folder' in runbook and 'R145' in runbook
+    # Gate outcomes belong to the evidence folder, never committed design handoffs.
+    for name in ('83-block83f5-report.md', '83f5-gate/selftest.txt', '83f5-gate/verify.json'):
+        assert not (ROOT / 'design' / name).exists()
