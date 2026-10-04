@@ -1,7 +1,7 @@
 {
   "issues_url": "https://github.com/Micro-Claw/example-skill-package/issues",
   "kind": "markdown",
-  "license": "MIT",
+  "license": "BSD-3-Clause",
   "microclaw": ">=0.1,<2",
   "package_id": "session-start",
   "publisher": "microclaw-examples",
