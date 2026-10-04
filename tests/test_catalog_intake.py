@@ -1249,7 +1249,7 @@ def test_production_gate_launcher_and_runbook():
     assert 'active-slot.txt' in launcher and 'env-$active\\Scripts\\python.exe' in launcher
     assert '& $python -I' in launcher and 'exit $code' in launcher
     assert 'Start-Transcript' not in launcher and 'uv run' not in launcher
-    assert 'git merge-base --is-ancestor f903fa3 HEAD' in runbook
+    assert 'git merge-base --is-ancestor e089365 HEAD' in runbook
     assert 'PowerShell 5.1' in runbook and 'Firefox' in runbook
     for phase in ('publish', 'prepare', 'session', 'verify', 'cleanup'):
         assert f'.\\design\\83-block83f5-gate.ps1 -Phase {phase}' in runbook
