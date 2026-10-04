@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import importlib.util
 import io
 import os
+from types import SimpleNamespace
 import json
 from pathlib import Path
 import shutil
@@ -1255,8 +1256,31 @@ def test_production_gate_launcher_and_runbook():
     assert 'gh workflow run policy-reminder.yml -R Micro-Claw/package-catalog --ref main' in runbook
     for name in ('screenshot-catalog.png', 'screenshot-installed.png'):
         assert name in runbook
-    assert 'first step only' in runbook and 'OPERATOR-JUDGED' in runbook
+    assert 'quote its first step' in runbook and 'OPERATOR-JUDGED' in runbook
     assert 'whole evidence folder' in runbook and 'R145' in runbook
     # Gate outcomes belong to the evidence folder, never committed design handoffs.
     for name in ('83-block83f5-report.md', '83f5-gate/selftest.txt', '83f5-gate/verify.json'):
         assert not (ROOT / 'design' / name).exists()
+
+
+def test_production_gate_collects_the_steps_own_firefox_screenshot(tmp_path):
+    module = load_production_gate()
+    downloads, out = tmp_path / 'Downloads', tmp_path / 'evidence'
+    downloads.mkdir(), out.mkdir()
+    gate = SimpleNamespace(out=out, said=[])
+    gate.say = gate.said.append
+    old = downloads / 'Screenshot old.png'
+    old.write_bytes(b'old')
+    os.utime(old, (1000, 1000))
+    collect = module.Gate.collect_screenshot
+    assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) is None
+    assert not (out / 'screenshot-catalog.png').exists() and 'missing' in gate.said[-1]
+    (downloads / 'Screenshot a.png').write_bytes(b'a')
+    newest = downloads / 'Screenshot b.png'
+    newest.write_bytes(b'b')
+    os.utime(downloads / 'Screenshot a.png', (3000, 3000)), os.utime(newest, (3001, 3001))
+    assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) == newest
+    assert (out / 'screenshot-catalog.png').read_bytes() == b'b'
+    newest.write_bytes(b'later')
+    assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) is None
+    assert (out / 'screenshot-catalog.png').read_bytes() == b'b'

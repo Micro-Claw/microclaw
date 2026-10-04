@@ -64,6 +64,10 @@ def download_asset(asset, target):
         raise RuntimeError('release asset download failed: ' + result.stderr.decode('utf-8', 'replace'))
 
 
+CHAT_STEPS = (1, 4)
+SCREENSHOTS = {2: 'screenshot-catalog.png', 3: 'screenshot-installed.png'}
+
+
 class Gate(demo.Gate):
     def __init__(self, root, out, *, fake=None):
         super().__init__(root, out, fake=fake)
@@ -137,19 +141,40 @@ class Gate(demo.Gate):
         if not (self.out / 'snapshots/launch').exists():
             self.snapshot('launch')
         prompts = {
-            1: 'Paste into MicroClaw\'s chat box in Firefox: Search the community skill catalog for "session" and list what you find. Do not paste the reply back here. When the reply finishes, type DONE here.',
-            2: 'Open Community skill packages in Firefox. Save a screenshot of the top of the panel, including the Catalog line, as ' + str(self.out / 'screenshot-catalog.png') + '. Then type DONE here.',
-            3: 'On microclaw-examples / session-start, click Install, read the confirmation box, then click Install in that box. Wait until the card says Installed. If it is already installed from a partial run, keep it. Save ' + str(self.out / 'screenshot-installed.png') + ', then type DONE here.',
-            4: 'Paste into MicroClaw\'s chat box in Firefox: Load microclaw-examples/session-start/open-unfamiliar-system and follow its first step only. Do not paste the reply back here. When the reply finishes, type DONE here.',
+            1: 'Search the community skill catalog for "session" and list what you find.',
+            2: 'Open Community skill packages in Firefox, scrolled so the Catalog line at the top shows. Take a Firefox screenshot: press Ctrl+Shift+S, click Save visible, then Download. The gate copies the newest Screenshot*.png from Downloads into the evidence folder. Then type DONE here.',
+            3: 'On microclaw-examples / session-start, click Install, read the confirmation box, then click Install in that box. Wait until the card says Installed (if a partial run already installed it, keep it), with that card in view. Take a Firefox screenshot: press Ctrl+Shift+S, click Save visible, then Download. The gate copies the newest Screenshot*.png from Downloads into the evidence folder. Then type DONE here.',
+            4: 'Load the skill microclaw-examples/session-start/open-unfamiliar-system and quote its first step. Do not carry it out.',
         }
         for step, prompt in prompts.items():
             if step in state['completed']:
                 continue
             self.say(f'STEP {step}')
+            if step in CHAT_STEPS:  # 83f-3 round 1: the message stands alone, the instruction follows
+                self.say('\n' + prompt + '\n')
+                prompt = ("Paste the message above into MicroClaw's chat box in Firefox (not here). "
+                          "When the agent's reply has finished, type DONE here.")
+            started = time.time()
             state['answers'][str(step)] = self.ask(prompt, str(step))
+            if step in SCREENSHOTS:
+                self.collect_screenshot(SCREENSHOTS[step], started)
             self.snapshot(step)
             state['completed'].append(step)
             self.save('session', state)
+
+    def collect_screenshot(self, name, started, downloads=None):
+        """Copy the newest Firefox screenshot taken during this step; a missing one stays missing (L10)."""
+        if (self.out / name).exists():  # saved there directly, or kept from a partial run
+            return None
+        downloads = Path(downloads or Path.home() / 'Downloads')
+        shots = [p for p in downloads.glob('Screenshot*.png') if p.stat().st_mtime >= started - 1]
+        if not shots:
+            self.say(f'No new Screenshot*.png in {downloads}; {name} is missing and L10 will say so.')
+            return None
+        newest = max(shots, key=lambda p: p.stat().st_mtime)
+        shutil.copyfile(newest, self.out / name)
+        self.say(f'Saved {newest.name} as {name}.')
+        return newest
 
     def cleanup(self):
         catalog_gate.require_gh()

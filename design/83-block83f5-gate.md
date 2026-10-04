@@ -60,18 +60,18 @@ to choose an evidence folder; subsequent phases use the pointer.
 Launch the **desktop icon** when asked. The gate validates that launch's health
 marker, then prints four steps:
 
-1. Paste the printed search message into **MicroClaw's chat box in Firefox**.
-   Wait for the reply, then type `DONE` in PowerShell; do not paste the reply back.
-2. Open **Community skill packages**. Save the top of the panel, including the
-   **Catalog …** line, as `screenshot-catalog.png` in the printed evidence folder.
-   Type `DONE`.
-3. On `microclaw-examples/session-start`, **Install** → read the confirmation
-   box → **Install**. Wait until the card says **Installed**. Save
-   `screenshot-installed.png` in the evidence folder, then `DONE`. If a partial
-   run already installed it, leave it installed and save its screenshot.
-4. Paste the printed request to load and follow
-   `microclaw-examples/session-start/open-unfamiliar-system`'s **first step only**
-   into the chat box. Wait for the reply, then `DONE`; do not paste the reply back.
+1. **chat** — the gate prints a search message on its own. Paste it into
+   **MicroClaw's chat box in Firefox**, wait for the reply, type `DONE` here.
+   Never paste the reply back.
+2. **panel** — open **Community skill packages** with the `Catalog …` line in
+   view. Firefox screenshot: **Ctrl+Shift+S → Save visible → Download**. Type
+   `DONE`; the gate copies the newest `Screenshot*.png` from Downloads into
+   the evidence folder as `screenshot-catalog.png`.
+3. **panel** — on `microclaw-examples / session-start`: **Install**, read the
+   box, **Install**. Wait for **Installed**, then the same screenshot (kept as
+   `screenshot-installed.png`), then `DONE`.
+4. **chat** — paste the printed request (load the skill, quote its first step,
+   don't carry it out), wait for the reply, `DONE`.
 
 Store and serve-history snapshots are taken after every step. `STOP` ends the
 phase without inventing evidence. Completed steps are retained on a partial rerun.
