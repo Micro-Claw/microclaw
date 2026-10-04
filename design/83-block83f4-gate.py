@@ -74,11 +74,14 @@ def gh(*args, payload=None):
     return command(['gh', *args], input=json.dumps(payload) if payload is not None else None)
 
 
-def api(endpoint, payload=None):
+def api(endpoint, payload=None, *, paginate=False):
     args = ['api', endpoint]
     if payload is not None:
         args += ['--method', 'POST', '--input', '-']
-    return json.loads(gh(*args, payload=payload))
+    if paginate:
+        args += ['--paginate', '--slurp']
+    result = json.loads(gh(*args, payload=payload))
+    return [entry for page in result for entry in page] if paginate else result
 
 
 def product(*args):
@@ -169,9 +172,7 @@ def create_branch(fork, base, branch, title, path, content):
     return commit
 
 
-def run(gate, deadline_seconds):
-    if (gate.directory / 'state.json').exists():
-        raise RuntimeError('Evidence folder already has a run; choose a fresh --evidence folder')
+def ensure_fork():
     owner = api('user')['login']
     try:
         gh('repo', 'view', owner + '/package-catalog', '--json', 'nameWithOwner')
@@ -181,6 +182,14 @@ def run(gate, deadline_seconds):
     info = api('repos/' + fork)
     if not info.get('fork') or info.get('parent', {}).get('full_name') != REPO:
         raise RuntimeError('The existing repository is not a fork of ' + REPO)
+    return fork
+
+
+def run(gate, deadline_seconds):
+    if (gate.directory / 'state.json').exists():
+        raise RuntimeError('Evidence folder already has a run; choose a fresh --evidence folder')
+    fork = ensure_fork()
+    owner = fork.split('/')[0]
     nonce = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
     state = dict(fork=fork, nonce=nonce, prs={})
     gate.save('state.json', state)
@@ -261,12 +270,12 @@ def run(gate, deadline_seconds):
     return verify(gate)
 
 
-def collect_served(gate):
+def collect_served(gate, *, base=CATALOG):
     for name in ('policy.json', 'catalog.json'):
         target = gate.directory / ('served-' + name)
         target.unlink(missing_ok=True)
         try:
-            with urllib.request.urlopen(CATALOG + name, timeout=30) as response:
+            with urllib.request.urlopen(base + name, timeout=30) as response:
                 gate.save('served-' + name, json.load(response))
         except Exception as exc:
             gate.log('Could not capture served ' + name + ': ' + str(exc))
@@ -306,14 +315,25 @@ def score(prs, runs, catalog, expected):
     return result
 
 
-def client_fetch(gate, *, opener=None):
+def client_fetch(gate, *, opener=None, environment='test', expected=None):
     with tempfile.TemporaryDirectory() as temporary, isolated_store(temporary) as store:
-        roots = dict(read(SEED / 'test-branch/roots-TEST-ONLY.json'), catalog_url=CATALOG)
-        write(store.store_dir() / 'trust/roots.json', roots)
+        if environment == 'test':
+            roots = dict(read(SEED / 'test-branch/roots-TEST-ONLY.json'), catalog_url=CATALOG)
+            write(store.store_dir() / 'trust/roots.json', roots)
+        elif environment != 'production':
+            raise ValueError('unknown environment')
         state = store.refresh_catalog(now=datetime.now(timezone.utc), opener=opener)
         catalog = store.catalog_entries(now=datetime.now(timezone.utc))
         gate.save('client-state.json', state)
         gate.save('client-catalog.json', catalog)
+        if environment == 'production':
+            assert not (store.store_dir() / 'trust/roots.json').exists()
+            gate.save('client-status.json', store.status()['catalog'])
+            good = bool(state.get('last_success')) and not state.get('error') and not catalog['exclusions'] and not state.get('exclusions')
+            good = good and store.status()['catalog']['state'] == 'ok'
+            good = good and all(any(all(r[k] == entry[k] for k in intake.IDENTITY)
+                                       for r in catalog['releases']) for entry in expected)
+            return 'PASS' if good else 'FAIL'
         expected = read(FIXTURES / 'A.json')
         good = bool(state.get('last_success')) and not state.get('error') and not catalog['exclusions']
         good = good and any(all(r[k] == expected[k] for k in intake.IDENTITY) and r['withdrawn'] for r in catalog['releases'])
@@ -357,16 +377,19 @@ def verify(gate, *, collect=False, opener=None):
     return 0 if all(v == 'PASS' for v in result.values()) else 1
 
 
-def cleanup(gate):
+def cleanup(gate, *, cases=None, branches=None):
     state = read(gate.directory / 'state.json')
     for case, pr in state['prs'].items():
+        if cases is not None and case not in cases:
+            continue
         current = json.loads(gh('pr', 'view', str(pr['number']), '--repo', REPO, '--json', 'state'))
         if current['state'] == 'OPEN':
             gh('pr', 'close', str(pr['number']), '--repo', REPO)
         gate.log(f'{case}: closed if open')
-    branches = {pr['branch'] for pr in state['prs'].values()}
-    if 'prepared' in state:
-        branches.add(state['prepared']['branch'])
+    if branches is None:
+        branches = {pr['branch'] for pr in state['prs'].values()}
+        if 'prepared' in state:
+            branches.add(state['prepared']['branch'])
     for branch in sorted(branches):
         try:
             gh('api', '--method', 'DELETE', f'repos/{state["fork"]}/git/refs/heads/{branch}')
@@ -376,22 +399,27 @@ def cleanup(gate):
         gate.log(branch + ': fork branch removed')
 
 
-def selftest():
-    # gh documented output: state is OPEN/MERGED, mergedAt ISO timestamp/null,
-    # comments are nodes with body; run list uses status/conclusion/displayTitle.
-    fixtures()
-    expected = {c: read(FIXTURES / f'{c}.json') for c in ('A', 'E', 'I')}
+def fake_observations(cases=CASES, *, prefix=PREFIX):
     prs, runs = {}, {}
-    for case, (accepted, field) in CASES.items():
-        prs[case] = dict(number=100 + ord(case), title=PREFIX + ' fake ' + case,
+    for index, (case, (accepted, field)) in enumerate(cases.items()):
+        prs[case] = dict(number=100 + index, title=prefix + ' fake ' + case,
                          state='MERGED' if accepted else 'OPEN', mergedAt='2026-10-02T10:00:00Z' if accepted else None,
                          comments=[] if accepted else [dict(id='IC_fake', author=dict(login='github-actions'),
                              body='Refused: field **' + field + '**. Correct this field.', createdAt='2026-10-02T10:00:00Z',
                              url='https://github.com/Micro-Claw/package-catalog/pull/1#issuecomment-1')],
                          url='https://github.com/Micro-Claw/package-catalog/pull/1')
-        runs[case] = [dict(databaseId=100 + ord(case), displayTitle=prs[case]['title'], status='completed',
+        runs[case] = [dict(databaseId=100 + index, displayTitle=prs[case]['title'], status='completed',
                            conclusion='success', headSha='0' * 40, createdAt='2026-10-02T10:00:00Z',
                            url='https://github.com/Micro-Claw/package-catalog/actions/runs/1')]
+    return prs, runs
+
+
+def selftest():
+    # gh documented output: state is OPEN/MERGED, mergedAt ISO timestamp/null,
+    # comments are nodes with body; run list uses status/conclusion/displayTitle.
+    fixtures()
+    expected = {c: read(FIXTURES / f'{c}.json') for c in ('A', 'E', 'I')}
+    prs, runs = fake_observations()
     catalog = dict(type='microclaw.catalog.v1', releases=[expected['A'], expected['I']], withdrawals=[expected['E']])
     control = score(prs, runs, catalog, expected)
     assert all(v == 'PASS' for v in control.values()), control
