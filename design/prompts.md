@@ -11527,7 +11527,7 @@ unadmitted publisher to correct a file that was not wrong. Second block running.
 **Counts.** Baseline `7383323`: 5634 passed, 108 skipped (first attempt hung
 >30 min, rerun 8 min). Start turn (`5ab2bee`): 5661 passed, 1 failed (unencoded
 test text I/O). Revision (`1c47f5e`): 5664. With roots (`7579be1`): 5666. With
-the gate (`f8887fb`): 5669 passed, 108 skipped — pytest reported 8 min 10 s
+the gate (`f8887fb`): 5669 passed, 108 skipped; final tip (`fcdcb14`): 5672 passed, 108 skipped — earlier, pytest reported 8 min 10 s
 while the run took ~45 min of wall clock, the process holding 3 min of CPU in
 21 min; cause on this Mac not attributed. Runner turns: one start, one
 revision, one gate turn (killed).
