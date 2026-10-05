@@ -111,6 +111,7 @@ Rows added since the triage:
 | `R142`–`R144` | `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29 |
 | `R145` | `design/83` 83f-3's demo gate, scored from artifacts 2026-10-02 |
 | `R146` | `design/83` 83f-5's demo gate screenshot, 2026-10-05 |
+| `R147` | `design/83` 83f-5's Linux CI run, 2026-10-05 (not 83f-5's code) |
 
 
 ## The work queue
@@ -175,6 +176,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R144` | [`duration_breakdown` cannot say where inside an acquisition the time went](#r144) | LOW | SMALL |  |
 | `R145` | [A package install records no finish time](#r145) | LOW | SMALL |  |
 | `R146` | [The panel offers Roll back with nothing to roll back to](#r146) | LOW | SMALL |  |
+| `R147` | [One-pass autofocus can report convergence on pure noise](#r147) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3190,3 +3192,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83f-5's demo gate screenshot, scored 2026-10-05.
+
+### R147 — One-pass autofocus can report convergence on pure noise
+
+**`test_flat_metric_restores_entry_z` builds its featureless field with unseeded `np.random.rand`, and on one CI run the sweep converged on it.**
+
+- **What happened** — PR #50's Linux CI, 2026-10-05 (run 37329529972): `single_sweep_autofocus` over a flat-noise field returned `converged=True`, `final_z_um=46.0` from entry 50.0, and the test failed. The same test passed on the run one commit earlier and in every local run; the commit between touched only a Windows mode check. Frequency not measured.
+- **Why it matters** — the test exists because a flat field must not converge (the `amr_test` regression). If sampling noise alone can clear the convergence test, a featureless sample on a rig can move Z and report focus found. A product question first, then a test one: seeding the fixture would only hide it.
+- **What a fix would look like** — measure the false-convergence rate over many unseeded flat fields; if nonzero, tighten the convergence criterion (design/23–25's SNR gate is the obvious owner); then seed the fixture so the suite is deterministic, keeping a separate rate test.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — SMALL
+- **Provenance** — PR #50's Linux CI, 2026-10-05; found while closing `design/83` 83f-5, not caused by it.

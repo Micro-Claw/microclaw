@@ -1666,7 +1666,7 @@ and `publishing/release.yml`; `design/83f5-example-package/`; gate
   placeholder root found five tests and that thread before the keys existed.
 - **Not exercised:** a second GitHub account (J7) and an outside publisher. The
   reminder's firing branch is unit-tested only; its live run was quiet, as it
-  should be at 182 days. Opens `R146` (Roll back on a first install).
+  should be at 182 days. Opens `R146` (Roll back on a first install) and `R147` (a flaky autofocus test, found by this PR's CI, not caused by it).
 
 ### Not a block — the SMAPpy conformance limb
 
@@ -1712,7 +1712,7 @@ and otherwise stays open.
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
 | 83f-3 | `block-83f-3` | `9e9271a` | **merged 2026-10-02** as `42770ab`, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
 | 83f-4 | `block-83f-4` | `42770ab` | **merged 2026-10-02** as `fac6cfb`, PR #48 (follow-up PR #49) — decisions H1–H6; `Micro-Claw/package-catalog` created; fork gate round 2 14/14 scored from artifacts (round 1 had no `gh`) |
-| 83f-5 | `block-83f-5` | `7383323` | **merged** — PR #50; decisions J1–J9; production roots, policy and catalog live; demo gate round 1 11/11 scored from artifacts; opens `R146` |
+| 83f-5 | `block-83f-5` | `7383323` | **merged** — PR #50; decisions J1–J9; production roots, policy and catalog live; demo gate round 1 11/11 scored from artifacts; opens `R146`, `R147` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.
