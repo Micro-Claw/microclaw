@@ -762,10 +762,11 @@ def selftest():
         rediscovered = Gate(root, base / 'rediscovered')
         assert publish(rediscovered, 1) == 0 and fake.created_prs == 2
         gate.prepare()
-        # Installed-slot mismatch: pre-root tree is read as source, not imported.
-        before = fake.real_command(
-            ['git', 'show', '54a07d6:microclaw/skill_packages.py'], cwd=HERE.parent)
-        pre_roots = shipped_roots(before)
+        # Installed-slot mismatch: a slot from before the roots shipped. Built from this
+        # source, not read from git history (CI's shallow clone has none).
+        source = (HERE.parent / 'microclaw/skill_packages.py').read_text(encoding='utf-8')
+        pre_roots = shipped_roots(re.sub(r'(?ms)^PRODUCTION_ROOTS = \{.*?^\]\}\n',
+                                         'PRODUCTION_ROOTS = {"environment": "production", "keys": []}\n', source))
         assert pre_roots['keys'] == []
         with patch.dict(globals(), slot_roots=lambda: pre_roots):
             try:

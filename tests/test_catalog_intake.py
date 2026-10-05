@@ -873,7 +873,8 @@ def test_root_key_passphrase_and_shape(tmp_path, monkeypatch, capsys):
     entry, tail = json.JSONDecoder().raw_decode(output)
     assert set(entry) == {'key_id', 'public_key'}
     assert 'PRODUCTION_ROOTS["keys"]' in output and 'offline' in output
-    assert path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != 'win32':  # Windows has no POSIX mode bits
+        assert path.stat().st_mode & 0o777 == 0o600
     assert b'ENCRYPTED PRIVATE KEY' in path.read_bytes()
     calls = []
     monkeypatch.setattr(intake.getpass, 'getpass', lambda prompt: calls.append(prompt) or 'offline-password')
@@ -1041,6 +1042,7 @@ def workflow_python(script):
     return script.split("python - <<'PY'\n", 1)[1].split('\nPY', 1)[0]
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='the reminder runs on the Action\'s Linux runner; the fake gh is a POSIX script')
 @pytest.mark.parametrize('days,duplicate,creates', [(None, False, False), (31, False, False), (30, False, True), (5, False, True), (-1, False, True), (5, True, False)])
 def test_policy_reminder_execution(tmp_path, days, duplicate, creates):
     from datetime import timedelta
@@ -1051,7 +1053,7 @@ def test_policy_reminder_execution(tmp_path, days, duplicate, creates):
     fake = tmp_path / 'gh'
     fake.write_text(f'#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\nwith Path("calls.jsonl").open("a", encoding="utf-8") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\nif sys.argv[2] == "list": print({json.dumps([{"title": "Renew catalog trust policy old"}] if duplicate else [])!r})\n', encoding='utf-8')
     fake.chmod(0o755)
-    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH']}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env={**os.environ, 'PATH': str(tmp_path)}, stdin=subprocess.DEVNULL, capture_output=True, text=True)  # never a real gh
     assert result.returncode == 0, result.stderr
     calls = [json.loads(line) for line in (tmp_path / 'calls.jsonl').read_text(encoding='utf-8').splitlines()] if (tmp_path / 'calls.jsonl').exists() else []
     new = [args for args in calls if args[1] == 'create']
