@@ -112,10 +112,10 @@ def test_props_and_models_are_recorded(monkeypatch):
     assert agent.resolve_model() == "Qwen3.8-27B-UD-Q4_K_XL.gguf"
 
 
-def test_request_translation_includes_checkpoint_and_all_d2_rows(monkeypatch):
+def test_request_translation_and_all_d2_rows(monkeypatch):
     captured = install(monkeypatch, "stream_text_reply")
     store = conversation.ConversationStore(conversation.AuditLog(None, enabled=False),
-                                          high_water_tokens=300, low_water_tokens=100)
+                                          high_water_tokens=10000, low_water_tokens=100)
     history = []
     for index in range(8):
         history.extend([
@@ -123,7 +123,9 @@ def test_request_translation_includes_checkpoint_and_all_d2_rows(monkeypatch):
             {"role": "assistant", "content": [{"type": "text", "text": "reply " + "y" * 100}]},
         ])
     messages = store.model_messages(history)
-    assert store.compaction_count == 1 and messages[0]["content"][0]["text"].startswith("Conversation checkpoint:")
+    # D9 leaves this over-high-water view intact because the retained turns
+    # make the old partial checkpoint ineffective.
+    assert store.compaction_count == 0 and messages == history
     messages.extend([{ "role": "assistant", "content": [
         {"type": "text", "text": "working"},
         {"type": "tool_use", "id": "a", "name": "alpha", "input": {"x": 1}},
@@ -140,7 +142,7 @@ def test_request_translation_includes_checkpoint_and_all_d2_rows(monkeypatch):
     for _ in gen: pass
     body = captured[0]
     assert body["messages"][0] == {"role": "system", "content": "sys1\n\nsys2"}
-    assert body["messages"][1]["content"].startswith("Conversation checkpoint:")
+    assert body["messages"][1]["content"].startswith("remember checkpoint")
     assistant = next(m for m in body["messages"] if m.get("tool_calls"))
     assert assistant == {"role": "assistant", "content": "working", "tool_calls": [
         {"id": "a", "type": "function", "function": {"name": "alpha", "arguments": '{"x":1}'}},

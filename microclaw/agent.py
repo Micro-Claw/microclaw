@@ -22,7 +22,7 @@ from microclaw.safety import SafetyGuard
 from microclaw.skills import catalog_text
 from microclaw.tools import TOOL_REGISTRY, execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
-from microclaw.conversation import ConversationStore
+from microclaw.conversation import ConversationStore, estimate_tokens
 
 # Latest available Opus at time of writing (verified against the Claude API
 # model reference). Override per-run with --model or the MICROCLAW_MODEL env var.
@@ -40,6 +40,8 @@ LLM_API_KEY_ENV = "MICROCLAW_LLM_API_KEY"
 _local_models: list[str] | None = None
 _local_vision: dict[str, bool] = {}
 _local_http: httpx.Client | None = None
+_local_prefill_rate: float | None = None
+LOCAL_PREFILL_MEASUREMENT_MIN_TOKENS = 1000
 
 
 def _get_local_http() -> httpx.Client:
@@ -1124,6 +1126,7 @@ def _local_error(response, base):
 
 def _read_local_stream(response, base, model, iteration, usage_sink):
     """Read chat-completion SSE and return the Anthropic-shaped Message."""
+    global _local_prefill_rate
     text = []
     calls = {}
     finish = None
@@ -1216,6 +1219,11 @@ def _read_local_stream(response, base, model, iteration, usage_sink):
             usage_sink(record)
         except Exception as exc:
             print(f"[microclaw] Could not record usage: {exc}", file=sys.stderr)
+    prompt_n = timings.get("prompt_n")
+    prompt_ms = timings.get("prompt_ms")
+    if (isinstance(prompt_n, (int, float)) and prompt_n >= LOCAL_PREFILL_MEASUREMENT_MIN_TOKENS
+            and isinstance(prompt_ms, (int, float)) and prompt_ms > 0):
+        _local_prefill_rate = prompt_n / (prompt_ms / 1000)
     return response
 
 
@@ -1227,8 +1235,21 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
     compactions_before = getattr(store, "compaction_count", 0)
     model_messages = context_provider(messages) if context_provider else messages
     if getattr(store, "compaction_count", 0) > compactions_before:
-        yield {"type": "compaction", "estimated_tokens": getattr(
-            store, "last_estimated_tokens", None)}
+        before = getattr(store, "last_pre_compaction_estimated_tokens", None)
+        after = getattr(store, "last_estimated_tokens", None)
+        rebuild_tokens = estimate_tokens(model_messages)
+        yield {"type": "compaction", "estimated_tokens": after,
+               "before_tokens": before, "after_tokens": after,
+               "rebuild_tokens": rebuild_tokens,
+               "expected_rebuild_seconds": (rebuild_tokens / _local_prefill_rate
+                                            if _local_prefill_rate else None),
+               "prefill_tokens_per_second": _local_prefill_rate}
+    elif getattr(store, "last_compaction_declined", False):
+        yield {"type": "compaction_declined",
+               "estimated_tokens": getattr(store, "last_estimated_tokens", None),
+               "high_water_tokens": getattr(store, "high_water_tokens", None),
+               "message": "Conversation history is above the compaction threshold; "
+                          "recent turns cannot be folded yet, so this request is being sent as is."}
     payload = _local_request_body(
         model_messages, system_blocks, tool_schemas, model, vision
     )
@@ -1497,5 +1518,13 @@ def run_agent(
                 f"(attempt {event['attempt']}/{len(_RETRY_DELAYS)})..."
             )
         elif event["type"] == "compaction":
-            print("[microclaw] Rebuilding conversation context; the next model request may take longer.")
+            seconds = event.get("expected_rebuild_seconds")
+            cost = f"about {seconds:.1f}s" if seconds is not None else "time unknown (no measured prefill rate yet)"
+            print(f"[microclaw] Compacted context: {event.get('before_tokens')} → "
+                  f"{event.get('after_tokens')} estimated tokens; rebuilding about "
+                  f"{event.get('rebuild_tokens')} tokens, {cost}.")
+        elif event["type"] == "compaction_declined":
+            print(f"[microclaw] {event['message']} "
+                  f"({event.get('estimated_tokens')} estimated / "
+                  f"{event.get('high_water_tokens')} token threshold).")
     return reply, messages

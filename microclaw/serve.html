@@ -747,7 +747,16 @@
           tool_use_id: ev.tool_use_id, content: ev.content, is_error: ev.is_error }] });
         break;
       case "retry": toast(ev.service + " unavailable — retrying in " + ev.delay + "s…"); break;
-      case "compaction": toast("Rebuilding conversation context; the next model request may take longer."); break;
+      case "compaction": {
+        const seconds = ev.expected_rebuild_seconds == null
+          ? "time unknown (no measured prefill rate yet)"
+          : `about ${Number(ev.expected_rebuild_seconds).toFixed(1)}s`;
+        toast(`Compacted context: ${Number(ev.before_tokens).toLocaleString()} → ${Number(ev.after_tokens).toLocaleString()} estimated tokens; rebuilding ${Number(ev.rebuild_tokens).toLocaleString()} tokens, ${seconds}.`);
+        break;
+      }
+      case "compaction_declined":
+        toast(`${ev.message} (${Number(ev.estimated_tokens).toLocaleString()} estimated / ${Number(ev.high_water_tokens).toLocaleString()} token threshold).`);
+        break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;
       case "acquisition_progress": {

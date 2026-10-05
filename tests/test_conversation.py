@@ -140,7 +140,7 @@ def test_compaction_is_batched_stable_and_keeps_tool_pairs_together(tmp_path):
 def test_long_session_compacts_model_view_without_losing_audit(tmp_path):
     history = []
     store = ConversationStore(
-        AuditLog(tmp_path / "long.jsonl"), high_water_tokens=1000,
+        AuditLog(tmp_path / "long.jsonl"), high_water_tokens=2000,
         low_water_tokens=600,
     )
     for index in range(30):
@@ -169,8 +169,35 @@ def test_compaction_keeps_two_complete_recent_turns_when_budget_is_impossible():
 
     view = store.model_messages(history)
 
-    assert view[1:] == history[-4:]
-    assert estimate_tokens(view) > store.low_water_tokens
+    # The recent-turn floor makes every candidate remain over high-water, so
+    # D9 leaves the complete current view unchanged.
+    assert view == history
+    assert estimate_tokens(view) > store.high_water_tokens
+
+
+def test_compaction_is_declined_without_advancing_the_checkpoint():
+    # The recent-turn floor makes each candidate remain above high-water.
+    history = []
+    for index in range(2):
+        history.extend(_turn(index, size=20))
+    huge = _turn(2, size=20)
+    huge[0]["content"] += " z" * 12000
+    history.extend(huge)
+    for index in (3, 4):
+        history.extend(_turn(index, size=20))
+    store = ConversationStore(AuditLog(None, enabled=False),
+                                      high_water_tokens=1100, low_water_tokens=750)
+    initial = store.model_messages(history)
+    assert estimate_tokens(initial) > store.high_water_tokens
+    cut = store._cut
+    count = store.compaction_count
+    assert count == 0
+    assert store.model_messages(history) == initial
+    assert store._cut == cut and store.compaction_count == count
+
+    for _ in range(2):
+        assert store.model_messages(history) == initial
+    assert store.compaction_count == 0  # Old code committed three times here.
 
 
 def test_tool_input_heavy_checkpoint_shrinks_history_meaningfully():
@@ -192,10 +219,10 @@ def test_tool_input_heavy_checkpoint_shrinks_history_meaningfully():
     )
 
     view = store.model_messages(history)
-    checkpoint_text = view[0]["content"][0]["text"]
-
-    assert "ELIDED" in checkpoint_text
-    assert estimate_tokens(view) < estimate_tokens(history) * 0.35
+    # D9 declines the old expectation: a checkpoint that remains above
+    # high-water cannot save the next request's rebuild cost.
+    assert view == history
+    assert store.compaction_count == 0
 
 
 def test_structured_credential_named_payload_keeps_its_shape():

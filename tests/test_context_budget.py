@@ -161,7 +161,7 @@ def test_compaction_event_precedes_local_request(monkeypatch):
     monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://recorded-server")
     monkeypatch.setattr(agent, "_local_http", httpx.Client(transport=httpx.MockTransport(handler)))
     store = conversation.ConversationStore(conversation.AuditLog(None, enabled=False),
-                                           high_water_tokens=80, low_water_tokens=40)
+                                                   high_water_tokens=500, low_water_tokens=40)
     history = []
     for index in range(7):
         history.extend([
@@ -173,8 +173,9 @@ def test_compaction_event_precedes_local_request(monkeypatch):
     assert context_provider.__self__ is store
     events = run_agent_iter("new", None, None, history, model="m", tool_schemas=[],
                             context_provider=context_provider)
-    compaction = next(event for event in events if event["type"] == "compaction")
-    assert compaction["estimated_tokens"] is not None
+    declined = next(event for event in events if event["type"] == "compaction_declined")
+    assert declined["estimated_tokens"] > declined["high_water_tokens"]
+    assert "being sent as is" in declined["message"]
     assert not requested
     list(events)
     assert requested == [True]

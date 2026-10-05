@@ -558,14 +558,20 @@ class ConversationStore:
         self._checkpoint: dict | None = None
         self.compaction_count = 0
         self.last_estimated_tokens = 0
+        self.last_pre_compaction_estimated_tokens = None
+        self.last_compaction_declined = False
+        self.last_declined_signature = None
 
     def append(self, message: dict) -> None:
         self.audit.append(message)
 
     def model_messages(self, full_history: list[dict]) -> list[dict]:
+        self.last_compaction_declined = False
         current = ([self._checkpoint] if self._checkpoint else []) + full_history[self._cut:]
         self.last_estimated_tokens = estimate_tokens(current, text_only=self.text_only)
+        self.last_pre_compaction_estimated_tokens = self.last_estimated_tokens
         if self.last_estimated_tokens <= self.high_water_tokens:
+            self.last_declined_signature = None
             return current
 
         complete_ends = _complete_turn_ends(full_history)
@@ -579,20 +585,29 @@ class ConversationStore:
         ends = [end for end in complete_ends
                 if self._cut < end <= floor_boundary]
         chosen = self._cut
+        chosen_estimate = self.last_estimated_tokens
         for end in ends:
             candidate_checkpoint = _checkpoint(full_history[:end], self.audit.secrets)
             candidate = [candidate_checkpoint, *full_history[end:]]
-            chosen = end
-            if estimate_tokens(candidate, text_only=self.text_only) <= self.low_water_tokens:
+            candidate_estimate = estimate_tokens(candidate, text_only=self.text_only)
+            if candidate_estimate < chosen_estimate:
+                chosen = end
+                chosen_estimate = candidate_estimate
+            if candidate_estimate <= self.low_water_tokens:
+                chosen = end
+                chosen_estimate = candidate_estimate
                 break
-        if chosen == self._cut:
-            # The in-flight/recent turn alone is over budget. Splitting it would
-            # break tool integrity, so leave it intact and let the API report its
-            # real context limit.
+        if chosen == self._cut or chosen_estimate > self.high_water_tokens:
+            # Keep the cached prefix when folding cannot get this view under
+            # high-water; a checkpoint that still triggers next round only
+            # forces the server to prefill the same history again.
+            signature = (self._cut, len(full_history), self.last_estimated_tokens)
+            self.last_compaction_declined = self.last_declined_signature != signature
+            self.last_declined_signature = signature
             return current
         self._cut = chosen
         self._checkpoint = _checkpoint(full_history[:chosen], self.audit.secrets)
         self.compaction_count += 1
-        compacted = [self._checkpoint, *full_history[chosen:]]
-        self.last_estimated_tokens = estimate_tokens(compacted, text_only=self.text_only)
-        return compacted
+        self.last_declined_signature = None
+        self.last_estimated_tokens = chosen_estimate
+        return [self._checkpoint, *full_history[chosen:]]
