@@ -11524,6 +11524,14 @@ put the thing, and ask again rather than record an absence.**
 **Read the comment, again.** L4 passed on its field while its comment told an
 unadmitted publisher to correct a file that was not wrong. Second block running.
 
+**CI found what three Mac runs could not, one of them dangerous.** The reminder
+test put a POSIX-script fake `gh` ahead of the real one on `PATH`; Windows could
+not run the fake and ran the real `gh`, which failed only because the runner was
+not logged in. On a logged-in Windows machine that test would have opened a real
+issue. A fake that shadows a real credentialed tool must **replace `PATH`, not
+prepend to it**. CI also found a selftest reading `git show` history, which a
+shallow clone does not have, and a POSIX mode check on Windows.
+
 **Counts.** Baseline `7383323`: 5634 passed, 108 skipped (first attempt hung
 >30 min, rerun 8 min). Start turn (`5ab2bee`): 5661 passed, 1 failed (unencoded
 test text I/O). Revision (`1c47f5e`): 5664. With roots (`7579be1`): 5666. With
