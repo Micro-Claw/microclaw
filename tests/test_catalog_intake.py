@@ -1104,7 +1104,8 @@ def test_release_tag_check_executes_before_key_write(tmp_path):
     assert not (tmp_path / 'publisher.pem').exists()
     result = subprocess.run([sys.executable, '-c', workflow_python(script)], env={**env, 'TAG': 'v1.0.0'}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / 'publisher.pem').stat().st_mode & 0o777 == 0o600
+    if sys.platform != 'win32':  # the workflow runs on Linux; Windows has no POSIX mode bits
+        assert (tmp_path / 'publisher.pem').stat().st_mode & 0o777 == 0o600
 
 
 def test_example_manifest_and_pack(tmp_path):
