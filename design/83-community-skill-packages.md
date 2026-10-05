@@ -1592,6 +1592,82 @@ gate `design/83-block83f4-gate.py`):
   publisher's PR. It was caught while updating the live catalog, which took the
   pin to `fac6cfb` only. `materialize`'s text output now names the change set.
 
+**83f-5 decisions** (operator, 2026-10-02). The production root, the first
+production policy, and the end-to-end path (D1 as renumbered by D7).
+
+- **J1 — the first policy admits one example publisher**, MicroClaw-owned
+  (`microclaw-examples`), with one small skill-only package. Its card carries
+  D2's notice like any other.
+- **J2 — `keygen --root` writes a passphrase-locked key** and prints the entry
+  in the shape `PRODUCTION_ROOTS` takes, `{key_id, public_key}` (the publisher
+  form's `state` is refused there). Signing asks for the passphrase. The
+  private key and passphrase never pass through a session; only the printed
+  public entry does. A forgotten passphrase is a lost root, which the spare covers.
+- **J3 — edit, then sign.** The operator hand-edits `policy.json` in a catalog
+  clone. One command, `sign-policy`, raises `revision`, sets `expires_at` about
+  six months out, refuses unless the result verifies against the shipped
+  `PRODUCTION_ROOTS` and is newer than the policy it replaces, re-signs in place,
+  and prints the expiry and renew-by dates. Renewing is signing with no edits.
+  It lives in `catalog_intake.py`.
+- **J4 — the catalog reminds.** A weekly scheduled workflow in
+  `Micro-Claw/package-catalog` reads `policy.json` and opens one issue 30 days
+  before `expires_at`. It reads the date only and runs no MicroClaw code.
+- **J5 — the example has its own public repository** (e.g.
+  `Micro-Claw/example-skill-package`), with the zip on a GitHub release, the
+  shape a real publisher has. Created only with operator approval. Its signing
+  key is the operator's, generated offline like the roots.
+- **J6 — pin the branch, then merge.** Roots land on this block's branch; the
+  catalog pin moves to that branch commit (reachable after the merge commit);
+  the operator pushes the signed `policy.json`; the example's release PR goes
+  in from a fork; the demo machine, installed from the branch, installs it;
+  then merge and move the pin to the merge commit. Each catalog push is asked.
+- **J7 — the release PR comes from the operator's account.** The gate reaches
+  a production submission and a publisher identity that is not the operator's,
+  but not a second GitHub account. The settlement says so.
+- **J8 — `pack` builds the release zip** (operator, 2026-10-03, after asking
+  why not pip). Dependencies already are standard wheels under hashes; only the
+  outer zip — `manifest.json` plus `SKILL.md` prose — is ours, and only test
+  fixtures could build it. `pack --dir <folder> --url <https> --out <zip>` fills
+  the asset hashes and the artifact URL and runs `sign-release`'s checks. It
+  works for any HTTPS host, by hand; the catalog points at an exact release,
+  never at a repository, because a branch is code nobody signed.
+- **J9 — a copy-paste release workflow for GitHub publishers.** On a version
+  tag it packs, signs with the key stored as a repository secret, publishes the
+  zip and attaches the signed `release.json` to the GitHub release. It stops
+  there: the publisher adds that one file to the catalog by PR, because opening
+  the PR from Actions needs a second, broader credential. The example
+  publisher's repository uses it.
+
+**What 83f-5 settled** (`skill_packages.PRODUCTION_ROOTS`, `catalog_intake`
+`keygen --root`/`sign-policy`/`pack`; the catalog seed's `policy-reminder.yml`
+and `publishing/release.yml`; `design/83f5-example-package/`; gate
+`design/83-block83f5-gate.py`):
+- **The catalog is live.** Two passphrase-locked roots, generated offline by the
+  operator (only the public entries entered the repository). Policy revision 2,
+  signed by root 1, admits `microclaw-examples` and expires 2027-04-04 (182 days).
+  `Micro-Claw/package-catalog` `main` holds it; the intake pin is this branch's
+  `7579be1` until the merge.
+- **The publisher half ran in Actions.** `Micro-Claw/example-skill-package`'s
+  `v1.0.0` tag packed, signed with the repository-secret key, and published
+  `session-start.zip` and `release.json`; production intake accepted it from a
+  fork (PR #10), merged in 45 s, rebuilt 2 s later (n=1).
+- **Demo gate, round 1: 11/11 from artifacts** (L10 read from the operator's two
+  screenshots). One digest (`aeacab11…`) agrees across release, served catalog
+  and the installed record; the served policy is byte-identical to the operator's
+  push; the slot's roots equal the source's. The agent found the card, the panel
+  installed it, and `load_skill` returned the text with its provenance header.
+  The unadmitted control (PR #11) was refused on `publisher` before any download.
+- **The control's comment told a newcomer to "correct this field".** An
+  unadmitted publisher or key now gets the admission route instead. Found in the
+  comment, not by L4, which passed on its field.
+- **The suite never reaches the live catalog.** Real roots point serve's startup
+  thread at production; conftest gives every test an empty root set, and
+  `test_shipped_production_roots` checks the shipped value once. A dry run with a
+  placeholder root found five tests and that thread before the keys existed.
+- **Not exercised:** a second GitHub account (J7) and an outside publisher. The
+  reminder's firing branch is unit-tested only; its live run was quiet, as it
+  should be at 182 days. Opens `R146` (Roll back on a first install) and `R147` (a flaky autofocus test, found by this PR's CI, not caused by it).
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1636,6 +1712,7 @@ and otherwise stays open.
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
 | 83f-3 | `block-83f-3` | `9e9271a` | **merged 2026-10-02** as `42770ab`, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
 | 83f-4 | `block-83f-4` | `42770ab` | **merged 2026-10-02** as `fac6cfb`, PR #48 (follow-up PR #49) — decisions H1–H6; `Micro-Claw/package-catalog` created; fork gate round 2 14/14 scored from artifacts (round 1 had no `gh`) |
+| 83f-5 | `block-83f-5` | `7383323` | **merged** — PR #50; decisions J1–J9; production roots, policy and catalog live; demo gate round 1 11/11 scored from artifacts; opens `R146`, `R147` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

@@ -53,7 +53,13 @@ MAX_CATALOG_RELEASES = 16384
 MAX_CATALOG_WITHDRAWALS = 16384
 
 TRUST_POLICY_TYPE = "microclaw.trust-policy.v1"
-PRODUCTION_ROOTS = {"environment": "production", "keys": []}
+# D3: the operator's offline root and its separately kept spare (83f-5, 2026-10-04).
+PRODUCTION_ROOTS = {"environment": "production", "keys": [
+    {"key_id": "e8a3f493fe7616cd17289cbeecb989aa79c4f72c3c1d6a72d40c9b515344adc9",
+     "public_key": "Bcoxe3hN4ddn0PuHI2s7PXIAEQrfGhM9cttPlwPQUkc="},
+    {"key_id": "ec2d86d601d6cd4dfc4ca1f294f654b4f0e964f83f75e4599b8bbde563678dca",
+     "public_key": "3InXvtNpiZbdjRa72evIMSxsmnznrVZXe78TfxtXzU8="},
+]}
 MAX_SIGNATURE_LENGTH = 88
 MAX_PUBLIC_KEY_LENGTH = 44
 MAX_TIMESTAMP_LENGTH = 20
@@ -656,7 +662,7 @@ def verify_trust_policy(document, roots=None, *, previous=None):
     """Return the detached verified policy document.
 
     Roots are caller-owned MicroClaw configuration, never submission data.
-    Omission selects the empty production root set (fails closed). Preserve the
+    Omission selects the shipped production roots (PRODUCTION_ROOTS). Preserve the
     last returned document as previous to enforce monotonic revisions. Freshness
     is purpose-dependent and is checked by check_release, not this function.
     """

@@ -4,11 +4,14 @@ from __future__ import annotations
 import argparse
 import base64
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import getpass
 import hashlib
 import json
 import os
 import re
+import shlex
+import stat
 import subprocess
 from pathlib import Path
 import tempfile
@@ -21,6 +24,9 @@ from microclaw import skill_packages as packages, skill_store as store
 
 Refusal = packages.PackageRefusal
 IDENTITY = ('publisher', 'package_id', 'version', 'artifact_digest')
+# 83f-5 gate: an unadmitted publisher has nothing in its file to correct.
+ADMISSION = ('This publisher or key is not admitted to the catalog, so editing the file will not help. '
+             'To ask for admission, open an issue in this repository with your publisher name and the entry keygen printed.')
 
 
 def encode(value):
@@ -56,12 +62,14 @@ def sign(document, private):
 
 def load_key(path):
     try:
-        key = serialization.load_pem_private_key(Path(path).read_bytes(), password=None)
+        data = Path(path).read_bytes()
+        password = getpass.getpass('Key passphrase: ').encode('utf-8') if b'-----BEGIN ENCRYPTED PRIVATE KEY-----' in data else None
+        key = serialization.load_pem_private_key(data, password=password)
         if not isinstance(key, Ed25519PrivateKey):
             raise ValueError('not ed25519')
         return key
     except (OSError, ValueError, TypeError) as exc:
-        raise Refusal('key', 'expected an unencrypted Ed25519 PEM private key') from exc
+        raise Refusal('key', 'expected an Ed25519 PEM private key and correct passphrase') from exc
 
 
 def archive_checks(artifact, record):
@@ -73,6 +81,54 @@ def archive_checks(artifact, record):
             return manifest
     except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
         raise Refusal('artifact', 'expected a readable, valid release zip') from exc
+
+
+def pack(directory, url, out):
+    """Fill a publisher manifest and pack a deterministic, checked release."""
+    directory, out = Path(directory), Path(out)
+    if directory.is_symlink() or not directory.is_dir():
+        raise Refusal('path', 'expected a regular package directory: ' + str(directory))
+    source = directory / 'manifest.json'
+    if source.is_symlink() or not source.is_file():
+        raise Refusal('path', 'expected a regular file: manifest.json')
+    manifest = read(source, store.MAX_MANIFEST_BYTES)
+    entries, skipped = {}, []
+    for folder, dirs, files in os.walk(directory, followlinks=False):
+        for name in sorted(dirs + files):
+            path = Path(folder) / name
+            relative = path.relative_to(directory).as_posix()
+            if name.startswith('.'):
+                skipped.append(relative)
+                if name in dirs:
+                    dirs.remove(name)
+                continue
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                raise Refusal('path', 'expected a regular file or directory: ' + relative)
+            if stat.S_ISREG(mode) and relative != 'manifest.json':
+                entries[relative] = path.read_bytes()
+    manifest['artifact'] = url
+    manifest['assets'] = [dict(path=name, sha256=hashlib.sha256(data).hexdigest())
+                          for name, data in sorted(entries.items())]
+    manifest = packages.validate_manifest(manifest)
+    entries['manifest.json'] = encode(manifest)
+    with tempfile.NamedTemporaryFile(dir=out.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_STORED) as archive:
+            for name, data in sorted(entries.items()):
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.external_attr = 0o100644 << 16
+                archive.writestr(info, data)
+        digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+        archive_checks(temporary, intake_from_manifest(manifest, digest))
+        os.replace(temporary, out)
+    finally:
+        temporary.unlink(missing_ok=True)
+    for name in sorted(skipped):
+        print('Skipped: ' + name)
+    return manifest, digest
 
 
 def sign_release(private, artifact, url):
@@ -119,22 +175,53 @@ def record_path(collection, record):
     return f"{collection}/{record['publisher']}/{record['package_id']}/{record['version']}.json"
 
 
-def policy_at(root, environment, roots_file, now):
+def roots_at(environment, roots_file):
     if environment == 'production':
         if roots_file is not None:
             raise Refusal('roots', 'production uses the roots shipped with MicroClaw; remove --roots')
-        roots = packages.PRODUCTION_ROOTS
-        if not roots['keys']:
-            raise Refusal('trust', 'no verified policy: production roots have not been published')
-    else:
-        if roots_file is None:
-            raise Refusal('roots', 'test requires --roots from the trusted base checkout')
-        roots = read(roots_file)
-        if not isinstance(roots, dict) or roots.get('environment') != 'test':
-            raise Refusal('roots.environment', 'test requires a test roots document')
+        return packages.PRODUCTION_ROOTS
+    if roots_file is None:
+        raise Refusal('roots', 'test requires --roots from the trusted base checkout')
+    roots = read(roots_file)
+    if not isinstance(roots, dict) or roots.get('environment') != 'test':
+        raise Refusal('roots.environment', 'test requires a test roots document')
+    return roots
+
+
+def policy_at(root, environment, roots_file, now):
+    roots = roots_at(environment, roots_file)
+    if environment == 'production' and not roots['keys']:
+        raise Refusal('trust', 'no verified policy: production roots have not been published')
     policy = packages.verify_trust_policy(read(Path(root) / 'policy.json'), roots)
     if now > packages._expires(policy['expires_at']):
         raise Refusal('trust.expires_at', 'policy expired; ask the catalog operator to renew it')
+    return policy
+
+
+def sign_policy(path, *, environment, roots_file, private, now):
+    roots = roots_at(environment, roots_file)
+    if environment == 'production' and not roots['keys']:
+        raise Refusal('roots', 'no production root is listed in this MicroClaw build; '
+                      'add the root entry to skill_packages.PRODUCTION_ROOTS')
+    target = Path(path)
+    if target.exists():
+        value = read(target)
+        revision = value.get('revision') if isinstance(value, dict) else None
+        if type(revision) is not int or revision < 1:
+            raise Refusal('trust.revision', 'expected positive integer')
+    else:
+        value = dict(type=packages.TRUST_POLICY_TYPE, environment=roots['environment'],
+                     revision=0, publishers={}, revoked_releases=[])
+    value['revision'] += 1
+    value['expires_at'] = (now + timedelta(days=182)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    policy = packages.verify_trust_policy(sign(value, private), roots)
+    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(encode(policy))
+    try:
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
     return policy
 
 
@@ -386,7 +473,9 @@ def human(verdict):
     def plain(text):
         return ''.join(c if c.isprintable() and c not in '`<>[]\\*_' else ' ' for c in str(text))
     field = ''.join(c if c.isascii() and (c.isalnum() or c in '._[]-') else ' ' for c in str(verdict['field']))
-    return f"Refused {plain(verdict['path'] or 'submission')}: field **{field}**. {plain(verdict['detail'])}. Correct this field and update the PR."
+    advice = (ADMISSION if verdict['field'] in ('publisher', 'signature.key_id')
+              else 'Correct this field and update the PR.')
+    return f"Refused {plain(verdict['path'] or 'submission')}: field **{field}**. {plain(verdict['detail'])}. {advice}"
 
 
 def main(argv=None):
@@ -394,6 +483,10 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     keygen = commands.add_parser('keygen')
     keygen.add_argument('--out', required=True)
+    keygen.add_argument('--root', action='store_true')
+    packing = commands.add_parser('pack')
+    for flag in ('dir', 'url', 'out'):
+        packing.add_argument('--' + flag, required=True)
     release = commands.add_parser('sign-release')
     for flag in ('key', 'artifact', 'url', 'out'):
         release.add_argument('--' + flag, required=True)
@@ -404,12 +497,15 @@ def main(argv=None):
     for flag in ('git-dir', 'base-ref', 'head-sha', 'out'):
         materializer.add_argument('--' + flag, required=True)
     materializer.add_argument('--json', action='store_true')
-    for name in ('check', 'build'):
+    for name in ('check', 'build', 'sign-policy'):
         command = commands.add_parser(name)
         if name == 'check':
             command.add_argument('--base', required=True)
             command.add_argument('--head', required=True)
             command.add_argument('--json', action='store_true')
+        elif name == 'sign-policy':
+            command.add_argument('--key', required=True)
+            command.add_argument('--policy', required=True)
         else:
             command.add_argument('--root', required=True)
         command.add_argument('--environment', choices=('production', 'test'), default='production', required=name == 'check')
@@ -418,15 +514,36 @@ def main(argv=None):
     try:
         if args.command == 'keygen':
             key = Ed25519PrivateKey.generate()
-            data = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+            encryption = serialization.NoEncryption()
+            if args.root:
+                password = getpass.getpass('Root passphrase: ')
+                confirmation = getpass.getpass('Repeat root passphrase: ')
+                if not password or password != confirmation:
+                    raise Refusal('key', 'passphrase must be nonempty and match')
+                encryption = serialization.BestAvailableEncryption(password.encode('utf-8'))
+            data = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, encryption)
             try:
                 fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError as exc:
                 raise Refusal('out', 'private key file exists; choose a new filename') from exc
             with os.fdopen(fd, 'wb') as stream:
                 stream.write(data)
-            print(encode(public_entry(key)).decode('ascii'), end='')
-            print('Keep the private key file secret.')
+            entry = public_entry(key)
+            if args.root:
+                entry.pop('state')
+            print(encode(entry).decode('ascii'), end='')
+            print('Put this entry into skill_packages.PRODUCTION_ROOTS["keys"]; keep the file and passphrase offline.'
+                  if args.root else 'Keep the private key file secret.')
+        elif args.command == 'sign-policy':
+            policy = sign_policy(args.policy, environment=args.environment, roots_file=args.roots,
+                                 private=load_key(args.key), now=datetime.now(timezone.utc))
+            renew = packages._expires(policy['expires_at']) - timedelta(days=30)
+            print(f"Revision: {policy['revision']}\nexpires_at: {policy['expires_at']}\nRenew by: {renew:%Y-%m-%d}")
+        elif args.command == 'pack':
+            _, digest = pack(args.dir, args.url, args.out)
+            print(f"SHA-256: {digest}\nZip: {args.out}")
+            print('Next: python -m microclaw.catalog_intake sign-release --key publisher-private.pem --artifact '
+                  + shlex.quote(args.out) + ' --url ' + shlex.quote(args.url) + ' --out release.json')
         elif args.command in ('sign-release', 'sign-withdrawal'):
             key = load_key(args.key)
             if args.command == 'sign-release':
@@ -451,7 +568,10 @@ def main(argv=None):
         return 0
     except Refusal as exc:
         verdict = dict(accepted=False, path=None, field=exc.field[:240], detail=str(exc)[:700])
-        print(json.dumps(verdict) if getattr(args, 'json', False) else human(verdict))
+        if args.command in ('check', 'materialize'):  # posted as the PR's refusal comment
+            print(json.dumps(verdict) if getattr(args, 'json', False) else human(verdict))
+        else:
+            print('Refused: ' + str(exc))
         return 1
     except Exception:
         verdict = dict(accepted=False, path=None, field='internal', detail='Internal intake error; ask the catalog operator to inspect the job log.')

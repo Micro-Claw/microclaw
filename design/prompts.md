@@ -11489,3 +11489,53 @@ gate collects, not only its scores.**
 1 failed (a test text read without an encoding). After the coordinator's fixes (`14d5bbf`): 5633 passed,
 108 skipped. Runner turns: one start, one revision.
 
+
+
+## design/83 block 83f-5 — production root, first policy, end-to-end (PR #50, 2026-10-05)
+
+**The operator's "why not pip?" produced two decisions.** Asked whether a
+release zip was needed at all, the honest answer was that dependencies already
+are wheels and only the prose wrapper is ours — and that no command built it.
+That is 83f-4's H6 lesson again, one step earlier in the publisher's path:
+**walk every command a publisher types, from an empty folder, before writing
+their README.** J8 (`pack`) and J9 (a copy-paste release workflow) came from it.
+
+**A placeholder root found the hazard before the real keys existed.** Five tests
+assumed `PRODUCTION_ROOTS` was empty, and serve's startup thread would have
+fetched the live catalog from every test that starts serve. **When a constant's
+emptiness is a safety property, run the suite with it filled before it ships.**
+
+**The private keys never entered the session.** The operator ran `keygen` in
+their own terminal and pasted only public entries; the coordinator checked
+`key_id` against each key and counted only the PEM header line to confirm the
+roots were locked. Pasted commands wrapped and failed once (n=1): give literal
+commands short enough not to wrap.
+
+**A runner turn was killed at the 2 h background limit with its work landed.**
+Committed as UNREVIEWED, then reviewed by the coordinator: the chat prompts
+repeated 83f-3 round 1's paste ambiguity, and "follow its first step" would
+have read hardware the gate does not require.
+
+**I invented an operator habit and the gate believed it.** The screenshot step
+looked only in Downloads; the operator saved straight to the evidence folder,
+and the gate said "missing" and moved on. **Accept every place a person can
+put the thing, and ask again rather than record an absence.**
+
+**Read the comment, again.** L4 passed on its field while its comment told an
+unadmitted publisher to correct a file that was not wrong. Second block running.
+
+**CI found what three Mac runs could not, one of them dangerous.** The reminder
+test put a POSIX-script fake `gh` ahead of the real one on `PATH`; Windows could
+not run the fake and ran the real `gh`, which failed only because the runner was
+not logged in. On a logged-in Windows machine that test would have opened a real
+issue. A fake that shadows a real credentialed tool must **replace `PATH`, not
+prepend to it**. CI also found a selftest reading `git show` history, which a
+shallow clone does not have, and a POSIX mode check on Windows.
+
+**Counts.** Baseline `7383323`: 5634 passed, 108 skipped (first attempt hung
+>30 min, rerun 8 min). Start turn (`5ab2bee`): 5661 passed, 1 failed (unencoded
+test text I/O). Revision (`1c47f5e`): 5664. With roots (`7579be1`): 5666. With
+the gate (`f8887fb`): 5669 passed, 108 skipped; final tip (`fcdcb14`): 5672 passed, 108 skipped — earlier, pytest reported 8 min 10 s
+while the run took ~45 min of wall clock, the process holding 3 min of CPU in
+21 min; cause on this Mac not attributed. Runner turns: one start, one
+revision, one gate turn (killed).

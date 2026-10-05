@@ -1143,3 +1143,15 @@ def test_block_reason_is_required_bounded_single_line(reason):
         blocked['reason'] = reason
     document['revoked_releases'] = [blocked]
     refuses('trust.revoked_releases[0].reason', policy, document)
+
+
+def test_shipped_production_roots():
+    """conftest replaces PRODUCTION_ROOTS for every test; this reads the shipped value."""
+    import ast
+    source = Path(packages.__file__).read_text(encoding='utf-8')
+    shipped = next(ast.literal_eval(node.value) for node in ast.parse(source).body
+                   if isinstance(node, ast.Assign) and getattr(node.targets[0], 'id', None) == 'PRODUCTION_ROOTS')
+    assert shipped['environment'] == 'production'
+    keys = packages._keys(shipped['keys'], 'roots.keys')  # recomputes each key_id from its public key
+    assert len(keys) == 2, 'D3: one operator root and one spare'
+    assert not set(keys) & {k['key_id'] for k in trust_file('roots')['keys']}

@@ -1,0 +1,17 @@
+{
+  "issues_url": "https://github.com/Micro-Claw/example-skill-package/issues",
+  "kind": "markdown",
+  "license": "BSD-3-Clause",
+  "microclaw": ">=0.1,<2",
+  "package_id": "session-start",
+  "publisher": "microclaw-examples",
+  "skills": [
+    {
+      "description": "A checklist for the first acquisition on an unfamiliar system.",
+      "name": "open-unfamiliar-system",
+      "path": "SKILL.md"
+    }
+  ],
+  "source_url": "https://github.com/Micro-Claw/example-skill-package",
+  "version": "1.0.0"
+}

@@ -10,11 +10,12 @@ import io
 import json
 from pathlib import Path
 import zipfile
+import tempfile
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from microclaw.skill_packages import validate_manifest
-from microclaw.catalog_intake import sign as product_sign, intake_from_manifest
+from microclaw.catalog_intake import sign as product_sign, intake_from_manifest, pack
 
 FIXTURES = Path(__file__).resolve().parent
 WHEEL_NAME = "fixture_dependency-1.2.3-py3-none-any.whl"
@@ -61,16 +62,26 @@ def sign(document, key="publisher-a"):
     return product_sign(document, private)
 
 
-def build_release(fixture_dir, artifact_path, *, version=None):
+def build_release(fixture_dir, artifact_path, *, version=None, invalid=False):
     """Write an archive and return its signed intake; optionally override version."""
     fixture_dir, artifact_path = Path(fixture_dir), Path(artifact_path)
     manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
     if version is not None:
         manifest["version"] = version
-    manifest = validate_manifest(manifest)
-    entries = {asset["path"]: (fixture_dir / asset["path"]).read_bytes() for asset in manifest["assets"]}
-    entries["manifest.json"] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8") + b"\n"
-    artifact_path.write_bytes(_archive(entries))
+    if invalid:
+        manifest = validate_manifest(manifest)
+        entries = {asset['path']: (fixture_dir / asset['path']).read_bytes() for asset in manifest['assets']}
+        entries['manifest.json'] = json.dumps(manifest, sort_keys=True, indent=2).encode('utf-8') + b'\n'
+        artifact_path.write_bytes(_archive(entries))
+    else:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            for asset in manifest['assets']:
+                target = source / asset['path']
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((fixture_dir / asset['path']).read_bytes())
+            (source / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+            manifest, _ = pack(source, manifest['artifact'], artifact_path)
     return sign(intake_from_manifest(manifest, hashlib.sha256(artifact_path.read_bytes()).hexdigest()))
 
 
