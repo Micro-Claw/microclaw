@@ -170,7 +170,8 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | block | branch | start | state |
 |---|---|---|---|
 | 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | reviewed 2026-10-02, gate not run |
-| 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | reviewed 2026-10-02; gate 84 pushed, not run |
+| 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | gate 84 run 2026-10-05: behaviour passes; compaction defect → 84c |
+| 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | assigned 2026-10-05 |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -216,4 +217,59 @@ the slow round re-processes the history only: ≈ low-water (63,690) at
 **For later, not a block yet.** The model's chat template renders "Reasoning
 effort is set to xhigh" by default; a lower per-request effort may cut reply
 latency substantially. Measure against gate 84's baseline before changing it.
+
+## Gate 84, round 1 (workstation, 2026-10-05) — scored from artifacts
+
+Session `20261005_153316_502746`: 14 model calls, all local; 8 tool calls, all
+registered, none unparsed; the no-key turn gave the 401 error naming
+`MICROCLAW_LLM_API_KEY` (O2) as a toast, Send stayed enabled with no banner
+(O1); entering the key re-read the budget exactly (O3b: 33,864 / 84,920 /
+63,690); the illumination answer relayed `unknown` from `get_system_state`
+(O5). Seven same-turn rounds reused all but ≤ 64 tokens of the previous prompt.
+The thumbnail moved the estimate by 519 tokens. Peak prompt + output reserve
+120,205 of 131,072.
+
+**F1 — a compaction that cannot get under high-water is committed anyway, and
+repeats.** One `read_hook_log(limit=200)` returned 140,218 characters (~59k
+tokens). `ConversationStore` could fold only the small early turns (the
+two-recent-turns floor), committed a checkpoint at **87,067 > 84,920**, and
+compacted again on each of the next two calls (86,773, then 67,021). Each
+commit rewrites the history head, so each paid a full history re-prefill:
+**134.0 s, 133.3 s, 98.7 s — 366 of the session's 443 s of prompt
+processing**, the second for ~300 tokens of saving. The operator saw a
+"rebuilding" toast and minutes of silence, with nothing saying it had not
+helped (O4: "several minutes").
+
+**F2 — the gate's budget limb could not fail on F1.** It excluded compaction
+records, so it passed with a post-compaction estimate above high-water.
+
+**Measured, not graded.** Prefill slows with position: 826 tok/s at 34k, 671 at
+54k, 583 at 112k. Generation was 464 s of the session (more than prompt
+processing), with 28,209 characters of hidden reasoning. The history estimate
+ran 1.12–1.63× the server's own history count (safe direction).
+
+## 84c — compaction only when it helps, and say so
+
+**D9 — commit a compaction only if it reaches high-water or below.** Otherwise
+send the current view unchanged: the prefix (and on the Anthropic path the
+cache) survives, and the real limit is the server's, which the request still
+fits (F1's peak: 120,205 of 131,072). Both backends; the Anthropic path gains
+the same saving on cache rewrites (design/82).
+
+**D10 — the operator sees what a compaction does and costs.** The `compaction`
+event carries the estimate before and after, and an expected rebuild time from
+this session's own measured prefill rate (not a constant); a declined
+compaction emits an information event saying the history is above the
+threshold and recent turns cannot be folded yet. Information, never a
+confirmation (CLAUDE.md).
+
+**D11 — the context window is operator configuration, measured, not coded.**
+84b already reads `n_ctx`. A larger `-c` makes compaction rarer but each rebuild
+longer, and slower per token (above): at `-c 262144` a low-water near 160k would
+re-prefill ~125k tokens at well under 583 tok/s — several minutes per rebuild.
+Gate 84c measures one larger window rather than assuming it helps.
+
+**Gate 84c.** Re-run gate 84 on the workstation with the fixed scorer (F2: grade
+prompt + reserve ≤ `n_ctx` and report every request sent above high-water; a
+mutant for each), expecting one compaction-cost round where round 1 had three.
 
