@@ -149,33 +149,106 @@ def test_local_request_body_prefix_is_stable_across_rounds():
     assert second["tools"] == first["tools"]
 
 
-def test_compaction_event_precedes_local_request(monkeypatch):
+def test_compaction_event_precedes_local_request_and_reports_rebuild(monkeypatch):
     requested = []
     def handler(request):
         if request.url.path.endswith("/props"):
             return recorded("get_props")
         if request.url.path.endswith("/chat/completions"):
             requested.append(True)
-            return recorded("stream_text_reply")
+            response = recorded("stream_text_reply")
+            return httpx.Response(response.status_code, headers=response.headers,
+                                  content=response.content.replace(
+                                      b'"prompt_n":20', b'"prompt_n":2000').replace(
+                                      b'"prompt_ms":174.428', b'"prompt_ms":500'))
         return httpx.Response(404, json={})
     monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://recorded-server")
     monkeypatch.setattr(agent, "_local_http", httpx.Client(transport=httpx.MockTransport(handler)))
     store = conversation.ConversationStore(conversation.AuditLog(None, enabled=False),
-                                                   high_water_tokens=500, low_water_tokens=40)
+                                           high_water_tokens=2500, low_water_tokens=2000,
+                                           text_only=True)
     history = []
-    for index in range(7):
+    for index in range(12):
+        result = [{"type": "text", "text": "z" * 1000}]
+        if index == 0:
+            result.append({"type": "image", "source": {"type": "base64",
+                          "media_type": "image/png", "data": "i" * 50000}})
         history.extend([
-            {"role": "user", "content": f"question {index} " + "x" * 100},
-            {"role": "assistant", "content": [{"type": "text", "text": "answer " + "y" * 100}]},
+            {"role": "user", "content": f"question {index}"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": f"t{index}",
+                                                   "name": "read", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{index}",
+                                             "content": result}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
         ])
     from microclaw.agent import run_agent_iter
+    monkeypatch.setattr(agent, "_local_prefill_rate", None)
     context_provider = store.model_messages
     assert context_provider.__self__ is store
     events = run_agent_iter("new", None, None, history, model="m", tool_schemas=[],
                             context_provider=context_provider)
-    declined = next(event for event in events if event["type"] == "compaction_declined")
-    assert declined["estimated_tokens"] > declined["high_water_tokens"]
-    assert "being sent as is" in declined["message"]
+    compaction = next(event for event in events if event["type"] == "compaction")
+    assert compaction["before_tokens"] > compaction["after_tokens"]
+    assert compaction["rebuild_tokens"] == compaction["after_tokens"]
+    assert compaction["expected_rebuild_seconds"] is None
     assert not requested
     list(events)
     assert requested == [True]
+    assert compaction["rebuild_tokens"] < 5000  # text-only estimate excludes image bytes
+
+    # The response above carried a recorded-shape prefill timing of 2,000
+    # tokens / 500 ms, so the next successful compaction uses 4,000 tok/s.
+    for index in range(12, 20):
+        history.extend([
+            {"role": "user", "content": f"question {index}"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": f"t{index}",
+                                                   "name": "read", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{index}",
+                                             "content": "z" * 1000}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+        ])
+    events2 = run_agent_iter("again", None, None, history, model="m", tool_schemas=[],
+                             context_provider=context_provider)
+    compaction2 = next(event for event in events2 if event["type"] == "compaction")
+    assert compaction2["prefill_tokens_per_second"] == 4000
+    assert compaction2["expected_rebuild_seconds"] == (
+        compaction2["rebuild_tokens"] / 4000)
+    list(events2)
+
+
+def test_declined_notice_fires_once_across_three_local_rounds(monkeypatch):
+    def handler(request):
+        if request.url.path.endswith("/props"):
+            return recorded("get_props")
+        if request.url.path.endswith("/chat/completions"):
+            return recorded("stream_tool_calls")
+        return httpx.Response(404, json={})
+
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://recorded-server")
+    monkeypatch.setattr(agent, "_local_http", httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(agent, "execute_tool", lambda *a, **kw: "{}")
+
+    class TrackingStore(conversation.ConversationStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.over_budget_rounds = 0
+
+        def model_messages(self, full_history):
+            view = super().model_messages(full_history)
+            if self.last_estimated_tokens > self.high_water_tokens:
+                self.over_budget_rounds += 1
+            return view
+
+    store = TrackingStore(conversation.AuditLog(None, enabled=False),
+                          high_water_tokens=500, low_water_tokens=300)
+    history = []
+    for index in range(8):
+        history.extend([
+            {"role": "user", "content": f"question {index} " + "x" * 1200},
+            {"role": "assistant", "content": [{"type": "text", "text": "answer"}]},
+        ])
+    events = list(agent.run_agent_iter("go", None, None, history, model="m",
+                                       max_iterations=3, tool_schemas=[],
+                                       context_provider=store.model_messages))
+    assert store.over_budget_rounds == 3
+    assert sum(event["type"] == "compaction_declined" for event in events) == 1

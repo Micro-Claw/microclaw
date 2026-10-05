@@ -22,7 +22,7 @@ from microclaw.safety import SafetyGuard
 from microclaw.skills import catalog_text
 from microclaw.tools import TOOL_REGISTRY, execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
-from microclaw.conversation import ConversationStore, estimate_tokens
+from microclaw.conversation import ConversationStore
 
 # Latest available Opus at time of writing (verified against the Claude API
 # model reference). Override per-run with --model or the MICROCLAW_MODEL env var.
@@ -1237,7 +1237,9 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
     if getattr(store, "compaction_count", 0) > compactions_before:
         before = getattr(store, "last_pre_compaction_estimated_tokens", None)
         after = getattr(store, "last_estimated_tokens", None)
-        rebuild_tokens = estimate_tokens(model_messages)
+        # model_messages is the post-compaction history estimate from the
+        # store, including its text-only image accounting when configured.
+        rebuild_tokens = after
         yield {"type": "compaction", "estimated_tokens": after,
                "before_tokens": before, "after_tokens": after,
                "rebuild_tokens": rebuild_tokens,

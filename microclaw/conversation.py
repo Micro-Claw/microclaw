@@ -560,7 +560,7 @@ class ConversationStore:
         self.last_estimated_tokens = 0
         self.last_pre_compaction_estimated_tokens = None
         self.last_compaction_declined = False
-        self.last_declined_signature = None
+        self._declined_stretch = False
 
     def append(self, message: dict) -> None:
         self.audit.append(message)
@@ -571,7 +571,7 @@ class ConversationStore:
         self.last_estimated_tokens = estimate_tokens(current, text_only=self.text_only)
         self.last_pre_compaction_estimated_tokens = self.last_estimated_tokens
         if self.last_estimated_tokens <= self.high_water_tokens:
-            self.last_declined_signature = None
+            self._declined_stretch = False
             return current
 
         complete_ends = _complete_turn_ends(full_history)
@@ -601,13 +601,12 @@ class ConversationStore:
             # Keep the cached prefix when folding cannot get this view under
             # high-water; a checkpoint that still triggers next round only
             # forces the server to prefill the same history again.
-            signature = (self._cut, len(full_history), self.last_estimated_tokens)
-            self.last_compaction_declined = self.last_declined_signature != signature
-            self.last_declined_signature = signature
+            self.last_compaction_declined = not self._declined_stretch
+            self._declined_stretch = True
             return current
         self._cut = chosen
         self._checkpoint = _checkpoint(full_history[:chosen], self.audit.secrets)
         self.compaction_count += 1
-        self.last_declined_signature = None
+        self._declined_stretch = False
         self.last_estimated_tokens = chosen_estimate
         return [self._checkpoint, *full_history[chosen:]]

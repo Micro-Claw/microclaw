@@ -175,29 +175,55 @@ def test_compaction_keeps_two_complete_recent_turns_when_budget_is_impossible():
     assert estimate_tokens(view) > store.high_water_tokens
 
 
-def test_compaction_is_declined_without_advancing_the_checkpoint():
-    # The recent-turn floor makes each candidate remain above high-water.
-    history = []
-    for index in range(2):
-        history.extend(_turn(index, size=20))
-    huge = _turn(2, size=20)
-    huge[0]["content"] += " z" * 12000
-    history.extend(huge)
-    for index in (3, 4):
-        history.extend(_turn(index, size=20))
-    store = ConversationStore(AuditLog(None, enabled=False),
-                                      high_water_tokens=1100, low_water_tokens=750)
-    initial = store.model_messages(history)
-    assert estimate_tokens(initial) > store.high_water_tokens
-    cut = store._cut
-    count = store.compaction_count
-    assert count == 0
-    assert store.model_messages(history) == initial
-    assert store._cut == cut and store.compaction_count == count
+def test_gate_shape_waits_until_a_whole_turn_fold_clears_high_water():
+    def tool_turn(index, result_size=20):
+        return [
+            {"role": "user", "content": f"question {index}"},
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": f"call-{index}", "name": "read",
+                "input": {},
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": f"call-{index}",
+                "content": "x" * result_size,
+            }]},
+            {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+        ]
 
-    for _ in range(2):
-        assert store.model_messages(history) == initial
-    assert store.compaction_count == 0  # Old code committed three times here.
+    store = ConversationStore(AuditLog(None, enabled=False),
+                              high_water_tokens=1000, low_water_tokens=750)
+    history = []
+    counts = []
+    declined = []
+    # Calling once after each completed round mirrors run_agent_iter's provider
+    # seam. The huge tool result and then its protected recent turns stay whole.
+    for index, size in ((0, 20), (1, 20), (2, 10000), (3, 20)):
+        history.extend(tool_turn(index, size))
+        store.model_messages(history)
+        counts.append(store.compaction_count)
+        declined.append(store.last_compaction_declined)
+    assert counts == [0, 0, 0, 0]
+    assert any(declined)
+
+    history.extend(tool_turn(4, 20))
+    compacted = store.model_messages(history)
+    assert store.compaction_count == 1
+    assert estimate_tokens(compacted) <= store.high_water_tokens
+    assert compacted[0]["content"][0]["text"].startswith("Conversation checkpoint:")
+
+
+def test_default_text_mode_store_declines_an_unhelpful_fold():
+    history = []
+    for index in range(8):
+        history.extend([
+            {"role": "user", "content": f"turn {index}"},
+            {"role": "assistant", "content": [{"type": "text", "text": "x" * 1200}]},
+        ])
+    store = ConversationStore(AuditLog(None, enabled=False),
+                              high_water_tokens=1500, low_water_tokens=800)
+    view = store.model_messages(history)
+    assert view == history
+    assert store.compaction_count == 0
 
 
 def test_tool_input_heavy_checkpoint_shrinks_history_meaningfully():
@@ -215,14 +241,14 @@ def test_tool_input_heavy_checkpoint_shrinks_history_meaningfully():
             {"role": "assistant", "content": [{"type": "text", "text": "saved"}]},
         ])
     store = ConversationStore(
-        AuditLog(None, enabled=False), high_water_tokens=1000, low_water_tokens=600,
+        AuditLog(None, enabled=False), high_water_tokens=14000, low_water_tokens=10000,
     )
 
     view = store.model_messages(history)
-    # D9 declines the old expectation: a checkpoint that remains above
-    # high-water cannot save the next request's rebuild cost.
-    assert view == history
-    assert store.compaction_count == 0
+    assert store.compaction_count == 1
+    checkpoint_text = view[0]["content"][0]["text"]
+    assert "ELIDED" in checkpoint_text
+    assert estimate_tokens(view) < estimate_tokens(history) * 0.35
 
 
 def test_structured_credential_named_payload_keeps_its_shape():
