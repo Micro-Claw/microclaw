@@ -1638,6 +1638,36 @@ production policy, and the end-to-end path (D1 as renumbered by D7).
   the PR from Actions needs a second, broader credential. The example
   publisher's repository uses it.
 
+**What 83f-5 settled** (`skill_packages.PRODUCTION_ROOTS`, `catalog_intake`
+`keygen --root`/`sign-policy`/`pack`; the catalog seed's `policy-reminder.yml`
+and `publishing/release.yml`; `design/83f5-example-package/`; gate
+`design/83-block83f5-gate.py`):
+- **The catalog is live.** Two passphrase-locked roots, generated offline by the
+  operator (only the public entries entered the repository). Policy revision 2,
+  signed by root 1, admits `microclaw-examples` and expires 2027-04-04 (182 days).
+  `Micro-Claw/package-catalog` `main` holds it; the intake pin is this branch's
+  `7579be1` until the merge.
+- **The publisher half ran in Actions.** `Micro-Claw/example-skill-package`'s
+  `v1.0.0` tag packed, signed with the repository-secret key, and published
+  `session-start.zip` and `release.json`; production intake accepted it from a
+  fork (PR #10), merged in 45 s, rebuilt 2 s later (n=1).
+- **Demo gate, round 1: 11/11 from artifacts** (L10 read from the operator's two
+  screenshots). One digest (`aeacab11…`) agrees across release, served catalog
+  and the installed record; the served policy is byte-identical to the operator's
+  push; the slot's roots equal the source's. The agent found the card, the panel
+  installed it, and `load_skill` returned the text with its provenance header.
+  The unadmitted control (PR #11) was refused on `publisher` before any download.
+- **The control's comment told a newcomer to "correct this field".** An
+  unadmitted publisher or key now gets the admission route instead. Found in the
+  comment, not by L4, which passed on its field.
+- **The suite never reaches the live catalog.** Real roots point serve's startup
+  thread at production; conftest gives every test an empty root set, and
+  `test_shipped_production_roots` checks the shipped value once. A dry run with a
+  placeholder root found five tests and that thread before the keys existed.
+- **Not exercised:** a second GitHub account (J7) and an outside publisher. The
+  reminder's firing branch is unit-tested only; its live run was quiet, as it
+  should be at 182 days. Opens `R146` (Roll back on a first install).
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1682,7 +1712,7 @@ and otherwise stays open.
 | 83f-2 | `block-83f-2` | `225b6f2` | **merged 2026-10-01** as `9e9271a`, PR #46 — local only, no gate; decisions E1–E5 |
 | 83f-3 | `block-83f-3` | `9e9271a` | **merged 2026-10-02** as `42770ab`, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
 | 83f-4 | `block-83f-4` | `42770ab` | **merged 2026-10-02** as `fac6cfb`, PR #48 (follow-up PR #49) — decisions H1–H6; `Micro-Claw/package-catalog` created; fork gate round 2 14/14 scored from artifacts (round 1 had no `gh`) |
-| 83f-5 | `block-83f-5` | `7383323` | opened 2026-10-02 — production root, first production policy, end-to-end path; decisions J1–J9 |
+| 83f-5 | `block-83f-5` | `7383323` | **merged** — PR #50; decisions J1–J9; production roots, policy and catalog live; demo gate round 1 11/11 scored from artifacts; opens `R146` |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

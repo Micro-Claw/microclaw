@@ -110,6 +110,7 @@ Rows added since the triage:
 | `R141` | `design/83` 83e-3's demo gate, 2026-09-28 |
 | `R142`–`R144` | `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29 |
 | `R145` | `design/83` 83f-3's demo gate, scored from artifacts 2026-10-02 |
+| `R146` | `design/83` 83f-5's demo gate screenshot, 2026-10-05 |
 
 
 ## The work queue
@@ -173,6 +174,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | ~~`R141`~~ | ~~[Package analysis cost during acquisition is unmeasured under a real worker](#r141)~~ | — | — | **CLOSED 2026-09-29 by `design/83` 83e-4** |
 | `R144` | [`duration_breakdown` cannot say where inside an acquisition the time went](#r144) | LOW | SMALL |  |
 | `R145` | [A package install records no finish time](#r145) | LOW | SMALL |  |
+| `R146` | [The panel offers Roll back with nothing to roll back to](#r146) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3175,3 +3177,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83f-3's demo gate, scored from artifacts 2026-10-02.
+
+### R146 — The panel offers Roll back with nothing to roll back to
+
+**Every installed package's card shows Roll back, including a first install whose `pointer.json` has `previous: null`.**
+
+- **What happened** — `design/83` 83f-5's demo gate, 2026-10-05: the installed `microclaw-examples/session-start` card (first install, `previous: None`) showed Remove, **Roll back** and Repair. `transcript.js` adds Roll back and Repair whenever `recoverable` is true, and `recoverable` is `ownsPackage` — whether the store holds the package, not whether a retained release exists. Introduced with 83f-3's one-card-per-package panel (G9).
+- **Why it matters** — a button that can only refuse is a decision the user cannot make; it reads as a promise that an earlier version exists.
+- **What a fix would look like** — show Roll back only when the package has a retained previous release (the panel already lists "Version … is kept for Roll back" from `install.previous`); a view test over a first install.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — `design/83` 83f-5's demo gate screenshot, scored 2026-10-05.
