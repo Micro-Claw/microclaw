@@ -24,6 +24,9 @@ from microclaw import skill_packages as packages, skill_store as store
 
 Refusal = packages.PackageRefusal
 IDENTITY = ('publisher', 'package_id', 'version', 'artifact_digest')
+# 83f-5 gate: an unadmitted publisher has nothing in its file to correct.
+ADMISSION = ('This publisher or key is not admitted to the catalog, so editing the file will not help. '
+             'To ask for admission, open an issue in this repository with your publisher name and the entry keygen printed.')
 
 
 def encode(value):
@@ -470,7 +473,9 @@ def human(verdict):
     def plain(text):
         return ''.join(c if c.isprintable() and c not in '`<>[]\\*_' else ' ' for c in str(text))
     field = ''.join(c if c.isascii() and (c.isalnum() or c in '._[]-') else ' ' for c in str(verdict['field']))
-    return f"Refused {plain(verdict['path'] or 'submission')}: field **{field}**. {plain(verdict['detail'])}. Correct this field and update the PR."
+    advice = (ADMISSION if verdict['field'] in ('publisher', 'signature.key_id')
+              else 'Correct this field and update the PR.')
+    return f"Refused {plain(verdict['path'] or 'submission')}: field **{field}**. {plain(verdict['detail'])}. {advice}"
 
 
 def main(argv=None):

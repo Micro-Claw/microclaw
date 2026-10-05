@@ -1274,13 +1274,33 @@ def test_production_gate_collects_the_steps_own_firefox_screenshot(tmp_path):
     os.utime(old, (1000, 1000))
     collect = module.Gate.collect_screenshot
     assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) is None
-    assert not (out / 'screenshot-catalog.png').exists() and 'missing' in gate.said[-1]
+    assert not (out / 'screenshot-catalog.png').exists()
     (downloads / 'Screenshot a.png').write_bytes(b'a')
     newest = downloads / 'Screenshot b.png'
     newest.write_bytes(b'b')
     os.utime(downloads / 'Screenshot a.png', (3000, 3000)), os.utime(newest, (3001, 3001))
-    assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) == newest
+    assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) == out / 'screenshot-catalog.png'
     assert (out / 'screenshot-catalog.png').read_bytes() == b'b'
     newest.write_bytes(b'later')
-    assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) is None
+    assert collect(gate, 'screenshot-catalog.png', started=2000, downloads=downloads) == out / 'screenshot-catalog.png'
     assert (out / 'screenshot-catalog.png').read_bytes() == b'b'
+
+
+@pytest.mark.parametrize('field', ['publisher', 'signature.key_id'])
+def test_unadmitted_refusal_asks_for_admission_not_a_correction(field):
+    text = intake.human(dict(accepted=False, path='releases/x/y/1.0.0.json', field=field, detail='unknown or revoked publisher'))
+    assert 'open an issue in this repository' in text and 'Correct this field' not in text and '\n' not in text
+    other = intake.human(dict(accepted=False, path='releases/x/y/1.0.0.json', field='artifact_digest', detail='mismatch'))
+    assert other.endswith('Correct this field and update the PR.')
+
+
+def test_production_gate_saved_directly_is_accepted_and_missing_asks_again(tmp_path, monkeypatch):
+    """Round 1: saved straight into the evidence folder, the gate said "missing" and moved on."""
+    module = load_production_gate()
+    gate = SimpleNamespace(out=tmp_path, said=[], asked=[])
+    gate.say = gate.said.append
+    (tmp_path / 'screenshot-catalog.png').write_bytes(b'png')
+    assert module.Gate.collect_screenshot(gate, 'screenshot-catalog.png', started=0, downloads=tmp_path / 'none') \
+        == tmp_path / 'screenshot-catalog.png'
+    source = (ROOT / 'design/83-block83f5-gate.py').read_text(encoding='utf-8')
+    assert 'while step in SCREENSHOTS and self.collect_screenshot' in source

@@ -142,8 +142,8 @@ class Gate(demo.Gate):
             self.snapshot('launch')
         prompts = {
             1: 'Search the community skill catalog for "session" and list what you find.',
-            2: 'Open Community skill packages in Firefox, scrolled so the Catalog line at the top shows. Take a Firefox screenshot: press Ctrl+Shift+S, click Save visible, then Download. The gate copies the newest Screenshot*.png from Downloads into the evidence folder. Then type DONE here.',
-            3: 'On microclaw-examples / session-start, click Install, read the confirmation box, then click Install in that box. Wait until the card says Installed (if a partial run already installed it, keep it), with that card in view. Take a Firefox screenshot: press Ctrl+Shift+S, click Save visible, then Download. The gate copies the newest Screenshot*.png from Downloads into the evidence folder. Then type DONE here.',
+            2: 'Open Community skill packages in Firefox, scrolled so the Catalog line at the top shows. Take a Firefox screenshot: press Ctrl+Shift+S, click Save visible, then Download (the gate copies it from Downloads) or save it yourself as ' + str(self.out / SCREENSHOTS[2]) + '. Then type DONE here.',
+            3: 'On microclaw-examples / session-start, click Install, read the confirmation box, then click Install in that box. Wait until the card says Installed (if a partial run already installed it, keep it), with that card in view. Take a Firefox screenshot: press Ctrl+Shift+S, click Save visible, then Download (the gate copies it from Downloads) or save it yourself as ' + str(self.out / SCREENSHOTS[3]) + '. Then type DONE here.',
             4: 'Load the skill microclaw-examples/session-start/open-unfamiliar-system and quote its first step. Do not carry it out.',
         }
         for step, prompt in prompts.items():
@@ -156,25 +156,27 @@ class Gate(demo.Gate):
                           "When the agent's reply has finished, type DONE here.")
             started = time.time()
             state['answers'][str(step)] = self.ask(prompt, str(step))
-            if step in SCREENSHOTS:
-                self.collect_screenshot(SCREENSHOTS[step], started)
+            # 83f-5 round 1: the operator saved straight into the evidence folder and the gate
+            # announced "missing" and moved on; now it accepts either place and asks until one holds it.
+            while step in SCREENSHOTS and self.collect_screenshot(SCREENSHOTS[step], started) is None:
+                self.ask(f'{SCREENSHOTS[step]} is not in {self.out} and no new Screenshot*.png is in Downloads. '
+                         'Save the screenshot now (either place), then type DONE (or STOP).', str(step))
             self.snapshot(step)
             state['completed'].append(step)
             self.save('session', state)
 
     def collect_screenshot(self, name, started, downloads=None):
-        """Copy the newest Firefox screenshot taken during this step; a missing one stays missing (L10)."""
+        """Return the evidence copy of this step's screenshot, copying the newest Firefox download if needed."""
         if (self.out / name).exists():  # saved there directly, or kept from a partial run
-            return None
+            return self.out / name
         downloads = Path(downloads or Path.home() / 'Downloads')
         shots = [p for p in downloads.glob('Screenshot*.png') if p.stat().st_mtime >= started - 1]
         if not shots:
-            self.say(f'No new Screenshot*.png in {downloads}; {name} is missing and L10 will say so.')
             return None
         newest = max(shots, key=lambda p: p.stat().st_mtime)
         shutil.copyfile(newest, self.out / name)
         self.say(f'Saved {newest.name} as {name}.')
-        return newest
+        return self.out / name
 
     def cleanup(self):
         catalog_gate.require_gh()
