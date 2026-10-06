@@ -172,6 +172,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | **merged** to fork `main` `24a28b3`, 2026-10-06 |
 | 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
 | 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
+| 84d | `design84/84d-calibrate` | `d4ae9fb` (fork `main`) | assigned 2026-10-06 (D12–D15; D16 measuring) |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -314,4 +315,35 @@ the rebuild (5,097 characters on that turn), which the toast does not mention.
 processing; one round wrote 8,656 reasoning characters before a tool call.
 **F7 — the model button says `claude-opus-4-8` on the local path** until the
 server answers `/v1/models`, which a keyed server does only after the key.
+
+## 84d — compaction that buys headroom, numbers that are true
+
+**D12 (F3) — on the local path, commit a fold only when it reaches low-water,
+unless the current view would not fit the server.** Otherwise send as is (D9's
+decline). The safety valve compares the *calibrated* view (D13) with what the
+server can take — `n_ctx − fixed − MAX_OUTPUT_TOKENS − margin`, in server
+tokens — and, when the view would not fit, commits the deepest fold at or below
+high-water as 84c does. The Anthropic path keeps 84c's D9 unchanged: it has no
+server-reported limit to calibrate against.
+
+**D13 (F3, F4) — calibrate the estimate against the server's own count.** Each
+local response reports `prompt_tokens`; with the fixed prompt known (84b), the
+server's history tokens over the store's estimate of the history that was sent
+is a measured ratio (round 1: 1.12–1.63). The valve (D12) and the rebuild
+prediction use the calibrated value; before any response, the raw estimate,
+which errs high (the safe direction for both).
+
+**D14 (F4, F5) — the operator can read what happened.** The compaction and
+declined notices stay up long enough to read (until dismissed or the next turn,
+not a few seconds), say that the predicted time covers the rebuild only and the
+model then thinks before it replies, and `serve` prints each with its numbers.
+
+**D15 (F7) — the model button names the model that is answering.** On the local
+path it shows the server's model id, refreshed when a key is entered; before the
+server has answered it says so, and it never shows a Claude id.
+
+**D16 (F6) — reasoning effort: measure first.** The model's template takes
+`reasoning_effort` (`xhigh` default, `medium`, `low`) through
+`chat_template_kwargs`. Coordinator measurement on Microclaw's real prompt
+decides whether a lower default is worth exposing; not implemented until then.
 
