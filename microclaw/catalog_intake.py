@@ -111,6 +111,8 @@ def _fill_locks(manifest, folder, directory):
         raise Refusal('locks', f'{folder}: locks directory must be outside the package directory')
     platforms = manifest.get('platforms', [])
     expected = {f'pylock.{platform}.toml' for platform in platforms}
+    if (folder / 'pylock.toml').exists():
+        raise Refusal('locks', 'pylock.toml: name each file pylock.<platform>.toml: ' + ', '.join(sorted(expected)))
     for path in sorted(folder.glob('pylock.*.toml')):
         if path.name not in expected:
             platform = path.name[len('pylock.'):-len('.toml')]

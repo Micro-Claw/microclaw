@@ -1447,6 +1447,7 @@ def test_pack_pylock_false_marker_and_deduplication(pylock_package):
 @pytest.mark.parametrize('case, field, filename, message', [
     ('missing', 'locks.win_amd64', 'pylock.win_amd64.toml', 'regular platform lock file'),
     ('extra', 'locks.other', 'pylock.other.toml', 'unexpected'),
+    ('unnamed', 'locks', 'pylock.toml', 'pylock.win_amd64.toml'),
     ('unsupported', 'locks.other', 'pylock.other.toml', 'unsupported'),
     ('inside', 'locks', 'locks', 'outside'),
     ('markdown', 'locks', 'locks', 'executable'),
@@ -1463,6 +1464,7 @@ def test_pack_pylock_folder_refusals(pylock_package, case, field, filename, mess
     path = locks / 'pylock.win_amd64.toml'
     if case == 'missing': path.unlink()
     elif case == 'extra': shutil.copyfile(path, locks / 'pylock.other.toml')
+    elif case == 'unnamed': shutil.copyfile(path, locks / 'pylock.toml')
     elif case == 'unsupported':
         manifest = intake.read(source / 'manifest.json')
         manifest['platforms'].append('other')
