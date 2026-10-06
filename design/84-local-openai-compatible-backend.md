@@ -172,7 +172,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | **merged** to fork `main` `24a28b3`, 2026-10-06 |
 | 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
 | 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
-| 84d | `design84/84d-calibrate` | `4859ce2` (fork `main` + httpx fix) | reviewed 2026-10-06; gate 84 round 3 pushed, not run |
+| 84d | `design84/84d-calibrate` | `4859ce2` (fork `main` + httpx fix) | **merged** to fork `main`, 2026-10-06 (gate 84 round 3: 9/9) |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -370,4 +370,27 @@ setting unset; with `medium` the probe counted 33,826 fixed and the request was
 only in the `test` extra while `agent.py` imports it; `anthropic` now depends on
 `httpx2`, so a fresh `.[serve]` install could not import `microclaw.agent`. The
 gates installed `.[serve,test]` and never saw it.
+
+## Gate 84, round 3 (workstation, 2026-10-06) — scored from artifacts
+
+Session `20261006_135341_257860`, 9/9 graded limbs, reasoning effort unset.
+**One** compaction (95,316 → 6,925 estimated), its rebuild **8.6 s** (5,823
+tokens processed, 33,366 reused; predicted 12.7 s) — against 366 s in round 1
+and 197 s in round 2. Five requests went out above high-water without
+compacting (records 16–20), each reusing the cache (0.3–7.2 s); the largest
+calibrated view was 83,624 against the 84,920 ceiling, so the valve correctly
+held. Peak prompt + reserve 125,680 of 131,072. O6: the model button named the
+Qwen model. Operator: "no appreciable delay" on the compaction round.
+
+Not compaction: record 16's 104 s was the server processing one 140,232-
+character `read_hook_log(limit=200)` result (59,262 new tokens), and a later turn
+asking for the same read overflowed the context; the server refused with its own
+numbers and the turn rolled back (`R146`). Model time was 200 s of prompt
+processing against **938 s of generation** — one round wrote 11,781 reasoning
+characters in 187 s — which is what the D16 setting is for.
+
+Fixed before merge (`75fe21b`): the rebuild count is whole tokens (the toast
+had shown `6,106.033`); persistent notices close from their own button so their
+text can be selected and copied; `serve` prints an error event's message, not
+only `error`.
 

@@ -3414,3 +3414,30 @@ the model" as the actual blast radius.
 - **What a fix would look like** — estimate an image block at its billed size (a per-image constant from the API's image-token rule) rather than its byte length; check an archived design/82 history for a compaction that followed a thumbnail. design/84 84b fixes the local text-only path only, where the image is never sent.
 - **Provenance** — design/84 84b planning, 2026-10-02.
 
+### R161 — One `read_hook_log` result can take a third of a local model's context
+
+**On the local llama.cpp server, `read_hook_log(limit=200)` returned 140,232 characters (~59k tokens): 104 s to process, and once more than the remaining context could hold.**
+
+- **What happened** — design/84 gate 84 round 3, 2026-10-06, `n_ctx` 131,072: record 16 processed 59,262 new tokens in 104.0 s for that one tool result; a later turn asking for the same read made the next request too large and the server refused it (context exceeded, the turn rolled back). design/82 F2/D3 bounded the read by entry count (`limit`), which the model may raise to 200.
+- **Why it matters** — on a local model the cost of a large result is prefill time on every cold path and a hard context limit, not just money; a bound in entries is not a bound in tokens.
+- **What a fix would look like** — bound tool-result size in characters relative to the session's remaining budget (the store knows it), stated in the result as design/82 D3 requires; or have `read_hook_log` cap its returned characters and point at `rank_hook_log`.
+- **Where** — LOCAL, then a workstation session.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — SMALL
+- **Provenance** — design/84 gate 84 round 3, scored from artifacts 2026-10-06.
+
+### R162 — `test_built_wheel_contains_the_source_tree_skill_catalog` fails intermittently
+
+**Failed in 2 of the full-suite runs during design/84 and passed alone each time (38 s).**
+
+- **What happened** — design/84, 2026-10-02: once at the 84a baseline (before any 84 code, during a network drop) and once on 84b's tip; never reproduced in isolation.
+- **Why it matters** — an intermittent in the full suite is read as noise, which is how a real failure in the same test would be missed.
+- **What a fix would look like** — capture its failure output on the next occurrence (the runs here did not keep the traceback) and decide whether it builds a wheel over the network.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — design/84 coordinator full-suite runs, 2026-10-02.
+
+
