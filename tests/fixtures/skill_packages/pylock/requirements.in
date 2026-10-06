@@ -1,0 +1,5 @@
+numpy
+scipy
+h5py
+requests[socks]
+tifffile ; sys_platform == "win32"

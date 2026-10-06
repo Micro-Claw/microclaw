@@ -27,9 +27,17 @@ python -m microclaw.catalog_intake pack --dir package --url https://example.org/
 python -m microclaw.catalog_intake sign-release --key publisher-private.pem --artifact package.zip --url https://example.org/package.zip --out release.json
 ```
 
-Upload the zip at that exact URL. For executable packages, the publisher writes
-`locks`; `pack` does not generate them, and every exact dependency pin requires
-wheel SHA-256 hashes (see the manifest `locks.<platform>[].hashes` requirement).
+Upload the zip at that exact URL. For executable packages, commit `locks/` next
+to the package folder, with one file per declared platform. MicroClaw runs
+workers on Python 3.12. From your `requirements.in`, generate the files:
+
+```sh
+uv pip compile --no-config --python-version 3.12 --python-platform x86_64-pc-windows-msvc requirements.in -o locks/pylock.win_amd64.toml
+uv pip compile --no-config --python-version 3.12 --python-platform aarch64-apple-darwin requirements.in -o locks/pylock.macosx_arm64.toml
+uv pip compile --no-config --python-version 3.12 --python-platform x86_64-manylinux_2_28 requirements.in -o locks/pylock.manylinux_x86_64.toml
+```
+
+Pass `--locks locks` to `pack`; it fills exact pins and fitting wheel SHA-256s.
 
 `sign-release` prints the repository path: `releases/<publisher>/<package_id>/<version>.json`.
 Fork this repository and open a PR adding just that file. Intake verifies the

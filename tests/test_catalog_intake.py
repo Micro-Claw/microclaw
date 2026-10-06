@@ -14,6 +14,9 @@ import socket
 import subprocess
 import sys
 import zipfile
+import tomllib
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 import pytest
 import yaml
@@ -1072,11 +1075,19 @@ def test_publishing_and_reminder_structure():
     assert 'Micro-Claw/microclaw' not in json.dumps(reminder)
     template = workflow(SEED / 'publishing/release.yml')
     example = workflow(ROOT / 'design/83f5-example-package/.github/workflows/microclaw-release.yml')
-    assert template['env'].keys() == {'PACKAGE_DIR', 'ZIP_NAME', 'MICROCLAW_COMMIT'}
+    assert template['env'].keys() == {'PACKAGE_DIR', 'LOCKS_DIR', 'ZIP_NAME', 'MICROCLAW_COMMIT'}
     pin = example['env'].pop('MICROCLAW_COMMIT')
     assert re.fullmatch(r'[0-9a-f]{40}', pin), 'the example publishes, so it carries a real pin'
     assert example['env'] == dict(PACKAGE_DIR='package', ZIP_NAME='session-start.zip')
-    assert {k: v for k, v in template.items() if k != 'env'} == {k: v for k, v in example.items() if k != 'env'}
+    template_steps = template['jobs']['release']['steps']
+    # The existing Markdown example stays unchanged; only the template opts in.
+    amended = deepcopy(template)
+    script = amended['jobs']['release']['steps'][-2]['run']
+    script = script.replace('LOCK_ARGS=()\nif [[ -d "$LOCKS_DIR" ]]; then LOCK_ARGS=(--locks "$LOCKS_DIR"); fi\n', '')
+    amended['jobs']['release']['steps'][-2]['run'] = script.replace('pack "${LOCK_ARGS[@]}"', 'pack')
+    assert {k: v for k, v in amended.items() if k != 'env'} == {k: v for k, v in example.items() if k != 'env'}
+    assert template['env']['LOCKS_DIR'] == 'locks'
+    assert 'if [[ -d "$LOCKS_DIR" ]]' in template_steps[-2]['run']
     assert template.get('on', template.get(True)) == {'push': {'tags': ['v*']}}
     assert template['permissions'] == {'contents': 'write'}
     steps = template['jobs']['release']['steps']
@@ -1307,3 +1318,222 @@ def test_production_gate_saved_directly_is_accepted_and_missing_asks_again(tmp_p
         == tmp_path / 'screenshot-catalog.png'
     source = (ROOT / 'design/83-block83f5-gate.py').read_text(encoding='utf-8')
     assert 'while step in SCREENSHOTS and self.collect_screenshot' in source
+
+
+@pytest.fixture
+def pylock_package(tmp_path):
+    source, locks = tmp_path / 'package', tmp_path / 'locks'
+    shutil.copytree(FIXTURES / 'executable', source, ignore=shutil.ignore_patterns('__pycache__'))
+    shutil.copytree(FIXTURES / 'pylock', locks)
+    return source, locks, tmp_path / 'package.zip'
+
+
+def _toml_value(value):
+    if isinstance(value, dict):
+        return '{ ' + ', '.join(k + ' = ' + _toml_value(v) for k, v in value.items()) + ' }'
+    if isinstance(value, list):
+        return '[' + ', '.join(_toml_value(v) for v in value) + ']'
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return json.dumps(value)
+
+
+def mutate_pylock(locks, change, platform='win_amd64'):
+    path = locks / f'pylock.{platform}.toml'
+    lock = tomllib.loads(path.read_text(encoding='utf-8'))
+    change(lock)
+    header = ''.join(k + ' = ' + _toml_value(v) + '\n' for k, v in lock.items() if k != 'packages')
+    entries = ''.join('\n[[packages]]\n' + ''.join(k + ' = ' + _toml_value(v) + '\n'
+                      for k, v in entry.items()) for entry in lock.get('packages', []))
+    path.write_text(header + entries, encoding='utf-8')
+
+
+def test_pack_real_uv_locks_and_cli(pylock_package):
+    source, locks, out = pylock_package
+    before = (source / 'manifest.json').read_bytes()
+    assert intake.main(['pack', '--dir', str(source), '--url', 'https://example.org/p.zip',
+                        '--out', str(out), '--locks', str(locks)]) == 0
+    with zipfile.ZipFile(out) as archive:
+        manifest = json.loads(archive.read('manifest.json'))
+        assert not any(name.endswith('.toml') for name in archive.namelist())
+    assert (source / 'manifest.json').read_bytes() == before
+    for platform, lock in manifest['locks'].items():
+        assert [canonicalize_name(Requirement(e['requirement']).name) for e in lock] == sorted(
+            canonicalize_name(Requirement(e['requirement']).name) for e in lock)
+        pins = {Requirement(e['requirement']).name: e for e in lock}
+        assert ('tifffile' in pins) == (platform == 'win_amd64')
+        for entry in lock:
+            requirement = Requirement(entry['requirement'])
+            assert requirement.marker is None and len(requirement.specifier) == 1
+            assert next(iter(requirement.specifier)).operator == '=='
+        real = tomllib.loads((locks / f'pylock.{platform}.toml').read_text(encoding='utf-8'))
+        charset = next(e for e in real['packages'] if e['name'] == 'charset-normalizer')
+        # All three observed wheels fit: cp312, cp37 abi3, and py3 none any.
+        assert pins['charset-normalizer']['hashes'] == [w['hashes']['sha256'] for w in charset['wheels']]
+        assert not set(pins['charset-normalizer']['hashes']) & {charset['sdist']['hashes']['sha256']}
+
+
+@pytest.mark.parametrize('case, message', [
+    ('sdist-only', 'no wheel'), ('musllinux', 'no wheel'),
+    ('missing-hash', 'sha256'), ('invalid-hash', 'SHA-256'),
+    ('full-version', 'python_full_version'), ('nested-marker', 'platform_release'),
+    ('extra-marker', 'extra'), ('invalid-marker', 'invalid marker'),
+    ('vcs', 'sources'), ('directory', 'sources'), ('archive', 'sources'),
+    ('missing-name', 'name and version'), ('missing-version', 'name and version'),
+    ('duplicate', 'duplicate'), ('invalid-wheel', 'wheel filename'),
+    ('invalid-name', 'exact version pin'), ('not-pin', 'exact version pin'), ('hash-limit', '64'), ('entry-limit', '512'),
+])
+def test_pack_pylock_entry_refusals(pylock_package, case, message):
+    source, locks, out = pylock_package
+    def change(lock):
+        entry = lock['packages'][0]
+        if case == 'sdist-only': entry.pop('wheels')
+        elif case == 'musllinux':
+            entry['wheels'][0]['name'] = 'certifi-2026.7.22-cp312-cp312-musllinux_1_2_x86_64.whl'
+        elif case == 'missing-hash': entry['wheels'][0]['hashes'] = {}
+        elif case == 'invalid-hash': entry['wheels'][0]['hashes']['sha256'] = 'bad'
+        elif case == 'full-version': entry['marker'] = "python_full_version >= '3.12.0'"
+        elif case == 'nested-marker': entry['marker'] = "sys_platform == 'win32' or (platform_release == 'foo')"
+        elif case == 'extra-marker': entry['marker'] = "extra == 'socks'"
+        elif case == 'invalid-marker': entry['marker'] = 'broken'
+        elif case in ('vcs', 'directory', 'archive'): entry[case] = {'url': 'https://example.org/source'}
+        elif case == 'missing-name': entry.pop('name')
+        elif case == 'missing-version': entry.pop('version')
+        elif case == 'duplicate': lock['packages'].append(deepcopy(entry) | {'name': 'Certifi'})
+        elif case == 'invalid-wheel': entry['wheels'][0]['name'] = 'broken.whl'
+        elif case == 'invalid-name': entry['name'] = 'certifi==1'
+        elif case == 'not-pin': entry['version'] = '*'
+        elif case == 'hash-limit':
+            wheel = entry['wheels'][0]
+            entry['wheels'] = [deepcopy(wheel) | {'hashes': {'sha256': f'{i:064x}'}} for i in range(65)]
+        elif case == 'entry-limit':
+            lock['packages'] = [deepcopy(entry) | {'name': f'certifi{i}'} for i in range(513)]
+    mutate_pylock(locks, change)
+    with pytest.raises(intake.Refusal) as caught:
+        intake.pack(source, 'https://example.org/p.zip', out, locks)
+    assert caught.value.field == 'locks.win_amd64'
+    assert 'pylock.win_amd64.toml' in str(caught.value)
+    if case != 'entry-limit':
+        assert 'packages[' in str(caught.value)
+        assert ('certifi' if case not in ('missing-name', 'duplicate') else '?' if case == 'missing-name' else 'Certifi') in str(caught.value)
+    assert message in str(caught.value)
+
+
+def test_pack_pylock_wrong_platform(pylock_package):
+    source, locks, out = pylock_package
+    shutil.copyfile(locks / 'pylock.win_amd64.toml', locks / 'pylock.macosx_arm64.toml')
+    with pytest.raises(intake.Refusal) as caught:
+        intake.pack(source, 'https://example.org/p.zip', out, locks)
+    assert caught.value.field == 'locks.macosx_arm64'
+    assert 'pylock.macosx_arm64.toml: packages[2] (h5py 3.16.0)' in str(caught.value)
+    assert 'no wheel' in str(caught.value)
+
+
+def test_pack_pylock_false_marker_and_deduplication(pylock_package):
+    source, locks, out = pylock_package
+    def change(lock):
+        entry = lock['packages'][0]
+        entry['marker'] = "sys_platform == 'darwin'"
+        entry['wheels'] = []  # False entries need no installable source.
+        entry['vcs'] = {'url': 'https://example.org/source'}
+        lock['packages'][1]['wheels'] *= 2
+    mutate_pylock(locks, change)
+    manifest, _ = intake.pack(source, 'https://example.org/p.zip', out, locks)
+    lock = manifest['locks']['win_amd64']
+    assert not any(e['requirement'].startswith('certifi==') for e in lock)
+    assert len(next(e['hashes'] for e in lock if e['requirement'].startswith('charset-normalizer=='))) == 3
+
+
+@pytest.mark.parametrize('case, field, filename, message', [
+    ('missing', 'locks.win_amd64', 'pylock.win_amd64.toml', 'regular platform lock file'),
+    ('extra', 'locks.other', 'pylock.other.toml', 'unexpected'),
+    ('unsupported', 'locks.other', 'pylock.other.toml', 'unsupported'),
+    ('inside', 'locks', 'locks', 'outside'),
+    ('markdown', 'locks', 'locks', 'executable'),
+    ('symlink', 'locks', 'locks-link', 'regular locks directory'),
+    ('file', 'locks', 'requirements.in', 'regular locks directory'),
+    ('lock-symlink', 'locks.win_amd64', 'pylock.win_amd64.toml', 'regular platform lock file'),
+    ('version', 'locks.win_amd64', 'pylock.win_amd64.toml', 'major version 1'),
+    ('missing-lock-version', 'locks.win_amd64', 'pylock.win_amd64.toml', 'major version 1'),
+    ('oversize', 'locks.win_amd64', 'pylock.win_amd64.toml', 'byte limit'),
+    ('toml', 'locks.win_amd64', 'pylock.win_amd64.toml', 'TOML'),
+])
+def test_pack_pylock_folder_refusals(pylock_package, case, field, filename, message):
+    source, locks, out = pylock_package
+    path = locks / 'pylock.win_amd64.toml'
+    if case == 'missing': path.unlink()
+    elif case == 'extra': shutil.copyfile(path, locks / 'pylock.other.toml')
+    elif case == 'unsupported':
+        manifest = intake.read(source / 'manifest.json')
+        manifest['platforms'].append('other')
+        write(source / 'manifest.json', manifest)
+        shutil.copyfile(path, locks / 'pylock.other.toml')
+    elif case == 'inside':
+        shutil.copytree(locks, source / 'locks')
+        locks = source / 'locks'
+    elif case == 'markdown':
+        shutil.rmtree(source)
+        shutil.copytree(FIXTURES / 'markdown', source)
+    elif case == 'symlink':
+        link = locks.parent / 'locks-link'
+        try: link.symlink_to(locks, target_is_directory=True)
+        except OSError: pytest.skip('symlinks unavailable')
+        locks = link
+    elif case == 'file': locks = locks / 'requirements.in'
+    elif case == 'lock-symlink':
+        path.unlink()
+        try: path.symlink_to(locks / 'pylock.macosx_arm64.toml')
+        except OSError: pytest.skip('symlinks unavailable')
+    elif case == 'version': mutate_pylock(locks, lambda lock: lock.update({'lock-version': '2.0'}))
+    elif case == 'missing-lock-version': mutate_pylock(locks, lambda lock: lock.pop('lock-version'))
+    elif case == 'oversize': path.write_bytes(path.read_bytes() + b' ' * store.MAX_MANIFEST_BYTES)
+    elif case == 'toml': path.write_text(path.read_text(encoding='utf-8') + '\n[', encoding='utf-8')
+    with pytest.raises(intake.Refusal) as caught:
+        intake.pack(source, 'https://example.org/p.zip', out, locks)
+    assert caught.value.field == field
+    assert filename in str(caught.value) and message in str(caught.value)
+
+
+@pytest.mark.parametrize('platform, fitting', [
+    ('win_amd64', ['cp312-cp312-win_amd64', 'cp37-abi3-win_amd64', 'py3-none-any']),
+    ('macosx_arm64', ['cp312-cp312-macosx_11_0_arm64', 'cp37-abi3-macosx_10_9_universal2', 'py3-none-any']),
+    ('manylinux_x86_64', ['cp312-cp312-manylinux_2_28_x86_64', 'cp37-abi3-manylinux2014_x86_64', 'py3-none-any']),
+])
+def test_pack_pylock_filters_wheel_tags(pylock_package, platform, fitting):
+    source, locks, out = pylock_package
+    def change(lock):
+        entry = lock['packages'][0]
+        wheel = entry['wheels'][0]
+        wrong = ['cp313-cp313-win_amd64', 'cp312-cp312-linux_x86_64',
+                 'cp312-cp312-musllinux_1_2_x86_64', 'cp312-cp312-win32',
+                 'cp312-cp312-macosx_11_0_x86_64', 'cp312-cp312-manylinux_2_28_aarch64']
+        entry['wheels'] = [deepcopy(wheel) | {
+            'name': f'certifi-2026.7.22-{tag}.whl', 'hashes': {'sha256': f'{i:064x}'}}
+            for i, tag in enumerate(fitting + wrong)]
+        # An incompatible wheel without hashes does not cause a refusal.
+        entry['wheels'][-1].pop('hashes')
+    mutate_pylock(locks, change, platform)
+    manifest = intake.read(source / 'manifest.json')
+    manifest['locks'] = {'old': 'replaced rather than merged'}
+    write(source / 'manifest.json', manifest)
+    manifest, _ = intake.pack(source, 'https://example.org/p.zip', out, locks)
+    entry = next(e for e in manifest['locks'][platform] if e['requirement'].startswith('certifi=='))
+    assert entry['hashes'] == [f'{i:064x}' for i in range(len(fitting))]
+    assert set(manifest['locks']) == set(manifest['platforms'])
+
+
+@pytest.mark.parametrize('platform, sys_platform, os_name, system, machine', [
+    ('win_amd64', 'win32', 'nt', 'Windows', 'AMD64'),
+    ('macosx_arm64', 'darwin', 'posix', 'Darwin', 'arm64'),
+    ('manylinux_x86_64', 'linux', 'posix', 'Linux', 'x86_64'),
+])
+def test_pack_pylock_fixed_marker_environment(pylock_package, platform, sys_platform, os_name, system, machine):
+    source, locks, out = pylock_package
+    marker = (f"sys_platform == '{sys_platform}' and os_name == '{os_name}' and "
+              f"platform_system == '{system}' and platform_machine == '{machine}' and "
+              "python_version == '3.12' and implementation_name == 'cpython' and "
+              "'CPython' == platform_python_implementation")
+    mutate_pylock(locks, lambda lock: lock['packages'][0].update(marker=marker), platform)
+    manifest, _ = intake.pack(source, 'https://example.org/p.zip', out, locks)
+    entry = next(e for e in manifest['locks'][platform] if e['requirement'].startswith('certifi=='))
+    assert set(entry) == {'requirement', 'hashes'}

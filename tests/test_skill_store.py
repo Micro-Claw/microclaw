@@ -2040,3 +2040,46 @@ def test_recovery_deletes_interrupted_download(tmp_path, broken_pointer):
     assert not temporary.exists()
     assert not result['deletion_failures']
     assert store._install_dir(directory, installed['install_id']).is_dir()
+
+
+def test_pack_pylocks_real_offline_install(tmp_path):
+    from microclaw import catalog_intake as intake
+    from packaging.utils import parse_wheel_filename
+
+    source = mutate_source(tmp_path, lambda manifest: manifest.pop('locks'))
+    # Other tests import the fixture worker, leaving host bytecode outside its
+    # declared assets. Ship source files, as the release fixture builder does.
+    for cache in source.rglob('__pycache__'):
+        shutil.rmtree(cache)
+    locks = tmp_path / 'locks'
+    locks.mkdir()
+    wheels = [WHEELS / builder.WHEEL_NAME, WHEELS / 'fixture_companion-2.0.0-py3-none-any.whl']
+    assert builder.build_wheel(name='fixture_companion', version='2.0.0') == wheels[1].read_bytes()
+    expected = {}
+    for platform, facts in store.PLATFORMS.items():
+        text = 'lock-version = "1.0"\ncreated-by = "uv"\nrequires-python = ">=3.12"\n'
+        for wheel in wheels:
+            name, version, _, _ = parse_wheel_filename(wheel.name)
+            expected[name] = str(version)
+            digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+            text += (f'\n[[packages]]\nname = "{name}"\nversion = "{version}"\n'
+                     f'wheels = [{{ url = "https://example.org/{wheel.name}", '
+                     f'hashes = {{ sha256 = "{digest}" }} }}]\n')
+        # False for each target, including the real interpreter's platform.
+        text += ('\n[[packages]]\nname = "false-marker-dependency"\nversion = "9.0"\n'
+                 f'marker = "sys_platform != \'{facts["sys_platform"]}\'"\n'
+                 f'wheels = [{{ url = "https://example.org/{wheels[0].name}", '
+                 f'hashes = {{ sha256 = "{hashlib.sha256(wheels[0].read_bytes()).hexdigest()}" }} }}]\n')
+        (locks / f'pylock.{platform}.toml').write_text(text, encoding='utf-8')
+    artifact = tmp_path / 'executable-1.0.0.zip'
+    url = read(source / 'manifest.json')['artifact']
+    assert intake.main(['pack', '--dir', str(source), '--url', url, '--out', str(artifact),
+                        '--locks', str(locks)]) == 0
+    with zipfile.ZipFile(artifact) as archive:
+        manifest = json.loads(archive.read('manifest.json'))
+    record = builder.sign(intake.intake_from_manifest(manifest, hashlib.sha256(artifact.read_bytes()).hexdigest()))
+    installed = install(tmp_path, prepared=record)
+    assert installed['state'] == 'ready'
+    assert installed['interpreter']['distributions'] == expected
+    assert store.probe(installed['python'])['distributions'] == expected
+    assert 'false-marker-dependency' not in expected

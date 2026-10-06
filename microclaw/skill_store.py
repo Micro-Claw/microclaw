@@ -23,6 +23,7 @@ import time
 import uuid
 import zipfile
 
+from packaging import tags
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
@@ -34,6 +35,19 @@ from microclaw.skill_supervisor import Supervisor
 
 PackageRefusal = packages.PackageRefusal
 PINNED_PYTHON = "3.12"
+# Interpreter selection, publisher marker facts and wheel platforms share this table.
+PLATFORMS = {
+    "win_amd64": dict(identity=r"win-amd64", sys_platform="win32", os_name="nt",
+                      platform_system="Windows", platform_machine="AMD64",
+                      wheel_platforms=["win_amd64"]),
+    "macosx_arm64": dict(identity=r"macosx-.+-arm64", sys_platform="darwin", os_name="posix",
+                         platform_system="Darwin", platform_machine="arm64",
+                         wheel_platforms=list(tags.mac_platforms((26, 0), "arm64"))),
+    "manylinux_x86_64": dict(identity=r"linux-x86_64", sys_platform="linux", os_name="posix",
+                            platform_system="Linux", platform_machine="x86_64",
+                            wheel_platforms=[f"manylinux_2_{n}_x86_64" for n in range(50, 4, -1)]
+                            + ["manylinux1_x86_64", "manylinux2010_x86_64", "manylinux2014_x86_64"]),
+}
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 MAX_MANIFEST_BYTES = 1024 * 1024
 PROBE = """import sys, os, sysconfig, json, re
@@ -376,13 +390,9 @@ def probe(python):
 
 def _platform(identity, manifest):
     platform = identity["platform"]
-    if platform == "win-amd64":
-        tag = "win_amd64"
-    elif re.fullmatch(r"macosx-.+-arm64", platform):
-        tag = "macosx_arm64"
-    elif platform == "linux-x86_64":
-        tag = "manylinux_x86_64"
-    else:
+    tag = next((tag for tag, facts in PLATFORMS.items()
+                if re.fullmatch(facts["identity"], platform)), None)
+    if tag is None:
         raise PackageRefusal("platforms", "unsupported platform: " + platform)
     if tag not in manifest["platforms"]:
         raise PackageRefusal("platforms", "release does not support " + tag)

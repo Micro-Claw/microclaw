@@ -32,11 +32,11 @@ def _archive(entries):
     return output.getvalue()
 
 
-def build_wheel(destination=None):
-    prefix = "fixture_dependency-1.2.3.dist-info/"
+def build_wheel(destination=None, *, name="fixture_dependency", version="1.2.3"):
+    prefix = f"{name}-{version}.dist-info/"
     entries = {
-        "fixture_dependency/__init__.py": b'VERSION = "1.2.3"\n',
-        prefix + "METADATA": b"Metadata-Version: 2.1\nName: fixture-dependency\nVersion: 1.2.3\n\n",
+        name + "/__init__.py": f'VERSION = "{version}"\n'.encode("utf-8"),
+        prefix + "METADATA": f"Metadata-Version: 2.1\nName: {name.replace('_', '-')}\nVersion: {version}\n\n".encode("utf-8"),
         prefix + "WHEEL": b"Wheel-Version: 1.0\nGenerator: microclaw-test-fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n\n",
     }
     record = io.StringIO(newline="")
@@ -87,3 +87,5 @@ def build_release(fixture_dir, artifact_path, *, version=None, invalid=False):
 
 if __name__ == "__main__":
     build_wheel(FIXTURES / "wheels" / WHEEL_NAME)
+    build_wheel(FIXTURES / "wheels/fixture_companion-2.0.0-py3-none-any.whl",
+                name="fixture_companion", version="2.0.0")

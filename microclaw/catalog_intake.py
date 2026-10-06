@@ -16,6 +16,12 @@ import subprocess
 from pathlib import Path
 import tempfile
 import zipfile
+import tomllib
+from urllib.parse import unquote, urlsplit
+
+from packaging import tags
+from packaging.markers import Marker, InvalidMarker
+from packaging.utils import canonicalize_name, parse_wheel_filename, InvalidWheelFilename
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -83,7 +89,116 @@ def archive_checks(artifact, record):
         raise Refusal('artifact', 'expected a readable, valid release zip') from exc
 
 
-def pack(directory, url, out):
+def _marker_variables(tree):
+    # packaging exposes its parsed marker tree here; inspect both operands and
+    # every branch before evaluation so host defaults never decide a lock.
+    for node in tree:
+        if isinstance(node, list):
+            yield from _marker_variables(node)
+        elif isinstance(node, tuple):
+            for operand in (node[0], node[2]):
+                if type(operand).__name__ == 'Variable':
+                    yield operand.value
+
+
+def _fill_locks(manifest, folder, directory):
+    folder = Path(folder)
+    if manifest.get('kind') != 'executable':
+        raise Refusal('locks', f'{folder}: --locks requires an executable manifest')
+    if folder.is_symlink() or not folder.is_dir():
+        raise Refusal('locks', f'{folder}: expected a regular locks directory, not a symlink')
+    if folder.resolve().is_relative_to(directory.resolve()):
+        raise Refusal('locks', f'{folder}: locks directory must be outside the package directory')
+    platforms = manifest.get('platforms', [])
+    expected = {f'pylock.{platform}.toml' for platform in platforms}
+    for path in sorted(folder.glob('pylock.*.toml')):
+        if path.name not in expected:
+            platform = path.name[len('pylock.'):-len('.toml')]
+            raise Refusal(f'locks.{platform}', f'{path.name}: unexpected platform file')
+    result, contexts = {}, {}
+    for platform in platforms:
+        field, filename = f'locks.{platform}', f'pylock.{platform}.toml'
+
+        def refuse(message, context=filename):
+            raise Refusal(field, context + ': ' + message)
+        if platform not in store.PLATFORMS:
+            refuse('unsupported platform; installer cannot select it')
+        path = folder / filename
+        try:
+            if path.is_symlink() or not path.is_file():
+                refuse('expected a regular platform lock file')
+            with path.open('rb') as stream:
+                data = stream.read(store.MAX_MANIFEST_BYTES + 1)
+            if len(data) > store.MAX_MANIFEST_BYTES:
+                refuse('lock file exceeds byte limit')
+            lock = tomllib.loads(data.decode('utf-8'))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            refuse('expected a readable TOML lock file: ' + str(exc))
+        if not isinstance(lock.get('lock-version'), str) or not re.fullmatch(r'1(?:\.\d+)*', lock['lock-version']):
+            refuse('lock-version must have major version 1')
+        facts = store.PLATFORMS[platform]
+        environment = {key: facts[key] for key in
+                       ('sys_platform', 'os_name', 'platform_system', 'platform_machine')}
+        environment.update(python_version=store.PINNED_PYTHON, implementation_name='cpython',
+                           platform_python_implementation='CPython')
+        wheel_platforms = facts['wheel_platforms']
+        supported = set(tags.cpython_tags((3, 12), ['cp312'], wheel_platforms))
+        supported.update(tags.compatible_tags((3, 12), 'cp312', wheel_platforms))
+        entries = lock.get('packages')
+        if not isinstance(entries, list):
+            refuse('expected [[packages]] entries')
+        pins, entry_contexts = {}, {}
+        for index, entry in enumerate(entries):
+            label = f"{entry.get('name', '?')} {entry.get('version', '?')}" if isinstance(entry, dict) else '?'
+            context = f'{filename}: packages[{index}] ({label})'
+            if not isinstance(entry, dict) or not all(isinstance(entry.get(k), str) and entry[k] for k in ('name', 'version')):
+                refuse('name and version are required strings', context)
+            if 'marker' in entry:
+                try:
+                    marker = Marker(entry['marker'])
+                    unknown = set(_marker_variables(marker._markers)) - environment.keys()
+                    if unknown:
+                        refuse('undecidable marker variable(s): ' + ', '.join(sorted(unknown)), context)
+                    if not marker.evaluate(environment):
+                        continue
+                except Refusal:
+                    raise
+                except (InvalidMarker, TypeError, ValueError, KeyError) as exc:
+                    refuse('invalid marker: ' + str(exc), context)
+            if any(source in entry for source in ('vcs', 'directory', 'archive')):
+                refuse('vcs, directory and archive sources are unsupported; use index or find-links wheels', context)
+            name = canonicalize_name(entry['name'])
+            if name in pins:
+                refuse('duplicate canonical package name: ' + name, context)
+            hashes = []
+            wheels = entry.get('wheels', [])
+            if not isinstance(wheels, list):
+                refuse('wheels must be an array', context)
+            for wheel in wheels:
+                try:
+                    filename_wheel = wheel.get('name') or unquote(urlsplit(wheel.get('url', '')).path.rsplit('/', 1)[-1])
+                    _, _, _, wheel_tags = parse_wheel_filename(filename_wheel)
+                except (InvalidWheelFilename, AttributeError, TypeError, ValueError) as exc:
+                    refuse('invalid wheel filename: ' + str(exc), context)
+                if not supported.intersection(wheel_tags):
+                    continue
+                wheel_hashes = wheel.get('hashes', {})
+                digest = wheel_hashes.get('sha256') if isinstance(wheel_hashes, dict) else None
+                if not digest:
+                    refuse('fitting wheel ' + filename_wheel + ' requires a sha256 hash', context)
+                if digest not in hashes:
+                    hashes.append(digest)
+            if not hashes:
+                refuse(f'no wheel for {platform} and CPython 3.12; installs never build from source', context)
+            pins[name] = dict(requirement=f"{entry['name']}=={entry['version']}", hashes=hashes)
+            entry_contexts[name] = context
+        result[platform] = [pins[name] for name in sorted(pins)]
+        contexts[platform] = [entry_contexts[name] for name in sorted(pins)]
+    manifest['locks'] = result
+    return contexts
+
+
+def pack(directory, url, out, locks=None):
     """Fill a publisher manifest and pack a deterministic, checked release."""
     directory, out = Path(directory), Path(out)
     if directory.is_symlink() or not directory.is_dir():
@@ -92,6 +207,7 @@ def pack(directory, url, out):
     if source.is_symlink() or not source.is_file():
         raise Refusal('path', 'expected a regular file: manifest.json')
     manifest = read(source, store.MAX_MANIFEST_BYTES)
+    lock_contexts = _fill_locks(manifest, locks, directory) if locks is not None else None
     entries, skipped = {}, []
     for folder, dirs, files in os.walk(directory, followlinks=False):
         for name in sorted(dirs + files):
@@ -110,7 +226,17 @@ def pack(directory, url, out):
     manifest['artifact'] = url
     manifest['assets'] = [dict(path=name, sha256=hashlib.sha256(data).hexdigest())
                           for name, data in sorted(entries.items())]
-    manifest = packages.validate_manifest(manifest)
+    try:
+        manifest = packages.validate_manifest(manifest)
+    except Refusal as exc:
+        if lock_contexts is not None and exc.field.startswith('locks.'):
+            platform = exc.field.split('.', 1)[1].split('[', 1)[0]
+            match = re.search(r'\[(\d+)\]', exc.field)
+            context = f'pylock.{platform}.toml'
+            if match:
+                context = lock_contexts[platform][int(match[1])]
+            raise Refusal(f'locks.{platform}', context + ': ' + str(exc)) from exc
+        raise
     entries['manifest.json'] = encode(manifest)
     with tempfile.NamedTemporaryFile(dir=out.parent, delete=False) as stream:
         temporary = Path(stream.name)
@@ -487,6 +613,7 @@ def main(argv=None):
     packing = commands.add_parser('pack')
     for flag in ('dir', 'url', 'out'):
         packing.add_argument('--' + flag, required=True)
+    packing.add_argument('--locks')
     release = commands.add_parser('sign-release')
     for flag in ('key', 'artifact', 'url', 'out'):
         release.add_argument('--' + flag, required=True)
@@ -540,7 +667,7 @@ def main(argv=None):
             renew = packages._expires(policy['expires_at']) - timedelta(days=30)
             print(f"Revision: {policy['revision']}\nexpires_at: {policy['expires_at']}\nRenew by: {renew:%Y-%m-%d}")
         elif args.command == 'pack':
-            _, digest = pack(args.dir, args.url, args.out)
+            _, digest = pack(args.dir, args.url, args.out, locks=args.locks)
             print(f"SHA-256: {digest}\nZip: {args.out}")
             print('Next: python -m microclaw.catalog_intake sign-release --key publisher-private.pem --artifact '
                   + shlex.quote(args.out) + ' --url ' + shlex.quote(args.url) + ' --out release.json')
