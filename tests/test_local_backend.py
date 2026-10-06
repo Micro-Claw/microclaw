@@ -89,6 +89,39 @@ def test_recorded_stream_tool_translation_and_usage(monkeypatch):
     assert seen[0]["reasoning_characters"] > 0
 
 
+def test_recorded_response_calibrates_store_and_rebuild_prediction(monkeypatch):
+    install(monkeypatch, ["stream_text_reply", "stream_text_reply"])
+    store = conversation.ConversationStore(conversation.AuditLog(None, enabled=False),
+                                          high_water_tokens=1000, low_water_tokens=700)
+    store.local_fixed_tokens = 33000
+    history = [{"role": "user", "content": "x" * 1000}]
+    estimate = conversation.estimate_tokens(history)
+    first = agent._stream_local_round(
+        history, [], "m", [], store.model_messages, 0, None,
+    )
+    for _ in first:
+        pass
+    expected_ratio = (33594 - 33000) / estimate
+    assert store.local_estimate_ratio == expected_ratio
+
+    monkeypatch.setattr(agent, "_local_prefill_rate", 10.0)
+    class CompactedProvider:
+        __self__ = store
+        def __call__(self, _messages):
+            store.compaction_count += 1
+            store.last_pre_compaction_estimated_tokens = 1200
+            store.last_estimated_tokens = 900
+            return history
+    second = agent._stream_local_round(
+        history, [], "m", [], CompactedProvider(), 1, None,
+    )
+    event = next(second)
+    assert event["type"] == "compaction"
+    assert event["rebuild_tokens"] == 900 * expected_ratio
+    assert abs(event["expected_rebuild_seconds"] - 90 * expected_ratio) < 1e-9
+    second.close()
+
+
 def test_recorded_text_and_length_finish_reasons(monkeypatch):
     for fixture, expected in (("stream_text_reply", "end_turn"), ("stream_length_cutoff", "max_tokens")):
         install(monkeypatch, fixture)

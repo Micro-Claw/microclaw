@@ -133,6 +133,13 @@ def test_serve_inlines_recovery_without_requiring_it_in_history_viewer():
     assert "global.Recovery = { create };" not in history
 
 
+def test_served_compaction_notices_use_persistent_toast_variant():
+    served = load_page("serve.html")
+    assert "Click to dismiss.`, true);" in served
+    assert "Predicted time covers rebuild only" in served
+    assert "toastTimer = persistent ? null" in served
+
+
 def test_view_history_output_is_self_contained(tmp_path):
     """It is written to a temp directory, where transcript.css/js are not siblings."""
     src = tmp_path / "h.json"

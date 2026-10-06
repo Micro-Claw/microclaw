@@ -577,7 +577,7 @@
 
   // ---- toast ----
   let toastTimer = null;
-  function toast(text) {
+  function toast(text, persistent = false) {
     let el = $("toast");
     if (!el) {
       el = document.createElement("div");
@@ -586,7 +586,8 @@
     }
     el.textContent = text;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.remove(), 6000);
+    el.onclick = () => el.remove();
+    toastTimer = persistent ? null : setTimeout(() => el.remove(), 6000);
   }
 
   // ---- rendering ----
@@ -751,11 +752,11 @@
         const seconds = ev.expected_rebuild_seconds == null
           ? "time unknown (no measured prefill rate yet)"
           : `about ${Number(ev.expected_rebuild_seconds).toFixed(1)}s`;
-        toast(`Compacted context: ${Number(ev.before_tokens).toLocaleString()} → ${Number(ev.after_tokens).toLocaleString()} estimated tokens; rebuilding ${Number(ev.rebuild_tokens).toLocaleString()} tokens, ${seconds}.`);
+        toast(`Compacted context: ${Number(ev.before_tokens).toLocaleString()} → ${Number(ev.after_tokens).toLocaleString()} estimated tokens; rebuilding ${Number(ev.rebuild_tokens).toLocaleString()} calibrated tokens, ${seconds}. Predicted time covers rebuild only; the model thinks before replying. Click to dismiss.`, true);
         break;
       }
       case "compaction_declined":
-        toast(`${ev.message} (${Number(ev.estimated_tokens).toLocaleString()} estimated / ${Number(ev.high_water_tokens).toLocaleString()} token threshold).`);
+        toast(`${ev.message} (${Number(ev.estimated_tokens).toLocaleString()} estimated / ${Number(ev.threshold_tokens ?? ev.high_water_tokens).toLocaleString()} token threshold). Click to dismiss.`, true);
         break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;
@@ -960,6 +961,9 @@
   $("confirm-decline").addEventListener("click", () => answerConfirm(false));
 
   async function runTurn(text) {
+    const oldToast = $("toast");
+    if (oldToast) oldToast.remove?.();
+    clearTimeout(toastTimer);
     recoverySettled = false;
     streamSilenceDetected = false;
     lastAppliedSeq = null;
@@ -1116,6 +1120,8 @@
     if (!res.ok) { toast(await detail(res)); return; }
     const state = await res.json();
     showKey(state);   // closes the banner and clears the input
+    const modelRes = await apiFetch("/api/model");
+    if (modelRes.ok) showModel(await modelRes.json());
     toast(state.stored_in === "keyring" ? "Key saved to the OS credential store."
         : state.stored_in === "file" ? "Key saved to " + state.stored_at + " (convenience, not protection)."
         : state.stale_store ? "Key set for this session. A different key is still saved "
@@ -1129,12 +1135,12 @@
   function showModel(state) {
     const btn = $("model-btn");
     btn.classList.remove("hidden");
-    btn.textContent = state.model;
+    btn.textContent = state.unknown ? "Model unknown (server has not answered)" : state.model;
     btn.disabled = !state.editable;
     btn.title = state.editable
       ? "Click to change the model for this session"
       : "Bound beyond localhost — set --model or MICROCLAW_MODEL and restart";
-    $("model-input").value = state.model;
+    $("model-input").value = state.model || "";
     if (state.available && state.available.length) {
       $("model-list").innerHTML = state.available
         .map(id => '<option value="' + Transcript.esc(id) + '">').join("");

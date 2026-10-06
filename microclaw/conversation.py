@@ -561,6 +561,11 @@ class ConversationStore:
         self.last_pre_compaction_estimated_tokens = None
         self.last_compaction_declined = False
         self._declined_stretch = False
+        # Set only for the local OpenAI-compatible backend. The ratio is
+        # server history tokens / the store's estimate of that same view.
+        self.local_context_ceiling = None
+        self.local_fixed_tokens = None
+        self.local_estimate_ratio = None
 
     def append(self, message: dict) -> None:
         self.audit.append(message)
@@ -570,7 +575,19 @@ class ConversationStore:
         current = ([self._checkpoint] if self._checkpoint else []) + full_history[self._cut:]
         self.last_estimated_tokens = estimate_tokens(current, text_only=self.text_only)
         self.last_pre_compaction_estimated_tokens = self.last_estimated_tokens
-        if self.last_estimated_tokens <= self.high_water_tokens:
+        local_over_ceiling = (
+            self.local_context_ceiling is not None
+            and self.last_estimated_tokens * (self.local_estimate_ratio or 1.0)
+            > self.local_context_ceiling
+        )
+        if self.local_context_ceiling is not None:
+            if self.last_estimated_tokens <= self.high_water_tokens and not local_over_ceiling:
+                self._declined_stretch = False
+                return current
+            if self.last_estimated_tokens > self.high_water_tokens and not local_over_ceiling:
+                self._declined_stretch = False
+                return current
+        if self.last_estimated_tokens <= self.high_water_tokens and not local_over_ceiling:
             self._declined_stretch = False
             return current
 
@@ -586,6 +603,7 @@ class ConversationStore:
                 if self._cut < end <= floor_boundary]
         chosen = self._cut
         chosen_estimate = self.last_estimated_tokens
+        best_under_high = None
         for end in ends:
             candidate_checkpoint = _checkpoint(full_history[:end], self.audit.secrets)
             candidate = [candidate_checkpoint, *full_history[end:]]
@@ -593,10 +611,21 @@ class ConversationStore:
             if candidate_estimate < chosen_estimate:
                 chosen = end
                 chosen_estimate = candidate_estimate
+            if candidate_estimate <= self.high_water_tokens:
+                best_under_high = (end, candidate_estimate)
             if candidate_estimate <= self.low_water_tokens:
                 chosen = end
                 chosen_estimate = candidate_estimate
                 break
+        # On the local path the safety valve needs the deepest useful fold;
+        # ordinary hysteresis still waits until a fold reaches low-water.
+        if local_over_ceiling and best_under_high:
+            chosen, chosen_estimate = best_under_high
+        if (self.local_context_ceiling is not None and not local_over_ceiling
+                and chosen_estimate > self.low_water_tokens):
+            self.last_compaction_declined = not self._declined_stretch
+            self._declined_stretch = True
+            return current
         if chosen == self._cut or chosen_estimate > self.high_water_tokens:
             # Keep the cached prefix when folding cannot get this view under
             # high-water; a checkpoint that still triggers next round only

@@ -388,6 +388,7 @@ def browser_turn_snippets():
     submit_start = html.index('  $("composer").addEventListener("submit"')
     submit_end = html.index('\n\n  $("expand")', submit_start)
     return "\n".join((
+        "  let toastTimer = null;",
         html[html.index("  let extensionPollTimer;"):html.index("  let updateState = null;")],
         html[set_busy_start:set_busy_end],
         html[recovery_start:recovery_end],

@@ -1371,6 +1371,18 @@ def test_get_model_reports_the_resolved_model_and_suggestions(client, no_model_f
     assert body["editable"] is True
 
 
+def test_local_model_endpoint_reports_unknown_until_server_answers(client, session, monkeypatch):
+    monkeypatch.setattr(agent, "llm_base_url", lambda: "http://local")
+    monkeypatch.setattr(webserve, "llm_base_url", lambda: "http://local")
+    monkeypatch.setattr(webserve, "known_models", lambda: [])
+    monkeypatch.setattr(agent, "known_models", lambda: [])
+    session.model = None
+    body = client.get("/api/model").json()
+    assert body["unknown"] is True
+    assert body["model"] is None
+    assert body["default"] is None
+
+
 def test_post_model_sets_it_for_the_session(session, client, no_model_fetch):
     assert client.post("/api/model", json={"model": " my-model "}).json() == {"model": "my-model"}
     assert session.model == "my-model"
@@ -1669,9 +1681,11 @@ def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatc
     cut = session.store._cut
     previous_props_probes = sum(path == "/props" for path, _ok in requests)
 
-    response = TestClient(build_app(session)).post(
-        "/api/key", json={"key": "local-test-key", "persist": False}
-    )
+    client = TestClient(build_app(session))
+    before_key = client.get("/api/model").json()
+    assert before_key["unknown"] is True
+    assert before_key["model"] is None
+    response = client.post("/api/key", json={"key": "local-test-key", "persist": False})
     assert response.status_code == 200
     assert response.json()["key_required"] is False
     assert response.json()["key_label"] == "local model server key"
@@ -1682,6 +1696,9 @@ def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatc
     assert session.store.text_only is False
     assert sum(path == "/props" for path, _ok in requests) > previous_props_probes
     assert agent.resolve_model() == "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    after_key = client.get("/api/model").json()
+    assert after_key["unknown"] is False
+    assert after_key["model"] == "Qwen3.8-27B-UD-Q4_K_XL.gguf"
     assert agent._local_vision[base] is True
     assert agent._local_models == ["Qwen3.8-27B-UD-Q4_K_XL.gguf"]
     assert any(path == "/v1/models" and not ok for path, ok in requests)

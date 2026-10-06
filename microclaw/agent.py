@@ -41,6 +41,8 @@ _local_models: list[str] | None = None
 _local_vision: dict[str, bool] = {}
 _local_http: httpx.Client | None = None
 _local_prefill_rate: float | None = None
+_local_fixed_tokens: int | None = None
+_local_context_ceiling: int | None = None
 LOCAL_PREFILL_MEASUREMENT_MIN_TOKENS = 1000
 
 
@@ -96,6 +98,7 @@ LOCAL_CONTEXT_MARGIN = 4096
 
 def local_context_budget():
     """Read the local server budget and vision support, using a provisional budget on failure."""
+    global _local_fixed_tokens, _local_context_ceiling
     failures = []
     n_ctx = None
     try:
@@ -155,6 +158,8 @@ def local_context_budget():
         fixed = math.ceil(len(json.dumps(body, ensure_ascii=False,
                                         separators=(",", ":")).encode("utf-8")) / 2.36)
     computed_high = n_ctx - fixed - MAX_OUTPUT_TOKENS - LOCAL_CONTEXT_MARGIN
+    _local_fixed_tokens = fixed
+    _local_context_ceiling = computed_high
     floor_used = bool(failures) and computed_high < LOCAL_CONTEXT_UNPROBED_HIGH_WATER
     high = (
         max(LOCAL_CONTEXT_UNPROBED_HIGH_WATER, computed_high)
@@ -174,8 +179,11 @@ def make_conversation_store(audit):
     if not llm_base_url():
         return ConversationStore(audit)
     high, low, vision = local_context_budget()
-    return ConversationStore(audit, high_water_tokens=high,
-                             low_water_tokens=low, text_only=not vision)
+    store = ConversationStore(audit, high_water_tokens=high,
+                              low_water_tokens=low, text_only=not vision)
+    store.local_fixed_tokens = _local_fixed_tokens
+    store.local_context_ceiling = _local_context_ceiling
+    return store
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -201,9 +209,14 @@ def set_api_key(key: str) -> None:
     _known_models = None  # the old key's client answered models.list()
 
 
-def resolve_model(model: str | None = None) -> str:
-    """Pick the model: explicit arg > MICROCLAW_MODEL env > DEFAULT_MODEL."""
-    return model or os.environ.get(MODEL_ENV) or (known_models()[0] if llm_base_url() and known_models() else DEFAULT_MODEL)
+def resolve_model(model: str | None = None) -> str | None:
+    """Pick an explicit/configured model, or the backend's first suggestion."""
+    if model or os.environ.get(MODEL_ENV):
+        return model or os.environ.get(MODEL_ENV)
+    if llm_base_url():
+        models = known_models()
+        return models[0] if models else None
+    return DEFAULT_MODEL
 
 
 def known_models() -> list[str]:
@@ -1124,7 +1137,7 @@ def _local_error(response, base):
     raise _LocalAPIError(f"Local server {base} returned HTTP {response.status_code}: {detail}")
 
 
-def _read_local_stream(response, base, model, iteration, usage_sink):
+def _read_local_stream(response, base, model, iteration, usage_sink, store=None):
     """Read chat-completion SSE and return the Anthropic-shaped Message."""
     global _local_prefill_rate
     text = []
@@ -1199,6 +1212,19 @@ def _read_local_stream(response, base, model, iteration, usage_sink):
             "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
         },
     })
+    fixed = getattr(store, "local_fixed_tokens", None)
+    estimate = getattr(store, "last_estimated_tokens", 0)
+    prompt_tokens = usage.get("prompt_tokens")
+    # A short history magnifies fixed-prompt measurement error. Require at
+    # least 256 estimated history tokens and complete server prompt timings;
+    # reject implausible ratios rather than poisoning future fit decisions.
+    if (store is not None and isinstance(prompt_tokens, (int, float))
+            and fixed is not None and estimate >= 256
+            and timings.get("prompt_n") and timings.get("prompt_ms", 0) > 0):
+        history_tokens = prompt_tokens - fixed
+        ratio = history_tokens / estimate if history_tokens > 0 else None
+        if ratio is not None and 0.1 <= ratio <= 4.0:
+            store.local_estimate_ratio = ratio
     if usage_sink is not None:
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1240,19 +1266,23 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
         # The system+tools prefix stays cached, so the history after the new
         # checkpoint is what the server re-processes: that is the store's own
         # post-compaction estimate, already text-only-aware for images.
-        rebuild_tokens = after
+        rebuild_tokens = after * (getattr(store, "local_estimate_ratio", None) or 1.0)
         yield {"type": "compaction", "estimated_tokens": after,
                "before_tokens": before, "after_tokens": after,
                "rebuild_tokens": rebuild_tokens,
                "expected_rebuild_seconds": (rebuild_tokens / _local_prefill_rate
                                             if _local_prefill_rate else None),
-               "prefill_tokens_per_second": _local_prefill_rate}
+               "prefill_tokens_per_second": _local_prefill_rate,
+               "message": "Predicted time covers the rebuild only; the model then thinks before replying."}
     elif getattr(store, "last_compaction_declined", False):
         yield {"type": "compaction_declined",
                "estimated_tokens": getattr(store, "last_estimated_tokens", None),
                "high_water_tokens": getattr(store, "high_water_tokens", None),
+               "threshold_tokens": getattr(store, "local_context_ceiling", None)
+                   or getattr(store, "high_water_tokens", None),
                "message": "Conversation history is above the compaction threshold; "
-                          "recent turns cannot be folded yet, so this request is being sent as is."}
+                          "recent turns cannot be folded yet, so this request is being sent as is. "
+                          "Any predicted time covers the rebuild only; the model then thinks before replying."}
     payload = _local_request_body(
         model_messages, system_blocks, tool_schemas, model, vision
     )
@@ -1267,7 +1297,8 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
     ) as response:
         if response.status_code >= 400:
             _local_error(response, base)
-        return (yield from _read_local_stream(response, base, model, iteration, usage_sink))
+        return (yield from _read_local_stream(response, base, model, iteration,
+                                              usage_sink, store=store))
 
 
 def run_agent_iter(
@@ -1525,9 +1556,10 @@ def run_agent(
             cost = f"about {seconds:.1f}s" if seconds is not None else "time unknown (no measured prefill rate yet)"
             print(f"[microclaw] Compacted context: {event.get('before_tokens')} → "
                   f"{event.get('after_tokens')} estimated tokens; rebuilding about "
-                  f"{event.get('rebuild_tokens')} tokens, {cost}.")
+                  f"{event.get('rebuild_tokens')} calibrated tokens, {cost}. "
+                  "Predicted time covers the rebuild only; the model then thinks before replying.")
         elif event["type"] == "compaction_declined":
             print(f"[microclaw] {event['message']} "
                   f"({event.get('estimated_tokens')} estimated / "
-                  f"{event.get('high_water_tokens')} token threshold).")
+                  f"{event.get('threshold_tokens', event.get('high_water_tokens'))} token threshold).")
     return reply, messages

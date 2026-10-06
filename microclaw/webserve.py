@@ -1214,10 +1214,16 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 if event_type == "text_delta":
                     text_delta_count += 1
                 else:
-                    print(
-                        f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}",
-                        flush=True,
-                    )
+                    detail = ""
+                    if event_type == "compaction":
+                        detail = (f" before={event.get('before_tokens')} after={event.get('after_tokens')}"
+                                  f" rebuild={event.get('rebuild_tokens')}"
+                                  f" predicted_seconds={event.get('expected_rebuild_seconds')}")
+                    elif event_type == "compaction_declined":
+                        detail = (f" estimate={event.get('estimated_tokens')}"
+                                  f" threshold={event.get('high_water_tokens')}")
+                    print(f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}{detail}",
+                          flush=True)
 
             try:
                 loop.call_soon_threadsafe(deliver)
@@ -1437,9 +1443,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def get_model():
         # known_models() is a blocking HTTP call the first time it is asked, and
         # this endpoint runs on page load — off the event loop.
+        model = resolve_model(session.model)
+        local_path = bool(llm_base_url())
         return JSONResponse({
-            "model": resolve_model(session.model),
-            "default": DEFAULT_MODEL,
+            "model": model,
+            "unknown": bool(local_path and model is None),
+            "default": None if local_path else DEFAULT_MODEL,
             "available": await run_in_threadpool(known_models),
             "editable": session.editable,
         })
@@ -1538,6 +1547,9 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
             session.store.high_water_tokens = high
             session.store.low_water_tokens = low
             session.store.text_only = not vision
+            from . import agent as agent_module
+            session.store.local_fixed_tokens = agent_module._local_fixed_tokens
+            session.store.local_context_ceiling = agent_module._local_context_ceiling
         stored_in = stored_at = None
         stale_store = False
         if k.persist:
