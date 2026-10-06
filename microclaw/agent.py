@@ -1099,8 +1099,9 @@ def _local_request_body(model_messages, system_blocks, tool_schemas, model, visi
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    # Empty means unset: PowerShell clears a variable by assigning ''.
     reasoning_effort = os.environ.get(LOCAL_REASONING_EFFORT_ENV)
-    if reasoning_effort is not None:
+    if reasoning_effort:
         payload["chat_template_kwargs"] = {"reasoning_effort": reasoning_effort}
     if tool_schemas:
         payload["tools"] = [

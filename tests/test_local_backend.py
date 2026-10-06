@@ -135,6 +135,10 @@ def test_reasoning_effort_is_optional_on_local_request_wire(monkeypatch):
         '{"model":"m","messages":[{"role":"system","content":""}],'
         '"max_tokens":8192,"stream":true,"stream_options":{"include_usage":true}}'
     )
+    # `$env:MICROCLAW_LLM_REASONING_EFFORT = ''` is how PowerShell clears it in
+    # practice; an empty value means unset, not an effort of "".
+    monkeypatch.setenv(agent.LOCAL_REASONING_EFFORT_ENV, "")
+    assert "chat_template_kwargs" not in agent._local_request_body([], [], [], "m", False)
 
     monkeypatch.setenv(agent.LOCAL_REASONING_EFFORT_ENV, "unrecognized-but-forwarded")
     gen = agent._stream_one_round([], [], "m", [])
