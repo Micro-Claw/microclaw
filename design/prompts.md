@@ -11988,3 +11988,27 @@ Claude Code's 2-hour background cap after a network drop; later turns ran under
 intermittent). 84a `64065e6`: 5532. 84b `a8c4f81`: 5547 (+1 intermittent).
 84c `4c99b81`: 5551, 108 skipped. Merged `24a28b3`: 5551, 108 skipped.
 
+## design/91 block 91d — compaction that buys headroom (merged to the operator's fork `main`, 2026-10-06)
+
+**Replay the real history before asking for another session.** Each of rounds
+2 and 3 was predicted off-rig by replaying the previous gate's recorded history
+through the new `ConversationStore` — calibrated from that session's own usage
+records — and each prediction held: round 3's single compaction (95,316 →
+6,925, 8.6 s) is the shape the replay showed. The replay also caught that 84d's
+first turn had not implemented D12 at all (the local path returned before trying
+a fold whenever the calibrated view fitted).
+
+**A non-editable install of `main` found what no gate could.** Building a
+frozen environment for a measurement exposed that `httpx` was declared only in
+the `test` extra while `agent.py` imports it; every gate installed
+`.[serve,test]`. A coordinator design claim ("already a direct dependency") was
+the source. Install the product the way `install.bat` does at least once per
+dependency change.
+
+**Don't delete an environment a background job is using.** Removing a merged
+block's worktree killed a running measurement mid-call (its CA bundle lived in
+that venv). Measurements now run from a frozen install outside every worktree.
+
+**Counts.** `cde64fe`: 5559 passed, 108 skipped; `75fe21b` (round-3 fixes):
+5559 passed, 108 skipped. Gate 84 round 3: 9/9.
+
