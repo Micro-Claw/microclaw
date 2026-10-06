@@ -1434,15 +1434,17 @@ def test_store_backed_artifact_survives_compaction_out_of_model_view(
         _history_declaring(str(data))[0],
         {"role": "assistant", "content": [{"type": "text", "text": "made it"}]},
     ]
-    for index in range(5):
+    for index in range(8):
         history.extend([
             {"role": "user", "content": f"later {index}"},
             {"role": "assistant", "content": [
                 {"type": "text", "text": "x" * 1000},
             ]},
         ])
+    # The 3k window clears the checkpoint plus its two retained 1k replies;
+    # the original 1k window made D9 correctly decline this fold.
     stored_session.store = ConversationStore(
-        AuditLog(None, enabled=False), high_water_tokens=1000, low_water_tokens=600,
+        AuditLog(None, enabled=False), high_water_tokens=3000, low_water_tokens=2250,
     )
     stored_session.history = history
     for message in history:
@@ -1652,11 +1654,14 @@ def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatc
 
     base = "http://keyed-llama"
     history = []
+    # On the unauthenticated provisional 4096-token budget, this leaves the
+    # checkpoint plus two 3k-character replies below high-water while the full
+    # history exceeds it. That makes the pre-refresh compaction useful under D9.
     for index in range(30):
         history.extend([
-            {"role": "user", "content": f"question {index} " + "x" * 600},
+            {"role": "user", "content": f"question {index}"},
             {"role": "assistant", "content": [
-                {"type": "text", "text": "answer " + "y" * 500}]},
+                {"type": "text", "text": "answer " + "y" * 3000}]},
         ])
     session.store.model_messages(history)
     assert session.store.compaction_count > 0
