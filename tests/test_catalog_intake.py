@@ -1539,3 +1539,46 @@ def test_pack_pylock_fixed_marker_environment(pylock_package, platform, sys_plat
     manifest, _ = intake.pack(source, 'https://example.org/p.zip', out, locks)
     entry = next(e for e in manifest['locks'][platform] if e['requirement'].startswith('certifi=='))
     assert set(entry) == {'requirement', 'hashes'}
+
+
+def load_83f6_gate():
+    spec = importlib.util.spec_from_file_location('lock_demo_gate', ROOT / 'design/83-block83f6-demo-gate.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_83f6_gate_selftest_is_offline_and_discriminates(capsys):
+    gate = load_83f6_gate()
+    assert gate.selftest() == 0
+    output = capsys.readouterr().out
+    assert 'SELFTEST baseline: PASS 5/5' in output
+    assert 'distributions -> 4 Exact Windows lock FAIL; other four limbs PASS' in output
+    assert 'find_links -> 3 PyPI route FAIL; other four limbs PASS' in output
+    assert 'fresh distributions -> 4 Exact Windows lock FAIL; other four limbs PASS' in output
+    assert 'limbs 2-5 NOT EXERCISED' in output
+    assert 'PyPI and scientific binaries NOT EXERCISED' in output
+    assert 'roots removed first; store and evidence pointer removed' in output
+    wrapper = (ROOT / 'design/83-block83f6-demo-gate.ps1').read_text(encoding='utf-8')
+    runbook = (ROOT / 'design/83-block83f6-demo-gate.md').read_text(encoding='utf-8')
+    assert "'83-block83f3-demo-gate.ps1'" in wrapper and "-Block '83f6'" in wrapper
+    assert 'PowerShell 5.1' in runbook and 'Firefox' in runbook
+    assert 'git merge-base --is-ancestor 8f9cb3f HEAD' in runbook
+    assert 'PyPI' in runbook and 'raw.githubusercontent.com' in runbook
+    for phase in ('cleanup', 'prepare', 'session', 'verify'):
+        assert f'.\\design\\83-block83f6-demo-gate.ps1 -Phase {phase}' in runbook
+
+
+def test_83f6_committed_fixtures_regenerate_identically(tmp_path):
+    gate = load_83f6_gate()
+    generated = tmp_path / 'generated'
+    paths = ['catalog-1/catalog.json', 'catalog-1/policy.json', 'artifacts/' + gate.ZIP]
+    gate.fixtures(generated)
+    first = {name: (generated / name).read_bytes() for name in paths}
+    gate.fixtures(generated)
+    assert first == {name: (generated / name).read_bytes() for name in paths}
+    assert first == {name: (gate.FIXTURES / name).read_bytes() for name in paths}
+    manifest = gate.validate_fixtures(generated)
+    assert set(gate.pins(manifest['locks']['win_amd64'])) == {'numpy', 'scipy', 'h5py', 'tifffile'}
+    for platform in ('macosx_arm64', 'manylinux_x86_64'):
+        assert set(gate.pins(manifest['locks'][platform])) == {'numpy', 'scipy', 'h5py'}

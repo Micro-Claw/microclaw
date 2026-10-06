@@ -1,0 +1,37 @@
+{
+  "type": "microclaw.catalog.v1",
+  "releases": [
+    {
+      "package_id": "lock-fixture",
+      "publisher": "fixture-lab",
+      "version": "1.0.0",
+      "artifact": "https://raw.githubusercontent.com/Micro-Claw/microclaw/block-83f-6/design/83f6-gate/artifacts/fixture-lab-lock-fixture-1.0.0.zip",
+      "kind": "executable",
+      "microclaw": ">=0.1,<2",
+      "license": "MIT",
+      "source_url": "https://github.com/fixture-lab/skills",
+      "issues_url": "https://github.com/fixture-lab/skills/issues",
+      "skills": [
+        {
+          "name": "workflow",
+          "description": "A publisher-provided fixture workflow."
+        }
+      ],
+      "python": ">=3.10,<4",
+      "platforms": [
+        "win_amd64",
+        "macosx_arm64",
+        "manylinux_x86_64"
+      ],
+      "protocol_version": "1.0",
+      "type": "microclaw.skill-release.v1",
+      "artifact_digest": "680d492778a11c0fff086f989b3c64ddbd22b599b6960c9e8a79a4f848251996",
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
+        "value": "5MGowtJlZz5iaPE17aVsgUhNqN9+k5CpE9FXn60WBfdybeF+i+fnRQIjlh5dq1Nsl0k/EhE4rvMVYa8Nk+LzAA=="
+      }
+    }
+  ],
+  "withdrawals": []
+}

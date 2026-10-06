@@ -84,7 +84,8 @@ def disk_opener(directory):
 def isolated_store(directory):
     from microclaw import skill_store
     from unittest.mock import patch
-    with patch.object(skill_store, 'user_data_dir', lambda: Path(directory)):
+    with patch.object(skill_store, 'user_data_dir', lambda: Path(directory)), \
+         patch.object(skill_store, 'store_dir', lambda: Path(directory) / 'skill-packages'):
         yield skill_store
 
 
@@ -215,7 +216,7 @@ class Gate(gate83e3.Gate):
                 raise NotExercised('operator stopped the gate')
             if (kind == 'done' and answer.upper() != 'DONE') or not answer:
                 self.say(f'REJECTED[{key}]: {answer!r}')
-                self.say("Type DONE here when finished (or STOP). Your message goes in MicroClaw's chat box, not here."
+                self.say("Type DONE here when finished (or STOP). Follow the instructions in the OPERATOR prompt above."
                          if kind == 'done' else 'Type a non-empty answer here (or STOP).')
                 continue
             self.say(f'ANSWER[{key}]: {answer}')
@@ -768,6 +769,48 @@ def check_cleanup_phase(base):
         assert not pointer.exists(), 'absent-store cleanup left the evidence pointer'
 
 
+def fake_environment(base, *, platform=None, modules=False):
+    """Shared offline boundary fake: real uv venv, synthetic wheel metadata.
+
+    The default is the original 83f-3 iniconfig fake. A selected lock platform
+    lets later gates exercise multi-pin records; optional modules are version
+    stubs, never evidence that scientific wheels import on the demo machine.
+    """
+    import uv
+    from packaging.requirements import Requirement
+    from microclaw import skill_store
+    base = Path(base)
+    empty = base / 'empty-find-links'
+    empty.mkdir()
+    executable = uv.find_uv_bin()  # absolute real executable; no PATH shadowing
+    original_probe = skill_store.probe
+
+    def environment(directory, manifest, **kwargs):
+        assert kwargs.get('find_links') is None, kwargs
+        pins = {'iniconfig': '2.0.0'} if platform is None else {
+            Requirement(item['requirement']).name: next(iter(Requirement(item['requirement']).specifier)).version
+            for item in manifest['locks'][platform]}
+        env = dict(os.environ, UV_OFFLINE='1', UV_CACHE_DIR=str(base / 'uv-cache'))
+        subprocess.run([executable, 'venv', '--no-config', '--no-python-downloads', '--python', sys.executable, str(directory / 'env')],
+                       stdin=subprocess.DEVNULL, env=env, capture_output=True, text=True, encoding='utf-8', check=True)
+        python = directory / 'env' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        name, version = next(iter(pins.items()))
+        attempted = subprocess.run([executable, 'pip', 'install', '--no-config', '--offline', '--no-index', '--find-links', str(empty),
+                                    '--python', str(python), f'{name}=={version}'], stdin=subprocess.DEVNULL,
+                                   env=env, capture_output=True, text=True, encoding='utf-8')
+        assert attempted.returncode != 0, 'empty wheelhouse unexpectedly supplied dependency'
+        site = subprocess.run([str(python), '-I', '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', check=True).stdout.strip()
+        for name, version in pins.items():
+            metadata = Path(site) / f'{name}-{version}.dist-info'
+            metadata.mkdir()
+            (metadata / 'METADATA').write_text(f'Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n', encoding='utf-8')
+            if modules:
+                (Path(site) / (name + '.py')).write_text(f'__version__ = {version!r}\n', encoding='utf-8')
+        return str(python), original_probe(python)
+    return environment
+
+
 def selftest():
     from unittest.mock import patch
     from types import SimpleNamespace
@@ -804,30 +847,10 @@ def selftest():
         root = data / 'microclaw'
         root.mkdir(parents=True)
         out = base / 'evidence'
-        empty = base / 'empty-find-links'
-        empty.mkdir()
-        uv = shutil.which('uv')
-        assert uv, 'real uv required for selftest'
-        original_probe = skill_store.probe
-        def environment(directory, manifest, **kwargs):
-            assert kwargs.get('find_links') is None, kwargs
-            env = dict(os.environ, UV_OFFLINE='1', UV_CACHE_DIR=str(base / 'uv-cache'))
-            subprocess.run([uv, 'venv', '--no-config', '--no-python-downloads', '--python', sys.executable, str(directory / 'env')],
-                           env=env, capture_output=True, text=True, check=True)
-            python = directory / 'env' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
-            # Prove this route cannot install from the permitted empty wheelhouse.
-            attempted = subprocess.run([uv, 'pip', 'install', '--no-config', '--offline', '--no-index', '--find-links', str(empty),
-                                        '--python', str(python), 'iniconfig==2.0.0'], env=env, capture_output=True, text=True)
-            assert attempted.returncode != 0, 'empty wheelhouse unexpectedly supplied dependency'
-            site = subprocess.run([str(python), '-I', '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'],
-                                  capture_output=True, text=True, check=True).stdout.strip()
-            metadata = Path(site) / 'iniconfig-2.0.0.dist-info'
-            metadata.mkdir()
-            (metadata / 'METADATA').write_text('Metadata-Version: 2.1\nName: iniconfig\nVersion: 2.0.0\n', encoding='utf-8')
-            return str(python), original_probe(python)
+        environment = fake_environment(base)
         open_file = disk_opener(FIXTURES)
         with patch.dict(os.environ, LOCALAPPDATA=str(data), XDG_DATA_HOME=str(data), UV_OFFLINE='1'), \
-             patch.object(skill_store, 'user_data_dir', lambda: root), \
+             isolated_store(root), \
              patch.object(updates, '_default_opener', open_file), \
              patch.object(skill_store, 'build_environment', environment):
             gate = Gate(root, out)
