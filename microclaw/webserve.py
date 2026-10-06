@@ -1443,13 +1443,15 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def get_model():
         # known_models() is a blocking HTTP call the first time it is asked, and
         # this endpoint runs on page load — off the event loop.
-        model = resolve_model(session.model)
+        available = await run_in_threadpool(known_models)
         local_path = bool(llm_base_url())
+        model = resolve_model(session.model)
+        configured = session.model or os.environ.get("MICROCLAW_MODEL")
         return JSONResponse({
             "model": model,
-            "unknown": bool(local_path and model is None),
+            "unknown": bool(local_path and not configured and not available),
             "default": None if local_path else DEFAULT_MODEL,
-            "available": await run_in_threadpool(known_models),
+            "available": available,
             "editable": session.editable,
         })
 

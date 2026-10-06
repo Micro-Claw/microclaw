@@ -580,14 +580,7 @@ class ConversationStore:
             and self.last_estimated_tokens * (self.local_estimate_ratio or 1.0)
             > self.local_context_ceiling
         )
-        if self.local_context_ceiling is not None:
-            if self.last_estimated_tokens <= self.high_water_tokens and not local_over_ceiling:
-                self._declined_stretch = False
-                return current
-            if self.last_estimated_tokens > self.high_water_tokens and not local_over_ceiling:
-                self._declined_stretch = False
-                return current
-        if self.last_estimated_tokens <= self.high_water_tokens and not local_over_ceiling:
+        if self.last_estimated_tokens <= self.high_water_tokens:
             self._declined_stretch = False
             return current
 
@@ -617,15 +610,18 @@ class ConversationStore:
                 chosen = end
                 chosen_estimate = candidate_estimate
                 break
-        # On the local path the safety valve needs the deepest useful fold;
-        # ordinary hysteresis still waits until a fold reaches low-water.
-        if local_over_ceiling and best_under_high:
-            chosen, chosen_estimate = best_under_high
-        if (self.local_context_ceiling is not None and not local_over_ceiling
-                and chosen_estimate > self.low_water_tokens):
-            self.last_compaction_declined = not self._declined_stretch
-            self._declined_stretch = True
-            return current
+        if self.local_context_ceiling is not None:
+            # A low-water fold always wins. Otherwise only the calibrated
+            # server-fit valve may commit a fold, choosing the deepest one
+            # that clears estimate-unit high-water.
+            if chosen_estimate <= self.low_water_tokens and chosen != self._cut:
+                pass  # Commit through the shared block below.
+            elif local_over_ceiling and best_under_high:
+                chosen, chosen_estimate = best_under_high
+            else:
+                self.last_compaction_declined = not self._declined_stretch
+                self._declined_stretch = True
+                return current
         if chosen == self._cut or chosen_estimate > self.high_water_tokens:
             # Keep the cached prefix when folding cannot get this view under
             # high-water; a checkpoint that still triggers next round only

@@ -20,6 +20,7 @@ def replay(name):
 def install(monkeypatch, name, *, extra=None, stream_chunks=False, vision=False):
     class Captured(list):
         timeouts = []
+        apply_templates = []
     captured = Captured()
     remaining = list(name if isinstance(name, list) else [name])
     def handler(request):
@@ -42,6 +43,9 @@ def install(monkeypatch, name, *, extra=None, stream_chunks=False, vision=False)
                 captured.append(stream)
                 return httpx.Response(response.status_code, headers=response.headers, stream=stream)
             return response
+        if request.url.path.endswith("/apply-template"):
+            captured.apply_templates.append(json.loads(request.content))
+            return httpx.Response(200, json={"prompt": "rendered prompt"})
         if request.url.path.endswith("/props"):
             prop = replay("get_props")
             if vision:
@@ -120,6 +124,35 @@ def test_recorded_response_calibrates_store_and_rebuild_prediction(monkeypatch):
     assert event["rebuild_tokens"] == 900 * expected_ratio
     assert abs(event["expected_rebuild_seconds"] - 90 * expected_ratio) < 1e-9
     second.close()
+
+
+def test_reasoning_effort_is_optional_on_local_request_wire(monkeypatch):
+    captured = install(monkeypatch, "stream_text_reply")
+    monkeypatch.delenv(agent.LOCAL_REASONING_EFFORT_ENV, raising=False)
+    payload = agent._local_request_body([], [], [], "m", False)
+    assert "chat_template_kwargs" not in payload
+    assert json.dumps(payload, separators=(",", ":"), ensure_ascii=False) == (
+        '{"model":"m","messages":[{"role":"system","content":""}],'
+        '"max_tokens":8192,"stream":true,"stream_options":{"include_usage":true}}'
+    )
+
+    monkeypatch.setenv(agent.LOCAL_REASONING_EFFORT_ENV, "unrecognized-but-forwarded")
+    gen = agent._stream_one_round([], [], "m", [])
+    for _ in gen:
+        pass
+    assert captured[0]["chat_template_kwargs"] == {
+        "reasoning_effort": "unrecognized-but-forwarded",
+    }
+
+
+def test_reasoning_effort_budget_probe_uses_same_template_kwargs(monkeypatch, capsys):
+    captured = install(monkeypatch, "stream_text_reply")
+    monkeypatch.setenv(agent.LOCAL_REASONING_EFFORT_ENV, "medium")
+    agent.local_context_budget()
+    assert captured.apply_templates[0]["chat_template_kwargs"] == {
+        "reasoning_effort": "medium",
+    }
+    assert "reasoning_effort=medium" in capsys.readouterr().out
 
 
 def test_recorded_text_and_length_finish_reasons(monkeypatch):

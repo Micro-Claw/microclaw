@@ -94,6 +94,7 @@ LOCAL_CONTEXT_UNPROBED_HIGH_WATER = 4096
 # It covers turn-to-turn knowledge/rig-interview changes and history-estimate
 # error; the small measured history error was 3 tokens on a 2,716-token sample.
 LOCAL_CONTEXT_MARGIN = 4096
+LOCAL_REASONING_EFFORT_ENV = "MICROCLAW_LLM_REASONING_EFFORT"
 
 
 def local_context_budget():
@@ -159,6 +160,9 @@ def local_context_budget():
                                         separators=(",", ":")).encode("utf-8")) / 2.36)
     computed_high = n_ctx - fixed - MAX_OUTPUT_TOKENS - LOCAL_CONTEXT_MARGIN
     _local_fixed_tokens = fixed
+    # This is the server-token history ceiling after fixed prompt, output
+    # reserve, and margin. With successful probes high-water uses this same
+    # figure in store-estimate units; calibration maps estimates to this ceiling.
     _local_context_ceiling = computed_high
     floor_used = bool(failures) and computed_high < LOCAL_CONTEXT_UNPROBED_HIGH_WATER
     high = (
@@ -169,6 +173,7 @@ def local_context_budget():
     print(f"[microclaw] Local context budget: n_ctx={n_ctx}"
           f"{' (default; server did not report n_ctx)' if used_default else ''}, "
           f"fixed={fixed}, high={high}, low={low}"
+          f", reasoning_effort={os.environ.get(LOCAL_REASONING_EFFORT_ENV) or 'server default'}"
           f"{' (provisional 4096-token history floor)' if floor_used else ''}"
           f"{'; probe failures: ' + ', '.join(failures) if failures else ''}")
     return high, low, vision
@@ -209,13 +214,15 @@ def set_api_key(key: str) -> None:
     _known_models = None  # the old key's client answered models.list()
 
 
-def resolve_model(model: str | None = None) -> str | None:
+def resolve_model(model: str | None = None) -> str:
     """Pick an explicit/configured model, or the backend's first suggestion."""
     if model or os.environ.get(MODEL_ENV):
         return model or os.environ.get(MODEL_ENV)
     if llm_base_url():
         models = known_models()
-        return models[0] if models else None
+        # "default" is a neutral OpenAI-compatible selector when the server
+        # has not exposed an id yet; the UI separately reports unknown state.
+        return models[0] if models else "default"
     return DEFAULT_MODEL
 
 
@@ -1092,6 +1099,9 @@ def _local_request_body(model_messages, system_blocks, tool_schemas, model, visi
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    reasoning_effort = os.environ.get(LOCAL_REASONING_EFFORT_ENV)
+    if reasoning_effort is not None:
+        payload["chat_template_kwargs"] = {"reasoning_effort": reasoning_effort}
     if tool_schemas:
         payload["tools"] = [
             {

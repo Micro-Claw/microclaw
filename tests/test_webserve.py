@@ -1379,7 +1379,7 @@ def test_local_model_endpoint_reports_unknown_until_server_answers(client, sessi
     session.model = None
     body = client.get("/api/model").json()
     assert body["unknown"] is True
-    assert body["model"] is None
+    assert body["model"] == "default"
     assert body["default"] is None
 
 
@@ -1684,7 +1684,7 @@ def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatc
     client = TestClient(build_app(session))
     before_key = client.get("/api/model").json()
     assert before_key["unknown"] is True
-    assert before_key["model"] is None
+    assert before_key["model"] == "default"
     response = client.post("/api/key", json={"key": "local-test-key", "persist": False})
     assert response.status_code == 200
     assert response.json()["key_required"] is False
