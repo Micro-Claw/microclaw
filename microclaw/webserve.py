@@ -1216,12 +1216,18 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 else:
                     detail = ""
                     if event_type == "compaction":
+                        seconds = event.get("expected_rebuild_seconds")
                         detail = (f" before={event.get('before_tokens')} after={event.get('after_tokens')}"
                                   f" rebuild={event.get('rebuild_tokens')}"
-                                  f" predicted_seconds={event.get('expected_rebuild_seconds')}")
+                                  f" predicted_seconds="
+                                  f"{'unknown' if seconds is None else f'{seconds:.1f}'}")
                     elif event_type == "compaction_declined":
                         detail = (f" estimate={event.get('estimated_tokens')}"
-                                  f" threshold={event.get('high_water_tokens')}")
+                                  f" threshold={event.get('threshold_tokens', event.get('high_water_tokens'))}")
+                    elif event_type == "error":
+                        # Say why in the console too: gate 84 round 3's operator saw
+                        # only "seq 5 error" for a context-exceeded refusal.
+                        detail = ": " + " ".join(str(event.get("message", "")).split())[:300]
                     print(f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}{detail}",
                           flush=True)
 

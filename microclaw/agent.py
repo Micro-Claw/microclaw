@@ -1277,7 +1277,7 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
         # The system+tools prefix stays cached, so the history after the new
         # checkpoint is what the server re-processes: that is the store's own
         # post-compaction estimate, already text-only-aware for images.
-        rebuild_tokens = after * (getattr(store, "local_estimate_ratio", None) or 1.0)
+        rebuild_tokens = round(after * (getattr(store, "local_estimate_ratio", None) or 1.0))
         yield {"type": "compaction", "estimated_tokens": after,
                "before_tokens": before, "after_tokens": after,
                "rebuild_tokens": rebuild_tokens,

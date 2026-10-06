@@ -100,7 +100,10 @@
     background: var(--panel); border: 1px solid var(--line); border-left: 3px solid #c0392b;
     border-radius: 10px; box-shadow: var(--shadow);
     padding: 10px 14px; font-size: 13px; max-width: min(600px, 90vw);
+    user-select: text;
   }
+  #toast .toast-close { margin-left: 10px; border: 0; background: none; cursor: pointer;
+    color: var(--ink); font-size: 13px; }
 </style>
 
 <header>
@@ -584,10 +587,27 @@
       el.id = "toast";
       document.body.appendChild(el);
     }
-    el.textContent = text;
     clearTimeout(toastTimer);
-    el.onclick = () => el.remove();
-    toastTimer = persistent ? null : setTimeout(() => el.remove(), 6000);
+    if (persistent) {
+      // A notice worth reading is worth copying: dismiss with the button only,
+      // so selecting its text does not close it (gate 84 round 3).
+      el.textContent = "";
+      const body = document.createElement("span");
+      body.textContent = text;
+      const close = document.createElement("button");
+      close.className = "toast-close";
+      close.type = "button";
+      close.setAttribute("aria-label", "Dismiss");
+      close.textContent = "\u2715";
+      close.onclick = () => el.remove();
+      el.append(body, close);
+      el.onclick = null;
+      toastTimer = null;
+    } else {
+      el.textContent = text;
+      el.onclick = () => el.remove();
+      toastTimer = setTimeout(() => el.remove(), 6000);
+    }
   }
 
   // ---- rendering ----
@@ -752,11 +772,11 @@
         const seconds = ev.expected_rebuild_seconds == null
           ? "time unknown (no measured prefill rate yet)"
           : `about ${Number(ev.expected_rebuild_seconds).toFixed(1)}s`;
-        toast(`Compacted context: ${Number(ev.before_tokens).toLocaleString()} → ${Number(ev.after_tokens).toLocaleString()} estimated tokens; rebuilding ${Number(ev.rebuild_tokens).toLocaleString()} calibrated tokens, ${seconds}. Predicted time covers rebuild only; the model thinks before replying. Click to dismiss.`, true);
+        toast(`Compacted context: ${Number(ev.before_tokens).toLocaleString()} → ${Number(ev.after_tokens).toLocaleString()} estimated tokens; rebuilding ${Number(ev.rebuild_tokens).toLocaleString()} calibrated tokens, ${seconds}. Predicted time covers rebuild only; the model thinks before replying.`, true);
         break;
       }
       case "compaction_declined":
-        toast(`${ev.message} (${Number(ev.estimated_tokens).toLocaleString()} estimated / ${Number(ev.threshold_tokens ?? ev.high_water_tokens).toLocaleString()} token threshold). Click to dismiss.`, true);
+        toast(`${ev.message} (${Number(ev.estimated_tokens).toLocaleString()} estimated / ${Number(ev.threshold_tokens ?? ev.high_water_tokens).toLocaleString()} token threshold).`, true);
         break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;

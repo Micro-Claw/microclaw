@@ -121,8 +121,10 @@ def test_recorded_response_calibrates_store_and_rebuild_prediction(monkeypatch):
     )
     event = next(second)
     assert event["type"] == "compaction"
-    assert event["rebuild_tokens"] == 900 * expected_ratio
-    assert abs(event["expected_rebuild_seconds"] - 90 * expected_ratio) < 1e-9
+    assert event["rebuild_tokens"] == round(900 * expected_ratio)  # whole tokens
+    # The prediction is the whole-token rebuild count over the measured rate
+    # (10 tok/s in this fixture), so it uses the rounded count.
+    assert abs(event["expected_rebuild_seconds"] - event["rebuild_tokens"] / 10) < 1e-9
     second.close()
 
 
