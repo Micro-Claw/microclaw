@@ -172,7 +172,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | **merged** to fork `main` `24a28b3`, 2026-10-06 |
 | 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
 | 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
-| 84d | `design84/84d-calibrate` | `d4ae9fb` (fork `main`) | assigned 2026-10-06 (D12–D15; D16 measuring) |
+| 84d | `design84/84d-calibrate` | `4859ce2` (fork `main` + httpx fix) | reviewed 2026-10-06; gate 84 round 3 pushed, not run |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -342,8 +342,32 @@ model then thinks before it replies, and `serve` prints each with its numbers.
 path it shows the server's model id, refreshed when a key is entered; before the
 server has answered it says so, and it never shows a Claude id.
 
-**D16 (F6) — reasoning effort: measure first.** The model's template takes
-`reasoning_effort` (`xhigh` default, `medium`, `low`) through
-`chat_template_kwargs`. Coordinator measurement on Microclaw's real prompt
-decides whether a lower default is worth exposing; not implemented until then.
+**D16 (F6) — reasoning effort: an optional setting, default unchanged**
+(operator decision, 2026-10-06). `MICROCLAW_LLM_REASONING_EFFORT`, unset by
+default, is forwarded unchanged as `chat_template_kwargs.reasoning_effort`, and
+the fixed-prompt count renders with it. Measured on Microclaw's real prompt and
+tools, 2 runs per cell: median generation per call 16.5 s (`xhigh`), 6.0 s
+(`medium`), 9.1 s (`low`); simple turns fell from 7–14 s to ~2 s, the 3×3
+bead-count planning turn did not reliably fall (80 s `xhigh`, 85–93 s
+`medium`, 20 s and 92 s `low`; 217 s once at `xhigh`). No quality loss visible
+at that sample size, which cannot show equivalence. The operator tries it out
+of band.
+
+**84d review, 2026-10-06.** Two runner turns: `0b55c88` (D13–D15 right; D12
+not — the local path returned before trying any fold whenever the calibrated
+view fitted, so a low-water fold never committed and no notice fired;
+`resolve_model` sent `"model": null`), `9372a89` (P1–P5: the D12 sequence,
+the ceiling stated, the gate-shape test watched failing on 84c's store, a
+neutral `"default"` model string, and D16). Coordinator: `cde64fe` (an empty
+effort means unset). Replays of both real gate sessions through `9372a89`'s
+store, calibrated from each session's own usage: round 1's history **0**
+compactions (one decline), round 2's **1**, landing at 55,222; largest request
+~126.6k of 131,072 with the reply reserve. Live: budget unchanged with the
+setting unset; with `medium` the probe counted 33,826 fixed and the request was
+33,831. Full suite on `cde64fe`: **5559 passed, 108 skipped**.
+
+**Found on the way, fixed on `main` first** (`54e1055`): `httpx` was declared
+only in the `test` extra while `agent.py` imports it; `anthropic` now depends on
+`httpx2`, so a fresh `.[serve]` install could not import `microclaw.agent`. The
+gates installed `.[serve,test]` and never saw it.
 

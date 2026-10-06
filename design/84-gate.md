@@ -1,4 +1,4 @@
-# Gate 84, round 2 — the same session on block 84c
+# Gate 84, round 3 — the same session on block 84d
 
 **Machine: the llama.cpp workstation** (`IIC-LLS-Wkstn`), with Micro-Manager's
 stock demo configuration — no microscope. **Windows PowerShell 5.1** and
@@ -12,14 +12,16 @@ rounds, a thumbnail does not count as text, and the browser works with a
 keyless or keyed local server. The scorer reads the session's own history and
 usage files; steps 6 and 7 are the parts only you can judge.
 
-**Round 2 (block 84c).** Round 1 (2026-10-05) passed its behaviour but paid
-three slow rebuilds in a row — 134 s, 133 s and 99 s — because each compaction
-was committed while the history was still above the threshold. 84c commits a
-compaction only when it gets under the threshold, and says what it did. This is
-the **same session, same server settings**, so the two can be compared. A
-replay of round 1's history through 84c predicts one rebuild where round 1 had
-three. Your machine already has the clone, the environment and the demo bounds;
-steps 1–3 below are written to be safe to re-run.
+**Round 3 (block 84d).** Round 1 paid three slow rebuilds (366 s); round 2,
+on 84c, paid two (197 s), the first landing 671 tokens under the threshold and
+buying one round. 84d commits a compaction only when it reaches the low-water
+mark, unless the conversation would otherwise not fit the server — judged with
+the estimate calibrated against the server's own token counts. Replaying both
+earlier sessions' real histories through 84d gives **no** compaction for round
+1's session and **one**, landing well under low-water, for round 2's; every
+request still fits. Same session, same server settings; steps 1–3 are safe to
+re-run. Leave `MICROCLAW_LLM_REASONING_EFFORT` unset for this round, so it
+compares with rounds 1 and 2.
 
 About **30–45 minutes**, most of it waiting for the model. Nothing here costs
 money or exposes a sample.
@@ -47,9 +49,9 @@ Expect `status` `ok`.
 if (-not (Test-Path C:\code\microclaw)) { git clone https://github.com/iandobbie/microclaw.git C:\code\microclaw }
 cd C:\code\microclaw
 git fetch origin
-git checkout design84/84c-compaction
+git checkout design84/84d-calibrate
 git pull
-git merge-base --is-ancestor 4c99b81 HEAD
+git merge-base --is-ancestor cde64fe HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" } else { "STOP - wrong tree, do not run the gate" }
 ```
 
@@ -175,16 +177,21 @@ cd C:\code\microclaw
 ```
 
 Each read adds roughly 19,000 tokens of history; compaction should come within
-about five reads. **(O4)** Two kinds of toast can now appear; note each one's
-text as it appears:
-- **"Conversation history is above the compaction threshold; recent turns cannot
-  be folded yet, so this request is being sent as is."** — expected once, around
-  the large hook-log read, and the replies after it should **not** be slow.
-- **"Compacted context: A → B estimated tokens; rebuilding N tokens, about S
-  s."** — expected once. Roughly how many seconds was it from **Send** to the
-  first text on that turn, against the S it predicted?
+about five reads. **(O4)** The two compaction notices now stay up until you
+click them, so copy each one's text before dismissing it; the `serve` window
+also prints each with its numbers.
+- **"Conversation history is above the compaction threshold; … being sent as
+  is."** — expected once, around the large hook-log read; the replies after it
+  should **not** be slow.
+- **"Compacted context: A → B estimated tokens; rebuilding N calibrated tokens,
+  about S s. …"** — expected **at most once**, and B should be well below the
+  low-water mark (63,690). If it appears, note S and roughly how long it was
+  from **Send** to the first text.
 
-Round 1 had three slow turns in a row; say how many slow turns this round had.
+Say how many slow turns this round had (round 1: three, round 2: two).
+
+**(O6)** After you entered the key, what does the model button at the top of the
+page say? It should name the Qwen model, not a Claude id.
 
 **Last turn:**
 
@@ -204,12 +211,12 @@ is, with the key, because the server answers nothing but `/health` without it.
 
 ```powershell
 cd C:\code\microclaw
-New-Item -ItemType Directory -Force block84c-evidence | Out-Null
-.venv\Scripts\python.exe design\84-gate.py --session . --base-url http://127.0.0.1:8080 --api-key testkey > block84c-evidence\gate.log 2>&1
-Get-Content block84c-evidence\gate.log
-Copy-Item (Get-ChildItem *_microclaw_history.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84c-evidence\
-Copy-Item (Get-ChildItem *_microclaw_usage.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84c-evidence\
-Copy-Item (Get-ChildItem *_microclaw_confirmations.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84c-evidence\ -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force block84d-evidence | Out-Null
+.venv\Scripts\python.exe design\84-gate.py --session . --base-url http://127.0.0.1:8080 --api-key testkey > block84d-evidence\gate.log 2>&1
+Get-Content block84d-evidence\gate.log
+Copy-Item (Get-ChildItem *_microclaw_history.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84d-evidence\
+Copy-Item (Get-ChildItem *_microclaw_usage.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84d-evidence\
+Copy-Item (Get-ChildItem *_microclaw_confirmations.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84d-evidence\ -ErrorAction SilentlyContinue
 ```
 
 The last line of `gate.log` reads `<k>/<n> graded limbs passed`. **NOT
@@ -217,7 +224,7 @@ EXERCISED is never a pass.** REPORT lines are measurements and are not graded.
 
 ## 8 — send
 
-Send the `block84c-evidence` folder, your answers to **O1–O5**, and a copy-paste
+Send the `block84d-evidence` folder, your answers to **O1–O6**, and a copy-paste
 of the `serve` window's output (select all in that window). The datasets in
 `block84-frames` can stay where they are.
 
