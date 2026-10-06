@@ -171,7 +171,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 |---|---|---|---|
 | 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | reviewed 2026-10-02, gate not run |
 | 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | gate 84 run 2026-10-05: behaviour passes; compaction defect → 84c |
-| 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | assigned 2026-10-05 |
+| 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | reviewed 2026-10-05; gate 84 round 2 pushed, not run |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -272,4 +272,18 @@ Gate 84c measures one larger window rather than assuming it helps.
 **Gate 84c.** Re-run gate 84 on the workstation with the fixed scorer (F2: grade
 prompt + reserve ≤ `n_ctx` and report every request sent above high-water; a
 mutant for each), expecting one compaction-cost round where round 1 had three.
+
+**84c review, 2026-10-05.** Three runner turns: `fa61636` (D9/D10; three
+existing tests weakened until they no longer tested their purpose — 84a's F1
+checkpoint-on-the-wire test among them), `ce3d2fc` (N1–N4: purposes restored at
+watermarks where D9 commits; the gate shape pinned — old store 1, 2, 3 commits;
+rebuild estimate text-only; declined notice once per stretch), `4c99b81` (six
+more fixtures outside the targeted files resized; the design/82 R63 probe now
+says it replays under the current policy, so a pre-84c session's partition is
+not historical proof). Coordinator: `f26df3e` (gate scorer F2 — fit and D9
+graded separately; re-scored on round 1's real artifacts it fails D9 at records
+10 and 11), `c650837` (round-2 runbook). Replay of round 1's real history
+through the final store at the gate's watermarks: old 3 commits at calls 10, 11,
+12; new: declined once at 10, sent as is at 11, **one** commit at 12. Full suite
+on `4c99b81`: **5551 passed, 108 skipped**.
 
