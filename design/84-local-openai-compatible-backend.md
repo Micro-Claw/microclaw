@@ -169,9 +169,9 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 
 | block | branch | start | state |
 |---|---|---|---|
-| 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | reviewed 2026-10-02, gate not run |
-| 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | gate 84 run 2026-10-05: behaviour passes; compaction defect → 84c |
-| 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | reviewed 2026-10-05; gate 84 round 2 pushed, not run |
+| 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | **merged** to fork `main` `24a28b3`, 2026-10-06 |
+| 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
+| 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -286,4 +286,32 @@ graded separately; re-scored on round 1's real artifacts it fails D9 at records
 through the final store at the gate's watermarks: old 3 commits at calls 10, 11,
 12; new: declined once at 10, sent as is at 11, **one** commit at 12. Full suite
 on `4c99b81`: **5551 passed, 108 skipped**.
+
+## Gate 84, round 2 (workstation, 2026-10-06) — scored from artifacts
+
+Session `20261006_090604_910375`, 9/9 graded limbs. Two compactions where round
+1 had three, both committed under high-water; two over-threshold requests sent as
+is, each reusing the cache (68,538 and 109,934 tokens). Rebuilds 125.3 s + 72.1 s
+= 197 s against round 1's 366 s. Peak prompt + reserve 121,586 of 131,072. The
+two sessions differ (Qwen read the log with `limit: 150` this time), so the
+comparison is qualitative; the per-record mechanism is not.
+
+**F3 — a fold that clears high-water by a hair buys nothing.** Compaction 1 left
+84,249 (671 under 84,920); the next call was over again and compaction 2
+followed two calls later. Replaying the real history with "commit only at
+low-water" gives one compaction (at call 14) and saves the 125 s rebuild, at the
+cost of sending call 13 about 5k tokens larger — which needs a calibrated
+"would not fit" valve, because the estimator runs ~1.2× high for Qwen and in raw
+estimate units that valve fires at call 12 and reproduces today's behaviour.
+
+**F4 — the rebuild prediction.** 150 s and 111.5 s predicted against 125.3 s
+and 72.1 s measured, because the estimate counts ~1.2× the server's tokens; and
+the operator's 210 s to first text includes the model's hidden reasoning after
+the rebuild (5,097 characters on that turn), which the toast does not mention.
+
+**F5 — the toasts vanish before they can be read, and `serve` logs only
+`compaction`.** **F6 — generation now dominates:** 728 s against 382 s of prompt
+processing; one round wrote 8,656 reasoning characters before a tool call.
+**F7 — the model button says `claude-opus-4-8` on the local path** until the
+server answers `/v1/models`, which a keyed server does only after the key.
 
