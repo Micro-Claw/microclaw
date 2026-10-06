@@ -1237,8 +1237,9 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
     if getattr(store, "compaction_count", 0) > compactions_before:
         before = getattr(store, "last_pre_compaction_estimated_tokens", None)
         after = getattr(store, "last_estimated_tokens", None)
-        # model_messages is the post-compaction history estimate from the
-        # store, including its text-only image accounting when configured.
+        # The system+tools prefix stays cached, so the history after the new
+        # checkpoint is what the server re-processes: that is the store's own
+        # post-compaction estimate, already text-only-aware for images.
         rebuild_tokens = after
         yield {"type": "compaction", "estimated_tokens": after,
                "before_tokens": before, "after_tokens": after,

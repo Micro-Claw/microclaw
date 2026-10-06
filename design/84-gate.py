@@ -181,21 +181,47 @@ def score(usage_path: Path | None, history_path: Path | None, base_url: str | No
     compactions = [i for i in range(1, len(records))
                    if (records[i].get("compaction_count") or 0)
                    > (records[i - 1].get("compaction_count") or 0)]
+    # Three questions, graded separately (gate 84 round 1, F2: one limb that
+    # skipped compaction records passed a checkpoint committed above high-water).
+    FIT = "every request fit the server's context"
+    D9 = "no compaction was committed above high-water"
     if base_url is None:
-        s.skip("history stayed under the server-derived high-water",
-               "no --base-url given, so the product's budget was not computed")
+        for name in (FIT, D9):
+            s.skip(name, "no --base-url given, so the server's budget was not read")
     else:
         budget = server_budget(base_url, api_key)
         if isinstance(budget, str):
-            s.skip("history stayed under the server-derived high-water", budget)
+            for name in (FIT, D9):
+                s.skip(name, budget)
         else:
             high, low, n_ctx = budget
-            over = [i for i, r in enumerate(records)
-                    if (r.get("estimated_tokens") or 0) > high and i not in compactions]
-            s.check("history stayed under the server-derived high-water", not over,
-                    f"server n_ctx {n_ctx}; product high {high}, low {low}; peak estimate "
-                    f"{max(r.get('estimated_tokens') or 0 for r in records)}"
-                    + (f"; over at record(s) {over}" if over else ""))
+            from microclaw.agent import MAX_OUTPUT_TOKENS
+            # The real limit: the server refuses a prompt that leaves no room for
+            # the reply. Everything else is the store's policy.
+            too_big = [(i, r.get("input_tokens")) for i, r in enumerate(records)
+                       if (r.get("input_tokens") or 0) + MAX_OUTPUT_TOKENS > n_ctx]
+            s.check(FIT, not too_big,
+                    f"server n_ctx {n_ctx}; peak prompt {peak} + {MAX_OUTPUT_TOKENS} reply "
+                    f"reserve = {peak + MAX_OUTPUT_TOKENS}"
+                    + (f"; over at (record, prompt) {too_big}" if too_big else ""))
+            # D9 (design/84 84c): a fold that cannot reach high-water is not
+            # committed. The record of the compacting call carries the estimate
+            # of the view it sent, so a committed compaction above high is visible.
+            bad = [(i, records[i].get("estimated_tokens")) for i in compactions
+                   if (records[i].get("estimated_tokens") or 0) > high]
+            if not compactions:
+                s.skip(D9, "the session never compacted, so no commit could be judged")
+            else:
+                s.check(D9, not bad,
+                        f"high {high}, low {low}; estimate after each compaction "
+                        f"{[records[i].get('estimated_tokens') for i in compactions]}"
+                        + (f"; committed above high at (record, estimate) {bad}" if bad else ""))
+            # D9 deliberately sends an over-threshold view when no fold would help;
+            # that is policy, so it is reported, not graded.
+            above = [i for i, r in enumerate(records)
+                     if (r.get("estimated_tokens") or 0) > high and i not in compactions]
+            s.report("requests sent above high-water without compacting",
+                     f"{len(above)}" + (f" at record(s) {above}" if above else ""))
 
     if not compactions:
         s.skip("the session compacted at least once",

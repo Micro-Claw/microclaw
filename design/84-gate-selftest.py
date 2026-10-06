@@ -132,18 +132,22 @@ def rewrite(stem: Path, suffix: str, edit) -> None:
 LOCAL = "every model call went through the local backend"
 ONE = "one usage record per model reply"
 NAMES = "every tool call names a registered tool"
-UNDER = "history stayed under the server-derived high-water"
+FIT = "every request fit the server's context"
+D9 = "no compaction was committed above high-water"
 COMPACTED = "the session compacted at least once"
 PREFIX = "each later round reused the previous round's prompt"
 THUMB = "a thumbnail did not inflate the history estimate"
-GRADED = (LOCAL, ONE, NAMES, UNDER, COMPACTED, PREFIX, THUMB)
+GRADED = (LOCAL, ONE, NAMES, FIT, D9, COMPACTED, PREFIX, THUMB)
 
 
 @pytest.fixture
 def good(tmp_path, monkeypatch):
     install_server(monkeypatch)
-    # high 1200 / low 600: each turn adds ~430 estimated tokens, so turn 3 compacts.
-    return drive(tmp_path, turns=6, high=1200, low=600, text_only=True)
+    # high 2500 / low 1500, 10 turns: each turn adds ~430 estimated tokens and
+    # a fold must clear high-water to commit (design/84 D9), so the checkpoint
+    # plus the two retained turns has to fit; measured, this commits twice
+    # (estimates 1502, 1858). At 1200 / 600 no fold ever clears high-water.
+    return drive(tmp_path, turns=10, high=2500, low=1500, text_only=True)
 
 
 def test_the_real_session_passes_every_graded_limb(good, capsys):
@@ -173,22 +177,37 @@ def test_an_unregistered_tool_name_fails_the_registry_limb(good, capsys):
     assert verdicts(capsys, good)[NAMES] == "FAIL"
 
 
-def test_an_estimate_above_the_server_budget_fails_the_budget_limb(good, capsys):
-    # The recorded server reports n_ctx 131072; the product derives high-water
-    # from it. An estimate above that, outside a compaction, must fail.
+def test_a_prompt_with_no_room_for_the_reply_fails_the_fit_limb(good, capsys):
+    # The recorded server reports n_ctx 131072; 125,000 + the 8,192 reply
+    # reserve does not fit.
     rewrite(good, "_microclaw_usage.jsonl",
-            lambda rows: rows[0].update(estimated_tokens=131072))
-    assert verdicts(capsys, good)[UNDER] == "FAIL"
+            lambda rows: rows[0].update(input_tokens=125_000))
+    assert verdicts(capsys, good)[FIT] == "FAIL"
+
+
+def test_a_compaction_committed_above_high_water_fails_the_d9_limb(good, capsys):
+    # Gate 84 round 1's shape: the compacting call's estimate is still above the
+    # high-water the product derives from the server (84,920 there; here the
+    # recorded server's tokenize fixture makes it larger, so use n_ctx itself).
+    def above(rows):
+        for i in range(1, len(rows)):
+            if rows[i]["compaction_count"] > rows[i - 1]["compaction_count"]:
+                rows[i]["estimated_tokens"] = 131_072
+                return
+    rewrite(good, "_microclaw_usage.jsonl", above)
+    assert verdicts(capsys, good)[D9] == "FAIL"
 
 
 def test_no_base_url_is_not_exercised_not_passed(good, capsys):
-    assert verdicts(capsys, good, base_url=None)[UNDER] == "NOT EXERCISED"
+    rows = verdicts(capsys, good, base_url=None)
+    assert (rows[FIT], rows[D9]) == ("NOT EXERCISED", "NOT EXERCISED")
 
 
 def test_no_key_for_a_keyed_server_is_not_exercised_not_passed(good, capsys):
     # Without the key the server answers 401 and the product falls back to a
     # guessed budget; the limb must not grade the session against that guess.
-    assert verdicts(capsys, good, api_key=None)[UNDER] == "NOT EXERCISED"
+    rows = verdicts(capsys, good, api_key=None)
+    assert (rows[FIT], rows[D9]) == ("NOT EXERCISED", "NOT EXERCISED")
 
 
 def test_a_session_that_never_compacts_is_not_exercised(tmp_path, monkeypatch, capsys):
