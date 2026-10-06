@@ -1668,6 +1668,55 @@ and `publishing/release.yml`; `design/83f5-example-package/`; gate
   reminder's firing branch is unit-tested only; its live run was quiet, as it
   should be at 182 days. Opens `R146` (Roll back on a first install) and `R147` (a flaky autofocus test, found by this PR's CI, not caused by it).
 
+### 83f-6 — `pack` fills an executable package's `locks`
+
+83f-5 gave publishers `pack`, which fills asset hashes and the artifact URL. It
+does not fill `locks`, so an executable publisher (SMAPpy: `smappy-smlm` plus
+numpy, scipy, h5py and the rest, on three platforms) must hand-convert dozens of
+hashed pins per platform. That is the first command a real executable publisher
+would find missing.
+
+**Measured before deciding** (uv 0.12.8, numpy/scipy/h5py/requests, Python
+3.12, three `--python-platform`s). `uv pip compile --generate-hashes` writes a
+hash for **every file of the version on every platform**: numpy 66,
+charset-normalizer 172, against `MAX_REQUIREMENT_HASHES = 64`, and no hash says
+which file it is. `-o pylock.<name>.toml` (PEP 751) keeps only that platform's
+wheels, each named: charset-normalizer 3, numpy 1. A platform-conditional
+dependency appears only in the platforms it applies to, and keeps its marker
+there (`marker = "sys_platform == 'win32'"`). uv refuses any other output
+filename.
+
+**83f-6 decisions** (operator, 2026-10-06).
+
+- **K0 — full locks stay.** Asked whether to pin only the package and resolve
+  the rest at install, the operator declined: that would be MicroClaw
+  maintaining dependencies for the publisher. A publisher pins its own
+  dependencies and ships them with the release; an unpinned dependency breaking
+  is the publisher's problem. This block makes the lock one command; it does
+  not loosen it.
+- **K1 — `pack` reads `pylock.toml`**, one per platform, written by
+  `uv pip compile --python-platform … --python-version 3.12 -o pylock.<platform>.toml`.
+  `pack` stays offline and never resolves; the publisher's machine or CI does.
+  Not the hashed `requirements.txt`, for the measurement above.
+- **K2 — one `--locks <folder>`** holding `pylock.<platform>.toml` for exactly
+  the manifest's `platforms`. A missing or extra file refuses, named.
+- **K3 — check against the platform.** Each marker is evaluated for that
+  platform under Python 3.12: true enters unconditionally, false is left out,
+  undecidable refuses. Every entry needs a wheel that fits the platform and
+  Python 3.12; only those wheels' hashes are kept. No wheel, or a non-index
+  source (VCS, directory, archive), refuses naming the file and the package —
+  installs never build from source, so this is the user's failure caught at
+  the publisher.
+- **K4 — lock files are committed.** The release workflow passes
+  `--locks locks` only when that folder exists, so a Markdown package is
+  unchanged; the publisher README documents the uv command. A release is
+  reproducible from its tag, and its pins are the ones the publisher reviewed.
+- **K5 — local evidence plus a demo-machine run.** In the suite, `pack` from
+  multi-entry locks then the real offline install, landing exactly the pins
+  (CI repeats it on Windows); a coordinator probe locks numpy/scipy/h5py for
+  real and installs from PyPI on the Mac; then a short demo-machine run
+  installs a PyPI-locked package through the panel.
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
