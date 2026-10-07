@@ -56,6 +56,8 @@ def supervisors():
     def factory(**kwargs):
         options = dict(startup_deadline_s=3, self_check_deadline_s=5, shutdown_grace_s=0.5)
         options.update(kwargs)
+        if "desktop_probe" not in inspect.signature(s.Supervisor).parameters:
+            options.pop("desktop_probe", None)
         sup = s.Supervisor(**options)
         original = sup.submit
 
@@ -1564,3 +1566,340 @@ def test_windows_job_priority_cleanup_attempts_every_handle_on_failure():
         job.close()
     assert calls['closed'] == [1, 2, 123]
     assert job.handle is None and job._priority_handles == {}
+
+
+def wait_until(predicate):
+    end = time.monotonic() + 8
+    while time.monotonic() < end:
+        if predicate():
+            return
+        time.sleep(0.01)
+    assert predicate()
+
+
+def window_job(sup, tmp_path, behaviour='window_hang', **params):
+    return submit(sup, tmp_path, behaviour, operation='window_worker', **params)
+
+
+def test_84a_window_handoff_releases_worker_and_freezes_evidence(supervisors, tmp_path):
+    sup = supervisors(max_workers=1, desktop_probe=lambda: True, max_stderr_bytes=128)
+    h = window_job(sup, tmp_path, 'window_flood')
+    original = finished(h)
+    entry = sup._windows[h.job_id]
+    assert entry[1].poll() is None
+    assert original['window_retained'] is True
+    assert original['exit_code'] is None
+    assert original['artifacts'][0]['sha256'] == __import__('hashlib').sha256(b'partial bytes').hexdigest()
+    second = submit(sup, tmp_path)
+    finished(second)
+    assert entry[1].poll() is None  # Observed progress with first process alive.
+    wait_until(lambda: sup.window_diagnostics(h.job_id)['discarded_stdout_bytes'] > 200000)
+    wait_until(lambda: 'WINDOW TAIL' in sup.window_diagnostics(h.job_id)['stderr_tail'])
+    diagnostic = sup.window_diagnostics(h.job_id)
+    assert len(diagnostic['stderr_tail']) <= 128
+    assert h.record() == original
+    assert h.notify_writer_finished() is False
+    assert h.record() == original
+    assert sup.list_open_windows() == [dict(package='fixture-lab/conformance-fixture',
+        operation='window_worker', job_id=h.job_id, dataset=str(tmp_path), opened_at=entry[4])]
+    assert sup.close_window(h.job_id)
+    wait_until(lambda: not sup.list_open_windows())
+    assert h.record() == original
+
+
+def test_84a_window_nonzero_is_only_diagnostic(supervisors, tmp_path):
+    sup = supervisors(desktop_probe=lambda: True)
+    h = window_job(sup, tmp_path, 'window_nonzero', sleep=0.5)
+    original = finished(h)
+    entry = sup._windows[h.job_id]
+    assert entry[1].poll() is None
+    assert original['artifacts'] and original['exit_code'] is None
+    wait_until(lambda: not sup.list_open_windows())
+    assert entry[0]._diagnostics['exit_code'] == 3
+    assert h.record() == original
+
+
+def test_84a_window_parent_exit_kills_pipe_child(supervisors, tmp_path):
+    sup = supervisors(desktop_probe=lambda: True)
+    heartbeat = tmp_path / 'heartbeat.txt'
+    h = window_job(sup, tmp_path, 'window_child', heartbeat=str(heartbeat))
+    original = finished(h)
+    assert original['window_retained'] is True
+    wait_until(lambda: not sup._window_reservations)
+    heartbeat_stopped(heartbeat)
+    assert h.record() == original
+
+
+def test_84a_window_close_and_shutdown_race(supervisors, tmp_path, monkeypatch):
+    sup = supervisors(desktop_probe=lambda: True)
+    h = window_job(sup, tmp_path)
+    finished(h)
+    process = sup._windows[h.job_id][1]
+    sup.close()
+    wait_until(lambda: process.poll() is not None and not sup._window_reservations)
+    racing = supervisors(desktop_probe=lambda: True)
+    hashing, resume = threading.Event(), threading.Event()
+    retain = racing._retain_artifacts
+    def pause(*args):
+        hashing.set()
+        assert resume.wait(5)
+        return retain(*args)
+    monkeypatch.setattr(racing, '_retain_artifacts', pause)
+    active = window_job(racing, tmp_path)
+    assert hashing.wait(5)
+    closer = threading.Thread(target=racing.close)
+    closer.start()
+    assert racing._closing.wait(3)
+    resume.set()
+    closer.join(8)
+    assert not closer.is_alive()
+    finished(active, 'supervisor_failed', 'supervisor_closed')
+    assert not racing.list_open_windows() and not racing._window_reservations
+
+
+def test_84a_window_reservations_concurrent_and_queued_cancel(supervisors, tmp_path):
+    sup = supervisors(max_workers=1, max_queued=16, desktop_probe=lambda: True)
+    blocker = submit(sup, tmp_path, 'mid_hang', heartbeat=str(tmp_path/'hb'))
+    wait_status(blocker)
+    assert not getattr(sup, '_windows', {})
+    handles = []
+    lock = threading.Lock()
+    def admission():
+        h = window_job(sup, tmp_path)
+        with lock:
+            handles.append(h)
+    threads = [threading.Thread(target=admission) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    admitted = [h for h in handles if not h.wait(0)]
+    assert len(admitted) == 4
+    assert len(sup._window_reservations) == 4
+    for h in handles:
+        if h not in admitted:
+            value = finished(h, 'refused')
+            assert 'open windows:' in value['failure']['detail'] and 'pending reservations:' in value['failure']['detail']
+    for h in admitted:
+        assert h.cancel()
+        finished(h, 'cancelled')
+    assert not sup._window_reservations
+    replacement = window_job(sup, tmp_path)
+    assert not replacement.wait(0)
+    replacement.cancel()
+    sup.close()
+
+
+@pytest.mark.parametrize('path', ['queue_full', 'launch_failed', 'desktop', 'startup_hang', 'ignore_cancel'])
+def test_84a_window_reservation_cleanup(supervisors, tmp_path, path, monkeypatch):
+    sup = supervisors(max_workers=1, max_queued=1, desktop_probe=lambda: path != 'desktop', startup_deadline_s=0.2)
+    if path == 'queue_full':
+        blocker = submit(sup, tmp_path, 'mid_hang', heartbeat=str(tmp_path/'hb'))
+        wait_status(blocker)
+        queued = submit(sup, tmp_path)
+        h = window_job(sup, tmp_path)
+        finished(h, 'dispatch_failed', 'queue_full')
+        queued.cancel()
+    elif path == 'launch_failed':
+        def cannot_launch(*args, **kwargs):
+            raise OSError('injected launch failure')
+        monkeypatch.setattr(s.subprocess, 'Popen', cannot_launch)
+        h = sup.submit(release(), policy(), now=NOW, python=str(tmp_path/'missing'),
+                       operation='window_worker', parameters={}, dataset=tmp_path, output_dir=tmp_path)
+        finished(h, 'supervisor_failed', 'launch_failed')
+    elif path == 'desktop':
+        h = window_job(sup, tmp_path)
+        finished(h, 'supervisor_failed', 'asset_refused')
+    else:
+        h = window_job(sup, tmp_path, path, heartbeat=str(tmp_path/'hb'))
+        if path == 'ignore_cancel':
+            wait_status(h)
+            h.cancel()
+            finished(h, 'supervisor_failed', 'shutdown_deadline')
+        else:
+            finished(h, 'supervisor_failed', 'startup_deadline')
+        heartbeat_stopped(tmp_path/'hb')
+    wait_until(lambda: not sup._window_reservations)
+
+
+def fixture_window(sup, tmp_path):
+    dataset, output = tmp_path/'dataset', tmp_path/'output'
+    dataset.mkdir(); output.mkdir()
+    h = sup.submit(release('executable'), policy(), now=NOW, python=sys.executable,
+                   operation='fixture_window', parameters=dict(display_backend='headless', close_file='close.txt'),
+                   dataset=dataset, output_dir=output)
+    wait_status(h)
+    return h, dataset, output
+
+
+def displayed(output, frames):
+    try:
+        return json.loads((output/'display.json').read_text())['frames_displayed'] == frames
+    except (OSError, ValueError):
+        return False
+
+
+def test_84a_fixture_live_pause_final_drain_and_eof(supervisors, tmp_path):
+    from ndstorage import NDTiffDataset
+    sup = supervisors(desktop_probe=lambda: True)
+    h, dataset, output = fixture_window(sup, tmp_path)
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    try:
+        write_frame(writer, 0)
+        wait_until(lambda: displayed(output, 1))
+        assert not h.wait(0) and not sup.list_open_windows()
+        time.sleep(0.2)  # > six observer polls and twenty display ticks.
+        assert not h.wait(0)
+        write_frame(writer, 1)
+        wait_until(lambda: displayed(output, 2))
+        write_frame(writer, 2)
+        writer.finish()
+        h.notify_acquisition('completed', writer='unknown')
+        assert not h.wait(0.1)
+        h.notify_writer_finished()
+        value = finished(h)
+        assert value['result']['input_complete'] is True
+        assert value['result']['output']['frames_read'] == 3
+        assert value['artifacts'] and not value['rejected_artifacts']
+        process = sup._windows[h.job_id][1]
+        time.sleep(0.2)
+        assert process.poll() is None  # stdin EOF after result leaves display alive.
+        assert displayed(output, 3)
+    finally:
+        writer.close()
+
+
+def test_84a_fixture_close_before_result_is_cancelled(supervisors, tmp_path):
+    from ndstorage import NDTiffDataset
+    sup = supervisors(desktop_probe=lambda: True)
+    h, dataset, output = fixture_window(sup, tmp_path)
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    try:
+        write_frame(writer, 0)
+        wait_until(lambda: displayed(output, 1))
+        assert not sup.list_open_windows()
+        assert sup.close_window(h.job_id) is False
+        (output/'close.txt').touch()
+        value = finished(h, 'cancelled')
+        assert value['result']['input_complete'] is False
+        assert value['artifacts'][0]['validity'] == 'partial'
+        assert value['result']['output']['frames_read'] == 1
+    finally:
+        writer.finish(); writer.close()
+
+
+@pytest.mark.parametrize('environment,expected', [({}, False), ({'DISPLAY': ''}, False),
+    ({'DISPLAY': ':1'}, True), ({'WAYLAND_DISPLAY': 'wayland-0'}, True)])
+def test_84a_linux_desktop_preflight(environment, expected):
+    assert s.interactive_desktop(platform='linux', environ=environment) is expected
+
+
+def test_84a_windows_session_zero_preflight(monkeypatch):
+    import ctypes
+    class Session:
+        argtypes = restype = None
+        def __call__(self, pid, target):
+            target._obj.value = self.value
+            return True
+    fn = Session()
+    class Kernel:
+        ProcessIdToSessionId = fn
+    monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **k: Kernel(), raising=False)
+    fn.value = 0
+    assert not s.interactive_desktop(platform='win32')
+    fn.value = 1
+    assert s.interactive_desktop(platform='win32')
+
+
+def test_84a_stdout_buffer_switch_at_terminal(supervisors):
+    import io
+    sup = supervisors(desktop_probe=lambda: True)
+    h = s.JobHandle(sup)
+    h._opens_window = True
+    h._record['operation'] = 'window_worker'
+    terminal = p.encode_message(dict(protocol=p.ANALYSIS_PROTOCOL, type='result', job_id=h.job_id,
+                                     state='succeeded', output={}, artifacts=[], input_complete=True))
+    garbage = b'\xff\n' + b'x' * 200000 + b'\n' + terminal
+    h._stdout(io.BytesIO(terminal + garbage))
+    assert h._violation is None
+    assert h._diagnostics['discarded_stdout_bytes'] == len(garbage)
+    assert not h._status
+    with h._lock:
+        h._finish('succeeded')
+    original = h.record()
+    h._drain_stderr(io.BytesIO(b'z' * 200000))
+    assert h.record() == original
+    assert len(h._window_stderr) <= sup.max_stderr_bytes
+
+
+def test_84a_open_windows_count_once_and_duplicate_id_refused(supervisors, tmp_path):
+    sup = supervisors(max_workers=1, desktop_probe=lambda: True)
+    handles = [window_job(sup, tmp_path) for _ in range(4)]
+    for h in handles:
+        finished(h)
+    assert len(sup.list_open_windows()) == 4
+    refused = window_job(sup, tmp_path)
+    value = finished(refused, 'refused')
+    assert 'window limit 4' in value['failure']['detail']
+    for h in handles:
+        assert h.job_id in value['failure']['detail']
+    duplicate = sup.submit(release(), policy(), now=NOW, python=sys.executable,
+                           operation='window_worker', parameters={}, dataset=tmp_path,
+                           output_dir=tmp_path, job_id=handles[0].job_id)
+    assert finished(duplicate, 'refused')['failure']['field'] == 'job_id'
+    assert sup.close_window(handles[0].job_id)
+    wait_until(lambda: len(sup._window_reservations) == 3)
+    replacement = window_job(sup, tmp_path)
+    finished(replacement)
+    assert len(sup.list_open_windows()) == 4
+
+
+def test_84a_window_prehandoff_hash_failure_kills_tree(supervisors, tmp_path, monkeypatch):
+    sup = supervisors(desktop_probe=lambda: True)
+    processes = []
+    popen = s.subprocess.Popen
+    def capture(*a, **kw):
+        process = popen(*a, **kw)
+        processes.append(process)
+        return process
+    monkeypatch.setattr(s.subprocess, 'Popen', capture)
+    def fail(*args):
+        raise RuntimeError('injected prehandoff failure')
+    monkeypatch.setattr(sup, '_retain_artifacts', fail)
+    h = window_job(sup, tmp_path)
+    value = finished(h, 'supervisor_failed', 'launch_failed')
+    assert 'window_retained' not in value
+    wait_until(lambda: not sup._window_reservations)
+    assert processes[0].poll() is not None
+    assert not sup.list_open_windows()
+
+
+def test_84a_window_result_frees_slot_before_process_exit(supervisors, tmp_path):
+    sup = supervisors(max_workers=1, desktop_probe=lambda: True)
+    h = window_job(sup, tmp_path)
+    assert h.wait(2)
+    value = h.record()
+    assert value['state'] == 'succeeded', value['failure']
+    process = sup._windows[h.job_id][1]
+    second = submit(sup, tmp_path)
+    finished(second)
+    assert process.poll() is None
+    assert value == h.record()
+
+
+@pytest.mark.parametrize('state', ['failed', 'cancelled'])
+def test_84a_all_worker_terminals_can_handoff(supervisors, tmp_path, state):
+    sup = supervisors(desktop_probe=lambda: True)
+    h = window_job(sup, tmp_path, 'failed' if state == 'failed' else 'cancel')
+    if state == 'cancelled':
+        wait_status(h)
+        h.cancel()
+    value = finished(h, state)
+    assert value['window_retained'] is True and value['exit_code'] is None
+    if state == 'failed':
+        assert value['failure']['reason'] == 'worker_failed'
+    else:
+        assert value['artifacts'][0]['validity'] == 'partial'
+        assert value['result']['input_complete'] is False

@@ -19,7 +19,7 @@
     },
     {
       "path": "conformance_worker/runner.py",
-      "sha256": "5002c5225c743c5dda5e39899625b7e9450700af8df7b6378abe54c44eb44e77"
+      "sha256": "62bcc1d7f5e2b2cf956c9405672d04433e6422ce1a667367bcd696569d258cd4"
     }
   ],
   "skills": [
@@ -35,7 +35,7 @@
     "macosx_arm64",
     "manylinux_x86_64"
   ],
-  "protocol_version": "1.0",
+  "protocol_version": "1.1",
   "entry_point": {
     "module": "conformance_worker.runner"
   },
@@ -51,6 +51,16 @@
     },
     {
       "name": "observe_dataset",
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "window_worker",
+      "opens_window": true,
       "input_schema": {
         "type": "object"
       },

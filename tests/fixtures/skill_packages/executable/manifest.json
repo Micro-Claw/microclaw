@@ -23,7 +23,7 @@
     },
     {
       "path": "fixture_worker/runner.py",
-      "sha256": "bfb57f5a11fe0382ee4c698d1c0fdd452642f68d5af2e86acf7ee2761486a31d"
+      "sha256": "0f31391f3a35234fca8d2be0cc06f9e63f337f581a9858f14ff58cbbbe3a27bd"
     }
   ],
   "skills": [
@@ -39,7 +39,7 @@
     "macosx_arm64",
     "manylinux_x86_64"
   ],
-  "protocol_version": "1.0",
+  "protocol_version": "1.1",
   "entry_point": {
     "module": "fixture_worker.runner"
   },
@@ -77,6 +77,32 @@
               "inherit"
             ],
             "default": "inherit"
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "fixture_window",
+      "opens_window": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "display_backend": {
+            "type": "string",
+            "enum": [
+              "tkinter",
+              "headless"
+            ]
+          },
+          "close_file": {
+            "type": "string",
+            "enum": [
+              "close.txt"
+            ]
           }
         },
         "additionalProperties": false
