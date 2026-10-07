@@ -363,3 +363,4 @@ Operator, 2026-10-07, before 84a was assigned:
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | `design-84-package-windows` | `5e2f90a` | proposed 2026-10-07, PR #53 |
+| 84a | `block-84a` | `46a22a7` | assigned 2026-10-07; merges into `design-84-package-windows`, PR #53 |
