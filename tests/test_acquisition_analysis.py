@@ -500,3 +500,22 @@ def test_84a_live_window_consent_and_desktop_refusal(live, monkeypatch, desktop)
         assert not calls
         assert 'cannot show one' in result['error']
     assert not live.engine.backends
+
+
+def test_84a_revision_live_window_persists_handoff(live, monkeypatch):
+    from microclaw.skill_supervisor import Supervisor
+    from tests.test_completed_dataset import terminal_analysis
+    sup = Supervisor(desktop_probe=lambda: True)
+    monkeypatch.setattr(cd, '_analysis_supervisor', sup)
+    monkeypatch.setattr('microclaw.skill_supervisor.interactive_desktop', lambda: True)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: True)
+    live.analysis.update(adapter='fixture-lab/conformance-fixture:window_worker',
+                         parameters={'behaviour': 'window_hang'})
+    result = live.run()
+    assert 'error' not in result
+    job_id = result['analysis']['jobs'][0]['job_id']
+    terminal_analysis(job_id)
+    persisted = json.loads(store.analysis_job_path(job_id).read_text(encoding='utf-8'))
+    assert persisted['window_retained'] is True and persisted['exit_code'] is None
+    assert live.analysis['release_digest'] in store.retained_digests()
+    assert sup._windows[job_id][1].poll() is None
