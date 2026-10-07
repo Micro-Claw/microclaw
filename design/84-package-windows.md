@@ -1,6 +1,6 @@
 # A package operation may open a window
 
-**Status: 84a merged into PR #53 on 2026-10-07 (LOCAL, no gate). 84b not started.** Answers the SMAPpy
+**Status: 84a merged into PR #53 on 2026-10-07 (LOCAL, no gate). 84b in progress.** Answers the SMAPpy
 publisher's request of 2026-10-07 (`request-skill-package-viewer.md`, in the
 rig evidence archive, not the repo). It is the "later" that `design/71`
 §"Feasibility against SMAPpy 0.1.0" (last table row) and `design/83`
@@ -393,3 +393,4 @@ Implemented as decided. These points are not visible from D1–D5 alone:
 |-------|--------|--------------|--------|
 | notebook | `design-84-package-windows` | `5e2f90a` | proposed 2026-10-07, PR #53 |
 | 84a | `block-84a` | `46a22a7` | merged into `design-84-package-windows` at `4e032e1`, PR #53, 2026-10-07; one start and one revision turn |
+| 84b | `block-84b` | `dbac8d4` | started 2026-10-07; panel Close outcome inline (operator) |
