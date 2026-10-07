@@ -813,6 +813,15 @@ class Supervisor:
                         if reason:
                             handle._record["priority"]["reason"][phase] = reason
 
+        def label_unsampled():
+            # Caller holds handle._lock. Labels phases monitoring never sampled.
+            for phase, arrived in (("at_start", handle._first is not None),
+                                   ("at_end", handle._record["result"] is not None)):
+                if phase not in sampled:
+                    handle._record["priority"]["reason"][phase] = (
+                        "message arrived after priority monitoring ended" if arrived else
+                        "worker message never arrived")
+
         try:
             if handle._opens_window:
                 self.check_desktop()
@@ -887,12 +896,7 @@ class Supervisor:
                                 with handle._lock:
                                     handle._record.update(artifacts=retained, rejected_artifacts=rejected,
                                                           exit_code=None, window_retained=True)
-                                    for phase, arrived in (("at_start", handle._first is not None),
-                                                           ("at_end", handle._record["result"] is not None)):
-                                        if phase not in sampled:
-                                            handle._record["priority"]["reason"][phase] = (
-                                                "message arrived after priority monitoring ended" if arrived else
-                                                "worker message never arrived")
+                                    label_unsampled()
                                     worker_failure = dict(reason="worker_failed", detail=terminal["failure"]["message"]) if state == "failed" else None
                                     handle._finish(state, worker_failure)
                         if handed_off:
@@ -959,12 +963,7 @@ class Supervisor:
                         failure = dict(reason="cleanup_failed", detail=str(exc))
             if not handed_off:
                 with handle._lock:
-                    for phase, arrived in (("at_start", handle._first is not None),
-                                           ("at_end", handle._record["result"] is not None)):
-                        if phase not in sampled:
-                            handle._record["priority"]["reason"][phase] = (
-                                "message arrived after priority monitoring ended" if arrived else
-                                "worker message never arrived")
+                    label_unsampled()
             if temporary is not None:
                 try:
                     temporary.cleanup()
