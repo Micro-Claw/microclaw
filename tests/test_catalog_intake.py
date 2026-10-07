@@ -1558,7 +1558,10 @@ def test_83f6_gate_selftest_is_offline_and_discriminates(capsys):
     assert 'fresh distributions -> 4 Exact Windows lock FAIL; other four limbs PASS' in output
     assert 'limbs 2-5 NOT EXERCISED' in output
     assert 'PyPI and scientific binaries NOT EXERCISED' in output
-    assert 'roots removed first; store and evidence pointer removed' in output
+    assert 'real store restored byte-identically' in output
+    assert 'SELFTEST real store: cleanup leaves it untouched and succeeds.' in output
+    assert 'prepare sets it aside unchanged; a second prepare refuses' in output
+    assert 'interrupted cleanup restores on re-run; two non-test stores refuse untouched' in output
     wrapper = (ROOT / 'design/83-block83f6-demo-gate.ps1').read_text(encoding='utf-8')
     runbook = (ROOT / 'design/83-block83f6-demo-gate.md').read_text(encoding='utf-8')
     assert "'83-block83f3-demo-gate.ps1'" in wrapper and "-Block '83f6'" in wrapper

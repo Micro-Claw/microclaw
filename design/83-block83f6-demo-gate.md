@@ -31,10 +31,18 @@ Close MicroClaw's console and launcher windows.
 .\design\83-block83f6-demo-gate.ps1 -Phase prepare
 ```
 
-Cleanup removes only a store carrying TEST-ONLY roots. Prepare refuses an
-existing store and writes TEST-ONLY roots for this branch's catalog. Startup is
-the first fetch. Expect `Prepared TEST-ONLY roots only` and `RECORDED: prepare`.
-The pointer is `%LOCALAPPDATA%\microclaw\83f6-gate-evidence.txt`.
+This machine already has **your own package store** (83f-5 kept the
+`session-start` example installed). The gate never deletes it. Cleanup leaves it
+untouched. Prepare asks you to close MicroClaw, then **renames it** to
+`%LOCALAPPDATA%\microclaw\skill-packages.83f6-saved` and writes TEST-ONLY roots
+in a fresh store. Step 3's cleanup removes the test store and renames yours
+back. If a run stops partway, run `-Phase cleanup` again; it finishes the
+restore.
+
+Expect `Your package store was set aside`, `Prepared TEST-ONLY roots only` and
+`RECORDED: prepare`. **If prepare does not print `RECORDED: prepare`, stop
+there** and send the folder printed after `Evidence:`. The pointer is
+`%LOCALAPPDATA%\microclaw\83f6-gate-evidence.txt`.
 
 ## 2. Session
 
@@ -66,7 +74,7 @@ a pass.** The install timing is reported with n=1, not scored; it measures
 `install.json` creation to its preserved ready-record write, excluding download.
 
 After scoring, follow the prompt to close MicroClaw and type `DONE` in
-PowerShell. Cleanup removes the TEST-ONLY roots first, then the store and
-pointer. Send the **whole folder printed after Evidence:**, including after a
+PowerShell. Cleanup removes the TEST-ONLY roots first, then the test store and
+pointer, and puts your own store back; expect `Your package store is back`. Send the **whole folder printed after Evidence:**, including after a
 failure. It contains the snapshot, fresh probe, import stdout/stderr, timings
 and per-limb verdicts. Evidence stays in that folder; do not commit gate results.

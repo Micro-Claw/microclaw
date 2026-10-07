@@ -119,11 +119,37 @@ def fixtures(destination=FIXTURES):
 
 
 class Gate(gate83f3.Gate):
+    # A machine that has used packages has a real store (83f-5's gate kept one on
+    # the demo machine). The gate never deletes it: prepare renames it aside and
+    # cleanup renames it back. One rename each way; nothing copied or deleted.
+    @property
+    def saved_store(self):
+        return self.store_root.with_name(self.store_root.name + '.83f6-saved')
+
+    def test_store(self):
+        try:
+            return read_json(self.store_root / 'trust/roots.json').get('environment') == 'test'
+        except (OSError, ValueError, AttributeError):
+            return False
+
     def prepare(self):
+        if self.saved_store.exists():
+            raise NotExercised(f'your package store is still set aside at {self.saved_store}; '
+                               'run -Phase cleanup first, which puts it back')
+        set_aside = None
         if self.store_root.exists():
-            raise NotExercised(f'{self.store_root} already exists; gate owns and removes its store. Do not delete existing user packages.')
+            if self.test_store():
+                raise NotExercised(f'{self.store_root} is a TEST-ONLY store from an earlier round; run -Phase cleanup first')
+            self.close_microclaw('Prepare sets your package store aside for this gate; cleanup puts it back.')
+            try:
+                os.replace(self.store_root, self.saved_store)
+            except OSError as exc:
+                raise NotExercised(f'could not set {self.store_root} aside ({exc}); nothing was moved. '
+                                   'Close MicroClaw and run prepare again') from exc
+            set_aside = str(self.saved_store)
+            self.say(f'Your package store was set aside at {self.saved_store}; cleanup puts it back.')
         write_json(self.store_root / 'trust/roots.json', roots())
-        self.save('prepare', dict(prepared_at=now().isoformat()))
+        self.save('prepare', dict(prepared_at=now().isoformat(), set_aside=set_aside))
         self.say('Prepared TEST-ONLY roots only. Startup is the first catalog fetch.')
 
     def session(self):
@@ -148,8 +174,28 @@ class Gate(gate83f3.Gate):
         self.save('session', session)
 
     def cleanup(self):
-        result = super().cleanup()  # roots-first removal and TEST-ONLY ownership check
+        saved = self.saved_store
+        if saved.exists() and self.store_root.exists() and not self.test_store():
+            raise NotExercised(f'both {self.store_root} (not TEST-ONLY) and your set-aside store {saved} exist; '
+                               'nothing changed. Decide which to keep by hand')
+        if self.store_root.exists() and not self.test_store():
+            self.say(f'Nothing to clean up: {self.store_root} is your own store (no TEST-ONLY roots); left untouched.')
+            (self.root / POINTER).unlink(missing_ok=True)
+            return dict(roots_present=False, store_present=False, saved_store_present=False,
+                        restored_store=None, evidence=str(self.out))
+        if self.store_root.exists():
+            result = super().cleanup()  # roots-first removal and TEST-ONLY ownership check
+        else:
+            if saved.exists():
+                self.close_microclaw('Cleanup puts your package store back.')
+            result = dict(roots_present=False, store_present=False, evidence=str(self.out))
         (self.root / POINTER).unlink(missing_ok=True)
+        result['restored_store'] = None
+        if saved.exists() and not result['store_present']:
+            os.replace(saved, self.store_root)
+            result['restored_store'] = str(self.store_root)
+            self.say(f'Your package store is back at {self.store_root}.')
+        result['saved_store_present'] = saved.exists()
         if 'retained_root_files' in result:
             result['retained_root_files'] = sorted(p.name for p in self.root.iterdir() if p.is_file())
         return result
@@ -267,7 +313,7 @@ def verify(gate, *, cleanup=True):
             remaining = gate.cleanup()
             gate.save('cleanup', remaining)
             gate.say('CLEANUP: ' + json.dumps(remaining))
-            bad += bool(remaining['roots_present'] or remaining['store_present'])
+            bad += bool(remaining['roots_present'] or remaining['store_present'] or remaining['saved_store_present'])
         except Exception as exc:
             gate.say('CLEANUP FAILED: ' + str(exc))
             bad += 1
@@ -314,8 +360,26 @@ def selftest():
             environment = gate83f3.fake_environment(base, platform='win_amd64', modules=True)
             stack.enter_context(patch.object(skill_store, 'build_environment', environment))
             gate = Gate(root, out)
+            gate.fake = SimpleNamespace(close=lambda: None)
+            # The demo machine keeps 83f-5's production store; never a test store.
+            real = gate.store_root
+            write_json(real / 'packages/microclaw-examples/session-start/pointer.json', dict(active='real'))
+            write_json(real / 'catalog/state.json', dict(last_success='production'))
+            def tree(path):
+                return {p.relative_to(path).as_posix(): p.read_bytes() for p in path.rglob('*') if p.is_file()}
+            real_tree = tree(real)
+            assert gate.cleanup()['store_present'] is False and tree(real) == real_tree
+            lines.append('SELFTEST real store: cleanup leaves it untouched and succeeds.')
             gate.prepare()
+            assert tree(gate.saved_store) == real_tree, 'set-aside store changed'
+            assert gate.need('prepare')['set_aside'] == str(gate.saved_store)
             assert [p.relative_to(gate.store_root).as_posix() for p in gate.store_root.rglob('*') if p.is_file()] == ['trust/roots.json']
+            try:
+                gate.prepare()
+                raise AssertionError('second prepare accepted while a store is set aside')
+            except NotExercised as exc:
+                assert 'cleanup' in str(exc)
+            lines.append('SELFTEST real store: prepare sets it aside unchanged; a second prepare refuses.')
             with TestClient(webserve.build_app(SimpleNamespace(mode=webserve.SessionMode.NORMAL))) as client:
                 gate.fake = PanelOperator(gate, client)
                 gate.session()
@@ -377,8 +441,23 @@ def selftest():
                 (root / POINTER).write_text(str(out), encoding='utf-8')
                 with patch.object(shutil, 'rmtree', roots_first):
                     assert verify(gate) == 0, gate.last_results
-                assert not gate.store_root.exists() and not (root / POINTER).exists()
-                lines.append('SELFTEST cleanup: TEST-ONLY roots removed first; store and evidence pointer removed.')
+                assert not (root / POINTER).exists() and not gate.saved_store.exists()
+                assert tree(gate.store_root) == real_tree, 'real store not restored byte-identically'
+                lines.append('SELFTEST cleanup: TEST-ONLY roots removed first; test store and pointer removed; real store restored byte-identically.')
+                # Interrupted cleanup: test store gone, real store still aside.
+                gate.prepare()
+                shutil.rmtree(gate.store_root)
+                assert gate.cleanup()['restored_store'] and tree(gate.store_root) == real_tree
+                # Both present and the live one is not TEST-ONLY: refuse, change nothing.
+                gate.prepare()
+                (gate.store_root / 'trust/roots.json').unlink()
+                try:
+                    gate.cleanup()
+                    raise AssertionError('cleanup chose between two real stores')
+                except NotExercised as exc:
+                    assert 'by hand' in str(exc)
+                assert gate.saved_store.exists() and gate.store_root.exists()
+                lines.append('SELFTEST interrupted cleanup restores on re-run; two non-test stores refuse untouched.')
     lines.append('SELFTEST SUMMARY: PASS baseline; 3/3 mutations killed independently; no-install NOT EXERCISED; live Windows/PyPI NOT EXERCISED.')
     print('\n'.join(lines), flush=True)
     return 0
@@ -412,7 +491,7 @@ def main():
         if args.phase == 'cleanup':
             gate.save('cleanup', result)
             gate.say('CLEANUP: ' + json.dumps(result))
-            if result['roots_present'] or result['store_present']:
+            if result['roots_present'] or result['store_present'] or result['saved_store_present']:
                 return 1
         gate.say('RECORDED: ' + args.phase)
         return 0
