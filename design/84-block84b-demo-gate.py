@@ -51,7 +51,7 @@ LIMBS = {
     5: 'consent', 6: 'session: job final while open', 7: 'session: panel Close kills',
     8: 'session: quit kills', 10: 'responsiveness and cadence',
 }
-SCREENSHOTS = ('confirmation.png', 'window.png', 'panel.png')
+SCREENSHOTS = ('window.png', 'panel.png')
 
 
 def plan(digest, save_dir, sizes=SIZES, backend='tkinter'):
@@ -128,13 +128,45 @@ def lag_samples(tail):
     return samples
 
 
-def lag_stats(tail):
+def lag_stats(tail, *, drop_first=False):
     from microclaw.skill_supervisor import MAX_STDERR_BYTES
-    samples = lag_samples(tail)
+    samples = lag_samples(tail)[1:] if drop_first else lag_samples(tail)
     return dict(n=len(samples), p50_s=statistics.median(samples) if samples else None,
                 p95_s=e4.p95(samples) if samples else None, max_s=max(samples) if samples else None,
                 tail_truncated=len((tail or '').encode('utf-8')) >= MAX_STDERR_BYTES,
                 n_is_lower_bound=len((tail or '').encode('utf-8')) >= MAX_STDERR_BYTES)
+
+
+def screenshot(path, *, synthetic=False):
+    """Capture the virtual desktop; failures are evidence, never exceptions."""
+    result = dict(ok=False, path=str(path), error=None)
+    try:
+        path = path if isinstance(path, Path) else Path(path)
+        if synthetic or os.name != 'nt':
+            Path(path).write_bytes(base64.b64decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aSFAAAAAASUVORK5CYII='))
+            result.update(ok=True, synthetic=True)
+            return result
+        destination = str(path).replace("'", "''")
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+            "$screen=[System.Windows.Forms.SystemInformation]::VirtualScreen; "
+            "$bitmap=New-Object System.Drawing.Bitmap($screen.Width,$screen.Height); "
+            "$graphics=$null; try { $graphics=[System.Drawing.Graphics]::FromImage($bitmap); "
+            "$graphics.CopyFromScreen($screen.Left,$screen.Top,0,0,$screen.Size); "
+            "$bitmap.Save('" + destination + "',[System.Drawing.Imaging.ImageFormat]::Png) "
+            "} finally { if ($graphics) { $graphics.Dispose() }; $bitmap.Dispose() }")
+        capture = subprocess.run(['powershell', '-NoProfile', '-Command', command],
+                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+                                 encoding='utf-8', errors='replace')
+        result.update(exit_code=capture.returncode, stdout=capture.stdout, stderr=capture.stderr)
+        result['ok'] = capture.returncode == 0 and path.is_file() and path.stat().st_size > 0
+        if not result['ok']:
+            result['error'] = capture.stderr or capture.stdout or 'Screenshot was not saved.'
+    except Exception as exc:
+        result['error'] = str(exc)
+    return result
 
 
 class Gate(e4.Gate, f6.Gate):
@@ -318,8 +350,12 @@ class Gate(e4.Gate, f6.Gate):
                     records.append(read_json(path))
                 except (OSError, ValueError) as exc:
                     records.append(dict(path=str(path), error=str(exc)))
-        self.save(f'session-step-{step}', dict(captured_at=now().isoformat(), records=records,
-                  processes=process_snapshot(), listening=bool(e4.serve_listening())))
+        snapshot = dict(captured_at=now().isoformat(), records=records,
+                        processes=process_snapshot(), listening=bool(e4.serve_listening()))
+        if step in (2, 3):
+            name = SCREENSHOTS[step - 2]
+            snapshot['screenshots'] = {name: screenshot(self.out / name, synthetic=bool(self.fake))}
+        self.save(f'session-step-{step}', snapshot)
 
     def session(self):
         prep = self.need('prepare')
@@ -345,15 +381,15 @@ class Gate(e4.Gate, f6.Gate):
                 raise NotExercised('Session output already exists: ' + output)
         steps = {
             1: 'Launch MicroClaw from its desktop icon and wait for Firefox.',
-            2: 'Paste into Firefox chat:\n' + chat(outputs[0]) + '\nBefore approving, save the '
-               'confirmation screenshot as confirmation.png. Approve, then save the fixture window '
-               'screenshot as window.png. Wait for the analysis reply to finish before DONE. '
-               'Save both in ' + str(self.out),
-            3: 'Open Community skill packages. Save the open-window row screenshot as panel.png in ' +
-               str(self.out) + ', then click Close.',
-            4: 'Paste into Firefox chat:\n' + chat(outputs[1]) + '\nApprove; wait for the fixture window '
+            2: 'Paste into Firefox chat:\n' + chat(outputs[0]) + '\nApprove the confirmation; wait for '
+               'the fixture window and for the reply to finish. Leave the fixture window visible, '
+               'not behind Firefox. The gate captures window.png after DONE in ' + str(self.out),
+            3: 'Open Community skill packages so the open-window row is visible. '
+               'The gate captures panel.png after DONE in ' + str(self.out),
+            4: 'Click Close on that open-window row.',
+            5: 'Paste into Firefox chat:\n' + chat(outputs[1]) + '\nApprove; wait for the fixture window '
                'and for the analysis reply to finish before DONE.',
-            5: 'Quit MicroClaw by closing its console and launcher windows. Leave Firefox open.',
+            6: 'Quit MicroClaw by closing its console and launcher windows. Leave Firefox open.',
         }
         for step, prompt in steps.items():
             self.say(f'STEP {step}: ' + prompt)
@@ -415,33 +451,33 @@ def threshold_table(out, prep):
             except NotExercised:
                 pass
         table.append(dict(id=row['id'], condition=row['condition'], repetition=row['repetition'],
-                          duration_s=duration, lag=lag_samples(tail), truncated=lag_stats(tail)['tail_truncated']))
+                          duration_s=duration, lag=lag_samples(tail)[1:], truncated=lag_stats(tail)['tail_truncated']))
     return table
 
 
 def score_threshold(table):
-    """Cadence excludes warm-up; lag pools every window run, including warm-up."""
+    """Exclude warm-up and each window's startup tick from scored lag."""
     for row in table:
         duration = row.get('duration_s')
         if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
             return dict(status='NOT EXERCISED', detail=row['id'] + ': missing/invalid duration_s')
-        if row['condition'] == 'window' and not row['lag']:
-            return dict(status='NOT EXERCISED', detail=row['id'] + ': no pre-result lag samples')
+        if row['condition'] == 'window' and row['repetition'] >= 1 and not row['lag']:
+            return dict(status='NOT EXERCISED', detail=row['id'] + ': no pre-result lag samples left after dropping first sample')
     durations = {condition: [r['duration_s'] for r in table if r['condition'] == condition and r['repetition'] >= 1]
                  for condition in ('none', 'window')}
     if not all(durations.values()):
         return dict(status='NOT EXERCISED', detail='Missing measured repetitions of a condition.')
     medians = {condition: statistics.median(values) for condition, values in durations.items()}
-    samples = [v for row in table if row['condition'] == 'window' for v in row['lag']]
+    samples = [v for row in table if row['condition'] == 'window' and row['repetition'] >= 1 for v in row['lag']]
     if not samples:
         return dict(status='NOT EXERCISED', detail='No window lag samples.')
     ratio, p95, maximum = medians['window'] / medians['none'], e4.p95(samples), max(samples)
     passed = ratio <= THRESHOLD['cadence_ratio'] and p95 <= THRESHOLD['lag_p95_s'] and maximum <= THRESHOLD['lag_max_s']
-    truncated = [row['id'] for row in table if row['truncated']]
+    truncated = [row['id'] for row in table if row['condition'] == 'window' and row['repetition'] >= 1 and row['truncated']]
     detail = (f"median cadence ratio={ratio:.6f} <= {THRESHOLD['cadence_ratio']:.2f} "
               f"(window={medians['window']:.6f}s, none={medians['none']:.6f}s, repetitions 1+); "
               f"pooled pre-result lag p95={p95:.6f}s <= {THRESHOLD['lag_p95_s']:.3f}s, "
-              f"max={maximum:.6f}s <= {THRESHOLD['lag_max_s']:.1f}s, n={len(samples)} (all window runs)")
+              f"max={maximum:.6f}s <= {THRESHOLD['lag_max_s']:.1f}s, n={len(samples)} (window repetitions 1+, warm-up excluded, first sample per run dropped)")
     if truncated:
         detail += '; 64 KiB tails truncated (sample counts are lower bounds): ' + ', '.join(truncated)
     return dict(status='PASS' if passed else 'FAIL', detail=detail)
@@ -546,22 +582,22 @@ def verify(gate, *, cleanup=True, echo=True):
         return require(process_count(snap['processes']) >= 1, 'No process while session job was final.')
     check(6, 'step-2', final_session)
     def panel_close():
-        before, after = session_step(2), session_step(3)
+        before, after = session_step(3), session_step(4)
         if process_count(before['processes']) == 0:
-            raise NotExercised('Control: no fixture process at step 2.')
+            raise NotExercised('Control: no fixture process at step 3.')
         ids = {r['job_id'] for r in viewer_records(before)}
-        require(ids and ids <= {r['job_id'] for r in viewer_records(after)}, 'Step 3 lacks step 2 job record.')
+        require(ids and ids <= {r['job_id'] for r in viewer_records(after)}, 'Step 4 lacks step 3 job record.')
         return require(process_count(after['processes']) == 0 and after.get('listening') is True,
-                       'Close must kill while MicroClaw remains listening at step 3.')
-    check(7, 'step-3', panel_close)
+                       'Close must kill while MicroClaw remains listening at step 4.')
+    check(7, 'step-4', panel_close)
     def quit_kills():
-        previous, before, after = session_step(3), session_step(4), session_step(5)
+        previous, before, after = session_step(4), session_step(5), session_step(6)
         old = {r['job_id'] for r in viewer_records(previous)}
         new = [r for r in viewer_records(before) if r['job_id'] not in old]
-        require(new and process_count(before['processes']) >= 1, 'No new fixture job/process at step 4.')
+        require(new and process_count(before['processes']) >= 1, 'No new fixture job/process at step 5.')
         return require(process_count(after['processes']) == 0 and after.get('listening') is False,
-                       'Fixture survived quit or MicroClaw still listening at step 5.')
-    check(8, 'step-5', quit_kills)
+                       'Fixture survived quit or MicroClaw still listening at step 6.')
+    check(8, 'step-6', quit_kills)
     def responsiveness():
         tk_available(out)
         if not runs:
@@ -569,12 +605,17 @@ def verify(gate, *, cleanup=True, echo=True):
         return score_threshold(threshold_table(out, prep))
     check(10, 'all-runs', responsiveness)
     try:
-        tk_available(out)
         session = load(out / 'session.json')
         answer = session.get('appeared')
-        screenshots = {name: (out / name).is_file() and (out / name).stat().st_size > 0 for name in SCREENSHOTS}
+        screenshots = {}
+        for step, name in zip((2, 3), SCREENSHOTS):
+            try:
+                screenshots[name] = load(out / f'session-step-{step}.json').get('screenshots', {}).get(
+                    name, dict(ok=False, error='No screenshot result recorded.'))
+            except NotExercised as exc:
+                screenshots[name] = dict(ok=False, error=str(exc))
         judged = dict(status='OPERATOR-JUDGED' if isinstance(answer, str) and answer.strip().upper() in ('YES', 'NO')
-                      and all(screenshots.values()) else 'NOT EXERCISED', answer=answer, screenshots=screenshots,
+                      else 'NOT EXERCISED', answer=answer, screenshots=screenshots,
                       synthetic=session.get('synthetic', False))
     except (NotExercised, StoreNotExercised) as exc:
         judged = dict(status='NOT EXERCISED', detail=str(exc))
@@ -623,7 +664,10 @@ def measurements(gate, prep, diagnostics, say):
             try:
                 record = load(folder / 'job-0.json')
                 diagnostic = load(folder / 'windows-idle.json').get('diagnostics') or {}
-                evidence = dict(run=row['id'], during_acquisition=lag_stats(record.get('stderr_tail')),
+                samples = lag_samples(record.get('stderr_tail'))
+                evidence = dict(run=row['id'], startup_first_tick_s=samples[0] if samples else None,
+                                scored=row['repetition'] >= 1,
+                                during_acquisition=lag_stats(record.get('stderr_tail'), drop_first=True),
                                 idle=lag_stats(diagnostic.get('stderr_tail')), priority=record.get('priority'))
             except Exception as exc:
                 evidence = dict(run=row['id'], unavailable=str(exc))
@@ -633,21 +677,21 @@ def measurements(gate, prep, diagnostics, say):
 
 
 def synthetic_session(gate, prep):
-    """Scorer evidence ONLY: no browser, visibility, consent screenshot or quit exercised."""
+    """Scorer evidence ONLY: no browser, visibility, desktop capture or quit exercised."""
     rows = [r for r in prep['runs'] if r['condition'] == 'window']
     records = [load(gate.out / 'runs' / r['id'] / 'job-0.json') for r in rows[:2]]
     processes = load(gate.out / 'runs' / rows[0]['id'] / 'processes-open.json')
     empty = dict(exit_code=0, stderr='', processes=[], synthetic=True)
     for step, jobs, alive, listening in [(1, [], False, True), (2, records[:1], True, True),
-                                        (3, records[:1], False, True), (4, records, True, True),
-                                        (5, records, False, False)]:
+                                        (3, records[:1], True, True), (4, records[:1], False, True),
+                                        (5, records, True, True), (6, records, False, False)]:
         gate.save(f'session-step-{step}', dict(records=jobs, processes=processes if alive else empty,
-                                             listening=listening, synthetic=True))
-    gate.save('session', dict(appeared='YES', completed=[1, 2, 3, 4, 5], synthetic=True,
+                                             listening=listening, synthetic=True,
+                                             screenshots={SCREENSHOTS[step - 2]: screenshot(
+                                                 gate.out / SCREENSHOTS[step - 2], synthetic=True)}
+                                             if step in (2, 3) else {}))
+    gate.save('session', dict(appeared='YES', completed=[1, 2, 3, 4, 5, 6], synthetic=True,
                              note='Synthesized for scorer only; session cannot be driven without a human.'))
-    png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aSFAAAAAASUVORK5CYII=')
-    for name in SCREENSHOTS:
-        (gate.out / name).write_bytes(png)
 
 
 def selftest(output=None):
@@ -770,7 +814,7 @@ def selftest(output=None):
                 write_json(folder / 'result.json', result)
                 if row['condition'] == 'window':
                     record = read_json(folder / 'job-0.json')
-                    record['stderr_tail'] = 'event_loop_lag_s=0.001\n'
+                    record['stderr_tail'] = 'event_loop_lag_s=0.001\n' * 3
                     write_json(folder / 'job-0.json', record)
             control = base / 'mutation'
             first = next(r for r in prep['runs'] if r['condition'] == 'window' and r['repetition'] >= 1)
@@ -794,18 +838,20 @@ def selftest(output=None):
                 (6, 'session job not final', 'FAIL', set(),
                  lambda f: alter(f, 'session-step-2.json', lambda v: v['records'][0].update(state='running'))),
                 (7, 'MicroClaw was quit, not panel Close', 'FAIL', set(),
-                 lambda f: alter(f, 'session-step-3.json', lambda v: v.update(listening=False))),
+                 lambda f: alter(f, 'session-step-4.json', lambda v: v.update(listening=False))),
                 (8, 'process survived quit', 'FAIL', set(),
-                 lambda f: alter(f, 'session-step-5.json', lambda v: v['processes'].update(
+                 lambda f: alter(f, 'session-step-6.json', lambda v: v['processes'].update(
                      processes=[dict(pid=123456, command='python -m fixture_worker.runner')]))),
                 (10, 'cadence exceeds 1.10x', 'FAIL', set(),
                  lambda f: alter(f, run / 'result.json', lambda v: v.update(duration_s=1.11))),
                 (10, 'lag p95 exceeds 0.100s but max is below 1.0s', 'FAIL', set(),
-                 lambda f: alter(f, run / 'job-0.json', lambda v: v.update(stderr_tail='event_loop_lag_s=0.2\n'))),
+                 lambda f: alter(f, run / 'job-0.json', lambda v: v.update(stderr_tail='event_loop_lag_s=0.001\nevent_loop_lag_s=0.2\n'))),
                 (10, 'lag max exceeds 1.0s', 'FAIL', set(),
-                 lambda f: alter(f, run / 'job-0.json', lambda v: v.update(stderr_tail='event_loop_lag_s=1.5\n'))),
+                 lambda f: alter(f, run / 'job-0.json', lambda v: v.update(stderr_tail='event_loop_lag_s=0.001\nevent_loop_lag_s=1.5\n'))),
                 (10, 'one window has no lag samples', 'NOT EXERCISED', set(),
                  lambda f: alter(f, run / 'job-0.json', lambda v: v.update(stderr_tail='no lag samples\n'))),
+                (10, 'only startup sample remains', 'NOT EXERCISED', set(),
+                 lambda f: alter(f, run / 'job-0.json', lambda v: v.update(stderr_tail='event_loop_lag_s=0.001\n'))),
                 (10, 'one condition lacks a duration', 'NOT EXERCISED', set(),
                  lambda f: alter(f, Path('runs') / 'r1-none' / 'result.json', lambda v: v.pop('duration_s'))),
                 (4, 'zero processes before Close (control)', 'NOT EXERCISED', {3},
@@ -834,15 +880,38 @@ def selftest(output=None):
                          f'{arm.last_results[limb]}; other non-pass={other}; declared collateral={sorted(collateral)}')
             arm = reset()
             (control / 'window.png').unlink()
+            alter(control, 'session-step-2.json', lambda v: v['screenshots']['window.png'].update(
+                ok=False, error='Synthetic capture failure.'))
             verify(arm, cleanup=False, echo=False)
             judged = read_json(control / 'verify.json')['operator_judged']
-            ok = judged['status'] == 'NOT EXERCISED' and all(v == 'PASS' for v in arm.last_results.values())
+            ok = judged['status'] == 'OPERATOR-JUDGED' and not judged['screenshots']['window.png']['ok'] and all(v == 'PASS' for v in arm.last_results.values())
             failures += not ok
-            gate.say(f'SELFTEST {"ok" if ok else "WRONG"}: limb 9 missing screenshot -> NOT EXERCISED; '
+            gate.say(f'SELFTEST {"ok" if ok else "WRONG"}: limb 9 failed screenshot -> OPERATOR-JUDGED with capture failure; '
                      'computed limbs unchanged.')
+            arm = reset()
+            alter(control, 'session.json', lambda v: v.pop('appeared'))
+            verify(arm, cleanup=False, echo=False)
+            ok = read_json(control / 'verify.json')['operator_judged']['status'] == 'NOT EXERCISED'
+            failures += not ok
+            gate.say(f'SELFTEST {"ok" if ok else "WRONG"}: limb 9 no answer -> NOT EXERCISED.')
+            for label, relative, tail in [
+                ('startup first tick excluded', run / 'job-0.json',
+                 'event_loop_lag_s=1.5\n' + 'event_loop_lag_s=0.001\n' * 3),
+                ('warm-up lag excluded', Path('runs/r0-window/job-0.json'),
+                 'event_loop_lag_s=0.001\nevent_loop_lag_s=1.5\n')]:
+                arm = reset()
+                alter(control, relative, lambda v: v.update(stderr_tail=tail))
+                verify(arm, cleanup=False, echo=False)
+                ok = all(v == 'PASS' for v in arm.last_results.values())
+                if label.startswith('startup'):
+                    window = next(w for w in read_json(control / 'verify.json')['measurement']['windows']
+                                  if w['run'] == first['id'])
+                    ok = ok and window['startup_first_tick_s'] == 1.5 and window['during_acquisition']['max_s'] == .001
+                failures += not ok
+                gate.say(f'SELFTEST {"ok" if ok else "WRONG"}: limb 10 {label} -> PASS.')
             # A truncated tail is flagged but remains scoreable.
             arm = reset()
-            alter(control, run / 'job-0.json', lambda v: v.update(stderr_tail='x' * (65536 - len('\nevent_loop_lag_s=0.001\n')) + '\nevent_loop_lag_s=0.001\n'))
+            alter(control, run / 'job-0.json', lambda v: v.update(stderr_tail='x' * (65536 - len('\nevent_loop_lag_s=0.001\nevent_loop_lag_s=0.001\n')) + '\nevent_loop_lag_s=0.001\nevent_loop_lag_s=0.001\n'))
             verify(arm, cleanup=False, echo=False)
             detail = read_json(control / 'verify.json')['limbs']['10'][0]['detail']
             ok = arm.last_results[10] == 'PASS' and 'truncated' in detail
@@ -866,13 +935,36 @@ def selftest(output=None):
                 ok = process_count(snap) == count and run_mock.call_args.kwargs['stdin'] == subprocess.DEVNULL
                 failures += not ok
             gate.say('SELFTEST Windows CIM JSON shapes checked with synthetic responses; Windows command not executed.')
+            # Execute capture success/failure branches with synthetic PowerShell responses.
+            capture_path = base / 'capture.png'
+            def capture_ok(*args, **kwargs):
+                capture_path.write_bytes(b'synthetic PNG response')
+                return SimpleNamespace(returncode=0, stdout='', stderr='')
+            capture_checks = []
+            with patch.object(os, 'name', 'nt'), patch.object(subprocess, 'run', side_effect=capture_ok) as mocked:
+                captured = screenshot(capture_path)
+            command = mocked.call_args.args[0][-1]
+            capture_checks.append(captured['ok'] and all(token in command for token in
+                                  ('Add-Type', 'VirtualScreen', 'CopyFromScreen', 'ImageFormat]::Png'))
+                                  and mocked.call_args.kwargs['stdin'] == subprocess.DEVNULL
+                                  and mocked.call_args.kwargs['timeout'] == 30)
+            for response in (SimpleNamespace(returncode=1, stdout='', stderr='Capture failed'),
+                             subprocess.TimeoutExpired('powershell', 30), OSError('No PowerShell')):
+                options = dict(side_effect=response) if isinstance(response, Exception) else dict(return_value=response)
+                with patch.object(os, 'name', 'nt'), patch.object(subprocess, 'run', **options):
+                    captured = screenshot(capture_path)
+                capture_checks.append(not captured['ok'] and bool(captured['error']))
+            ok = all(capture_checks)
+            failures += not ok
+            gate.say(f'SELFTEST {"ok" if ok else "WRONG"}: Windows screenshot success/error/timeout '
+                     'with synthetic responses; actual desktop capture not exercised.')
             launcher = (HERE / '84-block84b-demo-gate.ps1').read_text(encoding='utf-8')
             ok = ('84-block84b-demo-gate.py' in launcher and '/api/skill-packages/windows' in launcher
                   and 'already_closed' in launcher and "'prepare','measure','session','verify','cleanup','selftest'" in launcher)
             failures += not ok
             gate.say(f'SELFTEST {"ok" if ok else "WRONG"}: launcher phase/path and installed-feature probe wiring '
                      '(source check; PowerShell not executed).')
-            gate.save('selftest', dict(failed_controls=failures, synthesized=['desktop eligibility', 'Tk availability', 'human session', 'timing scorer control', 'Windows CIM responses']))
+            gate.save('selftest', dict(failed_controls=failures, synthesized=['desktop eligibility', 'Tk availability', 'human session', 'timing scorer control', 'Windows CIM responses', 'Windows screenshot responses']))
             gate.say(f'SELFTEST {"PASSED" if not failures else f"FAILED ({failures})"}; no wall-clock assertions.')
             persist(gate)
             return failures
