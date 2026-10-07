@@ -363,4 +363,4 @@ breakaway requires a different lifecycle and retention design first.
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| notebook | `design-84-package-windows` | `5e2f90a` | proposed 2026-10-07 |
+| notebook | `design-84-package-windows` | `5e2f90a` | proposed 2026-10-07, PR #53 |
