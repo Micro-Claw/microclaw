@@ -1602,7 +1602,7 @@ def test_84a_window_handoff_releases_worker_and_freezes_evidence(supervisors, tm
     assert h.record() == original
     assert sup.list_open_windows() == [dict(package='fixture-lab/conformance-fixture',
         operation='window_worker', job_id=h.job_id, dataset=str(tmp_path), opened_at=entry[4])]
-    assert sup.close_window(h.job_id)
+    assert sup.close_window(h.job_id) == {"state": "closed"}
     wait_until(lambda: not sup.list_open_windows())
     assert h.record() == original
 
@@ -1848,7 +1848,7 @@ def test_84a_open_windows_count_once_and_duplicate_id_refused(supervisors, tmp_p
                            operation='window_worker', parameters={}, dataset=tmp_path,
                            output_dir=tmp_path, job_id=handles[0].job_id)
     assert finished(duplicate, 'refused')['failure']['field'] == 'job_id'
-    assert sup.close_window(handles[0].job_id)
+    assert sup.close_window(handles[0].job_id) == {"state": "closed"}
     wait_until(lambda: len(sup._window_reservations) == 3)
     replacement = window_job(sup, tmp_path)
     finished(replacement)
@@ -1941,7 +1941,7 @@ def test_84a_revision_close_window_racing_reaper_returns(supervisors, tmp_path, 
     finished(h)
     assert reaping.wait(5)
     try:
-        assert sup.close_window(h.job_id) is False
+        assert sup.close_window(h.job_id) == {"state": "already_closed"}
     finally:
         resume.set()
     wait_until(lambda: not sup._windows)
@@ -2006,7 +2006,7 @@ def test_84b_fixture_close_running_cancels_without_kill(supervisors, tmp_path, m
         write_frame(writer, 0)
         wait_until(lambda: displayed(output, 1))
         assert not sup.list_open_windows()
-        assert sup.close_window(h.job_id) is True
+        assert sup.close_window(h.job_id) == {"state": "stopping"}
         value = finished(h, 'cancelled')
         assert value['result']['input_complete'] is False
         assert value['result']['output']['frames_read'] == 1
@@ -2030,13 +2030,13 @@ def test_84b_fixture_close_handoff_kills(supervisors, tmp_path, monkeypatch):
         calls.append(args)
         return original(*args)
     monkeypatch.setattr(s, '_kill_tree', kill)
-    assert sup.close_window(h.job_id)
+    assert sup.close_window(h.job_id) == {"state": "closed"}
     assert calls
     wait_until(lambda: not sup.list_open_windows())
-    assert sup.close_window(h.job_id) is False
+    assert sup.close_window(h.job_id) == {"state": "already_closed"}
 
 
-def test_84b_fixture_close_kill_failure_is_false(supervisors, tmp_path, monkeypatch):
+def test_84b_fixture_close_kill_failure_reports_reason(supervisors, tmp_path, monkeypatch):
     sup = supervisors(desktop_probe=lambda: True)
     h, dataset, output = fixture_window(sup, tmp_path)
     h.notify_acquisition('completed', writer='finished')
@@ -2046,10 +2046,10 @@ def test_84b_fixture_close_kill_failure_is_false(supervisors, tmp_path, monkeypa
     with monkeypatch.context() as patch:
         patch.setattr(s, '_kill_tree', fail)
         for _ in range(9):
-            assert sup.close_window(h.job_id) is False
+            assert sup.close_window(h.job_id) == {"state": "close_failed", "reason": "84b injected kill failure"}
         diagnostics = sup.window_diagnostics(h.job_id)
-        assert diagnostics['close_failure_count'] == 9
+        assert 'close_failure_count' not in diagnostics
         assert len(diagnostics['cleanup_failures']) == 8
         assert diagnostics['cleanup_failures'][-1] == 'window kill: 84b injected kill failure'
         assert sup.list_open_windows()[0]['job_id'] == h.job_id
-    assert sup.close_window(h.job_id)
+    assert sup.close_window(h.job_id) == {"state": "closed"}

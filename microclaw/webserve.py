@@ -894,20 +894,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         if supervisor is None:
             return JSONResponse({"state": "already_closed"})
 
-        def close():
-            before = supervisor.window_diagnostics(job_id)
-            accepted = supervisor.close_window(job_id)
-            if accepted:
-                return {"state": "closed" if before is not None else "stopping"}
-            after = supervisor.window_diagnostics(job_id)
-            failures = (after or {}).get("cleanup_failures", [])
-            # The bounded tail can be identical after repeated failed retries.
-            if failures and (failures != (before or {}).get("cleanup_failures", []) or
-                    (after or {}).get("close_failure_count", 0) != (before or {}).get("close_failure_count", 0)):
-                return {"state": "close_failed", "reason": failures[-1]}
-            return {"state": "already_closed"}
-
-        return JSONResponse(await run_in_threadpool(close))
+        return JSONResponse(await run_in_threadpool(supervisor.close_window, job_id))
 
     @app.get("/api/skill-packages/catalog")
     async def get_skill_catalog():
