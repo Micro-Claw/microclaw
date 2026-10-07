@@ -42,6 +42,7 @@ User (natural language) → Agent → Tools → Safety Guard → Microscope Cont
 | [Safety configuration](docs/safety-config.md) | The `safety_config.yaml` schema, every gate, and what a section's absence means |
 | [The browser GUI](docs/browser-gui.md) | The chat interface, the desktop shortcut, API keys, remote access |
 | [CLI reference](docs/cli-reference.md) | Flags and subcommands, the history viewer, where files live |
+| [Publishing a skill package](docs/publishing-skill-packages.md) | Ship your own skill or analysis worker from your own repository: manifest, locks, worker protocol, signing |
 | [Developing Microclaw](docs/development.md) | Source install, the test suite, building a safety profile by hand |
 
 ## Quick start (Windows)

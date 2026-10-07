@@ -113,6 +113,7 @@ Rows added since the triage:
 | `R146` | `design/83` 83f-5's demo gate screenshot, 2026-10-05 |
 | `R147` | `design/83` 83f-5's Linux CI run, 2026-10-05 (not 83f-5's code) |
 | `R148`–`R149` | `design/83` 83f-6's review and demo gate, 2026-10-07 |
+| `R150` | writing `docs/publishing-skill-packages.md`, the first publisher-facing doc, 2026-10-07 |
 
 
 ## The work queue
@@ -180,6 +181,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R147` | [One-pass autofocus can report convergence on pure noise](#r147) | MEDIUM | SMALL |  |
 | `R148` | [83f-3's demo-gate selftest fails on its own committed fixtures](#r148) | LOW | SMALL |  |
 | `R149` | [A package verdict's `checked_at` is the operation's start, not the check](#r149) | LOW | SMALL |  |
+| `R150` | [A publisher has no way to run their worker under MicroClaw before users do](#r150) | MEDIUM | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3235,3 +3237,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83f-6's demo gate, scored from artifacts 2026-10-07.
+
+### R150 — A publisher has no way to run their worker under MicroClaw before users do
+
+**Catalog intake checks format and signature but never runs the worker, and the supervisor only runs a release that a signed trust policy admits. So the first time a publisher's worker runs under MicroClaw is `self_check` on a user's machine.**
+
+- **What happened** — writing `docs/publishing-skill-packages.md` for the first external publisher (SMAPpy, `R85`), 2026-10-07. The doc can only tell a publisher to drive their worker over pipes in their own CI and validate each line with `skill_packages.validate_worker_message` — rebuilding a slice of `skill_supervisor` each.
+- **Why it matters** — design/83 promises publishers conformance without becoming their bridge maintainer; a publisher we are not in contact with has no other way to find a protocol mistake. The doc says so plainly, so the gap is disclosed, not hidden.
+- **What a fix would look like** — a `catalog_intake check-worker --dir package [--locks locks] --operation self_check [--dataset PATH --parameters JSON]` that builds the environment from the lock (or uses the caller's interpreter), runs the job through the real `Supervisor` with trust checks bypassed and said so in its output, and prints the record. One path for the supervisor, no second implementation. Then the doc's CI section shrinks to one command.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — SMALL
+- **Provenance** — `docs/publishing-skill-packages.md`, 2026-10-07.
