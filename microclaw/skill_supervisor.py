@@ -296,6 +296,12 @@ class JobHandle:
         self._lock = threading.Lock()
         self._done = threading.Event()
         self._window_done = threading.Event()
+        # Protected by the supervisor lifecycle lock. A reaper revokes new
+        # kills and waits outside the lock for already-claimed kills to finish.
+        self._window_reaping = False
+        self._window_kills = 0
+        self._window_kills_done = threading.Event()
+        self._window_kills_done.set()
         self._stop = threading.Event()
         self._pending = queue.Queue(maxsize=supervisor.max_pending_notifications)
         self._status = deque(maxlen=supervisor.max_retained_status)
@@ -502,8 +508,6 @@ class JobHandle:
                     target = self._window_stderr if self._discard_stdout else self._stderr
                     target.extend(chunk)
                     del target[:-self._supervisor.max_stderr_bytes]
-                    if self._discard_stdout:
-                        self._diagnostics["stderr_tail"] = bytes(target).decode("utf-8", errors="replace")
         except Exception as exc:
             if self._discard_stdout:
                 with self._lock:
@@ -670,14 +674,29 @@ class Supervisor:
         if entry is None:
             return None
         with entry[0]._lock:
-            return deepcopy(entry[0]._diagnostics)
+            value = deepcopy(entry[0]._diagnostics)
+            value["stderr_tail"] = bytes(entry[0]._window_stderr).decode("utf-8", errors="replace")
+            return value
 
     def close_window(self, job_id):
         with self._lock:
             entry = self._windows.get(job_id)
-        if entry is None:
-            return False
-        _kill_tree(entry[1], entry[2])
+            if entry is None or entry[0]._window_reaping:
+                return False
+            handle = entry[0]
+            handle._window_kills += 1
+            handle._window_kills_done.clear()
+        try:
+            _kill_tree(entry[1], entry[2])
+        except Exception as exc:
+            with handle._lock:
+                if len(handle._diagnostics["cleanup_failures"]) < 8:
+                    handle._diagnostics["cleanup_failures"].append(f"window kill: {exc}"[:2048])
+        finally:
+            with self._lock:
+                handle._window_kills -= 1
+                if not handle._window_kills:
+                    handle._window_kills_done.set()
         return True
 
     def _reap_window(self, entry):
@@ -686,6 +705,11 @@ class Supervisor:
         try:
             process.wait()
         finally:
+            with self._lock:
+                handle._window_reaping = True
+            # No handle close or group cleanup may race an OS kill already
+            # claimed by a caller. No OS calls or waits hold the lifecycle lock.
+            handle._window_kills_done.wait()
             try:
                 _kill_tree(process, job)  # Inherited pipes must die before joins.
                 process.wait(timeout=5)
@@ -737,7 +761,7 @@ class Supervisor:
                 self._queue.task_done()
             windows = list(self._windows.values())
         for entry in windows:
-            _kill_tree(entry[1], entry[2])
+            self.close_window(entry[0].job_id)
         end = time.perf_counter() + max(0, timeout)
         for thread in self._threads:
             thread.join(max(0, end - time.perf_counter()))
@@ -840,11 +864,14 @@ class Supervisor:
                 exited = process.poll() is not None
                 sample_priority()
                 if handle._opens_window:
-                    if exited:
-                        threads[0].join(0.1)  # Let already-written terminal reach the parser.
                     with handle._lock:
                         terminal = handle._record["result"]
                         violation = handle._violation
+                    if exited and terminal is None:
+                        threads[0].join(2)  # Same bounded pipe budget as ordinary cleanup.
+                        with handle._lock:
+                            terminal = handle._record["result"]
+                            violation = handle._violation
                     if terminal is not None and violation is None and not self._closing.is_set():
                         state = terminal["state"]
                         retained, rejected = self._retain_artifacts(handle, terminal["artifacts"], state)
@@ -860,6 +887,12 @@ class Supervisor:
                                 with handle._lock:
                                     handle._record.update(artifacts=retained, rejected_artifacts=rejected,
                                                           exit_code=None, window_retained=True)
+                                    for phase, arrived in (("at_start", handle._first is not None),
+                                                           ("at_end", handle._record["result"] is not None)):
+                                        if phase not in sampled:
+                                            handle._record["priority"]["reason"][phase] = (
+                                                "message arrived after priority monitoring ended" if arrived else
+                                                "worker message never arrived")
                                     worker_failure = dict(reason="worker_failed", detail=terminal["failure"]["message"]) if state == "failed" else None
                                     handle._finish(state, worker_failure)
                         if handed_off:
@@ -898,7 +931,8 @@ class Supervisor:
                     break
                 time.sleep(0.01)
         except packages.PackageRefusal as exc:
-            failure = dict(reason="asset_refused", field=exc.field, detail=str(exc))
+            failure = dict(reason="desktop_unavailable" if exc.field == "opens_window" else "asset_refused",
+                           field=exc.field, detail=str(exc))
         except Exception as exc:
             failure = dict(reason="launch_failed", detail=str(exc))
         finally:

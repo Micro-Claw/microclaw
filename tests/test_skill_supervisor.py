@@ -1709,7 +1709,7 @@ def test_84a_window_reservation_cleanup(supervisors, tmp_path, path, monkeypatch
         finished(h, 'supervisor_failed', 'launch_failed')
     elif path == 'desktop':
         h = window_job(sup, tmp_path)
-        finished(h, 'supervisor_failed', 'asset_refused')
+        finished(h, 'supervisor_failed', 'desktop_unavailable')
     else:
         h = window_job(sup, tmp_path, path, heartbeat=str(tmp_path/'hb'))
         if path == 'ignore_cancel':
@@ -1734,7 +1734,7 @@ def fixture_window(sup, tmp_path):
 
 def displayed(output, frames):
     try:
-        return json.loads((output/'display.json').read_text())['frames_displayed'] == frames
+        return json.loads((output/'display.json').read_text(encoding='utf-8'))['frames_displayed'] == frames
     except (OSError, ValueError):
         return False
 
@@ -1903,3 +1903,89 @@ def test_84a_all_worker_terminals_can_handoff(supervisors, tmp_path, state):
     else:
         assert value['artifacts'][0]['validity'] == 'partial'
         assert value['result']['input_complete'] is False
+
+
+def test_84a_revision_close_continues_after_window_kill_failure(supervisors, tmp_path, monkeypatch):
+    sup = supervisors(desktop_probe=lambda: True)
+    first, second = window_job(sup, tmp_path), window_job(sup, tmp_path)
+    finished(first); finished(second)
+    processes = [sup._windows[h.job_id][1] for h in (first, second)]
+    kill = s._kill_tree
+    def one_failure(process, job):
+        if process is processes[0] and threading.current_thread() is threading.main_thread():
+            raise OSError('injected window kill failure')
+        return kill(process, job)
+    with monkeypatch.context() as patch:
+        patch.setattr(s, '_kill_tree', one_failure)
+        try:
+            sup.close(timeout=0.3)
+            assert processes[1].poll() is not None
+            assert 'injected window kill failure' in str(first._diagnostics['cleanup_failures'])
+        finally:
+            kill(processes[0], None)
+    wait_until(lambda: not sup._windows)
+
+
+def test_84a_revision_close_window_racing_reaper_returns(supervisors, tmp_path, monkeypatch):
+    sup = supervisors(desktop_probe=lambda: True)
+    reaping, resume = threading.Event(), threading.Event()
+    kill = s._kill_tree
+    def pause_reaper(process, job):
+        if threading.current_thread().name.startswith('skill-window-'):
+            reaping.set()
+            assert resume.wait(5)
+        else:
+            raise OSError('tree already being reaped')
+        return kill(process, job)
+    monkeypatch.setattr(s, '_kill_tree', pause_reaper)
+    h = window_job(sup, tmp_path, 'window_nonzero', sleep=0.2)
+    finished(h)
+    assert reaping.wait(5)
+    try:
+        assert sup.close_window(h.job_id) is False
+    finally:
+        resume.set()
+    wait_until(lambda: not sup._windows)
+
+
+def test_84a_revision_immediate_nonzero_waits_for_terminal_parser(supervisors, tmp_path, monkeypatch):
+    stdout = s.JobHandle._stdout
+    def delayed(self, pipe):
+        time.sleep(0.3)  # Exceeds the old 0.1 s post-exit join.
+        stdout(self, pipe)
+    monkeypatch.setattr(s.JobHandle, '_stdout', delayed)
+    sup = supervisors(desktop_probe=lambda: True)
+    h = window_job(sup, tmp_path, 'window_nonzero', sleep=0)
+    value = finished(h)
+    assert value['window_retained'] is True and value['exit_code'] is None
+    wait_until(lambda: h._window_done.is_set())
+    assert h._diagnostics['exit_code'] == 3
+
+
+def test_84a_revision_stderr_drain_keeps_bytes_without_decoding(supervisors):
+    import io
+    class Raw(bytearray):
+        conversions = 0
+        def __bytes__(self):
+            self.conversions += 1
+            raise AssertionError('drain must not convert/decode the accumulated buffer')
+    sup = supervisors(desktop_probe=lambda: True)
+    h = s.JobHandle(sup)
+    h._discard_stdout = True
+    h._window_stderr = Raw()
+    h._drain_stderr(io.BytesIO(b'x' * 200000))
+    assert h._window_stderr.conversions == 0
+    assert len(h._window_stderr) == sup.max_stderr_bytes
+
+
+def test_84a_revision_handoff_labels_unsampled_priority(supervisors, tmp_path, monkeypatch):
+    read = s._read_priority
+    def wait_for_result(process, job):
+        time.sleep(0.5)  # Result arrives after sample_priority's arrival snapshot.
+        return read(process, job)
+    monkeypatch.setattr(s, '_read_priority', wait_for_result)
+    sup = supervisors(desktop_probe=lambda: True)
+    h = window_job(sup, tmp_path, 'slow', sleep=0.3)
+    value = finished(h)
+    assert value['priority']['at_end'] is None
+    assert value['priority']['reason']['at_end'] == 'message arrived after priority monitoring ended'
