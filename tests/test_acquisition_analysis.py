@@ -476,3 +476,46 @@ def test_job_disclosure_names_the_rerun_fields_not_the_whole_record(live, monkey
     assert job['job_id'] in line and job['digest'] in line
     for absent in ('notifications', 'status', 'state', 'owner', 'protocol'):
         assert f'{absent}=' not in line and f"'{absent}'" not in line, absent
+
+
+@pytest.mark.parametrize('desktop', [True, False])
+def test_84a_live_window_consent_and_desktop_refusal(live, monkeypatch, desktop):
+    import socket
+    from microclaw.skill_supervisor import Supervisor
+    live.analysis['adapter'] = 'fixture-lab/conformance-fixture:window_worker'
+    monkeypatch.setattr(cd, '_analysis_supervisor', Supervisor(desktop_probe=lambda: desktop))
+    monkeypatch.setattr('microclaw.skill_supervisor.interactive_desktop', lambda: desktop)
+    calls = []
+    def decline(summary, **kwargs):
+        calls.append((summary, kwargs))
+        assert socket.gethostname() in summary
+        assert 'stays open after the analysis ends' in summary and 'quit MicroClaw' in summary
+        assert kwargs['subject'] == 'fixture-lab/conformance-fixture@' + live.analysis['release_digest'] + '+window'
+        return False
+    monkeypatch.setattr(tools, 'CONFIRM_FN', decline)
+    result = live.run()
+    if desktop:
+        assert result['cancelled'] is True and len(calls) == 1
+    else:
+        assert not calls
+        assert 'cannot show one' in result['error']
+    assert not live.engine.backends
+
+
+def test_84a_revision_live_window_persists_handoff(live, monkeypatch):
+    from microclaw.skill_supervisor import Supervisor
+    from tests.test_completed_dataset import terminal_analysis
+    sup = Supervisor(desktop_probe=lambda: True)
+    monkeypatch.setattr(cd, '_analysis_supervisor', sup)
+    monkeypatch.setattr('microclaw.skill_supervisor.interactive_desktop', lambda: True)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: True)
+    live.analysis.update(adapter='fixture-lab/conformance-fixture:window_worker',
+                         parameters={'behaviour': 'window_hang'})
+    result = live.run()
+    assert 'error' not in result
+    job_id = result['analysis']['jobs'][0]['job_id']
+    terminal_analysis(job_id)
+    persisted = json.loads(store.analysis_job_path(job_id).read_text(encoding='utf-8'))
+    assert persisted['window_retained'] is True and persisted['exit_code'] is None
+    assert live.analysis['release_digest'] in store.retained_digests()
+    assert sup._windows[job_id][1].poll() is None

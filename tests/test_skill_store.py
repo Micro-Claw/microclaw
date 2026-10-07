@@ -2083,3 +2083,48 @@ def test_pack_pylocks_real_offline_install(tmp_path):
     assert installed['interpreter']['distributions'] == expected
     assert store.probe(installed['python'])['distributions'] == expected
     assert 'false-marker-dependency' not in expected
+
+
+def test_84a_terminal_window_release_survives_foreign_pruner(tmp_path):
+    from tests.test_skill_supervisor import release, finished
+    from tests.test_skill_packages import policy
+    from microclaw.skill_supervisor import Supervisor
+    # Real live window process and a terminal persisted handoff pin. Pruning
+    # reads only disk + owner liveness in a second interpreter.
+    sup = Supervisor(desktop_probe=lambda: True)
+    try:
+        output = tmp_path/'output'; output.mkdir()
+        h = sup.submit(release(), policy(), now=NOW, python=sys.executable,
+                       operation='window_worker', parameters={'behaviour': 'window_hang'},
+                       dataset=tmp_path, output_dir=output)
+        value = finished(h)
+        digest = value['release']['artifact_digest']
+        store._write(store.analysis_job_path(h.job_id), dict(value, digest=digest,
+                     owner=dict(pid=os.getpid(), nonce='live-window-owner')))
+        package = store._package('conformance-fixture')
+        old = package/'installs'/('1'*16+'-000000')
+        store._write(old/'install.json', dict(state='ready', artifact_digest=digest))
+        store._write(package/'pointer.json', dict(active=None, previous=None))
+        # No active pointer: this otherwise-prunable release is kept solely by
+        # the persisted viewer record, not by an active/previous install.
+        script = """
+import json, sys
+from pathlib import Path
+from microclaw import skill_store as store
+store.store_dir = lambda: Path(sys.argv[1])
+failures = []
+store._retention(store._package('conformance-fixture'), retained_digests=frozenset(), failures=failures)
+assert not failures
+print(json.dumps(dict(retained=list(store.retained_digests()), exists=(store._package('conformance-fixture')/'installs'/('1'*16+'-000000')).exists())))
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(store.store_dir())],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=True)
+        foreign = json.loads(result.stdout)
+        assert foreign == dict(retained=[digest], exists=True)
+        assert sup._windows[h.job_id][1].poll() is None
+        # A dead owner must not turn the historical fact into a permanent pin.
+        store._write(store.analysis_job_path(h.job_id), dict(value, digest=digest,
+                     owner=dict(pid=0, nonce='dead')))
+        assert digest not in store.retained_digests()
+    finally:
+        sup.close()

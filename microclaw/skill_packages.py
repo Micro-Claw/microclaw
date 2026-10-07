@@ -422,7 +422,11 @@ def validate_manifest(manifest):
         operations = set()
         for i, operation in enumerate(manifest["operations"]):
             field = f"operations[{i}]"
-            _mapping(operation, field, {"name", "input_schema", "output_schema"})
+            _mapping(operation, field, {"name", "input_schema", "output_schema"},
+                     {"opens_window"} if manifest["protocol_version"] == "1.1" else ())
+            if "opens_window" in operation:
+                if operation["name"] == "self_check" or type(operation["opens_window"]) is not bool:
+                    raise PackageRefusal(field + ".opens_window", "expected boolean on a dataset operation")
             name = _text(operation["name"], field + ".name", MAX_OPERATION_NAME_LENGTH)
             if not re.fullmatch(r"[a-z][a-z0-9_]*", name) or name in operations:
                 raise PackageRefusal(field + ".name", "expected a unique operation identifier")
@@ -834,7 +838,7 @@ def verify_catalog(document, policy, *, now, cached=False):
 
 
 ANALYSIS_PROTOCOL = "microclaw.analysis.v1"
-SUPPORTED_PROTOCOLS = {"1.0": ANALYSIS_PROTOCOL}
+SUPPORTED_PROTOCOLS = {"1.0": ANALYSIS_PROTOCOL, "1.1": ANALYSIS_PROTOCOL}
 MAX_MESSAGE_BYTES = 65536
 MAX_STATUS_MESSAGE_LENGTH = 512
 MAX_FAILURE_MESSAGE_LENGTH = 1024

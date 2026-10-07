@@ -9,7 +9,9 @@ and cleanup. Priority launch policy and at most two worker priority samples run 
 in the dispatcher monitor, never on submit/notify or in pipe callbacks. Cleanup
 labels unsampled phases without further OS reads or waits. Message bytes, pending
 stdin, retained stdout and stderr, queued
-jobs and live workers have explicit bounds. Notification history retains the first
+jobs, live workers and reserved window slots have explicit bounds. Retained
+windows release their worker slot at result; post-result pipes only drain bounded
+chunks into separate in-memory diagnostics. Notification history retains the first
 32 attempts and counts subsequent attempts without retaining them. There is no
 total analysis deadline unless supplied. All timing uses perf_counter, including
 deadlines. Measurements live in design/83-block83c-dispatch-timing.py.
@@ -33,6 +35,8 @@ from pathlib import Path
 import queue
 import signal
 import stat
+import sys
+from datetime import datetime, timezone
 import subprocess
 import tempfile
 import threading
@@ -47,6 +51,9 @@ MAX_PENDING_NOTIFICATIONS = 8
 MAX_RECORDED_NOTIFICATIONS = 32
 MAX_QUEUED_JOBS = 4
 MAX_CONCURRENT_WORKERS = 2
+MAX_OPEN_WINDOWS = 4
+DESKTOP_REFUSAL = ("This operation opens a window and this MicroClaw cannot show one; "
+                   "use an operation of the same package that does not open a window.")
 STARTUP_DEADLINE_S = 60
 SELF_CHECK_DEADLINE_S = 120
 SHUTDOWN_GRACE_S = 10
@@ -260,16 +267,50 @@ def _write_pipe(pipe, line):
         view = view[count:]
 
 
+def interactive_desktop(*, platform=None, environ=None):
+    """Bounded preflight, not proof GUI initialization will succeed.
+
+    Darwin is deliberately allowed: no portable macOS desktop policy is claimed.
+    """
+    platform = sys.platform if platform is None else platform
+    environ = os.environ if environ is None else environ
+    if platform.startswith("linux"):
+        return bool(environ.get("DISPLAY") or environ.get("WAYLAND_DISPLAY"))
+    if platform == "win32":
+        import ctypes as c
+        from ctypes import wintypes as w
+        kernel = c.WinDLL("kernel32", use_last_error=True)
+        kernel.ProcessIdToSessionId.argtypes = [w.DWORD, c.POINTER(w.DWORD)]
+        kernel.ProcessIdToSessionId.restype = w.BOOL
+        session = w.DWORD()
+        if not kernel.ProcessIdToSessionId(os.getpid(), c.byref(session)):
+            raise c.WinError(c.get_last_error())
+        return session.value != 0
+    return True
+
+
 class JobHandle:
     def __init__(self, supervisor, job_id=None):
         self.job_id = job_id or uuid4().hex
         self._supervisor = supervisor
         self._lock = threading.Lock()
         self._done = threading.Event()
+        self._window_done = threading.Event()
+        # Protected by the supervisor lifecycle lock. A reaper revokes new
+        # kills and waits outside the lock for already-claimed kills to finish.
+        self._window_reaping = False
+        self._window_kills = 0
+        self._window_kills_done = threading.Event()
+        self._window_kills_done.set()
         self._stop = threading.Event()
         self._pending = queue.Queue(maxsize=supervisor.max_pending_notifications)
         self._status = deque(maxlen=supervisor.max_retained_status)
         self._stderr = bytearray()
+        self._opens_window = False
+        self._discard_stdout = False
+        self._frozen = False
+        self._diagnostics = dict(stderr_tail="", discarded_stdout_bytes=0, exit_code=None, cleanup_failures=[])
+        self._window_stderr = bytearray()
         self._declared = {}
         self._accepted = {}
         self._created = time.perf_counter()
@@ -288,8 +329,9 @@ class JobHandle:
     def record(self):
         with self._lock:
             value = deepcopy(self._record)
-            value["status"] = list(self._status)
-            value["stderr_tail"] = bytes(self._stderr).decode("utf-8", errors="replace")
+            if not self._frozen:
+                value["status"] = list(self._status)
+                value["stderr_tail"] = bytes(self._stderr).decode("utf-8", errors="replace")
             return value
 
     def wait(self, timeout=None):
@@ -309,6 +351,9 @@ class JobHandle:
             accounted_s=end - self._created)
         self._stop.set()
         self._undeliver_pending(self._stdin_unavailable_reason or "worker_exited")
+        self._record["status"] = list(self._status)
+        self._record["stderr_tail"] = bytes(self._stderr).decode("utf-8", errors="replace")
+        self._frozen = self._record.get("window_retained", False)
         self._done.set()
 
     def _undeliver_pending(self, reason):
@@ -323,6 +368,8 @@ class JobHandle:
     def _notify(self, kind, **fields):
         message = dict(protocol=packages.ANALYSIS_PROTOCOL, type=kind, job_id=self.job_id, **fields)
         with self._lock:
+            if self._frozen:
+                return False
             entry = dict(type=kind, state="refused")
             if len(self._record["notifications"]) < MAX_RECORDED_NOTIFICATIONS:
                 self._record["notifications"].append(entry)
@@ -359,7 +406,10 @@ class JobHandle:
             return True
 
     def cancel(self):
-        return self._notify("cancel")
+        accepted = self._notify("cancel")
+        if self._done.is_set():
+            self._supervisor._release_reservation(self)
+        return accepted
 
     def notify_acquisition(self, outcome, *, writer):
         return self._notify("acquisition", outcome=outcome, writer=writer)
@@ -384,6 +434,10 @@ class JobHandle:
                     if buffer:
                         self._fail_protocol("partial_line", "stdout ended without newline")
                     return
+                if self._discard_stdout:
+                    with self._lock:
+                        self._diagnostics["discarded_stdout_bytes"] += len(chunk)
+                    continue
                 buffer.extend(chunk)
                 while b"\n" in buffer:
                     index = buffer.index(b"\n") + 1
@@ -429,21 +483,38 @@ class JobHandle:
                         else:
                             self._record["result"] = message
                             self._shutdown = self._shutdown or time.perf_counter()
+                            if self._opens_window:
+                                self._discard_stdout = True
+                                self._diagnostics["discarded_stdout_bytes"] += len(buffer)
+                                buffer.clear()
                             self._stop.set()
+                    if self._discard_stdout:
+                        break
                 if len(buffer) >= packages.MAX_MESSAGE_BYTES:
                     self._fail_protocol("message_too_large", "unterminated stdout exceeds byte bound")
                     return
         except Exception as exc:
-            self._fail_protocol("stdout_failed", str(exc))
+            if self._discard_stdout:
+                with self._lock:
+                    if len(self._diagnostics["cleanup_failures"]) < 8:
+                        self._diagnostics["cleanup_failures"].append(f"stdout: {exc}"[:2048])
+            else:
+                self._fail_protocol("stdout_failed", str(exc))
 
     def _drain_stderr(self, pipe):
         try:
             while chunk := pipe.read(4096):
                 with self._lock:
-                    self._stderr.extend(chunk)
-                    del self._stderr[:-self._supervisor.max_stderr_bytes]
+                    target = self._window_stderr if self._discard_stdout else self._stderr
+                    target.extend(chunk)
+                    del target[:-self._supervisor.max_stderr_bytes]
         except Exception as exc:
-            self._fail_protocol("stderr_failed", str(exc))
+            if self._discard_stdout:
+                with self._lock:
+                    if len(self._diagnostics["cleanup_failures"]) < 8:
+                        self._diagnostics["cleanup_failures"].append(f"stderr: {exc}"[:2048])
+            else:
+                self._fail_protocol("stderr_failed", str(exc))
 
     def _stdin(self, pipe, line):
         entry = None
@@ -495,7 +566,8 @@ class Supervisor:
                  startup_deadline_s=STARTUP_DEADLINE_S, self_check_deadline_s=SELF_CHECK_DEADLINE_S,
                  shutdown_grace_s=SHUTDOWN_GRACE_S, max_stderr_bytes=MAX_STDERR_BYTES,
                  max_retained_status=MAX_RETAINED_STATUS,
-                 max_pending_notifications=MAX_PENDING_NOTIFICATIONS):
+                 max_pending_notifications=MAX_PENDING_NOTIFICATIONS,
+                 desktop_probe=None):
         for value in (max_workers, max_queued, max_stderr_bytes, max_retained_status, max_pending_notifications):
             if type(value) is not int or value < 1:
                 raise ValueError("bounds must be positive integers")
@@ -508,6 +580,9 @@ class Supervisor:
         self.max_stderr_bytes = max_stderr_bytes
         self.max_retained_status = max_retained_status
         self.max_pending_notifications = max_pending_notifications
+        self._desktop_probe = desktop_probe or interactive_desktop
+        self._windows = {}
+        self._window_reservations = {}
         self._queue = queue.Queue(maxsize=max_queued)
         self._closing = threading.Event()
         self._lock = threading.Lock()
@@ -548,12 +623,27 @@ class Supervisor:
             handle._manifest = manifest
             handle._python = os.fspath(python)
             handle._deadline = deadline_s
+            handle._opens_window = next(op for op in manifest["operations"] if op["name"] == operation).get("opens_window", False)
             with self._lock:
                 if self._closing.is_set():
                     with handle._lock:
                         handle._finish("dispatch_failed", dict(reason="closed", detail="supervisor is closed"))
                 else:
-                    self._queue.put_nowait(handle)
+                    if handle._opens_window:
+                        if handle.job_id in self._window_reservations:
+                            raise packages.PackageRefusal("job_id", "window job id is already reserved")
+                        if len(self._window_reservations) >= MAX_OPEN_WINDOWS:
+                            opened = [f"{h._record['release']['package_id']}:{h._record['operation']} ({h.job_id})"
+                                      for h, *_ in self._windows.values()]
+                            pending = [f"{h._record['release']['package_id']}:{h._record['operation']} ({h.job_id})"
+                                       for jid, h in self._window_reservations.items() if jid not in self._windows]
+                            raise packages.PackageRefusal("opens_window", f"window limit {MAX_OPEN_WINDOWS}; open windows: {opened}; pending reservations: {pending}")
+                        self._window_reservations[handle.job_id] = handle
+                    try:
+                        self._queue.put_nowait(handle)
+                    except queue.Full:
+                        self._window_reservations.pop(handle.job_id, None)
+                        raise
         except queue.Full:
             with handle._lock:
                 handle._finish("dispatch_failed", dict(reason="queue_full", detail="dispatch queue is full"))
@@ -561,6 +651,93 @@ class Supervisor:
             with handle._lock:
                 handle._finish("refused", dict(reason="refused", field=getattr(exc, "field", "submit"), detail=str(exc)))
         return handle
+
+    def check_desktop(self):
+        if not self._desktop_probe():
+            raise packages.PackageRefusal("opens_window", DESKTOP_REFUSAL)
+
+    def _release_reservation(self, handle):
+        with self._lock:
+            if handle.job_id not in self._windows:
+                self._window_reservations.pop(handle.job_id, None)
+
+    def list_open_windows(self):
+        with self._lock:
+            return [dict(package=f"{h._record['release']['publisher']}/{h._record['release']['package_id']}",
+                         operation=h._record['operation'], job_id=h.job_id,
+                         dataset=h._job['input']['dataset'], opened_at=opened)
+                    for h, process, job, threads, opened in self._windows.values()]
+
+    def window_diagnostics(self, job_id):
+        with self._lock:
+            entry = self._windows.get(job_id)
+        if entry is None:
+            return None
+        with entry[0]._lock:
+            value = deepcopy(entry[0]._diagnostics)
+            value["stderr_tail"] = bytes(entry[0]._window_stderr).decode("utf-8", errors="replace")
+            return value
+
+    def close_window(self, job_id):
+        with self._lock:
+            entry = self._windows.get(job_id)
+            if entry is None or entry[0]._window_reaping:
+                return False
+            handle = entry[0]
+            handle._window_kills += 1
+            handle._window_kills_done.clear()
+        try:
+            _kill_tree(entry[1], entry[2])
+        except Exception as exc:
+            with handle._lock:
+                if len(handle._diagnostics["cleanup_failures"]) < 8:
+                    handle._diagnostics["cleanup_failures"].append(f"window kill: {exc}"[:2048])
+        finally:
+            with self._lock:
+                handle._window_kills -= 1
+                if not handle._window_kills:
+                    handle._window_kills_done.set()
+        return True
+
+    def _reap_window(self, entry):
+        handle, process, job, threads, _ = entry
+        failures = []
+        try:
+            process.wait()
+        finally:
+            with self._lock:
+                handle._window_reaping = True
+            # No handle close or group cleanup may race an OS kill already
+            # claimed by a caller. No OS calls or waits hold the lifecycle lock.
+            handle._window_kills_done.wait()
+            try:
+                _kill_tree(process, job)  # Inherited pipes must die before joins.
+                process.wait(timeout=5)
+            except Exception as exc:
+                failures.append(str(exc)[:2048])
+            end = time.perf_counter() + 2
+            for thread in threads:
+                thread.join(max(0, end - time.perf_counter()))
+            if any(thread.is_alive() for thread in threads):
+                failures.append("pipe thread did not stop")
+            else:
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    try:
+                        pipe.close()
+                    except Exception as exc:
+                        failures.append(str(exc)[:2048])
+            if job is not None:
+                try:
+                    job.close()
+                except OSError as exc:
+                    failures.append(str(exc)[:2048])
+            with handle._lock:
+                handle._diagnostics.update(exit_code=process.returncode,
+                    cleanup_failures=(handle._diagnostics["cleanup_failures"] + failures)[:8])
+            with self._lock:
+                self._windows.pop(handle.job_id, None)
+                self._window_reservations.pop(handle.job_id, None)
+            handle._window_done.set()
 
     def self_check(self, release, policy, *, now, python, timeout=None):
         handle = self.submit(release, policy, now=now, python=python, operation="self_check",
@@ -580,10 +757,18 @@ class Supervisor:
                 with handle._lock:
                     if not handle._done.is_set():
                         handle._finish("cancelled")
+                self._window_reservations.pop(handle.job_id, None)
                 self._queue.task_done()
+            windows = list(self._windows.values())
+        for entry in windows:
+            self.close_window(entry[0].job_id)
         end = time.perf_counter() + max(0, timeout)
         for thread in self._threads:
             thread.join(max(0, end - time.perf_counter()))
+        # A dispatcher racing shutdown either cleans up normally or published
+        # its entry before close took the snapshot. No later adoption is allowed.
+        for entry in windows:
+            entry[0]._window_done.wait(max(0, end - time.perf_counter()))
 
     def _dispatch(self):
         while not self._closing.is_set():
@@ -604,6 +789,7 @@ class Supervisor:
                 with handle._lock:
                     handle._finish("supervisor_failed", dict(reason="launch_failed", detail=str(exc)))
             finally:
+                self._release_reservation(handle)
                 self._queue.task_done()
 
     def _run(self, handle):
@@ -611,6 +797,7 @@ class Supervisor:
         threads = []
         failure = None
         sampled = set()
+        handed_off = False
 
         def sample_priority():
             with handle._lock:
@@ -626,7 +813,18 @@ class Supervisor:
                         if reason:
                             handle._record["priority"]["reason"][phase] = reason
 
+        def label_unsampled():
+            # Caller holds handle._lock. Labels phases monitoring never sampled.
+            for phase, arrived in (("at_start", handle._first is not None),
+                                   ("at_end", handle._record["result"] is not None)):
+                if phase not in sampled:
+                    handle._record["priority"]["reason"][phase] = (
+                        "message arrived after priority monitoring ended" if arrived else
+                        "worker message never arrived")
+
         try:
+            if handle._opens_window:
+                self.check_desktop()
             packages.verify_release_assets(handle._release_dir, handle._manifest)
             if self._closing.is_set():
                 with handle._lock:
@@ -674,6 +872,41 @@ class Supervisor:
             while True:
                 exited = process.poll() is not None
                 sample_priority()
+                if handle._opens_window:
+                    with handle._lock:
+                        terminal = handle._record["result"]
+                        violation = handle._violation
+                    if exited and terminal is None:
+                        threads[0].join(2)  # Same bounded pipe budget as ordinary cleanup.
+                        with handle._lock:
+                            terminal = handle._record["result"]
+                            violation = handle._violation
+                    if terminal is not None and violation is None and not self._closing.is_set():
+                        state = terminal["state"]
+                        retained, rejected = self._retain_artifacts(handle, terminal["artifacts"], state)
+                        # Pipe completion closes stdin; drain threads remain owned by the window.
+                        threads[2].join(2)
+                        if threads[2].is_alive():
+                            raise RuntimeError("stdin handoff did not stop")
+                        entry = (handle, process, job, threads, datetime.now(timezone.utc).isoformat())
+                        with self._lock:
+                            if not self._closing.is_set():
+                                self._windows[handle.job_id] = entry
+                                handed_off = True
+                                with handle._lock:
+                                    handle._record.update(artifacts=retained, rejected_artifacts=rejected,
+                                                          exit_code=None, window_retained=True)
+                                    label_unsampled()
+                                    worker_failure = dict(reason="worker_failed", detail=terminal["failure"]["message"]) if state == "failed" else None
+                                    handle._finish(state, worker_failure)
+                        if handed_off:
+                            try:
+                                threading.Thread(target=self._reap_window, args=(entry,), daemon=True,
+                                                 name=f"skill-window-{handle.job_id}").start()
+                            except Exception:
+                                _kill_tree(process, job)
+                                self._reap_window(entry)
+                            return
                 if exited:
                     break
                 now = time.perf_counter()
@@ -702,12 +935,13 @@ class Supervisor:
                     break
                 time.sleep(0.01)
         except packages.PackageRefusal as exc:
-            failure = dict(reason="asset_refused", field=exc.field, detail=str(exc))
+            failure = dict(reason="desktop_unavailable" if exc.field == "opens_window" else "asset_refused",
+                           field=exc.field, detail=str(exc))
         except Exception as exc:
             failure = dict(reason="launch_failed", detail=str(exc))
         finally:
             handle._stop.set()
-            if process is not None:
+            if process is not None and not handed_off:
                 try:
                     _kill_tree(process, job)  # Also after a successful parent exit.
                     process.wait(timeout=5)
@@ -727,13 +961,9 @@ class Supervisor:
                         job.close()
                     except OSError as exc:
                         failure = dict(reason="cleanup_failed", detail=str(exc))
-            with handle._lock:
-                for phase, arrived in (("at_start", handle._first is not None),
-                                       ("at_end", handle._record["result"] is not None)):
-                    if phase not in sampled:
-                        handle._record["priority"]["reason"][phase] = (
-                            "message arrived after priority monitoring ended" if arrived else
-                            "worker message never arrived")
+            if not handed_off:
+                with handle._lock:
+                    label_unsampled()
             if temporary is not None:
                 try:
                     temporary.cleanup()
@@ -752,6 +982,12 @@ class Supervisor:
                 failure = dict(reason="worker_failed", detail=result["failure"]["message"])
             descriptors = result["artifacts"] if result else list(handle._declared.values())
             handle._shutdown = handle._shutdown or time.perf_counter()
+        retained, rejected = self._retain_artifacts(handle, descriptors, state)
+        with handle._lock:
+            handle._record.update(artifacts=retained, rejected_artifacts=rejected)
+            handle._finish(state, failure)
+
+    def _retain_artifacts(self, handle, descriptors, state):
         retained, rejected = [], []
         for descriptor in descriptors:
             try:
@@ -768,6 +1004,4 @@ class Supervisor:
                 retained.append(dict(descriptor, validity=descriptor["validity"] if state == "succeeded" else "partial"))
             except (OSError, packages.PackageRefusal) as exc:
                 rejected.append(dict(descriptor, reason=getattr(exc, "field", "path"), detail=str(exc)))
-        with handle._lock:
-            handle._record.update(artifacts=retained, rejected_artifacts=rejected)
-            handle._finish(state, failure)
+        return retained, rejected

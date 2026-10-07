@@ -217,6 +217,7 @@ def test_entry_point_is_only_a_module_declaration(module):
 
 def test_protocol_is_structural_and_module_is_not_imported():
     value = manifest()
+    value['operations'] = value['operations'][:2]  # No version-specific window declaration.
     value['protocol_version'] = '999.42'
     value['entry_point']['module'] = 'does_not_exist.some_runner'
     value['operations'][0]['name'] = 'future_operation'
@@ -249,6 +250,8 @@ RENDERED = [
 @pytest.mark.parametrize('path,field,limit,char', RENDERED)
 def test_rendered_length_boundaries(path, field, limit, char):
     value = manifest()
+    if path == ('protocol_version',):
+        value['operations'] = value['operations'][:2]
     put(value, path, char * limit)
     assert packages.validate_manifest(value) == value
     put(value, path, char * (limit + 1))
@@ -1000,7 +1003,7 @@ def test_bad_record_is_excluded_without_hiding_other_skills():
     assert exclusions[0][1].field == 'signature.value'
 
 
-@pytest.mark.parametrize("version", ["1.1", "2.0"])
+@pytest.mark.parametrize("version", ["1.2", "2.0"])
 @pytest.mark.parametrize("purpose", ["admission", "execution"])
 def test_supported_protocol_after_signature(version, purpose):
     value = intake()
@@ -1155,3 +1158,22 @@ def test_shipped_production_roots():
     keys = packages._keys(shipped['keys'], 'roots.keys')  # recomputes each key_id from its public key
     assert len(keys) == 2, 'D3: one operator root and one spare'
     assert not set(keys) & {k['key_id'] for k in trust_file('roots')['keys']}
+
+
+@pytest.mark.parametrize('version,name,value,accepted', [
+    ('1.1', 'observe_dataset', True, True), ('1.1', 'observe_dataset', False, True),
+    ('1.0', 'observe_dataset', True, False), ('1.0', 'observe_dataset', False, False),
+    ('1.1', 'self_check', True, False), ('1.1', 'self_check', False, False),
+    ('1.1', 'observe_dataset', 1, False), ('1.1', 'observe_dataset', 'true', False)])
+def test_84a_window_manifest(version, name, value, accepted):
+    m = manifest()
+    m['protocol_version'] = version
+    m['operations'] = m['operations'][:2]
+    op = next(o for o in m['operations'] if o['name'] == name)
+    op['opens_window'] = value
+    if accepted:
+        assert packages.validate_manifest(m) == m
+        packages.supported_executable(m)
+    else:
+        with pytest.raises(packages.PackageRefusal):
+            packages.validate_manifest(m)

@@ -23,13 +23,13 @@
         "macosx_arm64",
         "manylinux_x86_64"
       ],
-      "protocol_version": "1.0",
+      "protocol_version": "1.1",
       "type": "microclaw.skill-release.v1",
-      "artifact_digest": "680d492778a11c0fff086f989b3c64ddbd22b599b6960c9e8a79a4f848251996",
+      "artifact_digest": "f105c7100cf3e7b55ca304033bbf8c9edc9232956fb0024f8baf001322425a2a",
       "signature": {
         "alg": "ed25519",
         "key_id": "9f53008c4eaa6f4c61f960518f6ac90094070d2ffbf311d1710e7f775579e7fe",
-        "value": "5MGowtJlZz5iaPE17aVsgUhNqN9+k5CpE9FXn60WBfdybeF+i+fnRQIjlh5dq1Nsl0k/EhE4rvMVYa8Nk+LzAA=="
+        "value": "LsU+qAjcn6mdW/xj6jzfJjDgzwLRaVY57FIR9d7GYpNIGNcyWgT2aphi4YM+5ytEiaUGw3x2Zqc5fsXMyjdvBw=="
       }
     }
   ],

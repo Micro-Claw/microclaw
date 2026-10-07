@@ -2,6 +2,7 @@
 import hashlib
 import json
 import io
+import queue
 import os
 import struct
 import threading
@@ -228,15 +229,103 @@ class Load:
         self.thread.join()
 
 
+
+def window(job, emit):
+    """Same timer/display/close lifecycle with Tk or the TEST-ONLY backend."""
+    params = job["parameters"]
+    root = label = None
+    closed = threading.Event()
+    if params.get("display_backend", "tkinter") == "tkinter":
+        import tkinter as tk  # Never imported/constructed for headless tests.
+        root = tk.Tk()
+        root.title("MicroClaw fixture window")
+        label = tk.Label(root, text="Waiting for frames")
+        label.pack()
+        root.protocol("WM_DELETE_WINDOW", closed.set)
+    inbox = queue.Queue(maxsize=8)
+    def read():
+        for line in sys.stdin.buffer:
+            inbox.put(json.loads(line))
+        inbox.put(None)  # EOF after result is handoff, not a close event.
+    threading.Thread(target=read, daemon=True).start()
+    observer = Observer(job["input"]["dataset"], emit)
+    observer.thread.start()
+    output = Path(job["output_dir"])
+    path = output / "observation.txt"
+    initial = b"observing dataset\n"
+    path.write_bytes(initial)
+    emit("artifact", artifact=dict(path=path.name, sha256=hashlib.sha256(initial).hexdigest(), validity="partial"))
+    terminal = False
+    last = time.perf_counter()
+    def finish(complete):
+        nonlocal terminal
+        observer.finish(drain=complete)
+        content = b"dataset writer finished\n" if complete else b"observing dataset\n"
+        path.write_bytes(content)  # write_bytes closes before declaration/result.
+        descriptor = dict(path=path.name, sha256=hashlib.sha256(content).hexdigest(),
+                          validity="final" if complete else "partial")
+        emit("result", state="succeeded" if complete else "cancelled", output=observer.output,
+             artifacts=[descriptor], input_complete=complete)
+        terminal = True
+    def tick():
+        nonlocal last
+        now = time.perf_counter()
+        print(f"event_loop_lag_s={max(0, now - last - 0.01):.6f}", file=sys.stderr, flush=True)
+        last = now
+        close_file = params.get("close_file")
+        if close_file and (output / close_file).exists():
+            closed.set()
+        if not terminal:
+            while True:
+                try:
+                    message = inbox.get_nowait()
+                except queue.Empty:
+                    break
+                if message is None or message.get("type") == "cancel":
+                    closed.set()
+                elif message.get("type") == "writer" or (message.get("type") == "acquisition" and
+                                                         message.get("writer") == "finished"):
+                    finish(True)
+                    break
+        frames = observer.output["frames_read"]
+        if label is not None:
+            label.config(text=f"Frames displayed: {frames}")
+        if params.get("display_backend") == "headless":
+            display = output / "display.tmp"
+            display.write_text(json.dumps(dict(frames_displayed=frames)), encoding="utf-8")
+            display.replace(output / "display.json")
+        if closed.is_set():
+            if not terminal:
+                finish(False)
+            if root is not None:
+                root.destroy()
+            return False
+        return True
+    try:
+        if root is None:
+            while tick():
+                time.sleep(0.01)
+        else:
+            def after():
+                if tick():
+                    root.after(10, after)
+            root.after(10, after)
+            root.mainloop()
+    finally:
+        observer.finish(drain=False)
+
 def main():
     job = json.loads(sys.stdin.buffer.readline(65536))
     if job["protocol"] != PROTOCOL or job["type"] != "job":
         raise ValueError("expected v1 job")
 
     emit_lock = threading.Lock()
+    terminal_sent = False
 
     def emit(kind, **fields):
+        nonlocal terminal_sent
         with emit_lock:
+            terminal_sent = terminal_sent or kind == "result"
             print(json.dumps(dict(protocol=PROTOCOL, type=kind, job_id=job["job_id"], **fields)), flush=True)
 
     output = {"observed": True, "priority": priority("inherit")}
@@ -250,6 +339,16 @@ def main():
     emit("status", message="ready")
     if job["operation"] == "self_check":
         result("succeeded", [], True)
+        return
+    if job["operation"] == "fixture_window":
+        try:
+            window(job, emit)
+        except Exception as exc:
+            if terminal_sent:
+                print(str(exc), file=sys.stderr, flush=True)
+            else:
+                emit("result", state="failed", output={}, artifacts=[], input_complete=False,
+                     failure={"message": str(exc).replace("\n", " ")[:1024]})
         return
     if job["operation"] != "observe_dataset":
         raise ValueError("unknown operation")
