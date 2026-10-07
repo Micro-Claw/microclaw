@@ -1,6 +1,6 @@
 # A package operation may open a window
 
-**Status: proposed 2026-10-07.** No blocks started. Answers the SMAPpy
+**Status: defaults decided 2026-10-07; 84a assigned.** Answers the SMAPpy
 publisher's request of 2026-10-07 (`request-skill-package-viewer.md`, in the
 rig evidence archive, not the repo). It is the "later" that `design/71`
 §"Feasibility against SMAPpy 0.1.0" (last table row) and `design/83`
@@ -349,15 +349,14 @@ Rows this would open:
   record vouched for its digest (D2's contract is unenforced); LOW, LOCAL — a
   re-hash at window exit is the cheap check if it ever bites.
 
-## Defaults to review before implementation
+## Defaults — decided
 
-These are proposed defaults, not blockers to reviewing this notebook. The
-shutdown ownership model in D2/D3 assumes windows close with MicroClaw; choosing
-breakaway requires a different lifecycle and retention design first.
+Operator, 2026-10-07, before 84a was assigned:
 
-1. On MicroClaw exit, close windows (recommended, D3) or let them outlive it?
-2. `MAX_OPEN_WINDOWS = 4` and not counted as workers — agreed?
-3. `opens_window` under protocol 1.1, not a `mode` — agreed?
+1. **Windows close when MicroClaw quits** (D3 as written). Breakaway was
+   declined, so D2/D3's ownership and retention model stands.
+2. **`MAX_OPEN_WINDOWS = 4`, not counted against `MAX_CONCURRENT_WORKERS`.**
+3. **`opens_window` boolean under manifest protocol 1.1**, not a `mode`.
 
 ## Run ledger
 
