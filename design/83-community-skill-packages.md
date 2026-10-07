@@ -1,5 +1,19 @@
 # Community skill packages — accepting one without becoming its maintainer
 
+**Status: closed 2026-10-07** (PR #51, block 83f-6). The publisher-to-user path
+is complete: format, trust, protocol, isolated install, discovery and
+execution, catalog intake, a live production catalog, and `pack` for both
+package kinds. What stays open lives in `design/70`, not here:
+- `R85`: SMAPpy's own preconditions (external, the publisher's);
+- `R86`: `run_mda` is invisible to analysis (disclosed, open by design);
+- `R139`: a package's results cannot steer an acquisition (a new typed capability, by design);
+- `R140`: automatic package analysis cannot outlast a session (the deferred trigger receipt);
+- `R142`–`R144`: 83e-4's rig measurements;
+- `R145`: an install records no finish time;
+- `R146`: Roll back offered on a first install;
+- `R147`: one-pass autofocus can converge on noise (MEDIUM; not this notebook's code, found by PR #50's CI);
+- `R148`–`R149`: 83f-6's findings.
+
 Opens `R82`. `design/71-installable-extensions.md` §"Community skill packages —
 next notebook brief" and §"Feasibility against SMAPpy 0.1.0" are this
 notebook's starting material and are **not restated here**; read them first.
@@ -1668,6 +1682,88 @@ and `publishing/release.yml`; `design/83f5-example-package/`; gate
   reminder's firing branch is unit-tested only; its live run was quiet, as it
   should be at 182 days. Opens `R146` (Roll back on a first install) and `R147` (a flaky autofocus test, found by this PR's CI, not caused by it).
 
+### 83f-6 — `pack` fills an executable package's `locks`
+
+83f-5 gave publishers `pack`, which fills asset hashes and the artifact URL. It
+does not fill `locks`, so an executable publisher (SMAPpy: `smappy-smlm` plus
+numpy, scipy, h5py and the rest, on three platforms) must hand-convert dozens of
+hashed pins per platform. That is the first command a real executable publisher
+would find missing.
+
+**Measured before deciding** (uv 0.12.8, numpy/scipy/h5py/requests, Python
+3.12, three `--python-platform`s). `uv pip compile --generate-hashes` writes a
+hash for **every file of the version on every platform**: numpy 66,
+charset-normalizer 172, against `MAX_REQUIREMENT_HASHES = 64`, and no hash says
+which file it is. `-o pylock.<name>.toml` (PEP 751) keeps only that platform's
+wheels, each named: charset-normalizer 3, numpy 1. A platform-conditional
+dependency appears only in the platforms it applies to, and keeps its marker
+there (`marker = "sys_platform == 'win32'"`). uv refuses any other output
+filename.
+
+**83f-6 decisions** (operator, 2026-10-06).
+
+- **K0 — full locks stay.** Asked whether to pin only the package and resolve
+  the rest at install, the operator declined: that would be MicroClaw
+  maintaining dependencies for the publisher. A publisher pins its own
+  dependencies and ships them with the release; an unpinned dependency breaking
+  is the publisher's problem. This block makes the lock one command; it does
+  not loosen it.
+- **K1 — `pack` reads `pylock.toml`**, one per platform, written by
+  `uv pip compile --python-platform … --python-version 3.12 -o pylock.<platform>.toml`.
+  `pack` stays offline and never resolves; the publisher's machine or CI does.
+  Not the hashed `requirements.txt`, for the measurement above.
+- **K2 — one `--locks <folder>`** holding `pylock.<platform>.toml` for exactly
+  the manifest's `platforms`. A missing or extra file refuses, named.
+- **K3 — check against the platform.** Each marker is evaluated for that
+  platform under Python 3.12: true enters unconditionally, false is left out,
+  undecidable refuses. Every entry needs a wheel that fits the platform and
+  Python 3.12; only those wheels' hashes are kept. No wheel, or a non-index
+  source (VCS, directory, archive), refuses naming the file and the package —
+  installs never build from source, so this is the user's failure caught at
+  the publisher.
+- **K4 — lock files are committed.** The release workflow passes
+  `--locks locks` only when that folder exists, so a Markdown package is
+  unchanged; the publisher README documents the uv command. A release is
+  reproducible from its tag, and its pins are the ones the publisher reviewed.
+- **K5 — local evidence plus a demo-machine run.** In the suite, `pack` from
+  multi-entry locks then the real offline install, landing exactly the pins
+  (CI repeats it on Windows); a coordinator probe locks numpy/scipy/h5py for
+  real and installs from PyPI on the Mac; then a short demo-machine run
+  installs a PyPI-locked package through the panel.
+
+**What 83f-6 settled** (`catalog_intake.pack(..., locks=)` and `--locks`;
+`skill_store.PLATFORMS`, now the one table of supported platforms that
+interpreter selection and `pack` share; the catalog seed's README and
+`publishing/release.yml`; gate `design/83-block83f6-demo-gate.{py,ps1,md}`
+over real uv locks in `design/83f6-gate/`):
+- **A publisher's lock is now one command per platform.** uv's `pylock.toml`
+  carried what the hashed requirements form could not: per-platform wheels,
+  named, so `pack` keeps only the files that fit and refuses a dependency an
+  install could not satisfy. Every refusal names the file, the entry and the
+  package. Mutation check: 5/5 of `pack`'s checks are each caught by a test.
+- **Real scientific locks install on both platforms we could reach.** On the
+  Mac, numpy, scipy and h5py went through `pack` and installed from PyPI in
+  15.35 s cold, n=1. On the demo machine (round 2, 5/5 scored from artifacts),
+  installed commit `3390392`:
+  - the installed `locks.win_amd64` is byte-equal to the `pack`-built
+    fixture's: four entries, one hash each, and `tifffile` present, which only
+    the Windows lock carries;
+  - `find_links` is null and the digest equals the committed zip's;
+  - a fresh probe and the imports give exactly the pins on CPython 3.12.13;
+  - install record to ready took 8.7 s, n=1, interpreter provisioning
+    included (`R145` has the caveat).
+- **The gate met a real store, and that is the machine's normal state now.**
+  Round 1 refused at `prepare`: 83f-5's gate had deliberately kept the
+  production store, and this gate inherited 83f-3's assumption that none
+  exists. The gate now renames a real store aside and restores it, and
+  re-running cleanup finishes an interrupted restore. Round 2 restored it.
+- **CI's Windows job found a guard, not a product defect.** Windows emulates
+  `socketpair()` over loopback, and the intake tests' no-network guard refused
+  every `connect`. It now allows loopback only, with a control showing that
+  anything else still refuses.
+- Opens `R148` (83f-3's gate selftest fails on its own fixtures, on `main`
+  too) and `R149` (a verdict's `checked_at` is the operation's start).
+
 ### Not a block — the SMAPpy conformance limb
 
 It stays **NOT EXERCISED** until the publisher meets `R85`'s six preconditions,
@@ -1691,7 +1787,8 @@ write-budget rules.
 83c's executable conformance tests. `R84` splits: its first item closes with
 83a, its second needs nothing beyond the coverage that already exists, and its
 third closes with 83e. `R85` is not ours. `R86` is disclosed by 83e's panel copy
-and otherwise stays open.
+and otherwise stays open. Rows opened by the blocks themselves (`R139`–`R149`)
+are listed in `design/70`; the open ones are named under Status at the top.
 
 ## Run ledger
 
@@ -1713,6 +1810,8 @@ and otherwise stays open.
 | 83f-3 | `block-83f-3` | `9e9271a` | **merged 2026-10-02** as `42770ab`, PR #47 — decisions G1–G9; demo gate round 3 10/10 scored from artifacts (round 1 gate defect, round 2 9/10 gate FAIL); opens `R145` |
 | 83f-4 | `block-83f-4` | `42770ab` | **merged 2026-10-02** as `fac6cfb`, PR #48 (follow-up PR #49) — decisions H1–H6; `Micro-Claw/package-catalog` created; fork gate round 2 14/14 scored from artifacts (round 1 had no `gh`) |
 | 83f-5 | `block-83f-5` | `7383323` | **merged** — PR #50; decisions J1–J9; production roots, policy and catalog live; demo gate round 1 11/11 scored from artifacts; opens `R146`, `R147` |
+| 83f-6 | `block-83f-6` | `d5a6182` | **merged** — PR #51; decisions K0–K5; demo gate round 2 5/5 scored from artifacts (round 1 refused 83f-5's retained store, a gate defect); opens `R148`, `R149` |
+| closed | — | — | **notebook closed 2026-10-07** in PR #51; open rows listed under Status at the top |
 
 The notebook and at least 83a land in the same pull request (operator decision,
 2026-09-22). Later blocks take their own branch and PR in the usual way.

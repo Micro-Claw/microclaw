@@ -6,6 +6,7 @@ permissions:
   contents: write
 env:
   PACKAGE_DIR: package
+  LOCKS_DIR: locks
   ZIP_NAME: package.zip
   MICROCLAW_COMMIT: REPLACE_WITH_PINNED_COMMIT
 jobs:
@@ -47,7 +48,9 @@ jobs:
               stream.write(os.environ['MICROCLAW_PUBLISHER_KEY'])
           PY
           URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$ZIP_NAME"
-          python -m microclaw.catalog_intake pack --dir "$PACKAGE_DIR" --url "$URL" --out "$RUNNER_TEMP/$ZIP_NAME"
+          LOCK_ARGS=()
+          if [[ -d "$LOCKS_DIR" ]]; then LOCK_ARGS=(--locks "$LOCKS_DIR"); fi
+          python -m microclaw.catalog_intake pack "${LOCK_ARGS[@]}" --dir "$PACKAGE_DIR" --url "$URL" --out "$RUNNER_TEMP/$ZIP_NAME"
           python -m microclaw.catalog_intake sign-release --key "$RUNNER_TEMP/publisher.pem" --artifact "$RUNNER_TEMP/$ZIP_NAME" --url "$URL" --out "$RUNNER_TEMP/release.json"
           gh release create "$TAG" "$RUNNER_TEMP/$ZIP_NAME" "$RUNNER_TEMP/release.json" --title "$TAG"
           echo 'Add release.json at the Repository path printed above to Micro-Claw/package-catalog by PR.'
