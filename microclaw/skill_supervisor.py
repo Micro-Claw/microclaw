@@ -681,17 +681,26 @@ class Supervisor:
     def close_window(self, job_id):
         with self._lock:
             entry = self._windows.get(job_id)
-            if entry is None or entry[0]._window_reaping:
+            pending = self._window_reservations.get(job_id) if entry is None else None
+            if entry is not None and entry[0]._window_reaping:
                 return False
-            handle = entry[0]
-            handle._window_kills += 1
-            handle._window_kills_done.clear()
+            if entry is not None:
+                handle = entry[0]
+                handle._window_kills += 1
+                handle._window_kills_done.clear()
+        if entry is None:
+            try:
+                return pending.cancel() if pending is not None else False
+            except Exception:
+                return False
         try:
             _kill_tree(entry[1], entry[2])
         except Exception as exc:
             with handle._lock:
-                if len(handle._diagnostics["cleanup_failures"]) < 8:
-                    handle._diagnostics["cleanup_failures"].append(f"window kill: {exc}"[:2048])
+                handle._diagnostics["close_failure_count"] = handle._diagnostics.get("close_failure_count", 0) + 1
+                handle._diagnostics["cleanup_failures"].append(f"window kill: {exc}"[:2048])
+                del handle._diagnostics["cleanup_failures"][:-8]
+            return False
         finally:
             with self._lock:
                 handle._window_kills -= 1

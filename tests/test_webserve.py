@@ -3208,3 +3208,41 @@ def test_skill_install_route_exact_identity(skill_client, monkeypatch):
     for body in [{}, dict(identity, extra=True), dict(identity, package_id='other'), dict(identity, publisher=[]), []]:
         assert skill_client.post(path, json=body).status_code == 400
     assert len(calls) == 1
+
+
+def test_84b_window_list_does_not_construct_supervisor(skill_client, monkeypatch):
+    from microclaw import completed_dataset
+    monkeypatch.setattr(completed_dataset, '_analysis_supervisor', None)
+    monkeypatch.setattr(completed_dataset, 'analysis_supervisor', lambda: pytest.fail('constructed supervisor'))
+    assert skill_client.get('/api/skill-packages/windows').json() == {'windows': []}
+    assert skill_client.post('/api/skill-packages/windows/' + 'a'*32 + '/close').json() == {'state': 'already_closed'}
+
+
+@pytest.mark.parametrize('outcome,previous_failures', [('closed', 0), ('stopping', 0), ('already_closed', 0), ('close_failed', 0), ('close_failed', 8)])
+def test_84b_window_routes(skill_client, monkeypatch, outcome, previous_failures):
+    from microclaw import completed_dataset, tools
+    from types import SimpleNamespace
+    registry = dict(tools.TOOL_REGISTRY)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **kw: pytest.fail('Close confirmed'))
+    row = dict(package='lab/package', operation='viewer', job_id='a'*32, dataset='/dataset', opened_at='now')
+    attempts = []
+    failures = ['window kill: denied'] * previous_failures
+    def diagnostics(job_id):
+        return {'cleanup_failures': list(failures), 'close_failure_count': previous_failures + len(attempts)} if outcome in {'closed', 'close_failed'} else None
+    def close(job_id):
+        attempts.append(job_id)
+        if outcome == 'close_failed':
+            failures.append('window kill: denied')
+            del failures[:-8]
+        return outcome in {'closed', 'stopping'}
+    supervisor = SimpleNamespace(list_open_windows=lambda: [row], close_window=close, window_diagnostics=diagnostics)
+    monkeypatch.setattr(completed_dataset, '_analysis_supervisor', supervisor)
+    assert skill_client.get('/api/skill-packages/windows').json() == {'windows': [row]}
+    response = skill_client.post('/api/skill-packages/windows/' + row['job_id'] + '/close')
+    assert response.status_code == 200
+    assert response.json() == ({'state': outcome, 'reason': 'window kill: denied'} if outcome == 'close_failed' else {'state': outcome})
+    assert attempts == [row['job_id']]
+    assert dict(tools.TOOL_REGISTRY) == registry
+    assert not any('window' in name for name in tools.TOOL_REGISTRY)
+    assert skill_client.post('/api/skill-packages/windows/invalid/close').status_code == 400
+    assert attempts == [row['job_id']]

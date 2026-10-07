@@ -5,8 +5,9 @@ repository. You host and sign the release. MicroClaw lists it in a catalog and
 installs exactly what you signed. You do not need to send us code or wait for a
 MicroClaw release.
 
-> **Status:** protocol `1.0`. The tooling below is merged and has passed its
-> demo-machine gates, but no external package has been admitted yet. Details
+> **Status:** protocols `1.0` and `1.1`. Headless tooling has passed its
+> demo-machine gates; the window gate is pending. No external package has
+> been admitted yet. Details
 > may change after the first one. This page will be updated when they do.
 
 Problems with your package's behaviour are yours to support: the Extensions
@@ -27,7 +28,7 @@ package. A worker is a read-only observer: it gets data and an output folder,
 never a hardware handle, and its results do not steer acquisition.
 
 **A worker runs with the user's permissions.** Nothing sandboxes it. Read only
-the input dataset, write only `output_dir`, use no network, and open no GUI.
+the input dataset, write only `output_dir`, use no network.
 Those are your obligations as a publisher; MicroClaw does not enforce them.
 
 ## Repository layout
@@ -146,7 +147,7 @@ release's own environment. The working directory is `output_dir`, or a
 temporary directory for `self_check`. The release directory is on
 `PYTHONPATH`, and environment variables starting with `MICROCLAW_` are removed.
 The process runs at below-normal priority. It is killed, with its children,
-when the job ends.
+when a headless job ends; window operations use the handoff below.
 
 **Messages.** Every message, in both directions, is one UTF-8 JSON object on
 one line. Each is at most 65,536 bytes including the newline. Each carries
@@ -167,8 +168,10 @@ The **first line is the job**:
 `self_check` carries no `input` and no `output_dir`. MicroClaw runs it when the
 package is installed, so it should prove the environment works without a
 dataset — for example, import your library and fit a tiny synthetic frame.
-Startup has a 60 s deadline and `self_check` 120 s. Analysis operations have no
-deadline.
+`STARTUP_DEADLINE_S` (60 s) is time to the first message: send a `status`
+before importing your GUI toolkit. Window startup after that has no deadline
+unless the caller sets one; a status is not proof a window appeared.
+`self_check` has a 120 s deadline. Analysis operations otherwise have none.
 
 **Later lines are lifecycle notifications.** Keep reading until you finish:
 
@@ -178,7 +181,8 @@ deadline.
 - `{"type":"writer","state":"finished"}`: the dataset is final. Read the rest
   and finish.
 - `{"type":"cancel"}`: stop, keep what you have, and report `cancelled`.
-- End of input on stdin: treat it as a cancel.
+- End of input on stdin before the result: treat it as a cancel. For window
+  operations, EOF after the result is handoff, never a request to close.
 
 For a **saved** dataset, `acquisition completed / writer finished` arrives
 straight after the job. For a **live** one, it arrives only when the
@@ -203,13 +207,38 @@ MicroClaw keeps the last 64 KiB of it.
     characters.
   - A `self_check` result has no `input_complete` and no artifacts.
   - `output` is your own JSON, for summary numbers.
-  - Exit 0 after the result, and print nothing more.
+  - Headless operations exit 0 after the result and print nothing more.
 
-**What counts as a worker failure.** Malformed or oversized output, a second
-result, anything printed after the result, exiting without a result, or a
+**For headless operations, what counts as a worker failure.** Malformed or
+oversized output, a second result, anything printed after the result, exiting without a result, or a
 non-zero exit after one. MicroClaw hashes every declared artifact at the end
 and never deletes any. If the run did not end in a `succeeded` result, every
 artifact is labelled partial.
+
+### Operations that open a window
+
+Declare `"opens_window": true` on the operation under manifest
+`"protocol_version": "1.1"`. Never declare it on `self_check`; protocol 1.0
+rejects the key, even when false. The job ends at any valid `result`, freeing
+the worker slot while the window outlives it. Stdin EOF then means handoff.
+MicroClaw keeps ownership of the process tree: do not daemonize or break away.
+Windows close when MicroClaw quits, and at most four windows may be open
+(including reservations for queued/running operations).
+
+If the user closes the window before the result, send `cancelled` with partial
+artifacts and `input_complete: false`, then exit. Never exit without a result.
+Every artifact named in the result must be closed before sending it and never
+rewritten afterwards. Do not declare continuously updated files; write a
+separate snapshot file if you want the job record to vouch for it.
+
+Idle time is not writer completion. Wait for the lifecycle notification that
+establishes writer completion, drain remaining frames, then finish. Keep
+cancellation responsive during pauses. MicroClaw refuses the operation where
+no desktop is visible; name a headless alternative in your `SKILL.md`.
+
+There is no publisher-side `check-worker` yet (`R150`, open). The first run of
+a window operation under MicroClaw is its first real test; installation's
+headless `self_check` does not exercise it.
 
 ## SKILL.md
 

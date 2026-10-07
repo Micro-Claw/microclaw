@@ -878,6 +878,37 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def get_skill_packages():
         return JSONResponse(await run_in_threadpool(skill_store.status))
 
+    @app.get("/api/skill-packages/windows")
+    async def get_skill_windows():
+        from microclaw import completed_dataset
+        supervisor = completed_dataset._analysis_supervisor
+        windows = await run_in_threadpool(supervisor.list_open_windows) if supervisor is not None else []
+        return JSONResponse({"windows": windows})
+
+    @app.post("/api/skill-packages/windows/{job_id}/close")
+    async def close_skill_window(job_id: str):
+        if len(job_id) != 32 or any(c not in "0123456789abcdef" for c in job_id):
+            raise HTTPException(400, "Expected a job id of 32 lowercase hex characters.")
+        from microclaw import completed_dataset
+        supervisor = completed_dataset._analysis_supervisor
+        if supervisor is None:
+            return JSONResponse({"state": "already_closed"})
+
+        def close():
+            before = supervisor.window_diagnostics(job_id)
+            accepted = supervisor.close_window(job_id)
+            if accepted:
+                return {"state": "closed" if before is not None else "stopping"}
+            after = supervisor.window_diagnostics(job_id)
+            failures = (after or {}).get("cleanup_failures", [])
+            # The bounded tail can be identical after repeated failed retries.
+            if failures and (failures != (before or {}).get("cleanup_failures", []) or
+                    (after or {}).get("close_failure_count", 0) != (before or {}).get("close_failure_count", 0)):
+                return {"state": "close_failed", "reason": failures[-1]}
+            return {"state": "already_closed"}
+
+        return JSONResponse(await run_in_threadpool(close))
+
     @app.get("/api/skill-packages/catalog")
     async def get_skill_catalog():
         return JSONResponse(await run_in_threadpool(skill_store.panel_catalog,
