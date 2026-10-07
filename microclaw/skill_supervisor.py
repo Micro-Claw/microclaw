@@ -681,23 +681,31 @@ class Supervisor:
     def close_window(self, job_id):
         with self._lock:
             entry = self._windows.get(job_id)
-            if entry is None or entry[0]._window_reaping:
-                return False
-            handle = entry[0]
-            handle._window_kills += 1
-            handle._window_kills_done.clear()
+            pending = self._window_reservations.get(job_id) if entry is None else None
+            if entry is not None and entry[0]._window_reaping:
+                return {"state": "already_closed"}
+            if entry is not None:
+                handle = entry[0]
+                handle._window_kills += 1
+                handle._window_kills_done.clear()
+        if entry is None:
+            try:
+                return {"state": "stopping" if pending is not None and pending.cancel() else "already_closed"}
+            except Exception:
+                return {"state": "already_closed"}
         try:
             _kill_tree(entry[1], entry[2])
         except Exception as exc:
             with handle._lock:
-                if len(handle._diagnostics["cleanup_failures"]) < 8:
-                    handle._diagnostics["cleanup_failures"].append(f"window kill: {exc}"[:2048])
+                handle._diagnostics["cleanup_failures"].append(f"window kill: {exc}"[:2048])
+                del handle._diagnostics["cleanup_failures"][:-8]
+            return {"state": "close_failed", "reason": str(exc)}
         finally:
             with self._lock:
                 handle._window_kills -= 1
                 if not handle._window_kills:
                     handle._window_kills_done.set()
-        return True
+        return {"state": "closed"}
 
     def _reap_window(self, entry):
         handle, process, job, threads, _ = entry
