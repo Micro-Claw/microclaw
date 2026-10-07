@@ -358,6 +358,15 @@ Operator, 2026-10-07, before 84a was assigned:
 2. **`MAX_OPEN_WINDOWS = 4`, not counted against `MAX_CONCURRENT_WORKERS`.**
 3. **`opens_window` boolean under manifest protocol 1.1**, not a `mode`.
 
+Operator, 2026-10-07, before the 84b gate was scored:
+
+4. **A failed Close is shown inline.** A window that already exited drops off
+   with "already closed"; a kill that raised keeps the row, shows
+   `Close failed: <reason>`, and leaves Close enabled to retry.
+5. **Responsiveness threshold.** With a window open beside a 1000-frame demo
+   burst: median burst duration ≤ 1.10 × the median without a window, and the
+   window's event-loop lag during the burst p95 ≤ 100 ms, max ≤ 1 s.
+
 ## What 84a built (reconciled 2026-10-07)
 
 Implemented as decided. These points are not visible from D1–D5 alone:
@@ -393,4 +402,4 @@ Implemented as decided. These points are not visible from D1–D5 alone:
 |-------|--------|--------------|--------|
 | notebook | `design-84-package-windows` | `5e2f90a` | proposed 2026-10-07, PR #53 |
 | 84a | `block-84a` | `46a22a7` | merged into `design-84-package-windows` at `4e032e1`, PR #53, 2026-10-07; one start and one revision turn |
-| 84b | `block-84b` | `dbac8d4` | started 2026-10-07; panel Close outcome inline (operator) |
+| 84b | `block-84b` | `dbac8d4` | started 2026-10-07 |
