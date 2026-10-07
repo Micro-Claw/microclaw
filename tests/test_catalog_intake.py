@@ -57,10 +57,29 @@ class Response(io.BytesIO):
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    def forbidden(*args, **kwargs):
+    # Loopback is not network: Windows emulates socket.socketpair() (the asyncio
+    # self-pipe behind a TestClient) by connecting to 127.0.0.1.
+    loopback = {'127.0.0.1', '::1', 'localhost'}
+    real_connect, real_create = socket.socket.connect, socket.create_connection
+
+    def connect(self, address, *args, **kwargs):
+        if isinstance(address, tuple) and address[0] in loopback:
+            return real_connect(self, address, *args, **kwargs)
         pytest.fail('real socket attempted')
-    monkeypatch.setattr(socket.socket, 'connect', forbidden)
-    monkeypatch.setattr(socket, 'create_connection', forbidden)
+
+    def create_connection(address, *args, **kwargs):
+        if address[0] in loopback:
+            return real_create(address, *args, **kwargs)
+        pytest.fail('real socket attempted')
+    monkeypatch.setattr(socket.socket, 'connect', connect)
+    monkeypatch.setattr(socket, 'create_connection', create_connection)
+
+
+def test_no_network_guard_still_refuses_non_loopback():
+    with pytest.raises(pytest.fail.Exception, match='real socket attempted'):
+        socket.create_connection(('example.org', 443))
+    with socket.socket() as sock, pytest.raises(pytest.fail.Exception, match='real socket attempted'):
+        sock.connect(('192.0.2.1', 443))
 
 
 @pytest.fixture
