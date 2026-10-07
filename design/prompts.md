@@ -11584,3 +11584,40 @@ message only.
 Linux 5717/108 and Windows 5709/116. Runner turns: one start and one gate turn,
 with no revision turn; the coordinator made three fixes itself. Demo rounds: 2
 (round 1 a gate defect, round 2 5/5).
+
+## design/84 block 84a — a package operation may open a window (PR #53, 2026-10-07)
+
+**The notebook and 84a share one PR**, following design/83's precedent.
+`block-84a` was cut from the notebook branch and merged back into it
+(`4e032e1`), never into `main`. The operator settled the three defaults one
+question at a time before the prompt was written: windows close on quit, 4
+windows not counted as workers, and `opens_window` under 1.1. All three were
+the recommended options.
+
+**The traps in the brief were all honoured on the first turn.** Review found
+six defects the brief did not name. Four were real:
+- `close()` raced the window reaper on Windows. The reaper closes the job
+  handle, so a window exiting at quit made `close()` raise and leave the other
+  windows unkilled.
+- A window job that exited nonzero right after its result fell back to the
+  headless verdict, because the result line had only 0.1 s to be parsed.
+- A missing desktop was labelled `asset_refused`.
+- stderr was re-decoded on every chunk.
+
+The other two were test gaps. Nothing drove the product's own persist path to
+show `window_retained` reaching disk, because the cross-process retention test
+hand-wrote the record (the fake-encodes-the-assumption pattern again). And a
+new `read_text()` had no encoding, which only the full suite's integrity test
+caught. The runner's targeted files could not have caught it. **Running the
+full suite stays the coordinator's job for that reason.**
+
+**The runner committed its report into the repo again** (`reports/`; 83f-6
+put it in `design/`). The 83f-6 note said a prompt should name where the
+report goes, and this prompt said "final report" without saying "final
+message only". Say it.
+
+**Counts.** Targeted baseline at `c022167`: 2265 passed, 9 skipped. Start turn:
+full suite 1 failed (integrity), 5754 passed, 108 skipped. Revision turn: 5762
+passed, 108 skipped. The coordinator made one fix itself, folding a duplicated
+priority-label loop into a helper (`2ed3de4`), then reran the targeted run.
+Runner turns: one start, one revision. No gate: 84a is LOCAL.

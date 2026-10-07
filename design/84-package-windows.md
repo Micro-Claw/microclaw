@@ -1,6 +1,6 @@
 # A package operation may open a window
 
-**Status: defaults decided 2026-10-07; 84a assigned.** Answers the SMAPpy
+**Status: 84a merged into PR #53 on 2026-10-07 (LOCAL, no gate). 84b not started.** Answers the SMAPpy
 publisher's request of 2026-10-07 (`request-skill-package-viewer.md`, in the
 rig evidence archive, not the repo). It is the "later" that `design/71`
 §"Feasibility against SMAPpy 0.1.0" (last table row) and `design/83`
@@ -331,7 +331,7 @@ Rows this touches in `design/70`:
   window is not a feedback channel.
 - **`R85`** (SMAPpy's preconditions) — not advanced; `fit_ndtiff_live` adds a
   fourth operation to what the publisher must ship.
-- **`R150`** (no publisher-side worker check) — **raised in importance.** A
+- **`R150`** (no publisher-side worker check) — **raised from MEDIUM to HIGH.** A
   window path is exactly what a publisher cannot test by piping lines in CI,
   so until `check-worker` exists the first run of a window operation under
   MicroClaw is on a user's machine. `check-worker` should drive a window
@@ -343,7 +343,7 @@ Rows this touches in `design/70`:
   every matching acquisition with no prompt. Its creation confirmation must say
   so.
 
-Rows this would open:
+Rows opened by 84a (2026-10-07):
 - **`R151`** — a job carries no typed microscope block (D7); LOW, LOCAL.
 - **`R152`** — an artifact may be rewritten by its still-open window after the
   record vouched for its digest (D2's contract is unenforced); LOW, LOCAL — a
@@ -358,9 +358,38 @@ Operator, 2026-10-07, before 84a was assigned:
 2. **`MAX_OPEN_WINDOWS = 4`, not counted against `MAX_CONCURRENT_WORKERS`.**
 3. **`opens_window` boolean under manifest protocol 1.1**, not a `mode`.
 
+## What 84a built (reconciled 2026-10-07)
+
+Implemented as decided. These points are not visible from D1–D5 alone:
+
+- **84b's panel calls three supervisor methods**: `list_open_windows()`
+  (package, operation, job id, dataset, opened at; post-handoff only),
+  `close_window(job_id)` (returns a boolean, never raises), and
+  `window_diagnostics(job_id)`. No route or agent tool exists yet.
+- **Every valid terminal hands off**, `failed` and `cancelled` included.
+  A cancelled window job keeps its window open only if the publisher keeps it
+  open. The fixture closes on cancel.
+- **A missing desktop at dispatch is recorded as `desktop_unavailable`.**
+  Before confirmation it is a `PackageRefusal` on `opens_window`.
+- **darwin is allowed**, with no portable claim (D5's macOS caveat).
+- **Close against reaper.** The reaper revokes new kill claims and waits for
+  any claimed kill before it closes the job handle. `close()` attempts every
+  window's kill even if one fails. Review found that race (Windows:
+  `TerminateJobObject` on a closed handle aborted `close()`).
+- **Release retention is conservative.** A release stays pinned until its
+  owner exits, even after its window closes, as allowed.
+- **Fixture changes.** The executable fixture is now protocol 1.1 and has
+  `fixture_window`, with `display_backend: tkinter | headless`. The headless
+  backend is TEST-ONLY. It runs the same ticks, lifecycle and close event,
+  publishes `display.json` and closes on `close.txt`. Its seams do **not**
+  exercise Tk visibility, `CREATE_NO_WINDOW`, desktop access or
+  responsiveness; those are 84b's gate. Rebuilding the fixture regenerated
+  `design/83f6-gate`'s committed archive and catalog through the existing
+  deterministic builder. The old digest was pinned nowhere else.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | `design-84-package-windows` | `5e2f90a` | proposed 2026-10-07, PR #53 |
-| 84a | `block-84a` | `46a22a7` | assigned 2026-10-07; merges into `design-84-package-windows`, PR #53 |
+| 84a | `block-84a` | `46a22a7` | merged into `design-84-package-windows` at `4e032e1`, PR #53, 2026-10-07; one start and one revision turn |
