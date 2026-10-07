@@ -11539,3 +11539,48 @@ the gate (`f8887fb`): 5669 passed, 108 skipped; final tip (`fcdcb14`): 5672 pass
 while the run took ~45 min of wall clock, the process holding 3 min of CPU in
 21 min; cause on this Mac not attributed. Runner turns: one start, one
 revision, one gate turn (killed).
+
+
+## design/83 block 83f-6 — `pack` fills executable locks; closes design/83 (PR #51, 2026-10-07)
+
+**Running the tool before asking changed the first question.** The brief
+expected "read uv's hashed requirements file". One `uv pip compile` run per
+platform showed that form carries every file's hash on every platform:
+charset-normalizer 172 against our limit of 64, with no hash naming its file.
+The PEP 751 `pylock.toml` uv also writes was filtered and named, so it became
+the recommendation. **Establish a format by producing it, never from the
+brief.** The real outputs went to the runner as fixtures, so its tests mutate
+what uv writes rather than a shape described in a prompt.
+
+**I wrote the gate from the gate it copied, not from the machine it would run
+on.** 83f-3's gate assumed no package store existed. 83f-5's gate had since
+deliberately kept the production store on the demo machine. Round 1 refused at
+`prepare`, correctly, and then `session` failed on a missing pointer with
+nothing telling the operator to stop. CLAUDE.md already says to write a gate
+step from the gates that already ran on that machine, and I did not reread
+83f-5's cleanup. **A retained artifact of the last gate is the next gate's
+starting state.** The fix was to rename aside and restore, never delete, and
+to make the runbook say to stop if `prepare` does not print `RECORDED`.
+
+**CI's Windows job failed on our own test guard.** The intake tests' autouse
+no-network guard refused every `connect`, and Windows builds `socketpair()` by
+connecting to loopback, which the gate selftest's `TestClient` needs. It now
+allows loopback only, with a control that anything else still refuses. Same
+family as 83f-5's `gh` shadowing: **a test guard is code that only one
+platform has reviewed.**
+
+**Reading what a timestamp means settled a contradiction, and it was not a
+defect in the run.** The verdict's `checked_at` was earlier than the install
+record it described. The cause is in the code: `checked_at` is the operation's
+`now`, not the check's own time. Recorded as `R149` and not fixed here.
+
+**The runner put its report in `design/`.** Removed at review. A prompt that
+names where code goes should also name where the report goes: the final
+message only.
+
+**Counts.** Baseline `cd51071`/`8d83b6c`: 5672 passed, 108 skipped. Start turn
+(`28dadf1`) plus coordinator fix (`8f9cb3f`): 5714. Gate turn (`af05a8c`):
+5716. Gate and guard fixes (`3390392`): 5717 passed, 108 skipped locally; CI
+Linux 5717/108 and Windows 5709/116. Runner turns: one start and one gate turn,
+with no revision turn; the coordinator made three fixes itself. Demo rounds: 2
+(round 1 a gate defect, round 2 5/5).
