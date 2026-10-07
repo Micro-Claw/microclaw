@@ -182,3 +182,18 @@ def test_d2_analysis_grant_rejects_malformed_subject(subject):
     assert not tools.SessionGrants.is_grantable('analysis', subject)
     with pytest.raises(ValueError):
         tools.SESSION_GRANTS.grant('analysis', subject, 'run', 'stdin')
+
+
+@pytest.mark.parametrize('window_first', [False, True])
+def test_84a_window_grants_are_separate(window_first, monkeypatch):
+    headless = 'fixture-lab/package@' + 'a' * 64
+    window = headless + '+window'
+    assert tools.SessionGrants.is_grantable('analysis', window)
+    assert not tools.SessionGrants.is_grantable('analysis', window + '+window')
+    assert not tools.SessionGrants.is_grantable('analysis', headless + '+other')
+    first, other = (window, headless) if window_first else (headless, window)
+    answers = iter(['session', 'n'])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(answers))
+    assert tools._require_confirmation('run', kind='analysis', subject=first)
+    assert tools._require_confirmation('repeat', kind='analysis', subject=first)
+    assert not tools._require_confirmation('other', kind='analysis', subject=other)

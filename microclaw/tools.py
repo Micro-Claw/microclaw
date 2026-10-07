@@ -2586,6 +2586,8 @@ class SessionGrants:
             if not isinstance(subject, str) or subject.count('@') != 1:
                 return False
             name, digest = subject.split('@')
+            if digest.endswith('+window'):
+                digest = digest[:-len('+window')]
             try:
                 skill_packages.parse_qualified_name(name + '/analysis')
                 skill_packages._digest(digest, 'digest')

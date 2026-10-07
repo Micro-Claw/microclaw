@@ -476,3 +476,27 @@ def test_job_disclosure_names_the_rerun_fields_not_the_whole_record(live, monkey
     assert job['job_id'] in line and job['digest'] in line
     for absent in ('notifications', 'status', 'state', 'owner', 'protocol'):
         assert f'{absent}=' not in line and f"'{absent}'" not in line, absent
+
+
+@pytest.mark.parametrize('desktop', [True, False])
+def test_84a_live_window_consent_and_desktop_refusal(live, monkeypatch, desktop):
+    import socket
+    from microclaw.skill_supervisor import Supervisor
+    live.analysis['adapter'] = 'fixture-lab/conformance-fixture:window_worker'
+    monkeypatch.setattr(cd, '_analysis_supervisor', Supervisor(desktop_probe=lambda: desktop))
+    monkeypatch.setattr('microclaw.skill_supervisor.interactive_desktop', lambda: desktop)
+    calls = []
+    def decline(summary, **kwargs):
+        calls.append((summary, kwargs))
+        assert socket.gethostname() in summary
+        assert 'stays open after the analysis ends' in summary and 'quit MicroClaw' in summary
+        assert kwargs['subject'] == 'fixture-lab/conformance-fixture@' + live.analysis['release_digest'] + '+window'
+        return False
+    monkeypatch.setattr(tools, 'CONFIRM_FN', decline)
+    result = live.run()
+    if desktop:
+        assert result['cancelled'] is True and len(calls) == 1
+    else:
+        assert not calls
+        assert 'cannot show one' in result['error']
+    assert not live.engine.backends

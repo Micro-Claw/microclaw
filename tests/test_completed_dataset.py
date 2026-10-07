@@ -1413,3 +1413,30 @@ def test_c1_package_route_loads_policy_once_per_side_of_consent(package_analysis
     result = tools.run_analysis_on_saved_dataset(**args)
     assert terminal_analysis(result['analysis']['job_id'])['state'] == 'succeeded'
     assert events == ['policy', 'confirm', 'policy']
+
+
+@pytest.mark.parametrize('desktop', [True, False])
+def test_84a_saved_window_consent_and_desktop_refusal(package_analysis, monkeypatch, desktop):
+    import socket
+    from microclaw import tools, skill_supervisor
+    args, _, _ = package_analysis
+    args = dict(args, adapter='fixture-lab/conformance-fixture:window_worker')
+    supervisor = skill_supervisor.Supervisor(desktop_probe=lambda: desktop)
+    monkeypatch.setattr(completed_dataset, '_analysis_supervisor', supervisor)
+    monkeypatch.setattr('microclaw.skill_supervisor.interactive_desktop', lambda: desktop)
+    calls = []
+    def decline(summary, **kwargs):
+        calls.append((summary, kwargs))
+        assert socket.gethostname() in summary
+        assert 'stays open after the analysis ends' in summary
+        assert 'quit MicroClaw' in summary
+        assert kwargs['subject'] == 'fixture-lab/conformance-fixture@' + args['release_digest'] + '+window'
+        return False
+    monkeypatch.setattr(tools, 'CONFIRM_FN', decline)
+    result = tools.run_analysis_on_saved_dataset(**args)
+    if desktop:
+        assert result['cancelled'] is True and len(calls) == 1
+    else:
+        assert not calls
+        assert 'cannot show one' in result['error']
+    assert not Path(args['output_dir']).exists()
