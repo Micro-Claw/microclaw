@@ -426,7 +426,7 @@ def load(path):
 def require(condition, detail):
     if not condition:
         raise AssertionError(detail)
-    return detail
+    return 'ok'
 
 
 def tk_available(out):
