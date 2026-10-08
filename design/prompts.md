@@ -11621,3 +11621,52 @@ full suite 1 failed (integrity), 5754 passed, 108 skipped. Revision turn: 5762
 passed, 108 skipped. The coordinator made one fix itself, folding a duplicated
 priority-label loop into a helper (`2ed3de4`), then reran the targeted run.
 Runner turns: one start, one revision. No gate: 84a is LOCAL.
+
+## design/84 block 84b — package window list, Close, publisher doc, demo gate (PR #53, 2026-10-08)
+
+**Two decisions went to the operator before scoring, one question each.** A
+failed Close is shown inline. Responsiveness passes at a median burst ≤ 1.10×
+and window lag p95 ≤ 100 ms, max ≤ 1 s. Both were the recommended options. The
+panel's placement (*Community skill packages*, not the design/71 Extensions
+panel) was decided without asking. It is reversible, and it is where the
+packages already are.
+
+**There was no user-facing cancel, and the brief assumed one.** "A running job
+is stopped through cancel" had no route: `JobHandle.cancel()` existed, with no
+caller a user could reach. `close_window` now cancels a reserved job itself.
+
+**Review rejected a green route that inferred its answer.** The first Close
+route diffed window diagnostics before and after to guess the outcome. That was
+a race with handoff, and a layer, when `close_window` could simply say what
+happened. It now returns a state dict, and the route passes it through.
+
+**The runner stopped correctly on a spec error.** The gate spec told it to read
+priority from the fixture's result, which carries none. It stopped and said so
+instead of adding a field to the fixture. Priority now comes from the
+supervisor's job record. **The spec was the coordinator's assumption, not the
+code's.**
+
+**Two gate findings came from the coordinator's own read, before the rig.**
+Lag pooling included each run's Tk startup tick and the warm-up run, so one
+mapping delay could fail a responsiveness limb. And the operator was asked to
+save named screenshots mid-step. The gate now takes them itself, so the session
+went from asking for files to asking for `DONE`.
+
+**The gate passed in one round, and its log lied about it.** `require()`
+returned its failure message on success, so 21 PASS lines (limbs 3–8) printed
+next to text like "Fixture process survived Close." Scoring from the process
+snapshots settled it: every window had 2 processes open and 0 after Close or
+quit. **A gate's PASS detail is part of its instrument.** The selftest's
+mutations checked statuses, never the text, so nothing could catch it.
+
+**One unattributed number.** Bursts with a window open were faster (median
+15.09 s against 16.23 s, four of five repetitions, both orders). It is
+recorded as "no slowdown, cause not attributed", not as a finding.
+
+**Counts.** Targeted baseline at `dbac8d4`: 449 passed, 9 skipped. New tests
+watched failing on `dbac8d4`: 16, each for its stated reason. Full suite after
+the product turns: 5775 passed, 108 skipped. Gate selftest: 29 checks on the
+branch; on the pre-fix tree only limb 4 fails. CI green on both runners at
+`c817c3c`. Runner turns: one start, three revisions (route outcome, gate
+program, startup lag and screenshots). The coordinator wrote the runbook and the
+`require` fix. Demo rounds: 1.

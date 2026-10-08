@@ -5,8 +5,8 @@ repository. You host and sign the release. MicroClaw lists it in a catalog and
 installs exactly what you signed. You do not need to send us code or wait for a
 MicroClaw release.
 
-> **Status:** protocols `1.0` and `1.1`. Headless tooling has passed its
-> demo-machine gates; the window gate is pending. No external package has
+> **Status:** protocols `1.0` and `1.1`. Headless and window operations have
+> passed their demo-machine gates. No external package has
 > been admitted yet. Details
 > may change after the first one. This page will be updated when they do.
 
@@ -235,6 +235,13 @@ Idle time is not writer completion. Wait for the lifecycle notification that
 establishes writer completion, drain remaining frames, then finish. Keep
 cancellation responsive during pauses. MicroClaw refuses the operation where
 no desktop is visible; name a headless alternative in your `SKILL.md`.
+
+The user sees each open window in the *Community skill packages* panel and can
+close it there, which ends your process tree. Your worker runs at below-normal
+priority. On MicroClaw's demo machine, a minimal Tk window stayed responsive
+beside a 1000-frame burst (event-loop lag p95 about 10 ms, max under 20 ms) and
+did not slow the burst. That is one Windows machine and a window that fits
+nothing, so it does not predict your fitting load.
 
 There is no publisher-side `check-worker` yet (`R150`, open). The first run of
 a window operation under MicroClaw is its first real test; installation's

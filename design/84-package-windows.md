@@ -1,6 +1,6 @@
 # A package operation may open a window
 
-**Status: 84a merged into PR #53 on 2026-10-07 (LOCAL, no gate). 84b in progress.** Answers the SMAPpy
+**Status: CLOSED with PR #53. 84a merged 2026-10-07 (LOCAL, no gate); 84b merged and its demo gate passed 2026-10-08.** Answers the SMAPpy
 publisher's request of 2026-10-07 (`request-skill-package-viewer.md`, in the
 rig evidence archive, not the repo). It is the "later" that `design/71`
 §"Feasibility against SMAPpy 0.1.0" (last table row) and `design/83`
@@ -219,8 +219,8 @@ package that does not. MicroClaw does not know the package's headless
 alternative; the package's skill text names it.
 
 `CREATE_NO_WINDOW` (`0x08000000`, in `_run`'s `creationflags`) suppresses the
-console only; a Qt or Tk window should still appear. **Unverified** — the demo
-gate checks it.
+console only; a Tk window still appears — **verified** on the demo machine by
+84b's gate (screenshot and operator, 2026-10-08). Qt is not tested.
 
 These are preflight refusal checks, not proof a display is usable: display
 variables can be stale and a nonzero Windows session can lack an accessible
@@ -373,7 +373,7 @@ Implemented as decided. These points are not visible from D1–D5 alone:
 
 - **84b's panel calls three supervisor methods**: `list_open_windows()`
   (package, operation, job id, dataset, opened at; post-handoff only),
-  `close_window(job_id)` (returns a boolean, never raises), and
+  `close_window(job_id)` (never raises; 84b changed its return to a state, below), and
   `window_diagnostics(job_id)`. No route or agent tool exists yet.
 - **Every valid terminal hands off**, `failed` and `cancelled` included.
   A cancelled window job keeps its window open only if the publisher keeps it
@@ -396,10 +396,54 @@ Implemented as decided. These points are not visible from D1–D5 alone:
   `design/83f6-gate`'s committed archive and catalog through the existing
   deterministic builder. The old digest was pinned nowhere else.
 
+## What 84b built and measured (2026-10-08)
+
+- **`close_window` returns the outcome** — `{"state": "closed" | "already_closed"
+  | "stopping" | "close_failed", "reason"?}` — and the route passes it through.
+  A reserved job that has not handed off is cancelled (`stopping`), never killed.
+  The first route inferred the outcome by diffing diagnostics; review rejected it.
+- **Routes.** `GET /api/skill-packages/windows` reads the supervisor without
+  constructing one. `POST /api/skill-packages/windows/{job_id}/close` takes a
+  32-hex id. No confirmation, no agent tool.
+- **Panel.** "Open package windows" sits in *Community skill packages*, not
+  design/71's Extensions panel; it polls only while that panel is open.
+
+**Demo gate, one round, 9/9 computed limbs plus the operator's YES** (Windows,
+`A743-RIE-PC28`, DemoCamera 512×512, 10 ms exposure, `interval_s=0`):
+
+| Limb | Evidence |
+|---|---|
+| Tk in the fixture interpreter | probe exit 0 |
+| frames saved = planned | 12/12 runs, 1000/1000 |
+| job final while open | 6/6 measure runs + session: `succeeded`, `window_retained`, `exit_code: null`, 2 processes alive (venv launcher + base python) |
+| Close kills | 6/6 `{"state":"closed"}` → 0 processes; session panel Close → 0 processes with port 8000 still listening |
+| quit kills | 2 processes → 0, port closed |
+| window appears under `CREATE_NO_WINDOW` | operator YES; `window.png` shows it (too narrow to show its title) |
+| priority | `requested`, `at_start`, `at_end` all `0x4000`, 3 processes read |
+
+Responsiveness, repetitions 1–5 (warm-up and each run's first tick dropped):
+
+| | none | window |
+|---|---|---|
+| median burst | 16.23 s | 15.09 s (ratio 0.93) |
+| lag during burst (pooled, n = 5218) | — | p95 10.4 ms, max 19.1 ms |
+| lag idle after result (per run) | — | p95 ≈ 11 ms, max ≤ 23 ms |
+
+The window run was faster in four of five repetitions and tied in the fifth,
+under both orders. **Cause not attributed.** Read it as "no slowdown", not as a
+speed-up. A 10 ms `after()` timer's p95 of about 10 ms is timer granularity,
+so the burst did not measurably disturb the window. Stderr tails reached about
+28 KB, under the 64 KiB cap, so the counts are exact. This is n = 1 machine
+with a window that fits nothing. SMAPpy's load is `R142`'s question.
+
+**Gate defect.** `require()` returned its failure text on success, so every
+PASS line read like a failure ("Fixture process survived Close."). The artifacts
+agreed with PASS. Fixed in `67cb7af`.
+
 ## Run ledger
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | `design-84-package-windows` | `5e2f90a` | proposed 2026-10-07, PR #53 |
 | 84a | `block-84a` | `46a22a7` | merged into `design-84-package-windows` at `4e032e1`, PR #53, 2026-10-07; one start and one revision turn |
-| 84b | `block-84b` | `dbac8d4` | started 2026-10-07 |
+| 84b | `block-84b` | `dbac8d4` | merged into `design-84-package-windows` at `c817c3c`, PR #53; demo gate passed 2026-10-08, one round; one start, three revision turns |
