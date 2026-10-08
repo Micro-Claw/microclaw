@@ -47,7 +47,8 @@ def main():
     artifacts = []
     if job["operation"] != "self_check" and behaviour in {
         "crash", "changed", "latest", "terminal_empty", "second_terminal", "after_terminal", "nonzero", "cancel",
-        "artifact_link", "artifact_missing", "artifact_directory", "artifact_hardlink"
+        "artifact_link", "artifact_missing", "artifact_directory", "artifact_hardlink",
+        "window_flood", "window_nonzero", "window_child", "window_hang"
     }:
         path = Path(job["output_dir"]) / "sample.txt"
         path.write_bytes(b"partial bytes")
@@ -157,8 +158,21 @@ def main():
     output = {"error": "measurement residual"} if behaviour == "output_error" else {}
     if behaviour == "environment":
         output = dict(environment=dict(os.environ), isatty=sys.stdin.isatty(), cwd=os.getcwd())
+    if behaviour == "window_child":
+        spawn_heartbeat(params["heartbeat"])
     raw(result("failed" if behaviour == "failed" else "succeeded", output))
-    if behaviour == "second_terminal":
+    if behaviour == "window_flood":
+        sys.stdout.buffer.write(b"\xff\n" + b"x" * 200000 + b"\n")
+        raw(result())
+        sys.stderr.buffer.write(b"z" * 200000 + b"WINDOW TAIL")
+        sys.stderr.buffer.flush()
+        time.sleep(60)
+    elif behaviour == "window_nonzero":
+        time.sleep(params.get("sleep", 0.3))
+        sys.exit(3)
+    elif behaviour == "window_hang":
+        time.sleep(60)
+    elif behaviour == "second_terminal":
         raw(result())
     elif behaviour == "after_terminal":
         emit("status", message="too late")

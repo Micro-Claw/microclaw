@@ -134,6 +134,7 @@
     <p id="skill-packages-trust"></p>
     <p id="skill-packages-disclosure"></p>
     <div id="skill-packages-list"></div>
+    <div id="skill-windows-list"></div>
   </details>
   <div class="banner hidden" id="update-banner">
     <h2>Microclaw update</h2>
@@ -290,6 +291,7 @@
   let skillPackagesPollTimer;
   let skillCatalog = {packages: []};
   const skillFinishedJobs = new Map();
+  let skillWindowNotes = {};
   async function refreshSkillCatalog() {
     const res = await apiFetch("/api/skill-packages/catalog");
     if (res.ok) skillCatalog = await res.json();
@@ -331,6 +333,42 @@
       if (operation === "remove") await refreshSkillCatalog();
       await refreshSkillPackages();
     } catch (err) { alert(err.message); }
+  }
+
+  async function refreshSkillWindows() {
+    const res = await apiFetch("/api/skill-packages/windows");
+    if (!res.ok) throw new Error(await detail(res));
+    const view = Transcript.skillWindowsView((await res.json()).windows, skillWindowNotes);
+    skillWindowNotes = view.notes;
+    const list = $("skill-windows-list"); list.replaceChildren();
+    if (view.rows.length) {
+      const title = document.createElement("p"); title.textContent = "Open package windows"; list.append(title);
+    }
+    for (const text of view.notices) {
+      const note = document.createElement("p"); note.textContent = text; list.append(note);
+    }
+    for (const row of view.rows) {
+      const item = document.createElement("section");
+      if (row.visible) {
+        const text = document.createElement("p"); text.textContent = row.text; item.append(text);
+        const button = document.createElement("button"); button.textContent = "Close";
+        button.disabled = !row.closeEnabled;
+        button.onclick = async () => {
+          button.disabled = true; skillWindowNotes[row.job_id] = {state: "pending"};
+          try {
+            const res = await apiFetch("/api/skill-packages/windows/" + encodeURIComponent(row.job_id) + "/close", {method: "POST"});
+            if (!res.ok) throw new Error(await detail(res));
+            skillWindowNotes[row.job_id] = await res.json();
+          } catch (err) { skillWindowNotes[row.job_id] = {state: "close_failed", reason: err.message}; }
+          await refreshSkillPackages();
+        };
+        item.append(button);
+      }
+      if (row.note) {
+        const note = document.createElement("p"); note.textContent = row.note; item.append(note);
+      }
+      list.append(item);
+    }
   }
 
   async function refreshSkillPackages() {
@@ -419,6 +457,11 @@
         list.append(item);
       }
       fast = state.packages.some(p => p.job && p.job.running);
+      if ($("skill-packages-panel").open) {
+        try { await refreshSkillWindows(); }
+        catch (err) { $("skill-windows-list").textContent = "Could not load windows: " + err.message; }
+        fast = fast || Object.values(skillWindowNotes).some(note => ["pending", "stopping", "closed"].includes(note.state));
+      }
     } catch (err) {
       $("skill-packages-list").textContent = "Could not load skill packages: " + err.message;
     } finally {

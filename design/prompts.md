@@ -11584,3 +11584,89 @@ message only.
 Linux 5717/108 and Windows 5709/116. Runner turns: one start and one gate turn,
 with no revision turn; the coordinator made three fixes itself. Demo rounds: 2
 (round 1 a gate defect, round 2 5/5).
+
+## design/84 block 84a — a package operation may open a window (PR #53, 2026-10-07)
+
+**The notebook and 84a share one PR**, following design/83's precedent.
+`block-84a` was cut from the notebook branch and merged back into it
+(`4e032e1`), never into `main`. The operator settled the three defaults one
+question at a time before the prompt was written: windows close on quit, 4
+windows not counted as workers, and `opens_window` under 1.1. All three were
+the recommended options.
+
+**The traps in the brief were all honoured on the first turn.** Review found
+six defects the brief did not name. Four were real:
+- `close()` raced the window reaper on Windows. The reaper closes the job
+  handle, so a window exiting at quit made `close()` raise and leave the other
+  windows unkilled.
+- A window job that exited nonzero right after its result fell back to the
+  headless verdict, because the result line had only 0.1 s to be parsed.
+- A missing desktop was labelled `asset_refused`.
+- stderr was re-decoded on every chunk.
+
+The other two were test gaps. Nothing drove the product's own persist path to
+show `window_retained` reaching disk, because the cross-process retention test
+hand-wrote the record (the fake-encodes-the-assumption pattern again). And a
+new `read_text()` had no encoding, which only the full suite's integrity test
+caught. The runner's targeted files could not have caught it. **Running the
+full suite stays the coordinator's job for that reason.**
+
+**The runner committed its report into the repo again** (`reports/`; 83f-6
+put it in `design/`). The 83f-6 note said a prompt should name where the
+report goes, and this prompt said "final report" without saying "final
+message only". Say it.
+
+**Counts.** Targeted baseline at `c022167`: 2265 passed, 9 skipped. Start turn:
+full suite 1 failed (integrity), 5754 passed, 108 skipped. Revision turn: 5762
+passed, 108 skipped. The coordinator made one fix itself, folding a duplicated
+priority-label loop into a helper (`2ed3de4`), then reran the targeted run.
+Runner turns: one start, one revision. No gate: 84a is LOCAL.
+
+## design/84 block 84b — package window list, Close, publisher doc, demo gate (PR #53, 2026-10-08)
+
+**Two decisions went to the operator before scoring, one question each.** A
+failed Close is shown inline. Responsiveness passes at a median burst ≤ 1.10×
+and window lag p95 ≤ 100 ms, max ≤ 1 s. Both were the recommended options. The
+panel's placement (*Community skill packages*, not the design/71 Extensions
+panel) was decided without asking. It is reversible, and it is where the
+packages already are.
+
+**There was no user-facing cancel, and the brief assumed one.** "A running job
+is stopped through cancel" had no route: `JobHandle.cancel()` existed, with no
+caller a user could reach. `close_window` now cancels a reserved job itself.
+
+**Review rejected a green route that inferred its answer.** The first Close
+route diffed window diagnostics before and after to guess the outcome. That was
+a race with handoff, and a layer, when `close_window` could simply say what
+happened. It now returns a state dict, and the route passes it through.
+
+**The runner stopped correctly on a spec error.** The gate spec told it to read
+priority from the fixture's result, which carries none. It stopped and said so
+instead of adding a field to the fixture. Priority now comes from the
+supervisor's job record. **The spec was the coordinator's assumption, not the
+code's.**
+
+**Two gate findings came from the coordinator's own read, before the rig.**
+Lag pooling included each run's Tk startup tick and the warm-up run, so one
+mapping delay could fail a responsiveness limb. And the operator was asked to
+save named screenshots mid-step. The gate now takes them itself, so the session
+went from asking for files to asking for `DONE`.
+
+**The gate passed in one round, and its log lied about it.** `require()`
+returned its failure message on success, so 21 PASS lines (limbs 3–8) printed
+next to text like "Fixture process survived Close." Scoring from the process
+snapshots settled it: every window had 2 processes open and 0 after Close or
+quit. **A gate's PASS detail is part of its instrument.** The selftest's
+mutations checked statuses, never the text, so nothing could catch it.
+
+**One unattributed number.** Bursts with a window open were faster (median
+15.09 s against 16.23 s, four of five repetitions, both orders). It is
+recorded as "no slowdown, cause not attributed", not as a finding.
+
+**Counts.** Targeted baseline at `dbac8d4`: 449 passed, 9 skipped. New tests
+watched failing on `dbac8d4`: 16, each for its stated reason. Full suite after
+the product turns: 5775 passed, 108 skipped. Gate selftest: 29 checks on the
+branch; on the pre-fix tree only limb 4 fails. CI green on both runners at
+`c817c3c`. Runner turns: one start, three revisions (route outcome, gate
+program, startup lag and screenshots). The coordinator wrote the runbook and the
+`require` fix. Demo rounds: 1.

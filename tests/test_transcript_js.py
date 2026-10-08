@@ -621,7 +621,7 @@ def test_package_card_dialog_and_outcome_wiring():
     panel = html.split('for (const row of view.catalogRows)')[1].split('fast = state.packages.some')[0]
     assert 'row.statusLines' in panel and 'row.toggle' in panel and 'row.jobText' in panel
     assert 'text.className = "err-badge"' in panel
-    assert 'for (const row of view.rows)' not in html and 'view.discovery' not in html
+    assert 'for (const row of view.rows)' not in panel and 'view.discovery' not in panel
 
 
 def g9_fixture_state():
@@ -702,3 +702,47 @@ def test_package_status_sentences_active_first_and_no_digests():
         'Installed, but disabled: needs MicroClaw >=99; this is 0.1.0; interpreter is missing')
     assert delivery_view({'packages': [{'package_id': 'damaged', 'installs': []}]})['catalogRows'][0]['statusLines'] == ['Install state is unknown']
     assert delivery_view({'catalogListing': {'packages': [{'package_id': 'new', 'publisher': 'lab', 'version': '1.0.0'}]}})['catalogRows'][0]['statusLines'] == ['Not installed']
+
+
+def windows_view(windows, notes):
+    path = resources.files('microclaw').joinpath('transcript.js')
+    script = ('global.window = {};\n' + f'require({json.dumps(str(path))});\n' +
+              f'process.stdout.write(JSON.stringify(window.Transcript.skillWindowsView({json.dumps(windows)}, {json.dumps(notes)})));')
+    return json.loads(subprocess.run(['node', '-e', script], capture_output=True,
+                                    text=True, encoding='utf-8', check=True).stdout)
+
+
+@pytest.mark.parametrize('state,note,enabled,visible', [
+    ('close_failed', 'Close failed: denied <unsafe>', True, True),
+    ('stopping', 'stopping', False, True),
+    ('already_closed', 'already closed', True, False),
+    ('closed', '', False, True),
+])
+def test_84b_window_view_notes_survive_refresh_and_drop(state, note, enabled, visible):
+    row = dict(package='lab/viewer', operation='fit_live', job_id='a'*32,
+               dataset='/dataset', opened_at='2026-10-07')
+    notes = {row['job_id']: dict(state=state, reason='denied <unsafe>'), 'gone': dict(state='stopping')}
+    view = windows_view([row], notes)
+    assert view['rows'][0]['text'] == ' — '.join(row.values())
+    assert view['rows'][0]['note'] == note
+    assert view['rows'][0]['closeEnabled'] is enabled
+    assert view['rows'][0]['visible'] is visible
+    assert 'gone' not in view['notes']
+    assert windows_view([row], view['notes']) == view
+    gone = windows_view([], view['notes'])
+    assert gone['rows'] == [] and gone['notes'] == {}
+    assert gone['notices'] == ([row['job_id'] + ': already closed'] if state == 'already_closed' else [])
+    assert windows_view([], gone['notes'])['notices'] == []
+    fresh = windows_view([row], {})['rows'][0]
+    assert fresh['closeEnabled'] and fresh['visible'] and fresh['note'] == ''
+
+
+def test_84b_window_close_render_has_no_confirmation():
+    html = resources.files('microclaw').joinpath('serve.html').read_text(encoding='utf-8')
+    action = html.split('async function refreshSkillWindows()', 1)[1].split('async function refreshSkillPackages()', 1)[0]
+    assert 'confirm' not in action.lower() and 'dialog' not in action and 'innerHTML' not in action
+    assert 'note.textContent = row.note' in action
+    assert 'button.disabled = !row.closeEnabled' in action
+    assert '/api/skill-packages/windows/' in action and '{method: "POST"}' in action
+    panel = html.split('<details id="skill-packages-panel"', 1)[1].split('</details>', 1)[0]
+    assert 'skill-windows-list' in panel

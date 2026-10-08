@@ -114,6 +114,7 @@ Rows added since the triage:
 | `R147` | `design/83` 83f-5's Linux CI run, 2026-10-05 (not 83f-5's code) |
 | `R148`–`R149` | `design/83` 83f-6's review and demo gate, 2026-10-07 |
 | `R150` | writing `docs/publishing-skill-packages.md`, the first publisher-facing doc, 2026-10-07 |
+| `R151`–`R152` | `design/84` block 84a, package windows, 2026-10-07 |
 
 
 ## The work queue
@@ -181,7 +182,9 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R147` | [One-pass autofocus can report convergence on pure noise](#r147) | MEDIUM | SMALL |  |
 | `R148` | [83f-3's demo-gate selftest fails on its own committed fixtures](#r148) | LOW | SMALL |  |
 | `R149` | [A package verdict's `checked_at` is the operation's start, not the check](#r149) | LOW | SMALL |  |
-| `R150` | [A publisher has no way to run their worker under MicroClaw before users do](#r150) | MEDIUM | SMALL |  |
+| `R150` | [A publisher has no way to run their worker under MicroClaw before users do](#r150) | HIGH | SMALL |  |
+| `R151` | [A package job carries no typed microscope block](#r151) | LOW | SMALL |  |
+| `R152` | [A still-open window may rewrite an artifact after the record vouched for it](#r152) | LOW | SMALL |  |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3247,6 +3250,32 @@ the model" as the actual blast radius.
 - **What a fix would look like** — a `catalog_intake check-worker --dir package [--locks locks] --operation self_check [--dataset PATH --parameters JSON]` that builds the environment from the lock (or uses the caller's interpreter), runs the job through the real `Supervisor` with trust checks bypassed and said so in its output, and prints the record. One path for the supervisor, no second implementation. Then the doc's CI section shrinks to one command.
 - **Where** — LOCAL.
 - **Block** — NONE.
-- **Importance** — MEDIUM
+- **Importance** — HIGH (raised from MEDIUM by `design/84`, 2026-10-07: a window operation is exactly what a publisher cannot test by piping lines in CI, so its first run under MicroClaw is on a user's machine. `check-worker` should drive a window operation to its result and report the window as left open.)
 - **Effort** — SMALL
 - **Provenance** — `docs/publishing-skill-packages.md`, 2026-10-07.
+
+### R151 — A package job carries no typed microscope block
+
+**A worker learns pixel size, ROI and binning from the NDTiff metadata, not from MicroClaw. There is no typed block in the job.**
+
+- **What happened** — the SMAPpy publisher asked for one (request item 6), 2026-10-07. `design/84` D7 declined it: Micro-Manager already writes those values into the dataset, and the ones SMAPpy cannot find there (offset, ADU per photon, EM gain) are values MicroClaw does not record either.
+- **Why it matters** — a block that mostly duplicates the dataset is a second source that can disagree with it. This row exists so that a real gap, if one appears, has a home.
+- **What a fix would look like** — only once a publisher names a value that is in neither the dataset nor the package's own parameters: add that value, typed, to the `job` message.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — `design/84` D7, 2026-10-07.
+
+### R152 — A still-open window may rewrite an artifact after the record vouched for it
+
+**Under `design/84` D2, artifacts are hashed at the result, while the window process lives on. Nothing stops that process from writing the file again afterwards.**
+
+- **What happened** — `design/84` block 84a, 2026-10-07. The publisher contract says every artifact named in the `result` is closed and not written again. The supervisor cannot enforce that.
+- **Why it matters** — the job record's digest would then describe bytes that are no longer on disk. Readers that trust the record get a silent mismatch.
+- **What a fix would look like** — re-hash the declared artifacts in the window reaper when the window exits, and record any mismatch in the window diagnostics. Do not change the job record.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — `design/84` D2, block 84a review, 2026-10-07.

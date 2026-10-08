@@ -1413,3 +1413,64 @@ def test_c1_package_route_loads_policy_once_per_side_of_consent(package_analysis
     result = tools.run_analysis_on_saved_dataset(**args)
     assert terminal_analysis(result['analysis']['job_id'])['state'] == 'succeeded'
     assert events == ['policy', 'confirm', 'policy']
+
+
+@pytest.mark.parametrize('desktop', [True, False])
+def test_84a_saved_window_consent_and_desktop_refusal(package_analysis, monkeypatch, desktop):
+    import socket
+    from microclaw import tools, skill_supervisor
+    args, _, _ = package_analysis
+    args = dict(args, adapter='fixture-lab/conformance-fixture:window_worker')
+    supervisor = skill_supervisor.Supervisor(desktop_probe=lambda: desktop)
+    monkeypatch.setattr(completed_dataset, '_analysis_supervisor', supervisor)
+    monkeypatch.setattr('microclaw.skill_supervisor.interactive_desktop', lambda: desktop)
+    calls = []
+    def decline(summary, **kwargs):
+        calls.append((summary, kwargs))
+        assert socket.gethostname() in summary
+        assert 'stays open after the analysis ends' in summary
+        assert 'quit MicroClaw' in summary
+        assert kwargs['subject'] == 'fixture-lab/conformance-fixture@' + args['release_digest'] + '+window'
+        return False
+    monkeypatch.setattr(tools, 'CONFIRM_FN', decline)
+    result = tools.run_analysis_on_saved_dataset(**args)
+    if desktop:
+        assert result['cancelled'] is True and len(calls) == 1
+    else:
+        assert not calls
+        assert 'cannot show one' in result['error']
+    assert not Path(args['output_dir']).exists()
+
+
+def test_84a_revision_saved_window_persists_handoff_and_retention(package_analysis, monkeypatch):
+    import subprocess
+    import sys
+    from microclaw import skill_store as store, skill_supervisor, tools
+    args, _, _ = package_analysis
+    sup = skill_supervisor.Supervisor(desktop_probe=lambda: True)
+    monkeypatch.setattr(completed_dataset, '_analysis_supervisor', sup)
+    monkeypatch.setattr(skill_supervisor, 'interactive_desktop', lambda: True)
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: True)
+    args = dict(args, adapter='fixture-lab/conformance-fixture:window_worker',
+                parameters={'behaviour': 'window_hang'})
+    submitted = tools.run_analysis_on_saved_dataset(**args)
+    job_id = submitted['analysis']['job_id']
+    value = terminal_analysis(job_id)
+    persisted = json.loads(store.analysis_job_path(job_id).read_text(encoding='utf-8'))
+    assert value == persisted
+    assert persisted['window_retained'] is True and persisted['exit_code'] is None
+    assert args['release_digest'] in store.retained_digests()
+    assert sup._windows[job_id][1].poll() is None
+    script = """
+import json, sys
+from pathlib import Path
+from microclaw import skill_store as store
+store.store_dir = lambda: Path(sys.argv[1])
+record = store.analysis_job_status(sys.argv[2])
+assert record['window_retained'] is True and record['exit_code'] is None
+print(json.dumps(sorted(store.retained_digests())))
+"""
+    foreign = subprocess.run([sys.executable, '-c', script, str(store.store_dir()), job_id],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=True)
+    assert args['release_digest'] in json.loads(foreign.stdout)
+    assert sup._windows[job_id][1].poll() is None

@@ -287,6 +287,23 @@
         ["publisher", "package_id", "version", "artifact_digest"].map(k => [k, release[k]])) : null};
   }
 
+  function skillWindowsView(windows, notes = {}) {
+    const retainedNotes = {};
+    const rows = windows.map(window => {
+      const note = notes[window.job_id];
+      if (note) retainedNotes[window.job_id] = note;
+      return {...window, text: [window.package, window.operation, window.job_id,
+        window.dataset, window.opened_at].join(" — "),
+        visible: !note || note.state !== "already_closed",
+        note: !note ? "" : note.state === "close_failed" ? "Close failed: " + note.reason :
+          note.state === "already_closed" ? "already closed" : note.state === "stopping" ? "stopping" : "",
+        closeEnabled: !note || !["pending", "stopping", "closed"].includes(note.state)};
+    });
+    const notices = Object.entries(notes).filter(([id, note]) =>
+      !retainedNotes[id] && note.state === "already_closed").map(([id]) => id + ": already closed");
+    return {rows, notes: retainedNotes, notices};
+  }
+
   function skillPackagesView(state) {
     const reasons = values => (values || []).map(r => r.field + ": " + r.detail).join("; ");
     const details = values => (values || []).map(r => r.detail).filter(Boolean).join("; ");
@@ -482,7 +499,7 @@
 
   global.Transcript = {
     esc, escAttr, md, fmtJSON, preview, renderResult, toolCard, render, initTheme,
-    updateBannerView, extensionsView, skillPackagesView, skillPackageRequest,
+    updateBannerView, extensionsView, skillPackagesView, skillPackageRequest, skillWindowsView,
     artifactOf, artifactChip, parseHistoryText,
     expandAll: (tx) => setOpen(tx, true),
     collapseAll: (tx) => setOpen(tx, false),

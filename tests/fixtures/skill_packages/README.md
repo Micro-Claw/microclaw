@@ -3,7 +3,7 @@
 `markdown/` and `executable/` contain release manifests and assets. The manifest
 is the authoritative external skill metadata; SKILL.md is opaque body text.
 The stdlib-only `fixture_worker.runner` implements microclaw.analysis.v1,
-self_check and observe_dataset. It reads lifecycle notifications, declares a
+self_check, observe_dataset and fixture_window under manifest protocol 1.1. It reads lifecycle notifications, declares a
 partial observation and finishes on writer completion or cancellation. It tails
 complete NDTiff index entries every 30 ms (responsive without busy-waiting),
 using `Full resolution/NDTiff.index` when that directory exists, otherwise
@@ -60,7 +60,8 @@ Manifest objects have closed fields. Asset hashes and external artifact digests
 are lowercase SHA-256 hex. Locks are keyed by declared platform tags, each with
 an array of `{requirement, hashes}` entries. Requirements use one unconditional
 `==` version pin. Entry points are `{module: <dotted Python module>}`. Operations
-are `{name, input_schema, output_schema}`; schema objects require a nonempty
+are `{name, input_schema, output_schema}` with optional boolean `opens_window`
+under 1.1 (forbidden on self_check and under 1.0); schema objects require a nonempty
 `type` label, with v1 execution supporting only object types. Versions and compatibility ranges
 use packaging's PEP 440 parsing. Artifact/source/issues references are HTTPS URLs.
 
@@ -78,3 +79,25 @@ or authorize execution; v1 protocol validation and supervision are exercised by 
 
 Operation schemas admit a closed JSON Schema 2020-12 subset; `type` is one of
 `null`, `boolean`, `object`, `array`, `number`, `integer`, or `string`.
+
+`fixture_window` defaults to a real stdlib tkinter display, imported and
+constructed only when selected. TEST-ONLY parameters `display_backend: headless`
+and `close_file: close.txt` drive the same timer, frame display count, lifecycle
+notifications, final NDTiff drain and close event without requiring a desktop.
+The headless display atomically publishes `display.json` in output_dir; it is
+not a declared immutable artifact. Creating close.txt cancels before result or
+closes after it. Stdin EOF after result leaves the timer alive. Both backends log
+10 ms timer jitter to stderr. This seam does not prove a Tk window appears or
+responds under CREATE_NO_WINDOW: those are 84b gate observations. The supervisor's
+injected desktop probe is separate from display selection; tests never override
+DISPLAY or WAYLAND_DISPLAY globally to admit a fixture.
+
+The conformance `window_worker` operation adds `window_flood` (invalid UTF-8,
+oversized output and another terminal after result), `window_nonzero`,
+`window_child` (parent exits with inherited pipes), and `window_hang`; the existing
+`ignore_cancel` also runs as a window operation. All use real subprocesses.
+To refresh committed records after changing a manifest: update its asset SHA-256
+values, copy matching compatibility fields to executable-intake.json, and sign
+with build_release.sign (publisher-a's committed TEST-ONLY seed). Operations and
+asset hashes live in the manifest, not the external intake's signed projection.
+Archives and wheels remain deterministic through build_release.py.

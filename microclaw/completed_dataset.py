@@ -658,7 +658,16 @@ def prepare_package_analysis(adapter, release_digest, parameters, *, disclosure)
     packages.validate_parameters(declaration['input_schema'], parameters)
     # Snapshot JSON data before publisher dispatch; defaults never mutate it.
     parameters = json.loads(json.dumps(parameters, allow_nan=False))
-    subject = f'{publisher}/{package_id}@{release_digest}'
+    window_lines = []
+    if declaration.get('opens_window', False):
+        import socket
+        from microclaw import skill_supervisor
+        if not skill_supervisor.interactive_desktop():
+            raise packages.PackageRefusal("opens_window", skill_supervisor.DESKTOP_REFUSAL)
+        window_lines = [
+            f"Opens a window on this computer's desktop ({tools.one_line(socket.gethostname())}); "
+            'it stays open after the analysis ends and closes when you close it or quit MicroClaw.']
+    subject = f'{publisher}/{package_id}@{release_digest}' + ('+window' if window_lines else '')
     summary = '\n'.join([
         f'Run analysis {tools.one_line(publisher)}/{tools.one_line(package_id)} '
         f'version {tools.one_line(manifest["version"])}',
@@ -666,6 +675,7 @@ def prepare_package_analysis(adapter, release_digest, parameters, *, disclosure)
         f'Operation: {tools.one_line(operation)}',
         f'Parameters: {tools.one_line(parameters)}',
         *disclosure,
+        *window_lines,
         'Publisher code runs with your user permissions; not sandboxed.',
     ])
     if not tools.CONFIRM_FN(summary, kind='analysis', subject=subject):

@@ -1069,7 +1069,7 @@ def _analysis_retained_digests():
     """
     digests = set()
     for _, record in _analysis_records():
-        if record.get('state') in ANALYSIS_NONTERMINAL and _analysis_owner_alive(record):
+        if (record.get('state') in ANALYSIS_NONTERMINAL or record.get('window_retained') is True) and _analysis_owner_alive(record):
             digest = record.get('digest')
             if isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest):
                 digests.add(digest)
