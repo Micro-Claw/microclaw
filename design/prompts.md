@@ -11670,3 +11670,26 @@ branch; on the pre-fix tree only limb 4 fails. CI green on both runners at
 `c817c3c`. Runner turns: one start, three revisions (route outcome, gate
 program, startup lag and screenshots). The coordinator wrote the runbook and the
 `require` fix. Demo rounds: 1.
+
+## design/85 — block 85a (intake explains hand-merged PRs)
+
+**The defect was found by the operator, from a comment they could not read.**
+Catalog PR #14 was merged by hand before intake started, and intake told the
+publisher to correct a field. The operator's reading was "our instructions
+were missing something", which is the reading the text invited. The
+submission itself re-checked `accepted: true` at the pin.
+
+**A message's fix is judged by its first words.** The first turn detected both
+hand-merge shapes correctly and kept `Refused submission: field **merged**.`
+plus Git jargon in front of the new explanation. The tests passed because they
+checked the explanation was *present*, not that nothing misleading came before
+it. The revision asserts what the comment must not contain and how it starts.
+
+**A hand merge also skipped the rebuild.** `build` alone verifies signatures
+and policy, not the artifact, so the recovery was `check` against the pre-merge
+base and then `build` (`package-catalog` `ca884c3`). The new comment names
+those two steps.
+
+**Counts.** Targeted file: 165 → 169 passed. Full suite: 5779 passed,
+108 skipped. 4 new tests watched failing on the pre-fix tree. Runner turns: one
+start, one revision.

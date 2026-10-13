@@ -1,6 +1,6 @@
 # Intake must say when a release PR was merged by hand
 
-**Status: OPEN.** One block, 85a, LOCAL gate. Found on the first external
+**Status: 85a reviewed and gated locally, PR #54.** One block, LOCAL gate. Found on the first external
 publisher's second release, 2026-10-13.
 
 ## The problem
@@ -78,4 +78,20 @@ catalog's `intake.yml` pin moves to the merge commit (operator push).
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| 85a | `block-85a` | `70976ee` | opened 2026-10-13 |
+| 85a | `block-85a` | `70976ee` | PR #54, 2026-10-13; local gate passed; one start, one revision turn |
+
+## What 85a built (reconciled 2026-10-13)
+
+- `materialize` refuses `merged` before writing anything to `out`, in both
+  shapes. The squash shape reached the old text through `check`, as stated above
+  (confirmed on the pre-fix tree).
+- For `merged`, `human()` returns the explanation alone. The first turn put it
+  behind `Refused submission: field **merged**. PR head is already an ancestor
+  of the base.`, which is the shape that misled the operator, so review sent it
+  back. The `detail` strings survive only in the verdict JSON.
+- Evidence: full suite 5779 passed, 108 skipped. With the pre-fix
+  `catalog_intake.py`, all 4 new tests fail; the merge-commit test prints the
+  old `no file added` refusal.
+- Not covered: a PR whose head is an ancestor of the base *without* having been
+  merged (an empty PR from an old commit) also reads as `merged`. GitHub does not
+  open a PR with no diff, so this was left.
