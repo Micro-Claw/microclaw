@@ -1568,13 +1568,13 @@ def test_windows_job_priority_cleanup_attempts_every_handle_on_failure():
     assert job.handle is None and job._priority_handles == {}
 
 
-def wait_until(predicate):
+def wait_until(predicate, describe=None):
     end = time.monotonic() + 8
     while time.monotonic() < end:
         if predicate():
             return
         time.sleep(0.01)
-    assert predicate()
+    assert predicate(), describe() if describe else None
 
 
 def window_job(sup, tmp_path, behaviour='window_hang', **params):
@@ -1739,20 +1739,38 @@ def displayed(output, frames):
         return False
 
 
-def test_84a_fixture_live_pause_final_drain_and_eof(supervisors, tmp_path):
+def test_84a_fixture_live_pause_final_drain_and_eof(supervisors, tmp_path, monkeypatch):
     from ndstorage import NDTiffDataset
     sup = supervisors(desktop_probe=lambda: True)
+    processes = []
+    original_popen = s.subprocess.Popen
+    def launch(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+    monkeypatch.setattr(s.subprocess, 'Popen', launch)
     h, dataset, output = fixture_window(sup, tmp_path)
+    def describe():
+        process = processes[-1] if processes else None
+        try:
+            display = (output/'display.json').read_text(encoding='utf-8')
+        except OSError as exc:
+            display = repr(exc)
+        record = h.record()
+        evidence = dict(state=record['state'], failure=record['failure'],
+                        stderr_tail=record['stderr_tail'])
+        return (f'record={evidence!r}; poll={process.poll() if process is not None else None!r}; '
+                f'display.json={display!r}')
     writer = NDTiffDataset(str(dataset), writable=True)
     writer.initialize({})
     try:
         write_frame(writer, 0)
-        wait_until(lambda: displayed(output, 1))
+        wait_until(lambda: displayed(output, 1), describe)
         assert not h.wait(0) and not sup.list_open_windows()
         time.sleep(0.2)  # > six observer polls and twenty display ticks.
         assert not h.wait(0)
         write_frame(writer, 1)
-        wait_until(lambda: displayed(output, 2))
+        wait_until(lambda: displayed(output, 2), describe)
         write_frame(writer, 2)
         writer.finish()
         h.notify_acquisition('completed', writer='unknown')
@@ -2053,3 +2071,47 @@ def test_84b_fixture_close_kill_failure_reports_reason(supervisors, tmp_path, mo
         assert diagnostics['cleanup_failures'][-1] == 'window kill: 84b injected kill failure'
         assert sup.list_open_windows()[0]['job_id'] == h.job_id
     assert sup.close_window(h.job_id) == {"state": "closed"}
+
+
+def test_86a_headless_display_retries_permission_error(monkeypatch, tmp_path):
+    import importlib.util
+    from types import SimpleNamespace
+    from ndstorage import NDTiffDataset
+    spec = importlib.util.spec_from_file_location('reference_worker',
+        FIXTURES / 'executable/fixture_worker/runner.py')
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    dataset, output = tmp_path/'dataset', tmp_path/'output'
+    dataset.mkdir(); output.mkdir()
+    target = output/'display.json'
+    target.write_text('{"frames_displayed": 0}', encoding='utf-8')
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    write_frame(writer, 0)
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, 'rb')
+    monkeypatch.setattr(runner.sys, 'stdin', SimpleNamespace(buffer=stream))
+    replace = Path.replace
+    attempts = []
+    end = time.monotonic() + 8
+    def publish(path, destination):
+        if path == output/'display.tmp':
+            attempts.append(json.loads(path.read_text(encoding='utf-8'))['frames_displayed'])
+            if len(attempts) == 1:
+                assert json.loads(target.read_text(encoding='utf-8')) == {'frames_displayed': 0}
+                write_frame(writer, 1)
+                raise PermissionError(13, 'The process cannot access the file because it is being used by another process', str(destination))
+            assert time.monotonic() < end, attempts
+            if attempts[-1] == 2:
+                (output/'close.txt').touch()
+        return replace(path, destination)
+    monkeypatch.setattr(Path, 'replace', publish)
+    try:
+        runner.window(dict(parameters=dict(display_backend='headless', close_file='close.txt'),
+                           input=dict(dataset=str(dataset)), output_dir=str(output)), lambda *a, **k: None)
+        assert len(attempts) >= 2
+        assert json.loads(target.read_text(encoding='utf-8'))['frames_displayed'] == 2
+    finally:
+        writer.finish(); writer.close()
+        os.close(write_fd)
+        stream.close()
