@@ -11717,7 +11717,9 @@ coordinator's full run did.
 the same commit (n=3) against 2 failures in the previous 5. Recorded as
 consistent with a fix, not as proof.
 
-**Counts.** Targeted: 1866 → 1868 passed. Full suite: 5781 passed, 108 skipped.
+**Counts.** Targeted: 1866 → 1868 passed. Full suite locally: 5780 passed,
+108 skipped, 1 failed (the 83f6 pin, then fixed and re-run by file only). The
+full suite after the fix ran in CI only.
 The display test was watched failing on the pre-fix `runner.py` with the
 injected `PermissionError`. Runner turns: one start. The coordinator committed
 the 83f6 fixture regeneration.

@@ -98,7 +98,8 @@ records the run count, and the reconciliation says what n it rests on.
   worker's bytes, and `test_83f6_committed_fixtures_regenerate_identically`
   pins them to the generator. Regenerated with the gate's own `fixtures()`
   (`6d4aa46`). Only the full suite caught it. The runner's targeted run did not.
-- **Evidence.** Full suite locally: 5781 passed, 108 skipped after the
-  regeneration. CI run 38465194033: three consecutive attempts, green on both
+- **Evidence.** Full suite locally before the regeneration: 5780 passed,
+  108 skipped, 1 failed (the 83f6 pin). After it, only `test_catalog_intake.py`
+  was re-run locally (169 passed). CI ran the full suite. CI run 38465194033: three consecutive attempts, green on both
   runners. **n=3** against 2 Windows failures in the 5 runs before. That is
   consistent with a fix, not proof of one at a 1-in-5 rate.
