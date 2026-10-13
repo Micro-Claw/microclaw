@@ -11693,3 +11693,8 @@ those two steps.
 **Counts.** Targeted file: 165 → 169 passed. Full suite: 5779 passed,
 108 skipped. 4 new tests watched failing on the pre-fix tree. Runner turns: one
 start, one revision.
+
+**CI flaked once on unrelated code.** Attempt 1 on Windows failed
+`test_84a_fixture_live_pause_final_drain_and_eof` at its 8 s first-frame wait; the
+re-run passed. It is `R153`, opened with the diagnostics as the fix, since the
+failure carried none.
