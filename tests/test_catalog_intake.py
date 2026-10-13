@@ -669,14 +669,9 @@ def test_materialize_refuses_squash_merge_already_in_base(setup, tmp_path):
     assert git(repo, 'rev-parse', 'HEAD') != head
     assert git(repo, 'merge-base', 'main', head) == ancestor
     out = tmp_path / 'materialized'
-    try:
+    with pytest.raises(intake.Refusal) as caught:
         intake.materialize(repo, 'main', head, out)
-    except intake.Refusal as exc:
-        assert exc.field == 'merged', str(exc)
-    else:
-        verdict = intake.check(repo, out, environment='test', roots=repo / 'roots-TEST-ONLY.json',
-                               now=NOW, opener=setup['opener'])
-        pytest.fail('materialize did not refuse; check printed: ' + intake.human(verdict))
+    assert caught.value.field == 'merged', str(caught.value)
     assert not out.exists()
 
 
@@ -701,7 +696,9 @@ def test_human_merged_refusal_addresses_operator_in_one_paragraph():
     text = intake.human(dict(accepted=False, path=None, field='merged',
                             detail='PR head is already an ancestor of the base'))
     assert 'Correct this field' not in text
-    assert 'merged before intake checked it' in text
+    assert 'Refused' not in text and '**merged**' not in text
+    assert text.startswith('This PR was merged by hand before intake checked it.')
+    assert 'PR head is already an ancestor of the base' not in text
     assert 'did not verify it or rebuild catalog.json' in text
     assert 'Release PRs merge themselves' in text
     assert "don't merge them by hand" in text
@@ -947,6 +944,10 @@ def test_materialize_text_output_names_the_change_and_stays_a_comment(setup, tmp
                         '--head-sha', 'not-a-sha', '--out', str(tmp_path / 'refused')]) == 1
     comment = capsys.readouterr().out
     assert comment.startswith('Refused') and 'field **head_sha**' in comment
+    git(repo, 'merge', '--no-ff', 'publisher', '-m', 'Operator hand merge')
+    assert intake.main(['materialize', '--git-dir', str(repo), '--base-ref', 'main',
+                        '--head-sha', head, '--out', str(tmp_path / 'merged')]) == 1
+    assert capsys.readouterr().out == intake.MERGED + '\n'
     workflow = (SEED / '.github/workflows/intake.yml').read_text(encoding='utf-8')
     line = next(l for l in workflow.splitlines() if 'catalog_intake materialize' in l)
     assert '--json' not in line and 'verdict.md' in line

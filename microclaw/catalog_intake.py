@@ -33,7 +33,7 @@ IDENTITY = ('publisher', 'package_id', 'version', 'artifact_digest')
 # 83f-5 gate: an unadmitted publisher has nothing in its file to correct.
 ADMISSION = ('This publisher or key is not admitted to the catalog, so editing the file will not help. '
              'To ask for admission, open an issue in this repository with your publisher name and the entry keygen printed.')
-MERGED = ('The PR was merged before intake checked it; intake did not verify it or rebuild catalog.json. '
+MERGED = ('This PR was merged by hand before intake checked it. Intake did not verify it or rebuild catalog.json. '
           "Release PRs merge themselves, so don't merge them by hand. The publisher has nothing to fix. "
           'A catalog operator runs catalog_intake check against the pre-merge base and then catalog_intake build.')
 
@@ -606,12 +606,13 @@ def check(base, head, *, environment, roots=None, now=None, opener=None):
 def human(verdict):
     if verdict['accepted']:
         return f"Accepted `{verdict['path']}`. Signature, policy and release data checks passed."
+    if verdict['field'] == 'merged':
+        return MERGED
     # Escape publisher-controlled Markdown and control characters, keep one paragraph.
     def plain(text):
         return ''.join(c if c.isprintable() and c not in '`<>[]\\*_' else ' ' for c in str(text))
     field = ''.join(c if c.isascii() and (c.isalnum() or c in '._[]-') else ' ' for c in str(verdict['field']))
     advice = (ADMISSION if verdict['field'] in ('publisher', 'signature.key_id')
-              else MERGED if verdict['field'] == 'merged'
               else 'Correct this field and update the PR.')
     return f"Refused {plain(verdict['path'] or 'submission')}: field **{field}**. {plain(verdict['detail'])}. {advice}"
 
