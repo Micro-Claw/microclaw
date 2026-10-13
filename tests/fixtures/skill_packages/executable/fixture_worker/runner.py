@@ -293,7 +293,11 @@ def window(job, emit):
         if params.get("display_backend") == "headless":
             display = output / "display.tmp"
             display.write_text(json.dumps(dict(frames_displayed=frames)), encoding="utf-8")
-            display.replace(output / "display.json")
+            try:
+                display.replace(output / "display.json")
+            except PermissionError:
+                # Windows refuses replacing an open file; a polling reader must not stop the display.
+                pass
         if closed.is_set():
             if not terminal:
                 finish(False)

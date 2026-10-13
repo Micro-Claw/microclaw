@@ -273,6 +273,8 @@ def test_d8_foreground_dispatch_measurement(live, monkeypatch, capsys, tmp_path)
 
 @pytest.mark.parametrize('hooked,where', [(False, 'exit'), (True, 'exit'), (False, 'acquire')])
 def test_engine_and_hooked_failures_keep_jobs_and_writer_truth(live, monkeypatch, hooked, where):
+    # Keep the observer alive until lifecycle notifications are delivered.
+    live.analysis['parameters'] = {'behaviour': 'lifecycle'}
     jobs = []
     original_job = cd.AcquisitionAnalysisJob
     def track(*a, **k):
@@ -302,11 +304,21 @@ def test_engine_and_hooked_failures_keep_jobs_and_writer_truth(live, monkeypatch
     result = live.run(**options)
     assert 'error' in result, result
     assert len(result['analysis']['jobs']) == 1
+    from tests.test_skill_supervisor import wait_until
+    wait_until(lambda: any(item['type'] == 'acquisition' and item['state'] != 'pending'
+                          for item in jobs[0].handle.record()['notifications']), jobs[0].handle.record)
     messages = jobs[0].handle.record()['notifications']
-    message = next(item['message'] for item in messages if item['type'] == 'acquisition')
+    entry = next(item for item in messages if item['type'] == 'acquisition')
+    record = jobs[0].handle.record()
+    assert entry['state'] == 'delivered', dict(notifications=messages,
+        state=record['state'], failure=record['failure'], stderr_tail=record['stderr_tail'])
+    message = entry['message']
     assert message['outcome'] == 'failed'
     assert message['writer'] == ('finished' if where == 'exit' else 'unknown')
     if where == 'acquire':
+        jobs[0].handle.notify_writer_finished()
+    else:
+        # No separate writer notification is valid when acquisition already says finished.
         jobs[0].handle.cancel()
 
 
@@ -519,3 +531,38 @@ def test_84a_revision_live_window_persists_handoff(live, monkeypatch):
     assert persisted['window_retained'] is True and persisted['exit_code'] is None
     assert live.analysis['release_digest'] in store.retained_digests()
     assert sup._windows[job_id][1].poll() is None
+
+
+def test_86a_acquisition_failure_after_worker_exit_is_undelivered(live, monkeypatch):
+    jobs = []
+    original_job = cd.AcquisitionAnalysisJob
+    def track(*args, **kwargs):
+        job = original_job(*args, **kwargs)
+        jobs.append(job)
+        return job
+    monkeypatch.setattr(cd, 'AcquisitionAnalysisJob', track)
+    constructor = tools.Acquisition
+    def construct(**kwargs):
+        backend = constructor(**kwargs)
+        def fail(*_):
+            # Default conformance success exits without reading lifecycle messages.
+            assert jobs[0].handle.wait(8), jobs[0].handle.record()
+            raise RuntimeError('engine failed after observer exit')
+        backend.acquire = fail
+        return backend
+    monkeypatch.setattr(tools, 'Acquisition', construct)
+    sent = []
+    from microclaw.skill_supervisor import JobHandle
+    notify = JobHandle.notify_acquisition
+    def capture(handle, outcome, *, writer):
+        sent.append((outcome, writer))
+        return notify(handle, outcome, writer=writer)
+    monkeypatch.setattr(JobHandle, 'notify_acquisition', capture)
+    result = live.run()
+    assert 'engine failed after observer exit' in result['error']
+    assert len(result['analysis']['jobs']) == 1
+    record = jobs[0].handle.record()
+    assert record['state'] == 'succeeded', record
+    assert record['failure'] is None
+    assert sent == [('failed', 'unknown')]
+    assert record['notifications'] == [dict(type='acquisition', state='undelivered', reason='worker_exited')]
