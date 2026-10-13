@@ -647,6 +647,72 @@ def advance_base(repo, ancestor, *, readme=None):
     return head
 
 
+def test_materialize_refuses_merge_commit_already_in_base(setup, tmp_path):
+    repo, ancestor = stale_repo(setup, tmp_path)
+    head = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'switch', 'main')
+    git(repo, 'merge', '--no-ff', 'publisher', '-m', 'Operator hand merge')
+    assert git(repo, 'merge-base', 'main', head) == head
+    out = tmp_path / 'materialized'
+    with pytest.raises(intake.Refusal) as caught:
+        intake.materialize(repo, 'main', head, out)
+    assert caught.value.field == 'merged', str(caught.value)
+    assert not out.exists()
+
+
+def test_materialize_refuses_squash_merge_already_in_base(setup, tmp_path):
+    repo, ancestor = stale_repo(setup, tmp_path)
+    head = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'switch', 'main')
+    git(repo, 'merge', '--squash', 'publisher')
+    git(repo, 'commit', '-m', 'Operator hand squash')
+    assert git(repo, 'rev-parse', 'HEAD') != head
+    assert git(repo, 'merge-base', 'main', head) == ancestor
+    out = tmp_path / 'materialized'
+    try:
+        intake.materialize(repo, 'main', head, out)
+    except intake.Refusal as exc:
+        assert exc.field == 'merged', str(exc)
+    else:
+        verdict = intake.check(repo, out, environment='test', roots=repo / 'roots-TEST-ONLY.json',
+                               now=NOW, opener=setup['opener'])
+        pytest.fail('materialize did not refuse; check printed: ' + intake.human(verdict))
+    assert not out.exists()
+
+
+def test_materialize_same_path_different_bytes_is_not_merged(setup, tmp_path):
+    repo, ancestor = stale_repo(setup, tmp_path)
+    head = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'switch', 'main')
+    record = deepcopy(setup['record'])
+    record['artifact_digest'] = '0' * 64
+    write(repo / setup['path'], intake.sign(record, private()))
+    git(repo, 'add', setup['path'])
+    git(repo, 'commit', '-m', 'Operator adds different release at same path')
+    out = tmp_path / 'materialized'
+    intake.materialize(repo, 'main', head, out)
+    verdict = intake.check(repo, out, environment='test', roots=repo / 'roots-TEST-ONLY.json',
+                           now=NOW, opener=setup['opener'])
+    assert_field(verdict, 'path')
+    assert verdict['field'] != 'merged'
+
+
+def test_human_merged_refusal_addresses_operator_in_one_paragraph():
+    text = intake.human(dict(accepted=False, path=None, field='merged',
+                            detail='PR head is already an ancestor of the base'))
+    assert 'Correct this field' not in text
+    assert 'merged before intake checked it' in text
+    assert 'did not verify it or rebuild catalog.json' in text
+    assert 'Release PRs merge themselves' in text
+    assert "don't merge them by hand" in text
+    assert 'publisher has nothing to fix' in text
+    assert 'catalog operator' in text
+    assert 'catalog_intake check against the pre-merge base' in text
+    assert 'catalog_intake build' in text
+    assert text.index('catalog_intake check') < text.index('catalog_intake build')
+    assert len(text.splitlines()) == 1
+
+
 def test_materialize_stale_fork_addition_against_current_base(setup, tmp_path):
     repo, ancestor = stale_repo(setup, tmp_path)
     head = advance_base(repo, ancestor)
