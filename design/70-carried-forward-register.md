@@ -186,7 +186,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R150` | [A publisher has no way to run their worker under MicroClaw before users do](#r150) | HIGH | SMALL |  |
 | `R151` | [A package job carries no typed microscope block](#r151) | LOW | SMALL |  |
 | `R152` | [A still-open window may rewrite an artifact after the record vouched for it](#r152) | LOW | SMALL |  |
-| `R153` | [Worker-lifetime tests fail on Windows CI with nothing to diagnose them](#r153) | MEDIUM | SMALL |  |
+| `R153` | [Worker-lifetime tests fail on Windows CI with nothing to diagnose them](#r153) | MEDIUM | SMALL  **86a** |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3291,7 +3291,7 @@ the model" as the actual blast radius.
 - **Why it matters** — a test that fails at random blocks unrelated PRs, and this one fails with `assert False` and no worker stderr, so a failure can't tell a slow start from a crashed or stalled worker. Re-running until green is how a real window-startup defect gets merged.
 - **What a fix would look like** — on timeout, `wait_until`'s callers in the window tests include the job's stderr tail and `poll()` state in the assertion message, so the next failure names its cause. Widen the deadline only after that shows a slow start, and say by how much from the measured time.
 - **Where** — LOCAL, then Windows CI.
-- **Block** — NONE.
+- **Block** — `design/86` block 86a.
 - **Importance** — MEDIUM
 - **Effort** — SMALL
 - **Provenance** — `design/85` block 85a's Windows CI run, 2026-10-13.
