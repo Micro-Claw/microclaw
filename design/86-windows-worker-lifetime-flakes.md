@@ -1,7 +1,7 @@
 # Two Windows CI flakes around a package worker's lifetime
 
-**Status: OPEN.** One block, 86a, LOCAL gate plus Windows CI. Closes `R153`
-(design/70).
+**Status: CLOSED with PR #56.** One block, 86a, LOCAL gate plus Windows CI.
+Closes `R153` (design/70).
 
 ## The problem
 
@@ -75,4 +75,30 @@ records the run count, and the reconciliation says what n it rests on.
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| 86a | `block-86a` | `38db7ed` | opened 2026-10-13 |
+| 86a | `block-86a` | `38db7ed` | PR #56, 2026-10-13; local gate and 3 CI runs passed; one start turn, one coordinator fix |
+
+## What 86a built and measured (2026-10-13)
+
+- **Flake 1, confirmed off-rig.** With a `PermissionError` injected into the
+  publish (the error text Windows produces), the pre-fix fixture's `tick()`
+  raised out of the display loop. The fixed one skips that tick and reaches
+  `frames_displayed == 2`. The real `MoveFileEx` collision was never observed.
+  The fake reproduces its documented behaviour.
+- **Flake 2, attributed locally.** The fixture's default `observe_dataset`
+  succeeds and exits straight away. Holding `acquire()` until the worker has
+  exited reproduces `state: undelivered, reason: worker_exited` with no
+  `message`. That record is truthful. The test now runs the worker in
+  `lifecycle` mode, which waits for the notification, and the undelivered
+  case is its own test. No product change.
+- **Diagnostics.** `wait_until` takes a `describe` callable. Both tests fail with
+  the job's state, failure and stderr tail. The forced failures were checked
+  locally.
+- **The coordinator's prompt was wrong once.** It said to leave `design/`
+  evidence alone, but design/83f6's committed gate fixtures embed the reference
+  worker's bytes, and `test_83f6_committed_fixtures_regenerate_identically`
+  pins them to the generator. Regenerated with the gate's own `fixtures()`
+  (`6d4aa46`). Only the full suite caught it. The runner's targeted run did not.
+- **Evidence.** Full suite locally: 5781 passed, 108 skipped after the
+  regeneration. CI run 38465194033: three consecutive attempts, green on both
+  runners. **n=3** against 2 Windows failures in the 5 runs before. That is
+  consistent with a fix, not proof of one at a 1-in-5 rate.
