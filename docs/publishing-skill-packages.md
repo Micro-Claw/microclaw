@@ -6,9 +6,10 @@ installs exactly what you signed. You do not need to send us code or wait for a
 MicroClaw release.
 
 > **Status:** protocols `1.0` and `1.1`. Headless and window operations have
-> passed their demo-machine gates. No external package has
-> been admitted yet. Details
-> may change after the first one. This page will be updated when they do.
+> passed their demo-machine gates. The first external publisher, `ries-lab`,
+> was admitted on 2026-10-08, and its package `ries-lab/smappy` (executable,
+> protocol `1.1`) is in the catalog. Details may still change; this page is
+> updated when they do.
 
 Problems with your package's behaviour are yours to support: the Extensions
 panel's *Report to publisher* button opens your `issues_url`. Problems with
