@@ -33,6 +33,9 @@ IDENTITY = ('publisher', 'package_id', 'version', 'artifact_digest')
 # 83f-5 gate: an unadmitted publisher has nothing in its file to correct.
 ADMISSION = ('This publisher or key is not admitted to the catalog, so editing the file will not help. '
              'To ask for admission, open an issue in this repository with your publisher name and the entry keygen printed.')
+MERGED = ('This PR was merged by hand before intake checked it. Intake did not verify it or rebuild catalog.json. '
+          "Release PRs merge themselves, so don't merge them by hand. The publisher has nothing to fix. "
+          'A catalog operator runs catalog_intake check against the pre-merge base and then catalog_intake build.')
 
 
 def encode(value):
@@ -421,6 +424,12 @@ def materialize(git_dir, base_ref, head_sha, out):
                 raise Refusal('path', 'unsupported PR file change: ' + path[:240])
             changed.append((status, path))
         base_files, head_files = listing(base), listing(head_sha)
+        if merge_base == head_sha:
+            raise Refusal('merged', 'PR head is already an ancestor of the base')
+        if len(changed) == 1 and changed[0][0] == 'A':
+            path = changed[0][1]
+            if path in base_files and base_files[path][2] == head_files[path][2]:
+                raise Refusal('merged', 'PR addition already has the same blob on the base')
         root.mkdir(parents=True)
 
         def destination(path):
@@ -597,6 +606,8 @@ def check(base, head, *, environment, roots=None, now=None, opener=None):
 def human(verdict):
     if verdict['accepted']:
         return f"Accepted `{verdict['path']}`. Signature, policy and release data checks passed."
+    if verdict['field'] == 'merged':
+        return MERGED
     # Escape publisher-controlled Markdown and control characters, keep one paragraph.
     def plain(text):
         return ''.join(c if c.isprintable() and c not in '`<>[]\\*_' else ' ' for c in str(text))
