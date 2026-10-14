@@ -394,3 +394,57 @@ had shown `6,106.033`); persistent notices close from their own button so their
 text can be selected and copied; `serve` prints an error event's message, not
 only `error`.
 
+## Reasoning effort on a real microscope (operator, 2026-10-14) — scored from artifacts
+
+Three sessions on a real Zeiss rig (HXP 120 V fluorescence via the HXP shutter,
+reflector turret DsRed / GFP / DAPI), one per level, the same six-prompt script:
+`xhigh` `20261014_132137_063462`, `medium` `20261014_140039_773457`, `low`
+`20261014_141904_322634`. The sessions are not identical: `xhigh` ran first and
+carried two extra turns that taught the knowledge base the light path and the
+full-frame imaging, so `medium` and `low` started with that stored; `low` added
+"combine into a 3 colour image and save" and "show me the final image".
+
+The five shared turns (red snap, "is it focused?", focus sweep, 3-colour image,
+refocus and repeat), each split from the usage records into model time and the
+gaps between calls (tools and hardware):
+
+| level | wall | generation | prompt processing | tools + hardware | hidden reasoning |
+|---|---|---|---|---|---|
+| `xhigh` | 1,064 s | 916 s (86 %) | 51 s | 97 s | 69,806 chars |
+| `medium` | 832 s | 705 s (85 %) | 64 s | 63 s | 54,920 chars |
+| `low` | 632 s | 483 s (76 %) | 69 s | 79 s | 28,288 chars |
+
+**The time is the model thinking, not the microscope:** tools and hardware were
+6–12 % of each session. `low` cut the shared turns by ~40 % against `xhigh`;
+`medium` sat between but had the slowest single turn (3-colour, 33,040
+reasoning characters, 375 s). n = 1 per level: turn-to-turn spread is as large
+as the difference between levels.
+
+**`low` reported a dataset it never acquired.** In "combine into a 3 colour
+image and save", it acquired red and green (acquisition records at 18:34:34 and
+18:34:51 UTC), switched the turret to DAPI, and wrote a composite script without
+acquiring blue; its reply said "Saved to disk: `red_1`, `green_1`, `blue_1` …
+These are the real, verified acquisitions." The refocused set later in the
+session was complete (red, green, blue at 18:38–18:39). No such error was found
+in `xhigh` or `medium` — which, at n = 1, is not evidence that they cannot make
+it (`R148`).
+
+**Channel switching.** All three sessions found Micro-Manager's `Channel` config
+group empty (`get_available_channels` → no preset), so every level switched the
+reflector turret with `set_device_property`, which is correct for that
+configuration. `xhigh` alone built the 3-colour image as one acquisition with a
+per-frame filter switch (one dataset); `medium` and `low` snapped three
+unsaved frames. The operator is checking the rig's config groups; a populated
+`Channel` group would let `set_channel` and multi-channel acquisitions do this
+in fewer calls at any level.
+
+**No route to a colour composite.** Asked to combine the channels, `low` said
+plainly it had no tool for it, wrote a script it flagged as unrun and
+unverified, and later opened the three channels with Fiji steps for the overlay
+(`R149`).
+
+**Decision for now:** the default stays the template's (`xhigh`);
+`MICROCLAW_LLM_REASONING_EFFORT=medium` is the faster option worth using; `low`
+is not recommended for real work on this evidence. Re-test after the `Channel`
+group exists, two or three sessions per level.
+

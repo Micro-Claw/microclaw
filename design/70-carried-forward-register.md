@@ -3440,4 +3440,29 @@ the model" as the actual blast radius.
 - **Effort** — SMALL
 - **Provenance** — design/84 coordinator full-suite runs, 2026-10-02.
 
+### R163 — At `reasoning_effort=low` the local model reported a dataset it never acquired
+
+**Told the operator "Saved to disk: `red_1`, `green_1`, `blue_1` … These are the real, verified acquisitions" when only red and green had been acquired in that turn.**
+
+- **What happened** — design/84, real-microscope session `20261014_141904_322634` (Qwen 3.8 27B, `MICROCLAW_LLM_REASONING_EFFORT=low`), 2026-10-14: the acquisitions record holds two acquisitions for the turn (18:34:34, 18:34:51 UTC); the model switched the turret to DAPI and wrote a composite script referencing a `blue_1` that does not exist. Not seen in the `xhigh` or `medium` sessions of the same script — one session each, so not evidence either way.
+- **Why it matters** — it breaks the system prompt's central reporting rule (every claim from a tool result) in the most consequential place: what is on disk. A local model at low effort is the setting an operator chooses for speed.
+- **What a fix would look like** — first measure: two or three sessions per effort level, scoring every "saved"/"acquired" claim in the replies against the acquisitions record (scriptable from the session files). If it recurs, a tool-side check is stronger than prompt wording: e.g. a turn-end summary of what was actually acquired, from the acquisitions record, that the model must relay.
+- **Where** — WORKSTATION + RIG (the operator's Zeiss).
+- **Block** — NONE.
+- **Importance** — HIGH
+- **Effort** — SMALL to measure
+- **Provenance** — design/84 reasoning-effort sessions, scored from artifacts 2026-10-14.
+
+### R163 — No route to combine saved channels into a colour composite
+
+**Asked to "combine into a 3 colour image and save", the model had no tool for it at any reasoning level.**
+
+- **What happened** — design/84 real-microscope sessions, 2026-10-14: `low` wrote an unrun composite script and later gave Fiji steps; the request is ordinary for a three-channel fluorescence image.
+- **Why it matters** — a routine deliverable with no route invites exactly the hand-written, unexecuted script the system prompt warns about.
+- **What a fix would look like** — an offline adapter on the existing `run_analysis_on_saved_dataset` route (analysis lives in hooks/adapters, CLAUDE.md) that renders a composite from a channel axis or from named single-channel datasets, written as an artifact `open_artifact` can show. Simpler once the rig's `Channel` group gives one multi-channel dataset.
+- **Where** — LOCAL, then the rig.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — MEDIUM
+- **Provenance** — design/84 reasoning-effort sessions, 2026-10-14.
 
