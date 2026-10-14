@@ -186,7 +186,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R150` | [A publisher has no way to run their worker under MicroClaw before users do](#r150) | HIGH | SMALL |  |
 | `R151` | [A package job carries no typed microscope block](#r151) | LOW | SMALL |  |
 | `R152` | [A still-open window may rewrite an artifact after the record vouched for it](#r152) | LOW | SMALL |  |
-| `R153` | [Worker-lifetime tests fail on Windows CI with nothing to diagnose them](#r153) | MEDIUM | SMALL |  |
+| ~~`R153`~~ | [Worker-lifetime tests fail on Windows CI with nothing to diagnose them](#r153) | MEDIUM | SMALL | **86a** |
 | ~~`R50`~~ | [design/38 F12 - a property write can report failure after succeeding](#r50) | HIGH | SMALL | **72a** |
 | ~~`R51`~~ | [design/38 F13 - the agent does not know it can read illumination state](#r51) | HIGH | SMALL | **72a** |
 | `R57` | [A full disk is reported as a hardware or connection fault](#r57) | HIGH | SMALL |  |
@@ -3286,12 +3286,13 @@ the model" as the actual blast radius.
 
 **`test_84a_fixture_live_pause_final_drain_and_eof` waited its full 8 s for the fixture worker to report one displayed frame and failed. The re-run of the same commit passed.**
 
+- **Status** — **CLOSED 2026-10-13** by `design/86` 86a (PR #56). Both causes were in the tests, not the product: the fixture's `display.json` replace raised `PermissionError` against the polling reader on Windows, and the default worker exited before the acquisition notification was sent. Three consecutive green CI runs on both runners; n=3, against 2 failures in the previous 5 Windows runs.
 - **What happened** — PR #54 (`design/85`, which touches only `catalog_intake.py`), run 38416052833 attempt 1 on `windows-latest`, 2026-10-13: `tests/test_skill_supervisor.py:1750`, `wait_until(lambda: displayed(output, 1))`, 8.07 s. Attempt 2 passed. design/84's three CI runs had passed. That is n=1 failure in 5 Windows runs, and the cause is not attributed.
 - **Second instance** — PR #55 (docs only), run 38448592441 attempt 1 on `windows-latest`, 2026-10-13: `test_acquisition_analysis.py::test_engine_and_hooked_failures_keep_jobs_and_writer_truth[False-acquire]`, `KeyError: 'message'` at line 306. `skill_supervisor.JobHandle._notify` records `message` only when it queues the notification, and records `state: undelivered, reason: worker_exited` (no `message`) when the worker has already exited. The test assumes the acquisition notification always reaches a live worker. The product's record is truthful; the test's assumption is the race. Both instances are a test assuming a worker is still alive at a moment the Windows runner doesn't guarantee. The fix for this one: assert on the entry's `state` and, when it was delivered, on `message`, or hold the fixture worker open until the notification is recorded.
 - **Why it matters** — a test that fails at random blocks unrelated PRs, and this one fails with `assert False` and no worker stderr, so a failure can't tell a slow start from a crashed or stalled worker. Re-running until green is how a real window-startup defect gets merged.
 - **What a fix would look like** — on timeout, `wait_until`'s callers in the window tests include the job's stderr tail and `poll()` state in the assertion message, so the next failure names its cause. Widen the deadline only after that shows a slow start, and say by how much from the measured time.
 - **Where** — LOCAL, then Windows CI.
-- **Block** — NONE.
+- **Block** — `design/86` block 86a.
 - **Importance** — MEDIUM
 - **Effort** — SMALL
 - **Provenance** — `design/85` block 85a's Windows CI run, 2026-10-13.

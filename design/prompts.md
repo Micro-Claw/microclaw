@@ -11698,3 +11698,29 @@ start, one revision.
 `test_84a_fixture_live_pause_final_drain_and_eof` at its 8 s first-frame wait; the
 re-run passed. It is `R153`, opened with the diagnostics as the fix, since the
 failure carried none.
+
+## design/86 — block 86a (Windows worker-lifetime flakes, R153)
+
+**Both flakes were the tests' assumptions, not timing.** Neither cause was a
+slow runner, so widening a deadline would have hidden both. One was a fixture
+publishing with `replace` onto a file the test held open, which Windows
+refuses. The other was a worker that legitimately exits before a notification
+it never needed. The first step that paid was making each failure carry the
+job record.
+
+**The prompt's "leave design/ evidence alone" was wrong.** A gate's committed
+fixtures are generated from the fixture tree and pinned by a regeneration test.
+They are inputs, not evidence. The runner's targeted run could not see it. The
+coordinator's full run did.
+
+**A flake's fix is measured in runs.** Three consecutive green CI attempts on
+the same commit (n=3) against 2 failures in the previous 5. Recorded as
+consistent with a fix, not as proof.
+
+**Counts.** Targeted: 1866 → 1868 passed. Full suite locally: 5780 passed,
+108 skipped, 1 failed (the 83f6 pin, then fixed and re-run by file only). The
+full suite after the fix ran in CI only.
+The display test was watched failing on the pre-fix `runner.py` with the
+injected `PermissionError`. Runner turns: one start. The coordinator committed
+the 83f6 fixture regeneration.
+
