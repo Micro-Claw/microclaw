@@ -1,6 +1,6 @@
 {
   "package_id": "thermal-observer",
-  "publisher": "fixture-lab",
+  "publisher": "weather-lab",
   "version": "1.0.0",
   "microclaw": ">=0.1,<2",
   "kind": "executable",
@@ -11,7 +11,7 @@
   "assets": [
     {
       "path": "SKILL.md",
-      "sha256": "435f7c0a51d773c4cf829c3663d662c33b69c4248775ae308bd3e8ca2335209c"
+      "sha256": "8671352a1c2f459fa72b0f61daf29b85a38b8b1b17f38d16aa072d569117be98"
     },
     {
       "path": "telemetry_worker/__init__.py",
@@ -19,7 +19,7 @@
     },
     {
       "path": "telemetry_worker/runner.py",
-      "sha256": "a52036c956f8c0cf7014d2be94ba9ccc15d692c3f7673807b5c2a3e603267a24"
+      "sha256": "880da1cafdc1a34e57dcc2b84da7dee95172a16e6f46b1ffe596709e2c85125a"
     }
   ],
   "skills": [
@@ -59,8 +59,8 @@
       },
       "metrics": {
         "temperature": {
-          "description": "Sensor temperature",
-          "unit": "C",
+          "description": "Mean bytes read per dataset frame",
+          "unit": "bytes",
           "kind": "gauge"
         }
       }

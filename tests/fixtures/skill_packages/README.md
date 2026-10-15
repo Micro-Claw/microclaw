@@ -102,11 +102,33 @@ with build_release.sign (publisher-a's committed TEST-ONLY seed). Operations and
 asset hashes live in the manifest, not the external intake's signed projection.
 Archives and wheels remain deterministic through build_release.py.
 
-`metrics/` (photon-observer, per-frame/counter/gauge) and `weather/`
-(thermal-observer, gauge only) are protocol 1.2 stdlib workers. Build signed
-archives with `build_release(fixture_dir, artifact_path)` just like the other
-fixtures. `parameters.lines` supplies wire payloads, `flood` emits that many
-2,000-frame messages, and a noncontiguous `lines` sequence exercises broken
-contiguity. `gate` holds at the observable `ready` status until the named file
-exists; `lifecycle` waits for completion. The executable and conformance
-fixtures remain protocol 1.1 for regression coverage.
+`metrics/` (`fixture-lab/photon-observer`, publisher-a) and `weather/`
+(`weather-lab/thermal-observer`, publisher-b) are protocol 1.2 stdlib workers.
+Their default `observe_dataset` operation follows the growing NDTiff index
+incrementally, retries partial entries/pixels, reads uncompressed uint8/uint16
+frames, and exits only after writer completion and a final drain. It supports
+both a root index and `Full resolution/NDTiff.index`. Ordinals are index order.
+
+Photon `flux` and `slow` contain each frame's mean pixel value; their normal
+cadences are 0.2 s and 0.6 s respectively, with at most 2,000 values per message
+and a global 0.101 s minimum message interval (including final flushes).
+`total` counts frames through the reported ordinal, and `load` gives the last
+frame's bytes. Thermal's gauge-only `temperature` is a synthetic fixture gauge
+of mean bytes read per frame, with unit `bytes` (no temperature sensor).
+
+Photon `parameters: {"flood": true}` emits one message per per-frame value plus
+unthrottled gauge messages between frames until writer completion, providing
+sustained load for cadence comparisons. `{"broken_contiguity": true}` omits
+ordinal 1 from `flux`; the following range causes a real protocol failure.
+
+Explicit `parameters.lines` enables the separate scripted protocol-test mode,
+including an empty list. In this mode `scripted_flood` is a finite startup burst
+of that many synthetic 2,000-frame messages; `gate` holds at `ready` until its
+file exists, and `lifecycle` waits for completion. These controls are for protocol
+tests, not the acquisition demo gate.
+
+Build photon archives with `build_release(fixture_dir, artifact_path)`, and
+thermal archives with `build_release(..., signing_key="publisher-b")`. Admit both
+using `trust/telemetry-policy-TEST-ONLY.json`, signed by the existing TEST-ONLY
+root: publisher-a belongs to fixture-lab and publisher-b to weather-lab. The
+original policy and protocol 1.1 executable/conformance fixtures are unchanged.

@@ -1272,6 +1272,7 @@ def test_87_old_wire_byte_regression():
 def test_87_signed_fixture_release(tmp_path, fixture):
     from tests.fixtures.skill_packages.build_release import build_release
     artifact = tmp_path / 'release.zip'
-    signed = build_release(FIXTURES / fixture, artifact)
-    packages.check_release(signed, policy(), purpose='admission', now=NOW, artifact=artifact)
+    signed = build_release(FIXTURES / fixture, artifact,
+                           signing_key='publisher-b' if fixture == 'weather' else 'publisher-a')
+    packages.check_release(signed, policy(trust_file('telemetry-policy')), purpose='admission', now=NOW, artifact=artifact)
     assert signed['protocol_version'] == '1.2'

@@ -5020,13 +5020,16 @@ def _acquire_with_hooks(
                 handle = analysis_job.handle
                 if handle is not None:
                     metrics = handle.metrics_snapshot(for_progress=True)
-                    if metrics["declared"]:
+                    if metrics.get("declared"):
                         # At most 32 entries; per-frame values are weighted
                         # bucket means, with their contributing ranges.
                         values = {}
+                        emitted_monotonic = time.perf_counter()
                         for metric, latest in metrics["latest"].items():
                             declaration = metrics["declared"][metric]
-                            values[metric] = dict(latest, unit=declaration["unit"])
+                            value = dict(latest, unit=declaration["unit"])
+                            value["age_s"] = max(0.0, emitted_monotonic - value.pop("received_monotonic"))
+                            values[metric] = value
                         with frame_lock:
                             count, phase = frame_state["count"], progress_state["phase"]
                         _emit_acquisition_diagnostic({

@@ -14,7 +14,7 @@ import pytest
 from microclaw import skill_packages as p
 from microclaw import skill_supervisor as s
 from microclaw.tools import _recorded_outcome
-from tests.test_skill_packages import FIXTURES, NOW, intake, policy, record, refuses, sign
+from tests.test_skill_packages import FIXTURES, NOW, intake, policy, record, refuses, sign, trust_file
 
 
 def release(kind="conformance"):
@@ -26,7 +26,7 @@ def release(kind="conformance"):
     for key in doc.keys() & m.keys():
         doc[key] = deepcopy(m[key])
     doc["skills"] = [{k: skill[k] for k in ("name", "description")} for skill in m["skills"]]
-    return dict(manifest=m, intake=sign(doc), release_dir=root)
+    return dict(manifest=m, intake=sign(doc, "publisher-b" if m["publisher"] == "weather-lab" else "publisher-a"), release_dir=root)
 
 
 def assert_record(value):
@@ -2117,8 +2117,14 @@ def test_86a_headless_display_retries_permission_error(monkeypatch, tmp_path):
         stream.close()
 
 
+def metrics_policy():
+    return policy(trust_file('telemetry-policy'))
+
+
 def metrics_submit(sup, tmp_path, *, fixture='metrics', lines=(), consumer=False, source=None, **params):
-    return sup.submit(source or release(fixture), policy(), now=NOW, python=sys.executable,
+    if 'flood' in params:
+        params['scripted_flood'] = params.pop('flood')
+    return sup.submit(source or release(fixture), metrics_policy(), now=NOW, python=sys.executable,
                       operation='observe_dataset', parameters=dict(lines=list(lines), **params),
                       dataset=tmp_path, output_dir=tmp_path, metrics_consumer=consumer)
 
@@ -2199,7 +2205,7 @@ def test_87_metrics_refused_in_11(supervisors, tmp_path):
     source['intake'] = sign(source['intake'])
     value = finished(metrics_submit(supervisors(), tmp_path, source=source,
                      lines=[dict(frames=[0, 0], values={'load': 1})]), 'supervisor_failed', 'protocol_violation')
-    assert value['metrics']['received'] == 0
+    assert 'metrics' not in value
 
 
 def test_87_queue_registered_before_deferred_launch_and_loss(supervisors, tmp_path):
@@ -2248,9 +2254,7 @@ def test_87_weighted_sparse_history_and_independent_ranges(supervisors, tmp_path
     assert m['history'][0]['values'] == {'flux': .1, 'load': 4, 'slow': 6}
     assert m['history'][1]['values'] == {'slow': 2}
     assert m['latest']['flux']['frames'] == [1, 99]
-    assert m['latest']['flux']['received_monotonic'] == 100.2
-    assert m['latest']['load']['received_monotonic'] == 100.1
-    assert m['latest']['slow']['received_monotonic'] == 101.1
+    assert all('received_monotonic' not in entry for entry in m['latest'].values())
     assert m['peak_rate'] == 3 and m['received'] == 4
 
 
@@ -2259,7 +2263,8 @@ def test_87_history_bounded_and_partial_retained(supervisors, tmp_path, monkeypa
     m = finished(metrics_submit(supervisors(), tmp_path, fixture='weather',
         lines=[dict(frames=[i, i], values={'temperature': i}) for i in range(1100)]))['metrics']
     assert len(m['history']) == 1024
-    assert m['history'][0]['second'] == 76
+    assert all('second' not in bucket and 'received_at' in bucket for bucket in m['history'])
+    assert m['history'][0]['values'] == {'temperature': 76}
     assert m['history'][-1]['values'] == {'temperature': 1099}
 
 
@@ -2353,6 +2358,7 @@ def test_87_existing_stdout_corpus_byte_regression(supervisors, tmp_path, monkey
     assert h.wait(12), h.record()
     assert compared
     assert h.record()['state'] != 'refused'
+    assert 'metrics' not in h.record()
 
 
 def test_87_immediate_consumer_keeps_first_line(supervisors, tmp_path):
@@ -2386,3 +2392,133 @@ def test_87_finite_extreme_values_keep_finite_weighted_mean(supervisors, tmp_pat
     m = finished(h)['metrics']
     assert m['history'][-1]['values']['flux'] == 1e308
     assert h.metrics_snapshot(for_progress=True)['latest']['flux']['value'] == 1e308
+
+
+@pytest.mark.parametrize('operation', ['self_check', 'observe_dataset'])
+def test_87_review_legacy_record_shape(supervisors, tmp_path, operation):
+    value = finished(submit(supervisors(), tmp_path, operation=operation))
+    original_keys = ('job_id release operation state priority result failure artifacts rejected_artifacts '
+                     'lifecycle notifications notifications_dropped status status_dropped stderr_tail '
+                     'exit_code duration_breakdown').split()
+    assert json.dumps(sorted(value)) == json.dumps(sorted(original_keys))
+
+
+def test_87_review_first_violation_wins(supervisors, tmp_path, monkeypatch):
+    handles = {}
+    stdout, validate = s.JobHandle._stdout, p.validate_worker_message
+    def reader(self, pipe):
+        handles[self.job_id] = self
+        return stdout(self, pipe)
+    def earlier(message, **kwargs):
+        value = validate(message, **kwargs)
+        if message['type'] == 'metrics':
+            handles[kwargs['job_id']]._fail_protocol('stdin_failed', 'earlier pipe failure')
+        return value
+    monkeypatch.setattr(s.JobHandle, '_stdout', reader)
+    monkeypatch.setattr(p, 'validate_worker_message', earlier)
+    value = finished(metrics_submit(supervisors(), tmp_path,
+        lines=[dict(frames=[1, 1], values={'flux': [3]})]), 'supervisor_failed')
+    assert value['failure'] == dict(reason='stdin_failed', detail='earlier pipe failure')
+
+
+def growing_metrics(sup, dataset, output, fixture='metrics', *, consumer=True, **parameters):
+    return sup.submit(release(fixture), metrics_policy(), now=NOW, python=sys.executable,
+                      operation='observe_dataset', parameters=parameters,
+                      dataset=dataset, output_dir=output, metrics_consumer=consumer)
+
+
+@pytest.mark.parametrize('fixture', ['metrics', 'weather'])
+@pytest.mark.parametrize('sixteen', [False, True])
+def test_87_review_metrics_follow_incremental_ndtiff(supervisors, tmp_path, fixture, sixteen):
+    from ndstorage import NDTiffDataset
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, fixture)
+    wait_status(h)
+    assert h.metrics_snapshot()['received'] == 0
+    directory = dataset / 'Full resolution'
+    directory.mkdir()
+    writer = NDTiffDataset(str(directory), writable=True)
+    writer.initialize({})
+    try:
+        for ordinal in range(6):
+            write_frame(writer, ordinal, sixteen=sixteen)
+            wait_observation(h, ordinal + 1)
+            if ordinal == 0:
+                wait_until(lambda: bool(h.metrics_snapshot()['latest']), h.record)
+        name = 'flux' if fixture == 'metrics' else 'temperature'
+        wait_until(lambda: h.metrics_snapshot()['latest'].get(name, {}).get('frames', [0, -1])[1] == 5, h.record)
+        writer.finish(); writer.close()
+        assert h.notify_acquisition('completed', writer='finished')
+        value = finished(h)
+    finally:
+        writer.close()
+        if not h.wait(0):
+            h.cancel()
+    assert value['result']['output']['frames_read'] == 6
+    items = h.drain_metrics()
+    if fixture == 'metrics':
+        observed = {}
+        for name in ('flux', 'slow'):
+            ranges = [item['frames'] for item in items if name in item['values']]
+            ordinals = [i for first, last in ranges for i in range(first, last + 1)]
+            scalars = [v for item in items for v in item['values'].get(name, [])]
+            assert ordinals == list(range(6))
+            assert scalars == list(range(6))
+            observed[name] = ranges
+        print(f'87a incremental uint{16 if sixteen else 8} observed ranges: {observed}')
+        assert value['metrics']['latest']['total']['value'] == 6
+    else:
+        assert value['metrics']['latest']['temperature']['value'] == 32*48*(2 if sixteen else 1)
+        assert value['release']['publisher'] == 'weather-lab'
+
+
+def test_87_review_dataset_flood_is_sustained(supervisors, tmp_path):
+    from ndstorage import NDTiffDataset
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, flood=True, consumer=False)
+    wait_status(h)
+    assert h.metrics_snapshot()['received'] == 0
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    try:
+        write_frame(writer, 0)
+        wait_until(lambda: h.metrics_snapshot()['received'] >= 100, h.record)
+        first_count = h.metrics_snapshot()['received']
+        # No further frame or notification is needed to keep the load running.
+        wait_until(lambda: h.metrics_snapshot()['received'] >= first_count + 100, h.record)
+        write_frame(writer, 1, sixteen=True)
+        wait_observation(h, 2)
+        wait_until(lambda: h.metrics_snapshot()['latest']['flux']['frames'][1] == 1, h.record)
+        writer.finish(); writer.close()
+        assert h.notify_acquisition('completed', writer='finished')
+        value = finished(h)
+    finally:
+        writer.close()
+        if not h.wait(0):
+            h.cancel()
+    assert value['metrics']['received'] >= 202
+    assert h._metrics_queue is None
+    # Protocol history checks prove contiguous coverage from zero through one;
+    # this load test does not depend on a consumer keeping up with the flood.
+    for name in ('flux', 'slow'):
+        assert value['metrics']['latest'][name]['frames'][1] == 1
+
+
+def test_87_review_dataset_broken_contiguity(supervisors, tmp_path):
+    from ndstorage import NDTiffDataset
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, broken_contiguity=True)
+    wait_status(h)
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    try:
+        for ordinal in range(4):
+            write_frame(writer, ordinal)
+        value = finished(h, 'supervisor_failed', 'protocol_violation')
+        assert value['failure']['field'] == 'frames'
+        assert value['metrics']['latest']['flux']['frames'] == [0, 0]
+    finally:
+        writer.finish(); writer.close()

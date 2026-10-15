@@ -11,7 +11,7 @@
   "assets": [
     {
       "path": "SKILL.md",
-      "sha256": "64ed95a527a2d401438a4dac572f75e0ee5653bd0e8f5be0af39886a472fbe38"
+      "sha256": "b30d3e2296d08a4afa03fcfa560a38b11480fe0145deff497ee2b9c1daf23096"
     },
     {
       "path": "telemetry_worker/__init__.py",
@@ -19,7 +19,7 @@
     },
     {
       "path": "telemetry_worker/runner.py",
-      "sha256": "a52036c956f8c0cf7014d2be94ba9ccc15d692c3f7673807b5c2a3e603267a24"
+      "sha256": "76c4053aecac20234754e5222174b23f57496e6f19c1617f5ef09dd449e00720"
     }
   ],
   "skills": [
@@ -74,8 +74,8 @@
           "kind": "counter"
         },
         "load": {
-          "description": "Worker load",
-          "unit": "%",
+          "description": "Bytes read in the most recent frame",
+          "unit": "bytes",
           "kind": "gauge"
         }
       }

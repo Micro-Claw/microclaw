@@ -554,7 +554,8 @@ def external_catalog_lines(records, policy, *, now, exclusions=None):
             lines.append(f"- {name} [{_provenance(manifest, intake)}]: {skill['description']}")
         for operation in manifest.get("operations", []):
             if operation.get("metrics"):
-                declarations = json.dumps(operation["metrics"], sort_keys=True, ensure_ascii=True)
+                declarations = ", ".join(f"{name} ({entry['kind']}, {entry['unit']})"
+                                         for name, entry in sorted(operation["metrics"].items()))
                 lines.append(f"- {manifest['publisher']}/{manifest['package_id']} operation "
                              f"{operation['name']} metrics (publisher data): {declarations}")
     return tuple(sorted(lines))

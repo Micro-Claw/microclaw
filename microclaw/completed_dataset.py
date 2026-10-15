@@ -744,9 +744,9 @@ def run_package_analysis(guard, dataset_path, adapter, release_digest, parameter
                 received = 0
                 while not handle.wait(5):
                     snapshot = handle.record()
-                    if snapshot['metrics']['received'] != received:
+                    if snapshot.get('metrics', {}).get('received', 0) != received:
                         skill_store._write(path, dict(snapshot, **metadata))
-                        received = snapshot['metrics']['received']
+                        received = snapshot.get('metrics', {}).get('received', 0)
                 skill_store._write(path, dict(handle.record(), **metadata))
             except Exception as exc:
                 metadata['record_failure'] = str(exc)
@@ -805,10 +805,10 @@ class AcquisitionAnalysisJob:
                 received = 0
                 while wait and self.handle is not None and not self.handle.wait(5):
                     snapshot = self.record()
-                    if snapshot['metrics']['received'] != received:
+                    if snapshot.get('metrics', {}).get('received', 0) != received:
                         with self._persistence_lock:
                             skill_store._write(Path(self.metadata['job_record_path']), snapshot)
-                        received = snapshot['metrics']['received']
+                        received = snapshot.get('metrics', {}).get('received', 0)
                 with self._persistence_lock:
                     skill_store._write(Path(self.metadata['job_record_path']), self.record())
             except Exception as exc:

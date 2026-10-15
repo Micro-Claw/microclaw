@@ -329,8 +329,6 @@ class JobHandle:
         self._record = dict(job_id=self.job_id, release={}, operation=None, state="queued",
                             priority=dict(requested=None, inherited=False, at_start=None, at_end=None,
                                           processes_read=dict(at_start=0, at_end=0), reason={}),
-                            metrics=dict(declared={}, latest={}, history=[], received=0,
-                                         feed_alive=False, lost_frames=False, peak_rate=0),
                             result=None, failure=None, artifacts=[], rejected_artifacts=[],
                             lifecycle=dict(acquisition=None, writer=None), notifications=[], notifications_dropped=0,
                             status=[], status_dropped=0, stderr_tail="", exit_code=None,
@@ -340,7 +338,10 @@ class JobHandle:
     def record(self):
         with self._lock:
             value = deepcopy(self._record)
-            value["metrics"]["history"] = self._history_snapshot()
+            if "metrics" in value:
+                value["metrics"]["history"] = self._history_snapshot()
+                for entry in value["metrics"]["latest"].values():
+                    entry.pop("received_monotonic")
             if not self._frozen:
                 value["status"] = list(self._status)
                 value["stderr_tail"] = bytes(self._stderr).decode("utf-8", errors="replace")
@@ -351,6 +352,7 @@ class JobHandle:
         history = list(self._metrics_history) if include_history else []
         if self._metrics_bucket is not None:
             bucket = deepcopy(self._metrics_bucket)
+            bucket.pop("second")
             for name, (total, count) in self._metrics_sums.items():
                 bucket["values"][name] = float(total / count)
             history.append(bucket)
@@ -359,6 +361,8 @@ class JobHandle:
     def metrics_snapshot(self, *, for_progress=False):
         """Bounded live read; no record, disk, or hardware access."""
         with self._lock:
+            if "metrics" not in self._record:
+                return {}
             value = deepcopy(self._record["metrics"])
             value["history"] = [] if for_progress else self._history_snapshot()
             if for_progress:
@@ -446,7 +450,8 @@ class JobHandle:
         spawn = self._spawned or end
         shutdown = self._shutdown or end
         first = min(self._first or shutdown, shutdown)
-        self._record["metrics"]["feed_alive"] = False
+        if "metrics" in self._record:
+            self._record["metrics"]["feed_alive"] = False
         self._record["state"] = state
         self._record["failure"] = failure
         self._record["duration_breakdown"] = dict(
@@ -521,14 +526,19 @@ class JobHandle:
     def notify_writer_finished(self):
         return self._notify("writer", state="finished")
 
+    def _fail_protocol_locked(self, reason, detail, field=None):
+        # Caller holds _lock; every pipe/history failure keeps the first cause.
+        if "metrics" in self._record:
+            self._record["metrics"]["feed_alive"] = False
+        if self._violation is None:
+            self._violation = dict(reason=reason, detail=detail)
+            if field is not None:
+                self._violation["field"] = field
+        self._stop.set()
+
     def _fail_protocol(self, reason, detail, field=None):
         with self._lock:
-            self._record["metrics"]["feed_alive"] = False
-            if self._violation is None:
-                self._violation = dict(reason=reason, detail=detail)
-                if field is not None:
-                    self._violation["field"] = field
-        self._stop.set()
+            self._fail_protocol_locked(reason, detail, field)
 
     def _stdout(self, pipe):
         buffer = bytearray()
@@ -563,14 +573,13 @@ class JobHandle:
                     try:
                         message = packages.validate_worker_message(message, job_id=self.job_id,
                                                                    operation=self._record["operation"],
-                                                                   metrics=self._record["metrics"]["declared"])
+                                                                   metrics=self._record.get("metrics", {}).get("declared"))
                     except (packages.PackageRefusal, TypeError, RecursionError) as exc:
                         self._fail_protocol("protocol_violation", str(exc), getattr(exc, "field", "message"))
                         return
                     with self._lock:
                         if self._record["result"] is not None:
-                            self._violation = dict(reason="message_after_terminal", detail="exactly one terminal required")
-                            self._stop.set()
+                            self._fail_protocol_locked("message_after_terminal", "exactly one terminal required")
                             return
                         if self._first is None:
                             self._first = time.perf_counter()
@@ -579,9 +588,7 @@ class JobHandle:
                             try:
                                 self._receive_metrics(message)
                             except packages.PackageRefusal as exc:
-                                self._record["metrics"]["feed_alive"] = False
-                                self._violation = dict(reason="protocol_violation", detail=str(exc), field=exc.field)
-                                self._stop.set()
+                                self._fail_protocol_locked("protocol_violation", str(exc), exc.field)
                                 return
                         elif kind == "status":
                             if len(self._status) == self._status.maxlen:
@@ -590,12 +597,12 @@ class JobHandle:
                         elif kind == "artifact":
                             descriptor = message["artifact"]
                             if descriptor["path"] not in self._declared and len(self._declared) >= packages.MAX_ARTIFACTS:
-                                self._violation = dict(reason="too_many_artifacts", detail="artifact limit exceeded")
-                                self._stop.set()
+                                self._fail_protocol_locked("too_many_artifacts", "artifact limit exceeded")
                                 return
                             self._declared[descriptor["path"]] = descriptor
                         else:
-                            self._record["metrics"]["feed_alive"] = False
+                            if "metrics" in self._record:
+                                self._record["metrics"]["feed_alive"] = False
                             self._record["result"] = message
                             self._shutdown = self._shutdown or time.perf_counter()
                             if self._opens_window:
@@ -740,8 +747,10 @@ class Supervisor:
             handle._deadline = deadline_s
             declaration = next(op for op in manifest["operations"] if op["name"] == operation)
             handle._opens_window = declaration.get("opens_window", False)
-            handle._record["metrics"]["declared"] = deepcopy(declaration.get("metrics", {}))
-            handle._record["metrics"]["feed_alive"] = bool(declaration.get("metrics"))
+            if "metrics" in declaration:
+                handle._record["metrics"] = dict(declared=deepcopy(declaration["metrics"]),
+                    latest={}, history=[], received=0, feed_alive=bool(declaration["metrics"]),
+                    lost_frames=False, peak_rate=0)
             with self._lock:
                 if self._closing.is_set():
                     with handle._lock:

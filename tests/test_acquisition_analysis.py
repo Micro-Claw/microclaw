@@ -584,17 +584,18 @@ def install_metrics_fixture(live, fixture):
     store._write(directory / 'verdict.json', dict(build=store.current_build(),
                  interpreter=record['interpreter'], eligible=True, reasons=[]))
     store._write(directory.parent.parent / 'pointer.json', dict(active=record['install_id'], previous=None))
-    from tests.test_skill_packages import NOW
+    from tests.test_skill_packages import NOW, trust_file
+    store.store_trust_policy(trust_file('telemetry-policy'))
     store._write(directory.parent.parent / 'discovery.json',
                  store._discovery_decision(True, record['artifact_digest'], now=NOW, source='install'))
-    return dict(adapter=f'fixture-lab/{package_id}:observe_dataset',
+    return dict(adapter=f"{source['manifest']['publisher']}/{package_id}:observe_dataset",
                 release_digest=record['artifact_digest'], parameters={}), source
 
 
 @pytest.mark.parametrize('fixture,name,unit,lines,expected', [
     ('metrics', 'flux', 'photons', [dict(frames=[0, 0], values={'flux': [10]}),
                                   dict(frames=[1, 99], values={'flux': [0]*99})], .1),
-    ('weather', 'temperature', 'C', [dict(frames=[0, 9], values={'temperature': 23})], 23),
+    ('weather', 'temperature', 'bytes', [dict(frames=[0, 9], values={'temperature': 23})], 23),
 ])
 def test_87_both_packages_discovery_status_result_live_without_saved_frames(
         live, monkeypatch, tmp_path, fixture, name, unit, lines, expected):
@@ -608,8 +609,10 @@ def test_87_both_packages_discovery_status_result_live_without_saved_frames(
     discovery = store.discovery_text()
     assert name in discovery and unit in discovery and source['manifest']['package_id'] in discovery
     loaded = tools.load_skill(live.ctrl, live.guard,
-                              f"fixture-lab/{source['manifest']['package_id']}/workflow")
+                              f"{source['manifest']['publisher']}/{source['manifest']['package_id']}/workflow")
     assert loaded['operations'][1]['metrics'] == source['manifest']['operations'][1]['metrics']
+    for entry in loaded['operations'][1]['metrics'].values():
+        assert entry['description'] not in discovery
     jobs = []
     original_job = cd.AcquisitionAnalysisJob
     def bind(*a, **k):
@@ -650,6 +653,9 @@ def test_87_both_packages_discovery_status_result_live_without_saved_frames(
         assert metrics['feed_alive'] and not metrics['lost_frames']
         assert metrics['values'][name]['value'] == expected
         assert metrics['values'][name]['unit'] == unit
+        assert 'received_monotonic' not in metrics['values'][name]
+        assert metrics['values'][name]['age_s'] >= 0
+        assert 'received_at' in metrics['values'][name]
         assert metrics['values'][name]['frames'] == [lines[0]['frames'][0], lines[-1]['frames'][1]]
     record = result['analysis']['jobs'][0]
     assert name in record['metrics']['latest']
@@ -700,3 +706,13 @@ def test_87_periodic_persistence_is_on_recorder_thread(live, monkeypatch, tmp_pa
         gate.touch()
     durable = terminal_analysis(job_id)
     assert durable['metrics']['received'] == 1 and not durable['metrics']['feed_alive']
+
+
+def test_87_review_legacy_status_has_no_metrics(live):
+    from tests.test_completed_dataset import terminal_analysis
+    result = live.run()
+    assert 'error' not in result, result
+    record = result['analysis']['jobs'][0]
+    assert 'metrics' not in record
+    terminal_analysis(record['job_id'])
+    assert 'metrics' not in tools.analysis_job_status(live.ctrl, live.guard, record['job_id'])['analysis']
