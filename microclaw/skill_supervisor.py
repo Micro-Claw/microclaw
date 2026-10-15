@@ -369,6 +369,9 @@ class JobHandle:
                 # Keep each sparse metric's last weighted bucket and its own
                 # range/time; a different metric cannot freshen its evidence.
                 value["latest"].update(deepcopy(self._metrics_display))
+                emitted_monotonic = time.perf_counter()
+                for entry in value["latest"].values():
+                    entry["age_s"] = max(0.0, emitted_monotonic - entry.pop("received_monotonic"))
             return value
 
     def drain_metrics(self):

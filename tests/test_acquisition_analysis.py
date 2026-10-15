@@ -604,7 +604,7 @@ def test_87_both_packages_discovery_status_result_live_without_saved_frames(
     analysis, source = install_metrics_fixture(live, fixture)
     # Both weighted messages deliberately arrive in the same reception second.
     from tests.test_skill_supervisor import metrics_clock
-    metrics_clock(monkeypatch, [100.1]*len(lines))
+    metrics_clock(monkeypatch, [100.1]*len(lines), snapshot_seconds=[102.5, 103.5, 104.5])
     analysis['parameters'] = dict(lines=lines, lifecycle=True)
     discovery = store.discovery_text()
     assert name in discovery and unit in discovery and source['manifest']['package_id'] in discovery
@@ -648,13 +648,13 @@ def test_87_both_packages_discovery_status_result_live_without_saved_frames(
     assert len(events) == 3
     assert all(b[0]-a[0] >= 1 for a, b in zip(events, events[1:]))
     assert all(event['frames_accounted'] == 0 for _, event in events)
-    for _, event in events:
+    for expected_age, (_, event) in zip((2.4, 3.4, 4.4), events):
         metrics = event['analysis_metrics']
         assert metrics['feed_alive'] and not metrics['lost_frames']
         assert metrics['values'][name]['value'] == expected
         assert metrics['values'][name]['unit'] == unit
         assert 'received_monotonic' not in metrics['values'][name]
-        assert metrics['values'][name]['age_s'] >= 0
+        assert metrics['values'][name]['age_s'] == pytest.approx(expected_age)
         assert 'received_at' in metrics['values'][name]
         assert metrics['values'][name]['frames'] == [lines[0]['frames'][0], lines[-1]['frames'][1]]
     record = result['analysis']['jobs'][0]

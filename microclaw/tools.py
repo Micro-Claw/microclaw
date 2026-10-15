@@ -5024,12 +5024,9 @@ def _acquire_with_hooks(
                         # At most 32 entries; per-frame values are weighted
                         # bucket means, with their contributing ranges.
                         values = {}
-                        emitted_monotonic = time.perf_counter()
                         for metric, latest in metrics["latest"].items():
                             declaration = metrics["declared"][metric]
-                            value = dict(latest, unit=declaration["unit"])
-                            value["age_s"] = max(0.0, emitted_monotonic - value.pop("received_monotonic"))
-                            values[metric] = value
+                            values[metric] = dict(latest, unit=declaration["unit"])
                         with frame_lock:
                             count, phase = frame_state["count"], progress_state["phase"]
                         _emit_acquisition_diagnostic({

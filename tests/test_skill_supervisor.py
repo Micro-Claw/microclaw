@@ -2232,13 +2232,16 @@ def test_87_queue_registered_before_deferred_launch_and_loss(supervisors, tmp_pa
         unattached.drain_metrics()
 
 
-def metrics_clock(monkeypatch, seconds):
+def metrics_clock(monkeypatch, seconds, *, snapshot_seconds=None):
     from types import SimpleNamespace
     actual = time.perf_counter
     clock = iter(seconds)
+    snapshots = iter(snapshot_seconds) if snapshot_seconds is not None else None
     def read():
         if sys._getframe(1).f_code.co_name == '_receive_metrics':
             return next(clock)
+        if snapshots is not None and sys._getframe(1).f_code.co_name == 'metrics_snapshot':
+            return next(snapshots)
         return actual()
     monkeypatch.setattr(s, 'time', SimpleNamespace(perf_counter=read, sleep=time.sleep))
 
@@ -2372,7 +2375,7 @@ def test_87_immediate_consumer_keeps_first_line(supervisors, tmp_path):
 
 
 def test_87_progress_keeps_sparse_weighted_mean_own_age(supervisors, tmp_path, monkeypatch):
-    metrics_clock(monkeypatch, [100.1, 100.2, 101.1])
+    metrics_clock(monkeypatch, [100.1, 100.2, 101.1], snapshot_seconds=[102.5, 103.5])
     h = metrics_submit(supervisors(), tmp_path, lines=[
         dict(frames=[0, 0], values={'flux': [10]}),
         dict(frames=[1, 99], values={'flux': [0]*99}),
@@ -2382,7 +2385,11 @@ def test_87_progress_keeps_sparse_weighted_mean_own_age(supervisors, tmp_path, m
     assert displayed['history'] == []
     assert displayed['latest']['flux']['value'] == .1
     assert displayed['latest']['flux']['frames'] == [0, 99]
-    assert displayed['latest']['flux']['received_monotonic'] == 100.2
+    assert displayed['latest']['flux']['age_s'] == pytest.approx(2.3)
+    assert displayed['latest']['slow']['age_s'] == pytest.approx(1.4)
+    assert all('received_monotonic' not in entry for entry in displayed['latest'].values())
+    assert h.metrics_snapshot()['latest']['flux']['received_monotonic'] == 100.2
+    assert h.metrics_snapshot(for_progress=True)['latest']['flux']['age_s'] == pytest.approx(3.3)
     assert h.record()['metrics']['latest']['flux']['value'] == 0
 
 
