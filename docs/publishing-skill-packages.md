@@ -5,7 +5,7 @@ repository. You host and sign the release. MicroClaw lists it in a catalog and
 installs exactly what you signed. You do not need to send us code or wait for a
 MicroClaw release.
 
-> **Status:** protocols `1.0` and `1.1`. Headless and window operations have
+> **Status:** protocols `1.0`, `1.1`, and `1.2` (numeric metrics). Headless and window operations have
 > passed their demo-machine gates. The first external publisher, `ries-lab`,
 > was admitted on 2026-10-08, and its package `ries-lab/smappy` (executable,
 > protocol `1.1`) is in the catalog. Details may still change; this page is
@@ -321,3 +321,100 @@ It has the exact commands, and it is the one place they are kept. In outline:
 
 Releases are immutable, so every change needs a new version. To withdraw a
 release, use `sign-withdrawal` as the catalog README describes.
+
+## Protocol 1.2: numeric metrics during analysis
+
+Set `protocol_version` to `"1.2"` to declare metrics on a dataset operation.
+The wire protocol remains `microclaw.analysis.v1`; `opens_window` remains
+available. Protocols 1.0 and 1.1 refuse the declaration, and `self_check` may
+never declare metrics. Older MicroClaw versions refuse a 1.2 release.
+
+For example, add this to an operation alongside its name and schemas:
+
+```json
+"metrics": {
+  "objects": {"description": "Objects counted in each saved frame", "unit": "objects", "kind": "per_frame"},
+  "slow_objects": {"description": "Objects from a slower analysis", "unit": "objects", "kind": "per_frame"},
+  "objects_total": {"description": "Objects counted so far", "unit": "objects", "kind": "counter"},
+  "temperature": {"description": "Sensor temperature", "unit": "C", "kind": "gauge"}
+}
+```
+
+There may be at most 32 entries. Names match `[a-z][a-z0-9_]*` and are at most
+64 characters. Each entry contains exactly `description` (nonempty single-line
+text, at most 512 characters), `unit` (single-line text, at most 32 characters;
+`""` is allowed), and `kind` (`gauge`, `counter`, or `per_frame`). No semantic
+or role field is accepted. MicroClaw never interprets a metric by its name or
+description. Your skill text should name the metric appropriate for each rule
+(for example activation feedback or stopping) and give typical parameters;
+choosing a suitable metric is the publisher's responsibility.
+
+Send messages with exactly these keys, before the terminal `result`:
+
+```json
+{"protocol":"microclaw.analysis.v1","type":"metrics","job_id":"<job id>","frames":[0,2],"values":{"objects":[5,0,4],"objects_total":9,"temperature":23.5}}
+```
+
+`frames` contains two nonnegative integers `[first, last]`, `first <= last`,
+referring to 0-based dataset ordinals in NDTiff index order, with at most
+2,000 ordinals per message. `values` is a nonempty object whose names must be
+declared by this operation. All numbers must be finite; booleans are refused.
+A message may omit metrics.
+
+| Kind | Value | Meaning of `frames` |
+| --- | --- | --- |
+| `per_frame` | Exactly `last - first + 1` numbers, in frame order | Every frame in this range; include zeros instead of skipping frames |
+| `gauge` | One number | Measurement accounts for data through `last`; range identifies the data it describes |
+| `counter` | One number, never decreasing | Cumulative through `last`, describing `[0, last]`; `first` is ignored for its meaning |
+
+Ordering is checked **per metric**, even across messages that omit it. Each
+metric's `last` may never decrease. Each per-frame metric starts at ordinal 0,
+then continues at its own previous `last + 1`, with no gaps or overlaps.
+Counters may stay equal but never decrease. Gauges may rise or fall and may
+report the same ordinal again.
+
+For example, these ranges are valid when each list has the indicated length:
+
+```text
+[0,2] objects=[5,0,4], objects_total=9
+[0,0] slow_objects=[7]
+[3,3] objects=[2]
+[1,1] slow_objects=[6]
+[0,3] objects_total=11
+```
+
+These sequences are invalid:
+
+```text
+objects first appears at [1,1]                 # must start at zero
+objects [0,2], then objects [4,4]              # gap at ordinal 3
+objects [0,2], then objects [2,3]              # ordinal 2 counted twice
+objects_total=11 at [0,3], then 10 at [0,4]    # counter decreased
+ temperature=23 at [0,3], then 24 at [0,2]     # this metric's last decreased
+result, then any metrics message              # terminal already accepted
+```
+
+The existing 65,536-byte NDJSON line limit applies. Batch high-rate per-frame
+measurements into messages of at most 2,000 frames. About 10 messages per
+second is a publisher guideline, not an enforced rate. MicroClaw validates
+every line, never coalesces per-frame values, and records reception count and
+peak messages in a reception-time second. It retains the latest scalar and
+range separately for each metric, plus up to 1,024 reception-second history
+samples. Per-frame history and live progress use a frame-weighted mean for
+the bucket, so unequal batch sizes do not bias the display. Gauges and
+counters use the latest value in the bucket. Omitted metrics are not refreshed.
+Feed health becomes false on exit or failure; older values remain visible.
+
+### Reporting for future feedback rules
+
+This release supplies the metrics channel and monitoring; feedback control is
+separate work. The feedback freshness contract uses defaults
+`max_frames_behind = 500` and `max_age_s = 3`: **each selected metric** must
+remain within 500 frames of MicroClaw's own dataset-index evidence and have a
+monotonic reception age no greater than 3 seconds. Report often enough to meet
+both. Frequency alone is insufficient if processing falls behind. A sparse
+metric may be eligible just after arrival and stale between updates. Stale
+evidence remains visible; it holds increases and feedback stops, while bounded
+decreases may continue when write authority is active. The package's own
+backlog gauges remain ordinary telemetry, with no implicit interpretation by
+MicroClaw.

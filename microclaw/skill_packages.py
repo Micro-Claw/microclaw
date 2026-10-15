@@ -423,10 +423,26 @@ def validate_manifest(manifest):
         for i, operation in enumerate(manifest["operations"]):
             field = f"operations[{i}]"
             _mapping(operation, field, {"name", "input_schema", "output_schema"},
-                     {"opens_window"} if manifest["protocol_version"] == "1.1" else ())
+                     ({"opens_window", "metrics"} if manifest["protocol_version"] == "1.2" else
+                      {"opens_window"} if manifest["protocol_version"] == "1.1" else ()))
             if "opens_window" in operation:
                 if operation["name"] == "self_check" or type(operation["opens_window"]) is not bool:
                     raise PackageRefusal(field + ".opens_window", "expected boolean on a dataset operation")
+            if "metrics" in operation:
+                declaration = operation["metrics"]
+                mf = field + ".metrics"
+                if operation["name"] == "self_check" or not isinstance(declaration, dict) or len(declaration) > 32:
+                    raise PackageRefusal(mf, "expected at most 32 metrics on a dataset operation")
+                for metric, entry in declaration.items():
+                    if not isinstance(metric, str) or len(metric) > 64 or not re.fullmatch(r"[a-z][a-z0-9_]*", metric):
+                        raise PackageRefusal(mf, "invalid metric identifier")
+                    ef = mf + "." + metric
+                    _mapping(entry, ef, {"description", "unit", "kind"})
+                    _text(entry["description"], ef + ".description", 512)
+                    if entry["unit"] != "":
+                        _text(entry["unit"], ef + ".unit", 32)
+                    if entry["kind"] not in ("gauge", "counter", "per_frame"):
+                        raise PackageRefusal(ef + ".kind", "unknown metric kind")
             name = _text(operation["name"], field + ".name", MAX_OPERATION_NAME_LENGTH)
             if not re.fullmatch(r"[a-z][a-z0-9_]*", name) or name in operations:
                 raise PackageRefusal(field + ".name", "expected a unique operation identifier")
@@ -536,6 +552,11 @@ def external_catalog_lines(records, policy, *, now, exclusions=None):
         for skill in manifest["skills"]:
             name = qualified_name(manifest["publisher"], manifest["package_id"], skill["name"])
             lines.append(f"- {name} [{_provenance(manifest, intake)}]: {skill['description']}")
+        for operation in manifest.get("operations", []):
+            if operation.get("metrics"):
+                declarations = json.dumps(operation["metrics"], sort_keys=True, ensure_ascii=True)
+                lines.append(f"- {manifest['publisher']}/{manifest['package_id']} operation "
+                             f"{operation['name']} metrics (publisher data): {declarations}")
     return tuple(sorted(lines))
 
 
@@ -838,7 +859,7 @@ def verify_catalog(document, policy, *, now, cached=False):
 
 
 ANALYSIS_PROTOCOL = "microclaw.analysis.v1"
-SUPPORTED_PROTOCOLS = {"1.0": ANALYSIS_PROTOCOL, "1.1": ANALYSIS_PROTOCOL}
+SUPPORTED_PROTOCOLS = {"1.0": ANALYSIS_PROTOCOL, "1.1": ANALYSIS_PROTOCOL, "1.2": ANALYSIS_PROTOCOL}
 MAX_MESSAGE_BYTES = 65536
 MAX_STATUS_MESSAGE_LENGTH = 512
 MAX_FAILURE_MESSAGE_LENGTH = 1024
@@ -977,8 +998,34 @@ def validate_artifact(artifact, field="artifact"):
         raise PackageRefusal(field + ".validity", "expected partial or final")
 
 
-def validate_worker_message(message, *, job_id, operation):
+def validate_worker_message(message, *, job_id, operation, metrics=None):
     """Validate stdout without touching files; output is opaque publisher JSON."""
+    if metrics and operation != "self_check" and isinstance(message, dict) and message.get("type") == "metrics":
+        _wire(message, {"metrics"}, job_id)
+        _mapping(message, "", {"protocol", "type", "job_id", "frames", "values"})
+        frames = message["frames"]
+        if (not isinstance(frames, list) or len(frames) != 2
+                or any(type(f) is not int or f < 0 for f in frames)
+                or frames[0] > frames[1] or frames[1] - frames[0] + 1 > 2000):
+            raise PackageRefusal("frames", "expected 1 to 2000 nonnegative frame ordinals")
+        values = message["values"]
+        if not isinstance(values, dict) or not values:
+            raise PackageRefusal("values", "expected nonempty object")
+        for name, value in values.items():
+            if name not in metrics:
+                raise PackageRefusal("values", "undeclared metric")
+            numbers = value if metrics[name]["kind"] == "per_frame" else [value]
+            if metrics[name]["kind"] == "per_frame" and (
+                    not isinstance(value, list) or len(value) != frames[1] - frames[0] + 1):
+                raise PackageRefusal("values." + name, "expected one number per frame")
+            try:
+                finite = all(type(v) in (int, float) and math.isfinite(v) for v in numbers)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise PackageRefusal("values." + name, "expected finite numbers, never bool")
+        encode_message(message)
+        return deepcopy(message)
     _wire(message, {"status", "artifact", "result"}, job_id)
     kind = message["type"]
     extra = {"status": {"message"}, "artifact": {"artifact"},

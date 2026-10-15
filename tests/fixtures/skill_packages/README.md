@@ -101,3 +101,12 @@ values, copy matching compatibility fields to executable-intake.json, and sign
 with build_release.sign (publisher-a's committed TEST-ONLY seed). Operations and
 asset hashes live in the manifest, not the external intake's signed projection.
 Archives and wheels remain deterministic through build_release.py.
+
+`metrics/` (photon-observer, per-frame/counter/gauge) and `weather/`
+(thermal-observer, gauge only) are protocol 1.2 stdlib workers. Build signed
+archives with `build_release(fixture_dir, artifact_path)` just like the other
+fixtures. `parameters.lines` supplies wire payloads, `flood` emits that many
+2,000-frame messages, and a noncontiguous `lines` sequence exercises broken
+contiguity. `gate` holds at the observable `ready` status until the named file
+exists; `lifecycle` waits for completion. The executable and conformance
+fixtures remain protocol 1.1 for regression coverage.

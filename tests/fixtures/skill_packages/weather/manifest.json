@@ -1,0 +1,74 @@
+{
+  "package_id": "thermal-observer",
+  "publisher": "fixture-lab",
+  "version": "1.0.0",
+  "microclaw": ">=0.1,<2",
+  "kind": "executable",
+  "license": "MIT",
+  "source_url": "https://github.com/fixture-lab/skills",
+  "issues_url": "https://github.com/fixture-lab/skills/issues",
+  "artifact": "https://github.com/fixture-lab/skills/releases/download/v1.0.0/executable.zip",
+  "assets": [
+    {
+      "path": "SKILL.md",
+      "sha256": "435f7c0a51d773c4cf829c3663d662c33b69c4248775ae308bd3e8ca2335209c"
+    },
+    {
+      "path": "telemetry_worker/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "telemetry_worker/runner.py",
+      "sha256": "a52036c956f8c0cf7014d2be94ba9ccc15d692c3f7673807b5c2a3e603267a24"
+    }
+  ],
+  "skills": [
+    {
+      "name": "workflow",
+      "description": "A publisher-provided fixture workflow.",
+      "path": "SKILL.md"
+    }
+  ],
+  "python": ">=3.10,<4",
+  "platforms": [
+    "win_amd64",
+    "macosx_arm64",
+    "manylinux_x86_64"
+  ],
+  "protocol_version": "1.2",
+  "entry_point": {
+    "module": "telemetry_worker.runner"
+  },
+  "operations": [
+    {
+      "name": "self_check",
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "observe_dataset",
+      "input_schema": {
+        "type": "object"
+      },
+      "output_schema": {
+        "type": "object"
+      },
+      "metrics": {
+        "temperature": {
+          "description": "Sensor temperature",
+          "unit": "C",
+          "kind": "gauge"
+        }
+      }
+    }
+  ],
+  "locks": {
+    "win_amd64": [],
+    "macosx_arm64": [],
+    "manylinux_x86_64": []
+  }
+}

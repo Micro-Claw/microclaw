@@ -37,6 +37,7 @@ import signal
 import stat
 import sys
 from datetime import datetime, timezone
+from fractions import Fraction
 import subprocess
 import tempfile
 import threading
@@ -290,7 +291,7 @@ def interactive_desktop(*, platform=None, environ=None):
 
 
 class JobHandle:
-    def __init__(self, supervisor, job_id=None):
+    def __init__(self, supervisor, job_id=None, *, metrics_consumer=False):
         self.job_id = job_id or uuid4().hex
         self._supervisor = supervisor
         self._lock = threading.Lock()
@@ -311,6 +312,14 @@ class JobHandle:
         self._frozen = False
         self._diagnostics = dict(stderr_tail="", discarded_stdout_bytes=0, exit_code=None, cleanup_failures=[])
         self._window_stderr = bytearray()
+        self._metrics_queue = deque() if metrics_consumer else None
+        self._metrics_queued_frames = 0
+        self._metrics_history = deque(maxlen=1023)
+        self._metrics_bucket = None
+        self._metrics_sums = {}
+        self._metrics_display = {}
+        self._metrics_rate_second = None
+        self._metrics_rate_count = 0
         self._declared = {}
         self._accepted = {}
         self._created = time.perf_counter()
@@ -320,6 +329,8 @@ class JobHandle:
         self._record = dict(job_id=self.job_id, release={}, operation=None, state="queued",
                             priority=dict(requested=None, inherited=False, at_start=None, at_end=None,
                                           processes_read=dict(at_start=0, at_end=0), reason={}),
+                            metrics=dict(declared={}, latest={}, history=[], received=0,
+                                         feed_alive=False, lost_frames=False, peak_rate=0),
                             result=None, failure=None, artifacts=[], rejected_artifacts=[],
                             lifecycle=dict(acquisition=None, writer=None), notifications=[], notifications_dropped=0,
                             status=[], status_dropped=0, stderr_tail="", exit_code=None,
@@ -329,10 +340,102 @@ class JobHandle:
     def record(self):
         with self._lock:
             value = deepcopy(self._record)
+            value["metrics"]["history"] = self._history_snapshot()
             if not self._frozen:
                 value["status"] = list(self._status)
                 value["stderr_tail"] = bytes(self._stderr).decode("utf-8", errors="replace")
             return value
+
+    def _history_snapshot(self, *, include_history=True):
+        # Caller holds _lock. The current partial second is always visible.
+        history = list(self._metrics_history) if include_history else []
+        if self._metrics_bucket is not None:
+            bucket = deepcopy(self._metrics_bucket)
+            for name, (total, count) in self._metrics_sums.items():
+                bucket["values"][name] = float(total / count)
+            history.append(bucket)
+        return deepcopy(history)
+
+    def metrics_snapshot(self, *, for_progress=False):
+        """Bounded live read; no record, disk, or hardware access."""
+        with self._lock:
+            value = deepcopy(self._record["metrics"])
+            value["history"] = [] if for_progress else self._history_snapshot()
+            if for_progress:
+                # Keep each sparse metric's last weighted bucket and its own
+                # range/time; a different metric cannot freshen its evidence.
+                value["latest"].update(deepcopy(self._metrics_display))
+            return value
+
+    def drain_metrics(self):
+        """Drain the consumer registered at submit, in wire order."""
+        with self._lock:
+            if self._metrics_queue is None:
+                raise ValueError("metrics consumer was not requested at submit")
+            items = list(self._metrics_queue)
+            self._metrics_queue.clear()
+            self._metrics_queued_frames = 0
+            return items
+
+    def _receive_metrics(self, message):
+        # Caller holds _lock. Stateless validation already completed.
+        metrics = self._record["metrics"]
+        first, last = message["frames"]
+        for name, value in message["values"].items():
+            kind = metrics["declared"][name]["kind"]
+            previous = metrics["latest"].get(name)
+            if previous is not None and last < previous["frames"][1]:
+                raise packages.PackageRefusal("frames", "metric last ordinal decreased")
+            if kind == "per_frame" and first != (previous["frames"][1] + 1 if previous else 0):
+                raise packages.PackageRefusal("frames", "per-frame metric must continue from ordinal zero")
+            if kind == "counter" and previous is not None and value < previous["value"]:
+                raise packages.PackageRefusal("values." + name, "counter decreased")
+        received = time.perf_counter()
+        utc = datetime.now(timezone.utc).isoformat()
+        second = int(received)
+        if self._metrics_rate_second != second:
+            self._metrics_rate_second, self._metrics_rate_count = second, 0
+        self._metrics_rate_count += 1
+        metrics["peak_rate"] = max(metrics["peak_rate"], self._metrics_rate_count)
+        metrics["received"] += 1
+        if self._metrics_bucket is None or self._metrics_bucket["second"] != second:
+            if self._metrics_bucket is not None:
+                self._metrics_history.append(self._history_snapshot(include_history=False)[-1])
+            self._metrics_bucket = dict(second=second, received_at=utc, values={}, frames={})
+            self._metrics_sums = {}
+        bucket = self._metrics_bucket
+        for name, value in message["values"].items():
+            per_frame = metrics["declared"][name]["kind"] == "per_frame"
+            metrics["latest"][name] = dict(value=value[-1] if per_frame else value,
+                frames=list(message["frames"]), received_at=utc, received_monotonic=received)
+            range_first = bucket["frames"].get(name, message["frames"])[0] if per_frame else first
+            bucket["frames"][name] = [range_first, last]
+            if per_frame:
+                total, count = self._metrics_sums.get(name, (0, 0))
+                previous_total = total
+                try:
+                    total += sum(value)
+                except OverflowError:
+                    total = math.inf
+                if isinstance(total, float) and not math.isfinite(total):
+                    # Finite inputs can overflow their sum even though their
+                    # mean is finite. Pay for exact arithmetic only then.
+                    total = Fraction(previous_total) + sum(Fraction(v) for v in value)
+                count += len(value)
+                self._metrics_sums[name] = (total, count)
+                self._metrics_display[name] = dict(metrics["latest"][name], value=float(total / count),
+                                                   frames=list(bucket["frames"][name]))
+            else:
+                bucket["values"][name] = value
+        if self._metrics_queue is not None:
+            count = last - first + 1
+            while self._metrics_queued_frames + count > 100000:
+                dropped = self._metrics_queue.popleft()
+                self._metrics_queued_frames -= dropped["frames"][1] - dropped["frames"][0] + 1
+                metrics["lost_frames"] = True
+            self._metrics_queue.append(dict(frames=message["frames"], values=message["values"],
+                                            received_monotonic=received, received_at=utc))
+            self._metrics_queued_frames += count
 
     def wait(self, timeout=None):
         return self._done.wait(timeout)
@@ -343,6 +446,7 @@ class JobHandle:
         spawn = self._spawned or end
         shutdown = self._shutdown or end
         first = min(self._first or shutdown, shutdown)
+        self._record["metrics"]["feed_alive"] = False
         self._record["state"] = state
         self._record["failure"] = failure
         self._record["duration_breakdown"] = dict(
@@ -419,6 +523,7 @@ class JobHandle:
 
     def _fail_protocol(self, reason, detail, field=None):
         with self._lock:
+            self._record["metrics"]["feed_alive"] = False
             if self._violation is None:
                 self._violation = dict(reason=reason, detail=detail)
                 if field is not None:
@@ -457,7 +562,8 @@ class JobHandle:
                         return
                     try:
                         message = packages.validate_worker_message(message, job_id=self.job_id,
-                                                                   operation=self._record["operation"])
+                                                                   operation=self._record["operation"],
+                                                                   metrics=self._record["metrics"]["declared"])
                     except (packages.PackageRefusal, TypeError, RecursionError) as exc:
                         self._fail_protocol("protocol_violation", str(exc), getattr(exc, "field", "message"))
                         return
@@ -469,7 +575,15 @@ class JobHandle:
                         if self._first is None:
                             self._first = time.perf_counter()
                         kind = message["type"]
-                        if kind == "status":
+                        if kind == "metrics":
+                            try:
+                                self._receive_metrics(message)
+                            except packages.PackageRefusal as exc:
+                                self._record["metrics"]["feed_alive"] = False
+                                self._violation = dict(reason="protocol_violation", detail=str(exc), field=exc.field)
+                                self._stop.set()
+                                return
+                        elif kind == "status":
                             if len(self._status) == self._status.maxlen:
                                 self._record["status_dropped"] += 1
                             self._status.append(message["message"])
@@ -481,6 +595,7 @@ class JobHandle:
                                 return
                             self._declared[descriptor["path"]] = descriptor
                         else:
+                            self._record["metrics"]["feed_alive"] = False
                             self._record["result"] = message
                             self._shutdown = self._shutdown or time.perf_counter()
                             if self._opens_window:
@@ -592,8 +707,8 @@ class Supervisor:
             thread.start()
 
     def submit(self, release, policy, *, now, python, operation, parameters,
-               dataset=None, output_dir=None, deadline_s=None, job_id=None):
-        handle = JobHandle(self, job_id=job_id)
+               dataset=None, output_dir=None, deadline_s=None, job_id=None, metrics_consumer=False):
+        handle = JobHandle(self, job_id=job_id, metrics_consumer=metrics_consumer)
         if isinstance(operation, str) and len(operation) <= packages.MAX_OPERATION_NAME_LENGTH:
             handle._record["operation"] = operation
         try:
@@ -623,7 +738,10 @@ class Supervisor:
             handle._manifest = manifest
             handle._python = os.fspath(python)
             handle._deadline = deadline_s
-            handle._opens_window = next(op for op in manifest["operations"] if op["name"] == operation).get("opens_window", False)
+            declaration = next(op for op in manifest["operations"] if op["name"] == operation)
+            handle._opens_window = declaration.get("opens_window", False)
+            handle._record["metrics"]["declared"] = deepcopy(declaration.get("metrics", {}))
+            handle._record["metrics"]["feed_alive"] = bool(declaration.get("metrics"))
             with self._lock:
                 if self._closing.is_set():
                     with handle._lock:

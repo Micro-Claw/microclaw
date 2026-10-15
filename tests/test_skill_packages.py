@@ -1003,7 +1003,7 @@ def test_bad_record_is_excluded_without_hiding_other_skills():
     assert exclusions[0][1].field == 'signature.value'
 
 
-@pytest.mark.parametrize("version", ["1.2", "2.0"])
+@pytest.mark.parametrize("version", ["1.3", "2.0"])
 @pytest.mark.parametrize("purpose", ["admission", "execution"])
 def test_supported_protocol_after_signature(version, purpose):
     value = intake()
@@ -1162,6 +1162,7 @@ def test_shipped_production_roots():
 
 @pytest.mark.parametrize('version,name,value,accepted', [
     ('1.1', 'observe_dataset', True, True), ('1.1', 'observe_dataset', False, True),
+    ('1.2', 'observe_dataset', True, True), ('1.2', 'observe_dataset', False, True),
     ('1.0', 'observe_dataset', True, False), ('1.0', 'observe_dataset', False, False),
     ('1.1', 'self_check', True, False), ('1.1', 'self_check', False, False),
     ('1.1', 'observe_dataset', 1, False), ('1.1', 'observe_dataset', 'true', False)])
@@ -1177,3 +1178,100 @@ def test_84a_window_manifest(version, name, value, accepted):
     else:
         with pytest.raises(packages.PackageRefusal):
             packages.validate_manifest(m)
+
+
+@pytest.mark.parametrize('version,name,accepted', [
+    ('1.2', 'observe_dataset', True), ('1.1', 'observe_dataset', False),
+    ('1.0', 'observe_dataset', False), ('1.2', 'self_check', False)])
+def test_87_metrics_manifest(version, name, accepted):
+    m = manifest()
+    m['protocol_version'] = version
+    op = next(o for o in m['operations'] if o['name'] == name)
+    op['metrics'] = {'signal': dict(description='Signal', unit='', kind='per_frame')}
+    if accepted:
+        assert packages.validate_manifest(m) == m
+        packages.supported_executable(m)
+    else:
+        with pytest.raises(packages.PackageRefusal):
+            packages.validate_manifest(m)
+
+
+def test_87_metrics_message():
+    message = dict(protocol=packages.ANALYSIS_PROTOCOL, type='metrics', job_id='a'*32,
+                   frames=[0, 1], values={'signal': [0, 3]})
+    assert packages.validate_worker_message(
+        message, job_id='a'*32, operation='observe_dataset',
+        metrics={'signal': dict(kind='per_frame')}) == message
+
+
+@pytest.mark.parametrize('change', [
+    {'bad-name': dict(description='d', unit='', kind='gauge')},
+    {'a'*65: dict(description='d', unit='', kind='gauge')},
+    {'a': dict(description='d\nb', unit='', kind='gauge')},
+    {'a': dict(description='x'*513, unit='', kind='gauge')},
+    {'a': dict(description='d', unit='x'*33, kind='gauge')},
+    {'a': dict(description='d', unit='', kind='other')},
+    {'a': dict(description='d', unit='', kind='gauge', role='control')},
+    {f'a{i}': dict(description='d', unit='', kind='gauge') for i in range(33)},
+    [],
+])
+def test_87_bad_declarations(change):
+    m = manifest()
+    m['protocol_version'] = '1.2'
+    m['operations'][1]['metrics'] = change
+    with pytest.raises(packages.PackageRefusal):
+        packages.validate_manifest(m)
+
+
+@pytest.mark.parametrize('frames,values,extra', [
+    ([0, 0], {'unknown': 1}, {}), ([0, 0], {}, {}),
+    ([0, 0], {'g': True}, {}), ([0, 0], {'g': float('nan')}, {}),
+    ([0, 0], {'g': float('inf')}, {}), ([0, 0], {'g': 10**1000}, {}),
+    ([0, 0], {'p': [False]}, {}), ([0, 1], {'p': [1]}, {}),
+    ([1, 0], {'g': 1}, {}), ([-1, 0], {'g': 1}, {}),
+    ([False, 0], {'g': 1}, {}), ([0, 2000], {'g': 1}, {}),
+    ([0], {'g': 1}, {}), ([0, 0], {'g': 1}, {'role': 'control'}),
+])
+def test_87_stateless_refusals(frames, values, extra):
+    msg = dict(protocol=packages.ANALYSIS_PROTOCOL, type='metrics', job_id='a'*32,
+               frames=frames, values=values, **extra)
+    with pytest.raises(packages.PackageRefusal):
+        packages.validate_worker_message(msg, job_id='a'*32, operation='observe_dataset',
+                                         metrics={'g': {'kind': 'gauge'}, 'p': {'kind': 'per_frame'}})
+
+
+def test_87_old_wire_byte_regression():
+    # Freeze the pre-change validator and compare every old corpus case through
+    # the existing parametrized protocol tests' inputs below, including refusal
+    # text/field and encoding bytes. The snapshot is code only in the test tree.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('old_skill_packages', FIXTURES / 'protocol_11_oracle.py')
+    old = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(old)
+    corpus = [dict(protocol=packages.ANALYSIS_PROTOCOL, job_id='a'*32, type='status', message='ready'),
+              dict(protocol=packages.ANALYSIS_PROTOCOL, job_id='a'*32, type='result', state='succeeded',
+                   output={}, artifacts=[], input_complete=True),
+              dict(protocol=packages.ANALYSIS_PROTOCOL, job_id='a'*32, type='artifact',
+                   artifact={'path': 'a.csv', 'kind': 'table', 'media_type': 'text/csv', 'complete': True}),
+              dict(protocol=packages.ANALYSIS_PROTOCOL, job_id='a'*32, type='metrics', frames=[0, 0], values={'g': 1})]
+    corpus += [dict(m, **{k: v}) for m in list(corpus) for k, v in
+               [('protocol', 'wrong'), ('job_id', 'b'*32), ('type', 'unknown'), ('extra', 1)]]
+    for operation in ('self_check', 'observe_dataset'):
+        for msg in corpus:
+            outcomes = []
+            for module in (old, packages):
+                try:
+                    value = module.validate_worker_message(msg, job_id='a'*32, operation=operation)
+                    outcomes.append(module.encode_message(value))
+                except module.PackageRefusal as exc:
+                    outcomes.append((exc.field, str(exc)))
+            assert outcomes[0] == outcomes[1]
+
+
+@pytest.mark.parametrize('fixture', ['metrics', 'weather'])
+def test_87_signed_fixture_release(tmp_path, fixture):
+    from tests.fixtures.skill_packages.build_release import build_release
+    artifact = tmp_path / 'release.zip'
+    signed = build_release(FIXTURES / fixture, artifact)
+    packages.check_release(signed, policy(), purpose='admission', now=NOW, artifact=artifact)
+    assert signed['protocol_version'] == '1.2'
