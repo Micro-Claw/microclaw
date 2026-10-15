@@ -13,6 +13,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -797,7 +798,9 @@ def selftest(output=None, sizes=(2, 120, 40)):
                 require(all(token in launcher for token in ("env-$active", "-I -c", "'1.2' in skill_packages.SUPPORTED_PROTOCOLS",
                     'JobHandle', 'metrics_snapshot', 'exit 2', '87-block87a-demo-gate.py', '--selftest-sizes')),
                     'PowerShell installed-slot/feature/phase wiring missing.')
-                require(runbook.count('<PIN>') == 1 and 'git checkout block-87a' in runbook,
+                # A shipped runbook pins a real commit; a placeholder is a step that does not run.
+                require('<PIN>' not in runbook and 'git checkout block-87a' in runbook
+                    and len(re.findall(r'git merge-base --is-ancestor [0-9a-f]{7,40} HEAD', runbook)) == 1,
                     'Runbook pin/branch wiring invalid.')
                 gate.say('SELFTEST PASS: transported file-only scoring; launcher/runbook source wiring (PowerShell execution not exercised).')
                 gate.save('selftest', dict(failed_controls=failures, baseline=observed, mutations=len(mutations),
