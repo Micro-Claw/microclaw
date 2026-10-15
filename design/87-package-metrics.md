@@ -1,6 +1,6 @@
 # Package metrics — numbers a community package sends while it runs
 
-**Status:** proposal, revised 2026-10-15. No block opened.
+**Status:** 87a open 2026-10-15 (branch `block-87a`).
 
 **Input:** the SMAPpy publisher's specification,
 [`ries-lab/smappy-microclaw` `docs/microclaw-feedback-spec.md`](https://github.com/ries-lab/smappy-microclaw/blob/claude/hopeful-hypatia-ng4jwr/docs/microclaw-feedback-spec.md)
@@ -206,4 +206,5 @@ further from MicroClaw once 87a merges.
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| notebook | — | `2a6f7ee` | drafted and revised 2026-10-15, not opened |
+| notebook | — | `2a6f7ee` | drafted and revised 2026-10-15 |
+| 87a | `block-87a` | `13382d5` | opened 2026-10-15; implementation delegated |
