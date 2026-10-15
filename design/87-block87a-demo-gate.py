@@ -30,10 +30,11 @@ e4, f6 = b84.e4, b84.f6
 read_json, write_json, now = e4.read_json, e4.write_json, e4.now
 NotExercised = e4.NotExercised
 POINTER = '87a-gate-evidence.txt'
+WALL_CLOCK_STEP_S = 0.0156
 # Configure this private module instance's cleanup pointer, without editing 84b.
 b84.POINTER = POINTER
 PACKAGES = {'metrics': 'fixture-lab/photon-observer', 'thermal': 'weather-lab/thermal-observer'}
-SIZES = (6, 1000, 300)
+SIZES = (6, 1000, 1200)  # session: about 60 s at 0.05 s, long enough to watch
 LIMBS = {1: 'both publishers installed and compact discovery', 2: 'all planned frames saved',
          3: 'live photon progress and one-second cadence', 4: 'final photon metrics and tool snapshot',
          5: 'gauge-only second publisher', 6: 'broken contiguity isolated from acquisition',
@@ -227,7 +228,7 @@ class Gate(b84.Gate):
         args = session_input(prep)
         data = dict(started_at=started.isoformat(), input=args, completed=[], answers={}, synthetic=False)
         self.save('session', data)
-        self.say('STEP 1: Launch MicroClaw from its desktop icon; wait for Firefox. Paste this literal line and approve. Type DONE while the acquisition is running, not after the reply:\n' + chat('run_timelapse', args))
+        self.say('STEP 1: Launch MicroClaw from its desktop icon; wait for Firefox. Put Firefox and this PowerShell window side by side, both visible. Paste this literal line and approve. Type DONE while the acquisition is running, not after the reply:\n' + chat('run_timelapse', args))
         data['answers']['1'] = self.ask('DONE when the working line is visible; STOP abandons.', '1')
         data['completed'].append(1)
         deadline = time.perf_counter() + 90
@@ -250,7 +251,7 @@ class Gate(b84.Gate):
             screenshot=b84.screenshot(self.out / 'working.png'))
         self.save('session', data)
         self.say('STEP 2: Watch the working line while frames are acquired. The program has captured working.png.')
-        question = 'Did the working line under the chat show flux, slow, total and load values changing while frames were acquired?'
+        question = 'Did the working line under the chat show flux, slow and total values changing while frames were acquired?'
         while True:
             self.say(question + ' Type YES or NO (STOP abandons).')
             self.discard_pending_input()
@@ -320,9 +321,14 @@ def scored(row):
 
 def progress(out, row, diagnostics):
     folder = out / 'runs' / row['id']
-    browser = [e for e in load(folder / 'browser-events.json') if e.get('analysis_metrics') is not None]
+    captured = load(folder / 'browser-events.json')
+    browser = [e for e in captured if e.get('analysis_metrics') is not None]
     stamped = [e for e in diagnostics if e.get('tool_call_id') == row['id'] and e.get('analysis_metrics') is not None]
     if not browser:
+        # The sink worked if it carried ordinary progress; then the product,
+        # not the capture, failed to publish metrics.
+        require(not any(e.get('type') == 'acquisition_progress' for e in captured),
+                'Progress reached the browser sink, but none carried analysis_metrics.')
         raise NotExercised('No analysis_metrics progress captured from the browser sink.')
     # This event class has one foreground producer. Match its recorded order as
     # well as payload, so repeated empty startup snapshots remain attributable.
@@ -343,7 +349,11 @@ def live(out, row, diagnostics, metric):
         'No live metric range before the planned final ordinal.')
     stamps = [datetime.fromisoformat(e['timestamp']) for e in events]
     gaps = [(b-a).total_seconds() for a, b in zip(stamps, stamps[1:])]
-    require(all(gap >= 1 for gap in gaps), 'Progress timestamps less than one second apart: ' + str(gaps))
+    # The product gates emission on perf_counter >= 1 s, but stamps the event
+    # with datetime.now(), which on Windows under Python 3.12 advances in
+    # 15.6 ms steps (design/79). Allow two such steps, never more.
+    require(all(gap >= 1 - WALL_CLOCK_STEP_S * 2 for gap in gaps),
+            'Progress timestamps less than one second apart: ' + str(gaps))
     return dict(events=len(events), timestamp_source='product diagnostic timestamp', consecutive_s=gaps)
 
 

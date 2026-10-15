@@ -1,15 +1,15 @@
 # 87a — demo-machine gate: package metrics during acquisition
 
 Use **Windows PowerShell 5.1**, **Firefox**, and Micro-Manager open with the
-usual demo config and bridge on port **4827**. Allow **15–20 minutes**; measure
-is hands-off for about 5 minutes. Prepare installs both stdlib-only fixtures
+usual demo config and bridge on port **4827**. Allow **20–30 minutes**; measure
+is hands-off for about 5–10 minutes. Prepare installs both stdlib-only fixtures
 **offline**, using the installed slot's base Python. No extra configuration.
 
 Prepare sets your package store aside as `skill-packages.87a-saved`; verify
 restores it. On interruption run `-Phase cleanup`. Keep **MicroClaw closed for
 prepare, measure and verify**. Datasets stay under the workspace (or the launcher
-root if no workspace): **20 × 1000 frames plus 300 session frames**, about
-**10.7 GB at 512 × 512 uint16**, with a 20% disk margin checked before starting.
+root if no workspace): **20 × 1000 frames plus 1200 session frames**, about
+**11.2 GB at 512 × 512 uint16**, with a 20% disk margin checked before starting.
 
 ## 0. Install the branch
 
@@ -62,11 +62,13 @@ Expect `RECORDED: measure`. Do not use the machine during measurement.
 .\design\87-block87a-demo-gate.ps1 -Phase session
 ```
 
-Follow the printed steps and literal chat lines. Step 1 names `run_timelapse`,
-300 frames, interval 0.05, exposure 10, and the photon adapter/digest/parameters.
+**Put Firefox and the PowerShell window side by side**, both visible: the
+program screenshots the screen while the acquisition runs. Follow the printed
+steps and literal chat lines. Step 1 names `run_timelapse`, 1200 frames
+(about one minute), interval 0.05, exposure 10, and the photon adapter/digest/parameters.
 Approve; type DONE **while the working line is visible and acquisition is still
 running**. The program waits for live job evidence and captures `working.png`.
-Answer its YES/NO question about changing flux/slow/total/load values. It then
+Answer its YES/NO question about changing flux/slow/total values (`load` is bytes per frame and stays constant). It then
 prints `analysis_job_status` with the actual job ID; paste it, wait for the reply,
 and type DONE. Finally quit MicroClaw and type DONE. STOP abandons a step.
 
@@ -100,9 +102,3 @@ For an interrupted restore:
 ```powershell
 .\design\87-block87a-demo-gate.ps1 -Phase cleanup
 ```
-
-Coordinator check before shipping: `-Phase selftest` (optionally
-`-SelftestSizes 2,120,40`) uses bridge-shaped fakes, real offline installs and real
-workers. UI/answers/screenshots are marked synthetic; synthetic timing controls
-exercise scoring without asserting fake-machine performance. This does not
-replace the Windows/Firefox demo gate.
