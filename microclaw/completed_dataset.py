@@ -689,7 +689,7 @@ def prepare_package_analysis(adapter, release_digest, parameters, *, disclosure)
                 operation=operation, parameters=parameters)
 
 
-def submit_package_analysis(prepared, dataset_path, output_dir, *, job_id=None, metadata=None):
+def submit_package_analysis(prepared, dataset_path, output_dir, *, job_id=None, metadata=None, metrics_consumer=False):
     """Submit and publish the durable retention pin before releasing the lock."""
     from microclaw import skill_store
     metadata = {} if metadata is None else metadata
@@ -700,7 +700,7 @@ def submit_package_analysis(prepared, dataset_path, output_dir, *, job_id=None, 
             release, prepared['policy'], now=datetime.now(timezone.utc),
             python=release['python'], operation=prepared['operation'],
             parameters=prepared['parameters'], dataset=dataset_path,
-            output_dir=output_dir, **({'job_id': job_id} if job_id else {}))
+            output_dir=output_dir, metrics_consumer=metrics_consumer, **({'job_id': job_id} if job_id else {}))
         path = skill_store.analysis_job_path(handle.job_id)
         metadata.update(
             package=prepared['package'], digest=prepared['digest'],
@@ -741,7 +741,12 @@ def run_package_analysis(guard, dataset_path, adapter, release_digest, parameter
 
         def persist_terminal():
             try:
-                handle.wait()
+                received = 0
+                while not handle.wait(5):
+                    snapshot = handle.record()
+                    if snapshot['metrics']['received'] != received:
+                        skill_store._write(path, dict(snapshot, **metadata))
+                        received = snapshot['metrics']['received']
                 skill_store._write(path, dict(handle.record(), **metadata))
             except Exception as exc:
                 metadata['record_failure'] = str(exc)
@@ -763,7 +768,7 @@ def run_package_analysis(guard, dataset_path, adapter, release_digest, parameter
 class AcquisitionAnalysisJob:
     """One dataset's dispatch and lifecycle, retained independently of tool errors."""
 
-    def __init__(self, prepared, dataset):
+    def __init__(self, prepared, dataset, *, metrics_consumer=False):
         from microclaw import skill_store
         self.handle = None
         self._lock = threading.Lock()
@@ -781,7 +786,8 @@ class AcquisitionAnalysisJob:
         self.failure = None
         try:
             self.handle = submit_package_analysis(
-                prepared, str(dataset), self.metadata['output_dir'], job_id=job_id, metadata=self.metadata)
+                prepared, str(dataset), self.metadata['output_dir'], job_id=job_id, metadata=self.metadata,
+                metrics_consumer=metrics_consumer)
         except Exception as exc:
             self.failure = dict(reason='dispatch_failed', detail=str(exc))
         self._persist(wait=True)
@@ -796,13 +802,17 @@ class AcquisitionAnalysisJob:
         from microclaw import skill_store
         def write():
             try:
-                if wait and self.handle is not None:
-                    self.handle.wait()
-                try:
-                    with self._persistence_lock:
-                        skill_store._write(Path(self.metadata['job_record_path']), self.record())
-                except Exception as exc:
-                    self.metadata['record_failure'] = str(exc)
+                received = 0
+                while wait and self.handle is not None and not self.handle.wait(5):
+                    snapshot = self.record()
+                    if snapshot['metrics']['received'] != received:
+                        with self._persistence_lock:
+                            skill_store._write(Path(self.metadata['job_record_path']), snapshot)
+                        received = snapshot['metrics']['received']
+                with self._persistence_lock:
+                    skill_store._write(Path(self.metadata['job_record_path']), self.record())
+            except Exception as exc:
+                self.metadata['record_failure'] = str(exc)
             finally:
                 with _analysis_lock:
                     _analysis_recorders.discard(threading.current_thread())

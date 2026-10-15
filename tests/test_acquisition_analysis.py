@@ -566,3 +566,137 @@ def test_86a_acquisition_failure_after_worker_exit_is_undelivered(live, monkeypa
     assert record['failure'] is None
     assert sent == [('failed', 'unknown')]
     assert record['notifications'] == [dict(type='acquisition', state='undelivered', reason='worker_exited')]
+
+
+def install_metrics_fixture(live, fixture):
+    """An installed signed release, following the same offline store convention."""
+    import shutil
+    import sys
+    from tests.test_skill_supervisor import release
+    source = release(fixture)
+    package_id = source['manifest']['package_id']
+    record = dict(source, state='ready', artifact_digest=source['intake']['artifact_digest'],
+                  python=sys.executable, interpreter={'test': 'current'}, install_id='0'*16+'-000000')
+    record.pop('release_dir')
+    directory = store._package(package_id) / 'installs' / record['install_id']
+    shutil.copytree(source['release_dir'], directory / 'release')
+    store._write(directory / 'install.json', record)
+    store._write(directory / 'verdict.json', dict(build=store.current_build(),
+                 interpreter=record['interpreter'], eligible=True, reasons=[]))
+    store._write(directory.parent.parent / 'pointer.json', dict(active=record['install_id'], previous=None))
+    from tests.test_skill_packages import NOW
+    store._write(directory.parent.parent / 'discovery.json',
+                 store._discovery_decision(True, record['artifact_digest'], now=NOW, source='install'))
+    return dict(adapter=f'fixture-lab/{package_id}:observe_dataset',
+                release_digest=record['artifact_digest'], parameters={}), source
+
+
+@pytest.mark.parametrize('fixture,name,unit,lines,expected', [
+    ('metrics', 'flux', 'photons', [dict(frames=[0, 0], values={'flux': [10]}),
+                                  dict(frames=[1, 99], values={'flux': [0]*99})], .1),
+    ('weather', 'temperature', 'C', [dict(frames=[0, 9], values={'temperature': 23})], 23),
+])
+def test_87_both_packages_discovery_status_result_live_without_saved_frames(
+        live, monkeypatch, tmp_path, fixture, name, unit, lines, expected):
+    from tests.test_skill_supervisor import wait_status, wait_until
+    from tests.test_completed_dataset import terminal_analysis
+    analysis, source = install_metrics_fixture(live, fixture)
+    # Both weighted messages deliberately arrive in the same reception second.
+    from tests.test_skill_supervisor import metrics_clock
+    metrics_clock(monkeypatch, [100.1]*len(lines))
+    analysis['parameters'] = dict(lines=lines, lifecycle=True)
+    discovery = store.discovery_text()
+    assert name in discovery and unit in discovery and source['manifest']['package_id'] in discovery
+    loaded = tools.load_skill(live.ctrl, live.guard,
+                              f"fixture-lab/{source['manifest']['package_id']}/workflow")
+    assert loaded['operations'][1]['metrics'] == source['manifest']['operations'][1]['metrics']
+    jobs = []
+    original_job = cd.AcquisitionAnalysisJob
+    def bind(*a, **k):
+        job = original_job(*a, **k)
+        jobs.append(job)
+        wait_status(job.handle)
+        return job
+    monkeypatch.setattr(cd, 'AcquisitionAnalysisJob', bind)
+    release_exit = threading.Event()
+    original_constructor = tools.Acquisition
+    def construct(**kwargs):
+        backend = original_constructor(**kwargs)
+        original_exit = type(backend).__exit__
+        def exit(self, *a):
+            assert release_exit.wait(8), 'clock-driven progress did not arrive'
+            return original_exit(self, *a)
+        monkeypatch.setattr(type(backend), '__exit__', exit)
+        return backend
+    monkeypatch.setattr(tools, 'Acquisition', construct)
+    events = []
+    def sink(event):
+        if 'analysis_metrics' in event:
+            events.append((time.monotonic(), event))
+            if len(events) == 3:
+                release_exit.set()
+    inputs = dict(n_frames=1, interval_s=0, save_dir=str(tmp_path), analysis=analysis)
+    try:
+        result = json.loads(tools.execute_tool('run_timelapse', inputs, live.ctrl, live.guard,
+                                              acquisition_event_sink=sink))
+    finally:
+        release_exit.set()
+    assert 'error' not in result, result
+    assert len(events) == 3
+    assert all(b[0]-a[0] >= 1 for a, b in zip(events, events[1:]))
+    assert all(event['frames_accounted'] == 0 for _, event in events)
+    for _, event in events:
+        metrics = event['analysis_metrics']
+        assert metrics['feed_alive'] and not metrics['lost_frames']
+        assert metrics['values'][name]['value'] == expected
+        assert metrics['values'][name]['unit'] == unit
+        assert metrics['values'][name]['frames'] == [lines[0]['frames'][0], lines[-1]['frames'][1]]
+    record = result['analysis']['jobs'][0]
+    assert name in record['metrics']['latest']
+    durable = terminal_analysis(record['job_id'])
+    status = tools.analysis_job_status(live.ctrl, live.guard, record['job_id'])['analysis']['metrics']
+    assert status == durable['metrics']
+    assert status['history'][-1]['values'][name] == expected
+    assert not status['feed_alive']
+
+
+@pytest.mark.parametrize('route', ['saved', 'acquisition'])
+def test_87_periodic_persistence_is_on_recorder_thread(live, monkeypatch, tmp_path, route):
+    from tests.test_skill_supervisor import wait_status
+    from tests.test_completed_dataset import terminal_analysis
+    analysis, _ = install_metrics_fixture(live, 'weather')
+    gate = tmp_path / 'gate'
+    analysis['parameters'] = dict(lines=[dict(frames=[0, 0], values={'temperature': 20})], gate=str(gate))
+    writes = []
+    recorded = threading.Event()
+    original_write = store._write
+    def write(path, value):
+        if Path(path).parent.name == 'jobs':
+            writes.append((threading.current_thread().name, time.monotonic(), value))
+            assert not threading.current_thread().name.startswith('skill-pipe-')
+        original_write(path, value)
+        if (Path(path).parent.name == 'jobs' and value.get('metrics', {}).get('received')
+                and value['state'] == 'running'):
+            recorded.set()
+    monkeypatch.setattr(store, '_write', write)
+    prepared = cd.prepare_package_analysis(analysis['adapter'], analysis['release_digest'], analysis['parameters'], disclosure=[])
+    if route == 'acquisition':
+        job = cd.AcquisitionAnalysisJob(prepared, tmp_path / 'acquisition')
+        handle = job.handle
+        wait_status(handle)
+        job_id = handle.job_id
+    else:
+        result = cd.run_package_analysis(live.guard, str(tmp_path), analysis['adapter'],
+                                        analysis['release_digest'], analysis['parameters'], str(tmp_path / 'out87'))
+        assert 'error' not in result, result
+        job_id = result['analysis']['job_id']
+    try:
+        assert recorded.wait(8), writes
+        periodic = [(name, t, r) for name, t, r in writes if r.get('metrics', {}).get('received')]
+        assert periodic and all(name.startswith('analysis-record-') for name, _, _ in periodic)
+        assert periodic[0][1] - writes[0][1] >= 4.9
+        assert tools.analysis_job_status(live.ctrl, live.guard, job_id)['analysis']['metrics']['received'] == 1
+    finally:
+        gate.touch()
+    durable = terminal_analysis(job_id)
+    assert durable['metrics']['received'] == 1 and not durable['metrics']['feed_alive']

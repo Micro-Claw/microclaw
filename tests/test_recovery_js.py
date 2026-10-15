@@ -707,7 +707,8 @@ def test_unrelated_abort_restores_prompt_and_is_not_false_success():
 @pytest.mark.parametrize("phase, suffix", [("finalizing", " · finalizing dataset"),
                                            ("acquiring", " · acquiring"),
                                            (None, "")])
-def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suffix):
+@pytest.mark.parametrize("feed", [None, (True, False), (False, True)])
+def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suffix, feed):
     source = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     start = source.index('case "acquisition_progress": {')
     end = source.index('// Confirmations are banner state', start)
@@ -715,9 +716,12 @@ def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suf
     event = {"type": "acquisition_progress", "frames_accounted": 1, "frames_planned": 1}
     if phase is not None:
         event["phase"] = phase
+    if feed:
+        event['analysis_metrics'] = dict(feed_alive=feed[0], lost_frames=feed[1],
+            values={'temperature': dict(value=23, unit='<C>', frames=[0, 9])})
     script = f"""
       const ev = {json.dumps(event)};
-      let pendingProgress = '', renders = 0;
+      let pendingProgress = '', pendingMetricProgress = '', renders = 0;
       function renderPendingText() {{ renders++; }}
       switch (ev.type) {{ {case} }}
       process.stdout.write(JSON.stringify({{text: pendingProgress, renders}}));
@@ -730,6 +734,11 @@ def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suf
     # fires on a slow machine is worse than no timeout.
     result = subprocess.run(["node", "-e", script], stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
+    if feed:
+        suffix += ' · temperature: 23 <C> [0–9]'
+        suffix += ' · metrics live' if feed[0] else ' · metrics ended'
+        if feed[1]:
+            suffix += ' · metrics lost frames'
     assert json.loads(result.stdout) == {"text": "frames 1 / 1" + suffix, "renders": 1}
 
 
