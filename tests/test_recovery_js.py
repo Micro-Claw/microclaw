@@ -371,7 +371,8 @@ def test_pending_text_priority_includes_authoritative_resolution_disclosure():
         "silenceProgress": "Live updates interrupted; checking Microclaw…",
         "progressDefault": "frames 700 / 700",
     }
-    assert html.count('$("pending-text").textContent =') == 1
+    assert html.count('const target = $("pending-text");') == 1
+    assert html.count('target.textContent =') == 1
 
 
 def browser_turn_snippets():
@@ -705,41 +706,53 @@ def test_unrelated_abort_restores_prompt_and_is_not_false_success():
 
 
 @pytest.mark.parametrize("phase, suffix", [("finalizing", " · finalizing dataset"),
-                                           ("acquiring", " · acquiring"),
-                                           (None, "")])
-@pytest.mark.parametrize("feed", [None, (True, False), (False, True)])
+                                           ("acquiring", " · acquiring"), (None, "")])
+@pytest.mark.parametrize("feed", [None, "waiting", "running", "ended"])
 def test_acquisition_progress_renders_phase_and_accepts_partial_event(phase, suffix, feed):
     source = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     start = source.index('case "acquisition_progress": {')
-    end = source.index('// Confirmations are banner state', start)
-    case = source[start:end]
-    event = {"type": "acquisition_progress", "frames_accounted": 1, "frames_planned": 1}
-    if phase is not None:
-        event["phase"] = phase
+    case = source[start:source.index('// Confirmations are banner state', start)]
+    start = source.index('  function renderPendingText() {')
+    render = source[start:source.index('  const confirmationRecovery', start)]
+    event = dict(type='acquisition_progress', frames_accounted=300, frames_planned=1200, phase=phase)
     if feed:
-        event['analysis_metrics'] = dict(feed_alive=feed[0], lost_frames=feed[1],
-            values={'temperature': dict(value=23, unit='<C>', frames=[0, 9])})
+        event['analysis_metrics'] = dict(job_id='job', package_id='photon-observer',
+            feed_alive=feed != 'ended', lost_frames=feed == 'ended', values={} if feed == 'waiting' else {
+                'mean_intensity': dict(value=3276.21875, unit='ADU', frames=[64,106], age_s=.41, description='<b>Sample mean</b>'),
+                'frames_read': dict(value=107, unit='', frames=[106,106], age_s=.41, description='Frames read')})
     script = f"""
-      const ev = {json.dumps(event)};
-      let pendingProgress = '', pendingMetricProgress = '', renders = 0;
-      function renderPendingText() {{ renders++; }}
-      switch (ev.type) {{ {case} }}
-      process.stdout.write(JSON.stringify({{text: pendingProgress, renders}}));
+      function element() {{ return {{_text:'', children:[], style:{{}}, title:'',
+        set textContent(v) {{this._text=v;this.children=[];}},
+        get textContent() {{return this._text+this.children.map(c=>c.textContent).join('\\n');}},
+        set innerHTML(v) {{throw Error('publisher text reached innerHTML');}},
+        appendChild(v) {{this.children.push(v);}} }}; }}
+      const target=element(), document={{createElement:element}}, $=()=>target;
+      const ev={json.dumps(event)};
+      let pendingProgress='', pendingMetricProgress=new Map(), pendingConfirmation=null,
+        pendingResolution=null, streamSilenceDetected=false, pendingDefault='working';
+      {render}
+      switch(ev.type) {{ {case} }}
+      process.stdout.write(JSON.stringify({{frames:pendingProgress, text:target.textContent,
+        titles:target.children.flatMap(b=>b.children.flatMap(l=>l.children.map(c=>c.title)))}}));
     """
-    # 60s, not 5: this is the only node invocation in the suite that carries a
-    # timeout at all, and 5 was short enough that node's own startup exceeded it
-    # on a loaded windows-latest runner -- the job failed with TimeoutExpired
-    # while ubuntu passed the identical commit. The timeout is here to bound a
-    # hang, not to assert a speed, so it should be generous. A timeout that
-    # fires on a slow machine is worse than no timeout.
-    result = subprocess.run(["node", "-e", script], stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
-    if feed:
-        suffix += ' · temperature: 23 <C> [0–9]'
-        suffix += ' · metrics live' if feed[0] else ' · metrics ended'
-        if feed[1]:
-            suffix += ' · metrics lost frames'
-    assert json.loads(result.stdout) == {"text": "frames 1 / 1" + suffix, "renders": 1}
+    result = subprocess.run(['node', '-e', script], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, encoding='utf-8', check=True, timeout=60)
+    value=json.loads(result.stdout)
+    frames='frames 300 / 1,200'+suffix
+    assert value['frames'] == frames
+    assert value['text'].startswith(frames)
+    if feed == 'waiting':
+        assert 'photon-observer (analysis running)' in value['text']
+        assert 'waiting for first values' in value['text']
+    elif feed:
+        assert 'mean intensity' in value['text'] and '3,276 ADU' in value['text']
+        assert 'frames read' in value['text'] and '107 · up to frame 106 · 0.4 s ago' in value['text']
+        assert '<b>Sample mean</b>' in value['titles']
+        assert '<b>' not in value['text']
+        assert ('analysis ended' in value['text']) == (feed == 'ended')
+        assert ('lost frames' in value['text']) == (feed == 'ended')
+    else:
+        assert value['text'] == frames
 
 
 def test_pending_extensions_request_does_not_delay_boot_adoption():

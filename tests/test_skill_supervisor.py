@@ -2170,20 +2170,20 @@ def metric_oracle(lines, declared):
 
 
 @pytest.mark.parametrize('lines', [
-    [dict(frames=[0, 1], values={'flux': [2, 4]}), dict(frames=[0, 0], values={'slow': [7]}),
-     dict(frames=[2, 2], values={'flux': [8]}), dict(frames=[1, 1], values={'slow': [6]})],
-    [dict(frames=[1, 1], values={'flux': [1]})],
-    [dict(frames=[0, 0], values={'flux': [1]}), dict(frames=[2, 2], values={'flux': [2]})],
-    [dict(frames=[0, 1], values={'flux': [1, 2]}), dict(frames=[1, 1], values={'flux': [2]})],
-    [dict(frames=[0, 9], values={'total': 10}), dict(frames=[0, 8], values={'total': 11})],
-    [dict(frames=[0, 9], values={'total': 10}), dict(frames=[0, 10], values={'load': 3}),
-     dict(frames=[0, 10], values={'total': 9})],
-    [dict(frames=[0, 2], values={'load': 10}), dict(frames=[0, 1], values={'load': 9})],
-    [dict(frames=[0, 2], values={'load': 10}), dict(frames=[0, 2], values={'load': 9})],
-    [dict(frames=[0, 0], values={'flux': [True]})],
-    [dict(frames=[0, 2000], values={'load': 1})],
+    [dict(frames=[0, 1], values={'mean_intensity': [2, 4]}), dict(frames=[0, 0], values={'peak_intensity': [7]}),
+     dict(frames=[2, 2], values={'mean_intensity': [8]}), dict(frames=[1, 1], values={'peak_intensity': [6]})],
+    [dict(frames=[1, 1], values={'mean_intensity': [1]})],
+    [dict(frames=[0, 0], values={'mean_intensity': [1]}), dict(frames=[2, 2], values={'mean_intensity': [2]})],
+    [dict(frames=[0, 1], values={'mean_intensity': [1, 2]}), dict(frames=[1, 1], values={'mean_intensity': [2]})],
+    [dict(frames=[0, 9], values={'frames_read': 10}), dict(frames=[0, 8], values={'frames_read': 11})],
+    [dict(frames=[0, 9], values={'frames_read': 10}), dict(frames=[0, 10], values={'frame_bytes': 3}),
+     dict(frames=[0, 10], values={'frames_read': 9})],
+    [dict(frames=[0, 2], values={'frame_bytes': 10}), dict(frames=[0, 1], values={'frame_bytes': 9})],
+    [dict(frames=[0, 2], values={'frame_bytes': 10}), dict(frames=[0, 2], values={'frame_bytes': 9})],
+    [dict(frames=[0, 0], values={'mean_intensity': [True]})],
+    [dict(frames=[0, 2000], values={'frame_bytes': 1})],
     [dict(frames=[0, 0], values={'absent': 2})],
-    [dict(type='result'), dict(frames=[0, 0], values={'load': 2})],
+    [dict(type='result'), dict(frames=[0, 0], values={'frame_bytes': 2})],
 ])
 def test_87_supervisor_matches_oracle(supervisors, tmp_path, lines):
     source = release('metrics')
@@ -2204,7 +2204,7 @@ def test_87_metrics_refused_in_11(supervisors, tmp_path):
     source['intake']['protocol_version'] = '1.1'
     source['intake'] = sign(source['intake'])
     value = finished(metrics_submit(supervisors(), tmp_path, source=source,
-                     lines=[dict(frames=[0, 0], values={'load': 1})]), 'supervisor_failed', 'protocol_violation')
+                     lines=[dict(frames=[0, 0], values={'frame_bytes': 1})]), 'supervisor_failed', 'protocol_violation')
     assert 'metrics' not in value
 
 
@@ -2225,7 +2225,7 @@ def test_87_queue_registered_before_deferred_launch_and_loss(supervisors, tmp_pa
     assert items[-1]['frames'] == [102000, 103999]
     assert all('received_monotonic' in item for item in items)
     assert queued.metrics_snapshot()['lost_frames']  # draining never clears latch
-    unattached = metrics_submit(sup, tmp_path, fixture='weather', lines=[dict(frames=[0, 0], values={'temperature': 9})])
+    unattached = metrics_submit(sup, tmp_path, fixture='weather', lines=[dict(frames=[0, 0], values={'mean_frame_bytes': 9})])
     finished(unattached)
     assert unattached._metrics_queue is None
     with pytest.raises(ValueError):
@@ -2248,15 +2248,18 @@ def metrics_clock(monkeypatch, seconds, *, snapshot_seconds=None):
 
 def test_87_weighted_sparse_history_and_independent_ranges(supervisors, tmp_path, monkeypatch):
     metrics_clock(monkeypatch, [100.1, 100.2, 100.3, 101.1])
-    lines = [dict(frames=[0, 0], values={'flux': [10], 'load': 4}),
-             dict(frames=[1, 99], values={'flux': [0]*99}),
-             dict(frames=[0, 0], values={'slow': [6]}),
-             dict(frames=[1, 1], values={'slow': [2]})]
+    lines = [dict(frames=[0, 0], values={'mean_intensity': [10], 'frame_bytes': 4}),
+             dict(frames=[1, 99], values={'mean_intensity': [0]*99}),
+             dict(frames=[0, 0], values={'peak_intensity': [6]}),
+             dict(frames=[1, 1], values={'peak_intensity': [2]})]
     m = finished(metrics_submit(supervisors(), tmp_path, lines=lines))['metrics']
     assert len(m['history']) == 2
-    assert m['history'][0]['values'] == {'flux': .1, 'load': 4, 'slow': 6}
-    assert m['history'][1]['values'] == {'slow': 2}
-    assert m['latest']['flux']['frames'] == [1, 99]
+    assert m['history'][0]['received'] == 3
+    assert m['history'][1]['received'] == 1
+    assert m['history'][0]['received_last_at'] >= m['history'][0]['received_at']
+    assert m['history'][0]['values'] == {'mean_intensity': .1, 'frame_bytes': 4, 'peak_intensity': 6}
+    assert m['history'][1]['values'] == {'peak_intensity': 2}
+    assert m['latest']['mean_intensity']['frames'] == [1, 99]
     assert all('received_monotonic' not in entry for entry in m['latest'].values())
     assert m['peak_rate'] == 3 and m['received'] == 4
 
@@ -2264,14 +2267,14 @@ def test_87_weighted_sparse_history_and_independent_ranges(supervisors, tmp_path
 def test_87_history_bounded_and_partial_retained(supervisors, tmp_path, monkeypatch):
     metrics_clock(monkeypatch, range(1100))
     m = finished(metrics_submit(supervisors(), tmp_path, fixture='weather',
-        lines=[dict(frames=[i, i], values={'temperature': i}) for i in range(1100)]))['metrics']
+        lines=[dict(frames=[i, i], values={'mean_frame_bytes': i}) for i in range(1100)]))['metrics']
     assert len(m['history']) == 1024
     assert all('second' not in bucket and 'received_at' in bucket for bucket in m['history'])
-    assert m['history'][0]['values'] == {'temperature': 76}
-    assert m['history'][-1]['values'] == {'temperature': 1099}
+    assert m['history'][0]['values'] == {'mean_frame_bytes': 76}
+    assert m['history'][-1]['values'] == {'mean_frame_bytes': 1099}
 
 
-@pytest.mark.parametrize('fixture,name,value', [('metrics', 'flux', [3]), ('weather', 'temperature', 7)])
+@pytest.mark.parametrize('fixture,name,value', [('metrics', 'mean_intensity', [3]), ('weather', 'mean_frame_bytes', 7)])
 def test_87_both_packages_declarations_and_health(supervisors, tmp_path, fixture, name, value):
     h = metrics_submit(supervisors(), tmp_path, fixture=fixture,
                        lines=[dict(frames=[0, 0], values={name: value})], crash=True)
@@ -2365,8 +2368,8 @@ def test_87_existing_stdout_corpus_byte_regression(supervisors, tmp_path, monkey
 
 
 def test_87_immediate_consumer_keeps_first_line(supervisors, tmp_path):
-    lines = [dict(frames=[0, 0], values={'flux': [10]}),
-             dict(frames=[1, 2], values={'flux': [0, 0]})]
+    lines = [dict(frames=[0, 0], values={'mean_intensity': [10]}),
+             dict(frames=[1, 2], values={'mean_intensity': [0, 0]})]
     h = metrics_submit(supervisors(), tmp_path, lines=lines, consumer=True)
     finished(h)
     items = h.drain_metrics()
@@ -2377,28 +2380,28 @@ def test_87_immediate_consumer_keeps_first_line(supervisors, tmp_path):
 def test_87_progress_keeps_sparse_weighted_mean_own_age(supervisors, tmp_path, monkeypatch):
     metrics_clock(monkeypatch, [100.1, 100.2, 101.1], snapshot_seconds=[102.5, 103.5])
     h = metrics_submit(supervisors(), tmp_path, lines=[
-        dict(frames=[0, 0], values={'flux': [10]}),
-        dict(frames=[1, 99], values={'flux': [0]*99}),
-        dict(frames=[0, 0], values={'slow': [6]})])
+        dict(frames=[0, 0], values={'mean_intensity': [10]}),
+        dict(frames=[1, 99], values={'mean_intensity': [0]*99}),
+        dict(frames=[0, 0], values={'peak_intensity': [6]})])
     finished(h)
     displayed = h.metrics_snapshot(for_progress=True)
     assert displayed['history'] == []
-    assert displayed['latest']['flux']['value'] == .1
-    assert displayed['latest']['flux']['frames'] == [0, 99]
-    assert displayed['latest']['flux']['age_s'] == pytest.approx(2.3)
-    assert displayed['latest']['slow']['age_s'] == pytest.approx(1.4)
+    assert displayed['latest']['mean_intensity']['value'] == .1
+    assert displayed['latest']['mean_intensity']['frames'] == [0, 99]
+    assert displayed['latest']['mean_intensity']['age_s'] == pytest.approx(2.3)
+    assert displayed['latest']['peak_intensity']['age_s'] == pytest.approx(1.4)
     assert all('received_monotonic' not in entry for entry in displayed['latest'].values())
-    assert h.metrics_snapshot()['latest']['flux']['received_monotonic'] == 100.2
-    assert h.metrics_snapshot(for_progress=True)['latest']['flux']['age_s'] == pytest.approx(3.3)
-    assert h.record()['metrics']['latest']['flux']['value'] == 0
+    assert h.metrics_snapshot()['latest']['mean_intensity']['received_monotonic'] == 100.2
+    assert h.metrics_snapshot(for_progress=True)['latest']['mean_intensity']['age_s'] == pytest.approx(3.3)
+    assert h.record()['metrics']['latest']['mean_intensity']['value'] == 0
 
 
 def test_87_finite_extreme_values_keep_finite_weighted_mean(supervisors, tmp_path):
     h = metrics_submit(supervisors(), tmp_path,
-        lines=[dict(frames=[0, 1], values={'flux': [1e308, 1e308]})])
+        lines=[dict(frames=[0, 1], values={'mean_intensity': [1e308, 1e308]})])
     m = finished(h)['metrics']
-    assert m['history'][-1]['values']['flux'] == 1e308
-    assert h.metrics_snapshot(for_progress=True)['latest']['flux']['value'] == 1e308
+    assert m['history'][-1]['values']['mean_intensity'] == 1e308
+    assert h.metrics_snapshot(for_progress=True)['latest']['mean_intensity']['value'] == 1e308
 
 
 @pytest.mark.parametrize('operation', ['self_check', 'observe_dataset'])
@@ -2424,7 +2427,7 @@ def test_87_review_first_violation_wins(supervisors, tmp_path, monkeypatch):
     monkeypatch.setattr(s.JobHandle, '_stdout', reader)
     monkeypatch.setattr(p, 'validate_worker_message', earlier)
     value = finished(metrics_submit(supervisors(), tmp_path,
-        lines=[dict(frames=[1, 1], values={'flux': [3]})]), 'supervisor_failed')
+        lines=[dict(frames=[1, 1], values={'mean_intensity': [3]})]), 'supervisor_failed')
     assert value['failure'] == dict(reason='stdin_failed', detail='earlier pipe failure')
 
 
@@ -2453,7 +2456,7 @@ def test_87_review_metrics_follow_incremental_ndtiff(supervisors, tmp_path, fixt
             wait_observation(h, ordinal + 1)
             if ordinal == 0:
                 wait_until(lambda: bool(h.metrics_snapshot()['latest']), h.record)
-        name = 'flux' if fixture == 'metrics' else 'temperature'
+        name = 'mean_intensity' if fixture == 'metrics' else 'mean_frame_bytes'
         wait_until(lambda: h.metrics_snapshot()['latest'].get(name, {}).get('frames', [0, -1])[1] == 5, h.record)
         writer.finish(); writer.close()
         assert h.notify_acquisition('completed', writer='finished')
@@ -2466,7 +2469,7 @@ def test_87_review_metrics_follow_incremental_ndtiff(supervisors, tmp_path, fixt
     items = h.drain_metrics()
     if fixture == 'metrics':
         observed = {}
-        for name in ('flux', 'slow'):
+        for name in ('mean_intensity', 'peak_intensity'):
             ranges = [item['frames'] for item in items if name in item['values']]
             ordinals = [i for first, last in ranges for i in range(first, last + 1)]
             scalars = [v for item in items for v in item['values'].get(name, [])]
@@ -2474,9 +2477,9 @@ def test_87_review_metrics_follow_incremental_ndtiff(supervisors, tmp_path, fixt
             assert scalars == list(range(6))
             observed[name] = ranges
         print(f'87a incremental uint{16 if sixteen else 8} observed ranges: {observed}')
-        assert value['metrics']['latest']['total']['value'] == 6
+        assert value['metrics']['latest']['frames_read']['value'] == 6
     else:
-        assert value['metrics']['latest']['temperature']['value'] == 32*48*(2 if sixteen else 1)
+        assert value['metrics']['latest']['mean_frame_bytes']['value'] == 32*48*(2 if sixteen else 1)
         assert value['release']['publisher'] == 'weather-lab'
 
 
@@ -2493,11 +2496,11 @@ def test_87_review_dataset_flood_is_sustained(supervisors, tmp_path):
         write_frame(writer, 0)
         wait_until(lambda: h.metrics_snapshot()['received'] >= 100, h.record)
         first_count = h.metrics_snapshot()['received']
-        # No further frame or notification is needed to keep the load running.
+        # No further frame or notification is needed to keep the frame_bytes running.
         wait_until(lambda: h.metrics_snapshot()['received'] >= first_count + 100, h.record)
         write_frame(writer, 1, sixteen=True)
         wait_observation(h, 2)
-        wait_until(lambda: h.metrics_snapshot()['latest']['flux']['frames'][1] == 1, h.record)
+        wait_until(lambda: h.metrics_snapshot()['latest']['mean_intensity']['frames'][1] == 1, h.record)
         writer.finish(); writer.close()
         assert h.notify_acquisition('completed', writer='finished')
         value = finished(h)
@@ -2509,7 +2512,7 @@ def test_87_review_dataset_flood_is_sustained(supervisors, tmp_path):
     assert h._metrics_queue is None
     # Protocol history checks prove contiguous coverage from zero through one;
     # this load test does not depend on a consumer keeping up with the flood.
-    for name in ('flux', 'slow'):
+    for name in ('mean_intensity', 'peak_intensity'):
         assert value['metrics']['latest'][name]['frames'][1] == 1
 
 
@@ -2526,6 +2529,53 @@ def test_87_review_dataset_broken_contiguity(supervisors, tmp_path):
             write_frame(writer, ordinal)
         value = finished(h, 'supervisor_failed', 'protocol_violation')
         assert value['failure']['field'] == 'frames'
-        assert value['metrics']['latest']['flux']['frames'] == [0, 0]
+        assert value['metrics']['latest']['mean_intensity']['frames'] == [0, 0]
     finally:
         writer.finish(); writer.close()
+
+
+@pytest.mark.parametrize('flood', [False, True])
+def test_87_512_fixture_keeps_pace_during_200fps_writing(supervisors, tmp_path, flood):
+    """A real worker must read while a 512x512 uint16 NDTiff is being written."""
+    from ndstorage import NDTiffDataset
+    import numpy as np
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, flood=flood, consumer=False)
+    wait_status(h)
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    n = 400
+    pixels = np.arange(512*512, dtype=np.uint16).reshape(512, 512)
+    start = time.perf_counter()
+    try:
+        for i in range(n):
+            # This sleep defines the simulated producer cadence, not worker synchronization.
+            remaining = start + i / 200 - time.perf_counter()
+            if remaining > 0:
+                time.sleep(remaining)
+            writer.put_image({'time': i}, pixels, {})
+            writer._index_file.flush()
+        end = time.perf_counter()
+        live = h.metrics_snapshot()
+        status = h.record()['status'][-1]
+        observed = int(status.split('frames_read=')[1].split(';')[0])
+        assert observed >= n - 50, h.record()
+        assert live['latest']['mean_intensity']['frames'][1] >= n - 100
+        if flood:
+            assert live['received'] >= n
+        print(f"87a 512x512 uint16 flood={flood}: n={n}, write_fps={n/(end-start):.1f}, "
+              f"read_fps_during_writing={observed/(end-start):.1f}, frames_read={observed}, "
+              f"lines_during_writing={live['received']}, line_rate={live['received']/(end-start):.1f}/s")
+        writer.finish(); writer.close()
+        h.notify_acquisition('completed', writer='finished')
+        final = finished(h)
+        assert final['result']['output']['frames_read'] == n
+        assert final['metrics']['latest']['mean_intensity']['frames'][1] == n - 1
+        sample = pixels.reshape(-1)[::256]
+        assert final['metrics']['latest']['mean_intensity']['value'] == float(sample.mean())
+        assert final['metrics']['latest']['peak_intensity']['value'] == int(sample.max())
+    finally:
+        writer.close()
+        if not h.wait(0):
+            h.cancel()

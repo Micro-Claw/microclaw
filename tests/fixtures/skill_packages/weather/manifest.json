@@ -11,7 +11,7 @@
   "assets": [
     {
       "path": "SKILL.md",
-      "sha256": "8671352a1c2f459fa72b0f61daf29b85a38b8b1b17f38d16aa072d569117be98"
+      "sha256": "0409496c78b913fc07b51142dd96cf7343bc8e6087665d2dff1e9a6e743f5f05"
     },
     {
       "path": "telemetry_worker/__init__.py",
@@ -19,7 +19,7 @@
     },
     {
       "path": "telemetry_worker/runner.py",
-      "sha256": "880da1cafdc1a34e57dcc2b84da7dee95172a16e6f46b1ffe596709e2c85125a"
+      "sha256": "a40cb7d23f8d88a0b36a4ab31f5b817548d58c6bc23d9c685774a5f5678a00be"
     }
   ],
   "skills": [
@@ -58,8 +58,8 @@
         "type": "object"
       },
       "metrics": {
-        "temperature": {
-          "description": "Mean bytes read per dataset frame",
+        "mean_frame_bytes": {
+          "description": "Mean pixel bytes per dataset frame read so far",
           "unit": "bytes",
           "kind": "gauge"
         }

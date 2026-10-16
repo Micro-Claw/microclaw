@@ -109,17 +109,14 @@ incrementally, retries partial entries/pixels, reads uncompressed uint8/uint16
 frames, and exits only after writer completion and a final drain. It supports
 both a root index and `Full resolution/NDTiff.index`. Ordinals are index order.
 
-Photon `flux` and `slow` contain each frame's mean pixel value; their normal
-cadences are 0.2 s and 0.6 s respectively, with at most 2,000 values per message
-and a global 0.101 s minimum message interval (including final flushes).
-`total` counts frames through the reported ordinal, and `load` gives the last
-frame's bytes. Thermal's gauge-only `temperature` is a synthetic fixture gauge
-of mean bytes read per frame, with unit `bytes` (no temperature sensor).
-
-Photon `parameters: {"flood": true}` emits one message per per-frame value plus
-unthrottled gauge messages between frames until writer completion, providing
-sustained load for cadence comparisons. `{"broken_contiguity": true}` omits
-ordinal 1 from `flux`; the following range causes a real protocol failure.
+Photon `mean_intensity` (ADU, every 0.2 s) and `peak_intensity` (ADU,
+every 0.6 s) are the mean and maximum of up to 1,024 evenly spaced sampled
+pixels per frame. `frames_read` counts frames; `frame_bytes` gives pixel bytes
+in the last frame. Thermal's gauge-only `mean_frame_bytes` reports mean pixel
+bytes per frame. Both use small read batches with reporting between batches.
+Photon `{"flood": true}` sends each frame immediately and an unthrottled gauge
+stream between frames until writer completion. `{"broken_contiguity": true}`
+omits ordinal 1 from `mean_intensity`, causing a real protocol failure.
 
 Explicit `parameters.lines` enables the separate scripted protocol-test mode,
 including an empty list. In this mode `scripted_flood` is a finite startup burst

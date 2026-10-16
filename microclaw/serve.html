@@ -755,14 +755,8 @@
         else if (ev.phase === "acquiring") pendingProgress += " · acquiring";
         if (ev.analysis_metrics) {
           const feed = ev.analysis_metrics;
-          pendingMetricProgress = "";
-          for (const [name, metric] of Object.entries(feed.values)) {
-            pendingMetricProgress += ` · ${name}: ${metric.value} ${metric.unit} [${metric.frames[0]}–${metric.frames[1]}]`;
-          }
-          pendingMetricProgress += feed.feed_alive ? " · metrics live" : " · metrics ended";
-          if (feed.lost_frames) pendingMetricProgress += " · metrics lost frames";
+          pendingMetricProgress.set(feed.job_id, feed);
         }
-        pendingProgress += pendingMetricProgress;
         renderPendingText();
         break;
       }
@@ -779,7 +773,7 @@
   let pendingConfirmation = null;
   let pendingResolution = null;
   let pendingProgress = null;
-  let pendingMetricProgress = "";
+  let pendingMetricProgress = new Map();
   let pendingDefault = "MicroClaw is working…";
   let streamSilenceDetected = false;
   let activeTurnAbort = null;
@@ -788,10 +782,37 @@
   let diagnosticTurnId = null;
 
   function renderPendingText() {
-    $("pending-text").textContent = pendingConfirmation ||
-      pendingResolution ||
-      (streamSilenceDetected ? "Live updates interrupted; checking Microclaw…" : null) ||
-      pendingProgress || pendingDefault;
+    const target = $("pending-text");
+    const override = pendingConfirmation || pendingResolution ||
+      (streamSilenceDetected ? "Live updates interrupted; checking Microclaw…" : null);
+    target.textContent = override || pendingProgress || pendingDefault;
+    if (override) return;
+    for (const feed of pendingMetricProgress.values()) {
+      const block = document.createElement("div");
+      block.textContent = `${feed.package_id} (analysis ${feed.feed_alive ? "running" : "ended"})` +
+        (feed.lost_frames ? " · lost frames" : "") + ":";
+      if (!Object.keys(feed.values).length) {
+        const waiting = document.createElement("div");
+        waiting.textContent = "waiting for first values";
+        waiting.style.paddingLeft = "1em";
+        block.appendChild(waiting);
+      }
+      for (const [name, metric] of Object.entries(feed.values)) {
+        const line = document.createElement("div");
+        line.style.paddingLeft = "1em";
+        const label = document.createElement("span");
+        label.textContent = name.replaceAll("_", " ");
+        label.title = metric.description;
+        line.appendChild(label);
+        const detail = document.createElement("span");
+        detail.textContent = ` ${Number(metric.value).toLocaleString(undefined, {maximumSignificantDigits: 4})}` +
+          (metric.unit ? ` ${metric.unit}` : "") +
+          ` · up to frame ${Number(metric.frames[1]).toLocaleString()} · ${Number(metric.age_s).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})} s ago`;
+        line.appendChild(detail);
+        block.appendChild(line);
+      }
+      target.appendChild(block);
+    }
   }
 
   const confirmationRecovery = Recovery.create({
@@ -931,7 +952,7 @@
     lastAppliedSeq = null;
     pendingResolution = null;
     pendingProgress = null;
-    pendingMetricProgress = "";
+    pendingMetricProgress.clear();
     pendingDefault = "MicroClaw is working…";
     renderPendingText();
     const turnAbort = new AbortController();

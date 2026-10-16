@@ -593,9 +593,9 @@ def install_metrics_fixture(live, fixture):
 
 
 @pytest.mark.parametrize('fixture,name,unit,lines,expected', [
-    ('metrics', 'flux', 'photons', [dict(frames=[0, 0], values={'flux': [10]}),
-                                  dict(frames=[1, 99], values={'flux': [0]*99})], .1),
-    ('weather', 'temperature', 'bytes', [dict(frames=[0, 9], values={'temperature': 23})], 23),
+    ('metrics', 'mean_intensity', 'ADU', [dict(frames=[0, 0], values={'mean_intensity': [10]}),
+                                  dict(frames=[1, 99], values={'mean_intensity': [0]*99})], .1),
+    ('weather', 'mean_frame_bytes', 'bytes', [dict(frames=[0, 9], values={'mean_frame_bytes': 23})], 23),
 ])
 def test_87_both_packages_discovery_status_result_live_without_saved_frames(
         live, monkeypatch, tmp_path, fixture, name, unit, lines, expected):
@@ -652,6 +652,8 @@ def test_87_both_packages_discovery_status_result_live_without_saved_frames(
         metrics = event['analysis_metrics']
         assert metrics['feed_alive'] and not metrics['lost_frames']
         assert metrics['values'][name]['value'] == expected
+        assert metrics['package_id'] == source['manifest']['package_id']
+        assert metrics['values'][name]['description'] == source['manifest']['operations'][1]['metrics'][name]['description']
         assert metrics['values'][name]['unit'] == unit
         assert 'received_monotonic' not in metrics['values'][name]
         assert metrics['values'][name]['age_s'] == pytest.approx(expected_age)
@@ -672,7 +674,7 @@ def test_87_periodic_persistence_is_on_recorder_thread(live, monkeypatch, tmp_pa
     from tests.test_completed_dataset import terminal_analysis
     analysis, _ = install_metrics_fixture(live, 'weather')
     gate = tmp_path / 'gate'
-    analysis['parameters'] = dict(lines=[dict(frames=[0, 0], values={'temperature': 20})], gate=str(gate))
+    analysis['parameters'] = dict(lines=[dict(frames=[0, 0], values={'mean_frame_bytes': 20})], gate=str(gate))
     writes = []
     recorded = threading.Event()
     original_write = store._write

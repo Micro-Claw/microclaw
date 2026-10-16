@@ -11,7 +11,7 @@
   "assets": [
     {
       "path": "SKILL.md",
-      "sha256": "b30d3e2296d08a4afa03fcfa560a38b11480fe0145deff497ee2b9c1daf23096"
+      "sha256": "5baff5d0a1fd8b642b291af6a03c2d56fc5832b1fbb1353d7cfc3995bda8b1e9"
     },
     {
       "path": "telemetry_worker/__init__.py",
@@ -19,7 +19,7 @@
     },
     {
       "path": "telemetry_worker/runner.py",
-      "sha256": "76c4053aecac20234754e5222174b23f57496e6f19c1617f5ef09dd449e00720"
+      "sha256": "16adc21a3ce1dbbd932b50461bb1c25edefb290e6636b64839df95142636902a"
     }
   ],
   "skills": [
@@ -58,23 +58,23 @@
         "type": "object"
       },
       "metrics": {
-        "flux": {
-          "description": "Photon flux",
-          "unit": "photons",
+        "mean_intensity": {
+          "description": "Mean pixel value of each frame, from up to 1,024 evenly spaced sampled pixels",
+          "unit": "ADU",
           "kind": "per_frame"
         },
-        "slow": {
-          "description": "Delayed intensity",
-          "unit": "counts",
+        "peak_intensity": {
+          "description": "Maximum pixel value of each frame, from the same up to 1,024 sampled pixels",
+          "unit": "ADU",
           "kind": "per_frame"
         },
-        "total": {
-          "description": "Accumulated objects",
-          "unit": "",
+        "frames_read": {
+          "description": "Number of dataset frames read so far",
+          "unit": "frames",
           "kind": "counter"
         },
-        "load": {
-          "description": "Bytes read in the most recent frame",
+        "frame_bytes": {
+          "description": "Pixel bytes in the most recently read frame",
           "unit": "bytes",
           "kind": "gauge"
         }

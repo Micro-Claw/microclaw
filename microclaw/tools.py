@@ -5024,16 +5024,18 @@ def _acquire_with_hooks(
                         # At most 32 entries; per-frame values are weighted
                         # bucket means, with their contributing ranges.
                         values = {}
-                        for metric, latest in metrics["latest"].items():
-                            declaration = metrics["declared"][metric]
-                            values[metric] = dict(latest, unit=declaration["unit"])
+                        for metric, declaration in metrics["declared"].items():
+                            if metric in metrics["latest"]:
+                                values[metric] = dict(metrics["latest"][metric], unit=declaration["unit"],
+                                    description=declaration["description"])
                         with frame_lock:
                             count, phase = frame_state["count"], progress_state["phase"]
                         _emit_acquisition_diagnostic({
                             "type": "acquisition_progress", "phase": phase,
                             "dataset_path": dataset_path, "frames_accounted": count,
                             "frames_planned": plan.frames if plan is not None else None,
-                            "analysis_metrics": dict(job_id=handle.job_id, values=values,
+                            "analysis_metrics": dict(job_id=handle.job_id,
+                                package_id=analysis_job.metadata["package"].split("/", 1)[-1], values=values,
                                 feed_alive=metrics["feed_alive"], lost_frames=metrics["lost_frames"]),
                         })
             # pycro-manager 1.0.2 abort() stores the fatal exception here.

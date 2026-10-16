@@ -12,7 +12,7 @@ from collections import deque
 
 PER_FRAME = ()
 INTERVALS = {}
-GAUGE = 'temperature'
+GAUGE = 'mean_frame_bytes'
 
 # Same native index layout as ndstorage.ndtiff_index.NDTiffIndexEntry.
 def index_path(dataset):
@@ -80,10 +80,16 @@ class Observer:
                     break
                 if len(pixels) != size:
                     break  # Retry this ordinal once its pixels are complete.
-                value = (sum(pixels) if pixel_type == 0 else
-                         sum(v[0] for v in struct.iter_unpack('<H', pixels))) / (width * height)
-                for values in self.pending.values():
-                    values.append(value)
+                # At most 1,024 evenly spaced pixels, independent of image size.
+                # memoryview slicing selects before converting/summing in Python.
+                view = memoryview(pixels).cast('B' if pixel_type == 0 else 'H')
+                step = max(1, (len(view) + 1023) // 1024)
+                sample = view[::step].tolist()
+                if pixel_type == 1 and sys.byteorder != 'little':
+                    sample = [((v & 255) << 8) | (v >> 8) for v in sample]
+                value = sum(sample) / len(sample)
+                for metric, values in self.pending.items():
+                    values.append(max(sample) if metric == 'peak_intensity' else value)
                 self.offset = end
                 self.output['frames_read'] += 1
                 self.output['bytes_read'] += size
@@ -91,7 +97,9 @@ class Observer:
                 self.output['last_mean'] = value
                 self.gauge_dirty = True
                 read += 1
-                if read == 2000:
+                if self.parameters.get('flood'):
+                    self.report()  # Each frame reaches stdout before reading the next.
+                if read == 50:
                     break
         status = f"frames_read={self.output['frames_read']}; index_offset={self.offset}; index_size={path.stat().st_size}"
         if status != self.last_status:
@@ -102,6 +110,14 @@ class Observer:
     def report(self, *, final=False):
         now = time.perf_counter()
         flooding = self.parameters.get('flood', False)
+        if flooding and any(self.pending.values()):
+            first = self.next_ordinal['mean_intensity']
+            payload = {name: [self.pending[name].popleft()] for name in PER_FRAME}
+            for name in PER_FRAME:
+                self.next_ordinal[name] += 1
+            payload.update(frames_read=first + 1, frame_bytes=self.output['last_frame_bytes'])
+            self.emit('metrics', frames=[first, first], values=payload)
+            return
         if not flooding and now < self.next_wire:
             return
         for name in PER_FRAME:
@@ -110,7 +126,7 @@ class Observer:
                 continue
             first = self.next_ordinal[name]
             # Deliberately omit ordinal 1 only in the explicit broken variant.
-            if name == 'flux' and self.parameters.get('broken_contiguity') and not self.broken and first <= 1 < first + len(values):
+            if name == 'mean_intensity' and self.parameters.get('broken_contiguity') and not self.broken and first <= 1 < first + len(values):
                 if first == 0:
                     count = 1
                 else:
@@ -125,15 +141,16 @@ class Observer:
                 count = min(len(values), 1 if flooding else 2000)
             batch = [values.popleft() for _ in range(count)]
             payload = {name: batch}
-            if name == 'flux':
-                payload['total'] = first + count
+            if name == 'mean_intensity':
+                payload['frames_read'] = first + count
                 if not flooding and first + count == self.output['frames_read']:
-                    payload['load'] = self.output['last_frame_bytes']
+                    payload['frame_bytes'] = self.output['last_frame_bytes']
             self.emit('metrics', frames=[first, first + count - 1], values=payload)
             self.next_ordinal[name] += count
             self.next_report[name] = now + INTERVALS[name]
             self.next_wire = now + 0.101
-            return
+            if not flooding:
+                return
         if not PER_FRAME and self.gauge_dirty and (final or now >= self.next_gauge):
             last = self.output['frames_read'] - 1
             self.emit('metrics', frames=[last, last], values={GAUGE: self.output['bytes_read'] / self.output['frames_read']})
@@ -141,9 +158,9 @@ class Observer:
             self.next_gauge = now + 0.2
             self.next_wire = now + 0.101
         elif flooding and not final and self.output['frames_read']:
-            # Sustained load, including between frames, until writer completion.
+            # Sustained gauge load between frames, until writer completion.
             last = self.output['frames_read'] - 1
-            self.emit('metrics', frames=[last, last], values={'load': self.output['last_frame_bytes']})
+            self.emit('metrics', frames=[last, last], values={'frame_bytes': self.output['last_frame_bytes']})
 
 
 def main():
@@ -167,7 +184,7 @@ def main():
             else:
                 emit('metrics', **item)
         for i in range(p.get('scripted_flood', 0)):
-            emit('metrics', frames=[i*2000, i*2000+1999], values={'flux': [i % 7]*2000})
+            emit('metrics', frames=[i*2000, i*2000+1999], values={'mean_intensity': [i % 7]*2000})
         emit('status', message='ready')
         while p.get('gate') and not Path(p['gate']).exists():
             time.sleep(0.001)
@@ -189,9 +206,10 @@ def main():
     observer = Observer(job['input']['dataset'], emit, p)
     emit('status', message='ready')
     final = False
+    read = False
     while True:
         try:
-            message = inbox.get(timeout=0 if p.get('flood') and observer.output['frames_read'] else 0.02)
+            message = inbox.get(timeout=0 if read or (p.get('flood') and observer.output['frames_read']) else 0.005)
         except queue.Empty:
             message = {}
         if message is None or message.get('type') == 'cancel':

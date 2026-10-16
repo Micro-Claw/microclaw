@@ -408,9 +408,11 @@ class JobHandle:
         if self._metrics_bucket is None or self._metrics_bucket["second"] != second:
             if self._metrics_bucket is not None:
                 self._metrics_history.append(self._history_snapshot(include_history=False)[-1])
-            self._metrics_bucket = dict(second=second, received_at=utc, values={}, frames={})
+            self._metrics_bucket = dict(second=second, received_at=utc, received_last_at=utc, received=0, values={}, frames={})
             self._metrics_sums = {}
         bucket = self._metrics_bucket
+        bucket["received"] += 1
+        bucket["received_last_at"] = utc
         for name, value in message["values"].items():
             per_frame = metrics["declared"][name]["kind"] == "per_frame"
             metrics["latest"][name] = dict(value=value[-1] if per_frame else value,
