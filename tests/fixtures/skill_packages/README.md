@@ -101,3 +101,31 @@ values, copy matching compatibility fields to executable-intake.json, and sign
 with build_release.sign (publisher-a's committed TEST-ONLY seed). Operations and
 asset hashes live in the manifest, not the external intake's signed projection.
 Archives and wheels remain deterministic through build_release.py.
+
+`metrics/` (`fixture-lab/photon-observer`, publisher-a) and `weather/`
+(`weather-lab/thermal-observer`, publisher-b) are protocol 1.2 stdlib workers.
+Their default `observe_dataset` operation follows the growing NDTiff index
+incrementally, retries partial entries/pixels, reads uncompressed uint8/uint16
+frames, and exits only after writer completion and a final drain. It supports
+both a root index and `Full resolution/NDTiff.index`. Ordinals are index order.
+
+Photon `mean_intensity` (ADU, every 0.2 s) and `peak_intensity` (ADU,
+every 0.6 s) are the mean and maximum of up to 1,024 evenly spaced sampled
+pixels per frame. `frames_read` counts frames; `frame_bytes` gives pixel bytes
+in the last frame. Thermal's gauge-only `mean_frame_bytes` reports mean pixel
+bytes per frame. Both use small read batches with reporting between batches.
+Photon `{"flood": true}` sends each frame immediately and an unthrottled gauge
+stream between frames until writer completion. `{"broken_contiguity": true}`
+omits ordinal 1 from `mean_intensity`, causing a real protocol failure.
+
+Explicit `parameters.lines` enables the separate scripted protocol-test mode,
+including an empty list. In this mode `scripted_flood` is a finite startup burst
+of that many synthetic 2,000-frame messages; `gate` holds at `ready` until its
+file exists, and `lifecycle` waits for completion. These controls are for protocol
+tests, not the acquisition demo gate.
+
+Build photon archives with `build_release(fixture_dir, artifact_path)`, and
+thermal archives with `build_release(..., signing_key="publisher-b")`. Admit both
+using `trust/telemetry-policy-TEST-ONLY.json`, signed by the existing TEST-ONLY
+root: publisher-a belongs to fixture-lab and publisher-b to weather-lab. The
+original policy and protocol 1.1 executable/conformance fixtures are unchanged.

@@ -14,7 +14,7 @@ import pytest
 from microclaw import skill_packages as p
 from microclaw import skill_supervisor as s
 from microclaw.tools import _recorded_outcome
-from tests.test_skill_packages import FIXTURES, NOW, intake, policy, record, refuses, sign
+from tests.test_skill_packages import FIXTURES, NOW, intake, policy, record, refuses, sign, trust_file
 
 
 def release(kind="conformance"):
@@ -26,7 +26,7 @@ def release(kind="conformance"):
     for key in doc.keys() & m.keys():
         doc[key] = deepcopy(m[key])
     doc["skills"] = [{k: skill[k] for k in ("name", "description")} for skill in m["skills"]]
-    return dict(manifest=m, intake=sign(doc), release_dir=root)
+    return dict(manifest=m, intake=sign(doc, "publisher-b" if m["publisher"] == "weather-lab" else "publisher-a"), release_dir=root)
 
 
 def assert_record(value):
@@ -405,7 +405,7 @@ def test_late_writer_completion_and_queued_order(supervisors, tmp_path):
     messages = [json.loads(x) for x in value["status"][1:]]
     assert [x["type"] for x in messages] == ["acquisition", "writer"]
     assert [x["state"] for x in value["notifications"]] == ["refused", "delivered", "delivered", "refused"]
-    assert "frames" not in json.dumps(value)
+    assert "frames" not in json.dumps({k: v for k, v in value.items() if k != "metrics"})
 
 
 def test_lifecycle_refusals_and_bounded_pending(supervisors, tmp_path):
@@ -2115,3 +2115,468 @@ def test_86a_headless_display_retries_permission_error(monkeypatch, tmp_path):
         writer.finish(); writer.close()
         os.close(write_fd)
         stream.close()
+
+
+def metrics_policy():
+    return policy(trust_file('telemetry-policy'))
+
+
+def metrics_submit(sup, tmp_path, *, fixture='metrics', lines=(), consumer=False, source=None, **params):
+    if 'flood' in params:
+        params['scripted_flood'] = params.pop('flood')
+    return sup.submit(source or release(fixture), metrics_policy(), now=NOW, python=sys.executable,
+                      operation='observe_dataset', parameters=dict(lines=list(lines), **params),
+                      dataset=tmp_path, output_dir=tmp_path, metrics_consumer=consumer)
+
+
+def metric_oracle(lines, declared):
+    """Publisher §9 oracle, adapted to independent metrics starting at zero."""
+    previous = {}
+    terminal = False
+    for message in lines:
+        if terminal:
+            return False
+        if message.get('type') == 'result':
+            terminal = True
+            continue
+        if set(message) != {'frames', 'values'}:
+            return False
+        frames, values = message['frames'], message['values']
+        if (not isinstance(frames, list) or len(frames) != 2
+                or any(type(f) is not int or f < 0 for f in frames)
+                or not 1 <= frames[1]-frames[0]+1 <= 2000 or not isinstance(values, dict) or not values):
+            return False
+        first, last = frames
+        for name, value in values.items():
+            if name not in declared:
+                return False
+            kind = declared[name]['kind']
+            prior = previous.get(name)
+            if prior and last < prior[0]:
+                return False
+            if kind == 'per_frame':
+                if first != (prior[0]+1 if prior else 0) or not isinstance(value, list) or len(value) != last-first+1:
+                    return False
+                numbers = value
+            else:
+                numbers = [value]
+                if kind == 'counter' and prior and value < prior[1]:
+                    return False
+            import math
+            if any(type(v) not in (int, float) or not math.isfinite(v) for v in numbers):
+                return False
+            previous[name] = last, value
+    return True
+
+
+@pytest.mark.parametrize('lines', [
+    [dict(frames=[0, 1], values={'mean_intensity': [2, 4]}), dict(frames=[0, 0], values={'peak_intensity': [7]}),
+     dict(frames=[2, 2], values={'mean_intensity': [8]}), dict(frames=[1, 1], values={'peak_intensity': [6]})],
+    [dict(frames=[1, 1], values={'mean_intensity': [1]})],
+    [dict(frames=[0, 0], values={'mean_intensity': [1]}), dict(frames=[2, 2], values={'mean_intensity': [2]})],
+    [dict(frames=[0, 1], values={'mean_intensity': [1, 2]}), dict(frames=[1, 1], values={'mean_intensity': [2]})],
+    [dict(frames=[0, 9], values={'frames_read': 10}), dict(frames=[0, 8], values={'frames_read': 11})],
+    [dict(frames=[0, 9], values={'frames_read': 10}), dict(frames=[0, 10], values={'frame_bytes': 3}),
+     dict(frames=[0, 10], values={'frames_read': 9})],
+    [dict(frames=[0, 2], values={'frame_bytes': 10}), dict(frames=[0, 1], values={'frame_bytes': 9})],
+    [dict(frames=[0, 2], values={'frame_bytes': 10}), dict(frames=[0, 2], values={'frame_bytes': 9})],
+    [dict(frames=[0, 0], values={'mean_intensity': [True]})],
+    [dict(frames=[0, 2000], values={'frame_bytes': 1})],
+    [dict(frames=[0, 0], values={'absent': 2})],
+    [dict(type='result'), dict(frames=[0, 0], values={'frame_bytes': 2})],
+])
+def test_87_supervisor_matches_oracle(supervisors, tmp_path, lines):
+    source = release('metrics')
+    declared = source['manifest']['operations'][1]['metrics']
+    expected = metric_oracle(lines, declared)
+    handle = metrics_submit(supervisors(), tmp_path, source=source, lines=lines)
+    value = finished(handle, 'succeeded' if expected else 'supervisor_failed')
+    if not expected:
+        assert value['failure']['reason'] in ('protocol_violation', 'message_after_terminal')
+    assert value['metrics']['feed_alive'] is False
+
+
+def test_87_metrics_refused_in_11(supervisors, tmp_path):
+    # Same actual metrics-emitting worker, declared as 1.1 without metrics.
+    source = release('metrics')
+    source['manifest']['protocol_version'] = '1.1'
+    del source['manifest']['operations'][1]['metrics']
+    source['intake']['protocol_version'] = '1.1'
+    source['intake'] = sign(source['intake'])
+    value = finished(metrics_submit(supervisors(), tmp_path, source=source,
+                     lines=[dict(frames=[0, 0], values={'frame_bytes': 1})]), 'supervisor_failed', 'protocol_violation')
+    assert 'metrics' not in value
+
+
+def test_87_queue_registered_before_deferred_launch_and_loss(supervisors, tmp_path):
+    sup = supervisors(max_workers=1)
+    gate = tmp_path / 'release'
+    blocker = metrics_submit(sup, tmp_path, fixture='weather', gate=str(gate))
+    wait_status(blocker)
+    queued = metrics_submit(sup, tmp_path, flood=52, consumer=True)
+    assert queued.record()['state'] == 'queued'
+    assert queued._metrics_queue is not None
+    gate.touch()
+    finished(blocker)
+    value = finished(queued)['metrics']
+    assert value['received'] == 52 and value['lost_frames']
+    items = queued.drain_metrics()
+    assert len(items) == 50 and items[0]['frames'] == [4000, 5999]
+    assert items[-1]['frames'] == [102000, 103999]
+    assert all('received_monotonic' in item for item in items)
+    assert queued.metrics_snapshot()['lost_frames']  # draining never clears latch
+    unattached = metrics_submit(sup, tmp_path, fixture='weather', lines=[dict(frames=[0, 0], values={'mean_frame_bytes': 9})])
+    finished(unattached)
+    assert unattached._metrics_queue is None
+    with pytest.raises(ValueError):
+        unattached.drain_metrics()
+
+
+def metrics_clock(monkeypatch, seconds, *, snapshot_seconds=None):
+    from types import SimpleNamespace
+    actual = time.perf_counter
+    clock = iter(seconds)
+    snapshots = iter(snapshot_seconds) if snapshot_seconds is not None else None
+    def read():
+        if sys._getframe(1).f_code.co_name == '_receive_metrics':
+            return next(clock)
+        if snapshots is not None and sys._getframe(1).f_code.co_name == 'metrics_snapshot':
+            return next(snapshots)
+        return actual()
+    monkeypatch.setattr(s, 'time', SimpleNamespace(perf_counter=read, sleep=time.sleep))
+
+
+def test_87_weighted_sparse_history_and_independent_ranges(supervisors, tmp_path, monkeypatch):
+    metrics_clock(monkeypatch, [100.1, 100.2, 100.3, 101.1])
+    lines = [dict(frames=[0, 0], values={'mean_intensity': [10], 'frame_bytes': 4}),
+             dict(frames=[1, 99], values={'mean_intensity': [0]*99}),
+             dict(frames=[0, 0], values={'peak_intensity': [6]}),
+             dict(frames=[1, 1], values={'peak_intensity': [2]})]
+    m = finished(metrics_submit(supervisors(), tmp_path, lines=lines))['metrics']
+    assert len(m['history']) == 2
+    assert m['history'][0]['received'] == 3
+    assert m['history'][1]['received'] == 1
+    assert m['history'][0]['received_last_at'] >= m['history'][0]['received_at']
+    assert m['history'][0]['values'] == {'mean_intensity': .1, 'frame_bytes': 4, 'peak_intensity': 6}
+    assert m['history'][1]['values'] == {'peak_intensity': 2}
+    assert m['latest']['mean_intensity']['frames'] == [1, 99]
+    assert all('received_monotonic' not in entry for entry in m['latest'].values())
+    assert m['peak_rate'] == 3 and m['received'] == 4
+
+
+def test_87_history_bounded_and_partial_retained(supervisors, tmp_path, monkeypatch):
+    metrics_clock(monkeypatch, range(1100))
+    m = finished(metrics_submit(supervisors(), tmp_path, fixture='weather',
+        lines=[dict(frames=[i, i], values={'mean_frame_bytes': i}) for i in range(1100)]))['metrics']
+    assert len(m['history']) == 1024
+    assert all('second' not in bucket and 'received_at' in bucket for bucket in m['history'])
+    assert m['history'][0]['values'] == {'mean_frame_bytes': 76}
+    assert m['history'][-1]['values'] == {'mean_frame_bytes': 1099}
+
+
+@pytest.mark.parametrize('fixture,name,value', [('metrics', 'mean_intensity', [3]), ('weather', 'mean_frame_bytes', 7)])
+def test_87_both_packages_declarations_and_health(supervisors, tmp_path, fixture, name, value):
+    h = metrics_submit(supervisors(), tmp_path, fixture=fixture,
+                       lines=[dict(frames=[0, 0], values={name: value})], crash=True)
+    m = finished(h, 'supervisor_failed')['metrics']
+    assert name in m['declared'] and name in m['latest']
+    assert name in m['history'][-1]['values']
+    assert not m['feed_alive']
+
+
+def test_87_flood_every_line_bounded_no_disk_on_reader(supervisors, tmp_path, monkeypatch):
+    import platform
+    n = 2000
+    reader_cost = []
+    original_stdout = s.JobHandle._stdout
+    def stdout(self, pipe):
+        start = time.thread_time()
+        try:
+            return original_stdout(self, pipe)
+        finally:
+            reader_cost.append(time.thread_time()-start)
+    monkeypatch.setattr(s.JobHandle, '_stdout', stdout)
+    costs = []
+    original = p.validate_worker_message
+    def measured(*args, **kwargs):
+        start = time.thread_time()
+        try:
+            return original(*args, **kwargs)
+        finally:
+            costs.append(time.thread_time()-start)
+    monkeypatch.setattr(p, 'validate_worker_message', measured)
+    original_receive = s.JobHandle._receive_metrics
+    receive_costs = []
+    def receive(self, message):
+        start = time.thread_time()
+        try:
+            return original_receive(self, message)
+        finally:
+            receive_costs.append(time.thread_time()-start)
+    monkeypatch.setattr(s.JobHandle, '_receive_metrics', receive)
+    from microclaw import skill_store
+    def forbidden(*a, **k):
+        pytest.fail('supervisor must never persist a record')
+    monkeypatch.setattr(skill_store, '_write', forbidden)
+    tracemalloc.start()
+    h = metrics_submit(supervisors(), tmp_path, flood=n)
+    assert h.wait(60), h.record()
+    m = finished(h)['metrics']
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert m['received'] == n and len(costs) == n+2 and len(receive_costs) == n
+    assert h._metrics_queue is None and len(m['history']) <= 1024
+    assert peak < 20_000_000
+    print(f'87a reader validation+aggregation: n={n}, {platform.platform()} {platform.machine()}, '
+          f'{sum(reader_cost)/n*1e6:.1f} us/line full reader; '
+          f'{(sum(costs)+sum(receive_costs))/n*1e6:.1f} us/line validation+aggregation (thread CPU, tracemalloc enabled); peak={peak}')
+
+
+@pytest.mark.parametrize('version', ['1.0', '1.1'])
+@pytest.mark.parametrize('behaviour', ['success', 'split', 'boundary', 'wrong_protocol',
+                                      'wrong_job', 'unknown_type', 'schema', 'second_terminal'])
+def test_87_existing_stdout_corpus_byte_regression(supervisors, tmp_path, monkeypatch, version, behaviour):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('old_worker_validator', FIXTURES / 'protocol_11_oracle.py')
+    old = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(old)
+    current = p.validate_worker_message
+    compared = []
+    def compare(message, **kwargs):
+        outcomes = []
+        for validator in (old.validate_worker_message, current):
+            try:
+                result = validator(message, job_id=kwargs['job_id'], operation=kwargs['operation'])
+                outcomes.append(p.encode_message(result))
+            except p.PackageRefusal as exc:
+                outcomes.append((exc.field, str(exc)))
+        assert outcomes[0] == outcomes[1]
+        compared.append(outcomes[0])
+        return current(message, **kwargs)
+    monkeypatch.setattr(p, 'validate_worker_message', compare)
+    source = release()
+    source['manifest']['protocol_version'] = version
+    for op in source['manifest']['operations']:
+        op.pop('opens_window', None)
+    source['intake']['protocol_version'] = version
+    source['intake'] = sign(source['intake'])
+    h = submit(supervisors(), tmp_path, behaviour, source=source)
+    assert h.wait(12), h.record()
+    assert compared
+    assert h.record()['state'] != 'refused'
+    assert 'metrics' not in h.record()
+
+
+def test_87_immediate_consumer_keeps_first_line(supervisors, tmp_path):
+    lines = [dict(frames=[0, 0], values={'mean_intensity': [10]}),
+             dict(frames=[1, 2], values={'mean_intensity': [0, 0]})]
+    h = metrics_submit(supervisors(), tmp_path, lines=lines, consumer=True)
+    finished(h)
+    items = h.drain_metrics()
+    assert [{k: item[k] for k in ('frames', 'values')} for item in items] == lines
+    assert not h.metrics_snapshot()['lost_frames']
+
+
+def test_87_progress_keeps_sparse_weighted_mean_own_age(supervisors, tmp_path, monkeypatch):
+    metrics_clock(monkeypatch, [100.1, 100.2, 101.1], snapshot_seconds=[102.5, 103.5])
+    h = metrics_submit(supervisors(), tmp_path, lines=[
+        dict(frames=[0, 0], values={'mean_intensity': [10]}),
+        dict(frames=[1, 99], values={'mean_intensity': [0]*99}),
+        dict(frames=[0, 0], values={'peak_intensity': [6]})])
+    finished(h)
+    displayed = h.metrics_snapshot(for_progress=True)
+    assert displayed['history'] == []
+    assert displayed['latest']['mean_intensity']['value'] == .1
+    assert displayed['latest']['mean_intensity']['frames'] == [0, 99]
+    assert displayed['latest']['mean_intensity']['age_s'] == pytest.approx(2.3)
+    assert displayed['latest']['peak_intensity']['age_s'] == pytest.approx(1.4)
+    assert all('received_monotonic' not in entry for entry in displayed['latest'].values())
+    assert h.metrics_snapshot()['latest']['mean_intensity']['received_monotonic'] == 100.2
+    assert h.metrics_snapshot(for_progress=True)['latest']['mean_intensity']['age_s'] == pytest.approx(3.3)
+    assert h.record()['metrics']['latest']['mean_intensity']['value'] == 0
+
+
+def test_87_finite_extreme_values_keep_finite_weighted_mean(supervisors, tmp_path):
+    h = metrics_submit(supervisors(), tmp_path,
+        lines=[dict(frames=[0, 1], values={'mean_intensity': [1e308, 1e308]})])
+    m = finished(h)['metrics']
+    assert m['history'][-1]['values']['mean_intensity'] == 1e308
+    assert h.metrics_snapshot(for_progress=True)['latest']['mean_intensity']['value'] == 1e308
+
+
+@pytest.mark.parametrize('operation', ['self_check', 'observe_dataset'])
+def test_87_review_legacy_record_shape(supervisors, tmp_path, operation):
+    value = finished(submit(supervisors(), tmp_path, operation=operation))
+    original_keys = ('job_id release operation state priority result failure artifacts rejected_artifacts '
+                     'lifecycle notifications notifications_dropped status status_dropped stderr_tail '
+                     'exit_code duration_breakdown').split()
+    assert json.dumps(sorted(value)) == json.dumps(sorted(original_keys))
+
+
+def test_87_review_first_violation_wins(supervisors, tmp_path, monkeypatch):
+    handles = {}
+    stdout, validate = s.JobHandle._stdout, p.validate_worker_message
+    def reader(self, pipe):
+        handles[self.job_id] = self
+        return stdout(self, pipe)
+    def earlier(message, **kwargs):
+        value = validate(message, **kwargs)
+        if message['type'] == 'metrics':
+            handles[kwargs['job_id']]._fail_protocol('stdin_failed', 'earlier pipe failure')
+        return value
+    monkeypatch.setattr(s.JobHandle, '_stdout', reader)
+    monkeypatch.setattr(p, 'validate_worker_message', earlier)
+    value = finished(metrics_submit(supervisors(), tmp_path,
+        lines=[dict(frames=[1, 1], values={'mean_intensity': [3]})]), 'supervisor_failed')
+    assert value['failure'] == dict(reason='stdin_failed', detail='earlier pipe failure')
+
+
+def growing_metrics(sup, dataset, output, fixture='metrics', *, consumer=True, **parameters):
+    return sup.submit(release(fixture), metrics_policy(), now=NOW, python=sys.executable,
+                      operation='observe_dataset', parameters=parameters,
+                      dataset=dataset, output_dir=output, metrics_consumer=consumer)
+
+
+@pytest.mark.parametrize('fixture', ['metrics', 'weather'])
+@pytest.mark.parametrize('sixteen', [False, True])
+def test_87_review_metrics_follow_incremental_ndtiff(supervisors, tmp_path, fixture, sixteen):
+    from ndstorage import NDTiffDataset
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, fixture)
+    wait_status(h)
+    assert h.metrics_snapshot()['received'] == 0
+    directory = dataset / 'Full resolution'
+    directory.mkdir()
+    writer = NDTiffDataset(str(directory), writable=True)
+    writer.initialize({})
+    try:
+        for ordinal in range(6):
+            write_frame(writer, ordinal, sixteen=sixteen)
+            wait_observation(h, ordinal + 1)
+            if ordinal == 0:
+                wait_until(lambda: bool(h.metrics_snapshot()['latest']), h.record)
+        name = 'mean_intensity' if fixture == 'metrics' else 'mean_frame_bytes'
+        wait_until(lambda: h.metrics_snapshot()['latest'].get(name, {}).get('frames', [0, -1])[1] == 5, h.record)
+        writer.finish(); writer.close()
+        assert h.notify_acquisition('completed', writer='finished')
+        value = finished(h)
+    finally:
+        writer.close()
+        if not h.wait(0):
+            h.cancel()
+    assert value['result']['output']['frames_read'] == 6
+    items = h.drain_metrics()
+    if fixture == 'metrics':
+        observed = {}
+        for name in ('mean_intensity', 'peak_intensity'):
+            ranges = [item['frames'] for item in items if name in item['values']]
+            ordinals = [i for first, last in ranges for i in range(first, last + 1)]
+            scalars = [v for item in items for v in item['values'].get(name, [])]
+            assert ordinals == list(range(6))
+            assert scalars == list(range(6))
+            observed[name] = ranges
+        print(f'87a incremental uint{16 if sixteen else 8} observed ranges: {observed}')
+        assert value['metrics']['latest']['frames_read']['value'] == 6
+    else:
+        assert value['metrics']['latest']['mean_frame_bytes']['value'] == 32*48*(2 if sixteen else 1)
+        assert value['release']['publisher'] == 'weather-lab'
+
+
+def test_87_review_dataset_flood_is_sustained(supervisors, tmp_path):
+    from ndstorage import NDTiffDataset
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, flood=True, consumer=False)
+    wait_status(h)
+    assert h.metrics_snapshot()['received'] == 0
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    try:
+        write_frame(writer, 0)
+        wait_until(lambda: h.metrics_snapshot()['received'] >= 100, h.record)
+        first_count = h.metrics_snapshot()['received']
+        # No further frame or notification is needed to keep the frame_bytes running.
+        wait_until(lambda: h.metrics_snapshot()['received'] >= first_count + 100, h.record)
+        write_frame(writer, 1, sixteen=True)
+        wait_observation(h, 2)
+        wait_until(lambda: h.metrics_snapshot()['latest']['mean_intensity']['frames'][1] == 1, h.record)
+        writer.finish(); writer.close()
+        assert h.notify_acquisition('completed', writer='finished')
+        value = finished(h)
+    finally:
+        writer.close()
+        if not h.wait(0):
+            h.cancel()
+    assert value['metrics']['received'] >= 202
+    assert h._metrics_queue is None
+    # Protocol history checks prove contiguous coverage from zero through one;
+    # this load test does not depend on a consumer keeping up with the flood.
+    for name in ('mean_intensity', 'peak_intensity'):
+        assert value['metrics']['latest'][name]['frames'][1] == 1
+
+
+def test_87_review_dataset_broken_contiguity(supervisors, tmp_path):
+    from ndstorage import NDTiffDataset
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, broken_contiguity=True)
+    wait_status(h)
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    try:
+        for ordinal in range(4):
+            write_frame(writer, ordinal)
+        value = finished(h, 'supervisor_failed', 'protocol_violation')
+        assert value['failure']['field'] == 'frames'
+        assert value['metrics']['latest']['mean_intensity']['frames'] == [0, 0]
+    finally:
+        writer.finish(); writer.close()
+
+
+@pytest.mark.parametrize('flood', [False, True])
+def test_87_512_fixture_keeps_pace_during_200fps_writing(supervisors, tmp_path, flood):
+    """A real worker reads a 512x512 uint16 NDTiff while it grows, and finishes it exactly."""
+    from ndstorage import NDTiffDataset
+    import numpy as np
+    dataset, output = tmp_path / 'dataset', tmp_path / 'out'
+    dataset.mkdir(); output.mkdir()
+    h = growing_metrics(supervisors(), dataset, output, flood=flood, consumer=False)
+    wait_status(h)
+    writer = NDTiffDataset(str(dataset), writable=True)
+    writer.initialize({})
+    n = 400
+    pixels = np.arange(512*512, dtype=np.uint16).reshape(512, 512)
+    start = time.perf_counter()
+    try:
+        for i in range(n):
+            # This sleep defines the simulated producer cadence, not worker synchronization.
+            remaining = start + i / 200 - time.perf_counter()
+            if remaining > 0:
+                time.sleep(remaining)
+            writer.put_image({'time': i}, pixels, {})
+            writer._index_file.flush()
+        end = time.perf_counter()
+        live = h.metrics_snapshot()
+        status = h.record()['status'][-1]
+        observed = int(status.split('frames_read=')[1].split(';')[0])
+        # Live throughput is printed, never asserted: it measures this machine
+        # and a below-normal-priority worker, and windows-latest read 323/400
+        # (flood) where a Mac reads all of them. Keeping pace on real frames
+        # is the demo gate's eligibility check (design/87 87a); this test
+        # asserts only what holds everywhere, below.
+        print(f"87a 512x512 uint16 flood={flood}: n={n}, write_fps={n/(end-start):.1f}, "
+              f"read_fps_during_writing={observed/(end-start):.1f}, frames_read={observed}, "
+              f"lines_during_writing={live['received']}, line_rate={live['received']/(end-start):.1f}/s")
+        writer.finish(); writer.close()
+        h.notify_acquisition('completed', writer='finished')
+        final = finished(h)
+        assert final['result']['output']['frames_read'] == n
+        assert final['metrics']['latest']['mean_intensity']['frames'][1] == n - 1
+        sample = pixels.reshape(-1)[::256]
+        assert final['metrics']['latest']['mean_intensity']['value'] == float(sample.mean())
+        assert final['metrics']['latest']['peak_intensity']['value'] == int(sample.max())
+    finally:
+        writer.close()
+        if not h.wait(0):
+            h.cancel()

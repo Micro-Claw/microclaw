@@ -11724,3 +11724,57 @@ The display test was watched failing on the pre-fix `runner.py` with the
 injected `PermissionError`. Runner turns: one start. The coordinator committed
 the 83f6 fixture regeneration.
 
+## design/87 — block 87a (package metrics channel, protocol 1.2; PR #57)
+
+**The first gate passed every limb but one, and measured nothing that
+mattered.** Its fixture took a pure-Python mean over all 262,144 pixels and
+read every available frame before reporting. On real frames it sent 8–12 lines
+per burst, and every "flood" arrived after teardown. Limbs 7–9 passed anyway,
+because nothing checked that the load existed. The selftest used 32 × 32
+frames and could not see it. Two numbers that did not fit gave it away: exactly
+2,000 lines per flood run, and a peak rate equal to the total. The fix was to
+make the gate prove its own load. A package that fell more than 200 frames
+behind, or a flood not sustained during acquisition, now reports NOT EXERCISED.
+The selftest also runs once at 512 × 512.
+
+**The operator answered YES to a question about names they could not
+identify.** The screenshot showed one metric where the question named three.
+The operator said the whole line was confusing, and that became a product
+decision: a labelled per-package block with the description on hover. Word an
+operator question around what is literally on screen, and check the answer
+against the screenshot.
+
+**A throughput assertion is a statement about the machine.** A unit test
+required the worker to read 350 of 400 frames during 200 fps writing.
+`windows-latest` read 323. It now prints the rate; keeping pace is the gate's
+eligibility check.
+
+**Review caught, before any gate:**
+- playback fixtures that could not drive a gate;
+- one publisher where the proof needed two;
+- full declarations in every turn's prompt;
+- a raw `perf_counter` value in browser events;
+- last-violation-wins;
+- a `metrics` block on every legacy record;
+- a clock read outside the timing seam, found only by the coordinator's full
+  run, because the runner's targeted files did not include
+  `test_timing_attribution.py`.
+
+The coordinator's own gate edits added an allowance of two Windows wall-clock
+steps (2 × 15.6 ms) in the ≥ 1 s spacing check, a session long enough to
+watch, and FAIL rather than NOT EXERCISED when progress reached the sink
+without metrics.
+
+**Evidence:**
+- Every new rule was mutated in turn, and every mutant was caught. The first
+  "mean of means" mutant was equivalent for the test's data and survived until
+  rewritten.
+- Pre-change failures were mostly missing-API `TypeError`s, which show the
+  tests need the feature, not that their assertions bite. That is why the
+  mutation step was needed.
+- Full suite at `862a747`: 5877 passed, 108 skipped.
+- CI at `eeca138`: Ubuntu 5877 passed, Windows 5869 passed.
+- Runner turns: one start, four revisions, the last two driven by gate
+  results. The coordinator made three runbook and gate commits and the
+  throughput-test fix.
+

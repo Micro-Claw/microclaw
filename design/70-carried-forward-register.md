@@ -116,6 +116,7 @@ Rows added since the triage:
 | `R150` | writing `docs/publishing-skill-packages.md`, the first publisher-facing doc, 2026-10-07 |
 | `R151`–`R152` | `design/84` block 84a, package windows, 2026-10-07 |
 | `R153` | `design/85` block 85a's Windows CI run, 2026-10-13 (not 85a's code) |
+| `R154` | `design/87` block 87a's demo gate, scored from artifacts 2026-10-16 |
 
 
 ## The work queue
@@ -174,7 +175,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R136` | [`design/55-gate-probe-selftest.py` is hard-coded to block 55a](#r136) | MEDIUM | SMALL |  |
 | `R137` | [The extras-failure fallback that protects an update has no rig evidence](#r137) | LOW | SMALL |  |
 | `R138` | [An extension recorded but not installed cannot be forgotten from the panel](#r138) | LOW | SMALL |  |
-| `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE |  |
+| `R139` | [A community package's results cannot steer an acquisition](#r139) | LOW | LARGE | → design/89 |
 | `R140` | [Automatic package analysis cannot outlast a session](#r140) | LOW | MEDIUM |  |
 | ~~`R141`~~ | ~~[Package analysis cost during acquisition is unmeasured under a real worker](#r141)~~ | — | — | **CLOSED 2026-09-29 by `design/83` 83e-4** |
 | `R144` | [`duration_breakdown` cannot say where inside an acquisition the time went](#r144) | LOW | SMALL |  |
@@ -216,7 +217,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | ~~`R82`~~ | ~~[Open the community skill package notebook](#r82)~~ | — | — | **CLOSED 2026-09-22 by opening `design/83`** |
 | ~~`R83`~~ | ~~[Generic package/protocol conformance needs a fixture](#r83)~~ | — | — | **CLOSED 2026-09-23 by `design/83` 83a + 83c** |
 | ~~`R84`~~ | ~~[Three export behaviours are unpinned ahead of a runner](#r84)~~ | — | — | **CLOSED 2026-09-28 by `design/83` 83a + 83e-2 + 83e-3** |
-| `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM | disclosed by `design/83` 83e |
+| `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM | disclosed by `design/83` 83e; → design/88 E2 |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
 | ~~`R88`~~ | ~~[The probe_hint payload reached a live model and did not route it](#r88)~~ | — | — | **CLOSED 2026-09-05 by the Nikon's own sessions** |
 | `R89` | [The PFS offset fine-tune is a hand-driven loop with no tool](#r89) | MEDIUM | MEDIUM |  |
@@ -247,6 +248,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R71` | [open_artifact's multi-channel caveat has never been checked on any rig](#r71) | LOW | SMALL |  |
 | `R75` | [Channel preset colliding with a typed actuator - rig coverage](#r75) | LOW | SMALL |  |
 | `R143` | [A spaced timelapse keeps time worse on an idle machine than beside a busy worker](#r143) | LOW | SMALL |  |
+| `R154` | [The metrics reader's cost above ~1,300 lines/s is unmeasured on Windows](#r154) | LOW | SMALL |  |
 
 **M2**
 
@@ -1397,6 +1399,7 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 - **Block** — NONE
 - **Effort** — MEDIUM
 - **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
+- **Owner (2026-10-16)** — [design/88](88-mda-and-micro-manager-plugins.md) E2 closes it (`run_mda` becomes non-blocking and supervised on both routes), and E4 then lets a package watch an MDA.
 
 ## Demo machine
 
@@ -2716,6 +2719,7 @@ visible; do not put one of these on a checklist.
 - **Block** — NONE. **Explicitly out of scope for 81a-2**, which modifies this very path; the runner is told to report a recurrence and not to quiet the fake.
 - **Effort** — SMALL
 - **Provenance** — coordinator's pre-launch baseline runs for `design/81` block 81a-2, 2026-09-09.
+- **Second occurrence** — `design/87` 87a, 2026-10-15, full suite on macOS at `f580a73`, run while a Codex turn was also running tests on the same machine. Same message (`measured 1.0 um after 0.028 s using 2.0 um from floor policy`). It passed 5/5 in isolation, and 87a touches no stage code. Now n=2, still no rate and no cause.
 
 ### R115 — The hook log rewrites the whole file per entry, and 81a-2 made each entry ten times bigger
 
@@ -3104,6 +3108,7 @@ the model" as the actual blast radius.
 - **Importance** — LOW. Nobody needs it before SMAPpy exists as a conforming package (`R85`).
 - **Effort** — LARGE
 - **Provenance** — `design/83` §"What a package can be", 2026-09-24.
+- **Owner (2026-10-16)** — [design/89](89-feedback-during-acquisition.md) (`analysis_feedback`). The channel it reads landed in `design/87` 87a (PR #57).
 
 ### R140 — Automatic package analysis cannot outlast a session
 
@@ -3163,6 +3168,7 @@ the model" as the actual blast radius.
 - **Importance** — LOW
 - **Effort** — SMALL
 - **Provenance** — `design/83` 83e-4's demo gate, scored from artifacts 2026-09-29.
+- **Same direction, burst shape (2026-10-16)** — `design/87` 87a's demo gate, 1000-frame bursts at `interval_s=0`, 10 ms, 512 × 512. The burst with no package was slower in all five scored repetitions, wherever it ran in the rotation. Median imaging span (first to planned-final frame accounted, product diagnostic timestamps) was 11.14 s, against 10.78 s with a reporting worker and 10.72 s with a flooding one. That is about 0.4 ms per frame. Start-up and teardown were equal. The first 87a run, with a near-idle worker, went the same way (15.79 s against 14.77 and 14.70 s). Not attributed; the hypothesis above is still unmeasured.
 
 ### R144 — `duration_breakdown` cannot say where inside an acquisition the time went
 
@@ -3296,3 +3302,16 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM
 - **Effort** — SMALL
 - **Provenance** — `design/85` block 85a's Windows CI run, 2026-10-13.
+
+### R154 — The metrics reader's cost above ~1,300 lines/s is unmeasured on Windows
+
+**`design/87` 87a's flood fixture reached 500–670 lines/s sustained (peak 1,272/s) on the demo machine. The same fixture on a Mac reached about 23,000/s. So the supervisor's stdout reader was measured on Windows only at the rate a below-normal-priority worker there could produce.**
+
+- **What happened** — 87a's demo gate, 2026-10-16. The flood arm did not slow acquisition at that rate (0.963× the no-package median, gap p95 12 ms in every arm). `windows-latest` also read only 323 of 400 frames in a 200 fps flood test, which is why that test now prints its throughput instead of asserting it.
+- **Why it matters** — design/87 M1 change 2 does not enforce a message rate, and says a resource policy beyond the existing line and memory bounds needs its own decision. That decision needs the reader's cost at the rates a fast, normal-priority publisher could send, and those are unmeasured on Windows.
+- **What a fix would look like** — run the 87a gate's flood arm with the worker at normal priority (a gate parameter, not a product change) and report the line rate, the gate process's CPU, and burst cadence against the no-package arm.
+- **Where** — DEMO MACHINE.
+- **Block** — NONE.
+- **Importance** — LOW. No publisher sends near this rate. SMAPpy's specification asks for ≤ 10 messages/s.
+- **Effort** — SMALL
+- **Provenance** — `design/87` 87a's demo gate, scored from artifacts 2026-10-16.

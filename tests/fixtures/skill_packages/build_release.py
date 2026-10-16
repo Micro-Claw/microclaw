@@ -62,7 +62,7 @@ def sign(document, key="publisher-a"):
     return product_sign(document, private)
 
 
-def build_release(fixture_dir, artifact_path, *, version=None, invalid=False):
+def build_release(fixture_dir, artifact_path, *, version=None, invalid=False, signing_key="publisher-a"):
     """Write an archive and return its signed intake; optionally override version."""
     fixture_dir, artifact_path = Path(fixture_dir), Path(artifact_path)
     manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -82,7 +82,7 @@ def build_release(fixture_dir, artifact_path, *, version=None, invalid=False):
                 target.write_bytes((fixture_dir / asset['path']).read_bytes())
             (source / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
             manifest, _ = pack(source, manifest['artifact'], artifact_path)
-    return sign(intake_from_manifest(manifest, hashlib.sha256(artifact_path.read_bytes()).hexdigest()))
+    return sign(intake_from_manifest(manifest, hashlib.sha256(artifact_path.read_bytes()).hexdigest()), signing_key)
 
 
 if __name__ == "__main__":
