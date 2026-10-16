@@ -193,8 +193,14 @@ Start non-blocking: `runAcquisitionWithSettings(…, false)` or
   `_microclaw_acquisition_entry_point`, which already includes `run_mda`).
 
 The dialog route keeps its `authorize_path` exemption (design/33 excluded the
-opaque `mmstudio-mda` path). Whether the typed route earns an
-`acquisition-tool:run_mda` row is decided in 88a. It is no longer opaque.
+opaque `mmstudio-mda` path). **The settings route earns an
+`acquisition-tool:run_mda` row** (operator decision, 2026-10-16), classified
+exactly like the other acquisition tools' rows, so on a rig with an
+authorization profile it runs under the same dose policy as `run_timelapse`.
+Today `mmstudio-mda` is `excluded`, so `run_mda` is refused outright on any
+such rig. The dialog route stays refused there. What remains outside the map
+is Studio's processor pipeline, which sees the settings route's frames too.
+E3 discloses htSMLM's part of that; 88a does not enumerate it.
 
 ### E3 — htSMLM: MicroClaw checks, discloses and records; the operator ticks "Activate"
 
