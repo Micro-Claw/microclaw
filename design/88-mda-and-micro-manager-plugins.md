@@ -1,6 +1,6 @@
 # Driving Micro-Manager's own side — the MDA, htSMLM activation, plugin windows
 
-**Status:** proposal, revised 2026-10-15. No block opened. Owns `R86`.
+**Status:** in flight. 88a opened 2026-10-16. Owns `R86`.
 Siblings: [design/87](87-package-metrics.md) (community-package metrics) and
 [design/89](89-feedback-during-acquisition.md) (MicroClaw acting on them).
 
@@ -439,3 +439,4 @@ goes in that notebook's carried-forward list.
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | — | `2a6f7ee` | drafted 2026-10-14, revised 2026-10-15, not opened |
+| 88a | `block-88a` | `d90e6f6` | opened 2026-10-16; implementation delegated |
