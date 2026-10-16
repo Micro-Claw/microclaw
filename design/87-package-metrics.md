@@ -1,6 +1,6 @@
 # Package metrics — numbers a community package sends while it runs
 
-**Status:** 87a open 2026-10-15 (branch `block-87a`).
+**Status:** 87a demo gate passed 2026-10-16 (second run); PR #57.
 
 **Input:** the SMAPpy publisher's specification,
 [`ries-lab/smappy-microclaw` `docs/microclaw-feedback-spec.md`](https://github.com/ries-lab/smappy-microclaw/blob/claude/hopeful-hypatia-ng4jwr/docs/microclaw-feedback-spec.md)
@@ -179,6 +179,51 @@ catalog's intake pin moves to a commit with 87a, as happened for `1.1`. Moving
 the pin is the operator's step. An older MicroClaw refuses the release at
 `check_release`, which is correct.
 
+## What 87a built and measured (2026-10-16)
+
+As decided in M1–M3. The fixtures are `fixture-lab/photon-observer`
+(two per-frame metrics, a counter and a gauge) and
+`weather-lab/thermal-observer` (gauge only). They are signed by two publishers,
+follow a growing NDTiff, and add `flood` and `broken_contiguity` modes. Two
+decisions were taken during the block:
+
+- **Cadence bound** (operator, 2026-10-15). The median burst with a reporting
+  package must be ≤ 1.10 × the median with none. The flood arm is reported, not
+  scored: its cost is the input to change 2's separate resource-policy decision.
+- **The working line** (operator, 2026-10-16). The first gate's line,
+  `slow: 3276.21875 counts [64–106] · metrics live`, was unreadable to the
+  operator. Now each package gets a block under the frames line with one line
+  per metric: `mean intensity 3,276 ADU · up to frame 106 · 0.4 s ago`. Values
+  have four significant digits, and the declared `description` shows on hover.
+  The progress payload therefore carries the package and each description.
+
+**Demo gate**: Windows, demo config, 1000-frame bursts at 10 ms, 512 × 512
+uint16, n = 5 scored per arm.
+
+| arm | median burst | imaging span, first→final frame | lines before teardown | last live lag |
+| --- | --- | --- | --- | --- |
+| none | 11.41 s | 11.14 s | — | — |
+| metrics | 11.03 s (0.967×) | 10.78 s | 55–62 | 0–37 frames |
+| flood | 10.99 s (0.963×) | 10.72 s | 5,659–7,313 | 0–5 frames |
+
+- Gap p50 and p95 were 11 ms and 12 ms in every arm.
+- Live progress arrived 1.000–1.012 s apart, and final ranges reached frame 999.
+- The broken-contiguity job failed on `frames` while its acquisition saved all
+  1000 frames.
+- The flood ran at 500–670 lines/s sustained and peaked at 1,272/s. That rate
+  is set by a below-normal-priority worker on that machine. A Mac fixture
+  reached about 23,000/s, so the reader's cost above about 1,300 lines/s is
+  unmeasured on Windows (`R154`).
+- The burst with **no** package images about 0.4 ms per frame slower, in all
+  five repetitions and in the first run. That is unattributed (`R143`).
+
+**The first gate run measured nothing that mattered.** Its fixture took a
+pure-Python mean over every pixel and read before reporting, so it sent 8–12
+lines per burst, and the "flood" arrived after teardown. All limbs but one
+still passed. The gate now refuses to score a package that fell more than 200
+frames behind, and a flood that was not sustained during acquisition, as NOT
+EXERCISED.
+
 ## Back to the publisher
 
 - Per-frame lists are never coalesced, and the rate is not enforced (M1).
@@ -189,6 +234,8 @@ the pin is the operator's step. An older MicroClaw refuses the release at
   (`localizations_per_frame`) and a typical setpoint; MicroClaw does not infer
   it from the manifest.
 - `frames` on a gauge or counter means the last frame the value accounts for.
+- The browser shows each metric's name, value, unit and frame, with the
+  `description` on hover. Names and units should read for a microscopist.
 - Report often enough, and process close enough to the growing dataset, to
   keep each rule's evidence within the default 500-frame lag and 3 s reception
   age. Sparse reporting can leave stale intervals that hold increases and
@@ -199,12 +246,15 @@ the pin is the operator's step. An older MicroClaw refuses the release at
 
 ## Register
 
-No row closes here. `R139` is design/89's. Spec §8's package side needs nothing
-further from MicroClaw once 87a merges.
+No row closes here. `R139` is design/89's, and `R86` is design/88's. Spec §8's
+package side needs nothing further from MicroClaw once 87a merges. 87a opened
+`R154` (the reader's cost at high line rates is unmeasured on Windows). It added
+evidence to `R143` (an idle machine images slower) and `R114` (the 80b test
+flake, n=2).
 
 ## Run ledger
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | — | `2a6f7ee` | drafted and revised 2026-10-15 |
-| 87a | `block-87a` | `13382d5` | opened 2026-10-15; implementation delegated |
+| 87a | `block-87a` | `13382d5` | demo gate passed 2026-10-16 on its second run (the first run's fixture was too slow to load anything); PR #57 |

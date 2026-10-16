@@ -349,6 +349,14 @@ description. Your skill text should name the metric appropriate for each rule
 (for example activation feedback or stopping) and give typical parameters;
 choosing a suitable metric is the publisher's responsibility.
 
+Microscopists read these while the run is going. Under the frame count, the
+browser shows one line per metric: the name with underscores as spaces, the
+value rounded to four significant digits, the unit, `up to frame N` and its
+age. The `description` appears when they hover over the name. Choose names and
+units a microscopist recognises (`localizations_per_frame`, `ADU`), and write
+the description to say what the number is. In the 87a demo gate, an operator
+could not read a line whose names and units did not say what they measured.
+
 Send messages with exactly these keys, before the terminal `result`:
 
 ```json
