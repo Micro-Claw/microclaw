@@ -3,7 +3,8 @@ param(
     [ValidateSet('prepare','measure','session','verify','cleanup','selftest')]
     [string]$Phase,
     [string]$Out,
-    [int[]]$SelftestSizes = @(2,120,40)
+    [int[]]$SelftestSizes = @(2,120,40),
+    [int]$SelftestFrameSize = 32
 )
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:LOCALAPPDATA 'microclaw'
@@ -38,6 +39,7 @@ $ErrorActionPreference = 'Continue'
 if ($Phase -eq 'selftest' -and $SelftestSizes.Count -ne 3) { throw 'SelftestSizes needs repetitions, burst frames, session frames.' }
 $gateArgs = @((Join-Path $PSScriptRoot '87-block87a-demo-gate.py'), $Phase, '--out', $Out)
 if ($Phase -eq 'selftest') {
+    $gateArgs += @('--selftest-frame-size', [string]$SelftestFrameSize)
     $gateArgs += '--selftest-sizes'
     foreach ($size in $SelftestSizes) { $gateArgs += [string]$size }
 }

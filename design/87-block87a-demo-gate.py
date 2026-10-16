@@ -154,16 +154,17 @@ class Gate(b84.Gate):
         tools.SESSION_GRANTS.clear()
         tools.CONFIRM_FN = e4.recording_confirm(prompts, subject,
             lambda p: write_json(folder / 'confirmations.json', p))
+        self.say('RUN ' + row['id'])
         clock = dict(start_utc=now().isoformat(), start_perf=time.perf_counter(),
                      process_cpu_start_s=time.process_time(), clock='time.perf_counter / UTC; CPU=time.process_time')
-        self.say('RUN ' + row['id'])
         try:
             raw = tools.execute_tool('run_timelapse', deepcopy(row['input']), ctrl, guard,
                 acquisition_diagnostic_writer=writer, acquisition_event_sink=lambda event: events.append(deepcopy(event)),
                 acquisition_session_id=session_id, tool_call_id=row['id'])
-            result = json.loads(raw)
+            tool_cpu_end = time.process_time()
             clock.update(tool_end_utc=now().isoformat(), tool_end_perf=time.perf_counter(),
-                         tool_process_cpu_s=time.process_time() - clock['process_cpu_start_s'])
+                         tool_process_cpu_s=tool_cpu_end - clock['process_cpu_start_s'])
+            result = json.loads(raw)
             write_json(folder / 'result.json', result)
             for i, job in enumerate((result.get('analysis') or {}).get('jobs') or []):
                 self.wait_terminal(job, folder, i)
@@ -173,6 +174,7 @@ class Gate(b84.Gate):
         finally:
             clock.update(end_utc=now().isoformat(), end_perf=time.perf_counter(),
                          process_cpu_s=time.process_time() - clock['process_cpu_start_s'])
+            clock['post_tool_process_cpu_s'] = clock['process_cpu_s'] - clock.get('tool_process_cpu_s', clock['process_cpu_s'])
             write_json(folder / 'clock.json', clock)
             # Exact browser-sink payloads, no gate-invented event timestamps.
             write_json(folder / 'browser-events.json', events)
@@ -208,6 +210,10 @@ class Gate(b84.Gate):
         finally:
             writer.close()
             completed_dataset.close_analysis_supervisor()
+            diagnostics = e4._diagnostics(self.out)
+            for row in prep['runs']:
+                if row['condition'] != 'none' and (self.out / 'runs' / row['id'] / 'job-0.json').exists():
+                    write_json(self.out / 'runs' / row['id'] / 'load-evidence.json', load_evidence(self.out, row, diagnostics))
             self.save('measure-end', dict(completed=completed, planned=len(prep['runs']), ended_at=now().isoformat()))
 
     def capture_session(self, started):
@@ -252,7 +258,7 @@ class Gate(b84.Gate):
             screenshot=b84.screenshot(self.out / 'working.png'))
         self.save('session', data)
         self.say('STEP 2: Watch the working line while frames are acquired. The program has captured working.png.')
-        question = 'Did the working line under the chat show flux, slow and total values changing while frames were acquired?'
+        question = "Did the second line under the frames line show photon-observer's metrics, each with a value and an 'up to frame' number that increased while frames were acquired? Hovering a metric name should show what it means."
         while True:
             self.say(question + ' Type YES or NO (STOP abandons).')
             self.discard_pending_input()
@@ -342,7 +348,54 @@ def progress(out, row, diagnostics):
     return stamped
 
 
+def load_evidence(out, row, diagnostics):
+    """Conservative, file-only load proof. Never attribute a straddling bucket early."""
+    folder = out / 'runs' / row['id']
+    job = load(folder / 'job-0.json')
+    events = [e for e in diagnostics if e.get('tool_call_id') == row['id']]
+    ends = [e for e in events if e.get('type') == 'acquisition_teardown_completion']
+    starts = [e for e in events if e.get('type') == 'acquisition_event_submission']
+    if len(ends) != 1 or len(starts) != 1:
+        raise NotExercised('No unique product submission/teardown timestamps.')
+    start, end = (datetime.fromisoformat(e['timestamp']) for e in (starts[0], ends[0]))
+    history = job.get('metrics', {}).get('history', [])
+    if not history or any('received' not in b or 'received_last_at' not in b for b in history):
+        return dict(exercised=False, reason='No reception counts/times in history buckets.')
+    before = [b for b in history if datetime.fromisoformat(b['received_last_at']) < end]
+    count = sum(b['received'] for b in before)
+    active = set()
+    for bucket in history:
+        first = max(start, datetime.fromisoformat(bucket['received_at']))
+        last = min(end, datetime.fromisoformat(bucket['received_last_at']))
+        if first <= last:
+            active.update(range(int(first.timestamp()), int(last.timestamp()) + 1))
+    burst_seconds = set(range(int(start.timestamp()), int(end.timestamp()) + 1))
+    metric = 'mean_frame_bytes' if row['condition'] == 'thermal' else 'mean_intensity'
+    live_events = [e for e in events if e.get('analysis_metrics', {}).get('feed_alive')
+        and metric in e['analysis_metrics'].get('values', {}) and datetime.fromisoformat(e['timestamp']) <= end]
+    lag = None
+    if live_events:
+        event = live_events[-1]
+        lag = event['frames_accounted'] - (event['analysis_metrics']['values'][metric]['frames'][1] + 1)
+    duration = e4.number(load(folder / 'result.json').get('duration_s'), 'product burst duration')
+    return dict(exercised=True, lines_before_teardown_lower_bound=count,
+        occupied_burst_seconds=len(active & burst_seconds), burst_seconds=len(burst_seconds),
+        accounted=ends[0]['frames_accounted'], last_live_frame_lag=lag, burst_duration_s=duration,
+        start_utc=start.isoformat(), teardown_utc=end.isoformat(),
+        boundary_policy='Count only buckets whose last reception is < teardown; straddling bucket excluded.')
+
+
+def keeps_pace(out, row, diagnostics):
+    info = load_evidence(out, row, diagnostics)
+    if not info.get('exercised') or info.get('last_live_frame_lag') is None:
+        raise NotExercised('No timed load/last live range evidence: ' + str(info))
+    if info['last_live_frame_lag'] > 200 or info['lines_before_teardown_lower_bound'] < math.ceil(info['burst_duration_s']):
+        raise NotExercised('Package did not keep pace: ' + json.dumps(info))
+    return info
+
+
 def live(out, row, diagnostics, metric):
+    pace = keeps_pace(out, row, diagnostics) if row['condition'] == 'metrics' else None
     events = progress(out, row, diagnostics)
     last = row['input']['n_frames'] - 1
     require(any(e['analysis_metrics'].get('feed_alive') is True and
@@ -355,7 +408,7 @@ def live(out, row, diagnostics, metric):
     # 15.6 ms steps (design/79). Allow two such steps, never more.
     require(all(gap >= 1 - WALL_CLOCK_STEP_S * 2 for gap in gaps),
             'Progress timestamps less than one second apart: ' + str(gaps))
-    return dict(events=len(events), timestamp_source='product diagnostic timestamp', consecutive_s=gaps)
+    return dict(load=pace, events=len(events), timestamp_source='product diagnostic timestamp', consecutive_s=gaps)
 
 
 def final_metrics(out, row, metrics_names):
@@ -395,6 +448,7 @@ def measurements(out, rows):
         table[arm].append(dict(run=row['id'], duration_s=duration,
             cpu_s=e4.number(clock.get('process_cpu_s'), 'process CPU delta'),
             tool_cpu_s=e4.number(clock.get('tool_process_cpu_s'), 'tool CPU delta'),
+            post_tool_cpu_s=e4.number(clock.get('post_tool_process_cpu_s'), 'post-tool CPU delta'),
             gaps_s=gaps))
     if not all(table.values()):
         raise NotExercised('Missing scored arm repetitions.')
@@ -402,8 +456,13 @@ def measurements(out, rows):
     for arm, runs in table.items():
         gaps = [x for r in runs for x in r['gaps_s']]
         cpu = [r['cpu_s'] for r in runs]
+        def cpu_summary(key):
+            values = [r[key] for r in runs]
+            return dict(per_run=values, min=min(values), median=statistics.median(values),
+                p95=e4.p95(values), max=max(values), spread=max(values)-min(values))
         summaries[arm] = dict(duration_median_s=statistics.median(r['duration_s'] for r in runs),
             gap_p50_s=statistics.median(gaps), gap_p95_s=e4.p95(gaps), gap_max_s=max(gaps),
+            tool_cpu=cpu_summary('tool_cpu_s'), post_tool_cpu=cpu_summary('post_tool_cpu_s'),
             cpu_seconds=cpu, cpu_min_s=min(cpu), cpu_p50_s=statistics.median(cpu), cpu_p95_s=e4.p95(cpu),
             cpu_max_s=max(cpu), cpu_spread_s=max(cpu)-min(cpu),
             runs=[{k: v for k, v in r.items() if k != 'gaps_s'} for r in runs])
@@ -481,18 +540,18 @@ def verify(gate, *, cleanup=True, echo=True):
         elif row['condition'] != 'flood':
             continue
         if row['condition'] == 'metrics':
-            check(3, name, lambda r=row: live(out, r, diagnostics, 'flux'))
+            check(3, name, lambda r=row: live(out, r, diagnostics, 'mean_intensity'))
             def photon(row=row):
-                metrics = final_metrics(out, row, ('flux', 'slow'))
-                return require(metrics.get('latest', {}).get('total', {}).get('value') == row['input']['n_frames'], 'total differs from planned frames.')
+                metrics = final_metrics(out, row, ('mean_intensity', 'peak_intensity'))
+                return require(metrics.get('latest', {}).get('frames_read', {}).get('value') == row['input']['n_frames'], 'frames_read differs from planned frames.')
             check(4, name, photon)
         elif row['condition'] == 'thermal':
             def thermal(row=row):
-                info = live(out, row, diagnostics, 'temperature')
-                metrics = final_metrics(out, row, ('temperature',))
+                info = live(out, row, diagnostics, 'mean_frame_bytes')
+                metrics = final_metrics(out, row, ('mean_frame_bytes',))
                 job = load(out / 'runs' / row['id'] / 'job-0.json')
-                require(job['release']['publisher'] == 'weather-lab' and set(metrics['declared']) == {'temperature'}
-                        and metrics['declared']['temperature']['kind'] == 'gauge', 'Not the gauge-only second publisher.')
+                require(job['release']['publisher'] == 'weather-lab' and set(metrics['declared']) == {'mean_frame_bytes'}
+                        and metrics['declared']['mean_frame_bytes']['kind'] == 'gauge', 'Not the gauge-only second publisher.')
                 return info
             check(5, name, thermal)
         elif row['condition'] == 'broken':
@@ -505,13 +564,16 @@ def verify(gate, *, cleanup=True, echo=True):
             check(6, name, broken)
         elif row['condition'] == 'flood':
             def flood(folder=folder, row=row):
+                info = load_evidence(out, row, diagnostics)
+                if not info.get('exercised') or info['occupied_burst_seconds'] * 2 <= info['burst_seconds'] or info['lines_before_teardown_lower_bound'] < info['accounted']:
+                    raise NotExercised('Flood not sustained during acquisition: ' + json.dumps(info))
                 require(load(folder / 'dataset.json').get('frames') == row['input']['n_frames'], 'Flood did not save all planned frames.')
                 job = load(folder / 'job-0.json')
                 metrics = job.get('metrics', {})
                 require(job.get('state') == 'succeeded' and metrics.get('lost_frames') is False and metrics.get('feed_alive') is False,
                     'Flood did not complete cleanly without a loss latch.')
                 require(metrics.get('received', 0) > 0 and metrics.get('peak_rate', 0) > 0, 'No flood lines observed.')
-                return dict(received=metrics['received'], peak_rate=metrics['peak_rate'])
+                return dict(load=info, received=metrics['received'], peak_rate=metrics['peak_rate'])
             check(7, name, flood)
     measurement = {}
     def cadence():
@@ -519,6 +581,8 @@ def verify(gate, *, cleanup=True, echo=True):
         for row in rows:
             if row['condition'] not in durations or row['repetition'] < 1:
                 continue
+            if row['condition'] == 'metrics':
+                keeps_pace(out, row, diagnostics)
             duration = e4.number(load(out / 'runs' / row['id'] / 'result.json').get('duration_s'), 'product duration_s')
             if duration <= 0:
                 raise NotExercised('Nonpositive product duration.')
@@ -535,6 +599,8 @@ def verify(gate, *, cleanup=True, echo=True):
     check(8, 'repetitions 1+', cadence)
     def report_load():
         measurement['reported_load'] = measurements(out, rows)
+        measurement['analysis_load'] = {r['id']: load_evidence(out, r, diagnostics)
+            for r in rows if r['condition'] != 'none'}
         return measurement['reported_load']
     check(9, 'report only; no flood performance threshold', report_load, reported=True)
     def session_calls():
@@ -549,7 +615,7 @@ def verify(gate, *, cleanup=True, echo=True):
         session, _, call = session_calls()
         jobs = call['result'].get('analysis', {}).get('jobs', [])
         return require('error' not in call['result'] and len(jobs) == 1 and jobs[0].get('job_id') == session.get('job_id')
-            and jobs[0].get('metrics', {}).get('received', 0) > 0 and 'flux' in jobs[0]['metrics'].get('latest', {}),
+            and jobs[0].get('metrics', {}).get('received', 0) > 0 and bool(jobs[0]['metrics'].get('latest')),
             'Session tool result lacks this job\'s metrics.')
     check('S1', 'history JSONL', session_result)
     def session_status():
@@ -560,7 +626,7 @@ def verify(gate, *, cleanup=True, echo=True):
         final = load(out / 'session-final/job-0.json')
         require(all(found[-1]['result'].get('analysis', {}).get(k) == final.get(k) for k in ('job_id', 'state', 'failure', 'metrics')),
                 'Session status core differs from final job record.')
-        return require(final.get('state') == 'succeeded' and final.get('metrics', {}).get('latest', {}).get('flux', {}).get('frames', [0, -1])[1]
+        return require(final.get('state') == 'succeeded' and final.get('metrics', {}).get('latest', {}).get('mean_intensity', {}).get('frames', [0, -1])[1]
             == prep['sizes'][2]-1 and final['metrics'].get('feed_alive') is False, 'Session final metrics incomplete.')
     check('S2', 'history JSONL + job record', session_status)
     def operator():
@@ -601,8 +667,14 @@ def verify(gate, *, cleanup=True, echo=True):
     return bad
 
 
-def selftest(output=None, sizes=(2, 120, 40)):
+def selftest(output=None, sizes=(2, 120, 40), frame_size=32):
     from unittest.mock import patch
+    from ndstorage import NDTiffDataset
+    import numpy as np
+    original_put = NDTiffDataset.put_image
+    def sized_put(storage, axes, pixels, metadata):
+        # 83e4.Backend writes 32x32 uint16 via put_image; resize at that boundary.
+        return original_put(storage, axes, np.zeros((frame_size, frame_size), np.uint16), metadata)
     from microclaw import paths, controller, tools, completed_dataset
     features()  # Old product is refused before any store mutation.
     if sizes[0] < 2 or sizes[1] < 110 or sizes[2] < 30:
@@ -655,7 +727,10 @@ def selftest(output=None, sizes=(2, 120, 40)):
                     gate.fake.listening = None
                 with patch.object(controller, 'Core', e4.BridgeCore), patch.object(controller, 'Studio', e4.BridgeStudio), \
                         patch.object(controller.MicroscopeController, 'get_mm_app_dir', return_value=str(mm)), \
-                        patch.object(tools, 'Acquisition', e4.FakeAcquisition):
+                        patch.object(tools, 'Acquisition', e4.FakeAcquisition), \
+                        patch.object(NDTiffDataset, 'put_image', sized_put), \
+                        patch.object(e4.BridgeCore, 'get_image_width', return_value=frame_size), \
+                        patch.object(e4.BridgeCore, 'get_image_height', return_value=frame_size):
                     gate.prepare(sizes=sizes)
                     gate.measure()
                     gate.session()
@@ -720,7 +795,7 @@ def selftest(output=None, sizes=(2, 120, 40)):
                     write_json(folder / relative / 'status-0.json', dict(analysis=read_json(folder / relative / 'job-0.json')))
                 def remove_live(folder):
                     def change(event):
-                        metric = event.get('analysis_metrics', {}).get('values', {}).get('flux')
+                        metric = event.get('analysis_metrics', {}).get('values', {}).get('mean_intensity')
                         if metric:
                             metric['frames'][1] = first['input']['n_frames'] - 1
                     edit(folder, Path('runs') / first['id'] / 'browser-events.json', lambda events: [change(e) for e in events])
@@ -757,8 +832,8 @@ def selftest(output=None, sizes=(2, 120, 40)):
                     ('2', 'missing frame', lambda f: edit(f, Path('runs')/first['id']/'dataset.json', lambda v: v.update(frames=1))),
                     ('3', 'no range before final ordinal', remove_live),
                     ('3', 'progress events only 0.5 seconds apart', fast_progress),
-                    ('4', 'slow final range incomplete', lambda f: edit_job(f, first, lambda v: v['metrics']['latest']['slow'].update(frames=[0, 0]))),
-                    ('5', 'thermal final range incomplete', lambda f: edit_job(f, thermal, lambda v: v['metrics']['latest']['temperature'].update(frames=[0, 0]))),
+                    ('4', 'peak_intensity final range incomplete', lambda f: edit_job(f, first, lambda v: v['metrics']['latest']['peak_intensity'].update(frames=[0, 0]))),
+                    ('5', 'thermal final range incomplete', lambda f: edit_job(f, thermal, lambda v: v['metrics']['latest']['mean_frame_bytes'].update(frames=[0, 0]))),
                     ('6', 'broken job succeeded', lambda f: edit_job(f, {'id': 'broken'}, lambda v: v.update(state='succeeded'))),
                     ('7', 'flood loss latch', lambda f: edit_job(f, flood, lambda v: v['metrics'].update(lost_frames=True))),
                     ('8', 'metrics cadence exceeds 1.10', slow_metrics),
@@ -786,6 +861,34 @@ def selftest(output=None, sizes=(2, 120, 40)):
                         ok = ok and all(v == 'PASS' for k, v in arm.last_results.items() if k != '9')
                     failures += not ok
                     gate.say(f'SELFTEST {"PASS" if ok else "FAIL"}: missing evidence limb {key} -> {arm.last_results[key]} (9 never FAIL).')
+                # New eligibility controls must refuse underloaded or lagging analysis,
+                # independently of a healthy final job and attractive cadence ratio.
+                for label, row, expected in [
+                        ('too few live metric lines', first, {'3', '8'}),
+                        ('lag over 200 frames', first, {'3', '8'}),
+                        ('flood only after teardown', flood, {'7'})]:
+                    folder = base / ('eligibility-' + label.replace(' ', '-'))
+                    shutil.copytree(control, folder)
+                    if label == 'lag over 200 frames':
+                        def lag(event):
+                            if event.get('analysis_metrics', {}).get('values', {}).get('mean_intensity'):
+                                event['frames_accounted'] = row['input']['n_frames'] + 201
+                        edit(folder, Path('runs') / row['id'] / 'browser-events.json', lambda values: [lag(e) for e in values])
+                        for path in folder.glob('*_microclaw_acquisitions.jsonl'):
+                            values = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+                            for event in values:
+                                if event.get('tool_call_id') == row['id']:
+                                    lag(event)
+                            path.write_text(''.join(json.dumps(v)+'\n' for v in values), encoding='utf-8')
+                    elif label == 'too few live metric lines':
+                        edit_job(folder, row, lambda job: [bucket.update(received=0) for bucket in job['metrics']['history']])
+                    else:
+                        edit_job(folder, row, lambda job: [bucket.update(received_at='2099-01-01T00:00:00+00:00',
+                            received_last_at='2099-01-01T00:00:00+00:00') for bucket in job['metrics']['history']])
+                    arm = Gate(root, folder, fake=e4.OfflineInstall()); verify(arm, cleanup=False, echo=False)
+                    ok = all(arm.last_results[key] == 'NOT EXERCISED' for key in expected)
+                    failures += not ok
+                    gate.say(f'SELFTEST {"PASS" if ok else "FAIL"}: {label} -> ' + str({key: arm.last_results[key] for key in expected}))
                 # Off-rig verification must neither contact hardware nor touch
                 # an unrelated local store, even when cleanup=True is requested.
                 arm = Gate(root, control, fake=e4.OfflineInstall())
@@ -804,7 +907,7 @@ def selftest(output=None, sizes=(2, 120, 40)):
                     'Runbook pin/branch wiring invalid.')
                 gate.say('SELFTEST PASS: transported file-only scoring; launcher/runbook source wiring (PowerShell execution not exercised).')
                 gate.save('selftest', dict(failed_controls=failures, baseline=observed, mutations=len(mutations),
-                    synthetic=['bridge/acquisition', 'UI/answers/history envelope/screenshots', 'timing scorer control'],
+                    synthetic=['bridge/acquisition', 'UI/answers/history envelope/screenshots', 'timing scorer control'], frame_size=frame_size,
                     real=['offline installs', 'workers', 'growing NDTiff', 'product tools', 'diagnostic and job records']))
                 gate.say('SELFTEST ' + ('PASSED' if not failures else 'FAILED') + f': {failures} failed controls.')
             except Exception as exc:
@@ -826,12 +929,13 @@ def main():
     parser.add_argument('phase', choices=('prepare', 'measure', 'session', 'verify', 'cleanup', 'selftest'))
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--port', type=int, default=4827)
+    parser.add_argument('--selftest-frame-size', type=int, default=32)
     parser.add_argument('--selftest-sizes', type=int, nargs=3, default=(2, 120, 40), metavar=('REPETITIONS', 'BURST_FRAMES', 'SESSION_FRAMES'))
     args = parser.parse_args()
     gate = None
     try:
         if args.phase == 'selftest':
-            return selftest(args.out, tuple(args.selftest_sizes))
+            return selftest(args.out, tuple(args.selftest_sizes), args.selftest_frame_size)
         from microclaw import paths
         gate = Gate(paths.user_data_dir(), args.out)
         if args.phase == 'verify':
