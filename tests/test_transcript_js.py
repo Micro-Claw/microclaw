@@ -474,7 +474,7 @@ def test_skill_discovery_toggle_exclusion_and_disclosure():
         "Installing a package lets the agent read its instructions; you can stop that here. "
         "That never lets its code run: MicroClaw asks you each time, or once per session. "
         "Package code runs with your user permissions and is not sandboxed. "
-        "run_mda uses Micro-Manager’s own engine; MicroClaw cannot see its dataset creation, so it cannot attach package analysis.")
+        "run_mda does not yet support package analysis.")
     assert "discovery" not in view["disclosure"]
     html = resources.files("microclaw").joinpath("serve.html").read_text(encoding="utf-8")
     assert '$("skill-packages-disclosure").textContent = view.disclosure' in html

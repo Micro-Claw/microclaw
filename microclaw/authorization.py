@@ -1425,8 +1425,6 @@ def validate_live_rig(
         ))
 
     for tool_name in _acquisition_tool_names():
-        if tool_name == "run_mda":
-            continue
         entries.append(AuthorizationEntry(
             path=f"acquisition-tool:{tool_name}",
             classification=(
@@ -1449,7 +1447,7 @@ def validate_live_rig(
             path="mmstudio-mda",
             classification="excluded",
             detail=(
-                "run_mda remains excluded even though its preview is dose-planned; "
+                "The run_mda dialog route remains excluded even though its preview is dose-planned; "
                 "GUI-owned effects cannot be enumerated as an immutable guarded plan"
             ),
         ),

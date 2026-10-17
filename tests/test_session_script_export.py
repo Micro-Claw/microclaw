@@ -3991,7 +3991,7 @@ def test_every_registered_tool_has_exactly_one_export_decision():
 @pytest.mark.parametrize("name,reason", [
     ("calibrate_stage_to_camera", "solve and its knowledge-base cache are microclaw.calibration"),
     ("snap_to_album", "exported script builds core = Core() and has no studio"),
-    ("run_mda", "preview token hashed over settings read immediately before the run"),
+    ("run_mda", "contents of the recorded MDA dialog"),
 ])
 def test_the_three_new_tool_refusals_keep_their_specific_reason(tmp_path, name, reason):
     _, _, source = export(tmp_path, [call(name, {})])

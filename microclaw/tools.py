@@ -2744,7 +2744,7 @@ class _HookedAcquisitionFailure(RuntimeError):
 
 
 class AcquisitionUnterminated(RuntimeError):
-    """pycro-manager teardown exceeded a supervised acquisition bound."""
+    """An acquisition or its writer exceeded a supervised completion bound."""
 
     def __init__(self, *, dataset_path: str, frames_planned: int | None,
                  frames_accounted: int, engine_exception: BaseException | None,
@@ -2928,6 +2928,7 @@ def _unterminated_result(exc: AcquisitionUnterminated) -> dict[str, Any]:
         "ceiling_fallback": exc.fallback_ceiling,
         "hardware": hardware, "next": next_steps,
     }
+    result.update(getattr(exc, "mda_state", {}))
     completed = [
         record for record in (
             _completed_position_record(item)
@@ -4689,6 +4690,13 @@ def _gap_summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _check_acquisition_install_admission(ctrl):
+    # Also covers Studio acquisitions, which construct no pycro-manager Acquisition.
+    admission = getattr(ctrl, "_microclaw_extension_install", None)
+    if isinstance(admission, dict) and admission.get("running") is True:
+        raise RuntimeError("Extension install admission: acquisition refused.")
+
+
 def _acquire_with_hooks(
     guard: SafetyGuard,
     save_dir: str,
@@ -4746,12 +4754,7 @@ def _acquire_with_hooks(
     `save_dir` up front too, to fail before any hardware moves; resolving twice
     is idempotent.
     """
-    # Unreachable through turn admission: a future non-turn path must fail loudly
-    # rather than race an install. run_mda is NOT behind this chokepoint: it
-    # drives ctrl.studio.acquisitions() and constructs no Acquisition.
-    admission = getattr(ctrl, "_microclaw_extension_install", None)
-    if isinstance(admission, dict) and admission.get("running") is True:
-        raise RuntimeError("Extension install admission: acquisition refused.")
+    _check_acquisition_install_admission(ctrl)
     save_dir = guard.resolve_in_workspace(save_dir)
     hook_fn_kwargs: dict[str, Any] = {}
     if hook is not None:
@@ -12021,7 +12024,7 @@ _MDA_SCALARS = (
     "slice_z_top_um", "slice_z_step_um", "relative_z_slice", "use_channels",
     "channel_group", "use_autofocus", "skip_autofocus_count",
     "keep_shutter_open_channels", "keep_shutter_open_slices", "acq_order_mode",
-    "camera_timeout", "comment",
+    "camera_timeout", "comment", "save_mode", "use_custom_intervals",
 )
 
 
@@ -12079,28 +12082,323 @@ def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
             "warning": "Inspect illumination, motion, saving, and all enabled axes before running."}
 
 
+def _build_mda_settings(manager, modes, settings):
+    builder = manager.sequence_settings_builder()
+    for name, value in {
+        "use_frames": True, "use_slices": False, "use_channels": False,
+        "use_position_list": False, "use_autofocus": False,
+        "use_custom_intervals": False, "is_test_acquisition": False,
+        "save": True, "save_mode": getattr(modes, settings["save_mode"]),
+        "root": settings["save_dir"], "prefix": settings["name"],
+        "interval_ms": settings["interval_s"] * 1000,
+        "num_frames": settings["n_frames"],
+    }.items():
+        builder = getattr(builder, name)(value)
+    return builder.build()
+
+
+def _mda_index_complete(path, count):
+    # Opening ndstorage's own reader checks readability and parses the index.
+    # Only called after the engine stopped AND the store reports frozen.
+    reader = None
+    try:
+        reader = Dataset(path)
+        return len(reader.index) == count
+    except Exception:
+        return False
+    finally:
+        if reader is not None:
+            reader.close()
+
+
+def _mda_poll_wait(seconds):
+    threading.Event().wait(seconds)
+
+
+def _mda_report(state, now):
+    end = state.get("finished_at", now)
+    start_end = state.get("start_returned", end)
+    start_called = state.get("start_called", state["started"])
+    engine_end = state.get("engine_finished", end)
+    first_poll = state.get("first_poll", start_end)
+    writer_end = state.get("writer_finished_at", end)
+    phases = {}
+    for name, duration in (
+        ("start_call", start_end - start_called),
+        ("acquiring", engine_end - first_poll),
+        ("writer_finalization", writer_end - engine_end),
+    ):
+        phases[name] = {"count": 1, "total_s": duration, "min_s": duration,
+                        "max_s": duration, "mean_s": duration}
+    duration = end - state["started"]
+    accounted = sum(p["total_s"] for p in phases.values())
+    return {key: state[key] for key in (
+        "outcome", "writer_completion", "dataset_path", "frames_accounted",
+        "settings_that_ran", "settings_source", "phase", "progress_meaning", "supervision",
+    )} | {"duration_breakdown": {
+        "duration_s": duration, "phases": phases, "accounted_s": accounted,
+        "unaccounted_s": duration - accounted,
+        "clock": state.get("clock", "monotonic"),
+    }, "datastore": {"image_count": state["frames_accounted"],
+                      "frozen": state.get("frozen", False),
+                      "save_path": state["dataset_path"]}, **({"error": state["error"]} if state.get("error") else {})}
+
+
+def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s,
+                   quiet_window, clock, join, poll_s, cancel=None,
+                   account=lambda: None, close=lambda: None,
+                   notify=lambda event: None, expired=None, pause=None,
+                   clock_name="monotonic", frames_planned=None):
+    """One bridge owner; the watchdog never calls Java, including on expiry.
+
+    notify is the internal lifecycle seam for future read-only observers.
+    A per-poll observation and the single abort-request path live here so a
+    future dwell rule need not introduce another loop or bridge worker.
+    """
+    state = dict(started=clock(), clock=clock_name, phase="starting", frames_accounted=0,
+                 dataset_path=None, outcome=None,
+                 writer_completion={"state": "not_reached"},
+                 settings_that_ran=None, settings_source=None,
+                 supervision={"runtime_ceiling_s": runtime_s,
+                              "quiet_bound_s": max(quiet_window(0), interval_s * 5),
+                              "largest_observed_gap_s": 0.0,
+                              "first_frame_deadline_s": startup_s,
+                              "planned_interval_s": interval_s},
+                 progress_meaning="coarse image-count increases, not per-frame timing")
+    lock = threading.Lock()
+    request_abort = threading.Event()
+    last_progress = state["started"]
+    largest_gap = 0.0
+    first_progress = False
+    pause = pause or _mda_poll_wait
+
+    def lifecycle(outcome):
+        with lock:
+            if state["outcome"] is not None:
+                return
+            state["outcome"] = outcome
+        notify({"type": "acquisition_finished", "outcome": outcome,
+                "dataset_path": state["dataset_path"],
+                "writer_completion": state["writer_completion"]})
+
+    def worker():
+        nonlocal last_progress, largest_gap, first_progress
+        aborted = False
+        try:
+            notify({"type": "acquisition_construction", "source": "MMStudio MDA"})
+            state["start_called"] = clock()
+            store = start()
+            notify({"type": "acquisition_event_submission", "source": "MMStudio MDA"})
+            state["start_returned"] = clock()
+            state["phase"] = "acquiring"
+            while True:
+                if (request_abort.is_set() or (cancel is not None and cancel.is_set())) and not aborted:
+                    aborted = True  # latch BEFORE the potentially blocking call
+                    state["phase"] = "stopping"
+                    try:
+                        manager.abort_acquisition()
+                    except Exception as exc:
+                        # A failed stop request is no more proof of termination
+                        # than a successful one. Keep polling under the same bound.
+                        state["error"] = f"{type(exc).__name__}: {exc}"
+                        notify({"type": "acquisition_diagnostic", "message": state["error"]})
+                # All bridge calls, including finalization, stay on this worker.
+                if "first_poll" not in state:
+                    state["first_poll"] = clock()
+                try:
+                    running = bool(manager.is_acquisition_running())
+                    count = int(store.get_num_images())
+                    path = store.get_save_path()
+                except Exception as exc:
+                    state["error"] = f"{type(exc).__name__}: {exc}"
+                    notify({"type": "acquisition_diagnostic", "message": state["error"]})
+                    request_abort.set()
+                    pause(poll_s)
+                    continue
+                if path is not None:
+                    state["dataset_path"] = str(path)
+                now = clock()
+                with lock:
+                    previous_count = state["frames_accounted"]
+                    if count > previous_count:
+                        if first_progress:
+                            largest_gap = max(largest_gap, now - last_progress)
+                        first_progress = True
+                        last_progress = now
+                        state["supervision"]["largest_observed_gap_s"] = largest_gap
+                        state["frames_accounted"] = count
+                for _ in range(max(0, count - previous_count)):
+                    account()
+                if previous_count == 0 and count > 0:
+                    notify({"type": "acquisition_first_frame_accounted", "frames_accounted": count})
+                if frames_planned is not None and previous_count < frames_planned <= count:
+                    notify({"type": "acquisition_planned_final_frame_accounted", "frames_accounted": count})
+                notify({"type": "acquisition_progress", "phase": state["phase"],
+                        "frames_accounted": count, "dataset_path": state["dataset_path"]})
+                if not running:
+                    if "engine_finished" not in state:
+                        state["engine_finished"] = clock()
+                        lifecycle("failed" if state.get("error") else "cancelled" if aborted else "completed")
+                    state["phase"] = "writer_finalizing"
+                    try:
+                        state["frozen"] = bool(store.is_frozen())
+                    except Exception as exc:
+                        state["error"] = f"{type(exc).__name__}: {exc}"
+                        notify({"type": "acquisition_diagnostic", "message": state["error"]})
+                        pause(poll_s)
+                        continue
+                    if state["frozen"]:
+                        if settings.get("save") and settings.get("save_mode") == "ND_TIFF":
+                            complete = (state["dataset_path"] is not None
+                                        and _mda_index_complete(state["dataset_path"], count))
+                            writer = {"state": "proved", "flush": "verified_ndtiff_index"}
+                        else:
+                            complete = True
+                            writer = {"state": "frozen-unverified", "flush": "unverified",
+                                      "reason": "save is off or save mode is not ND_TIFF"}
+                        if complete:
+                            state["writer_finished_at"] = clock()
+                            state["writer_completion"] = writer
+                            notify({"type": "writer_finished", "dataset_path": state["dataset_path"],
+                                    "writer_completion": writer})
+                            notify({"type": "acquisition_teardown_completion",
+                                    "dataset_path": state["dataset_path"], "outcome": state["outcome"],
+                                    "writer_completion": writer})
+                            break
+                pause(poll_s)
+            try:
+                ran = store.get_summary_metadata().get_sequence_settings()
+                if ran is None:
+                    raise ValueError("Summary metadata has no sequence settings")
+                state["settings_source"] = "datastore summary metadata"
+            except Exception:
+                ran = manager.get_acquisition_settings()
+                state["settings_source"] = "manager current settings fallback"
+            state["settings_that_ran"] = _read_mda_settings(ran)
+            state["phase"] = "finished"
+        except Exception as exc:
+            state["error"] = f"{type(exc).__name__}: {exc}"
+            lifecycle("failed")
+            state["outcome"] = "failed"
+        finally:
+            state["finished_at"] = clock()
+            close()  # exclusive ownership, including after foreground expiry
+
+    waiter = threading.Thread(target=worker, name="microclaw-mda", daemon=True)
+    try:
+        waiter.start()
+    except BaseException:
+        close()
+        raise
+    while waiter.is_alive():
+        try:
+            join(waiter, poll_s)
+        except KeyboardInterrupt:
+            request_abort.set()
+            continue
+        now = clock()
+        with lock:
+            # Before the first count increase the plan's first-frame allowance
+            # includes its scheduled startup work; subsequent silence allows
+            # the declared interval as well as the measured coarse cadence.
+            reference = last_progress if first_progress else state["started"] + startup_s
+            state["supervision"]["quiet_bound_s"] = max(quiet_window(largest_gap), interval_s * 5)
+            quiet = now - reference >= state["supervision"]["quiet_bound_s"]
+        if waiter.is_alive() and now - state["started"] >= runtime_s and quiet:
+            lifecycle("unterminated")
+            state["outcome"] = "unterminated"
+            state["diagnostic_persisted"] = notify({"type": "acquisition_timeout", "phase": state["phase"],
+                    "outcome": "unterminated", "writer_completion": state["writer_completion"],
+                    "dataset_path": state["dataset_path"],
+                    "frames_accounted": state["frames_accounted"],
+                    "frames_planned": frames_planned,
+                    "active_bound_s": runtime_s,
+                    **state["supervision"]})
+            if expired is not None:
+                expired(state, waiter)
+            raise RuntimeError("MDA unterminated: " + state["phase"])
+    return state
+
+
+def _emit_mda(params: RecordedParams) -> str:
+    if params.get("settings") is None:
+        raise CannotEmit("A standalone script cannot know the contents of the recorded MDA dialog")
+    if not params.result:
+        raise CannotEmit("run_mda has no recorded result")
+    settings = {"save_mode": "ND_TIFF", **params["settings"]}
+    # The recorded resolved root preserves workspace confinement in the export.
+    settings["save_dir"] = params.result["resolved_settings"]["root"]
+    plan = AcquisitionPlan(frames=settings["n_frames"],
+        exposure_ms_per_frame=settings["exposure_ms"], estimated_bytes=0,
+        estimated_duration_s=max(settings["n_frames"] * settings["exposure_ms"] / 1000,
+            (settings["n_frames"] - 1) * settings["interval_s"] + settings["exposure_ms"] / 1000))
+    runtime = _runtime_ceiling_s(plan, DEFAULT)[0]
+    from microclaw.controller import _new_static_java_class, _TIMING_CLOCK
+    source = "\n".join(inspect.getsource(fn) for fn in (
+        _new_static_java_class, timing_clock, timing_clock_name, _build_mda_settings, _read_mda_settings,
+        _mda_index_complete, _mda_poll_wait, _mda_report, _supervise_mda))
+    return (
+        "import threading\nimport time\nimport math\nfrom typing import Any\n"
+        "from pycromanager import Studio\nfrom ndstorage import Dataset\n"
+        + f"_TIMING_CLOCK = {_TIMING_CLOCK!r}\n_MDA_SCALARS = {_MDA_SCALARS!r}\n" + source + "\n"
+        + _export_guard_source(params.get("_export_safety_limits", {})) + "\n"
+        + f"_mda_input = {settings!r}\n"
+        + f"print('MDA envelope:', _mda_input, 'runtime ceiling:', {runtime!r})\n"
+        + "print('htSMLM activation, if used, is the operator panel and is not reproduced.')\n"
+        + "guard.check_exposure(_mda_input['exposure_ms'])\n"
+        + "_mda_studio = Studio()\n_mda_manager = _mda_studio.acquisitions()\n"
+        + "_mda_modes = _new_static_java_class(4827, 'org.micromanager.data.Datastore$SaveMode')\n"
+        + "_mda_built = _build_mda_settings(_mda_manager, _mda_modes, _mda_input)\n"
+        + "def _mda_start():\n    core.set_exposure(_mda_input['exposure_ms'])\n"
+        + "    return _mda_manager.run_acquisition_with_settings(_mda_built, False)\n"
+        + "_mda_values = _read_mda_settings(_mda_built)\n"
+        + f"_mda_state = _supervise_mda(_mda_manager, _mda_start, _mda_values, runtime_s={runtime!r}, "
+        + f"startup_s={plan.exposure_ms_per_frame / 1000.0!r}, interval_s={settings['interval_s']!r}, "
+        + f"quiet_window=lambda gap: max({DEFAULT.quiet_floor_s!r}, 5 * gap), "
+        + "clock=timing_clock, clock_name=timing_clock_name(), join=lambda worker, seconds: worker.join(seconds), poll_s=1.0)\n"
+        + "print(_mda_report(_mda_state, timing_clock()))\n"
+    )
+
+
 @_acquisition_entry_point
-@refuses(
-    "MMStudio owns the settings, and the tool's contract is a preview token hashed "
-    "over settings read immediately before the run. A standalone script has neither "
-    "the studio nor the settings, and re-running whatever the MDA dialog holds now "
-    "is not the recorded acquisition."
-)
-def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) -> dict:
-    from microclaw.authorization import authorize_path
-    authorize_path(ctrl, "mmstudio-mda")
-    preview = _EMU_SESSION_CACHE.get("mda_preview")
-    if not preview or preview[0] != preview_token:
-        return {"error": "Missing or stale MDA preview. Call get_mda_settings immediately before run_mda."}
+@emits(_emit_mda)
+def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
+            preview_token: str | None = None, settings: dict | None = None) -> dict:
+    if (preview_token is None) == (settings is None):
+        raise ValueError("Exactly one of preview_token or settings is required")
+    _check_acquisition_install_admission(ctrl)
     manager = ctrl.studio.acquisitions()
-    current = _read_mda_settings(manager.get_acquisition_settings())
-    current_token = hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest()
-    if current_token != preview_token:
-        return {"error": "MMStudio MDA settings changed after preview; inspect them again."}
-    if current.get("save") is True and current.get("root"):
-        guard.resolve_in_workspace(str(current["root"]))
-    exposure_ms = float(ctrl.core.get_exposure())
-    guard.check_exposure(exposure_ms)
+    built = None
+    if settings is not None:
+        from microclaw.skill_packages import validate_parameters
+        from microclaw.tools_schema import MDA_SETTINGS_SCHEMA
+        validate_parameters(MDA_SETTINGS_SCHEMA, settings)
+        if (type(settings["n_frames"]) is not int or settings["n_frames"] <= 0
+                or not math.isfinite(settings["interval_s"]) or settings["interval_s"] < 0
+                or not math.isfinite(settings["exposure_ms"]) or settings["exposure_ms"] <= 0):
+            raise ValueError("MDA requires positive integer n_frames, finite nonnegative interval_s and finite positive exposure_ms")
+        settings = {"save_mode": "ND_TIFF", **settings}
+        settings["save_dir"] = str(guard.resolve_in_workspace(settings["save_dir"]))
+        exposure_ms = float(settings["exposure_ms"])
+        guard.check_exposure(exposure_ms)
+        from microclaw.controller import _new_static_java_class
+        modes = _new_static_java_class(ctrl._port, "org.micromanager.data.Datastore$SaveMode")
+        built = _build_mda_settings(manager, modes, settings)
+        current = _read_mda_settings(built)
+    else:
+        from microclaw.authorization import authorize_path
+        authorize_path(ctrl, "mmstudio-mda")
+        preview = _EMU_SESSION_CACHE.get("mda_preview")
+        if not preview or preview[0] != preview_token:
+            return {"error": "Missing or stale MDA preview. Call get_mda_settings immediately before run_mda."}
+        current = _read_mda_settings(manager.get_acquisition_settings())
+        current_token = hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest()
+        if current_token != preview_token:
+            return {"error": "MMStudio MDA settings changed after preview; inspect them again."}
+        if current.get("save") is True and current.get("root"):
+            guard.resolve_in_workspace(str(current["root"]))
+        exposure_ms = float(ctrl.core.get_exposure())
+        guard.check_exposure(exposure_ms)
     try:
         time_points = int(current["num_frames"]) if current.get("use_frames") else 1
         if time_points <= 0:
@@ -12160,23 +12458,63 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard, preview_token: str) 
         + f"{plan.estimated_duration_s:g} s estimated, "
         + f"{plan.estimated_bytes} bytes estimated."
     )
-    if not CONFIRM_FN("RUN MMSTUDIO CURRENT MDA:\n" + summary, kind="acquisition"):
+    try:
+        consent = CONFIRM_FN("RUN MMSTUDIO MDA:\n" + summary, kind="acquisition")
+    except BaseException:
+        reservation.close()
+        raise
+    if not consent:
         reservation.close()
         return {"error": "User declined to run the current MMStudio MDA."}
-    try:
-        # MMStudio owns this opaque call and it runs to completion. Like the
-        # list-backed runners, it cannot be cancelled mid-run; this is not new.
-        store = manager.run_acquisition()
-        for _ in range(plan.frames):
-            reservation.commit_frame()
-    finally:
-        reservation.close()
     _EMU_SESSION_CACHE.pop("mda_preview", None)
+    def start():
+        if settings is not None:
+            ctrl.core.set_exposure(exposure_ms)
+            return manager.run_acquisition_with_settings(built, False)
+        return manager.run_acquisition_nonblocking()
+
+    context = {key: getattr(_ACQUISITION_EVENT_CONTEXT, key, None)
+               for key in ("sink", "diagnostic_writer", "session_id", "tool_call_id")}
+    def notify(event):
+        if event["type"] == "acquisition_timeout":
+            event = {**event, "active_bound": DEFAULT.bound_name,
+                     "active_bound_term": term, "estimated_bytes": plan.estimated_bytes}
+        with _acquisition_diagnostic_context(context):
+            return _emit_acquisition_diagnostic(event,
+                lifecycle=event["type"] != "acquisition_progress",
+                acknowledge=event["type"] == "acquisition_timeout",
+                publish=event["type"] != "acquisition_timeout")
+    runtime, fallback, term = _runtime_ceiling_s(plan, DEFAULT)
+    def expired(state, waiter):
+        ctrl._microclaw_unterminated_acquisition = {
+            "waiter": waiter, "teardown_running": True,
+            "camera_sequence_running": None, "dataset_path": state["dataset_path"],
+        }
+        failure = AcquisitionUnterminated(
+            dataset_path=state["dataset_path"], frames_planned=plan.frames,
+            frames_accounted=state["frames_accounted"], engine_exception=None,
+            camera_sequence_running=None, teardown_running=True,
+            expired_bound=DEFAULT.bound_name, bound_s=runtime,
+            fallback_ceiling=fallback, phase=state["phase"],
+        )
+        failure.diagnostic_persisted = bool(state.get("diagnostic_persisted"))
+        failure.mda_state = _mda_report(state, _acquisition_monotonic())
+        raise failure
+    state = _supervise_mda(
+        manager, start, current, runtime_s=runtime,
+        startup_s=plan.exposure_ms_per_frame / 1000.0, interval_s=interval_s,
+        quiet_window=lambda gap: _stall_quiet_s(gap, DEFAULT)[0],
+        clock=_acquisition_monotonic, join=_join_acquisition_waiter,
+        poll_s=_ACQUISITION_POLL_S,
+        cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
+        account=reservation.commit_frame, close=reservation.close,
+        notify=notify, expired=expired, clock_name=timing_clock_name(), frames_planned=plan.frames,
+    )
     return {
-        "status": "MMStudio MDA complete.",
-        "source": "MMStudio GUI current MDA",
+        "status": "MMStudio MDA " + state["outcome"] + ".",
+        "source": "MicroClaw settings" if settings is not None else "MMStudio GUI current MDA",
         "resolved_settings": current,
-        "datastore": _datastore_state(store),
+        **_mda_report(state, _acquisition_monotonic()),
         **_reservation_report(reservation),
     }
 
@@ -12309,6 +12647,7 @@ def execute_tool(
         "analysis_prepared": None,
         "analysis_jobs": analysis_jobs,
         "sink": acquisition_event_sink,
+        "cancel": cancel,
         "diagnostic_writer": acquisition_diagnostic_writer,
         "session_id": acquisition_session_id,
         "tool_call_id": tool_call_id,
@@ -12331,11 +12670,12 @@ def execute_tool(
         if getattr(fn, "_microclaw_acquisition_entry_point", False):
             pending = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
             if isinstance(pending, dict):
-                camera = _camera_sequence_running(ctrl)
                 waiter = pending.get("waiter")
                 teardown = bool(waiter.is_alive()) if waiter is not None else bool(
                     pending.get("teardown_running")
                 )
+                # Never queue a bridge probe behind a live, possibly blocked worker.
+                camera = None if teardown else _camera_sequence_running(ctrl)
                 pending["camera_sequence_running"] = camera
                 pending["teardown_running"] = teardown
                 if camera is False and not teardown:
@@ -12353,7 +12693,7 @@ def execute_tool(
                         "next": "Retry only after the camera is measured idle and teardown finishes.",
                     })
         if (
-            name != "run_mda"
+            (name != "run_mda" or tool_input.get("settings") is not None)
             and getattr(fn, "_microclaw_acquisition_entry_point", False)
         ):
             from microclaw.authorization import authorize_path

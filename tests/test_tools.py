@@ -6652,20 +6652,16 @@ def test_read_mda_settings_reads_arraylist_slices_and_channel_methods():
 def test_mda_requires_unchanged_preview_and_confirmation(
     mock_ctrl, unconstrained_guard, monkeypatch
 ):
-    settings = MagicMock()
-    for name in tools._MDA_SCALARS:
-        getattr(settings, name).return_value = False if name.startswith("use_") else None
-    settings.save.return_value = False
-    manager = mock_ctrl.studio.acquisitions()
-    manager.get_acquisition_settings.return_value = settings
-    store = MagicMock()
-    store.get_num_images.return_value = 1
-    manager.run_acquisition.return_value = store
+    from tests.mda_fakes import Manager, Studio
+    manager = Manager()
+    mock_ctrl.studio = Studio(manager)
     preview = tools.get_mda_settings(mock_ctrl, unconstrained_guard)
     monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tools, "_mda_index_complete", manager.index_complete)
+    monkeypatch.setattr(tools, "_mda_poll_wait", lambda _: None)
     result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
-    manager.run_acquisition.assert_called_once_with()
-    assert result["datastore"]["image_count"] == 1
+    assert manager.calls.count('start') == 1
+    assert result["frames_accounted"] == 2
 
 
 def test_mda_refuses_a_stale_token_when_settings_changed(

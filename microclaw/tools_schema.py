@@ -1,5 +1,19 @@
 from typing import Any
 
+MDA_SETTINGS_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "n_frames": {"type": "integer", "minimum": 1},
+        "interval_s": {"type": "number", "minimum": 0},
+        "exposure_ms": {"type": "number", "exclusiveMinimum": 0},
+        "name": {"type": "string"},
+        "save_dir": {"type": "string", "description": "Required; resolved within the configured workspace before hardware effects."},
+        "save_mode": {"type": "string", "enum": ["ND_TIFF", "MULTIPAGE_TIFF", "SINGLEPLANE_TIFF_SERIES"], "default": "ND_TIFF"},
+    },
+    "required": ["n_frames", "interval_s", "exposure_ms", "name", "save_dir"],
+}
+
+
 ANALYSIS_TOOLS = frozenset({
     'run_zstack', 'run_timelapse', 'run_multiposition_acquisition',
     'run_tile_acquisition', 'run_multiposition_with_autofocus', 'run_adaptive_survey',
@@ -2343,19 +2357,22 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_mda_settings",
         "description": (
             "Inspect and preview MMStudio's current GUI MDA settings. Returns a token "
-            "required by run_mda; it does not construct pycro-manager events."
+            "required by run_mda’s dialog route; it does not construct pycro-manager events."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "run_mda",
         "description": (
-            "Run exactly the MMStudio GUI MDA settings most recently previewed by "
-            "get_mda_settings. Refuses stale previews and requires blocking human "
-            "confirmation because current settings may move hardware, illuminate, or save."
+            "Run a supervised Studio MDA from fresh time-lapse settings or the most "
+            "recently previewed dialog. Requires one acquisition confirmation."
         ),
-        "input_schema": {"type": "object", "properties": {
-            "preview_token": {"type": "string"}}, "required": ["preview_token"]},
+        "input_schema": {"type": "object", "additionalProperties": False,
+            "properties": {
+                "preview_token": {"type": "string", "description": "Exactly one of preview_token or settings is required. Refuses missing, stale or changed dialog previews."},
+                "settings": {**MDA_SETTINGS_SCHEMA, "description": "Exactly one of settings or preview_token is required. Required keys: positive integer n_frames, finite nonnegative interval_s, finite positive exposure_ms, string name and string save_dir (confined to the configured workspace). Unknown keys refuse. save_mode must be ND_TIFF (default), MULTIPAGE_TIFF or SINGLEPLANE_TIFF_SERIES."},
+            },
+            "oneOf": [{"required": ["preview_token"]}, {"required": ["settings"]}]},
     },
     {
         "name": "read_hook_from_file",
@@ -2539,7 +2556,7 @@ for _tool in TOOLS:
     elif _tool['name'] == 'run_mda':
         _tool['description'] += (
             " Package analysis is unavailable: run_mda uses Micro-Manager's own engine "
-            "and creates no dataset MicroClaw can observe."
+            "and package attachment is not yet supported."
         )
 
 # Add cache_control on the last tool so the entire tool list is cached.
