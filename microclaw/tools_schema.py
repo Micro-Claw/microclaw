@@ -4,7 +4,7 @@ MDA_SETTINGS_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
         "n_frames": {"type": "integer", "minimum": 1},
-        "interval_s": {"type": "number", "minimum": 0},
+        "interval_s": {"type": "number", "minimum": 0, "description": "Seconds between frames; 0 runs one continuous burst. Unlike run_timelapse, a zero-interval run_mda still stops: Stop in the web UI or Ctrl-C aborts it within about a second (measured on the demo machine, 2026-10-17)."},
         "exposure_ms": {"type": "number", "exclusiveMinimum": 0},
         "name": {"type": "string"},
         "save_dir": {"type": "string", "description": "Required; resolved within the configured workspace before hardware effects."},
