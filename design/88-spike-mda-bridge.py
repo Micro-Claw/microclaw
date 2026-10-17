@@ -18,6 +18,15 @@ Part B (one short MDA, only with --acquire; it REPLACES the MDA window's setting
       first image's axes and metadata keys (is there ElapsedTime-ms?).
   B5  summary metadata: get_sequence_settings() present? its save_mode name.
 
+Part C (only with --tiff; one short MDA per TIFF mode, MULTIPAGE_TIFF then
+SINGLEPLANE_TIFF_SERIES). Measures the layout a "dataset reopens complete" check
+would read, instead of guessing it:
+  C<mode>  save path; engine stop and isFrozen() timing; the file tree under the save
+           path with sizes at freeze, +1 s and +3 s (does anything still change after
+           isFrozen?); per .tif: tifffile page count, is_ome / is_micromanager flags,
+           series shapes and whether a series spans files; the total pages counted per
+           file vs getNumImages().
+
 Writes spike-88a.json next to --out and prints each step. --selftest runs against a
 pyjavaz-shaped fake: a static shadow carries only static methods, an enum shadow has
 the default repr plus name()/to_string(), and a fresh shadow comes back on every read.
@@ -74,7 +83,89 @@ def enum_text(value):
     return out
 
 
-def run(studio, port, out_dir, acquire, frames):
+def tree(path):
+    """Every file under path with its size; never raises."""
+    out = {}
+    for item in sorted(Path(path).rglob('*')):
+        if item.is_file():
+            try:
+                out[str(item.relative_to(path))] = item.stat().st_size
+            except OSError as exc:
+                out[str(item.relative_to(path))] = f'<{type(exc).__name__}>'
+    return out
+
+
+def tiff_facts(path):
+    """What tifffile sees, file by file. Pages are counted per file, never per series."""
+    import tifffile
+    files = {}
+    for item in sorted(Path(path).rglob('*.tif')):
+        rel = str(item.relative_to(path))
+        try:
+            with tifffile.TiffFile(str(item)) as tif:
+                series = []
+                for s in tif.series:
+                    try:
+                        spans = sorted({str(Path(p.parent.filehandle.path).name)
+                                        for p in s.pages if p is not None and getattr(p, 'parent', None)})
+                    except Exception as exc:
+                        spans = f'<{type(exc).__name__}: {exc}>'
+                    series.append(dict(shape=list(s.shape), axes=s.axes, kind=getattr(s, 'kind', None),
+                                       files=spans))
+                files[rel] = dict(pages=len(tif.pages), is_ome=tif.is_ome,
+                                  is_micromanager=tif.is_micromanager, series=series[:4])
+        except Exception as exc:
+            files[rel] = dict(error=f'{type(exc).__name__}: {exc}'[:300])
+    pages = [f['pages'] for f in files.values() if 'pages' in f]
+    return dict(files=files, tif_files=len(files), pages_summed_per_file=sum(pages))
+
+
+def tiff_run(manager, modes, out_dir, mode, frames):
+    root = Path(out_dir) / 'spike-mda-data'
+    root.mkdir(parents=True, exist_ok=True)
+    key = 'C_' + mode
+
+    def go():
+        b = manager.sequence_settings_builder()
+        for name, value in (('use_frames', True), ('use_slices', False), ('use_channels', False),
+                            ('use_position_list', False), ('use_autofocus', False),
+                            ('use_custom_intervals', False), ('is_test_acquisition', False),
+                            ('save', True), ('save_mode', modes.value_of(mode)),
+                            ('root', str(root)), ('prefix', 'spike88a-' + mode.lower()),
+                            ('interval_ms', 0.0), ('num_frames', frames)):
+            b = getattr(b, name)(value)
+        start = time.perf_counter()
+        store = manager.run_acquisition_with_settings(b.build(), False)
+        returned = round(time.perf_counter() - start, 3)
+        stopped = frozen = None
+        while time.perf_counter() - start < 600:
+            t = round(time.perf_counter() - start, 3)
+            if stopped is None and not manager.is_acquisition_running():
+                stopped = t
+            if stopped is not None and store.is_frozen():
+                frozen = t
+                break
+            time.sleep(0.1)
+        path = store.get_save_path()
+        count = int(store.get_num_images())
+        if frozen is None:
+            raise TimeoutError(f'not frozen within 600 s (stopped at {stopped}); path {path}')
+        snapshots = {'at_freeze': tree(path)}
+        time.sleep(1)
+        snapshots['plus_1s'] = tree(path)
+        time.sleep(2)
+        snapshots['plus_3s'] = tree(path)
+        changed = sorted(k for k in set(snapshots['at_freeze']) | set(snapshots['plus_3s'])
+                         if snapshots['at_freeze'].get(k) != snapshots['plus_3s'].get(k))
+        facts = tiff_facts(path)
+        return dict(save_path=str(path), start_returned_s=returned, engine_stopped_s=stopped,
+                    frozen_s=frozen, engine_images=count, changed_after_freeze=changed,
+                    tree_at_freeze=snapshots['at_freeze'], **facts,
+                    pages_match_images=facts['pages_summed_per_file'] == count)
+    return step(key, go)
+
+
+def run(studio, port, out_dir, acquire, frames, tiff=False):
     manager = studio.acquisitions()
     modes = static_class(port, 'org.micromanager.data.Datastore$SaveMode')
     step('A1_static_attributes', lambda: dict(attributes=public(modes), has_ND_TIFF=hasattr(modes, 'ND_TIFF'),
@@ -96,6 +187,9 @@ def run(studio, port, out_dir, acquire, frames):
             info[probe] = hasattr(values, probe)
         return info
     step('A4_values', a4)
+    if tiff and a2['ok']:
+        for mode in ('MULTIPAGE_TIFF', 'SINGLEPLANE_TIFF_SERIES'):
+            tiff_run(manager, modes, out_dir, mode, frames)
     if not acquire:
         print('Part B skipped (pass --acquire to run one short MDA).', flush=True)
         return
@@ -249,6 +343,8 @@ class _Store:
         threading.Thread(target=self.run, daemon=True).start()
     def run(self):
         import numpy as np
+        if self.s.v.get('save_mode') != 'ND_TIFF':
+            return self.run_tiff()
         from ndstorage.ndtiff_dataset import NDTiffDataset
         w = NDTiffDataset(self.s.v['root'], name=self.s.v['prefix'], writable=True)
         w.initialize({})
@@ -263,6 +359,26 @@ class _Store:
         time.sleep(0.2)
         w.finish()
         w.close()
+    def run_tiff(self):
+        """A plausible layout for the selftest only; the spike exists to measure the real one."""
+        import numpy as np
+        import tifffile
+        folder = Path(self.s.v['root']) / (self.s.v['prefix'] + '_1')
+        folder.mkdir(parents=True)
+        self.path = str(folder)
+        frame = np.zeros((64, 64), np.uint16)
+        if self.s.v['save_mode'] == 'MULTIPAGE_TIFF':
+            with tifffile.TiffWriter(str(folder / 'stack_MMStack_Pos0.ome.tif')) as w:
+                for i in range(self.s.v['num_frames']):
+                    w.write(frame, contiguous=False)
+                    self.n += 1
+        else:
+            for i in range(self.s.v['num_frames']):
+                tifffile.imwrite(str(folder / f'img_{i:09d}.tif'), frame)
+                self.n += 1
+        self.done.set()
+        self.frozen = True
+
     def get_num_images(self): return self.n
     def get_save_path(self): return self.path
     def is_frozen(self): return self.frozen
@@ -289,11 +405,13 @@ def selftest():
         studio = type('Studio', (), {'acquisitions': lambda self: manager})()
         manager = _Manager()
         with mock.patch.object(pycromanager, 'JavaClass', lambda classpath, port=None: _StaticSaveMode()):
-            run(studio, 4827, tmp, True, 30)
+            run(studio, 4827, tmp, True, 30, tiff=True)
     want = dict(A1=lambda v: v['has_ND_TIFF'] is False, A2=lambda v: v['name'] == 'ND_TIFF' and v['default_repr'],
                 A3=lambda v: v['name_stable'] and not v['str_stable'], B1=lambda v: v['running_after'],
                 B2=lambda v: v['num_frames'] == 30 and v['prefix'] == 'spike88a',
-                B4=lambda v: v['has_elapsed_ms'], B5=lambda v: v['save_mode']['name'] == 'ND_TIFF')
+                B4=lambda v: v['has_elapsed_ms'], B5=lambda v: v['save_mode']['name'] == 'ND_TIFF',
+                C_MULTIPAGE=lambda v: v['pages_match_images'] and v['tif_files'] == 1,
+                C_SINGLEPLANE=lambda v: v['pages_match_images'] and v['tif_files'] == 30)
     bad = []
     for prefix, check in want.items():
         key = next(k for k in REPORT if k.startswith(prefix + '_'))
@@ -309,6 +427,7 @@ def main():
     parser.add_argument('--port', type=int, default=4827)
     parser.add_argument('--acquire', action='store_true')
     parser.add_argument('--frames', type=int, default=300)
+    parser.add_argument('--tiff', action='store_true', help='Part C: one short MDA per TIFF mode')
     parser.add_argument('--selftest', action='store_true')
     args = parser.parse_args()
     if args.selftest:
@@ -317,7 +436,7 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     try:
-        run(Studio(port=args.port), args.port, out, args.acquire, args.frames)
+        run(Studio(port=args.port), args.port, out, args.acquire, args.frames, tiff=args.tiff)
     finally:
         (out / 'spike-88a.json').write_text(json.dumps(REPORT, indent=2, default=str), encoding='utf-8')
         print(f"Wrote {out / 'spike-88a.json'}", flush=True)
