@@ -64,6 +64,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     manager = Studio(port=a.port).acquisitions()
     modes = static_class(a.port, 'org.micromanager.data.Datastore$SaveMode')
+    # Create the folder first: AcquisitionWrapperEngine.runAcquisition shows a modal
+    # 'Directory not found. Create it?' for a root that cannot be written, and the bridge
+    # blocks until someone answers it (found 2026-10-17 by this spike's first attempt).
+    (out / 'data').mkdir(parents=True, exist_ok=True)
     b = manager.sequence_settings_builder()
     for name, value in (('use_frames', True), ('use_slices', False), ('use_channels', False),
                         ('use_position_list', False), ('use_autofocus', False),
