@@ -60,6 +60,7 @@ print("MAP", json.dumps({
         entry.path for entry in report.entries
         if entry.capability == "acquisition-dose"
     ),
+    # HISTORICAL: mmstudio-mda was removed by design/88 88a (PR #58); this now lists nothing.
     "mda": [
         entry.classification for entry in report.entries
         if entry.path == "mmstudio-mda"

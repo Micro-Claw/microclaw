@@ -1,5 +1,8 @@
 """Block 5 gate B4b: prove run_mda is refused live. Takes no exposure.
 
+HISTORICAL: design/88 88a (PR #58, 2026-10-17) removed run_mda's dialog route and the
+mmstudio-mda path, so this probe cannot exercise the current API.
+
 run_mda is fully dose-planned by Block 4 yet has no `acquisition-tool:` row and
 sits behind an `excluded` mmstudio-mda path. This probe proves the exclusion
 still holds at dispatch after Block 5 added the dose policy -- i.e. that the new

@@ -1,6 +1,6 @@
 # Driving Micro-Manager's own side — the MDA, htSMLM activation, plugin windows
 
-**Status:** in flight. 88a opened 2026-10-16. Owns `R86`.
+**Status:** 88a done (PR #58, demo gate 15/15 on 2026-10-17; closes `R86`). 88b–88d not opened.
 Siblings: [design/87](87-package-metrics.md) (community-package metrics) and
 [design/89](89-feedback-during-acquisition.md) (MicroClaw acting on them).
 
@@ -108,7 +108,7 @@ Implementation inspection of this build also establishes:
 
 §"Probe" establishes behavior beyond this source evidence.
 
-## What `run_mda` is today
+## What `run_mda` was before 88a
 
 | today | where | consequence |
 |---|---|---|
@@ -121,96 +121,86 @@ Implementation inspection of this build also establishes:
 
 ## Decisions
 
-### E1 — one tool, two routes: `run_mda(settings=…)` beside `run_mda(preview_token=…)`
+### E1 — `run_mda(settings=…)`: MicroClaw builds the MDA
 
-> **Superseded in part (operator decision, 2026-10-17): the dialog route is
-> removed.** Every MicroClaw session (terminal and browser) runs
-> `validate_live_rig`, which lists `mmstudio-mda` as `excluded`. So
-> `run_mda(preview_token=…)` has been refused in every session since design/33
-> block 5 (`2599869`), with or without an authorization profile, and no session
-> can reach it. 88a removes it. `run_mda` is settings-only, and `get_mda_settings`
-> stays as a read-only view of the MDA window, without a token. A dialog route,
-> if wanted later, returns with its own authorization decision. The text below
-> is kept as written until 88a's reconciliation.
+**The dialog route is removed (operator decision, 2026-10-17).** Every
+MicroClaw session runs `validate_live_rig`, which lists `mmstudio-mda` as
+`excluded`, so `run_mda(preview_token=…)` had been refused in every session
+since design/33 block 5 (`2599869`), not only on rigs with an authorization
+profile. `run_mda` is settings-only. `get_mda_settings` stays as a read-only
+view of the MDA window, with no token. A dialog route returns only with its own
+authorization decision.
 
-Fold into `run_mda`; do not add a tool. The two routes are mutually exclusive:
+```json
+{"n_frames": 50000, "interval_s": 0, "exposure_ms": 15, "name": "cell3_dstorm",
+ "save_dir": "D:/data/cell3", "save_mode": "ND_TIFF"}
+```
 
-- **`preview_token`**, unchanged: run exactly what the dialog holds. Add
-  `saveMode` to the fingerprint.
-- **`settings`**, MicroClaw-built. v1 is time-lapse only, which is the SMLM
-  shape:
-
-  ```json
-  {"n_frames": 50000, "interval_s": 0, "exposure_ms": 15,
-   "name": "cell3_dstorm", "save_mode": "ND_TIFF"}
-  ```
-
-  `save_mode` defaults to `ND_TIFF`. `root` is the workspace
-  (`guard.resolve_in_workspace`). The settings come from a **fresh builder**,
-  not `copyBuilder()`, with every axis not given explicitly off, so nothing the
-  dialog holds (positions, autofocus, slices) rides along. Exposure goes
-  through `guard.check_exposure` and is set on the core, as `run_timelapse`
-  does. Channels, slices and positions stay on the dialog route until someone
-  needs them typed.
-
-**Update the MDA dialog (operator decision, 2026-10-15).** After validation
-and the acquisition confirmation, start with
-`runAcquisitionWithSettings(built, false)`. That call already applies the
-settings as the engine's current ones (`executeAcquisition` →
-`setSequenceSettings` → `acquire`, read from the 2.0.3 jar), which posts the
-settings-changed event, so the requested settings become visible without a
-separate `setAcquisitionSettings` call. A second call would only post a second
-event. V1 must confirm that the dialog follows. If it does not, use the
-public `setAcquisitionSettings` route to make the dialog update; a visible
-update is required, not optional. Record the settings that actually ran and
-save them in summary metadata.
+- **`save_dir` is required** and means what `run_timelapse`'s does, resolved
+  through `guard.resolve_in_workspace` (coordinator decision, 2026-10-16:
+  `workspace_dir` is optional, so there is no root to default to).
+- **`save_mode`** defaults to `ND_TIFF`; the MDA window's "Image stack file" is
+  `MULTIPAGE_TIFF` and "Separate image files" is `SINGLEPLANE_TIFF_SERIES`
+  (operator, 2026-10-17: TIFF must be verified like NDTiff; see E2).
+- A **fresh builder**, never `copyBuilder()`, with every axis set explicitly,
+  `use_custom_intervals` and `is_test_acquisition` included. Exposure goes
+  through `guard.check_exposure` and is set on the core.
+- **Over the bridge, an enum constant is not reachable** (spike, demo machine):
+  `Datastore$SaveMode`'s static shadow exposes only `value_of` and `values`, so
+  the mode is `value_of("ND_TIFF")`. **An enum read back is an object shadow**,
+  and its `str()` carries a memory address that changes on every read, so the
+  recorded and hashed text is `.name()`. Gate run 1 failed every MDA on the
+  first; the second would have made every preview token unique.
+- **The dialog follows.** `runAcquisitionWithSettings(built, false)` alone made
+  the MDA window show the requested Count, Name prefix and save format, as
+  checked against screenshots in gate runs 2 and 3. No second setter call.
+- **Settings that ran** are read back from MM's own summary metadata
+  (`SummaryMetadata.getSequenceSettings()`); MicroClaw writes nothing into the
+  datastore.
+- **The save folder is MicroClaw's to create.** `AcquisitionWrapperEngine.
+  runAcquisition` opens a modal "Directory not found. Create it?" on the bridge's
+  thread for any root it cannot write. That blocks every bridge call until a
+  human answers, and it hung Micro-Manager twice on 2026-10-17. Before the
+  confirmation, `run_mda` refuses unless the nearest existing ancestor is
+  writable and has more than `1.25 ×` the image bytes free (MM's own
+  `enoughDiskSpace`, whose `getTotalMemory` equals the plan's bytes for this
+  route). After consent it creates the folder. A `null` datastore from MM is
+  `failed`, never supervised.
 
 **No settings restoration in v1 (operator decision, 2026-10-15).** The run
-leaves its settings in the dialog. Putting the previous settings back
-(snapshot, restore after proved termination, skip if the operator edited them
-meanwhile) waits until someone needs it. Micro-Manager's own save/load of MDA
-settings covers the case meanwhile. See §"Not now".
+leaves its settings in the dialog. See §"Not now".
 
-### E2 — non-blocking and supervised, on both routes (closes `R86`)
+### E2 — non-blocking and supervised (closes `R86`)
 
-Start non-blocking: `runAcquisitionWithSettings(…, false)` or
-`runAcquisitionNonblocking()`. Then:
+- **One worker owns every bridge call** (start, poll, abort, finalization). The
+  foreground makes no Java call, so it returns within the bound even when a call
+  hangs, and never queues a second call behind a hung one. It waits on a
+  completion `Event`, never on `Thread.join`: on CPython 3.12 an interrupted
+  `join` marks the live worker stopped, after which `is_alive()` lies (measured
+  in the gate selftest; `R155` holds the pycro-manager path's copy of the hazard).
+- **Bound**: design/60's runtime ceiling **and** quiet-window qualification,
+  with startup and planned-interval allowances. Image-count polling is coarse
+  progress, not frame timing. A later acquisition tool is refused **without a
+  bridge probe** while the worker lives.
+- **Cancel**: web UI Stop (the session cancel event) or Ctrl-C requests
+  `abortAcquisition()` exactly once; supervision continues to the bound. An
+  observation failure is recorded and never aborts. Outcome (`completed`,
+  `cancelled`, `failed`, `unterminated`) and diagnostics are separate.
+- **Writer completion**, checked only after engine idle **and** `isFrozen()`,
+  because `DefaultDatastore.freeze()` sets the flag *before* the storage flushes
+  and MM swallows a failed flush:
 
-- **Poll** `isAcquisitionRunning()` and the datastore's `getNumImages()` about
-  once a second. Expected short round trips replace today's whole-run lock.
-- **Bound** the wait using design/60's plan-derived runtime deadline **and**
-  quiet-window qualification (`max(900, 5 × largest gap)`). Account for planned
-  long intervals and startup before the first observed gap. Image-count polling
-  gives coarse progress, not individual frame timing. A quiet timer alone is
-  not the runtime policy.
-- **Bridge hangs.** Run start/poll/stop calls on the supervised worker side;
-  the tool's watchdog must return even if one call blocks. Do not queue repeated
-  calls behind a hung bridge lock. Raise `AcquisitionUnterminated` and retain
-  the pending worker and hardware/teardown uncertainty for the existing
-  concurrent-acquisition refusal. V4 injects blocked start, poll and stop calls.
-- **Cancel.** The UI's Stop and terminal interrupt request
-  `abortAcquisition()`, pending V4's preservation/latency probe. Avoid
-  `haltAcquisition()`'s additional modal prompt. A stop request is not proof of
-  termination; continue bounded supervision.
-- **Writer completion.** Prove engine/pipeline completion and datastore
-  finalization using the supported running/frozen state, checked against
-  readability and flushed ND-TIFF index in V2/V4. Never infer writer completion
-  from a stop request or an unchanged image count. Keep acquisition outcome and
-  writer completion separate for analysis notifications.
-- **Record** `design/75` D4 lifecycle diagnostics and a `duration_breakdown`.
-- **Gate.** Put `run_mda` behind the install-admission chokepoint, and keep
-  `design/60`'s concurrent-acquisition refusal (it keys on
-  `_microclaw_acquisition_entry_point`, which already includes `run_mda`).
+  | save mode | proved when | measured |
+  |---|---|---|
+  | `ND_TIFF` | ndstorage reopens it with `getNumImages()` index entries | frozen and complete within 10 ms of engine stop |
+  | `MULTIPAGE_TIFF` | every `*.ome.tif` carries `MultipageTiffWriter.close()`'s markers (483765892 at byte 16, 99384722 at 24) and is no longer the 4 GiB pre-allocation, and pages summed **per file** equal the count | at `isFrozen()` both stacks of an 8,500-frame run were exactly 4,294,967,296 bytes and every file changed afterwards; one series spans all files |
+  | `SINGLEPLANE_TIFF_SERIES` | one `*.tif` per image under the save path, each at least the pixel bytes, from `stat` only (operator decision) | opening freshly written files cost ~30 ms each on the demo machine (`R156`); nothing changes after `isFrozen()` |
 
-The dialog route keeps its `authorize_path` exemption (design/33 excluded the
-opaque `mmstudio-mda` path). **The settings route earns an
-`acquisition-tool:run_mda` row** (operator decision, 2026-10-16), classified
-exactly like the other acquisition tools' rows, so it runs under the same
-dose policy as `run_timelapse`. `mmstudio-mda` is `excluded` in every session's
-map, so before 88a `run_mda` was refused outright everywhere, not only on rigs
-with an authorization profile (corrected 2026-10-17). What remains outside the map
-is Studio's processor pipeline, which sees the settings route's frames too.
-E3 discloses htSMLM's part of that; 88a does not enumerate it.
+- **Record**: design/75 D4 lifecycle records and one `duration_breakdown` with
+  its residual named; progress events carry `frames_planned`.
+- **Admission and authorization**: one shared install-admission check, and an
+  `acquisition-tool:run_mda` row (operator decision, 2026-10-16). Studio's
+  processor pipeline stays outside the map; E3 discloses htSMLM's part.
 
 ### E3 — htSMLM: MicroClaw checks, discloses and records; the operator ticks "Activate"
 
@@ -288,6 +278,13 @@ with a second fixture package using unrelated metric names and with no htSMLM/
 EMU installed. Design/89's `analysis_feedback` is refused on all MDA calls in
 v1 by its tool-scope rule; this does not imply that htSMLM is always present.
 
+**From 88a, for 88b.** The save path is non-null at the first poll. An MDA
+ND-TIFF has four axes (`channel`, `position`, `time`, `z`). The on-disk index
+was sometimes one entry ahead of `getNumImages()` while growing. The
+supervisor already exposes a private `notify` seam that carries the lifecycle
+points (`acquisition_finished` with outcome, then `writer_finished`), one
+per-poll step, and one abort latch for 88c's dwell rule.
+
 ### E5 — inspected plugin operations, informed by skills
 
 Start with EMU/htSMLM; there is no requirement to handle every plugin.
@@ -336,39 +333,48 @@ in this block.
 
 The MDA dialog is handled by E1, independently of plugin operations.
 
-### E6 — export: the settings route emits; the dialog route still refuses
+### E6 — export: the settings run emits as plain pycro-manager
 
-The settings route renders as plain pycro-manager:
+`run_mda` is `@emits`. The script inlines, by `inspect.getsource`, the same
+builder, settings reader, storage preflight and folder creation, supervisor,
+writer-completion predicate and clock as the live tool, reaches `SaveMode` with
+`value_of` through the inlined `_new_static_java_class`, uses the bridge port
+the script's own `core` was created on, prints its envelope and says htSMLM
+activation is not reproduced. It refuses (`CannotEmit`) for a cancelled or
+unterminated record (that would replay more than ran) and when the recorded
+safety limits are missing. Gate runs 2 and 3 ran the exported script standalone
+on the demo machine: exit 0, 1,500 frames.
 
-```python
-studio = Studio()
-am = studio.acquisitions()
-core.set_exposure(15.0)  # after portable exposure preflight
-s = (am.sequence_settings_builder().num_frames(50000).interval_ms(0.0)
-     .use_frames(True).save(True).save_mode(<ND_TIFF>).root(str(_HERE))
-     .prefix("cell3_dstorm").use_slices(False).use_channels(False)
-     .use_position_list(False).use_autofocus(False).build())
-store = am.run_acquisition_with_settings(s, False)  # also updates the dialog
-# Bounded supervision, cancellation and writer-finalization checks follow E2.
-```
+## What 88a built and measured (2026-10-17)
 
-The `ND_TIFF` static is reached the way `_new_static_java_class` reaches
-statics, emitted inline, because pyjavaz's static-cache collision applies in a
-script too. The script prints that htSMLM activation is the operator's panel
-and is not reproduced. The final emitter reproduces exposure preflight,
-settings update, bounded supervision, cancellation
-and, once 88c adds it, the activation-maximum dwell stop. Exec tests drive the
-normal and failure paths against bridge-shaped fakes; the sketch above is not
-the complete emitted program. If a requested stop cannot be reproduced,
-refuse that call rather than omit it. The dialog route keeps `@refuses`, with
-its reason narrowed to "the dialog's contents". This is a tool with two emitted routes,
-the shape `set_channel` already has (block 41c).
+E1, E2 and E6 as decided above. Demo machine, demo config, 512 × 512 uint16,
+10 ms exposure, n = 3 per arm unless stated.
+
+| measurement | result |
+|---|---|
+| V1 start call | returns with a datastore while acquiring: 0.03 s typical; 0.10 s into a folder MicroClaw had just created |
+| V1 dialog | follows the requested settings (screenshots, runs 2 and 3) |
+| V2 save path | non-null at the first poll |
+| V2 growing reads | 32/32 ndstorage reads succeeded while acquiring; the index was sometimes one entry **ahead** of `getNumImages()` (matters to 88b and design/89) |
+| V2 finalization | NDTiff 0.12–0.32 s, stack 0.11 s, separate files 0.03 s after the count + size change (35.96 s before it) |
+| V3 gaps (report only) | MDA p50 11.2–11.9 ms, p95 12.0 ms; `run_timelapse` p50 11–12 ms, p95 12 ms |
+| V4 abort (report only) | 1.1–1.2 s from request to tool return, ~90 frames after the request (one 1 s poll), 4/4 per run; dataset readable, index = count, writer proved |
+| V4 no prompt | no confirm-abort window (operator, runs 2 and 3) |
+| export | standalone script: exit 0, 1,500 frames, runs 2 and 3 |
+
+**Gate runs.** Run 1: 2/14. Every MDA failed on `getattr(modes, "ND_TIFF")`.
+Run 2: 15/15, but scoring its artifacts found the 36 s separate-files check;
+MM's directory dialog (the operator answered it, so the first start's 7.9 s was
+a human, not warm-up); and the agent telling the operator Stop would not stop a
+zero-interval `run_mda`. Run 3: 15/15, with every fix. The agent repeated
+the Stop misstatement, despite `run_mda`'s own description, in both sessions;
+the text now sits on `interval_s` and is to be checked in 88b's session (`R01`).
 
 ## Probes — each before its owning block's gate
 
-`design/88-probe-mda.py`, standalone, run first against a bridge-shaped fake
-(snake-cased Datastore/SequenceSettings shadows, a static `SaveMode` reached
-as `_new_static_java_class` does).
+V1–V4 were measured by 88a's demo gate (`design/88-block88a-demo-gate.*`) and
+three spikes (`design/88-spike-*`); results are in §"What 88a built and
+measured". No separate `design/88-probe-mda.py` was written.
 
 **On the demo machine:**
 
@@ -422,7 +428,7 @@ as `_new_static_java_class` does).
 
 | block | content | where it is proved |
 | --- | --- | --- |
-| **88a** | E1, E2, E6: settings route and dialog update, non-blocking supervision and direct abort on both routes, writer completion, lifecycle record, install-admission gate, `saveMode` hash, emitter exec tests. Closes `R86`. | demo: V1–V4 and literal-command gate; fake blocked-call/long-interval cases |
+| **88a** ✓ | E1, E2, E6: settings-only `run_mda` (dialog route removed), dialog update, non-blocking supervision and direct abort, writer completion for NDTiff and both TIFF modes, folder and disk preflight, lifecycle record, install-admission gate, export. Closed `R86` (PR #58). | demo gate 15/15 (run 3, 2026-10-17); three spikes |
 | **88b** | E4: `analysis` on typed ND-TIFF MDA, actual datastore path, acquisition/writer notifications and progress metrics when 87a is present. Independent of htSMLM/plugin work. | demo with a fixture package; growing reader, cancellation and finalized index |
 | **88c** | E3: htSMLM preflight, disclosure, trace and exhaustion stop, including its emitter. Shared EMU reader extension can land first and is also used by 89b. Manual Activate is sufficient. | M2: V5, real activation and direct-abort preservation; no cadence regression |
 | **88d** | E5: inspected EMU opening, and a typed htSMLM activation operation built from the V7 spike. Implement activation control only if the full seam, bounds and export are proved; otherwise record the missing API. | V7 spike first (demo machine if htSMLM is installed there, else M2), V6 on demo for applicable operations, then M2 for EMU/htSMLM |
@@ -447,12 +453,15 @@ can run before these blocks.
 
 ## Register
 
-`R86` closes with 88a. V5's observation confirms design/78's 78c check, and
-goes in that notebook's carried-forward list.
+`R86` **closed by 88a** (PR #58). 88a opened `R155` (CPython's interrupted
+`join` on the pycro-manager path) and `R156` (opening freshly written files on
+Windows), and added its Stop-wording evidence to `R01`. V5's observation
+confirms design/78's 78c check, and goes in that notebook's carried-forward
+list.
 
 ## Run ledger
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | — | `2a6f7ee` | drafted 2026-10-14, revised 2026-10-15, not opened |
-| 88a | `block-88a` | `d90e6f6` | opened 2026-10-16; implementation delegated |
+| 88a | `block-88a` | `d90e6f6` | closed 2026-10-17, PR #58: demo gate 15/15 on run 3; six runner rounds, three spikes |
