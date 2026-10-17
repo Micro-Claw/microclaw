@@ -6,6 +6,7 @@ expose static methods, not enum fields. Enum reads return fresh opaque
 shadows, and Java arrays do not implement Python sequence protocols.
 """
 import threading
+import os
 from types import SimpleNamespace
 
 
@@ -129,6 +130,9 @@ class Manager:
         self.calls.append('settings'); return self.settings
     def run_acquisition_with_settings(self, settings, block):
         assert block is False
+        if not os.path.isdir(settings.values['root']) or not os.access(settings.values['root'], os.W_OK):
+            self.calls.append('modal_dialog')
+            raise AssertionError('Micro-Manager would show a root-directory modal dialog')
         self.calls.append('start'); self.settings = settings
         self.blocked('start'); return self.store
     def is_acquisition_running(self):

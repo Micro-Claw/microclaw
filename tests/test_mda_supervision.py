@@ -216,6 +216,8 @@ def test_emitter_routes_and_missing_record(rig):
 def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, capsys, mode, save_mode):
     import builtins
     ctrl, manager, guard, settings = rig
+    if save_mode == 'ND_TIFF':
+        settings['save_dir'] = str(tmp_path / 'mda-root')
     settings['save_mode'] = save_mode
     if save_mode == 'MULTIPAGE_TIFF':
         from tests.test_mda_tiff import write_stack
@@ -231,6 +233,9 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, c
     if save_mode != 'ND_TIFF':
         monkeypatch.setattr(manager.store, 'get_save_path', lambda: str(tmp_path))
     result = tools.run_mda(ctrl, guard, settings=settings)
+    if save_mode == 'ND_TIFF':
+        from pathlib import Path
+        Path(settings['save_dir']).rmdir()  # exported script must recreate its missing root
     monkeypatch.undo()  # emit product source, not the live test's patched dependencies
     from tests.test_session_script_export import Guard, completed_call
     export_guard = Guard(tmp_path)
@@ -295,6 +300,11 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, c
         if name == 'threading': return SimpleNamespace(Thread=Thread, Event=Event, Lock=threading.Lock)
         if name == 'time': return SimpleNamespace(perf_counter=lambda: now[0])
         return original_import(name, *args, **kwargs)
+    if save_mode == 'SINGLEPLANE_TIFF_SERIES':
+        import tifffile
+        def no_tiff_open(*args, **kwargs):
+            raise AssertionError('Emitted single-plane verifier must use stat only')
+        monkeypatch.setattr(tifffile, 'TiffFile', no_tiff_open)
     scope = {'__file__': str(tmp_path / 'mda.py'), '__builtins__': {**vars(builtins), '__import__': importing}}
     try:
         if mode == 'over_limit':
@@ -311,6 +321,8 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, c
             assert manager.calls.count('abort') == (1 if mode == 'interrupt' else 0)
             assert scope['_mda_state']['writer_completion']['state'] == 'proved'
         assert ports == ([] if mode == 'over_limit' else [('studio', 5839), ('enum', 5839)])
+        if mode != 'over_limit':
+            assert scope['_mda_image_bytes'] == 16 * 16 * 2
         assert scope['_LIMITS']['exposure_ms'] == (0.0, export_guard._c.camera.max_exposure_ms)
         assert 'MDA envelope:' in capsys.readouterr().out
     finally:
@@ -353,9 +365,9 @@ def test_tiff_supervisor_proves_writer(rig, monkeypatch, mode, label):
                              np.zeros((512, 512), np.uint16), byteorder='>')
     monkeypatch.setattr(manager.store, 'get_save_path', lambda: str(root))
     predicate = tools._mda_writer_complete
-    def checked(path, count, save_mode):
+    def checked(path, count, save_mode, image_bytes):
         assert manager.frozen_reads and not manager.observation[0]
-        return predicate(path, count, save_mode)
+        return predicate(path, count, save_mode, image_bytes)
     monkeypatch.setattr(tools, '_mda_writer_complete', checked)
     result = tools.run_mda(ctrl, guard, settings={**settings, 'save_mode': mode})
     assert result['outcome'] == 'completed'
@@ -675,3 +687,103 @@ def test_mda_enum_name_failure_is_labelled_unreadable(rig, monkeypatch):
     result = tools._read_mda_settings(manager.settings)
     assert result['save_mode'] == '<unreadable: RuntimeError>'
     assert ' object at 0x' not in result['save_mode']
+
+
+def test_mda_missing_save_root_created_only_after_consent(rig, monkeypatch):
+    from pathlib import Path
+    ctrl, manager, guard, settings = rig
+    root = Path(settings['save_dir']) / 'missing' / 'nested'
+    settings['save_dir'] = str(root)
+    confirmations = []
+    def confirm(*args, **kwargs):
+        assert not root.exists(), 'No directory write before acquisition consent'
+        confirmations.append(True)
+        return True
+    monkeypatch.setattr(tools, 'CONFIRM_FN', confirm)
+    result = tools.run_mda(ctrl, guard, settings=settings)
+    assert result['outcome'] == 'completed', result
+    assert root.is_dir()
+    assert confirmations == [True]
+    assert manager.calls.count('start') == 1
+    assert 'modal_dialog' not in manager.calls
+
+
+@pytest.mark.parametrize('free', [1279, 1280])
+def test_mda_low_disk_refuses_before_consent(rig, monkeypatch, free):
+    from pathlib import Path
+    ctrl, manager, guard, settings = rig
+    root = Path(settings['save_dir']) / 'missing'
+    settings['save_dir'] = str(root)
+    # getTotalMemory is 2 frames * 16 * 16 * 2; Java requires > 1.25 times it.
+    monkeypatch.setattr(tools.shutil, 'disk_usage', lambda path: SimpleNamespace(free=free))
+    confirmations = []
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: confirmations.append(True))
+    with pytest.raises(ValueError, match='Not enough free disk space'):
+        tools.run_mda(ctrl, guard, settings=settings)
+    assert not confirmations
+    assert not root.exists()
+    assert 'start' not in manager.calls
+    assert not tools._acquisition_ledger(ctrl).in_flight
+
+
+def test_mda_unwritable_parent_refuses_before_consent(rig, monkeypatch):
+    ctrl, manager, guard, settings = rig
+    monkeypatch.setattr(tools.os, 'access', lambda *a: False)
+    confirmations = []
+    monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: confirmations.append(True))
+    with pytest.raises(ValueError, match='writable existing parent'):
+        tools.run_mda(ctrl, guard, settings=settings)
+    assert not confirmations and 'start' not in manager.calls
+
+
+def test_mda_directory_writability_rechecked_after_consent(rig, monkeypatch):
+    ctrl, manager, guard, settings = rig
+    checks = iter([True, False])
+    monkeypatch.setattr(tools.os, 'access', lambda *a: next(checks))
+    result = tools.run_mda(ctrl, guard, settings=settings)
+    assert result['outcome'] == 'failed'
+    assert 'not writable' in result['error']
+    assert 'start' not in manager.calls
+    assert not tools._acquisition_ledger(ctrl).in_flight
+
+
+def test_mda_null_start_is_failed_without_polling(rig, monkeypatch):
+    ctrl, manager, guard, settings = rig
+    def declined(*args):
+        manager.calls.append('start')
+        return None
+    monkeypatch.setattr(manager, 'run_acquisition_with_settings', declined)
+    def no_retry(*args):
+        raise RuntimeError('A null datastore must never enter observation retry')
+    monkeypatch.setattr(tools, '_mda_poll_wait', no_retry)
+    result = tools.run_mda(ctrl, guard, settings=settings)
+    assert result['outcome'] == 'failed', result
+    assert 'poll' not in manager.calls
+    assert 'Micro-Manager declined to start' in result['error']
+    assert 'message that needs dismissing' in result['error']
+    assert 'poll' not in manager.calls
+    assert result['writer_completion']['state'] == 'not_reached'
+    assert not tools._acquisition_ledger(ctrl).in_flight
+
+
+def test_mda_progress_has_planned_frame_count(rig):
+    ctrl, manager, guard, settings = rig
+    events = []
+    result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard,
+                                         acquisition_event_sink=events.append))
+    assert result['outcome'] == 'completed'
+    progress = [event for event in events if event['type'] == 'acquisition_progress']
+    assert progress
+    assert [event['frames_accounted'] for event in progress] == [1, 2]
+    assert all(event['frames_planned'] == settings['n_frames'] for event in progress)
+
+
+def test_mda_stop_guidance_and_cancel_banner_are_explicit():
+    from microclaw.agent import CANCEL_REASON
+    from microclaw.tools_schema import TOOLS
+    description = next(tool['description'] for tool in TOOLS if tool['name'] == 'run_mda')
+    assert 'Stop in the web UI, or Ctrl-C in the terminal, aborts the MDA mid-run' in description
+    assert 'keeps supervising until the dataset is finished' in description
+    assert 'MDA was aborted' in CANCEL_REASON
+    assert 'any other running step finished first' in CANCEL_REASON
+    assert 'last step completed' not in CANCEL_REASON

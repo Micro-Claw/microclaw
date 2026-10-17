@@ -2365,7 +2365,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "run_mda",
         "description": (
             "Run a supervised Studio MDA from fresh time-lapse settings. "
-            "Requires one acquisition confirmation."
+            "Requires one acquisition confirmation. Stop in the web UI, or Ctrl-C in the terminal, aborts the MDA mid-run, and MicroClaw keeps supervising until the dataset is finished."
         ),
         "input_schema": {"type": "object", "additionalProperties": False,
             "properties": {

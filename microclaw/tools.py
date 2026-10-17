@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import queue
+import shutil
 import os
 import re
 import sys
@@ -12123,7 +12124,7 @@ _MDA_DISPLAY_SETTINGS_HEADER = 483765892
 _MDA_COMMENTS_HEADER = 99384722
 
 
-def _mda_writer_complete(path, count, save_mode):
+def _mda_writer_complete(path, count, save_mode, image_bytes=None):
     # Called only after engine idle and frozen; read errors mean not yet.
     try:
         if save_mode == "ND_TIFF":
@@ -12150,14 +12151,28 @@ def _mda_writer_complete(path, count, save_mode):
             files = list(root.rglob("*.tif"))
             if len(files) != count:
                 return False
-            for file in files:
-                with tifffile.TiffFile(file) as image:
-                    if len(image.pages) != 1:
-                        return False
-            return True
+            return (image_bytes is not None and image_bytes > 0
+                    and all(file.stat().st_size >= image_bytes for file in files))
         return False
     except Exception:
         return False
+
+
+def _mda_save_preflight(path, total_bytes):
+    ancestor = Path(path)
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    if not ancestor.is_dir() or not os.access(ancestor, os.W_OK):
+        raise ValueError(f"MDA save directory has no writable existing parent: {ancestor}")
+    # AcquisitionWrapperEngine 2.0.3: enoughDiskSpace requires > 1.25 * getTotalMemory.
+    if shutil.disk_usage(ancestor).free <= 1.25 * total_bytes:
+        raise ValueError("Not enough free disk space for the MDA (needs more than 1.25 times image bytes)")
+
+
+def _mda_prepare_save_dir(path):
+    os.makedirs(path, exist_ok=True)
+    if not os.path.isdir(path) or not os.access(path, os.W_OK):
+        raise ValueError(f"MDA save directory is not writable: {path}")
 
 
 def _wait_mda_completion(done, timeout_s):
@@ -12204,7 +12219,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                    quiet_window, clock, wait, poll_s, cancel=None,
                    account=lambda: None, close=lambda: None,
                    notify=lambda event: None, expired=None, pause=None,
-                   clock_name="monotonic", frames_planned=None):
+                   clock_name="monotonic", frames_planned=None, image_bytes=None):
     """One bridge owner; the watchdog never calls Java, including on expiry.
 
     notify is the internal lifecycle seam for future read-only observers.
@@ -12253,6 +12268,8 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
             notify({"type": "acquisition_construction", "source": "MMStudio MDA"})
             state["start_called"] = clock()
             store = start()
+            if store is None:
+                raise RuntimeError("Micro-Manager declined to start the MDA; its own window may be showing a message that needs dismissing")
             notify({"type": "acquisition_event_submission", "source": "MMStudio MDA"})
             state["start_returned"] = clock()
             state["phase"] = "acquiring"
@@ -12296,7 +12313,8 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                 if frames_planned is not None and previous_count < frames_planned <= count:
                     notify({"type": "acquisition_planned_final_frame_accounted", "frames_accounted": count})
                 notify({"type": "acquisition_progress", "phase": state["phase"],
-                        "frames_accounted": count, "dataset_path": state["dataset_path"]})
+                        "frames_accounted": count, "frames_planned": frames_planned,
+                        "dataset_path": state["dataset_path"]})
                 if not running:
                     if "engine_finished" not in state:
                         state["engine_finished"] = clock()
@@ -12312,7 +12330,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                     if state["frozen"]:
                         mode = settings["save_mode"]
                         complete = (state["dataset_path"] is not None
-                                    and _mda_writer_complete(state["dataset_path"], count, mode))
+                                    and _mda_writer_complete(state["dataset_path"], count, mode, image_bytes))
                         writer = {"state": "proved", "flush": {
                             "ND_TIFF": "verified_ndtiff_index",
                             "MULTIPAGE_TIFF": "verified_multipage_tiff_closed",
@@ -12411,9 +12429,9 @@ def _emit_mda(params: RecordedParams) -> str:
     from microclaw.controller import _new_static_java_class, _TIMING_CLOCK
     source = "\n".join(inspect.getsource(fn) for fn in (
         _new_static_java_class, timing_clock, timing_clock_name, _build_mda_settings, _read_mda_settings,
-        _mda_index_complete, _mda_writer_complete, _mda_poll_wait, _mda_report, _supervise_mda))
+        _mda_index_complete, _mda_writer_complete, _mda_save_preflight, _mda_prepare_save_dir, _mda_poll_wait, _mda_report, _supervise_mda))
     return (
-        "import threading\nimport time\nimport math\nfrom typing import Any\n"
+        "import threading\nimport time\nimport math\nimport os\nimport shutil\nfrom typing import Any\n"
         "from pycromanager import Studio\nfrom ndstorage import Dataset\nfrom pathlib import Path\nimport tifffile\n"
         + f"_TIMING_CLOCK = {_TIMING_CLOCK!r}\n_MDA_SCALARS = {_MDA_SCALARS!r}\n"
         + "\n".join(f"{name} = {globals()[name]!r}" for name in (
@@ -12427,13 +12445,17 @@ def _emit_mda(params: RecordedParams) -> str:
         + "_mda_port = core._creation_port\n_mda_studio = Studio(port=_mda_port)\n_mda_manager = _mda_studio.acquisitions()\n"
         + "_mda_modes = _new_static_java_class(_mda_port, 'org.micromanager.data.Datastore$SaveMode')\n"
         + "_mda_built = _build_mda_settings(_mda_manager, _mda_modes, _mda_input)\n"
-        + "def _mda_start():\n    core.set_exposure(_mda_input['exposure_ms'])\n"
+        + "_mda_geometry = (int(core.get_image_width()), int(core.get_image_height()), int(core.get_bytes_per_pixel()))\n"
+        + "if min(_mda_geometry) <= 0: raise ValueError('MDA camera geometry is unavailable')\n"
+        + "_mda_image_bytes = math.prod(_mda_geometry)\n"
+        + "_mda_save_preflight(_mda_input['save_dir'], _mda_image_bytes * _mda_input['n_frames'])\n"
+        + "def _mda_start():\n    _mda_prepare_save_dir(_mda_input['save_dir'])\n    core.set_exposure(_mda_input['exposure_ms'])\n"
         + "    return _mda_manager.run_acquisition_with_settings(_mda_built, False)\n"
         + "_mda_values = _read_mda_settings(_mda_built)\n"
         + f"_mda_state = _supervise_mda(_mda_manager, _mda_start, _mda_values, runtime_s={runtime!r}, "
         + f"startup_s={plan.exposure_ms_per_frame / 1000.0!r}, interval_s={settings['interval_s']!r}, "
         + f"quiet_window=lambda gap: max({DEFAULT.quiet_floor_s!r}, 5 * gap), "
-        + "clock=timing_clock, clock_name=timing_clock_name(), wait=lambda done, seconds: done.wait(seconds), poll_s=1.0)\n"
+        + "clock=timing_clock, clock_name=timing_clock_name(), wait=lambda done, seconds: done.wait(seconds), poll_s=1.0, image_bytes=_mda_image_bytes, frames_planned=_mda_input['n_frames'])\n"
         + "print(_mda_report(_mda_state, timing_clock()))\n"
     )
 
@@ -12479,6 +12501,7 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         )
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise SafetyViolation(f"MMStudio MDA is unplannable: {exc}") from exc
+    _mda_save_preflight(settings["save_dir"], plan.estimated_bytes)
     reservation = _authorize_acquisition(ctrl, guard, plan, confirm=False)
     summary = (
         json.dumps(current, indent=2, sort_keys=True)
@@ -12496,6 +12519,7 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         reservation.close()
         return {"error": "User declined to run the MicroClaw-built MDA."}
     def start():
+        _mda_prepare_save_dir(settings["save_dir"])
         ctrl.core.set_exposure(exposure_ms)
         return manager.run_acquisition_with_settings(built, False)
 
@@ -12535,6 +12559,7 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
         account=reservation.commit_frame, close=reservation.close,
         notify=notify, expired=expired, clock_name=timing_clock_name(), frames_planned=plan.frames,
+        image_bytes=width * height * bpp,
     )
     if state.get("outcome") is None:
         raise RuntimeError("MDA supervision returned without an acquisition outcome")

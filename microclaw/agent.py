@@ -605,8 +605,9 @@ CANCEL_RESULT = json.dumps({"error": "Cancelled by the operator."})
 TRUNCATED_RESULT = json.dumps({"error": "The model reply was cut off."})
 
 CANCEL_REASON = (
-    "Stopped by the operator. The last step completed — check illumination and "
-    "stage position; nothing further was run."
+    "Stopped by the operator. Nothing further was run; a running Micro-Manager "
+    "MDA was aborted, any other running step finished first. Check illumination "
+    "and stage position."
 )
 
 

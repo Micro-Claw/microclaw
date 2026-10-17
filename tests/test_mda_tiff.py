@@ -76,9 +76,9 @@ def test_multipage_big_endian_closed(tmp_path):
 
 
 @pytest.mark.parametrize('mode', ['MULTIPAGE_TIFF', 'SINGLEPLANE_TIFF_SERIES'])
-def test_tiff_unreadable_returns_not_yet(tmp_path, mode):
+def test_tiff_truncated_returns_not_yet(tmp_path, mode):
     (tmp_path / 'broken.ome.tif').write_bytes(b'MM\x00')
-    assert not tools._mda_writer_complete(str(tmp_path), 1, mode)
+    assert not tools._mda_writer_complete(str(tmp_path), 1, mode, 512 * 512 * 2)
 
 
 def test_multipage_empty_is_not_complete(tmp_path):
@@ -91,18 +91,35 @@ def test_singleplane_default_position_files(tmp_path):
     for frame in range(3):
         tifffile.imwrite(position / f'img_channel000_position000_time{frame:09}_z000.tif',
                          np.zeros((512, 512), np.uint16), byteorder='>')
-    assert tools._mda_writer_complete(str(tmp_path), 3, 'SINGLEPLANE_TIFF_SERIES')
-    assert not tools._mda_writer_complete(str(tmp_path), 4, 'SINGLEPLANE_TIFF_SERIES')
+    assert tools._mda_writer_complete(str(tmp_path), 3, 'SINGLEPLANE_TIFF_SERIES', 512 * 512 * 2)
+    assert not tools._mda_writer_complete(str(tmp_path), 4, 'SINGLEPLANE_TIFF_SERIES', 512 * 512 * 2)
     (position / 'img_channel000_position000_time000000001_z000.tif').write_bytes(b'broken')
-    assert not tools._mda_writer_complete(str(tmp_path), 3, 'SINGLEPLANE_TIFF_SERIES')
+    assert not tools._mda_writer_complete(str(tmp_path), 3, 'SINGLEPLANE_TIFF_SERIES', 512 * 512 * 2)
 
 
-def test_singleplane_must_have_one_page(tmp_path):
-    write_stack(tmp_path / 'image.tif', pages=2)
-    assert not tools._mda_writer_complete(str(tmp_path), 1, 'SINGLEPLANE_TIFF_SERIES')
+def test_singleplane_count_and_size_never_opens_tiff(tmp_path, monkeypatch):
+    position = tmp_path / 'Default'
+    position.mkdir()
+    minimum = 512 * 512 * 2
+    image = position / 'img_channel000_position000_time000000000_z000.tif'
+    tifffile.imwrite(image, np.zeros((512, 512), np.uint16), byteorder='>')
+    opens = []
+    original = tifffile.TiffFile
+    def observed(*args, **kwargs):
+        opens.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(tifffile, 'TiffFile', observed)
+    assert tools._mda_writer_complete(str(tmp_path), 1, 'SINGLEPLANE_TIFF_SERIES', minimum)
+    assert not opens, 'Single-plane verification must never open freshly written TIFFs'
+    image.write_bytes(b'x' * minimum)
+    assert tools._mda_writer_complete(str(tmp_path), 1, 'SINGLEPLANE_TIFF_SERIES', minimum)
+    image.write_bytes(b'x' * (minimum - 1))
+    assert not tools._mda_writer_complete(str(tmp_path), 1, 'SINGLEPLANE_TIFF_SERIES', minimum)
+    image.unlink()
+    assert not tools._mda_writer_complete(str(tmp_path), 1, 'SINGLEPLANE_TIFF_SERIES', minimum)
 
 
-def test_singleplane_thousands_open_pass(tmp_path):
+def test_singleplane_thousands_stat_pass(tmp_path):
     position = tmp_path / 'Default'
     position.mkdir()
     count = 8500
@@ -110,7 +127,7 @@ def test_singleplane_thousands_open_pass(tmp_path):
         tifffile.imwrite(position / f'img_channel000_position000_time{frame:09}_z000.tif',
                          np.zeros((16, 16), np.uint16), byteorder='>')
     started = time.perf_counter()
-    complete = tools._mda_writer_complete(str(tmp_path), count, 'SINGLEPLANE_TIFF_SERIES')
+    complete = tools._mda_writer_complete(str(tmp_path), count, 'SINGLEPLANE_TIFF_SERIES', 16 * 16 * 2)
     elapsed = time.perf_counter() - started
     print(f'Single-plane verification: {count} small files, {elapsed:.6f} s (no rate assertion)')
     assert complete
