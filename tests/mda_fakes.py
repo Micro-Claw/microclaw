@@ -131,8 +131,6 @@ class Manager:
         assert block is False
         self.calls.append('start'); self.settings = settings
         self.blocked('start'); return self.store
-    def run_acquisition_nonblocking(self):
-        self.calls.append('start'); self.blocked('start'); return self.store
     def is_acquisition_running(self):
         self.calls.append('poll'); self.blocked('poll')
         self.observation = self.observations.pop(0) if len(self.observations) > 1 else self.observations[0]

@@ -264,12 +264,6 @@ def test_acquisition_report_names_all_policies_and_honest_session_scope():
     assert "acquisition-policy:confirm_above_bytes" not in policies
 
 
-def test_dialog_mda_stays_excluded_beside_settings_dose_row():
-    report = validate_live_rig(Controller(), parsed())
-    mda = [entry for entry in report.entries if entry.path == "mmstudio-mda"]
-    assert len(mda) == 1 and mda[0].classification == "excluded"
-    assert any(entry.path == "acquisition-tool:run_mda" for entry in report.entries)
-
 
 def test_camera_roi_is_a_built_in_geometry_capability_beside_exposure():
     report = validate_live_rig(Controller(), parsed())
@@ -280,21 +274,6 @@ def test_camera_roi_is_a_built_in_geometry_capability_beside_exposure():
     assert roi[0].device == "Cam"
     assert "dose" not in (roi[0].detail or "")
 
-
-def test_code_level_exclusion_says_config_cannot_repair_it():
-    ctrl = Controller()
-    ctrl.authorization_map = AuthorizationMap(
-        mode="guaranteed", verdict="complete", complete=True,
-        entries=[AuthorizationEntry(
-            path="mmstudio-mda", classification="excluded",
-            detail="GUI-owned effects cannot be enumerated",
-        )],
-    )
-    with pytest.raises(RigAuthorizationError) as caught:
-        authorize_path(ctrl, "mmstudio-mda")
-    message = str(caught.value)
-    assert "changing the rig's safety config cannot permit it" in message
-    assert "GUI-owned effects cannot be enumerated" in message
 
 
 def test_missing_camera_roi_entry_names_absent_camera():
@@ -1884,4 +1863,9 @@ def test_settings_mda_row_tracks_timelapse_policy_completeness():
         report = validate_live_rig(Controller(), config)
         rows = {entry.path: entry for entry in report.entries}
         assert rows['acquisition-tool:run_mda'].classification == rows['acquisition-tool:run_timelapse'].classification
-        assert rows['mmstudio-mda'].classification == 'excluded'
+
+
+def test_mda_has_only_its_typed_acquisition_authorization_path():
+    report = validate_live_rig(Controller(), parsed())
+    assert not any(entry.path.startswith('mmstudio') for entry in report.entries)
+    assert sum(entry.path == 'acquisition-tool:run_mda' for entry in report.entries) == 1

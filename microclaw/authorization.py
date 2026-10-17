@@ -1442,17 +1442,6 @@ def validate_live_rig(
                 )
             ),
         ))
-    entries.extend([
-        AuthorizationEntry(
-            path="mmstudio-mda",
-            classification="excluded",
-            detail=(
-                "The run_mda dialog route remains excluded even though its preview is dose-planned; "
-                "GUI-owned effects cannot be enumerated as an immutable guarded plan"
-            ),
-        ),
-    ])
-
     if parsed_config.constraints.plugins.allow_hardware_motion:
         entries.append(AuthorizationEntry(
             path="opaque-hardware-motion-plugin",

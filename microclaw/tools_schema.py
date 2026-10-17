@@ -2356,23 +2356,22 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_mda_settings",
         "description": (
-            "Inspect and preview MMStudio's current GUI MDA settings. Returns a token "
-            "required by run_mda’s dialog route; it does not construct pycro-manager events."
+            "Inspect MMStudio's current GUI MDA settings for inspection only. "
+            "run_mda takes settings built by MicroClaw."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "run_mda",
         "description": (
-            "Run a supervised Studio MDA from fresh time-lapse settings or the most "
-            "recently previewed dialog. Requires one acquisition confirmation."
+            "Run a supervised Studio MDA from fresh time-lapse settings. "
+            "Requires one acquisition confirmation."
         ),
         "input_schema": {"type": "object", "additionalProperties": False,
             "properties": {
-                "preview_token": {"type": "string", "description": "Exactly one of preview_token or settings is required. Refuses missing, stale or changed dialog previews."},
-                "settings": {**MDA_SETTINGS_SCHEMA, "description": "Exactly one of settings or preview_token is required. Required keys: positive integer n_frames, finite nonnegative interval_s, finite positive exposure_ms, string name and string save_dir (confined to the configured workspace). Unknown keys refuse. save_mode must be ND_TIFF (default), MULTIPAGE_TIFF or SINGLEPLANE_TIFF_SERIES."},
+                "settings": {**MDA_SETTINGS_SCHEMA, "description": "Required keys: positive integer n_frames, finite nonnegative interval_s, finite positive exposure_ms, string name and string save_dir (confined to the configured workspace). Unknown keys refuse. save_mode must be ND_TIFF (default), MULTIPAGE_TIFF or SINGLEPLANE_TIFF_SERIES."},
             },
-            "required": []},
+            "required": ["settings"]},
     },
     {
         "name": "read_hook_from_file",

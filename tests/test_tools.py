@@ -6649,44 +6649,6 @@ def test_read_mda_settings_reads_arraylist_slices_and_channel_methods():
     ]
 
 
-def test_mda_requires_unchanged_preview_and_confirmation(
-    mock_ctrl, unconstrained_guard, monkeypatch
-):
-    from tests.mda_fakes import Manager, Studio
-    manager = Manager()
-    mock_ctrl.studio = Studio(manager)
-    preview = tools.get_mda_settings(mock_ctrl, unconstrained_guard)
-    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
-    monkeypatch.setattr(tools, "_mda_index_complete", manager.index_complete)
-    monkeypatch.setattr(tools, "_mda_poll_wait", lambda _: None)
-    result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
-    assert manager.calls.count('start') == 1
-    assert result["frames_accounted"] == 2
-
-
-def test_mda_refuses_a_stale_token_when_settings_changed(
-    mock_ctrl, unconstrained_guard, monkeypatch
-):
-    """Pin the staleness refusal — unobservable on M5, where the authorization
-    map excludes the mmstudio-mda path and refuses before this check (design/32
-    Block 4 G5). The live token proved sensitive to slice/channel changes; this
-    guards the run-side consumption of that sensitivity."""
-    settings = MagicMock()
-    for name in tools._MDA_SCALARS:
-        getattr(settings, name).return_value = False if name.startswith("use_") else None
-    settings.save.return_value = False
-    settings.num_frames.return_value = 3
-    manager = mock_ctrl.studio.acquisitions()
-    manager.get_acquisition_settings.return_value = settings
-    preview = tools.get_mda_settings(mock_ctrl, unconstrained_guard)
-    # Operator changes a setting in the GUI after previewing.
-    settings.num_frames.return_value = 5
-    monkeypatch.setattr(tools, "CONFIRM_FN", lambda *args, **kwargs: True)
-    result = tools.run_mda(mock_ctrl, unconstrained_guard, preview["preview_token"])
-    assert "changed" in result.get("error", "").lower()
-    manager.run_acquisition.assert_not_called()
-
-
 @pytest.mark.parametrize("count,options,start,stop", [
     (60, {}, 10, 60), (60, {"limit": 3, "where": "first"}, 0, 3),
     (60, {"limit": 3, "where": "last"}, 57, 60),

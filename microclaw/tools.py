@@ -2230,8 +2230,7 @@ def export_session_script(
         ))
     ]
     safety_limits = safety_limits_error = None
-    if any(name in {"run_autofocus", "run_zstack", "run_multiposition_acquisition", "run_tile_acquisition"}
-           or (name == "run_mda" and params.get("settings") is not None)
+    if any(name in {"run_autofocus", "run_zstack", "run_multiposition_acquisition", "run_tile_acquisition", "run_mda"}
            for name, params in included) or hook_runtime_calls:
         # Read strictly: a renamed field must not degrade to "no limits", which
         # would emit a script whose header claims recorded bounds while its seed
@@ -12046,8 +12045,7 @@ def _read_mda_settings(settings: Any) -> dict:
                              if " object at 0x" in text else text)
         except Exception as e:
             out[name] = f"<unreadable: {type(e).__name__}>"
-    # These are non-scalar but safety-critical: channel exposure changes and
-    # exact slice-list changes must invalidate the preview token.
+    # Include non-scalar channel exposures and exact slice lists for inspection.
     #
     # slices()/channels() return a java.util.ArrayList, which is NOT directly
     # Python-iterable over the bridge (`for v in list` raises TypeError) — read
@@ -12082,14 +12080,12 @@ def get_mda_settings(ctrl: MicroscopeController, guard: SafetyGuard) -> dict:
     manager = ctrl.studio.acquisitions()
     settings = manager.get_acquisition_settings()
     values = _read_mda_settings(settings)
-    fingerprint = hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
-    _EMU_SESSION_CACHE["mda_preview"] = (fingerprint, settings)
     enabled = [axis for flag, axis in (("use_frames", "time"), ("use_position_list", "positions"),
                                         ("use_slices", "z"), ("use_channels", "channels"),
                                         ("use_autofocus", "autofocus")) if values.get(flag) is True]
     return {"source": "MMStudio GUI current MDA", "settings": values,
-            "enabled_axes": enabled, "preview_token": fingerprint,
-            "warning": "Inspect illumination, motion, saving, and all enabled axes before running."}
+            "enabled_axes": enabled,
+            "warning": "Inspection only; run_mda takes settings built by MicroClaw."}
 
 
 def _build_mda_settings(manager, modes, settings):
@@ -12271,14 +12267,14 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                         pause(poll_s)
                         continue
                     if state["frozen"]:
-                        if settings.get("save") and settings.get("save_mode") == "ND_TIFF":
+                        if settings.get("save_mode") == "ND_TIFF":
                             complete = (state["dataset_path"] is not None
                                         and _mda_index_complete(state["dataset_path"], count))
                             writer = {"state": "proved", "flush": "verified_ndtiff_index"}
                         else:
                             complete = True
                             writer = {"state": "frozen-unverified", "flush": "unverified",
-                                      "reason": "save is off or save mode is not ND_TIFF"}
+                                      "reason": "save mode is not ND_TIFF"}
                         if complete:
                             state["writer_finished_at"] = clock()
                             state["writer_completion"] = writer
@@ -12353,8 +12349,6 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
 
 
 def _emit_mda(params: RecordedParams) -> str:
-    if params.get("settings") is None:
-        raise CannotEmit("A standalone script cannot know the contents of the recorded MDA dialog")
     if not params.result:
         raise CannotEmit("run_mda has no recorded result")
     if params.result.get("outcome") != "completed":
@@ -12401,76 +12395,27 @@ def _emit_mda(params: RecordedParams) -> str:
 @_acquisition_entry_point
 @emits(_emit_mda)
 def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
-            preview_token: str | None = None, settings: dict | None = None) -> dict:
-    if (preview_token is None) == (settings is None):
-        raise ValueError("Exactly one of preview_token or settings is required")
+            settings: dict) -> dict:
     _check_acquisition_install_admission(ctrl)
     manager = ctrl.studio.acquisitions()
-    built = None
-    if settings is not None:
-        from microclaw.skill_packages import validate_parameters
-        from microclaw.tools_schema import MDA_SETTINGS_SCHEMA
-        validate_parameters(MDA_SETTINGS_SCHEMA, settings)
-        if (type(settings["n_frames"]) is not int or settings["n_frames"] <= 0
-                or not math.isfinite(settings["interval_s"]) or settings["interval_s"] < 0
-                or not math.isfinite(settings["exposure_ms"]) or settings["exposure_ms"] <= 0):
-            raise ValueError("MDA requires positive integer n_frames, finite nonnegative interval_s and finite positive exposure_ms")
-        settings = {"save_mode": "ND_TIFF", **settings}
-        settings["save_dir"] = str(guard.resolve_in_workspace(settings["save_dir"]))
-        exposure_ms = float(settings["exposure_ms"])
-        guard.check_exposure(exposure_ms)
-        from microclaw.controller import _new_static_java_class
-        modes = _new_static_java_class(ctrl._port, "org.micromanager.data.Datastore$SaveMode")
-        built = _build_mda_settings(manager, modes, settings)
-        current = _read_mda_settings(built)
-    else:
-        from microclaw.authorization import authorize_path
-        authorize_path(ctrl, "mmstudio-mda")
-        preview = _EMU_SESSION_CACHE.get("mda_preview")
-        if not preview or preview[0] != preview_token:
-            return {"error": "Missing or stale MDA preview. Call get_mda_settings immediately before run_mda."}
-        current = _read_mda_settings(manager.get_acquisition_settings())
-        current_token = hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest()
-        if current_token != preview_token:
-            return {"error": "MMStudio MDA settings changed after preview; inspect them again."}
-        if current.get("save") is True and current.get("root"):
-            guard.resolve_in_workspace(str(current["root"]))
-        exposure_ms = float(ctrl.core.get_exposure())
-        guard.check_exposure(exposure_ms)
+    from microclaw.skill_packages import validate_parameters
+    from microclaw.tools_schema import MDA_SETTINGS_SCHEMA
+    validate_parameters(MDA_SETTINGS_SCHEMA, settings)
+    if (type(settings["n_frames"]) is not int or settings["n_frames"] <= 0
+            or not math.isfinite(settings["interval_s"]) or settings["interval_s"] < 0
+            or not math.isfinite(settings["exposure_ms"]) or settings["exposure_ms"] <= 0):
+        raise ValueError("MDA requires positive integer n_frames, finite nonnegative interval_s and finite positive exposure_ms")
+    settings = {"save_mode": "ND_TIFF", **settings}
+    settings["save_dir"] = str(guard.resolve_in_workspace(settings["save_dir"]))
+    exposure_ms = float(settings["exposure_ms"])
+    guard.check_exposure(exposure_ms)
+    from microclaw.controller import _new_static_java_class
+    modes = _new_static_java_class(ctrl._port, "org.micromanager.data.Datastore$SaveMode")
+    built = _build_mda_settings(manager, modes, settings)
+    current = _read_mda_settings(built)
     try:
-        time_points = int(current["num_frames"]) if current.get("use_frames") else 1
-        if time_points <= 0:
-            raise ValueError("num_frames must be positive")
-        if current.get("use_slices"):
-            slice_values = current.get("slices")
-            if not isinstance(slice_values, list) or not slice_values:
-                raise ValueError("enabled slice list is unreadable or empty")
-            slices = len(slice_values)
-        else:
-            slices = 1
-        if current.get("use_position_list"):
-            position_list = ctrl.studio.positions().get_position_list()
-            positions = int(position_list.get_number_of_positions())
-            if positions <= 0:
-                raise ValueError("enabled position list is empty")
-        else:
-            positions = 1
-        if current.get("use_channels"):
-            channel_values = current.get("channels")
-            if not isinstance(channel_values, list):
-                raise ValueError("enabled channel list is unreadable")
-            enabled_channels = [
-                c for c in channel_values
-                if isinstance(c, dict) and c.get("use_channel") is True
-            ]
-            if not enabled_channels:
-                raise ValueError("enabled channel list is empty")
-            channels = len(enabled_channels)
-            exposure_ms = max(float(c["exposure_ms"]) for c in enabled_channels)
-            guard.check_exposure(exposure_ms)
-        else:
-            channels = 1
-        frames = time_points * slices * positions * channels
+        time_points = settings["n_frames"]
+        frames = time_points
         width = int(ctrl.core.get_image_width())
         height = int(ctrl.core.get_image_height())
         bpp = int(ctrl.core.get_bytes_per_pixel())
@@ -12503,13 +12448,10 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         raise
     if not consent:
         reservation.close()
-        return {"error": "User declined to run the current MMStudio MDA."}
-    _EMU_SESSION_CACHE.pop("mda_preview", None)
+        return {"error": "User declined to run the MicroClaw-built MDA."}
     def start():
-        if settings is not None:
-            ctrl.core.set_exposure(exposure_ms)
-            return manager.run_acquisition_with_settings(built, False)
-        return manager.run_acquisition_nonblocking()
+        ctrl.core.set_exposure(exposure_ms)
+        return manager.run_acquisition_with_settings(built, False)
 
     context = {key: getattr(_ACQUISITION_EVENT_CONTEXT, key, None)
                for key in ("sink", "diagnostic_writer", "session_id", "tool_call_id")}
@@ -12552,7 +12494,7 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         raise RuntimeError("MDA supervision returned without an acquisition outcome")
     return {
         "status": "MMStudio MDA " + state["outcome"] + ".",
-        "source": "MicroClaw settings" if settings is not None else "MMStudio GUI current MDA",
+        "source": "MicroClaw settings",
         "resolved_settings": current,
         **_mda_report(state, _acquisition_monotonic()),
         **_reservation_report(reservation),
@@ -12732,10 +12674,7 @@ def execute_tool(
                                     f"teardown running is {str(teardown).lower()}.",
                         "next": "Retry only after the camera is measured idle and teardown finishes.",
                     })
-        if (
-            (name != "run_mda" or tool_input.get("settings") is not None)
-            and getattr(fn, "_microclaw_acquisition_entry_point", False)
-        ):
+        if getattr(fn, "_microclaw_acquisition_entry_point", False):
             from microclaw.authorization import authorize_path
             authorize_path(ctrl, f"acquisition-tool:{name}")
         if tool_input.get('analysis') is not None:

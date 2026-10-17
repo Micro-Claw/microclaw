@@ -108,21 +108,11 @@ def test_cancel_continues_until_completion_once(rig, monkeypatch, interrupt):
     assert result['frames_accounted'] == 2
 
 
-def test_preview_save_mode_invalidates(rig):
-    ctrl, manager, guard, _ = rig
-    preview = tools.get_mda_settings(ctrl, guard)
-    manager.settings.values['save_mode'] = 'MULTIPAGE_TIFF'
-    result = tools.run_mda(ctrl, guard, preview_token=preview['preview_token'])
-    assert 'changed' in result['error']
-    assert 'start' not in manager.calls
-
-
-@pytest.mark.parametrize('route', ['settings', 'preview'])
-def test_install_admission(rig, route):
+def test_install_admission(rig):
     ctrl, manager, guard, settings = rig
     ctrl._microclaw_extension_install = {'running': True}
     with pytest.raises(RuntimeError, match='install admission'):
-        tools.run_mda(ctrl, guard, **({'settings': settings} if route == 'settings' else {'preview_token': 'x'}))
+        tools.run_mda(ctrl, guard, settings=settings)
     assert not manager.calls
 
 
@@ -200,8 +190,6 @@ def test_invalid_settings_precede_builder_and_exposure(rig, changes):
 def test_emitter_routes_and_missing_record(rig):
     from microclaw.tools import CannotEmit
     _, _, _, settings = rig
-    with pytest.raises(CannotEmit, match='dialog'):
-        tools._emit_mda(tools.RecordedParams({'preview_token': 'x'}, {'status': 'done'}))
     with pytest.raises(CannotEmit, match='recorded result'):
         tools._emit_mda(tools.RecordedParams({'settings': settings}))
 
@@ -297,16 +285,15 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, c
         for worker in workers: worker.join(5)
 
 
-@pytest.mark.parametrize('route', ['settings', 'dialog'])
-def test_route_authorization_refuses_before_start(rig, route):
+def test_mda_authorization_refuses_before_start(rig):
     from microclaw.authorization import AuthorizationEntry
     ctrl, manager, guard, settings = rig
     # The same excluded acquisition-tool row that refuses a timelapse must
-    # refuse typed MDA; dialog still goes through its separate excluded path.
+    # refuse MDA before any hardware effect.
     ctrl.authorization_map = SimpleNamespace(entries=[AuthorizationEntry(
-        path='acquisition-tool:run_mda' if route == 'settings' else 'mmstudio-mda',
+        path='acquisition-tool:run_mda',
         classification='excluded')])
-    inputs = {'settings': settings} if route == 'settings' else {'preview_token': 'x'}
+    inputs = {'settings': settings}
     result = json.loads(tools.execute_tool('run_mda', inputs, ctrl, guard))
     assert 'excluded' in result['error']
     assert 'start' not in manager.calls
@@ -318,7 +305,7 @@ def test_other_save_modes_disclose_unverified_flush(rig, mode):
     result = tools.run_mda(ctrl, guard, settings={**settings, 'save_mode': mode})
     assert result['outcome'] == 'completed'
     assert result['writer_completion'] == {'state': 'frozen-unverified', 'flush': 'unverified',
-                                         'reason': 'save is off or save mode is not ND_TIFF'}
+                                         'reason': 'save mode is not ND_TIFF'}
     assert manager.index_reads == 0
 
 
@@ -348,11 +335,14 @@ def test_summary_settings_fallback_is_labelled(rig, monkeypatch):
     assert manager.calls.count('settings') == 1
 
 
-@pytest.mark.parametrize('inputs', [{}, {'settings': {}, 'preview_token': 'x'}])
-def test_routes_are_mutually_exclusive_before_bridge(rig, inputs):
+def test_mda_settings_required_by_schema_and_signature(rig):
+    from microclaw.tools_schema import TOOLS
+    schema = next(t['input_schema'] for t in TOOLS if t['name'] == 'run_mda')
+    assert schema['required'] == ['settings']
+    assert set(schema['properties']) == {'settings'}
     ctrl, manager, guard, _ = rig
-    with pytest.raises(ValueError, match='Exactly one'):
-        tools.run_mda(ctrl, guard, **inputs)
+    with pytest.raises(TypeError, match='settings'):
+        tools.run_mda(ctrl, guard)
     assert not manager.calls
 
 
@@ -572,8 +562,8 @@ def test_mda_emitter_refuses_missing_limits_with_recorded_reason(rig):
             {'outcome': 'completed', 'resolved_settings': {'root': settings['save_dir']}}))
 
 
-def test_mda_previews_stable_with_fresh_enum_shadows_then_run(rig):
-    ctrl, manager, guard, _ = rig
+def test_mda_inspection_stable_with_fresh_enum_shadows(rig):
+    ctrl, manager, guard, settings = rig
     first = tools.get_mda_settings(ctrl, guard)
     second = tools.get_mda_settings(ctrl, guard)
     left, right = manager.settings._save_mode_reads[-2:]
@@ -581,10 +571,10 @@ def test_mda_previews_stable_with_fresh_enum_shadows_then_run(rig):
     assert str(left) != str(right)
     assert ' object at 0x' in str(left)
     assert left.name() == right.name() == 'ND_TIFF'
-    assert first['preview_token'] == second['preview_token'], (
-        first['settings']['save_mode'], second['settings']['save_mode'])
+    assert first == second
+    assert set(first) == {'source', 'settings', 'enabled_axes', 'warning'}
     assert first['settings']['save_mode'] == second['settings']['save_mode'] == 'ND_TIFF'
-    result = tools.run_mda(ctrl, guard, preview_token=second['preview_token'])
+    result = tools.run_mda(ctrl, guard, settings=settings)
     assert 'error' not in result, result
     assert result['outcome'] == 'completed'
     assert result['settings_that_ran']['save_mode'] == 'ND_TIFF'
@@ -612,7 +602,7 @@ def test_mda_static_enum_fake_matches_measured_pyjavaz_surface():
     with pytest.raises(TypeError): array[0]
 
 
-def test_mda_default_object_repr_is_unreadable_and_cannot_change_preview_token(rig):
+def test_mda_default_object_repr_is_unreadable_and_stable(rig):
     ctrl, manager, guard, _ = rig
     manager.settings.values['comment'] = object()
     first = tools.get_mda_settings(ctrl, guard)
@@ -620,7 +610,7 @@ def test_mda_default_object_repr_is_unreadable_and_cannot_change_preview_token(r
     second = tools.get_mda_settings(ctrl, guard)
     assert first['settings']['comment'] == second['settings']['comment'] == (
         '<unreadable: default Python object representation>')
-    assert first['preview_token'] == second['preview_token']
+    assert first == second
     assert ' object at 0x' not in json.dumps(first['settings'])
 
 

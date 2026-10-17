@@ -1937,35 +1937,10 @@ def test_real_snap_appears_in_mmstudio_album(headless_mm, unconstrained_guard):
     assert result["datastore"]["image_count"] > before_count
 
 
-def test_real_mda_preview_reads_gui_state(headless_mm, unconstrained_guard):
+def test_real_mda_inspection_reads_gui_state(headless_mm, unconstrained_guard):
     from microclaw import tools
     result = tools.get_mda_settings(headless_mm, unconstrained_guard)
     assert result["source"] == "MMStudio GUI current MDA"
-    assert len(result["preview_token"]) == 64
     for key in ("save", "use_frames", "use_position_list", "use_slices",
                 "use_channels", "use_autofocus"):
         assert isinstance(result["settings"][key], bool), result
-
-
-@pytest.mark.skipif(
-    os.environ.get("MM_ALLOW_SAFE_MDA") != "RUN ONE SAFE IMAGE",
-    reason="set MM_ALLOW_SAFE_MDA='RUN ONE SAFE IMAGE' after configuring safe GUI MDA",
-)
-def test_real_mda_runs_exactly_one_deliberately_safe_image(
-    headless_mm, unconstrained_guard, monkeypatch
-):
-    from microclaw import tools
-    preview = tools.get_mda_settings(headless_mm, unconstrained_guard)
-    settings = preview["settings"]
-    unsafe = {
-        key: settings[key]
-        for key in ("save", "use_frames", "use_position_list", "use_slices",
-                    "use_channels", "use_autofocus")
-        if settings[key] is not False
-    }
-    assert not unsafe, f"Refusing unsafe current GUI MDA settings: {unsafe}"
-    monkeypatch.setattr(tools, "CONFIRM_FN", lambda summary, kind="action": True)
-    result = tools.run_mda(headless_mm, unconstrained_guard, preview["preview_token"])
-    assert "error" not in result, result
-    assert result["datastore"]["image_count"] == 1
-    assert result["datastore"]["frozen"] is True
