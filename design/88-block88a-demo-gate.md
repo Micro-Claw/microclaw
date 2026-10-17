@@ -50,6 +50,10 @@ Do not press Ctrl-C yourself. Each run prints one line such as
 `r0-mda: outcome=completed frames=1000 writer=proved`. The stopped runs say
 `outcome=cancelled` with fewer frames. Expect `RECORDED: measure`.
 
+**Do not click anything in Micro-Manager during measure.** If a dialog appears,
+for example "Directory not found. Create it?", leave it open, note its text and
+send the evidence. A dialog during measure is a defect this gate exists to catch.
+
 Exit 2 means **NOT EXERCISED** (wrong install, MicroClaw running, no disk). That
 is not a pass.
 

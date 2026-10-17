@@ -816,6 +816,13 @@ class FakeEngine:
         assert block is False
         if self.running:
             raise RuntimeError('IllegalThreadStateException: acquisition already running')
+        # AcquisitionWrapperEngine.runAcquisition: a root that cannot be written (including one
+        # that does not exist) opens a modal 'Directory not found. Create it?' on the bridge's
+        # thread. The real bridge then blocks until a human answers; this fake refuses instead,
+        # so the run fails visibly rather than hanging the selftest.
+        if bool(settings.save()) and not os.access(str(settings.root()), os.W_OK):
+            self.dialogs = getattr(self, 'dialogs', 0) + 1
+            raise RuntimeError("Micro-Manager would block here on a modal 'Directory not found. Create it?'")
         self.settings = settings
         self.store = FakeStore(self, settings)
         self.running = True
