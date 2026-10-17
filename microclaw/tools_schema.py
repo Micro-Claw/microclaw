@@ -8,7 +8,7 @@ MDA_SETTINGS_SCHEMA = {
         "exposure_ms": {"type": "number", "exclusiveMinimum": 0},
         "name": {"type": "string"},
         "save_dir": {"type": "string", "description": "Required; resolved within the configured workspace before hardware effects."},
-        "save_mode": {"type": "string", "enum": ["ND_TIFF", "MULTIPAGE_TIFF", "SINGLEPLANE_TIFF_SERIES"], "default": "ND_TIFF"},
+        "save_mode": {"type": "string", "enum": ["ND_TIFF", "MULTIPAGE_TIFF", "SINGLEPLANE_TIFF_SERIES"], "default": "ND_TIFF", "description": "ND_TIFF: NDTiff (default); MULTIPAGE_TIFF: Image stack file (OME-TIFF stacks, new file every 4 GiB); SINGLEPLANE_TIFF_SERIES: Separate image files (one TIFF per image)."},
     },
     "required": ["n_frames", "interval_s", "exposure_ms", "name", "save_dir"],
 }

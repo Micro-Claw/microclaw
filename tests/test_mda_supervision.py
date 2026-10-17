@@ -116,8 +116,21 @@ def test_install_admission(rig):
     assert not manager.calls
 
 
-def test_frozen_never_flushed_expires_and_reservation_stays_owned(rig, monkeypatch):
+@pytest.mark.parametrize('save_mode', ['ND_TIFF', 'MULTIPAGE_TIFF'])
+def test_frozen_never_flushed_expires_and_reservation_stays_owned(rig, monkeypatch, save_mode):
     ctrl, manager, guard, settings = rig
+    settings['save_mode'] = save_mode
+    stack = None
+    if save_mode == 'MULTIPAGE_TIFF':
+        from tests.test_mda_tiff import write_stack
+        from pathlib import Path
+        stack = write_stack(Path(settings['save_dir']) / 'run_MMStack_Pos0.ome.tif')
+        closed_size = stack.stat().st_size
+        # Small preallocation substitute; never allocate the real 4 GiB.
+        preallocated = 4 * 1024 * 1024
+        monkeypatch.setattr(tools, '_MDA_MULTIPAGE_PREALLOCATED_BYTES', preallocated)
+        with stack.open('r+b') as stream: stream.truncate(preallocated)
+        monkeypatch.setattr(manager.store, 'get_save_path', lambda: settings['save_dir'])
     manager.observations = [(False, 2, True, False)]
     tick = threading.Event(); advance = threading.Event(); release = threading.Event()
     now = [0.]
@@ -125,7 +138,10 @@ def test_frozen_never_flushed_expires_and_reservation_stays_owned(rig, monkeypat
     def pause(_):
         tick.set()
         advance.wait(); advance.clear()
-        if release.is_set(): manager.observations = [(False, 2, True, True)]
+        if release.is_set():
+            if stack is not None:
+                with stack.open('r+b') as stream: stream.truncate(closed_size)
+            manager.observations = [(False, 2, True, True)]
     monkeypatch.setattr(tools, '_mda_poll_wait', pause)
     def wait(done, _):
         assert tick.wait(5); tick.clear()
@@ -194,10 +210,26 @@ def test_emitter_routes_and_missing_record(rig):
         tools._emit_mda(tools.RecordedParams({'settings': settings}))
 
 
-@pytest.mark.parametrize('mode', ['complete', 'interrupt', 'bound', 'frozen', 'over_limit'])
-def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, capsys, mode):
+@pytest.mark.parametrize('mode,save_mode', [
+    *[(mode, 'ND_TIFF') for mode in ('complete', 'interrupt', 'bound', 'frozen', 'over_limit')],
+    ('complete', 'MULTIPAGE_TIFF'), ('complete', 'SINGLEPLANE_TIFF_SERIES')])
+def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, capsys, mode, save_mode):
     import builtins
     ctrl, manager, guard, settings = rig
+    settings['save_mode'] = save_mode
+    if save_mode == 'MULTIPAGE_TIFF':
+        from tests.test_mda_tiff import write_stack
+        write_stack(tmp_path / 'run_MMStack_Pos0.ome.tif')
+    elif save_mode == 'SINGLEPLANE_TIFF_SERIES':
+        import numpy as np
+        import tifffile
+        position = tmp_path / 'Default'
+        position.mkdir()
+        for frame in range(2):
+            tifffile.imwrite(position / f'img_channel000_position000_time{frame:09}_z000.tif',
+                             np.zeros((512, 512), np.uint16), byteorder='>')
+    if save_mode != 'ND_TIFF':
+        monkeypatch.setattr(manager.store, 'get_save_path', lambda: str(tmp_path))
     result = tools.run_mda(ctrl, guard, settings=settings)
     monkeypatch.undo()  # emit product source, not the live test's patched dependencies
     from tests.test_session_script_export import Guard, completed_call
@@ -212,6 +244,8 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, c
     ctrl.core._creation_port = 5839
     ports = []
     manager = Manager()
+    if save_mode != 'ND_TIFF':
+        monkeypatch.setattr(manager.store, 'get_save_path', lambda: str(tmp_path))
     manager.block = 'start' if mode == 'bound' else 'poll'
     manager.observations = ([(False, 2, True, False)] if mode == 'frozen' else
                             [(True, 1, False, False), (False, 2, True, True)])
@@ -299,14 +333,33 @@ def test_mda_authorization_refuses_before_start(rig):
     assert 'start' not in manager.calls
 
 
-@pytest.mark.parametrize('mode', ['MULTIPAGE_TIFF', 'SINGLEPLANE_TIFF_SERIES'])
-def test_other_save_modes_disclose_unverified_flush(rig, mode):
+@pytest.mark.parametrize('mode,label', [
+    ('MULTIPAGE_TIFF', 'verified_multipage_tiff_closed'),
+    ('SINGLEPLANE_TIFF_SERIES', 'verified_singleplane_files')])
+def test_tiff_supervisor_proves_writer(rig, monkeypatch, mode, label):
+    from pathlib import Path
+    import numpy as np
+    import tifffile
+    from tests.test_mda_tiff import write_stack
     ctrl, manager, guard, settings = rig
+    root = Path(settings['save_dir'])
+    if mode == 'MULTIPAGE_TIFF':
+        write_stack(root / 'run_MMStack_Pos0.ome.tif')
+    else:
+        position = root / 'Default'
+        position.mkdir()
+        for frame in range(2):
+            tifffile.imwrite(position / f'img_channel000_position000_time{frame:09}_z000.tif',
+                             np.zeros((512, 512), np.uint16), byteorder='>')
+    monkeypatch.setattr(manager.store, 'get_save_path', lambda: str(root))
+    predicate = tools._mda_writer_complete
+    def checked(path, count, save_mode):
+        assert manager.frozen_reads and not manager.observation[0]
+        return predicate(path, count, save_mode)
+    monkeypatch.setattr(tools, '_mda_writer_complete', checked)
     result = tools.run_mda(ctrl, guard, settings={**settings, 'save_mode': mode})
     assert result['outcome'] == 'completed'
-    assert result['writer_completion'] == {'state': 'frozen-unverified', 'flush': 'unverified',
-                                         'reason': 'save mode is not ND_TIFF'}
-    assert manager.index_reads == 0
+    assert result['writer_completion'] == {'state': 'proved', 'flush': label}
 
 
 def test_reservation_closes_on_decline_and_start_failure(rig, monkeypatch):

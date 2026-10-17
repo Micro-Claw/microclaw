@@ -12117,6 +12117,49 @@ def _mda_index_complete(path, count):
             reader.close()
 
 
+# MultipageTiffWriter, Micro-Manager 2.0.3: preallocation and close() headers.
+_MDA_MULTIPAGE_PREALLOCATED_BYTES = 4294967296
+_MDA_DISPLAY_SETTINGS_HEADER = 483765892
+_MDA_COMMENTS_HEADER = 99384722
+
+
+def _mda_writer_complete(path, count, save_mode):
+    # Called only after engine idle and frozen; read errors mean not yet.
+    try:
+        if save_mode == "ND_TIFF":
+            return _mda_index_complete(path, count)
+        root = Path(path)
+        if save_mode == "MULTIPAGE_TIFF":
+            files = list(root.glob("*.ome.tif"))
+            if not files:
+                return False
+            pages = 0
+            for file in files:
+                with file.open("rb") as stream:
+                    header = stream.read(28)
+                    order = {b"II": "little", b"MM": "big"}.get(header[:2])
+                    if (order is None or len(header) < 28
+                            or int.from_bytes(header[16:20], order) != _MDA_DISPLAY_SETTINGS_HEADER
+                            or int.from_bytes(header[24:28], order) != _MDA_COMMENTS_HEADER
+                            or file.stat().st_size == _MDA_MULTIPAGE_PREALLOCATED_BYTES):
+                        return False
+                with tifffile.TiffFile(file) as stack:
+                    pages += len(stack.pages)
+            return pages == count
+        if save_mode == "SINGLEPLANE_TIFF_SERIES":
+            files = list(root.rglob("*.tif"))
+            if len(files) != count:
+                return False
+            for file in files:
+                with tifffile.TiffFile(file) as image:
+                    if len(image.pages) != 1:
+                        return False
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def _wait_mda_completion(done, timeout_s):
     # Event.wait does not touch Thread's state lock. An interrupted join can
     # falsely mark a live worker stopped on CPython (bpo-45274).
@@ -12267,14 +12310,14 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                         pause(poll_s)
                         continue
                     if state["frozen"]:
-                        if settings.get("save_mode") == "ND_TIFF":
-                            complete = (state["dataset_path"] is not None
-                                        and _mda_index_complete(state["dataset_path"], count))
-                            writer = {"state": "proved", "flush": "verified_ndtiff_index"}
-                        else:
-                            complete = True
-                            writer = {"state": "frozen-unverified", "flush": "unverified",
-                                      "reason": "save mode is not ND_TIFF"}
+                        mode = settings["save_mode"]
+                        complete = (state["dataset_path"] is not None
+                                    and _mda_writer_complete(state["dataset_path"], count, mode))
+                        writer = {"state": "proved", "flush": {
+                            "ND_TIFF": "verified_ndtiff_index",
+                            "MULTIPAGE_TIFF": "verified_multipage_tiff_closed",
+                            "SINGLEPLANE_TIFF_SERIES": "verified_singleplane_files",
+                        }[mode]}
                         if complete:
                             state["writer_finished_at"] = clock()
                             state["writer_completion"] = writer
@@ -12368,11 +12411,14 @@ def _emit_mda(params: RecordedParams) -> str:
     from microclaw.controller import _new_static_java_class, _TIMING_CLOCK
     source = "\n".join(inspect.getsource(fn) for fn in (
         _new_static_java_class, timing_clock, timing_clock_name, _build_mda_settings, _read_mda_settings,
-        _mda_index_complete, _mda_poll_wait, _mda_report, _supervise_mda))
+        _mda_index_complete, _mda_writer_complete, _mda_poll_wait, _mda_report, _supervise_mda))
     return (
         "import threading\nimport time\nimport math\nfrom typing import Any\n"
-        "from pycromanager import Studio\nfrom ndstorage import Dataset\n"
-        + f"_TIMING_CLOCK = {_TIMING_CLOCK!r}\n_MDA_SCALARS = {_MDA_SCALARS!r}\n" + source + "\n"
+        "from pycromanager import Studio\nfrom ndstorage import Dataset\nfrom pathlib import Path\nimport tifffile\n"
+        + f"_TIMING_CLOCK = {_TIMING_CLOCK!r}\n_MDA_SCALARS = {_MDA_SCALARS!r}\n"
+        + "\n".join(f"{name} = {globals()[name]!r}" for name in (
+            "_MDA_MULTIPAGE_PREALLOCATED_BYTES", "_MDA_DISPLAY_SETTINGS_HEADER", "_MDA_COMMENTS_HEADER"))
+        + "\n" + source + "\n"
         + _export_guard_source(limits) + "\n"
         + f"_mda_input = {settings!r}\n"
         + f"print('MDA envelope:', _mda_input, 'runtime ceiling:', {runtime!r})\n"
