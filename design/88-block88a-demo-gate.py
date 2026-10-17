@@ -58,6 +58,9 @@ SIZES = (3, 1000, 2000, 200, 1500, 6000)
 SELFTEST_SIZES = (2, 40, 400, 30, 40, 400)
 EXPOSURE_MS = 10
 SESSION_NAME, STOP_NAME, SCRIPT_NAME = 'gate88a-dialog', 'gate88a-stop', 'gate88a-export.py'
+# kind -> (save_mode, the product's flush label once proved), measured layouts (spike, 2026-10-17)
+TIFF_KINDS = {'mda-stack': ('MULTIPAGE_TIFF', 'verified_multipage_tiff_closed'),
+              'mda-files': ('SINGLEPLANE_TIFF_SERIES', 'verified_singleplane_files')}
 LIFECYCLE = ('acquisition_construction', 'acquisition_finished', 'writer_finished',
              'acquisition_teardown_completion')
 LIMBS = {
@@ -69,6 +72,7 @@ LIMBS = {
     6: 'engine idle after every run, exposure left at the requested value',
     7: 'D4 lifecycle records in the diagnostics file, in order, outcome matching',
     8: 'duration_breakdown present, accounted, residual named',
+    9: 'TIFF save modes: completed, writer proved for the mode, every frame on disk',
     'S1': 'session run_mda from chat completed (history)',
     'S2': 'operator: MDA window shows the requested Count and Name prefix',
     'S3': 'session Stop button: run_mda cancelled, writer proved (history)',
@@ -87,12 +91,14 @@ def plan(directory, sizes=SIZES):
         args = dict(n_frames=frames, interval_s=0, exposure_ms=EXPOSURE_MS, name=name,
                     save_dir=str(directory))
         if tool == 'run_mda':
-            args = dict(settings=dict(args, save_mode='ND_TIFF'))
+            args = dict(settings=dict(args, save_mode=TIFF_KINDS.get(kind, ('ND_TIFF',))[0]))
         return dict(id=name, kind=kind, rep=rep, tool=tool, input=args, abort=abort,
                     abort_at=abort_at if abort else None, frames=frames)
     for rep in range(reps):
         pair = [row('mda', rep, 'run_mda', burst), row('timelapse', rep, 'run_timelapse', burst)]
         rows.extend(pair if rep % 2 == 0 else pair[::-1])
+    for kind in TIFF_KINDS:
+        rows.append(row(kind, 0, 'run_mda', burst))
     for rep in range(reps):
         rows.append(row('abort-stop', rep, 'run_mda', abort_frames, 'stop'))
     rows.append(row('abort-ctrlc', 0, 'run_mda', abort_frames, 'ctrlc'))
@@ -123,8 +129,26 @@ def recording_confirm(prompts, on_write):
     return confirm
 
 
+def tiff_facts(path):
+    """Frames on disk for the TIFF modes, counted by the gate itself: pages per *.ome.tif
+    stack (never series: one series spans every file of a split stack), or one-page files
+    under the position subfolder."""
+    import tifffile
+    path = Path(path)
+    stacks = sorted(path.glob('*.ome.tif'))
+    files = stacks or sorted(path.rglob('*.tif'))
+    pages = 0
+    for f in files:
+        with tifffile.TiffFile(str(f)) as tif:
+            pages += len(tif.pages)
+    return dict(frames=pages, index_entries=pages, tif_files=len(files), layout='stack' if stacks else 'files',
+                file_sizes=[f.stat().st_size for f in stacks])
+
+
 def dataset_facts(path):
     """Frame count, axes and the first image's metadata keys, read with ndstorage."""
+    if not (Path(path) / 'NDTiff.index').exists() and list(Path(path).rglob('*.tif')):
+        return tiff_facts(path)
     from ndstorage import Dataset
     reader = Dataset(str(path))
     try:
@@ -647,6 +671,29 @@ def verify(gate, *, echo=True):
                     and b.get('phase_meaning'), f"{row['id']}: breakdown {b}")
     check(8, limb8)
 
+    def limb9():
+        prep = load(out / 'measure.json')
+        rows = [r for r in prep['runs'] if r['kind'] in TIFF_KINDS]
+        present = [r for r in rows if (out / 'runs' / r['id'] / 'result.json').exists()]
+        if not present:
+            raise NotExercised('no TIFF-mode run was captured')
+        require(len(present) == len(rows), f'{len(present)} of {len(rows)} TIFF runs captured')
+        for row in present:
+            result, ds, _, _, _ = run_files(out, row)
+            mode, flush = TIFF_KINDS[row['kind']]
+            require(result.get('outcome') == 'completed', f"{row['id']}: outcome {result.get('outcome')!r} "
+                    f"({result.get('error')})")
+            writer = result.get('writer_completion') or {}
+            require(writer.get('state') == 'proved' and writer.get('flush') == flush,
+                    f"{row['id']}: writer {writer}, expected proved/{flush}")
+            require(ds.get('frames') == row['frames'] == (result.get('datastore') or {}).get('image_count'),
+                    f"{row['id']}: {ds.get('frames')} frames on disk, datastore "
+                    f"{(result.get('datastore') or {}).get('image_count')}, planned {row['frames']} "
+                    f"({ds.get('read_error')})")
+            require((result.get('settings_that_ran') or {}).get('save_mode') == mode,
+                    f"{row['id']}: ran as {(result.get('settings_that_ran') or {}).get('save_mode')!r}")
+    check(9, limb9)
+
     def s1():
         prep = load(out / 'measure.json')
         _, call = session_call(out, 'run_mda', session_inputs(prep)['dialog'])
@@ -776,6 +823,31 @@ class FakeEngine:
         return self.store
 
 
+def mm_stack(path, count, size, *, closed):
+    """A little-endian stack laid out as MultipageTiffWriter's: bytes 8-39 hold MM's header
+    (index map offset header at 8; at close, display-settings and comments offset headers at
+    16 and 24), so the first IFD starts after them. Uncompressed, one strip per page."""
+    import struct
+    entries = lambda w, h, data_at: [(256, 4, 1, w), (257, 4, 1, h), (258, 3, 1, 16), (259, 3, 1, 1),
+                                     (262, 3, 1, 1), (273, 4, 1, data_at), (277, 3, 1, 1),
+                                     (278, 4, 1, h), (279, 4, 1, w * h * 2)]
+    ifd_bytes = 2 + 9 * 12 + 4
+    first = 64
+    out = bytearray(b'II*\x00' + struct.pack('<I', first))
+    out += struct.pack('<II', 54773648, 0)
+    out += struct.pack('<II', 483765892, 0) if closed else b'\0' * 8
+    out += struct.pack('<II', 99384722, 0) if closed else b'\0' * 8
+    out += b'\0' * (first - len(out))
+    page = size * size * 2
+    for i in range(count):
+        at = first + i * (ifd_bytes + page)
+        nxt = at + ifd_bytes + page if i + 1 < count else 0
+        body = struct.pack('<H', 9) + b''.join(struct.pack('<HHII', tag, typ, n, value)
+                                               for tag, typ, n, value in entries(size, size, at + ifd_bytes))
+        out += body + struct.pack('<I', nxt) + b'\0' * page
+    Path(path).write_bytes(bytes(out))
+
+
 class FakeStore:
     def __init__(self, engine, settings):
         self.engine, self.settings = engine, settings
@@ -784,6 +856,10 @@ class FakeStore:
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def run(self):
+        mode = self.settings.save_mode()
+        mode = mode.name() if hasattr(mode, 'name') else str(mode)
+        if mode != 'ND_TIFF':
+            return self.run_tiff(mode)
         import numpy as np
         from ndstorage.ndtiff_dataset import NDTiffDataset
         s = self.settings
@@ -807,6 +883,40 @@ class FakeStore:
             time.sleep(0.2)
             writer.finish()               # ...then the storage flush
             writer.close()
+
+    def run_tiff(self, mode):
+        """The layouts measured on the demo machine (spike, 2026-10-17), at selftest size. A
+        stack is pre-sized and gets MultipageTiffWriter's close markers (bytes 16/24) and its
+        truncation only after isFrozen() flips, as the jar and the spike both show."""
+        import numpy as np
+        import struct
+        import tifffile
+        s = self.settings
+        folder = Path(str(s.root())) / (str(s.prefix()) + '_1')
+        folder.mkdir(parents=True)
+        frame = np.zeros((self.engine.size, self.engine.size), np.uint16)
+        stack = folder / (str(s.prefix()) + '_1_MMStack_Pos0.ome.tif')
+        writer = mode == 'MULTIPAGE_TIFF'
+        try:
+            for i in range(int(s.num_frames())):
+                if self.abort.is_set():
+                    break
+                time.sleep(FakeEngine.FRAME_S)
+                if writer:
+                    if i == 0:
+                        mm_stack(stack, 0, self.engine.size, closed=False)
+                else:
+                    (folder / 'Default').mkdir(exist_ok=True)
+                    tifffile.imwrite(str(folder / 'Default' / f'img_channel000_position000_time{i:09d}_z000.tif'), frame)
+                self.path = str(folder)
+                self.count += 1
+        finally:
+            self.engine.running = False
+            self.frozen = True
+            if writer:
+                # Frozen flips first; close-time markers and the real length arrive after.
+                time.sleep(0.2)
+                mm_stack(stack, self.count, self.engine.size, closed=True)
 
     def get_num_images(self): return self.count
     def get_save_path(self): return self.path
@@ -988,6 +1098,8 @@ def selftest(sizes=SELFTEST_SIZES, frame_size=512, keep=None):
                     ''.join(l + '\n' for l in (out / 'measure_microclaw_acquisitions.jsonl').read_text(encoding='utf-8').splitlines()
                             if not ('"writer_finished"' in l and first['mda'] in l)), encoding='utf-8'),
                 8: lambda: edit(run('mda') / 'result.json', lambda d: d['duration_breakdown'].pop('phase_meaning')),
+                9: lambda: edit(out / 'runs' / 'r0-mda-stack' / 'result.json',
+                                lambda d: d['writer_completion'].update(flush='verified_ndtiff_index')),
                 'S1': lambda: history_edit(result_of('dialog', lambda d: d.update(outcome='cancelled'))),
                 'S2': lambda: edit(out / 'session.json', lambda d: d.update(dialog_answer='NO')),
                 'S3': lambda: history_edit(result_of('stop', lambda d: d['writer_completion'].update(state='not_reached'))),
