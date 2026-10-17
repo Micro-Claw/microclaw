@@ -465,3 +465,4 @@ list.
 |-------|--------|--------------|--------|
 | notebook | — | `2a6f7ee` | drafted 2026-10-14, revised 2026-10-15, not opened |
 | 88a | `block-88a` | `d90e6f6` | closed 2026-10-17, PR #58: demo gate 15/15 on run 3; six runner rounds, three spikes |
+| 88b | `block-88b` | `971a4b4` | opened 2026-10-17 |
