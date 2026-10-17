@@ -194,6 +194,7 @@ def test_complete_map_covers_dedicated_autofocus_and_acquisition_paths():
         "acquisition-tool:run_zstack",
         "acquisition-tool:run_timelapse",
         "acquisition-tool:run_adaptive_survey",
+        "acquisition-tool:run_mda",
     }
     inventory = {
         entry.device for entry in report.entries
@@ -246,7 +247,7 @@ def test_optional_dose_caps_are_unrestricted():
         entry for entry in report.entries
         if entry.path.startswith("acquisition-tool:")
     ]
-    assert len(tool_entries) == 6
+    assert len(tool_entries) == 7
     assert {entry.classification for entry in tool_entries} == {
         "built_in_typed_capability"
     }
@@ -263,12 +264,6 @@ def test_acquisition_report_names_all_policies_and_honest_session_scope():
     assert "acquisition-policy:confirm_above_bytes" not in policies
 
 
-def test_mda_remains_excluded_and_is_not_admitted_by_dose_policy():
-    report = validate_live_rig(Controller(), parsed())
-    mda = [entry for entry in report.entries if entry.path == "mmstudio-mda"]
-    assert len(mda) == 1 and mda[0].classification == "excluded"
-    assert not any(entry.path == "acquisition-tool:run_mda" for entry in report.entries)
-
 
 def test_camera_roi_is_a_built_in_geometry_capability_beside_exposure():
     report = validate_live_rig(Controller(), parsed())
@@ -279,21 +274,6 @@ def test_camera_roi_is_a_built_in_geometry_capability_beside_exposure():
     assert roi[0].device == "Cam"
     assert "dose" not in (roi[0].detail or "")
 
-
-def test_code_level_exclusion_says_config_cannot_repair_it():
-    ctrl = Controller()
-    ctrl.authorization_map = AuthorizationMap(
-        mode="guaranteed", verdict="complete", complete=True,
-        entries=[AuthorizationEntry(
-            path="mmstudio-mda", classification="excluded",
-            detail="GUI-owned effects cannot be enumerated",
-        )],
-    )
-    with pytest.raises(RigAuthorizationError) as caught:
-        authorize_path(ctrl, "mmstudio-mda")
-    message = str(caught.value)
-    assert "changing the rig's safety config cannot permit it" in message
-    assert "GUI-owned effects cannot be enumerated" in message
 
 
 def test_missing_camera_roi_entry_names_absent_camera():
@@ -1874,3 +1854,18 @@ def test_unreadable_emu_config_refuses_the_session_rather_than_offering_none(tmp
     (tmp_path / "Micro-Manager-2.0" / "EMU" / "config.uicfg").write_text("not json", encoding="utf-8")
     with pytest.raises(RigAuthorizationError, match="Could not resolve EMU semantic"):
         validate_live_rig(ctrl, parsed(channels=["640"], illumination=m5_illumination()))
+
+
+def test_settings_mda_row_tracks_timelapse_policy_completeness():
+    for config in (parsed(), parsed(mode='degraded_trusted_plugins',
+            acquisition=AcquisitionConstraints(confirm_above_frames=500,
+                                                confirm_above_duration_s=300))):
+        report = validate_live_rig(Controller(), config)
+        rows = {entry.path: entry for entry in report.entries}
+        assert rows['acquisition-tool:run_mda'].classification == rows['acquisition-tool:run_timelapse'].classification
+
+
+def test_mda_has_only_its_typed_acquisition_authorization_path():
+    report = validate_live_rig(Controller(), parsed())
+    assert not any(entry.path.startswith('mmstudio') for entry in report.entries)
+    assert sum(entry.path == 'acquisition-tool:run_mda' for entry in report.entries) == 1

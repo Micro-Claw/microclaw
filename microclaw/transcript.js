@@ -405,7 +405,7 @@
       disclosure: "Installing a package lets the agent read its instructions; you can stop that here. " +
         "That never lets its code run: MicroClaw asks you each time, or once per session. " +
         "Package code runs with your user permissions and is not sandboxed. " +
-        "run_mda uses Micro-Manager’s own engine; MicroClaw cannot see its dataset creation, so it cannot attach package analysis.",
+        "run_mda does not yet support package analysis.",
       trust: trust.test_roots_active
       ? "TEST-ONLY trust roots are active: releases signed with publicly known test keys can run on this machine."
       : [trust.reason, reasons(trust.reasons)].filter(Boolean).join("; ")};

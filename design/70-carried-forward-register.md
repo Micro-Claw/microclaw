@@ -117,6 +117,7 @@ Rows added since the triage:
 | `R151`–`R152` | `design/84` block 84a, package windows, 2026-10-07 |
 | `R153` | `design/85` block 85a's Windows CI run, 2026-10-13 (not 85a's code) |
 | `R154` | `design/87` block 87a's demo gate, scored from artifacts 2026-10-16 |
+| `R155`–`R156` | `design/88` block 88a's gate selftest, demo gates and spikes, 2026-10-17 |
 
 
 ## The work queue
@@ -217,7 +218,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | ~~`R82`~~ | ~~[Open the community skill package notebook](#r82)~~ | — | — | **CLOSED 2026-09-22 by opening `design/83`** |
 | ~~`R83`~~ | ~~[Generic package/protocol conformance needs a fixture](#r83)~~ | — | — | **CLOSED 2026-09-23 by `design/83` 83a + 83c** |
 | ~~`R84`~~ | ~~[Three export behaviours are unpinned ahead of a runner](#r84)~~ | — | — | **CLOSED 2026-09-28 by `design/83` 83a + 83e-2 + 83e-3** |
-| `R86` | [run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86) | LOW | MEDIUM | disclosed by `design/83` 83e; → design/88 E2 |
+| ~~`R86`~~ | ~~[run_mda bypasses _acquire_with_hooks, so lifecycle events are invisible](#r86)~~ | — | — | **CLOSED 2026-10-17 by `design/88` 88a (PR #58)** |
 | `R87` | [D5's session-end rule names a field that is absent when nothing is declared](#r87) | MEDIUM | SMALL |  |
 | ~~`R88`~~ | ~~[The probe_hint payload reached a live model and did not route it](#r88)~~ | — | — | **CLOSED 2026-09-05 by the Nikon's own sessions** |
 | `R89` | [The PFS offset fine-tune is a hand-driven loop with no tool](#r89) | MEDIUM | MEDIUM |  |
@@ -229,6 +230,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R95` | [Does live-mode ownership churn precede a lost terminal notification?](#r95) | MEDIUM | LARGE |  |
 | `R96` | [An unterminated acquisition with every frame accounted is summarised to the user as a success](#r96) | MEDIUM | SMALL |  |
 | `R97` | [The runtime deadline includes Acquisition() construction, and nothing records how much](#r97) | LOW | SMALL |  |
+| `R155` | [Ctrl-C during a pycro-manager teardown wait can make a live waiter look finished](#r155) | MEDIUM | SMALL |  |
 
 **Demo machine**
 
@@ -249,6 +251,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R75` | [Channel preset colliding with a typed actuator - rig coverage](#r75) | LOW | SMALL |  |
 | `R143` | [A spaced timelapse keeps time worse on an idle machine than beside a busy worker](#r143) | LOW | SMALL |  |
 | `R154` | [The metrics reader's cost above ~1,300 lines/s is unmeasured on Windows](#r154) | LOW | SMALL |  |
+| `R156` | [Opening freshly written files costs ~30 ms each on the demo machine](#r156) | LOW | SMALL |  |
 
 **M2**
 
@@ -311,6 +314,7 @@ These need a code change and a test. Nothing here is waiting on hardware; the on
 **Tool guidance can falsely imply that a nonzero frame interval makes an acquisition interruptible by Microclaw.**
 
 - **Status** — OPEN - `microclaw/tools_schema.py:707-713` warns only that zero-interval bursts may resist Stop, still inviting the false converse; design/69a explicitly leaves the finding open.
+- **Changed by `design/88` 88a (2026-10-17)** — the premise "Microclaw cannot stop anything mid-tool" is no longer true for `run_mda`: Stop and Ctrl-C abort it within 1.1–1.2 s (demo gate, 4/4 per run), and `serve.html`'s Stop tooltip now says so. Yet in **both** gate sessions (n=2) the agent told the operator that Stop may not stop a zero-interval `run_mda`, attributing `run_timelapse`'s caveat to it as "the tool's own caveat" although `run_mda`'s description said the opposite. `e058daf` puts the contrast on `run_mda`'s `interval_s` description. **Check what the agent says before a zero-interval `run_mda` in 88b's gate session**; no 88a run tests the text.
 - **Importance** — HIGH - Misleading interruption advice can cause thousands of unintended exposures, wasting dose, data, and rig time.
 - **Where** — LOCAL - The defect is in schema/disclosure wording and agent guidance, so code inspection and off-rig response tests can settle it.
 - **Block** — NONE - Block 60 D5 introduced the zero-burst warning but does not disclaim added stoppability at nonzero intervals; Block 12 only requires disposition.
@@ -1393,13 +1397,26 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **MMStudio MDA runs go around the supervised acquisition path, so any acquisition-lifecycle event added there does not fire for them.**
 
-- **Status** — OPEN, **disclosed 2026-09-28 by `design/83` 83e-3**: `run_mda` does not take `analysis`, and its description and the package panel say it uses Micro-Manager's own engine and MicroClaw cannot see its dataset creation. Pre-existing, and not introduced by `design/71`; noticed while scoping where a community package's acquisition trigger would observe from. **Widened 2026-09-05 by `design/75`, which asked for this to be said in its close-out rather than rediscovered later**: neither block of that notebook reaches `run_mda` either. It gets no D4 diagnostic record (no correlation id, no lifecycle timestamps, no file that survives a restart) and no D1/D2 supervised-runtime bound (no `AcquisitionSupervisionPolicy`, no typed `AcquisitionUnterminated`, no session refusal). So an MMStudio MDA that hangs in teardown still hangs the way 2026-09-04 did, and leaves the same nothing behind.
+- **Status** — **CLOSED 2026-10-17 by `design/88` 88a (PR #58)**: `run_mda` is non-blocking and supervised (design/60 bound, D4 lifecycle records, `AcquisitionUnterminated`, session refusal, install admission), measured on the demo machine. Package analysis on an MDA is 88b. History: OPEN, **disclosed 2026-09-28 by `design/83` 83e-3**: `run_mda` does not take `analysis`, and its description and the package panel say it uses Micro-Manager's own engine and MicroClaw cannot see its dataset creation. Pre-existing, and not introduced by `design/71`; noticed while scoping where a community package's acquisition trigger would observe from. **Widened 2026-09-05 by `design/75`, which asked for this to be said in its close-out rather than rediscovered later**: neither block of that notebook reaches `run_mda` either. It gets no D4 diagnostic record (no correlation id, no lifecycle timestamps, no file that survives a restart) and no D1/D2 supervised-runtime bound (no `AcquisitionSupervisionPolicy`, no typed `AcquisitionUnterminated`, no session refusal). So an MMStudio MDA that hangs in teardown still hangs the way 2026-09-04 did, and leaves the same nothing behind.
 - **Importance** — LOW - `run_mda` is a deliberate hand-off to MMStudio's own engine and nothing today depends on observing it. It matters only once something subscribes to acquisition lifecycle events and quietly gets none from this route.
 - **Where** — LOCAL - the divergence is visible in the call path; whether to close it is a design question about what `run_mda` promises.
 - **Block** — NONE
 - **Effort** — MEDIUM
 - **Provenance** — carried from `design/71` §"Register rows this leaves behind", not from the design/35 triage.
 - **Owner (2026-10-16)** — [design/88](88-mda-and-micro-manager-plugins.md) E2 closes it (`run_mda` becomes non-blocking and supervised on both routes), and E4 then lets a package watch an MDA.
+
+### R155 — Ctrl-C during a pycro-manager teardown wait can make a live waiter look finished
+
+**On CPython 3.12, a `Thread.join(timeout)` interrupted by `KeyboardInterrupt` releases the live thread's state lock (bpo-45274's cleanup) and marks it stopped, so `is_alive()` returns `False` while the thread still runs.**
+
+- **What happened** — found by `design/88` 88a's gate selftest, 2026-10-17: `run_mda` returned mid-run with `outcome=None` while its worker kept going, and the next acquisition was not refused. Reproduced with a standalone probe on 3.12.14. 88a fixed `run_mda` by waiting on a completion `Event` instead of joining.
+- **Where else** — `_acquire_with_hooks` waits with `_join_acquisition_waiter` and then reads `waiter.is_alive()`, and `execute_tool`'s pending-acquisition refusal reads the same flag, so a terminal Ctrl-C during a `run_timelapse` teardown wait can make the refusal believe teardown finished. 88a's runner also listed `controller._bridge_call`, `AcquisitionDiagnosticWriter.close` and `skill_supervisor`'s pipe-thread joins; those run on background threads, so a main-thread Ctrl-C reaching them is not established.
+- **What a fix would look like** — the waiter sets an `Event` in its `finally`; foreground waits use `Event.wait`; nothing reads `is_alive()` after an interruptible `join`. Test with a real `_thread.interrupt_main()` delivered inside the wait.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — MEDIUM. Only the terminal path delivers Ctrl-C into that wait; the web UI's Stop does not.
+- **Effort** — SMALL
+- **Provenance** — `design/88` 88a, 2026-10-17.
 
 ## Demo machine
 
@@ -3315,3 +3332,17 @@ the model" as the actual blast radius.
 - **Importance** — LOW. No publisher sends near this rate. SMAPpy's specification asks for ≤ 10 messages/s.
 - **Effort** — SMALL
 - **Provenance** — `design/87` 87a's demo gate, scored from artifacts 2026-10-16.
+
+### R156 — Opening freshly written files costs ~30 ms each on the demo machine
+
+**After a fresh 1,000-frame "Separate image files" MDA, opening every file with `tifffile` took 30.4 s; the same kind of 1,000 files opened in 0.2 s an hour later. Listing took 5 ms and `stat` about 4 µs per file.**
+
+- **What happened** — `design/88` 88a's second demo gate and a timing spike, 2026-10-17 (`design/88-spike-singleplane-timing.py`). Every bridge call took under 1 ms; the open pass took the time. 88a's completion check for that mode now uses count and size only (operator decision).
+- **Cause** — not identified. Windows Defender scanning a new file on first open is the usual suspect, unmeasured. n=1, one machine.
+- **Why it matters** — any reader that opens many freshly written files on Windows during or right after acquisition pays this: 88b's analysis attachment on TIFF datasets, and any gate that counts frames by opening files (88a's gate does, deliberately, outside the product's timing).
+- **What a fix would look like** — repeat the spike with Defender's real-time scan excluded for the data folder, to attribute the cost; then decide whether any product path must avoid opens.
+- **Where** — DEMO MACHINE.
+- **Block** — NONE.
+- **Importance** — LOW.
+- **Effort** — SMALL
+- **Provenance** — `design/88` 88a, 2026-10-17.

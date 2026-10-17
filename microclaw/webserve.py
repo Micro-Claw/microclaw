@@ -357,7 +357,8 @@ class Session:
         # same rule design/15 sets for the safety-config editor (v2).
         self.editable = args.host in LOCAL_HOSTS
         self.lock = asyncio.Lock()  # one operator at a time
-        # Set by POST /api/stop, polled by run_agent_iter at round and tool
+        # Set by POST /api/stop; Studio MDA also polls during supervision.
+        # Polled by run_agent_iter at round and tool
         # boundaries. threading.Event, not asyncio: the turn runs on a thread.
         self.cancel = threading.Event()
         # The browser confirmation gate (design/21 F1). _emit is set per turn
@@ -1317,16 +1318,12 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     @app.post("/api/stop")
     async def post_stop():
-        """Ask the running turn to stop at the next round or tool boundary.
+        """Request cooperative cancellation of the running turn.
 
-        Cooperative, and honest about it: `execute_tool` blocks in Java and there
-        is no interrupting `run_timelapse` halfway. The button says "Stop after
-        the current step" for that reason.
-
-        A UI endpoint, never a tool — the agent must not be able to call it, and
-        it is not in TOOL_REGISTRY. There is deliberately no hardware-halt
-        companion: pyjavaz serializes every bridge call, so a halt would queue
-        behind the tool call it means to interrupt (design/16 §6).
+        Studio MDA polls this event mid-call and requests abort, then supervises
+        engine and writer completion. Other tools stop at round/tool boundaries.
+        This endpoint makes no bridge calls: a blocked round trip cannot accept
+        another call behind its lock.
         """
         if not session.lock.locked():
             raise HTTPException(409, "No turn is running.")

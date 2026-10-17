@@ -582,7 +582,8 @@ def test_planner_reachable_public_tools_cannot_bypass_map_registration():
         if getattr(fn, "_microclaw_acquisition_entry_point", False)
     }
     assert candidates == marked
-    assert candidates - {"run_mda"} == {
+    assert candidates == {
+        "run_mda",
         "run_zstack", "run_timelapse", "run_multiposition_acquisition",
         "run_tile_acquisition", "run_multiposition_with_autofocus",
         "run_zstack", "run_timelapse", "run_adaptive_survey",

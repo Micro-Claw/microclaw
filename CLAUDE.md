@@ -159,8 +159,8 @@ replacement for it.
   `move_named_stage` was undecorated while sitting on the gate path of the block
   about named-stage motion. **Every registered tool now carries exactly one
   marker** — design/63 block 63a, merged 2026-08-30, decided the last eleven
-  (83 tools as of design/83 block 83f-2: 24 `@emits`, 55 `@emits_nothing`,
-  4 `@refuses`) — and
+  (83 tools as of design/88 block 88a: 25 `@emits`, 55 `@emits_nothing`,
+  3 `@refuses`) — and
   `test_every_registered_tool_has_exactly_one_export_decision` keeps it that
   way, so a twelfth cannot ship the way the first eleven did. Do not re-derive
   that count by hand; if you must, the three attributes are
@@ -1076,3 +1076,26 @@ bridge. A Java object's **public fields** keep their raw camelCase name —
 data / drops axes; it does not error). Static **methods**, by contrast, are
 snake_cased — `create2_d`, `create1_d`. So: fields = camelCase, methods =
 snake_case.
+
+**An enum constant is not on a static shadow, and an enum value read back is
+not its name.** A static shadow carries the class's static *methods* only, so
+`Datastore$SaveMode`'s exposes `value_of` and `values` and no `ND_TIFF`; use
+`value_of("ND_TIFF")`. An enum returned by a call is an object shadow whose
+`str()` is Python's repr, **with a memory address that differs on every read**;
+record or hash `.name()`. Both measured on the demo machine (design/88 88a,
+2026-10-17). The first cost a full gate run that failed every MDA, and the
+second would have made every preview token unique. Both survived the suite
+because the fake had an `ND_TIFF` attribute and a friendly `__str__`.
+
+**A Micro-Manager call can open a modal dialog on the thread serving the
+bridge, and then every bridge call waits for a human.** `runAcquisitionWithSettings`
+asks "Directory not found. Create it?" for any root it cannot write, and shows
+modal errors for low disk (`usable < 1.25 × image bytes`) and a failed
+`mkdirs`, returning a null datastore. It hung Micro-Manager twice in one day.
+Create and check whatever MM would ask about *before* the call (design/88 E1).
+
+**Never read `is_alive()` after a `Thread.join` that Ctrl-C can interrupt.** On
+CPython 3.12 an interrupted `join` releases the live thread's state lock and
+marks it stopped. 88a's supervisor returned mid-run because of it. Wait on an
+`Event` the worker sets in its `finally` instead. The pycro-manager teardown
+wait still has the hazard (`R155`).

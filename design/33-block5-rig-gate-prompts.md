@@ -1,5 +1,7 @@
 # design/33 Block 5 — acquisition/dose authorization rig gate prompts
 
+> **Superseded by `design/88` 88a (PR #58, 2026-10-17):** `run_mda`'s dialog route and the `mmstudio-mda` path were removed; `run_mda` is settings-only and has an `acquisition-tool:run_mda` row. This runbook records the Block 5 state and its rig evidence as they were.
+
 Gate for `design33/dose-authorization` (impl `ff41de7`, coordinator-review fixes
 `a28e5bd`). The branch is pushed; **do not merge until this gate passes.**
 

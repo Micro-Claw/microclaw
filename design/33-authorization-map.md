@@ -928,6 +928,7 @@ or the appropriateness of M5's declared limits.
   typed capability that the configuration does not back. This lockstep rule and
   one missed tripwire entry point were the two real Block 5 defects caught and
   fixed in coordinator review before hardware. The rig required no code fix.
+- **Superseded by `design/88` 88a (PR #58, 2026-10-17):** `run_mda`'s dialog route and the `mmstudio-mda` path were removed; `run_mda` is settings-only and has an `acquisition-tool:run_mda` row. What follows records the Block 5 state and its rig evidence as they were.
 - **MDA remains excluded.** `run_mda` deliberately receives no
   `acquisition-tool:` row; its existing `mmstudio-mda` path remains excluded.
   Its internal planning/ledger plumbing does not make that opaque authorization

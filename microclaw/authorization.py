@@ -1425,8 +1425,6 @@ def validate_live_rig(
         ))
 
     for tool_name in _acquisition_tool_names():
-        if tool_name == "run_mda":
-            continue
         entries.append(AuthorizationEntry(
             path=f"acquisition-tool:{tool_name}",
             classification=(
@@ -1444,17 +1442,6 @@ def validate_live_rig(
                 )
             ),
         ))
-    entries.extend([
-        AuthorizationEntry(
-            path="mmstudio-mda",
-            classification="excluded",
-            detail=(
-                "run_mda remains excluded even though its preview is dose-planned; "
-                "GUI-owned effects cannot be enumerated as an immutable guarded plan"
-            ),
-        ),
-    ])
-
     if parsed_config.constraints.plugins.allow_hardware_motion:
         entries.append(AuthorizationEntry(
             path="opaque-hardware-motion-plugin",

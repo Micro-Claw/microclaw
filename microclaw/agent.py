@@ -232,9 +232,9 @@ SYSTEM_PROMPT = (
     "contact sheet only arranges panels for inspection; a stage-coordinate mosaic "
     "places tiles from XY metadata; a stitched mosaic registers/blends overlaps; and a "
     "multi-page TIFF implies no layout. Never call a contact sheet a stitch. Use "
-    "snap_to_album when the user asks for Album, and get_mda_settings then run_mda "
-    "when they ask to run the GUI's current MDA rather than a pycro-manager "
-    "acquisition with similar axes.\n"
+    "snap_to_album when the user asks for Album. run_mda takes time-lapse settings "
+    "that MicroClaw builds; get_mda_settings only shows what the MDA window "
+    "holds.\n"
     "\n"
     "Illumination safety:\n"
     "- Illumination bleaches samples and endangers eyes. A laser you enabled is yours "
@@ -605,8 +605,9 @@ CANCEL_RESULT = json.dumps({"error": "Cancelled by the operator."})
 TRUNCATED_RESULT = json.dumps({"error": "The model reply was cut off."})
 
 CANCEL_REASON = (
-    "Stopped by the operator. The last step completed — check illumination and "
-    "stage position; nothing further was run."
+    "Stopped by the operator. Nothing further was run; a running Micro-Manager "
+    "MDA was aborted, any other running step finished first. Check illumination "
+    "and stage position."
 )
 
 

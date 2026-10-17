@@ -219,7 +219,7 @@
 <form id="composer">
   <div class="row">
     <textarea id="msg" rows="1" placeholder="Tell MicroClaw what to image…"></textarea>
-    <button id="stop" type="button" class="hidden" title="Stops at the next step boundary — it cannot interrupt a tool that is already running, and it does not shutter lasers or halt the stage.">Stop after the current step</button>
+    <button id="stop" type="button" class="hidden" title="Stops at the next step boundary. A running Micro-Manager MDA (run_mda) is asked to abort now; any other running tool finishes first. It does not shutter lasers or halt the stage.">Stop after the current step</button>
     <button id="send" type="submit">Send</button>
   </div>
   <div class="composer-hint">Enter to send · Shift+Enter for a new line. This session drives real hardware.

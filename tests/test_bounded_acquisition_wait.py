@@ -271,7 +271,7 @@ def test_acquire_on_hit_handler_does_not_close_waiter_owned_reservation(monkeypa
 
 SUPERVISED_TOOL_NAMES = [
     name for name, fn in tools.TOOL_REGISTRY.items()
-    if getattr(fn, "_microclaw_acquisition_entry_point", False) and name != "run_mda"
+    if getattr(fn, "_microclaw_acquisition_entry_point", False)
 ]
 
 # The entry points whose acquisition is a per-position loop, so an expiry at
@@ -283,8 +283,10 @@ SUPERVISED_TOOL_NAMES = [
 LOOPING_COMPOSITES = {"run_multiposition_acquisition", "run_tile_acquisition"}
 
 
-@pytest.mark.parametrize("name", SUPERVISED_TOOL_NAMES)
-@pytest.mark.parametrize("with_analysis", [False, True])
+@pytest.mark.parametrize("name,with_analysis", [
+    (name, analysis) for name in SUPERVISED_TOOL_NAMES
+    for analysis in ([False] if name == "run_mda" else [False, True])
+])
 def test_every_supervised_entry_propagates_unterminated_without_continuing(
     name, monkeypatch, tmp_path, with_analysis,
 ):
@@ -345,7 +347,7 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
     monkeypatch.setattr(tools, "_wait", lambda *a, **k: None)
 
     reservations = []
-    def authorize(_ctrl, _guard, plan):
+    def authorize(_ctrl, _guard, plan, **kwargs):
         reservation = AcquisitionLedger().reserve(MagicMock(), plan)
         reservations.append(reservation)
         return reservation
@@ -360,6 +362,8 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
     ]
     common = {"save_dir": str(tmp_path)}
     inputs = {
+        "run_mda": {"settings": {"n_frames": 2, "interval_s": 0, "exposure_ms": 1,
+                                  "name": "run", "save_dir": str(tmp_path)}},
         "run_zstack": {
             **common, "z_start_um": 0, "z_end_um": 1, "z_step_um": 1,
         },
@@ -395,13 +399,29 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
     ctrl.core.get_x_position.return_value = 0
     ctrl.core.get_y_position.return_value = 0
 
+    if name == "run_mda":
+        from tests.mda_fakes import Manager, Studio, static_class
+        manager = Manager(block="poll")
+        ctrl.studio = Studio(manager)
+        monkeypatch.setattr("microclaw.controller._new_static_java_class", static_class)
+        monkeypatch.setattr(tools, "CONFIRM_FN", lambda *a, **k: True)
+        monkeypatch.setattr(tools, "_mda_index_complete", manager.index_complete)
+        monkeypatch.setattr(tools, "_mda_poll_wait", lambda _: None)
+        clock = SimulatedClock(step=1000)
+        monkeypatch.setattr(tools, "_acquisition_monotonic", clock)
+        def wait_mda(done, _):
+            assert manager.entered.wait(5)
+            clock.now += 1000
+        monkeypatch.setattr(tools, "_wait_mda_completion", wait_mda)
+
     if with_analysis:
         inputs[name]['analysis'] = dict(adapter='fixture-lab/package:observe_dataset',
                                        release_digest='a' * 64, parameters={})
     result = json.loads(tools.execute_tool(name, inputs[name], ctrl, _guard()))
     assert result.get("acquisition") == "unterminated", result
     looping = name in LOOPING_COMPOSITES
-    assert result["dataset_path"] == ("/data/run_2" if looping else "/data/run_1")
+    assert result["dataset_path"] == (None if name == "run_mda" else
+                                       "/data/run_2" if looping else "/data/run_1")
     assert "frames_accounted" in result
     if looping:
         # D3a: the first position finished, so its dataset is named and called
@@ -420,7 +440,11 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
         # claim rather than a silence, so the key is absent entirely.
         assert "positions_completed" not in result
     assert reservations and reservations[0].ledger.in_flight is True
-    assert FatalCountingAcquisition.constructions == (2 if looping else 1)
+    assert FatalCountingAcquisition.constructions == (0 if name == "run_mda" else 2 if looping else 1)
+    if name == "run_mda":
+        assert manager.calls.count("start") == 1
+        manager.release.set()
+        ctrl._microclaw_unterminated_acquisition['waiter'].join(5)
     BlockingAcquisition.release.set()
     if with_analysis:
         assert len(result['analysis']['jobs']) == (2 if looping else 1)

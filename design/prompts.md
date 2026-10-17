@@ -11778,3 +11778,63 @@ without metrics.
   results. The coordinator made three runbook and gate commits and the
   throughput-test fix.
 
+
+## design/88 — block 88a (supervised, settings-only `run_mda`; PR #58)
+
+**Two rounds of code were written on assumptions a ten-minute spike would have
+settled.** Round 3's first attempt assumed `SaveMode.value_of` and `.name()`
+from pyjavaz's source. The operator asked for a spike before any more code;
+the runner turn was stopped before it edited anything, and the spike confirmed
+both on the demo machine in one run. The TIFF modes went the same way, with a
+layout spike and a marker check before the predicate was written. The failure
+the spikes replaced was gate run 1: 2/14, every MDA dead on
+`getattr(modes, "ND_TIFF")`, because `tests/mda_fakes.py` gave the static class
+an `ND_TIFF` attribute. **When a fix depends on what the bridge or a file format
+does, measure that first, then write the code.**
+
+**A 15/15 gate still had four defects.** Run 2 passed every limb, and its
+artifacts showed these:
+- a 36 s gap with no progress records, attributed by a per-call timing spike to
+  opening freshly written files;
+- a 7.9 s first start, which was the operator answering Micro-Manager's modal
+  "Create directory?" dialog during a step the runbook called hands-off, and
+  which I first reported as warm-up;
+- the agent telling the operator Stop would not stop the run, seen in a
+  screenshot;
+- a banner saying "the last step completed" after an abort.
+
+None was a limb. Read the screenshots and the silences, not just the verdicts.
+**Never explain an unattributed number** (the warm-up claim was wrong). Say it is
+unattributed and measure it.
+
+**The selftest found three product defects the suite could not:**
+- Ctrl-C returned mid-run, because CPython 3.12's interrupted `join` makes
+  `is_alive()` lie;
+- the exported script crashed on `_LIMITS = None`, because the exporter
+  records limits only for named tools and the exec test hand-built them;
+- with fakes rewritten from pyjavaz, the selftest reproduced gate run 1 off-rig.
+
+It also found one defect in itself: it had patched `_new_static_java_class`, so
+the exporter inlined the fake's source. Fake one level below what the exporter
+reads.
+
+**A runner's targeted test list missed the one test that mattered.**
+`test_schema_parity` (a top-level `oneOf` stops every session, the 56b defect)
+was not in round 1's command, and the coordinator's full run caught it. A block
+that edits `tools_schema.py` names that file in the targeted command.
+
+**The dialog route had been unreachable since design/33**, which only came out
+when a limb was written for it. The operator removed it rather than carry it.
+
+**Commands for a Windows shell paste as one block or not at all.** The operator
+pasted a nine-line block; one long line split, and half the probe did not run.
+Ship a one-line launcher (`design/88-spike-singleplane-timing.ps1`) instead.
+
+**Evidence:**
+- Full suite at `16b1831`: 5947 passed, 107 skipped.
+- CI at `541fae6`: Ubuntu and Windows green.
+- Demo gate run 3: 15/15.
+- Runner turns: one start and six revisions; one stopped revision was relaunched
+  as round 3.
+- Coordinator commits: the gate, three spikes, the Stop tooltip, a test
+  encoding, `SafetyViolation` for storage refusals, and the `interval_s` wording.
