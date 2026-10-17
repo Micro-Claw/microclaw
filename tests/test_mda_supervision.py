@@ -52,11 +52,11 @@ def test_frozen_is_not_flush(rig):
 def install_clock(monkeypatch, manager, step=1000):
     now = [0.]
     monkeypatch.setattr(tools, '_acquisition_monotonic', lambda: now[0])
-    def join(worker, _):
+    def wait(done, _):
         # Synchronize with the fake bridge entry rather than measuring throughput.
         assert manager.entered.wait(5)
         now[0] += step
-    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
 
 
 @pytest.mark.parametrize('block', ['start', 'poll', 'abort'])
@@ -90,14 +90,14 @@ def test_cancel_continues_until_completion_once(rig, monkeypatch, interrupt):
     cancel = threading.Event()
     manager.block = 'poll'
     if not interrupt: cancel.set()
-    def join(worker, seconds):
+    def wait(done, seconds):
         assert manager.entered.wait(5)
         manager.release.set()
         if interrupt and not cancel.is_set():
             cancel.set()
             raise KeyboardInterrupt
-        worker.join(5)
-    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+        done.wait(5)
+    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
     # Ensure a poll after the first blocked call, so interrupt reaches worker.
     manager.observations = [(True, 0, False, False)] * 10 + [(False, 2, True, True)]
     result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard,
@@ -137,11 +137,11 @@ def test_frozen_never_flushed_expires_and_reservation_stays_owned(rig, monkeypat
         advance.wait(); advance.clear()
         if release.is_set(): manager.observations = [(False, 2, True, True)]
     monkeypatch.setattr(tools, '_mda_poll_wait', pause)
-    def join(worker, _):
+    def wait(done, _):
         assert tick.wait(5); tick.clear()
         now[0] += 1000
         # leave worker parked at expiry so pending ownership is observable
-    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
     result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard))
     assert result.get('acquisition') == 'unterminated', result
     assert result['phase'] == 'writer_finalizing'
@@ -168,16 +168,16 @@ def test_planned_long_startup_and_interval_do_not_false_expire(rig, monkeypatch,
     def pause(_):
         ticks.put(True)
         advance.get(timeout=5)
-    def join(worker, _):
+    def wait(done, _):
         if joins[0]: advance.put(True)
         if joins[0] < 2:
             ticks.get(timeout=5)
             now[0] += 1500  # exceeds the quiet floor and then the runtime ceiling
         else:
-            worker.join(5)
+            done.wait(5)
         joins[0] += 1
     monkeypatch.setattr(tools, '_mda_poll_wait', pause)
-    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
     monkeypatch.setattr(tools, '_acquisition_monotonic', lambda: now[0])
     try:
         result = tools.run_mda(ctrl, guard, settings=settings)
@@ -206,14 +206,19 @@ def test_emitter_routes_and_missing_record(rig):
         tools._emit_mda(tools.RecordedParams({'settings': settings}))
 
 
-@pytest.mark.parametrize('mode', ['complete', 'interrupt', 'bound', 'frozen'])
-def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, mode):
+@pytest.mark.parametrize('mode', ['complete', 'interrupt', 'bound', 'frozen', 'over_limit'])
+def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, capsys, mode):
     import builtins
     ctrl, manager, guard, settings = rig
     result = tools.run_mda(ctrl, guard, settings=settings)
     monkeypatch.undo()  # emit product source, not the live test's patched dependencies
-    source = tools._emit_mda(tools.RecordedParams(
-        {'settings': settings, '_export_safety_limits': {'exposure_ms': (0, 100)}}, result))
+    from tests.test_session_script_export import Guard, completed_call
+    export_guard = Guard(tmp_path)
+    export_guard._c.camera.max_exposure_ms = 5 if mode == 'over_limit' else 15
+    exported = tools.export_session_script(None, export_guard, 'mda.py',
+        completed_call('run_mda', {'settings': settings}, result))
+    assert 'error' not in exported
+    source = (tmp_path / 'mda.py').read_text()
     ast.parse(source)
     assert 'from microclaw' not in source and 'import microclaw' not in source
     ctrl.core._creation_port = 5839
@@ -224,32 +229,38 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, mode):
                             [(True, 1, False, False), (False, 2, True, True)])
     now = [0.]; interrupted = [False]; workers = []
     paused = threading.Event(); release_pause = threading.Event()
+    events = []
     class Event:
-        def __init__(self): self.event = threading.Event()
+        def __init__(self):
+            self.event = threading.Event()
+            events.append(self)
         def set(self): self.event.set()
         def is_set(self): return self.event.is_set()
         def wait(self, seconds):
-            if mode == 'frozen':
+            if self is events[1]:  # completion event: drive the foreground wait
+                assert manager.entered.wait(5)
+                if mode == 'interrupt' and not interrupted[0]:
+                    interrupted[0] = True
+                    raise KeyboardInterrupt
+                if mode == 'bound':
+                    now[0] += 2000
+                elif mode == 'frozen':
+                    manager.release.set()
+                    assert paused.wait(5)
+                    now[0] += 2000
+                else:
+                    manager.release.set()
+                    self.event.wait(5)
+            elif mode == 'frozen':
                 paused.set(); release_pause.wait()
-            # no real sleeping: the scripted clock drives finalization expiry
+            return self.event.is_set()
     class Thread:
         def __init__(self, **kwargs):
             self.worker = threading.Thread(**kwargs); workers.append(self.worker)
         def start(self): self.worker.start()
         def is_alive(self): return self.worker.is_alive()
         def join(self, seconds):
-            assert manager.entered.wait(5)
-            if mode == 'interrupt' and not interrupted[0]:
-                interrupted[0] = True
-                raise KeyboardInterrupt
-            if mode == 'bound':
-                now[0] += 2000
-            elif mode == 'frozen':
-                manager.release.set()
-                assert paused.wait(5)
-                now[0] += 2000
-            else:
-                manager.release.set(); self.worker.join(5)
+            raise AssertionError('MDA foreground must not join its worker')
     class Reader:
         def __init__(self, path):
             assert manager.observation[2]
@@ -257,14 +268,18 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, mode):
         def close(self): pass
     original_import = builtins.__import__
     def importing(name, *args, **kwargs):
-        if name == 'pycromanager': return SimpleNamespace(Studio=lambda port: (ports.append(('studio', port)) or Studio(manager)), JavaClass=lambda cls, port: (ports.append(('enum', port)) or static_class(port, cls)))
+        if name == 'pycromanager': return SimpleNamespace(Core=lambda: ctrl.core, Acquisition=object, multi_d_acquisition_events=lambda **kw: [], Studio=lambda port: (ports.append(('studio', port)) or Studio(manager)), JavaClass=lambda cls, port: (ports.append(('enum', port)) or static_class(port, cls)))
         if name == 'ndstorage': return SimpleNamespace(Dataset=Reader)
         if name == 'threading': return SimpleNamespace(Thread=Thread, Event=Event, Lock=threading.Lock)
         if name == 'time': return SimpleNamespace(perf_counter=lambda: now[0])
         return original_import(name, *args, **kwargs)
-    scope = {'core': ctrl.core, '__builtins__': {**vars(builtins), '__import__': importing}}
+    scope = {'__file__': str(tmp_path / 'mda.py'), '__builtins__': {**vars(builtins), '__import__': importing}}
     try:
-        if mode in ('bound', 'frozen'):
+        if mode == 'over_limit':
+            with pytest.raises(Exception, match='exceeds recorded maximum'):
+                exec(compile(source, '<mda-export>', 'exec'), scope)
+            assert not manager.calls
+        elif mode in ('bound', 'frozen'):
             with pytest.raises(RuntimeError, match='unterminated'):
                 exec(compile(source, '<mda-export>', 'exec'), scope)
             assert workers[0].is_alive()
@@ -273,7 +288,9 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, mode):
             assert scope['_mda_state']['outcome'] == ('cancelled' if mode == 'interrupt' else 'completed')
             assert manager.calls.count('abort') == (1 if mode == 'interrupt' else 0)
             assert scope['_mda_state']['writer_completion']['state'] == 'proved'
-        assert ports == [('studio', 5839), ('enum', 5839)]
+        assert ports == ([] if mode == 'over_limit' else [('studio', 5839), ('enum', 5839)])
+        assert scope['_LIMITS']['exposure_ms'] == (0.0, export_guard._c.camera.max_exposure_ms)
+        assert 'MDA envelope:' in capsys.readouterr().out
     finally:
         manager.observations = [(False, 2, True, True)]
         manager.release.set(); release_pause.set()
@@ -411,13 +428,13 @@ def test_repeated_observation_errors_are_bounded_diagnostics_not_abort(rig, monk
     now = [0.]
     def pause(_):
         tick.set(); advance.wait(); advance.clear()
-    def join(worker, _):
+    def wait(done, _):
         assert tick.wait(5); tick.clear()
         now[0] += 101
         if now[0] < 1200: advance.set()
     monkeypatch.setattr(tools, '_mda_poll_wait', pause)
     monkeypatch.setattr(tools, '_acquisition_monotonic', lambda: now[0])
-    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
     # Use a short policy seam so all 12 diagnostics are exercised before expiry.
     monkeypatch.setattr(tools, '_stall_quiet_s', lambda *args: (1200, 'test'))
     try:
@@ -447,14 +464,14 @@ def test_interrupt_from_watchdog_clock_requests_abort_and_keeps_supervising(rig,
             interrupted[0] = True
             raise KeyboardInterrupt
         return 0.
-    def join(worker, _):
+    def wait(done, _):
         assert manager.entered.wait(5)
         if not interrupted[0]:
-            joining[0] = True  # next foreground clock read is outside join
+            joining[0] = True  # next foreground clock read is outside wait
         else:
-            manager.release.set(); worker.join(5)
+            manager.release.set(); done.wait(5)
     monkeypatch.setattr(tools, '_acquisition_monotonic', clock)
-    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
     try:
         try:
             result = tools.run_mda(ctrl, guard, settings=settings)
@@ -467,3 +484,89 @@ def test_interrupt_from_watchdog_clock_requests_abort_and_keeps_supervising(rig,
         assert not tools._acquisition_ledger(ctrl).in_flight
     finally:
         manager.release.set()
+
+
+def test_real_interrupt_inside_wait_preserves_live_worker_and_cancels(rig, monkeypatch):
+    import _thread
+    import sys
+    ctrl, manager, guard, settings = rig
+    release = threading.Event()
+    wait_entered = threading.Event()
+    worker = []
+    observed = []
+    foreground = threading.get_ident()
+    original_wait = getattr(tools, '_wait_mda_completion', lambda event, seconds: event.wait(seconds))
+    original_join = tools._join_acquisition_waiter
+    first = [True]
+    def pause(_):
+        if not first[0]: return
+        first[0] = False
+        worker.append(threading.current_thread())
+        assert wait_entered.wait(5)
+        # Deliver the real interrupt only once the foreground is inside the
+        # threading blocking primitive, rather than guessing with a timer.
+        for _ in range(10000):
+            frame = sys._current_frames()[foreground]
+            while frame:
+                if frame.f_code.co_filename == threading.__file__ and frame.f_code.co_name in ('wait', '_wait_for_tstate_lock'):
+                    _thread.interrupt_main()
+                    assert release.wait(5)
+                    return
+                frame = frame.f_back
+            threading.Event().wait(0.001)
+        raise AssertionError('Foreground never entered its blocking wait')
+    def interrupted_wait(call):
+        if observed:
+            release.set()  # the supervisor has now latched the abort request
+        wait_entered.set()
+        try:
+            return call()
+        except KeyboardInterrupt:
+            alive = worker[0].is_alive()
+            observed.append(alive)
+            assert alive, 'Interrupted Thread.join falsely marked a still-running MDA worker stopped'
+            raise
+    # The old join seam is used only when this regression is run against f79ed81.
+    monkeypatch.setattr(tools, '_join_acquisition_waiter',
+        lambda waiter, seconds: interrupted_wait(lambda: original_join(waiter, seconds)))
+    monkeypatch.setattr(tools, '_wait_mda_completion',
+        lambda done, seconds: interrupted_wait(lambda: original_wait(done, seconds)), raising=False)
+    monkeypatch.setattr(tools, '_mda_poll_wait', pause)
+    monkeypatch.setattr(tools, '_ACQUISITION_POLL_S', 0.05)
+    events = []
+    try:
+        result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard,
+                                            acquisition_event_sink=events.append))
+        assert 'error' not in result, result
+        assert observed == [True]
+        assert result['outcome'] == 'cancelled'
+        assert manager.calls.count('abort') == 1
+        assert result['writer_completion']['state'] == 'proved'
+        assert any(event['type'] == 'writer_finished' for event in events)
+        assert not tools._acquisition_ledger(ctrl).in_flight
+        # Cleanup and writer completion were observed before returning. No join
+        # was interrupted, so native thread liveness remains trustworthy too.
+        worker[0].join(5)
+        assert not worker[0].is_alive()
+    finally:
+        release.set()
+        if worker: worker[0].join(5)
+
+
+def test_mda_rejects_missing_supervision_outcome(rig, monkeypatch):
+    ctrl, _, guard, settings = rig
+    def incomplete(*args, **kwargs):
+        kwargs['close']()
+        return {'outcome': None}
+    monkeypatch.setattr(tools, '_supervise_mda', incomplete)
+    with pytest.raises(RuntimeError, match='without an acquisition outcome'):
+        tools.run_mda(ctrl, guard, settings=settings)
+
+
+def test_mda_emitter_refuses_missing_limits_with_recorded_reason(rig):
+    _, _, _, settings = rig
+    with pytest.raises(tools.CannotEmit, match='reviewed constraints unavailable'):
+        tools._emit_mda(tools.RecordedParams({'settings': settings,
+            '_export_safety_limits': None,
+            '_export_safety_limits_error': 'reviewed constraints unavailable'},
+            {'outcome': 'completed', 'resolved_settings': {'root': settings['save_dir']}}))

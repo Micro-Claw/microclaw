@@ -407,7 +407,12 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
         monkeypatch.setattr(tools, "CONFIRM_FN", lambda *a, **k: True)
         monkeypatch.setattr(tools, "_mda_index_complete", manager.index_complete)
         monkeypatch.setattr(tools, "_mda_poll_wait", lambda _: None)
-        _install_clock(monkeypatch, SimulatedClock(step=1000))
+        clock = SimulatedClock(step=1000)
+        monkeypatch.setattr(tools, "_acquisition_monotonic", clock)
+        def wait_mda(done, _):
+            assert manager.entered.wait(5)
+            clock.now += 1000
+        monkeypatch.setattr(tools, "_wait_mda_completion", wait_mda)
 
     if with_analysis:
         inputs[name]['analysis'] = dict(adapter='fixture-lab/package:observe_dataset',

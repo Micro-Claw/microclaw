@@ -2231,7 +2231,8 @@ def export_session_script(
     ]
     safety_limits = safety_limits_error = None
     if any(name in {"run_autofocus", "run_zstack", "run_multiposition_acquisition", "run_tile_acquisition"}
-           for name, _ in included) or hook_runtime_calls:
+           or (name == "run_mda" and params.get("settings") is not None)
+           for name, params in included) or hook_runtime_calls:
         # Read strictly: a renamed field must not degrade to "no limits", which
         # would emit a script whose header claims recorded bounds while its seed
         # check accepts anything. Carried to the renderer as a reason rather than
@@ -12111,6 +12112,12 @@ def _mda_index_complete(path, count):
             reader.close()
 
 
+def _wait_mda_completion(done, timeout_s):
+    # Event.wait does not touch Thread's state lock. An interrupted join can
+    # falsely mark a live worker stopped on CPython (bpo-45274).
+    return done.wait(timeout_s)
+
+
 def _mda_poll_wait(seconds):
     threading.Event().wait(seconds)
 
@@ -12146,7 +12153,7 @@ def _mda_report(state, now):
 
 
 def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s,
-                   quiet_window, clock, join, poll_s, cancel=None,
+                   quiet_window, clock, wait, poll_s, cancel=None,
                    account=lambda: None, close=lambda: None,
                    notify=lambda event: None, expired=None, pause=None,
                    clock_name="monotonic", frames_planned=None):
@@ -12168,6 +12175,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                  progress_meaning="coarse image-count increases, not per-frame timing")
     lock = threading.Lock()
     request_abort = threading.Event()
+    done = threading.Event()
     last_progress = state["started"]
     largest_gap = 0.0
     first_progress = False
@@ -12287,8 +12295,11 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
             lifecycle("failed")
             state["outcome"] = "failed"
         finally:
-            state["finished_at"] = clock()
-            close()  # exclusive ownership, including after foreground expiry
+            try:
+                state["finished_at"] = clock()
+                close()  # exclusive ownership, including after foreground expiry
+            finally:
+                done.set()
 
     waiter = threading.Thread(target=worker, name="microclaw-mda", daemon=True)
     try:
@@ -12298,9 +12309,9 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
         raise
     while True:
         try:
-            if not waiter.is_alive():
+            if done.is_set():
                 break
-            join(waiter, poll_s)
+            wait(done, poll_s)
             now = clock()
             with lock:
                 # Before the first count increase the plan's first-frame allowance
@@ -12309,7 +12320,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                 reference = last_progress if first_progress else state["started"] + startup_s
                 state["supervision"]["quiet_bound_s"] = max(quiet_window(largest_gap), interval_s * 5)
                 quiet = now - reference >= state["supervision"]["quiet_bound_s"]
-            if waiter.is_alive() and now - state["started"] >= runtime_s and quiet:
+            if not done.is_set() and now - state["started"] >= runtime_s and quiet:
                 lifecycle("unterminated")
                 state["outcome"] = "unterminated"
                 state["diagnostic_persisted"] = notify({"type": "acquisition_timeout", "phase": state["phase"],
@@ -12339,6 +12350,10 @@ def _emit_mda(params: RecordedParams) -> str:
         raise CannotEmit("run_mda has no recorded result")
     if params.result.get("outcome") != "completed":
         raise CannotEmit("Only a completed MDA can be reproduced; a cancelled or unterminated run is partial")
+    limits = params.get("_export_safety_limits")
+    if not limits:
+        raise CannotEmit(params.get("_export_safety_limits_error") or
+                         "recorded MDA exposure safety limits are unavailable")
     settings = {"save_mode": "ND_TIFF", **params["settings"]}
     # The recorded resolved root preserves workspace confinement in the export.
     settings["save_dir"] = params.result["resolved_settings"]["root"]
@@ -12355,7 +12370,7 @@ def _emit_mda(params: RecordedParams) -> str:
         "import threading\nimport time\nimport math\nfrom typing import Any\n"
         "from pycromanager import Studio\nfrom ndstorage import Dataset\n"
         + f"_TIMING_CLOCK = {_TIMING_CLOCK!r}\n_MDA_SCALARS = {_MDA_SCALARS!r}\n" + source + "\n"
-        + _export_guard_source(params.get("_export_safety_limits", {})) + "\n"
+        + _export_guard_source(limits) + "\n"
         + f"_mda_input = {settings!r}\n"
         + f"print('MDA envelope:', _mda_input, 'runtime ceiling:', {runtime!r})\n"
         + "print('htSMLM activation, if used, is the operator panel and is not reproduced.')\n"
@@ -12369,7 +12384,7 @@ def _emit_mda(params: RecordedParams) -> str:
         + f"_mda_state = _supervise_mda(_mda_manager, _mda_start, _mda_values, runtime_s={runtime!r}, "
         + f"startup_s={plan.exposure_ms_per_frame / 1000.0!r}, interval_s={settings['interval_s']!r}, "
         + f"quiet_window=lambda gap: max({DEFAULT.quiet_floor_s!r}, 5 * gap), "
-        + "clock=timing_clock, clock_name=timing_clock_name(), join=lambda worker, seconds: worker.join(seconds), poll_s=1.0)\n"
+        + "clock=timing_clock, clock_name=timing_clock_name(), wait=lambda done, seconds: done.wait(seconds), poll_s=1.0)\n"
         + "print(_mda_report(_mda_state, timing_clock()))\n"
     )
 
@@ -12518,12 +12533,14 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         manager, start, current, runtime_s=runtime,
         startup_s=plan.exposure_ms_per_frame / 1000.0, interval_s=interval_s,
         quiet_window=lambda gap: _stall_quiet_s(gap, DEFAULT)[0],
-        clock=_acquisition_monotonic, join=_join_acquisition_waiter,
+        clock=_acquisition_monotonic, wait=_wait_mda_completion,
         poll_s=_ACQUISITION_POLL_S,
         cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
         account=reservation.commit_frame, close=reservation.close,
         notify=notify, expired=expired, clock_name=timing_clock_name(), frames_planned=plan.frames,
     )
+    if state.get("outcome") is None:
+        raise RuntimeError("MDA supervision returned without an acquisition outcome")
     return {
         "status": "MMStudio MDA " + state["outcome"] + ".",
         "source": "MicroClaw settings" if settings is not None else "MMStudio GUI current MDA",
