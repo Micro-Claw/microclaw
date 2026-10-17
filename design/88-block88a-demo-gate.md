@@ -9,10 +9,12 @@ Datasets go under the workspace (or the launcher root if there is none), in a
 check reserves the planned maximum, about **16 GB**. The datasets can be deleted
 after you send the evidence.
 
-**Second run (2026-10-17).** The first run failed every MDA before it started
-(`ND_TIFF` was not reachable over the bridge). Two spikes on this machine then
-measured the bridge and the TIFF layouts, and the code changed. Start again at
-step 0: `install.bat` must run again. The first run's datasets can be deleted.
+**Third run (2026-10-17).** Run 2 passed 15/15, but its artifacts and three probes
+found defects: Micro-Manager's modal "Directory not found. Create it?" when a
+save folder does not exist yet (MicroClaw now creates it first), a 30 s check on
+freshly written "Separate image files" (now count and size only), and wording
+that told you Stop would not stop an MDA. Start again at step 0: `install.bat`
+must run again. Earlier runs' datasets can be deleted.
 
 ## 0. Install the branch
 
@@ -24,7 +26,7 @@ git checkout block-88a
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor db2a455 HEAD
+git merge-base --is-ancestor 16b1831 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 .\install.bat
 if ($LASTEXITCODE -ne 0) { throw 'install failed' }
