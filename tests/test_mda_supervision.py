@@ -218,7 +218,7 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, tmp_path, c
     exported = tools.export_session_script(None, export_guard, 'mda.py',
         completed_call('run_mda', {'settings': settings}, result))
     assert 'error' not in exported
-    source = (tmp_path / 'mda.py').read_text()
+    source = (tmp_path / 'mda.py').read_text(encoding="utf-8")
     ast.parse(source)
     assert 'from microclaw' not in source and 'import microclaw' not in source
     ctrl.core._creation_port = 5839
