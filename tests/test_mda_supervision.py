@@ -216,6 +216,8 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, mode):
         {'settings': settings, '_export_safety_limits': {'exposure_ms': (0, 100)}}, result))
     ast.parse(source)
     assert 'from microclaw' not in source and 'import microclaw' not in source
+    ctrl.core._creation_port = 5839
+    ports = []
     manager = Manager()
     manager.block = 'start' if mode == 'bound' else 'poll'
     manager.observations = ([(False, 2, True, False)] if mode == 'frozen' else
@@ -255,7 +257,7 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, mode):
         def close(self): pass
     original_import = builtins.__import__
     def importing(name, *args, **kwargs):
-        if name == 'pycromanager': return SimpleNamespace(Studio=lambda: Studio(manager), JavaClass=lambda cls, port: static_class(port, cls))
+        if name == 'pycromanager': return SimpleNamespace(Studio=lambda port: (ports.append(('studio', port)) or Studio(manager)), JavaClass=lambda cls, port: (ports.append(('enum', port)) or static_class(port, cls)))
         if name == 'ndstorage': return SimpleNamespace(Dataset=Reader)
         if name == 'threading': return SimpleNamespace(Thread=Thread, Event=Event, Lock=threading.Lock)
         if name == 'time': return SimpleNamespace(perf_counter=lambda: now[0])
@@ -271,6 +273,7 @@ def test_emitted_source_executes_shared_supervisor(rig, monkeypatch, mode):
             assert scope['_mda_state']['outcome'] == ('cancelled' if mode == 'interrupt' else 'completed')
             assert manager.calls.count('abort') == (1 if mode == 'interrupt' else 0)
             assert scope['_mda_state']['writer_completion']['state'] == 'proved'
+        assert ports == [('studio', 5839), ('enum', 5839)]
     finally:
         manager.observations = [(False, 2, True, True)]
         manager.release.set(); release_pause.set()
@@ -352,9 +355,115 @@ def test_failed_abort_still_supervises_engine_and_writer(rig, monkeypatch):
         raise RuntimeError('Stop request failed')
     monkeypatch.setattr(manager, 'abort_acquisition', abort)
     result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard, cancel=cancel))
-    assert result['outcome'] == 'failed'
+    assert result['outcome'] == 'cancelled'
+    assert 'error' not in result
+    assert result['diagnostics']['count'] == 1
     assert manager.calls.count('abort') == 1
     assert manager.calls.count('poll') == 2
     assert result['writer_completion']['state'] == 'proved'
     assert result['frames_accounted'] == 2
     assert not tools._acquisition_ledger(ctrl).in_flight
+
+
+@pytest.mark.parametrize('accessor', ['running', 'count', 'path'])
+def test_transient_observation_never_aborts_and_completed_run_exports(rig, monkeypatch, tmp_path, accessor):
+    from tests.test_session_script_export import completed_call, export
+    ctrl, manager, guard, settings = rig
+    owner, method = (manager, 'is_acquisition_running') if accessor == 'running' else (
+        manager.store, 'get_num_images' if accessor == 'count' else 'get_save_path')
+    original = getattr(owner, method)
+    attempts = [0]
+    def observe():
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise RuntimeError('Transient observation failure')
+        return original()
+    monkeypatch.setattr(owner, method, observe)
+    result = tools.run_mda(ctrl, guard, settings=settings)
+    assert manager.calls.count('abort') == 0
+    assert result['outcome'] == 'completed'
+    assert 'error' not in result
+    assert result['diagnostics'] == {'count': 1, 'first': ['RuntimeError: Transient observation failure']}
+    # Export the actual session record, including _recorded_outcome filtering.
+    monkeypatch.undo()
+    _, exported, source = export(tmp_path, completed_call('run_mda', {'settings': settings}, result))
+    assert 'SKIPPED' not in source and 'NOT EMITTED: run_mda' not in source
+    assert 'run_acquisition_with_settings' in source
+    ast.parse(source)
+
+
+@pytest.mark.parametrize('outcome', ['cancelled', 'unterminated'])
+def test_partial_mda_record_refuses_full_plan_export(rig, outcome):
+    _, _, _, settings = rig
+    with pytest.raises(tools.CannotEmit, match='partial'):
+        tools._emit_mda(tools.RecordedParams({'settings': settings}, {
+            'outcome': outcome, 'resolved_settings': {'root': settings['save_dir']}}))
+
+
+def test_repeated_observation_errors_are_bounded_diagnostics_not_abort(rig, monkeypatch):
+    ctrl, manager, guard, settings = rig
+    count = [0]
+    def observe():
+        count[0] += 1
+        raise RuntimeError(f'Observation {count[0]} unavailable')
+    monkeypatch.setattr(manager, 'is_acquisition_running', observe)
+    tick = threading.Event(); advance = threading.Event()
+    now = [0.]
+    def pause(_):
+        tick.set(); advance.wait(); advance.clear()
+    def join(worker, _):
+        assert tick.wait(5); tick.clear()
+        now[0] += 101
+        if now[0] < 1200: advance.set()
+    monkeypatch.setattr(tools, '_mda_poll_wait', pause)
+    monkeypatch.setattr(tools, '_acquisition_monotonic', lambda: now[0])
+    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    # Use a short policy seam so all 12 diagnostics are exercised before expiry.
+    monkeypatch.setattr(tools, '_stall_quiet_s', lambda *args: (1200, 'test'))
+    try:
+        result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard))
+        assert result['acquisition'] == 'unterminated'
+        assert result['phase'] == 'acquiring'
+        assert manager.calls.count('abort') == 0
+        assert result['diagnostics']['count'] >= 12
+        assert len(result['diagnostics']['first']) == 8
+        assert result['diagnostics']['first'][0] == 'RuntimeError: Observation 1 unavailable'
+    finally:
+        monkeypatch.setattr(manager, 'is_acquisition_running', lambda: False)
+        manager.observation = (False, 2, True, True)
+        advance.set()
+        pending = getattr(ctrl, '_microclaw_unterminated_acquisition', {})
+        if pending: pending['waiter'].join(5)
+
+
+def test_interrupt_from_watchdog_clock_requests_abort_and_keeps_supervising(rig, monkeypatch):
+    ctrl, manager, guard, settings = rig
+    manager.block = 'poll'
+    interrupted = [False]
+    foreground = threading.get_ident()
+    joining = [False]
+    def clock():
+        if threading.get_ident() == foreground and joining[0] and not interrupted[0]:
+            interrupted[0] = True
+            raise KeyboardInterrupt
+        return 0.
+    def join(worker, _):
+        assert manager.entered.wait(5)
+        if not interrupted[0]:
+            joining[0] = True  # next foreground clock read is outside join
+        else:
+            manager.release.set(); worker.join(5)
+    monkeypatch.setattr(tools, '_acquisition_monotonic', clock)
+    monkeypatch.setattr(tools, '_join_acquisition_waiter', join)
+    try:
+        try:
+            result = tools.run_mda(ctrl, guard, settings=settings)
+        except KeyboardInterrupt:
+            pytest.fail('Watchdog clock interrupt escaped while the MDA worker was alive')
+        assert interrupted[0]
+        assert result['outcome'] == 'cancelled'
+        assert manager.calls.count('abort') == 1
+        assert result['writer_completion']['state'] == 'proved'
+        assert not tools._acquisition_ledger(ctrl).in_flight
+    finally:
+        manager.release.set()

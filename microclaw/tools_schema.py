@@ -2372,7 +2372,7 @@ TOOLS: list[dict[str, Any]] = [
                 "preview_token": {"type": "string", "description": "Exactly one of preview_token or settings is required. Refuses missing, stale or changed dialog previews."},
                 "settings": {**MDA_SETTINGS_SCHEMA, "description": "Exactly one of settings or preview_token is required. Required keys: positive integer n_frames, finite nonnegative interval_s, finite positive exposure_ms, string name and string save_dir (confined to the configured workspace). Unknown keys refuse. save_mode must be ND_TIFF (default), MULTIPAGE_TIFF or SINGLEPLANE_TIFF_SERIES."},
             },
-            "oneOf": [{"required": ["preview_token"]}, {"required": ["settings"]}]},
+            "required": []},
     },
     {
         "name": "read_hook_from_file",

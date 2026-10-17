@@ -12134,14 +12134,15 @@ def _mda_report(state, now):
     accounted = sum(p["total_s"] for p in phases.values())
     return {key: state[key] for key in (
         "outcome", "writer_completion", "dataset_path", "frames_accounted",
-        "settings_that_ran", "settings_source", "phase", "progress_meaning", "supervision",
+        "settings_that_ran", "settings_source", "phase", "progress_meaning", "supervision", "diagnostics",
     )} | {"duration_breakdown": {
         "duration_s": duration, "phases": phases, "accounted_s": accounted,
         "unaccounted_s": duration - accounted,
         "clock": state.get("clock", "monotonic"),
+        "phase_meaning": "unaccounted_s includes dispatch between polls, settings read-back, and other work outside start, acquiring and writer-finalization spans",
     }, "datastore": {"image_count": state["frames_accounted"],
                       "frozen": state.get("frozen", False),
-                      "save_path": state["dataset_path"]}, **({"error": state["error"]} if state.get("error") else {})}
+                      "save_path": state["dataset_path"]}, **({"error": state["error"]} if state["outcome"] == "failed" and state.get("error") else {})}
 
 
 def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s,
@@ -12156,7 +12157,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
     future dwell rule need not introduce another loop or bridge worker.
     """
     state = dict(started=clock(), clock=clock_name, phase="starting", frames_accounted=0,
-                 dataset_path=None, outcome=None,
+                 dataset_path=None, outcome=None, diagnostics={"count": 0, "first": []},
                  writer_completion={"state": "not_reached"},
                  settings_that_ran=None, settings_source=None,
                  supervision={"runtime_ceiling_s": runtime_s,
@@ -12181,6 +12182,14 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                 "dataset_path": state["dataset_path"],
                 "writer_completion": state["writer_completion"]})
 
+    def diagnostic(exc):
+        message = f"{type(exc).__name__}: {exc}"
+        with lock:
+            state["diagnostics"]["count"] += 1
+            if len(state["diagnostics"]["first"]) < 8:
+                state["diagnostics"]["first"].append(message)
+        notify({"type": "acquisition_diagnostic", "message": message})
+
     def worker():
         nonlocal last_progress, largest_gap, first_progress
         aborted = False
@@ -12200,8 +12209,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                     except Exception as exc:
                         # A failed stop request is no more proof of termination
                         # than a successful one. Keep polling under the same bound.
-                        state["error"] = f"{type(exc).__name__}: {exc}"
-                        notify({"type": "acquisition_diagnostic", "message": state["error"]})
+                        diagnostic(exc)
                 # All bridge calls, including finalization, stay on this worker.
                 if "first_poll" not in state:
                     state["first_poll"] = clock()
@@ -12210,9 +12218,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                     count = int(store.get_num_images())
                     path = store.get_save_path()
                 except Exception as exc:
-                    state["error"] = f"{type(exc).__name__}: {exc}"
-                    notify({"type": "acquisition_diagnostic", "message": state["error"]})
-                    request_abort.set()
+                    diagnostic(exc)
                     pause(poll_s)
                     continue
                 if path is not None:
@@ -12238,13 +12244,13 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                 if not running:
                     if "engine_finished" not in state:
                         state["engine_finished"] = clock()
-                        lifecycle("failed" if state.get("error") else "cancelled" if aborted else "completed")
+                        state["engine_outcome"] = "cancelled" if aborted else "completed"
+                        lifecycle(state["engine_outcome"])
                     state["phase"] = "writer_finalizing"
                     try:
                         state["frozen"] = bool(store.is_frozen())
                     except Exception as exc:
-                        state["error"] = f"{type(exc).__name__}: {exc}"
-                        notify({"type": "acquisition_diagnostic", "message": state["error"]})
+                        diagnostic(exc)
                         pause(poll_s)
                         continue
                     if state["frozen"]:
@@ -12290,33 +12296,39 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
     except BaseException:
         close()
         raise
-    while waiter.is_alive():
+    while True:
         try:
+            if not waiter.is_alive():
+                break
             join(waiter, poll_s)
+            now = clock()
+            with lock:
+                # Before the first count increase the plan's first-frame allowance
+                # includes its scheduled startup work; subsequent silence allows
+                # the declared interval as well as the measured coarse cadence.
+                reference = last_progress if first_progress else state["started"] + startup_s
+                state["supervision"]["quiet_bound_s"] = max(quiet_window(largest_gap), interval_s * 5)
+                quiet = now - reference >= state["supervision"]["quiet_bound_s"]
+            if waiter.is_alive() and now - state["started"] >= runtime_s and quiet:
+                lifecycle("unterminated")
+                state["outcome"] = "unterminated"
+                state["diagnostic_persisted"] = notify({"type": "acquisition_timeout", "phase": state["phase"],
+                        "outcome": "unterminated", "writer_completion": state["writer_completion"],
+                        "dataset_path": state["dataset_path"],
+                        "frames_accounted": state["frames_accounted"],
+                        "frames_planned": frames_planned,
+                        "active_bound_s": runtime_s,
+                        **state["supervision"]})
+                if expired is not None:
+                    expired(state, waiter)
+                raise RuntimeError("MDA unterminated: " + state["phase"])
         except KeyboardInterrupt:
             request_abort.set()
+            # An interrupted timeout disclosure has not handed ownership back
+            # to the caller. Keep supervising and let the bound be evaluated again.
+            if state["outcome"] == "unterminated":
+                state["outcome"] = state.get("engine_outcome")
             continue
-        now = clock()
-        with lock:
-            # Before the first count increase the plan's first-frame allowance
-            # includes its scheduled startup work; subsequent silence allows
-            # the declared interval as well as the measured coarse cadence.
-            reference = last_progress if first_progress else state["started"] + startup_s
-            state["supervision"]["quiet_bound_s"] = max(quiet_window(largest_gap), interval_s * 5)
-            quiet = now - reference >= state["supervision"]["quiet_bound_s"]
-        if waiter.is_alive() and now - state["started"] >= runtime_s and quiet:
-            lifecycle("unterminated")
-            state["outcome"] = "unterminated"
-            state["diagnostic_persisted"] = notify({"type": "acquisition_timeout", "phase": state["phase"],
-                    "outcome": "unterminated", "writer_completion": state["writer_completion"],
-                    "dataset_path": state["dataset_path"],
-                    "frames_accounted": state["frames_accounted"],
-                    "frames_planned": frames_planned,
-                    "active_bound_s": runtime_s,
-                    **state["supervision"]})
-            if expired is not None:
-                expired(state, waiter)
-            raise RuntimeError("MDA unterminated: " + state["phase"])
     return state
 
 
@@ -12325,6 +12337,8 @@ def _emit_mda(params: RecordedParams) -> str:
         raise CannotEmit("A standalone script cannot know the contents of the recorded MDA dialog")
     if not params.result:
         raise CannotEmit("run_mda has no recorded result")
+    if params.result.get("outcome") != "completed":
+        raise CannotEmit("Only a completed MDA can be reproduced; a cancelled or unterminated run is partial")
     settings = {"save_mode": "ND_TIFF", **params["settings"]}
     # The recorded resolved root preserves workspace confinement in the export.
     settings["save_dir"] = params.result["resolved_settings"]["root"]
@@ -12346,8 +12360,8 @@ def _emit_mda(params: RecordedParams) -> str:
         + f"print('MDA envelope:', _mda_input, 'runtime ceiling:', {runtime!r})\n"
         + "print('htSMLM activation, if used, is the operator panel and is not reproduced.')\n"
         + "guard.check_exposure(_mda_input['exposure_ms'])\n"
-        + "_mda_studio = Studio()\n_mda_manager = _mda_studio.acquisitions()\n"
-        + "_mda_modes = _new_static_java_class(4827, 'org.micromanager.data.Datastore$SaveMode')\n"
+        + "_mda_port = core._creation_port\n_mda_studio = Studio(port=_mda_port)\n_mda_manager = _mda_studio.acquisitions()\n"
+        + "_mda_modes = _new_static_java_class(_mda_port, 'org.micromanager.data.Datastore$SaveMode')\n"
         + "_mda_built = _build_mda_settings(_mda_manager, _mda_modes, _mda_input)\n"
         + "def _mda_start():\n    core.set_exposure(_mda_input['exposure_ms'])\n"
         + "    return _mda_manager.run_acquisition_with_settings(_mda_built, False)\n"
