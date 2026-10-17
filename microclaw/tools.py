@@ -12163,16 +12163,16 @@ def _mda_save_preflight(path, total_bytes):
     while not ancestor.exists():
         ancestor = ancestor.parent
     if not ancestor.is_dir() or not os.access(ancestor, os.W_OK):
-        raise ValueError(f"MDA save directory has no writable existing parent: {ancestor}")
+        raise SafetyViolation(f"MDA save directory has no writable existing parent: {ancestor}")
     # AcquisitionWrapperEngine 2.0.3: enoughDiskSpace requires > 1.25 * getTotalMemory.
     if shutil.disk_usage(ancestor).free <= 1.25 * total_bytes:
-        raise ValueError("Not enough free disk space for the MDA (needs more than 1.25 times image bytes)")
+        raise SafetyViolation("Not enough free disk space for the MDA (needs more than 1.25 times image bytes)")
 
 
 def _mda_prepare_save_dir(path):
     os.makedirs(path, exist_ok=True)
     if not os.path.isdir(path) or not os.access(path, os.W_OK):
-        raise ValueError(f"MDA save directory is not writable: {path}")
+        raise SafetyViolation(f"MDA save directory is not writable: {path}")
 
 
 def _wait_mda_completion(done, timeout_s):

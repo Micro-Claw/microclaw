@@ -718,7 +718,7 @@ def test_mda_low_disk_refuses_before_consent(rig, monkeypatch, free):
     monkeypatch.setattr(tools.shutil, 'disk_usage', lambda path: SimpleNamespace(free=free))
     confirmations = []
     monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: confirmations.append(True))
-    with pytest.raises(ValueError, match='Not enough free disk space'):
+    with pytest.raises(tools.SafetyViolation, match='Not enough free disk space'):
         tools.run_mda(ctrl, guard, settings=settings)
     assert not confirmations
     assert not root.exists()
@@ -731,7 +731,7 @@ def test_mda_unwritable_parent_refuses_before_consent(rig, monkeypatch):
     monkeypatch.setattr(tools.os, 'access', lambda *a: False)
     confirmations = []
     monkeypatch.setattr(tools, 'CONFIRM_FN', lambda *a, **k: confirmations.append(True))
-    with pytest.raises(ValueError, match='writable existing parent'):
+    with pytest.raises(tools.SafetyViolation, match='writable existing parent'):
         tools.run_mda(ctrl, guard, settings=settings)
     assert not confirmations and 'start' not in manager.calls
 
