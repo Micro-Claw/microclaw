@@ -353,7 +353,7 @@ class Gate:
         inputs = session_inputs(prep)
         data = dict(started_at=started.isoformat(), inputs=inputs, answers={}, synthetic=False)
         self.save('session', data)
-        self.say("STEP 1: In Micro-Manager's main window click 'Multi-D Acq.' and leave the "
+        self.say("STEP 1: In Micro-Manager choose Tools > Multi-Dimensional Acquisition... and leave the "
                  'Multi-Dimensional Acquisition window open where you can see it. Then launch MicroClaw '
                  'from its desktop icon and wait for Firefox. Put Firefox, the Multi-Dimensional '
                  'Acquisition window and this PowerShell window side by side, all visible.')
@@ -922,8 +922,13 @@ def selftest(sizes=SELFTEST_SIZES, frame_size=512, keep=None):
             fake = SelftestFake(root, Studio, Core, engine, answers)
             out = base / 'evidence'
             gate = Gate(root, out, fake=fake)
+            # Fake one level below _new_static_java_class (its pycromanager.JavaClass), never the
+            # function itself: the exporter inlines that function's source, so patching it would
+            # export the fake (found by this selftest, 2026-10-17).
+            import pycromanager
+            java_class = lambda classpath, port=None, **_: fakes.static_class(port, classpath)
             with patch.object(controller, 'Core', Core), patch.object(controller, 'Studio', Studio), \
-                    patch.object(controller, '_new_static_java_class', fakes.static_class), \
+                    patch.object(pycromanager, 'JavaClass', java_class), \
                     patch.object(controller.MicroscopeController, 'get_mm_app_dir', return_value=str(mm_root)), \
                     patch.object(tools, 'Acquisition', e4.FakeAcquisition):
                 for phase in (lambda: gate.measure(sizes=sizes), gate.session, gate.script):
@@ -975,7 +980,7 @@ def selftest(sizes=SELFTEST_SIZES, frame_size=512, keep=None):
                                                                       for e in d['events'] if e.get('type') == 'acquisition_progress']),
                 2: lambda: edit(run('mda') / 'result.json', lambda d: d['settings_that_ran'].update(use_autofocus=True)),
                 3: lambda: edit(run('mda') / 'result.json', lambda d: d['writer_completion'].update(state='frozen-unverified')),
-                4: lambda: edit(run('abort-stop') / 'result.json', lambda d: d.update(outcome='completed')),
+                4: lambda: edit(run('abort-stop') / 'dataset.json', lambda d: d.update(frames=sizes[2])),
                 5: lambda: edit(run('abort-ctrlc') / 'state.json', lambda d: d.update(escaped='KeyboardInterrupt escaped execute_tool')),
                 6: lambda: edit(run('mda') / 'state.json', lambda d: d['post'].update(running=True)),
                 7: lambda: (out / 'measure_microclaw_acquisitions.jsonl').write_text(
