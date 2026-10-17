@@ -5,9 +5,14 @@ usual demo config and the bridge on port **4827**. Allow **25 minutes**; step 1
 is hands-off for about 5. No extra configuration.
 
 Datasets go under the workspace (or the launcher root if there is none), in a
-`block88a-<time>` folder. That is about **6 GB** of 512 × 512 frames. The disk
-check reserves the planned maximum, about **15 GB**. The datasets can be deleted
+`block88a-<time>` folder. That is about **7 GB** of 512 × 512 frames. The disk
+check reserves the planned maximum, about **16 GB**. The datasets can be deleted
 after you send the evidence.
+
+**Second run (2026-10-17).** The first run failed every MDA before it started
+(`ND_TIFF` was not reachable over the bridge). Two spikes on this machine then
+measured the bridge and the TIFF layouts, and the code changed. Start again at
+step 0: `install.bat` must run again. The first run's datasets can be deleted.
 
 ## 0. Install the branch
 
@@ -19,7 +24,7 @@ git checkout block-88a
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor 9a80727 HEAD
+git merge-base --is-ancestor db2a455 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 .\install.bat
 if ($LASTEXITCODE -ne 0) { throw 'install failed' }
@@ -38,8 +43,9 @@ reinstall from `main`; that is expected.
 ```
 
 It runs, through MicroClaw's own tools: three 1000-frame MDA bursts and three
-1000-frame `run_timelapse` bursts (alternating), three 2000-frame MDAs it stops
-partway with the Stop signal, and one it stops with a Ctrl-C it sends itself.
+1000-frame `run_timelapse` bursts (alternating), one 1000-frame MDA saved as each
+TIFF type ("Image stack file", then "Separate image files"), three 2000-frame MDAs
+it stops partway with the Stop signal, and one it stops with a Ctrl-C it sends itself.
 Do not press Ctrl-C yourself. Each run prints one line such as
 `r0-mda: outcome=completed frames=1000 writer=proved`. The stopped runs say
 `outcome=cancelled` with fewer frames. Expect `RECORDED: measure`.
@@ -88,7 +94,7 @@ Runs the script exported in step 2.3 with the installed interpreter. It takes
 .\design\88-block88a-demo-gate.ps1 -Phase verify
 ```
 
-Expect 14 limbs PASS, then the MEASUREMENT lines. Those lines (frame-interval
+Expect 15 limbs PASS, then the MEASUREMENT lines. Those lines (frame-interval
 spread of MDA vs `run_timelapse`, abort-to-return time, save-path timing,
 reads of the growing dataset) are reported with **no pass bound** (agreed
 2026-10-16). Any FAIL or NOT EXERCISED exits nonzero.
