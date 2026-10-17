@@ -1,7 +1,9 @@
 """Micro-Manager 2.0.3 interfaces, transcribed from javap-mm-2.0.3.txt.
 
-No Java collection is a Python sequence. SaveMode is only exposed by the
-static-class factory; builder method names follow pyjavaz's method mapping.
+Bridge shapes follow pyjavaz _JavaClassFactory.create/_get_java_class and
+spike-88a.json A1–A4 measured on Micro-Manager 2.0.3. Static class shadows
+expose static methods, not enum fields. Enum reads return fresh opaque
+shadows, and Java arrays do not implement Python sequence protocols.
 """
 import threading
 from types import SimpleNamespace
@@ -15,8 +17,36 @@ class JavaList:
 
 
 class SaveMode:
-    def __init__(self, name): self.name = name
-    def __str__(self): return self.name
+    # Deliberately inherit object.__str__/__repr__, as pyjavaz does.
+    def __init__(self, name): self._name = name
+    def name(self): return self._name
+    def to_string(self): return self._name
+
+
+_SAVE_MODE_NAMES = ('SINGLEPLANE_TIFF_SERIES', 'MULTIPAGE_TIFF', 'ND_TIFF')
+
+
+class _SaveModeArray:
+    def __init__(self, items): self._items = tuple(items)
+    def clone(self): return type(self)(self._items)
+    def equals(self, other): return self is other
+    def hash_code(self): return id(self)
+    def to_string(self): return f'[Lorg.micromanager.data.Datastore$SaveMode;@{id(self):x}'
+    def _unsupported(self, *args):
+        raise AssertionError('Java Object method is outside this fake acquisition API')
+    get_class = finalize = notify = notify_all = register_natives = wait = _unsupported
+
+
+_SaveModeArray.__name__ = '[Lorg_micromanager_data_Datastore$SaveMode;'
+
+
+class java_lang_Class:
+    def value_of(self, name):
+        if name not in _SAVE_MODE_NAMES:
+            raise ValueError(f'No enum constant org.micromanager.data.Datastore.SaveMode.{name}')
+        return SaveMode(name)
+    def values(self):
+        return _SaveModeArray(SaveMode(name) for name in _SAVE_MODE_NAMES)
 
 
 class Settings:
@@ -26,6 +56,9 @@ class Settings:
             use_slices=False, use_channels=False, use_autofocus=False,
             use_custom_intervals=False)
         self.values.update(values or {})
+        # Retain reads so address reuse cannot accidentally hide an unstable
+        # repr-based fingerprint in the repeated-preview regression.
+        self._save_mode_reads = []
     def __getattr__(self, name):
         # All accessors here exist in the javap dump. Unknown names refuse.
         if name in {
@@ -38,6 +71,11 @@ class Settings:
             'comment', 'use_custom_intervals',
         }: return lambda: self.values.get(name)
         raise AttributeError(name)
+    def save_mode(self):
+        stored = self.values.get('save_mode')
+        mode = SaveMode(stored.name() if isinstance(stored, SaveMode) else stored)
+        self._save_mode_reads.append(mode)
+        return mode
     def slices(self): return JavaList([0., 1.])
     def channels(self): return JavaList()
     def copy_builder(self):
@@ -127,5 +165,4 @@ class Core:
 
 def static_class(port, classpath):
     assert classpath == 'org.micromanager.data.Datastore$SaveMode'
-    return SimpleNamespace(**{name: SaveMode(name) for name in
-        ('ND_TIFF', 'MULTIPAGE_TIFF', 'SINGLEPLANE_TIFF_SERIES')})
+    return java_lang_Class()

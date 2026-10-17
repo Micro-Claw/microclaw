@@ -12034,7 +12034,16 @@ def _read_mda_settings(settings: Any) -> dict:
     for name in _MDA_SCALARS:
         try:
             value = getattr(settings, name)()
-            out[name] = value if value is None or isinstance(value, (bool, int, float, str)) else str(value)
+            if name == "save_mode" and value is not None:
+                # Java enum shadows retain Python's address-bearing repr;
+                # Enum.name() is the stable Java value, not str(shadow).
+                value = value.name()
+            if value is None or isinstance(value, (bool, int, float, str)):
+                out[name] = value
+            else:
+                text = str(value)
+                out[name] = ("<unreadable: default Python object representation>"
+                             if " object at 0x" in text else text)
         except Exception as e:
             out[name] = f"<unreadable: {type(e).__name__}>"
     # These are non-scalar but safety-critical: channel exposure changes and
@@ -12089,7 +12098,7 @@ def _build_mda_settings(manager, modes, settings):
         "use_frames": True, "use_slices": False, "use_channels": False,
         "use_position_list": False, "use_autofocus": False,
         "use_custom_intervals": False, "is_test_acquisition": False,
-        "save": True, "save_mode": getattr(modes, settings["save_mode"]),
+        "save": True, "save_mode": modes.value_of(settings["save_mode"]),
         "root": settings["save_dir"], "prefix": settings["name"],
         "interval_ms": settings["interval_s"] * 1000,
         "num_frames": settings["n_frames"],

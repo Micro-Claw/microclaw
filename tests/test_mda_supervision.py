@@ -570,3 +570,65 @@ def test_mda_emitter_refuses_missing_limits_with_recorded_reason(rig):
             '_export_safety_limits': None,
             '_export_safety_limits_error': 'reviewed constraints unavailable'},
             {'outcome': 'completed', 'resolved_settings': {'root': settings['save_dir']}}))
+
+
+def test_mda_previews_stable_with_fresh_enum_shadows_then_run(rig):
+    ctrl, manager, guard, _ = rig
+    first = tools.get_mda_settings(ctrl, guard)
+    second = tools.get_mda_settings(ctrl, guard)
+    left, right = manager.settings._save_mode_reads[-2:]
+    assert left is not right
+    assert str(left) != str(right)
+    assert ' object at 0x' in str(left)
+    assert left.name() == right.name() == 'ND_TIFF'
+    assert first['preview_token'] == second['preview_token'], (
+        first['settings']['save_mode'], second['settings']['save_mode'])
+    assert first['settings']['save_mode'] == second['settings']['save_mode'] == 'ND_TIFF'
+    result = tools.run_mda(ctrl, guard, preview_token=second['preview_token'])
+    assert 'error' not in result, result
+    assert result['outcome'] == 'completed'
+    assert result['settings_that_ran']['save_mode'] == 'ND_TIFF'
+    assert manager.calls.count('start') == 1
+
+
+def test_mda_static_enum_fake_matches_measured_pyjavaz_surface():
+    modes = static_class(4827, 'org.micromanager.data.Datastore$SaveMode')
+    assert type(modes).__name__ == 'java_lang_Class'
+    assert [name for name in dir(modes) if not name.startswith('_')] == ['value_of', 'values']
+    with pytest.raises(AttributeError, match="'java_lang_Class' object has no attribute 'ND_TIFF'"):
+        getattr(modes, 'ND_TIFF')
+    mode = modes.value_of('ND_TIFF')
+    assert mode.name() == mode.to_string() == 'ND_TIFF'
+    assert type(mode).__str__ is object.__str__
+    assert type(mode).__repr__ is object.__repr__
+    array = modes.values()
+    assert type(array).__name__ == '[Lorg_micromanager_data_Datastore$SaveMode;'
+    assert [name for name in dir(array) if not name.startswith('_')] == [
+        'clone', 'equals', 'finalize', 'get_class', 'hash_code', 'notify',
+        'notify_all', 'register_natives', 'to_string', 'wait']
+    assert not any(hasattr(array, name) for name in ('__iter__', '__len__', '__getitem__'))
+    with pytest.raises(TypeError): iter(array)
+    with pytest.raises(TypeError): len(array)
+    with pytest.raises(TypeError): array[0]
+
+
+def test_mda_default_object_repr_is_unreadable_and_cannot_change_preview_token(rig):
+    ctrl, manager, guard, _ = rig
+    manager.settings.values['comment'] = object()
+    first = tools.get_mda_settings(ctrl, guard)
+    manager.settings.values['comment'] = object()
+    second = tools.get_mda_settings(ctrl, guard)
+    assert first['settings']['comment'] == second['settings']['comment'] == (
+        '<unreadable: default Python object representation>')
+    assert first['preview_token'] == second['preview_token']
+    assert ' object at 0x' not in json.dumps(first['settings'])
+
+
+def test_mda_enum_name_failure_is_labelled_unreadable(rig, monkeypatch):
+    _, manager, _, _ = rig
+    class EnumShadow:
+        def name(self): raise RuntimeError('Java enum name unavailable')
+    monkeypatch.setattr(manager.settings, 'save_mode', lambda: EnumShadow())
+    result = tools._read_mda_settings(manager.settings)
+    assert result['save_mode'] == '<unreadable: RuntimeError>'
+    assert ' object at 0x' not in result['save_mode']
