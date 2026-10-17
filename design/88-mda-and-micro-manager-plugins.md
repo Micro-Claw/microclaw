@@ -123,6 +123,16 @@ Implementation inspection of this build also establishes:
 
 ### E1 — one tool, two routes: `run_mda(settings=…)` beside `run_mda(preview_token=…)`
 
+> **Superseded in part (operator decision, 2026-10-17): the dialog route is
+> removed.** Every MicroClaw session (terminal and browser) runs
+> `validate_live_rig`, which lists `mmstudio-mda` as `excluded`. So
+> `run_mda(preview_token=…)` has been refused in every session since design/33
+> block 5 (`2599869`), with or without an authorization profile, and no session
+> can reach it. 88a removes it. `run_mda` is settings-only, and `get_mda_settings`
+> stays as a read-only view of the MDA window, without a token. A dialog route,
+> if wanted later, returns with its own authorization decision. The text below
+> is kept as written until 88a's reconciliation.
+
 Fold into `run_mda`; do not add a tool. The two routes are mutually exclusive:
 
 - **`preview_token`**, unchanged: run exactly what the dialog holds. Add
@@ -195,10 +205,10 @@ Start non-blocking: `runAcquisitionWithSettings(…, false)` or
 The dialog route keeps its `authorize_path` exemption (design/33 excluded the
 opaque `mmstudio-mda` path). **The settings route earns an
 `acquisition-tool:run_mda` row** (operator decision, 2026-10-16), classified
-exactly like the other acquisition tools' rows, so on a rig with an
-authorization profile it runs under the same dose policy as `run_timelapse`.
-Today `mmstudio-mda` is `excluded`, so `run_mda` is refused outright on any
-such rig. The dialog route stays refused there. What remains outside the map
+exactly like the other acquisition tools' rows, so it runs under the same
+dose policy as `run_timelapse`. `mmstudio-mda` is `excluded` in every session's
+map, so before 88a `run_mda` was refused outright everywhere, not only on rigs
+with an authorization profile (corrected 2026-10-17). What remains outside the map
 is Studio's processor pipeline, which sees the settings route's frames too.
 E3 discloses htSMLM's part of that; 88a does not enumerate it.
 

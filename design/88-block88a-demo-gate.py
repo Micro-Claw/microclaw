@@ -796,7 +796,8 @@ class FakeStore:
                 if self.abort.is_set():
                     break
                 time.sleep(FakeEngine.FRAME_S)
-                writer.put_image({'time': i}, frame, {'ElapsedTime-ms': (time.perf_counter() - start) * 1000})
+                # Studio's MDA writes four axes even for a time-lapse (spike, 2026-10-17).
+                writer.put_image({'channel': 0, 'position': 0, 'time': i, 'z': 0}, frame, {'ElapsedTime-ms': (time.perf_counter() - start) * 1000})
                 writer._index_file.flush()
                 self.path = writer.path
                 self.count += 1
