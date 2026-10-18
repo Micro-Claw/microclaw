@@ -129,6 +129,9 @@ class Gate(b87.Gate, a88.Gate):
     # and pointer. No second implementation of store mutation/restore.
     capture_history = a88.Gate.capture_history
     close_microclaw = a88.Gate.close_microclaw
+    # 87a's base (83d) defines ask(prompt, key) and wins the MRO; the session
+    # below passes allowed answers, which is 88a's signature (demo run 1).
+    ask = a88.Gate.ask
 
     def prepare(self, *, port=4827, sizes=SIZES):
         # The admission bypass exists only on this isolated selftest instance.
@@ -254,8 +257,13 @@ class Gate(b87.Gate, a88.Gate):
         if self.fake:
             return self.synthetic_session()
         self.close_microclaw('Begin session with MicroClaw closed.')
-        if (self.out / 'session.json').exists():
-            raise NotExercised('Session evidence exists; refusing to overwrite.')
+        previous = self.out / 'session.json'
+        if previous.exists():
+            if read_json(previous).get('answers'):
+                raise NotExercised('Session evidence exists; refusing to overwrite.')
+            # A session that failed before its first answer recorded nothing the
+            # operator did; keep it beside the retry rather than blocking it.
+            previous.replace(self.out / ('session-unanswered-' + now().strftime('%Y%m%dT%H%M%S') + '.json'))
         prep, started = self.need('prepare'), now()
         args = session_input(prep)
         data = dict(started_at=started.isoformat(), input=args, answers={}, synthetic=False)
@@ -628,6 +636,11 @@ def selftest(output, *, pre_block=False):
     for rep in range(6):
         arms = [r['condition'] for r in canonical if r['condition'] in ('none', 'photon') and r['rep'] == rep]
         require(arms == (['none', 'photon'] if rep % 2 == 0 else ['photon', 'none']), 'Arm order does not rotate')
+    # The real session is never driven here (it is synthetic), so check that
+    # every operator prompt it issues binds to the ask that MRO resolves.
+    import inspect
+    for allowed in ({'DONE'}, {'YES', 'NO'}):
+        inspect.signature(Gate.ask).bind(None, 'prompt', 'key', allowed)
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise NotExercised('Selftest output must be empty.')
