@@ -404,7 +404,7 @@ def test_mda_settings_required_by_schema_and_signature(rig):
     from microclaw.tools_schema import TOOLS
     schema = next(t['input_schema'] for t in TOOLS if t['name'] == 'run_mda')
     assert schema['required'] == ['settings']
-    assert set(schema['properties']) == {'settings'}
+    assert set(schema['properties']) == {'settings', 'analysis'}
     ctrl, manager, guard, _ = rig
     with pytest.raises(TypeError, match='settings'):
         tools.run_mda(ctrl, guard)
