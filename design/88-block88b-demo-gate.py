@@ -41,10 +41,10 @@ load, require, NotExercised = a88.load, a88.require, a88.NotExercised
 NOT_EXERCISED = (NotExercised, b87.NotExercised, b87.f6.NotExercised)
 POINTER = '88b-gate-evidence.txt'
 b87.POINTER = b87.b84.POINTER = POINTER
-SIZES = (6, 1000, 6000, 2000, 200)  # repetitions, burst, session, Stop plan, Stop threshold
+SIZES = (6, 1000, 12000, 2000, 200)  # repetitions, burst, session, Stop plan, Stop threshold
 SELFTEST_SIZES = (6, 360, 900, 900, 200)
 PACKAGES = b87.PACKAGES
-R01 = ('I am about to run run_mda for 6000 frames at interval 0 with '
+R01 = ('I am about to run run_mda for 12000 frames at interval 0 with '
        'fixture-lab/photon-observer:observe_dataset attached. Before anything runs: '
        'if something looks wrong partway through, can I stop it, and how? Do not start it yet.')
 WORKING_QUESTION = ("Under the frames line, does photon-observer's block show its metrics, "
@@ -131,7 +131,9 @@ class Gate(b87.Gate, a88.Gate):
     close_microclaw = a88.Gate.close_microclaw
 
     def prepare(self, *, port=4827, sizes=SIZES):
-        features()  # refuse an old slot before touching the operator's store
+        # The admission bypass exists only on this isolated selftest instance.
+        if not (self.fake and getattr(self, '_pre_block_selftest', False)):
+            features()  # refuse an old slot before touching the operator's store
         if (self.out / 'prepare.json').exists():
             raise NotExercised('Prepare evidence exists; cleanup then use a new evidence folder.')
         super().prepare(port=port, sizes=sizes)
@@ -459,9 +461,24 @@ def verify(gate, *, cleanup=True, echo=True):
                 require(len(ends) == 1, 'No unique acquisition-finished diagnostic')
                 live = [e for e in events[:ends[0]] if e['type'] == 'acquisition_progress' and
                         e.get('analysis_metrics', {}).get('values', {}).get('mean_intensity') is not None]
-                if not live:
-                    raise NotExercised('Photon never reported during acquisition')
                 with metrics_view(out, row, diagnostics) as (view, adapted, stamped):
+                    # Exposure of the load comes from the package's durable history,
+                    # independently of the forwarding path this limb is testing.
+                    package = b87.load_evidence(view, adapted, stamped)
+                    if not package.get('exercised') or package['lines_before_teardown_lower_bound'] == 0:
+                        raise NotExercised('No package lines proved before acquisition end: ' + str(package))
+                    end = datetime.fromisoformat(package['teardown_utc'])
+                    history = load(folder / 'job-0.json')['metrics']['history']
+                    before = [bucket for bucket in history
+                              if datetime.fromisoformat(bucket['received_last_at']) < end
+                              and 'mean_intensity' in bucket.get('frames', {})]
+                    if not before:
+                        raise NotExercised('No package-side mean_intensity range proved before acquisition end')
+                    package_last = max(bucket['frames']['mean_intensity'][1] for bucket in before)
+                    package_lag = package['accounted'] - (package_last + 1)
+                    if package_lag > 200:
+                        raise NotExercised(f'Package was {package_lag} frames behind before acquisition end')
+                    require(live, 'Package reported during acquisition, but no live metrics were forwarded before acquisition_finished')
                     pace = b87.keeps_pace(view, adapted, stamped)
                     require(len(live) >= 3, f"{row['id']}: fewer than three live metrics events")
                     last_ordinal = {}
@@ -470,7 +487,8 @@ def verify(gate, *, cleanup=True, echo=True):
                             ordinal = value['frames'][1]
                             require(ordinal >= last_ordinal.get(metric, -1), 'Live metric range decreased: ' + metric)
                             last_ordinal[metric] = ordinal
-                    observations.append(dict(run=row['id'], live=b87.live(view, adapted, stamped, 'mean_intensity'), pace=pace))
+                    observations.append(dict(run=row['id'], live=b87.live(view, adapted, stamped, 'mean_intensity'),
+                                             pace=pace, package_side_frame_lag=package_lag))
             require(len(observations) == prep['sizes'][0] - 1, 'Missing scored photon run')
             return observations
         check('B4', b4)
@@ -600,10 +618,11 @@ def verify(gate, *, cleanup=True, echo=True):
     return bad
 
 
-def selftest(output):
+def selftest(output, *, pre_block=False):
     from microclaw import paths, controller, tools, completed_dataset
-    features()  # pre-block must never pass or touch the operator store
-    require(SIZES == (6, 1000, 6000, 2000, 200), 'Production frame/repetition/Stop plan changed')
+    if not pre_block:
+        features()
+    require(SIZES == (6, 1000, 12000, 2000, 200), 'Production frame/repetition/Stop plan changed')
     canonical = plan({'metrics': 'a' * 64, 'thermal': 'b' * 64}, Path('datasets'))
     require(len(canonical) == 17, 'Production plan must have 17 runs')
     for rep in range(6):
@@ -636,6 +655,7 @@ def selftest(output):
             class Studio(e4.BridgeStudio):
                 def acquisitions(self): return engine
             gate = Gate(root, base / 'evidence', fake=e4.OfflineInstall())
+            gate._pre_block_selftest = pre_block
             marker = gate.store_root / 'operator-marker.txt'
             marker.parent.mkdir(parents=True)
             marker.write_bytes(b'88b operator store must survive\r\n')
@@ -650,9 +670,16 @@ def selftest(output):
                     gate.prepare(sizes=SELFTEST_SIZES)
                     gate.measure()
                     gate.session()
-                verify(gate)
+                bad = verify(gate)
                 shutil.copytree(gate.out, output, dirs_exist_ok=True)
                 require(marker.read_bytes() == b'88b operator store must survive\r\n' and not gate.saved_store.exists(), 'Operator store not restored')
+                if pre_block:
+                    gate.save('selftest', dict(pre_block=True, actual_scores=gate.last_results,
+                        nonpass=bad, frame_size=512, store_restored=True,
+                        phases=['prepare', 'measure', 'synthetic session', 'verify']))
+                    gate.say('SELFTEST --pre-block: full verify reached; ' + json.dumps(gate.last_results))
+                    shutil.copytree(gate.out, output, dirs_exist_ok=True)
+                    return int(bool(bad))
                 # Cadence is measured on the fake, never declared demo performance.
                 require(all(v == 'PASS' for k, v in gate.last_results.items() if k != 'B6'),
                         'Unmutated structural limbs failed: ' + str(gate.last_results))
@@ -686,6 +713,13 @@ def selftest(output):
                     ordinary = [(e, t) for e, t in zip(value['events'], value['receipt_s']) if not e.get('analysis_metrics')]
                     value.update(events=[e for e, t in ordinary + metrics], receipt_s=[t for e, t in ordinary + metrics])
                     write_json(path, value)
+                def no_package_lines_before_end():
+                    events = e4._diagnostics(control)
+                    end = next(datetime.fromisoformat(e['timestamp']) for e in events
+                               if e.get('tool_call_id') == first['id'] and e['type'] == 'acquisition_finished')
+                    edit(first, 'job-0.json', lambda d: d['metrics'].update(history=[
+                        bucket for bucket in d['metrics']['history']
+                        if datetime.fromisoformat(bucket['received_last_at']) >= end]))
                 def cadence_bad():
                     for row in prep['runs']:
                         if row['condition'] == 'photon' and row['rep'] >= 1:
@@ -696,6 +730,7 @@ def selftest(output):
                     ('B2', 'duplicate acquisition', lambda: edit(first, 'job-0.json', lambda d: d['notifications'].insert(1, deepcopy(d['notifications'][0])))),
                     ('B3', 'Stop job completed', lambda: edit(stop, 'job-0.json', lambda d: d['notifications'][0]['message'].update(outcome='completed'))),
                     ('B4', 'metrics only after acquisition', after_only),
+                    ('B4', 'no package lines before acquisition end', no_package_lines_before_end),
                     ('B5', 'photon names on thermal', lambda: edit(thermal, 'events.json', lambda d: [e['analysis_metrics'].update(values={'mean_intensity': dict(value=1, frames=[0, 1])}) for e in d['events'] if e.get('analysis_metrics')])),
                     ('B6', 'median 1.11', cadence_bad),
                     ('B7', 'refusal prompt', lambda: edit(refused, 'confirmations.json', lambda d: d.append(dict(kind='analysis')))),
@@ -709,11 +744,13 @@ def selftest(output):
                     verify(arm, cleanup=False, echo=False)
                     changed = {k for k, v in arm.last_results.items() if v != 'PASS'}
                     require(changed == {limb}, f'{label}: changed {changed}, expected only {limb}')
+                    expected = 'NOT EXERCISED' if label == 'no package lines before acquisition end' else 'FAIL'
+                    require(arm.last_results[limb] == expected, f'{label}: expected {expected}, got {arm.last_results[limb]}')
                     mutation_results.append(dict(limb=limb, mutation=label, status=arm.last_results[limb], other_limbs='PASS'))
                     gate.say(f'SELFTEST mutation {label}: {limb} {arm.last_results[limb]}; all other limbs PASS')
                 gate.save('selftest', dict(actual_scores=gate.last_results, mutations=mutation_results, frame_size=512,
                     phases=['prepare', 'measure', 'synthetic session', 'verify'], store_restored=True))
-                gate.say('SELFTEST PASSED: prepare -> measure -> synthetic session -> verify; 10 isolated mutations; store restored.')
+                gate.say(f'SELFTEST PASSED: prepare -> measure -> synthetic session -> verify; {len(mutation_results)} isolated mutations; store restored.')
                 shutil.copytree(gate.out, output, dirs_exist_ok=True)
                 return 0
             finally:
@@ -728,11 +765,14 @@ def main():
     parser.add_argument('phase', choices=('prepare', 'measure', 'session', 'verify', 'cleanup', 'selftest'))
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--port', type=int, default=4827)
+    parser.add_argument('--pre-block', action='store_true', help='selftest only: bypass 88b admission and score the full fake run')
     args = parser.parse_args()
+    if args.pre_block and args.phase != 'selftest':
+        parser.error('--pre-block is allowed only with phase selftest')
     gate = None
     try:
         if args.phase == 'selftest':
-            return selftest(args.out)
+            return selftest(args.out, pre_block=args.pre_block)
         from microclaw import paths
         gate = Gate(paths.user_data_dir(), args.out)
         if args.phase == 'verify':

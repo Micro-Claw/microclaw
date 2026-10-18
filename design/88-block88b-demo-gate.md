@@ -9,10 +9,10 @@ the installed slot's base Python.
 Keep **MicroClaw closed except during session**. Prepare sets your package store
 aside as `skill-packages.88b-saved`; verify restores it. On interruption use
 cleanup below. Datasets stay under the workspace (or the launcher root if none),
-in a `block88b-…` folder. Maximum imaging is 23,000 frames at 512 × 512 uint16,
-about **12.1 GB**, with a 20% disk margin (about **14.5 GB**) checked first.
+in a `block88b-…` folder. Maximum imaging is 29,000 frames at 512 × 512 uint16,
+about **15.2 GB**, with a 20% disk margin (about **18.2 GB**) checked first.
 The refusal plans reserve an additional conservative 2,000 frames of disk,
-so prepare checks about **15.7 GB** in total.
+so prepare checks about **19.5 GB** in total.
 Datasets can be deleted after sending the evidence.
 
 ## 0. Install the branch
@@ -76,11 +76,12 @@ Follow the printed steps and **literal chat lines**; do not paraphrase them.
 Typing STOP at a prompt abandons the phase.
 
 1. Launch MicroClaw from its desktop icon. Put Firefox and PowerShell side by side.
-2. Paste the printed R01 question about stopping a 6000-frame interval-0 MDA.
+2. Paste the printed R01 question about stopping a 12000-frame interval-0 MDA.
    The agent must run nothing. Wait for its reply, then type DONE. The program
    saves the reply verbatim from history in `r01.json`; it is reported, unscored.
-3. Paste the printed 6000-frame `run_mda` line, with the actual photon digest.
-   Approve. While frames move and metrics are visible, type DONE. The program
+3. Paste the printed 12000-frame `run_mda` line, with the actual photon digest.
+   Approve. You have about two minutes: answer the question and click Stop
+   promptly. While frames move and metrics are visible, type DONE. The program
    takes `working.png` and asks whether photon's block shows changing values
    and "up to frame" numbers. Answer YES or NO as you see it.
 4. When instructed, click **Stop after the current step**, then type DONE.
@@ -96,7 +97,9 @@ Typing STOP at a prompt abandons the phase.
 Expect **B1–B8 and S1–S2 PASS**, R01 REPORTED verbatim, MEASUREMENT lines and
 CLEANUP confirming your operator store is restored. Any FAIL or NOT EXERCISED
 exits nonzero. A package that never reported during acquisition or fell more
-than 200 frames behind is NOT EXERCISED. Only the median product photon/none
+than 200 frames behind is NOT EXERCISED, decided from package-side history.
+If the package reported during acquisition but MicroClaw forwarded no live
+metrics before completion, B4 FAILs. Only the median product photon/none
 `duration_breakdown.duration_s` ratio is bounded, at **1.10** over five scored
 repetitions per arm. Gap p50/p95, dispatch, save-path receipt, metrics load/lag
 and writer-to-terminal times are reported without bounds.
