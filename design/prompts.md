@@ -11838,3 +11838,46 @@ Ship a one-line launcher (`design/88-spike-singleplane-timing.ps1`) instead.
   as round 3.
 - Coordinator commits: the gate, three spikes, the Stop tooltip, a test
   encoding, `SafetyViolation` for storage refusals, and the `interval_s` wording.
+
+## design/88 — block 88b (package `analysis` on ND-TIFF `run_mda`; PR #59)
+
+**The spike changed nothing, and was still worth it.** The one unmeasured
+dependency was the existing output location, `<dataset>/analysis/<job>/`,
+inside a folder Micro-Manager was still writing. MM's own type detection lists
+the folder (bytecode), so the question was real. Two minutes on the demo
+machine settled it before the runner prompt was written, and the prompt could
+state it as a fact.
+
+**A test fake that is idempotent hides the duplicate it should catch.** Round
+1's fake job kept only the first `acquisition_finished`. That let a
+`lifecycle("cancelled")` in the supervisor's `finally` through: it relabelled any
+worker `BaseException` as a cancelled MDA, for every run, with or without
+analysis. The fix moved the net to the job, and the fake now records every call.
+
+**The gate's real session was never driven by its selftest, and died at step
+1.** The 88b gate inherits from 87a's and 88a's; 87a's `ask(prompt, key)` won
+the MRO over 88a's `ask(prompt, key, allowed)`. The selftest replaced the
+session with a synthetic one, so the call that crashed had never run. When a
+gate composes two gates, list the methods both define and which wins; the
+selftest now binds every session prompt to the resolved `ask`.
+
+**A limb must not read its own subject as "not exercised".** Round 1's B4
+decided whether the package had reported from MicroClaw's forwarded progress,
+the very output under test, so a forwarding defect scored NOT EXERCISED. Whether
+a load happened is read from the package side (the job record); only then is
+the product's output scored.
+
+**A passing ratio was measured on a slowed machine.** Both gate runs imaged
+1000 frames in ~15–17 s instead of 11.3 s, in both arms. Rerunning the morning's
+spike unchanged, outside MicroClaw, showed the same slowness, which placed it in
+the machine without explaining it. The operator accepted B6 as measured; the
+finding, that a package's load moves frames onto a ~21 ms gap in that state, is
+`R157`. **Keep a standalone spike for the dependency you measured; it is the
+control that separates the machine from the product.**
+
+**Evidence:**
+- Full suite at `03ab1de`: 5963 passed, 107 skipped.
+- CI at `5d418ec`: Ubuntu and Windows green.
+- Demo gate run 2: 10/10 (run 1: measure 17/17 runs, session died on the gate's own `ask`).
+- Runner turns: one start, one product revision, one gate build, one gate revision.
+- Coordinator commits: the ledger, the spike and its launcher, the gate's `ask`/retry fix, this reconciliation.
