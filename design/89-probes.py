@@ -30,6 +30,7 @@ import os
 import queue
 from pathlib import Path
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -374,6 +375,73 @@ def dataset_report(env, path, planned, property_key=None):
     if property_key is not None:
         result["metadata_property_values"] = property_values
     return result
+
+
+def disk_preflight(core, args, out):
+    largest_run_frames = {
+        "p1": 80 if args.fake else 5000,
+        "p2": 80 if args.fake else 3000,
+        "p3": 6 if args.fake else 50,
+        "p4": 160 if args.fake else 3000,
+    }[args.probe]
+    width = bounded(core.get_image_width, args.call_bound)
+    height = bounded(core.get_image_height, args.call_bound)
+    bytes_per_pixel = bounded(core.get_bytes_per_pixel, args.call_bound)
+    if min(width, height, bytes_per_pixel) <= 0:
+        raise ValueError("camera image dimensions and bytes per pixel must be positive")
+    frame_bytes = width * height * bytes_per_pixel
+    needed_bytes = math.ceil(frame_bytes * largest_run_frames * 1.25)
+    usage = shutil.disk_usage(out)
+    return dict(
+        image_width=width,
+        image_height=height,
+        bytes_per_pixel=bytes_per_pixel,
+        frame_bytes=frame_bytes,
+        largest_run_frames=largest_run_frames,
+        margin=1.25,
+        needed_bytes=needed_bytes,
+        free_bytes=usage.free,
+        enough_space=usage.free >= needed_bytes,
+    )
+
+
+def discard_scored_stacks(run, probe, index):
+    run["deleted_bytes"] = 0
+    run["deleted_files"] = []
+    if probe == "p3":
+        reason = "P3 datasets retained"
+    elif not run.get("teardown_returned"):
+        reason = "teardown did not return; dataset retained as evidence"
+    elif not run.get("reader_stopped", True):
+        reason = "reader did not stop; dataset retained as evidence"
+    elif not run.get("acquisition_reader_closed", False):
+        reason = (
+            "acquisition dataset reader did not close; dataset retained as evidence"
+        )
+    elif index is None or "dataset" not in run or run.get("dataset_error"):
+        reason = "dataset report failed or unavailable; dataset retained as evidence"
+    elif (
+        run["dataset"]["failures"]
+        or run["dataset"]["indexed"] != run["dataset"]["readable"]
+    ):
+        reason = "dataset readability failed; dataset retained as evidence"
+    else:
+        try:
+            for stack in sorted(index.parent.rglob("*.tif")):
+                size = stack.stat().st_size
+                stack.unlink()
+                run["deleted_bytes"] += size
+                run["deleted_files"].append(str(stack.relative_to(index.parent)))
+            run[
+                "stack_cleanup"
+            ] = "scored image stacks deleted; index and logs retained"
+        except Exception as e:
+            run["stack_cleanup_error"] = f"{type(e).__name__}: {e}"
+            run[
+                "stack_cleanup"
+            ] = "stack deletion incomplete; see deleted_files and stack_cleanup_error"
+        return
+    run["stack_cleanup"] = reason
 
 
 def writer_limbs(w):
@@ -732,6 +800,17 @@ def run_one(
             r["dataset_error"] = str(e)
             if isinstance(e, TimeoutError):
                 r["pending_dependency_call"] = True
+    if acq is not None and r["teardown_returned"]:
+        # await_completion joins acquisition threads but does not close the
+        # Python dataset view (acquisition_superclass.py:213-217). Release its
+        # TIFF handles too before unlinking stacks, particularly on Windows.
+        try:
+            bounded(lambda: acq.get_dataset().close(), args.call_bound)
+            r["acquisition_reader_closed"] = True
+        except BaseException as e:
+            r["dataset_close_error"] = f"{type(e).__name__}: {e}"
+            if isinstance(e, TimeoutError):
+                r["pending_dependency_call"] = True
     r["saved_vs_index"] = [
         dict(
             at=s["at"],
@@ -780,6 +859,7 @@ def run_one(
                 overshoot_ms=ds["elapsed_ms"][-1] - abort_ms,
                 frames_after_abort=sum(t > abort_ms for t in ds["elapsed_ms"]),
             )
+    discard_scored_stacks(r, args.probe, index)
     return r
 
 
@@ -790,7 +870,9 @@ def run_health(r):
         and not r.get("callback_errors")
         and not r.get("imaging_timeout")
         and not r.get("dataset_error")
+        and not r.get("dataset_close_error")
         and not r.get("exit_error")
+        and not r.get("stack_cleanup_error")
         and r.get("writer_stopped", True)
         and r.get("reader_stopped", True)
         and bool(r.get("dataset", {}).get("readable"))
@@ -1104,6 +1186,8 @@ def execute(env, args, out):
             exit_error=r.get("exit_error"),
             teardown_wait_s=r["teardown_wait_s"],
         )
+        if r.get("stack_cleanup_error"):
+            raise RuntimeError("image stack cleanup failed; no further acquisitions")
         if (
             not r["teardown_returned"]
             or not r.get("writer_stopped", True)
@@ -1120,6 +1204,40 @@ def execute(env, args, out):
 
     try:
         core = bounded(lambda: env.Core(port=args.port))
+        space = disk_preflight(core, args, out)
+        report["disk_preflight"] = space
+        if not space["enough_space"]:
+            if args.probe == "p4":
+                expect(["fast_exposure", "10ms-control-post/run"])
+                for exposure in ("10ms", "fast"):
+                    for arm in ("2Hz", "5Hz", "10Hz", "worker", "behind"):
+                        expect([f"cadence/{exposure}/{arm}"])
+                    for repeat in range(3):
+                        for arm in (
+                            "control",
+                            "2Hz",
+                            "5Hz",
+                            "10Hz",
+                            "worker",
+                            "behind",
+                        ):
+                            prefix = f"{exposure}-{arm}-{repeat}/"
+                            expect([prefix + "run"])
+                            if arm != "control":
+                                expect([prefix + "read_growth"])
+                            if arm in ("worker", "behind"):
+                                expect([prefix + "worker"])
+                            if arm == "behind":
+                                expect([prefix + "behind_control"])
+            expect(["disk_space"])
+            for name in limbs:
+                limbs[name] = limb(
+                    "NOT EXERCISED",
+                    "insufficient free space for the largest run with 1.25 margin",
+                    needed_bytes=space["needed_bytes"],
+                    free_bytes=space["free_bytes"],
+                )
+            return report
         entry_exposure = bounded(core.get_exposure)
         restores.append(("exposure", lambda: core.set_exposure(entry_exposure)))
         if args.probe in ("p1", "p2", "p3"):
@@ -1378,6 +1496,7 @@ class FakeEnvironment:
         self.writes = []
         self.cores = []
         self.dispatched_milestones = []
+        self.acquisition_constructions = 0
         env = self
 
         class Core:
@@ -1388,6 +1507,15 @@ class FakeEnvironment:
 
             def get_camera_device(self):
                 return "Camera"
+
+            def get_image_width(self):
+                return 4
+
+            def get_image_height(self):
+                return 4
+
+            def get_bytes_per_pixel(self):
+                return 2
 
             def get_device_property_names(self, d):
                 return JavaVector(
@@ -1462,6 +1590,7 @@ class FakeEnvironment:
 
         class Backend:
             def __init__(self, **kw):
+                env.acquisition_constructions += 1
                 self.kw = kw
                 self.stop = threading.Event()
                 self.done = threading.Event()
@@ -1494,6 +1623,9 @@ class FakeEnvironment:
 
             def __enter__(self):
                 return self
+
+            def get_dataset(self):
+                return self.ds
 
             def acquire(self, events):
                 from pycromanager.acquisition.acq_eng_py.main.acq_notification import (
@@ -1626,7 +1758,6 @@ class FakeEnvironment:
                 self.notification_queue.put(N.create_data_sink_finished_notification())
                 if not self.dispatcher_done.wait(5):
                     raise RuntimeError("fake notification dispatcher did not finish")
-                self.ds.close()
 
         class Acquisition:
             def __new__(cls, **kw):
@@ -1654,7 +1785,17 @@ def selftest():
             args.call_bound = 3
             args.teardown_bound = 3
             env = FakeEnvironment(folder, mutation)
-            with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+            from unittest.mock import patch
+
+            usage = shutil.disk_usage(folder)
+            disk_control = (
+                patch.object(shutil, "disk_usage", return_value=usage._replace(free=0))
+                if mutation == "low_disk"
+                else contextlib.nullcontext()
+            )
+            with disk_control, open(
+                os.devnull, "w"
+            ) as sink, contextlib.redirect_stdout(sink):
                 report = execute(env, args, folder)
             (folder / "report.json").write_text(json.dumps(report, indent=2))
             assert (
@@ -1675,6 +1816,40 @@ def selftest():
                     c.new_socket for c in env.cores
                 ), "writer own Core connection"
             print(f'ok end-to-end: {probe} ({len(report["runs"])} runs)')
+            assert report["disk_preflight"]["enough_space"]
+            assert report["disk_preflight"]["frame_bytes"] == 4 * 4 * 2
+        for probe in ("p1", "p2", "p3", "p4"):
+            r, env = run(probe, "low_disk")
+            assert env.acquisition_constructions == 0 and not r["runs"]
+            space = r["disk_preflight"]
+            assert space["needed_bytes"] == math.ceil(
+                space["frame_bytes"] * space["largest_run_frames"] * 1.25
+            )
+            assert space["free_bytes"] < space["needed_bytes"]
+            assert r["limbs"] and all(
+                item["status"] == "NOT EXERCISED"
+                and item["needed_bytes"] == space["needed_bytes"]
+                and item["free_bytes"] == space["free_bytes"]
+                for item in r["limbs"].values()
+            )
+        print(
+            "ok control: insufficient disk space -> every limb NOT EXERCISED; zero acquisition constructions"
+        )
+        for arm in reports["p1"]["runs"]:
+            dataset_folder = Path(arm["index_path"]).parent
+            assert not list(dataset_folder.rglob("*.tif"))
+            assert (dataset_folder / "NDTiff.index").is_file()
+            assert Path(arm["callback_stream"]).is_file()
+            assert arm["acquisition_reader_closed"]
+            assert arm["deleted_bytes"] > 0 and arm["deleted_files"]
+        assert all(
+            list(Path(arm["index_path"]).parent.rglob("*.tif"))
+            and arm["deleted_bytes"] == 0
+            for arm in reports["p3"]["runs"]
+        )
+        print(
+            "ok control: healthy P1 removes image stacks and keeps index/logs/scoring fields; P3 keeps stacks"
+        )
         r, _ = run("p3", "refuted")
         assert (
             r["limbs"]["verdict"]["status"] == "FAIL"
@@ -1874,18 +2049,31 @@ def selftest():
         # Exit exception and hung teardown exercise the actual foreground deadline.
         base = FakeEnvironment(root)
         original = base.Acquisition
+        hang_release = threading.Event()
+        hang_done = threading.Event()
+        hung_objects = []
 
         def hang_factory(**kw):
             obj = original(**kw)
+            real_exit = type(obj).__exit__
+
+            def hung_exit(self, *exc):
+                try:
+                    real_exit(self, *exc)
+                    hang_release.wait(10)
+                finally:
+                    hang_done.set()
+
             obj.__class__ = type(
                 "HungBackend",
                 (type(obj),),
-                {"__exit__": lambda self, *exc: threading.Event().wait(10)},
+                {"__exit__": hung_exit},
             )
+            hung_objects.append(obj)
             return obj
 
         base.Acquisition = hang_factory
-        args = parser().parse_args(["p3"])
+        args = parser().parse_args(["p1"])
         args.fake = True
         args.start_bound = 1
         args.run_bound = 1
@@ -1894,6 +2082,15 @@ def selftest():
         r = run_one(base, args, root, "hung", 3)
         assert not r["teardown_returned"] and not run_health(r)
         print("ok control: hung teardown returns bounded FAIL via finally Event")
+        assert list(Path(r["index_path"]).parent.rglob("*.tif"))
+        assert r["deleted_bytes"] == 0 and not r["deleted_files"]
+        assert "teardown did not return" in r["stack_cleanup"]
+        print(
+            "ok control: hung teardown keeps image stacks as evidence; zero deleted bytes"
+        )
+        hang_release.set()
+        assert hang_done.wait(1)
+        hung_objects[0].get_dataset().close()
         for p in ("p1", "p2", "p3", "p4"):
             launcher = Path(__file__).with_name(f"89-probe-{p}.ps1").read_text()
             assert len(launcher.strip().splitlines()) == 1
