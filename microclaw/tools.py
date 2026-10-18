@@ -12384,7 +12384,6 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
             state["outcome"] = "failed"
         finally:
             try:
-                lifecycle("cancelled")  # idempotent safety net, including BaseException
                 state["finished_at"] = clock()
                 close()  # exclusive ownership, including after foreground expiry
             finally:
@@ -12615,17 +12614,23 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         failure.diagnostic_persisted = bool(state.get("diagnostic_persisted"))
         failure.mda_state = _mda_report(state, _acquisition_monotonic())
         raise failure
-    state = _supervise_mda(
-        manager, start, current, runtime_s=runtime,
-        startup_s=plan.exposure_ms_per_frame / 1000.0, interval_s=interval_s,
-        quiet_window=lambda gap: _stall_quiet_s(gap, DEFAULT)[0],
-        clock=_acquisition_monotonic, wait=_wait_mda_completion,
-        poll_s=_ACQUISITION_POLL_S,
-        cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
-        account=reservation.commit_frame, close=reservation.close,
-        notify=notify, expired=expired, clock_name=timing_clock_name(), frames_planned=plan.frames,
-        image_bytes=width * height * bpp, observe_analysis=prepared is not None,
-    )
+    try:
+        state = _supervise_mda(
+            manager, start, current, runtime_s=runtime,
+            startup_s=plan.exposure_ms_per_frame / 1000.0, interval_s=interval_s,
+            quiet_window=lambda gap: _stall_quiet_s(gap, DEFAULT)[0],
+            clock=_acquisition_monotonic, wait=_wait_mda_completion,
+            poll_s=_ACQUISITION_POLL_S,
+            cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
+            account=reservation.commit_frame, close=reservation.close,
+            notify=notify, expired=expired, clock_name=timing_clock_name(), frames_planned=plan.frames,
+            image_bytes=width * height * bpp, observe_analysis=prepared is not None,
+        )
+    finally:
+        # Only the observer needs a terminal safety net. A worker BaseException
+        # does not establish a cancelled acquisition outcome.
+        if analysis_job is not None:
+            analysis_job.acquisition_finished("cancelled")
     if state.get("outcome") is None:
         raise RuntimeError("MDA supervision returned without an acquisition outcome")
     return {

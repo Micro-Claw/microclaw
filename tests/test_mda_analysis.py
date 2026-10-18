@@ -13,6 +13,8 @@ ATTACH = dict(adapter='lab/pkg:observe', release_digest='a' * 64, parameters={})
 def observer(monkeypatch):
     made = []
     snapshots = []
+    # Record every raw call, including the finally safety net. The real job
+    # suppresses repeated outcomes; this fake must expose extra deliveries.
     class Job:
         def __init__(self, prepared, dataset):
             self.dataset = dataset
@@ -27,8 +29,7 @@ def observer(monkeypatch):
                         latest={'density': dict(value=3, frames=[0, 8])},
                         feed_alive=True, lost_frames=False)
         def acquisition_finished(self, outcome):
-            if not self.events:
-                self.events.append(outcome)
+            self.events.append(outcome)
         def writer_finished(self): self.events.append('writer')
         def record(self): return dict(dataset=self.dataset, events=self.events)
     monkeypatch.setattr(completed_dataset, 'prepare_package_analysis', lambda **kw: {})
@@ -50,7 +51,7 @@ def test_completed_binding_lifecycle_metrics(rig, observer):
     assert len(made) == 1
     assert made[0].dataset == '/data/actual_suffix'
     assert made[0].thread != threading.get_ident()
-    assert made[0].events == ['completed', 'writer']
+    assert made[0].events == ['completed', 'writer', 'cancelled']
     assert result['analysis']['jobs'][0]['dataset'] == '/data/actual_suffix'
     assert 'analysis_dispatch' in result['duration_breakdown']['phases']
     progress = [e for e in events if 'analysis_metrics' in e]
@@ -66,7 +67,7 @@ def test_stop_midrun(rig, observer, monkeypatch):
     monkeypatch.setattr(tools, '_mda_poll_wait', lambda _: cancel.set())
     result = execute(rig, cancel=cancel)
     assert result['outcome'] == 'cancelled'
-    assert observer[0][0].events == ['cancelled', 'writer']
+    assert observer[0][0].events == ['cancelled', 'writer', 'cancelled']
     assert rig[1].calls.count('abort') == 1
 
 
@@ -120,7 +121,7 @@ def test_unterminated_no_writer(rig, observer, monkeypatch):
     try:
         result = execute(rig)
         assert result['acquisition'] == 'unterminated'
-        assert observer[0][0].events == ['unterminated']
+        assert observer[0][0].events == ['unterminated', 'cancelled']
     finally:
         manager.observations = [(False, 2, True, True)]
         monkeypatch.setattr(manager, 'is_acquisition_running', original)
@@ -196,4 +197,28 @@ def test_delayed_real_path(rig, observer, monkeypatch):
     result = execute(rig)
     assert result['outcome'] == 'completed', result
     assert [job.dataset for job in observer[0]] == ['/data/run_1']
-    assert observer[0][0].events == ['completed', 'writer']
+    assert observer[0][0].events == ['completed', 'writer', 'cancelled']
+
+
+def test_worker_baseexception_cancels_job_without_relabelling_mda(rig, observer, monkeypatch):
+    class WorkerExit(BaseException):
+        pass
+    failures = []
+    failure_reported = threading.Event()
+    def report_failure(args):
+        failures.append(args.exc_value)
+        failure_reported.set()
+    monkeypatch.setattr(threading, 'excepthook', report_failure)
+    def interrupt(_):
+        assert len(observer[0]) == 1, 'The observer must already be bound'
+        raise WorkerExit('worker exited')
+    monkeypatch.setattr(tools, '_mda_poll_wait', interrupt)
+    events = []
+    result = execute(rig, acquisition_event_sink=events.append)
+    assert observer[0][0].events == ['cancelled']
+    assert 'without an acquisition outcome' in result.get('error', ''), result
+    assert 'outcome' not in result
+    assert not any(e['type'] == 'acquisition_finished' for e in events)
+    assert failure_reported.wait(5)
+    assert len(failures) == 1 and isinstance(failures[0], WorkerExit)
+    assert not tools._acquisition_ledger(rig[0]).in_flight

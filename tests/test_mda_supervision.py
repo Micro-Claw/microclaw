@@ -787,3 +787,30 @@ def test_mda_stop_guidance_and_cancel_banner_are_explicit():
     assert 'MDA was aborted' in CANCEL_REASON
     assert 'any other running step finished first' in CANCEL_REASON
     assert 'last step completed' not in CANCEL_REASON
+
+
+def test_supervisor_baseexception_preserves_missing_outcome_without_analysis(rig, monkeypatch):
+    class WorkerExit(BaseException):
+        pass
+    failures = []
+    events = []
+    closed = []
+    failure_reported = threading.Event()
+    def report_failure(args):
+        failures.append(args.exc_value)
+        failure_reported.set()
+    monkeypatch.setattr(threading, 'excepthook', report_failure)
+    def interrupt(_):
+        raise WorkerExit('worker exited')
+    manager = rig[1]
+    state = tools._supervise_mda(
+        manager, lambda: manager.store, {'save_mode': 'ND_TIFF'},
+        runtime_s=100, startup_s=1, interval_s=0, quiet_window=lambda gap: 10,
+        clock=tools._acquisition_monotonic, wait=lambda done, seconds: done.wait(seconds),
+        poll_s=0.01, pause=interrupt, notify=events.append,
+        close=lambda: closed.append(True))
+    assert state['outcome'] is None
+    assert not any(e['type'] == 'acquisition_finished' for e in events)
+    assert failure_reported.wait(5)
+    assert len(failures) == 1 and isinstance(failures[0], WorkerExit)
+    assert closed == [True]
