@@ -15,7 +15,7 @@ MDA_SETTINGS_SCHEMA = {
 
 
 ANALYSIS_TOOLS = frozenset({
-    'run_zstack', 'run_timelapse', 'run_multiposition_acquisition',
+    'run_mda', 'run_zstack', 'run_timelapse', 'run_multiposition_acquisition',
     'run_tile_acquisition', 'run_multiposition_with_autofocus', 'run_adaptive_survey',
 })
 ANALYSIS_SCHEMA = {
@@ -2552,11 +2552,10 @@ TOOLS: list[dict[str, Any]] = [
 for _tool in TOOLS:
     if _tool['name'] in ANALYSIS_TOOLS:
         _tool['input_schema']['properties']['analysis'] = ANALYSIS_SCHEMA
-    elif _tool['name'] == 'run_mda':
-        _tool['description'] += (
-            " Package analysis is unavailable: run_mda uses Micro-Manager's own engine "
-            "and package attachment is not yet supported."
-        )
+        if _tool['name'] == 'run_mda':
+            _tool['input_schema']['properties']['analysis'] = {
+                **ANALYSIS_SCHEMA, 'description': ANALYSIS_SCHEMA['description'] +
+                ' Only settings.save_mode ND_TIFF (the default) accepts analysis; MULTIPAGE_TIFF and SINGLEPLANE_TIFF_SERIES are refused before confirmation or hardware effects.'}
 
 # Add cache_control on the last tool so the entire tool list is cached.
 TOOLS_CACHED = [*TOOLS[:-1], {**TOOLS[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}}]

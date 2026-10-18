@@ -5025,23 +5025,11 @@ def _acquire_with_hooks(
                 if handle is not None:
                     metrics = handle.metrics_snapshot(for_progress=True)
                     if metrics.get("declared"):
-                        # At most 32 entries; per-frame values are weighted
-                        # bucket means, with their contributing ranges.
-                        values = {}
-                        for metric, declaration in metrics["declared"].items():
-                            if metric in metrics["latest"]:
-                                values[metric] = dict(metrics["latest"][metric], unit=declaration["unit"],
-                                    description=declaration["description"])
                         with frame_lock:
                             count, phase = frame_state["count"], progress_state["phase"]
-                        _emit_acquisition_diagnostic({
-                            "type": "acquisition_progress", "phase": phase,
-                            "dataset_path": dataset_path, "frames_accounted": count,
-                            "frames_planned": plan.frames if plan is not None else None,
-                            "analysis_metrics": dict(job_id=handle.job_id,
-                                package_id=analysis_job.metadata["package"].split("/", 1)[-1], values=values,
-                                feed_alive=metrics["feed_alive"], lost_frames=metrics["lost_frames"]),
-                        })
+                        _emit_acquisition_diagnostic(_analysis_metrics_progress(
+                            analysis_job, metrics, dataset_path, count,
+                            plan.frames if plan is not None else None, phase))
             # pycro-manager 1.0.2 abort() stores the fatal exception here.
             # This private API and _dataset_disk_location below must both be
             # re-verified whenever pycro-manager is upgraded.
@@ -12185,6 +12173,24 @@ def _mda_poll_wait(seconds):
     threading.Event().wait(seconds)
 
 
+def _analysis_metrics_progress(job, metrics, dataset_path, count, planned, phase):
+    """The bounded package working-line payload shared by acquisition engines."""
+    values = {
+        name: dict(metrics["latest"][name], unit=declaration["unit"],
+                   description=declaration["description"])
+        for name, declaration in metrics["declared"].items()
+        if name in metrics["latest"]
+    }
+    return {
+        "type": "acquisition_progress", "phase": phase,
+        "dataset_path": dataset_path, "frames_accounted": count,
+        "frames_planned": planned,
+        "analysis_metrics": dict(job_id=job.handle.job_id,
+            package_id=job.metadata["package"].split("/", 1)[-1], values=values,
+            feed_alive=metrics["feed_alive"], lost_frames=metrics["lost_frames"]),
+    }
+
+
 def _mda_report(state, now):
     end = state.get("finished_at", now)
     start_end = state.get("start_returned", end)
@@ -12200,6 +12206,13 @@ def _mda_report(state, now):
     ):
         phases[name] = {"count": 1, "total_s": duration, "min_s": duration,
                         "max_s": duration, "mean_s": duration}
+    if "analysis_dispatch_s" in state:
+        dispatch = state["analysis_dispatch_s"]
+        phases["acquiring"]["total_s"] -= dispatch
+        for key in ("min_s", "max_s", "mean_s"):
+            phases["acquiring"][key] = phases["acquiring"]["total_s"]
+        phases["analysis_dispatch"] = dict(count=1, total_s=dispatch,
+            min_s=dispatch, max_s=dispatch, mean_s=dispatch)
     duration = end - state["started"]
     accounted = sum(p["total_s"] for p in phases.values())
     return {key: state[key] for key in (
@@ -12219,7 +12232,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                    quiet_window, clock, wait, poll_s, cancel=None,
                    account=lambda: None, close=lambda: None,
                    notify=lambda event: None, expired=None, pause=None,
-                   clock_name="monotonic", frames_planned=None, image_bytes=None):
+                   clock_name="monotonic", frames_planned=None, image_bytes=None, observe_analysis=False):
     """One bridge owner; the watchdog never calls Java, including on expiry.
 
     notify is the internal lifecycle seam for future read-only observers.
@@ -12295,7 +12308,12 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                     pause(poll_s)
                     continue
                 if path is not None:
+                    first_path = state["dataset_path"] is None
                     state["dataset_path"] = str(path)
+                    if observe_analysis and first_path:
+                        dispatch_started = clock()
+                        notify({"type": "analysis_dataset", "dataset_path": str(path)})
+                        state["analysis_dispatch_s"] = clock() - dispatch_started
                 now = clock()
                 with lock:
                     previous_count = state["frames_accounted"]
@@ -12315,6 +12333,10 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                 notify({"type": "acquisition_progress", "phase": state["phase"],
                         "frames_accounted": count, "frames_planned": frames_planned,
                         "dataset_path": state["dataset_path"]})
+                if observe_analysis:
+                    notify({"type": "analysis_progress", "phase": state["phase"],
+                            "frames_accounted": count, "frames_planned": frames_planned,
+                            "dataset_path": state["dataset_path"]})
                 if not running:
                     if "engine_finished" not in state:
                         state["engine_finished"] = clock()
@@ -12410,6 +12432,8 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
 
 
 def _emit_mda(params: RecordedParams) -> str:
+    # Like _emit_timelapse, attachment arguments do not enter the standalone
+    # acquisition; export_session_script discloses recorded jobs separately.
     if not params.result:
         raise CannotEmit("run_mda has no recorded result")
     if params.result.get("outcome") != "completed":
@@ -12463,7 +12487,7 @@ def _emit_mda(params: RecordedParams) -> str:
 @_acquisition_entry_point
 @emits(_emit_mda)
 def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
-            settings: dict) -> dict:
+            settings: dict, analysis: dict | None = None) -> dict:
     _check_acquisition_install_admission(ctrl)
     manager = ctrl.studio.acquisitions()
     from microclaw.skill_packages import validate_parameters
@@ -12523,9 +12547,49 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         ctrl.core.set_exposure(exposure_ms)
         return manager.run_acquisition_with_settings(built, False)
 
+    prepared = getattr(_ACQUISITION_EVENT_CONTEXT, "analysis_prepared", None)
+    jobs = getattr(_ACQUISITION_EVENT_CONTEXT, "analysis_jobs", None)
+    analysis_job = None
+    last_metrics_progress = None
+    analysis_lock = threading.Lock() if prepared is not None else None
+    analysis_outcome = None
     context = {key: getattr(_ACQUISITION_EVENT_CONTEXT, key, None)
                for key in ("sink", "diagnostic_writer", "session_id", "tool_call_id")}
     def notify(event):
+        nonlocal analysis_job, last_metrics_progress, analysis_outcome
+        if prepared is not None:
+            if event["type"] == "analysis_dataset":
+                from microclaw.completed_dataset import AcquisitionAnalysisJob
+                # Dispatch may spawn a process: never hold the watchdog's lock.
+                job = AcquisitionAnalysisJob(prepared, event["dataset_path"])
+                with analysis_lock:
+                    analysis_job = job
+                    jobs.append(job)
+                    if analysis_outcome is not None:
+                        job.acquisition_finished(analysis_outcome)
+                return
+            with analysis_lock:
+                if event["type"] == "acquisition_finished":
+                    analysis_outcome = event["outcome"]
+                if event["type"] == "analysis_progress":
+                    tick = _acquisition_monotonic()
+                    if analysis_job is None or (last_metrics_progress is not None and tick - last_metrics_progress < 1):
+                        return
+                    last_metrics_progress = tick
+                    handle = analysis_job.handle
+                    if handle is None:
+                        return
+                    metrics = handle.metrics_snapshot(for_progress=True)
+                    if not metrics.get("declared"):
+                        return
+                    event = _analysis_metrics_progress(analysis_job, metrics,
+                        event["dataset_path"], event["frames_accounted"],
+                        event["frames_planned"], event["phase"])
+                elif analysis_job is not None:
+                    if event["type"] == "acquisition_finished":
+                        analysis_job.acquisition_finished(event["outcome"])
+                    elif event["type"] == "writer_finished":
+                        analysis_job.writer_finished()
         if event["type"] == "acquisition_timeout":
             event = {**event, "active_bound": DEFAULT.bound_name,
                      "active_bound_term": term, "estimated_bytes": plan.estimated_bytes}
@@ -12550,17 +12614,23 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
         failure.diagnostic_persisted = bool(state.get("diagnostic_persisted"))
         failure.mda_state = _mda_report(state, _acquisition_monotonic())
         raise failure
-    state = _supervise_mda(
-        manager, start, current, runtime_s=runtime,
-        startup_s=plan.exposure_ms_per_frame / 1000.0, interval_s=interval_s,
-        quiet_window=lambda gap: _stall_quiet_s(gap, DEFAULT)[0],
-        clock=_acquisition_monotonic, wait=_wait_mda_completion,
-        poll_s=_ACQUISITION_POLL_S,
-        cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
-        account=reservation.commit_frame, close=reservation.close,
-        notify=notify, expired=expired, clock_name=timing_clock_name(), frames_planned=plan.frames,
-        image_bytes=width * height * bpp,
-    )
+    try:
+        state = _supervise_mda(
+            manager, start, current, runtime_s=runtime,
+            startup_s=plan.exposure_ms_per_frame / 1000.0, interval_s=interval_s,
+            quiet_window=lambda gap: _stall_quiet_s(gap, DEFAULT)[0],
+            clock=_acquisition_monotonic, wait=_wait_mda_completion,
+            poll_s=_ACQUISITION_POLL_S,
+            cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
+            account=reservation.commit_frame, close=reservation.close,
+            notify=notify, expired=expired, clock_name=timing_clock_name(), frames_planned=plan.frames,
+            image_bytes=width * height * bpp, observe_analysis=prepared is not None,
+        )
+    finally:
+        # Only the observer needs a terminal safety net. A worker BaseException
+        # does not establish a cancelled acquisition outcome.
+        if analysis_job is not None:
+            analysis_job.acquisition_finished("cancelled")
     if state.get("outcome") is None:
         raise RuntimeError("MDA supervision returned without an acquisition outcome")
     return {
@@ -12717,6 +12787,8 @@ def execute_tool(
     def encode_result(result):
         if analysis_jobs and isinstance(result, dict):
             result["analysis"] = {"jobs": [job.record() for job in analysis_jobs]}
+        if name == "run_mda" and getattr(_ACQUISITION_EVENT_CONTEXT, "analysis_prepared", None) is not None and not analysis_jobs and isinstance(result, dict):
+            result["analysis"] = {"jobs": [], "reason": "No datastore save path observed; no analysis job created."}
         return result if isinstance(result, list) else json.dumps(result)
 
     try:
@@ -12748,6 +12820,11 @@ def execute_tool(
         if getattr(fn, "_microclaw_acquisition_entry_point", False):
             from microclaw.authorization import authorize_path
             authorize_path(ctrl, f"acquisition-tool:{name}")
+        if name == "run_mda":
+            if "analysis_feedback" in tool_input:
+                raise ValueError("run_mda does not accept analysis_feedback")
+            if tool_input.get("analysis") is not None and tool_input.get("settings", {}).get("save_mode", "ND_TIFF") != "ND_TIFF":
+                raise ValueError("run_mda analysis requires settings.save_mode ND_TIFF")
         if tool_input.get('analysis') is not None:
             from microclaw.tools_schema import ANALYSIS_TOOLS, ANALYSIS_SCHEMA
             from microclaw.skill_packages import validate_parameters

@@ -38,12 +38,12 @@ def live(package_analysis, hooked_engine, monkeypatch, tmp_path):
 
 def test_schema_is_shared_and_mda_discloses_boundary():
     selected = {tool['name']: tool for tool in TOOLS if tool['name'] in ANALYSIS_TOOLS}
-    assert len(selected) == 6
+    assert len(selected) == 7
     assert all(tool['input_schema']['properties']['analysis'] is ANALYSIS_SCHEMA
-               for tool in selected.values())
+               for name, tool in selected.items() if name != 'run_mda')
     mda = next(tool for tool in TOOLS if tool['name'] == 'run_mda')
-    assert 'analysis' not in mda['input_schema']['properties']
-    assert "Micro-Manager's own engine" in mda['description']
+    assert 'ND_TIFF' in mda['input_schema']['properties']['analysis']['description']
+    assert "attachment is not yet supported" not in mda['description']
 
 
 @pytest.mark.parametrize('name', sorted(ANALYSIS_TOOLS))

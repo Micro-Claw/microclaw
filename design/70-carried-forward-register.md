@@ -118,6 +118,8 @@ Rows added since the triage:
 | `R153` | `design/85` block 85a's Windows CI run, 2026-10-13 (not 85a's code) |
 | `R154` | `design/87` block 87a's demo gate, scored from artifacts 2026-10-16 |
 | `R155`–`R156` | `design/88` block 88a's gate selftest, demo gates and spikes, 2026-10-17 |
+| `R157` | `design/88` block 88b's demo gate and spike rerun, scored from artifacts 2026-10-18 |
+| `R158` | `design/88` block 88b's Windows CI run, 2026-10-18 (not 88b's code) |
 
 
 ## The work queue
@@ -231,6 +233,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R96` | [An unterminated acquisition with every frame accounted is summarised to the user as a success](#r96) | MEDIUM | SMALL |  |
 | `R97` | [The runtime deadline includes Acquisition() construction, and nothing records how much](#r97) | LOW | SMALL |  |
 | `R155` | [Ctrl-C during a pycro-manager teardown wait can make a live waiter look finished](#r155) | MEDIUM | SMALL |  |
+| `R158` | [84a's window test reads the final display once, without a wait](#r158) | LOW | SMALL |  |
 
 **Demo machine**
 
@@ -251,6 +254,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R75` | [Channel preset colliding with a typed actuator - rig coverage](#r75) | LOW | SMALL |  |
 | `R143` | [A spaced timelapse keeps time worse on an idle machine than beside a busy worker](#r143) | LOW | SMALL |  |
 | `R154` | [The metrics reader's cost above ~1,300 lines/s is unmeasured on Windows](#r154) | LOW | SMALL |  |
+| `R157` | [On a slowed demo machine, a disk-following package moves MDA frames onto a ~21 ms gap](#r157) | MEDIUM | SMALL |  |
 | `R156` | [Opening freshly written files costs ~30 ms each on the demo machine](#r156) | LOW | SMALL |  |
 
 **M2**
@@ -315,6 +319,7 @@ These need a code change and a test. Nothing here is waiting on hardware; the on
 
 - **Status** — OPEN - `microclaw/tools_schema.py:707-713` warns only that zero-interval bursts may resist Stop, still inviting the false converse; design/69a explicitly leaves the finding open.
 - **Changed by `design/88` 88a (2026-10-17)** — the premise "Microclaw cannot stop anything mid-tool" is no longer true for `run_mda`: Stop and Ctrl-C abort it within 1.1–1.2 s (demo gate, 4/4 per run), and `serve.html`'s Stop tooltip now says so. Yet in **both** gate sessions (n=2) the agent told the operator that Stop may not stop a zero-interval `run_mda`, attributing `run_timelapse`'s caveat to it as "the tool's own caveat" although `run_mda`'s description said the opposite. `e058daf` puts the contrast on `run_mda`'s `interval_s` description. **Check what the agent says before a zero-interval `run_mda` in 88b's gate session**; no 88a run tests the text.
+- **Checked by `design/88` 88b (2026-10-18)** — asked before a 12000-frame, zero-interval `run_mda` with a package attached, the agent was **correct** this time: Stop or Ctrl-C aborts it "within about a second", "unlike `run_timelapse`", and it ran nothing. One slip: it called Stop "the MMStudio MDA control"; it is MicroClaw's "Stop after the current step" button. n=1 against 88a's two wrong sessions, so the `interval_s` wording is not shown to work; the verbatim reply is `r01.json` in 88b's gate evidence.
 - **Importance** — HIGH - Misleading interruption advice can cause thousands of unintended exposures, wasting dose, data, and rig time.
 - **Where** — LOCAL - The defect is in schema/disclosure wording and agent guidance, so code inspection and off-rig response tests can settle it.
 - **Block** — NONE - Block 60 D5 introduced the zero-burst warning but does not disclaim added stoppability at nonzero intervals; Block 12 only requires disposition.
@@ -3346,3 +3351,30 @@ the model" as the actual blast radius.
 - **Importance** — LOW.
 - **Effort** — SMALL
 - **Provenance** — `design/88` 88a, 2026-10-17.
+
+### R157 — On a slowed demo machine, a disk-following package moves MDA frames onto a ~21 ms gap
+
+**On 2026-10-18 the demo machine imaged a 1000-frame, 10 ms, zero-interval MDA in 14.6–16.9 s instead of 11.3 s, with gaps mixing ~11 ms and ~21 ms frames. In that state, a package following the dataset moved the gap p50 from ~12.7 ms to ~17 ms.**
+
+- **What happened** — `design/88` 88b's two demo-gate runs (10:20, 10:34) were slow with or without a package: every run of the second, and all but two of the first (those two imaged in 11.0–11.3 s). The growing-reader spike (`design/88-spike-growing-reader.py`, no MicroClaw) measured 11.25–11.34 s spans and no reader effect at 08:51, and 15.2–16.5 s spans with the same p50 shift at 10:43. So the slow state is the machine's, and the shift is the package's load, not MicroClaw's supervision. 88b's cadence bound passed (1.064 on `duration_s`); the operator accepted it as measured.
+- **Cause** — not identified, for both the slow state and the ~21 ms mode.
+- **Why it matters** — SMLM needs a constant frame interval. A ratio on burst duration can pass while the per-frame interval distribution changes; design/89 and SMAPpy on M2 should look at gap p95 and the ~21 ms mode, not only the median duration.
+- **What a fix would look like** — measure first: rerun the spike after a reboot with the old datasets deleted, and again with Defender's real-time scan excluded for the data folder (also `R156`), to find what brings back 11.3 s. Then decide whether the cadence bound for MDA should be on gap p95 as well as duration.
+- **Where** — DEMO MACHINE.
+- **Block** — NONE.
+- **Importance** — MEDIUM.
+- **Effort** — SMALL
+- **Provenance** — `design/88` 88b, 2026-10-18.
+
+### R158 — 84a's window test reads the final display once, without a wait
+
+**`test_84a_fixture_live_pause_final_drain_and_eof` failed on Windows CI at its last line, `assert displayed(output, 3)`: one read of `display.json`, 0.2 s after the result, where every earlier display check uses a bounded `wait_until`.**
+
+- **What happened** — PR #59, run 39113232886, `windows-latest`, 2026-10-18, at commit `100fd8b`. Since the previous green run (`5d418ec`) only files under `design/` had changed, so no code under test differed. 1 failed, 5954 passed. This is the test `R153` named, but a different line: R153 was the 8 s first-frame wait at `:1750`, which design/86 86a fixed.
+- **Cause** — not identified. Either the worker had not yet drawn frame 3 within 0.2 s on the runner, or the read met the fixture's `display.json` replace (the race 86a found for the first frame). The assertion carries no `describe()` evidence, so the log cannot tell which.
+- **What a fix would look like** — `wait_until(lambda: displayed(output, 3), describe)`, as the earlier checks do, so a failure carries the record, `poll()` and `display.json`.
+- **Where** — LOCAL, then Windows CI.
+- **Block** — NONE.
+- **Importance** — LOW. The test, not the product: the product's result had already been asserted.
+- **Effort** — SMALL
+- **Provenance** — `design/88` 88b's CI, 2026-10-18.

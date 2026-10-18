@@ -1,6 +1,6 @@
 # Driving Micro-Manager's own side — the MDA, htSMLM activation, plugin windows
 
-**Status:** 88a done (PR #58, demo gate 15/15 on 2026-10-17; closes `R86`). 88b–88d not opened.
+**Status:** 88a done (PR #58, demo gate 15/15 on 2026-10-17; closes `R86`). 88b done (PR #59, demo gate 10/10 on 2026-10-18). 88c–88d not opened.
 Siblings: [design/87](87-package-metrics.md) (community-package metrics) and
 [design/89](89-feedback-during-acquisition.md) (MicroClaw acting on them).
 
@@ -370,6 +370,55 @@ zero-interval `run_mda`. Run 3: 15/15, with every fix. The agent repeated
 the Stop misstatement, despite `run_mda`'s own description, in both sessions;
 the text now sits on `interval_s` and is to be checked in 88b's session (`R01`).
 
+## What 88b built and measured (2026-10-18)
+
+E4 as decided. `run_mda` is in `ANALYSIS_TOOLS` through the existing
+attachment path. The job binds to the first non-null `getSavePath()` the
+supervisor's worker sees. It receives the supervisor's outcome, then writer
+completion. A job-only `finally` covers a `BaseException`, and the MDA's own
+outcome is not relabelled. Live `analysis_metrics` progress comes from one
+helper shared with `_acquire_with_hooks`. Dispatch is reported as its own
+phase, `analysis_dispatch`. Refused before any confirmation: `analysis` with a
+TIFF mode, and any `analysis_feedback` key. Export matches `_emit_timelapse`
+(attachment does not enter the script).
+
+**Spike before code** (`design/88-spike-growing-reader.*`, demo machine,
+08:51). Creating `<dataset>/analysis/<job>/` inside the growing MDA dataset,
+with a `.json` and a `.tif` written there mid-run, changed nothing: MM's
+`loadData(path, true)` and ndstorage reopened 1000/1000, and the index was
+complete 13–16 ms after freeze. MM's own type detection looks only one level
+down for `.tif` (bytecode), so `analysis/<job>/` is invisible to it. The path is
+non-null 0.03–0.08 s after start, with 0 images, and is MM-suffixed (`_1`) even
+the first time a name is used. The fixture was never ahead of the *next*
+`getNumImages()` poll in ~900 status lines; 88a's "index ahead" did not recur.
+
+**Demo gate** (`design/88-block88b-demo-gate.*`), run 2: 10/10.
+
+| measurement | result |
+|---|---|
+| B1 binding | every job on the suffixed datastore path, output under `analysis/<job_id>/` |
+| B2/B3 lifecycle (job record) | `acquisition` then `writer`, once each, for 7 completed and 2 Stop-cancelled runs; every job read every saved frame |
+| S1 session Stop | 12000-frame run cancelled at 1,726 frames; job saw `cancelled` then `writer` and read 1,726 |
+| B4/S2 live metrics | 25–95 package lines before acquisition end; last live lag 0–16 frames; screenshot at frame 263 shows four metrics "up to frame 255" |
+| B6 cadence | median `duration_s` photon/none **1.064** (16.51 s vs 17.58 s), n = 5 per arm, bound 1.10 (operator, 2026-10-18) |
+| B8 dispatch | 0.011–0.024 s per attached run |
+| writer → job terminal | 0.06–0.21 s |
+
+**B6 was measured in a slow machine state whose cause is not attributed.** All
+of gate run 2's runs and all but two of run 1's (r5-none and thermal, 11.0–11.3
+s) imaged 1000 frames in 14.6–16.9 s, against 11.3 s in the morning's spike and
+in 88a, with gaps that mix ~11 ms and ~21 ms frames. The
+spike, rerun unchanged at 10:43 (it imports nothing from MicroClaw), was just
+as slow: control 15.2–15.9 s. So the state is the machine's, not MicroClaw's.
+In that state a disk-following package moved the gap p50 from ~12.7 to ~17 ms,
+in the spike as in the gate. The operator accepted B6 as measured (2026-10-18).
+The finding is `R157`.
+
+**Gate run 1** completed measure (17/17 runs) and died at session step 1: the
+88b gate inherits from 87a's and 88a's gates, and 87a's `ask(prompt, key)` won
+the MRO. The selftest drove a synthetic session, so the real one had never run.
+The selftest now binds every session prompt to the resolved `ask`.
+
 ## Probes — each before its owning block's gate
 
 V1–V4 were measured by 88a's demo gate (`design/88-block88a-demo-gate.*`) and
@@ -429,7 +478,7 @@ measured". No separate `design/88-probe-mda.py` was written.
 | block | content | where it is proved |
 | --- | --- | --- |
 | **88a** ✓ | E1, E2, E6: settings-only `run_mda` (dialog route removed), dialog update, non-blocking supervision and direct abort, writer completion for NDTiff and both TIFF modes, folder and disk preflight, lifecycle record, install-admission gate, export. Closed `R86` (PR #58). | demo gate 15/15 (run 3, 2026-10-17); three spikes |
-| **88b** | E4: `analysis` on typed ND-TIFF MDA, actual datastore path, acquisition/writer notifications and progress metrics when 87a is present. Independent of htSMLM/plugin work. | demo with a fixture package; growing reader, cancellation and finalized index |
+| **88b** ✓ | E4: `analysis` on typed ND-TIFF MDA, actual datastore path, acquisition/writer notifications and progress metrics when 87a is present. Independent of htSMLM/plugin work. Closed by PR #59. | demo gate 10/10 (run 2, 2026-10-18); one spike |
 | **88c** | E3: htSMLM preflight, disclosure, trace and exhaustion stop, including its emitter. Shared EMU reader extension can land first and is also used by 89b. Manual Activate is sufficient. | M2: V5, real activation and direct-abort preservation; no cadence regression |
 | **88d** | E5: inspected EMU opening, and a typed htSMLM activation operation built from the V7 spike. Implement activation control only if the full seam, bounds and export are proved; otherwise record the missing API. | V7 spike first (demo machine if htSMLM is installed there, else M2), V6 on demo for applicable operations, then M2 for EMU/htSMLM |
 
@@ -455,7 +504,9 @@ can run before these blocks.
 
 `R86` **closed by 88a** (PR #58). 88a opened `R155` (CPython's interrupted
 `join` on the pycro-manager path) and `R156` (opening freshly written files on
-Windows), and added its Stop-wording evidence to `R01`. V5's observation
+Windows), and added its Stop-wording evidence to `R01`. 88b opened `R157`
+(package load and MDA frame gaps on a slow machine) and added one correct
+session to `R01`. V5's observation
 confirms design/78's 78c check, and goes in that notebook's carried-forward
 list.
 
@@ -465,3 +516,4 @@ list.
 |-------|--------|--------------|--------|
 | notebook | — | `2a6f7ee` | drafted 2026-10-14, revised 2026-10-15, not opened |
 | 88a | `block-88a` | `d90e6f6` | closed 2026-10-17, PR #58: demo gate 15/15 on run 3; six runner rounds, three spikes |
+| 88b | `block-88b` | `971a4b4` | closed 2026-10-18, PR #59: demo gate 10/10 on run 2; one spike; two runner review rounds and two gate rounds |
