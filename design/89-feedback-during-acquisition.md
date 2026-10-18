@@ -621,4 +621,4 @@ reaching Studio's pipeline is design/88's finding.
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | — | `2a6f7ee` | drafted and revised 2026-10-15, not opened |
-| 89a | `block-89a` | `860daac` | opened 2026-10-18; starts with `R157` (demo-machine cadence state) before P1/P4 |
+| 89a | `block-89a` | `860daac` | opened 2026-10-18; R157 guard decided (interleaved controls); probes at `90fdf18`, PR #60; awaiting demo run |
