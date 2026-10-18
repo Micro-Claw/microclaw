@@ -119,6 +119,7 @@ Rows added since the triage:
 | `R154` | `design/87` block 87a's demo gate, scored from artifacts 2026-10-16 |
 | `R155`–`R156` | `design/88` block 88a's gate selftest, demo gates and spikes, 2026-10-17 |
 | `R157` | `design/88` block 88b's demo gate and spike rerun, scored from artifacts 2026-10-18 |
+| `R158` | `design/88` block 88b's Windows CI run, 2026-10-18 (not 88b's code) |
 
 
 ## The work queue
@@ -232,6 +233,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R96` | [An unterminated acquisition with every frame accounted is summarised to the user as a success](#r96) | MEDIUM | SMALL |  |
 | `R97` | [The runtime deadline includes Acquisition() construction, and nothing records how much](#r97) | LOW | SMALL |  |
 | `R155` | [Ctrl-C during a pycro-manager teardown wait can make a live waiter look finished](#r155) | MEDIUM | SMALL |  |
+| `R158` | [84a's window test reads the final display once, without a wait](#r158) | LOW | SMALL |  |
 
 **Demo machine**
 
@@ -3363,3 +3365,16 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM.
 - **Effort** — SMALL
 - **Provenance** — `design/88` 88b, 2026-10-18.
+
+### R158 — 84a's window test reads the final display once, without a wait
+
+**`test_84a_fixture_live_pause_final_drain_and_eof` failed on Windows CI at its last line, `assert displayed(output, 3)`: one read of `display.json`, 0.2 s after the result, where every earlier display check uses a bounded `wait_until`.**
+
+- **What happened** — PR #59, run 39113232886, `windows-latest`, 2026-10-18, at commit `100fd8b`. Since the previous green run (`5d418ec`) only files under `design/` had changed, so no code under test differed. 1 failed, 5954 passed. This is the test `R153` named, but a different line: R153 was the 8 s first-frame wait at `:1750`, which design/86 86a fixed.
+- **Cause** — not identified. Either the worker had not yet drawn frame 3 within 0.2 s on the runner, or the read met the fixture's `display.json` replace (the race 86a found for the first frame). The assertion carries no `describe()` evidence, so the log cannot tell which.
+- **What a fix would look like** — `wait_until(lambda: displayed(output, 3), describe)`, as the earlier checks do, so a failure carries the record, `poll()` and `display.json`.
+- **Where** — LOCAL, then Windows CI.
+- **Block** — NONE.
+- **Importance** — LOW. The test, not the product: the product's result had already been asserted.
+- **Effort** — SMALL
+- **Provenance** — `design/88` 88b's CI, 2026-10-18.
