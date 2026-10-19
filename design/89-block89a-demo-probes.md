@@ -1,5 +1,13 @@
 # 89a — demo-machine probes P3, P2, P1, P4
 
+**Round 2 (2026-10-19): rerun P1 and P4 only** (steps 0, 3 and 4). Round 1
+settled P3 and P2. P1 and P4 met the `R157` slow state, and P4's index reader
+read nothing on this machine's preallocated index (fixed). Both now **stop
+within about a minute** if their first 10 ms control is slow, and print
+`demo machine in R157 slow state at the first control; rerun later`. If that
+happens, try again later in the day; yesterday the machine was healthy at
+15:55. Send every folder, including the short ones.
+
 Use **Windows PowerShell 5.1** on the demo machine, with Micro-Manager open on
 the usual demo config and the bridge on port **4827**. **Keep MicroClaw
 closed.** The probes import nothing from MicroClaw; they use only the installed
@@ -23,7 +31,7 @@ git checkout block-89a
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor 90fdf18 HEAD
+git merge-base --is-ancestor c5b78f8 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 ```
 
