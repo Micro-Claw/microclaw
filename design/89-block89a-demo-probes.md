@@ -4,9 +4,12 @@
 settled P3 and P2. P1 and P4 met the `R157` slow state, and P4's index reader
 read nothing on this machine's preallocated index (fixed). Both now **stop
 within about a minute** if their first 10 ms control is slow, and print
-`demo machine in R157 slow state at the first control; rerun later`. If that
-happens, try again later in the day; yesterday the machine was healthy at
-15:55. Send every folder, including the short ones.
+`demo machine in R157 slow state at the first control; rerun later`. Every
+probe now also records the machine's state (timer resolution, power plan,
+Micro-Manager's process and windows, top CPU processes) at its start, after
+the first control and at its end. **A slow run is R157 evidence, not a wasted
+run**: send the folder, and rerun whenever convenient. Send every folder,
+including the short ones.
 
 Use **Windows PowerShell 5.1** on the demo machine, with Micro-Manager open on
 the usual demo config and the bridge on port **4827**. **Keep MicroClaw
@@ -31,7 +34,7 @@ git checkout block-89a
 if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
 git pull
 if ($LASTEXITCODE -ne 0) { throw 'pull failed' }
-git merge-base --is-ancestor c5b78f8 HEAD
+git merge-base --is-ancestor 43b67f5 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'WRONG TREE - stop' }
 ```
 
