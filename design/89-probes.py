@@ -45,6 +45,9 @@ import traceback
 # Operator decision 2026-10-18, R157: healthy 12.03–12.05 ms n=8;
 # transient slow 21.56–22.33 ms n=4. This threshold is ONLY for 10 ms controls.
 R157_CONTROL_P95_MS = 13.0
+R157_FIRST_CONTROL_REASON = (
+    "demo machine in R157 slow state at the first control; rerun later"
+)
 CALL_BOUND_S = 15.0
 TEARDOWN_BOUND_S = 30.0
 INDEX_CHUNK_BYTES = 64 * 1024
@@ -1271,6 +1274,34 @@ def execute(env, args, out):
             )
         return r
 
+    def stop_after_first_slow_control(run):
+        if (
+            args.probe not in ("p1", "p4")
+            or len(report["runs"]) != 1
+            or not is_slow([run])
+        ):
+            return False
+        dataset = run["dataset"]
+        control = dict(
+            name=run["name"],
+            exposure_ms=run["exposure_ms"],
+            planned=run["planned"],
+            indexed=dataset["indexed"],
+            gap_ms=dataset["cadence"]["gap_ms"],
+            span_ms=dataset["cadence"]["span_ms"],
+            planned_minus_indexed=dataset["planned_minus_indexed"],
+            missing_time_index_count=len(dataset["missing_time_indices"]),
+        )
+        report["early_stop"] = dict(
+            reason=R157_FIRST_CONTROL_REASON, first_control=control
+        )
+        for name in limbs:
+            if name != run["name"] + "/run":
+                limbs[name] = limb(
+                    "NOT EXERCISED", R157_FIRST_CONTROL_REASON, first_control=control
+                )
+        return True
+
     try:
         core = bounded(lambda: env.Core(port=args.port))
         space = disk_preflight(core, args, out)
@@ -1384,6 +1415,8 @@ def execute(env, args, out):
                         else None,
                     )
                     r["arm"] = arm
+                    if args.probe == "p1" and stop_after_first_slow_control(r):
+                        return report
                     if hz:
                         w = r["writer"]
                         prefix = r["name"] + "/"
@@ -1448,8 +1481,9 @@ def execute(env, args, out):
                     "NOT EXERCISED",
                     "no exposure in {1,2,5} proven by camera Exposure limits",
                 )
-            for exposure in [10] + ([fast] if fast is not None else []):
-                arms = ["control", "2Hz", "5Hz", "10Hz", "worker", "behind"]
+            exposures = [10] + ([fast] if fast is not None else [])
+            arms = ["control", "2Hz", "5Hz", "10Hz", "worker", "behind"]
+            for exposure in exposures:
                 expect([f"cadence/{exposure}ms/{arm}" for arm in arms[1:]])
                 for repeat in range(3):
                     for arm in arms:
@@ -1461,6 +1495,9 @@ def execute(env, args, out):
                             expect([prefix + "worker"])
                         if arm == "behind":
                             expect([prefix + "behind_control"])
+            if fast is not None:
+                expect(["10ms-control-post/run"])
+            for exposure in exposures:
                 for repeat in range(3):
                     for arm in arms:
                         reader_hz = int(arm[:-2]) if arm.endswith("Hz") else 0
@@ -1475,6 +1512,8 @@ def execute(env, args, out):
                             behind=arm == "behind",
                         )
                         r["arm"] = arm
+                        if stop_after_first_slow_control(r):
+                            return report
                         if reader_hz:
                             limbs[r["name"] + "/read_growth"] = growth_score(r)
                         if arm in ("worker", "behind"):
@@ -1496,7 +1535,7 @@ def execute(env, args, out):
                 )
                 post["arm"] = "control"
                 post["guard_only"] = True
-            for exposure in [10] + ([fast] if fast is not None else []):
+            for exposure in exposures:
                 runs = [r for r in report["runs"] if r["exposure_ms"] == exposure]
                 limbs.update(
                     {
@@ -1796,6 +1835,11 @@ class FakeEnvironment:
                                     env.mutation == "post_slow"
                                     and "10ms-control-post" in self.kw["directory"]
                                 )
+                                or (
+                                    env.mutation == "later_slow"
+                                    and Path(self.kw["directory"]).name
+                                    in ("control-1", "10ms-control-1")
+                                )
                                 else 12
                             )
                             value = (
@@ -2018,13 +2062,49 @@ def selftest():
         r, _ = run("p3", "no_spaced_log")
         assert r["limbs"]["verdict"]["status"] == "NOT EXERCISED"
         print("ok control: P3 missing spaced setProperty witness -> NOT EXERCISED")
-        r, _ = run("p1", "slow")
-        assert all(
-            v["status"] == "NOT EXERCISED"
-            for k, v in r["limbs"].items()
-            if k.startswith("cadence/")
+        for probe in ("p1", "p4"):
+            r, env = run(probe, "slow")
+            assert env.acquisition_constructions == len(r["runs"]) == 1
+            assert set(r["limbs"]) == set(reports[probe]["limbs"])
+            first = r["runs"][0]
+            assert r["early_stop"]["reason"] == R157_FIRST_CONTROL_REASON
+            assert r["early_stop"]["first_control"]["gap_ms"]["p95"] == 21
+            for name, result in r["limbs"].items():
+                if name == first["name"] + "/run" or name.startswith("restore/"):
+                    assert result["status"] == "PASS"
+                else:
+                    assert result["status"] == "NOT EXERCISED"
+                    assert result["reason"] == R157_FIRST_CONTROL_REASON
+                    assert result["first_control"] == r["early_stop"]["first_control"]
+            assert all(
+                result["status"] == "NOT EXERCISED"
+                and result["reason"] == R157_FIRST_CONTROL_REASON
+                for name, result in r["limbs"].items()
+                if name.startswith("cadence/")
+            )
+        print(
+            "ok control: P1/P4 slow first control -> exactly one acquisition; pending limbs NOT EXERCISED with control numbers; restoration PASS"
         )
         print("ok control: 21 ms slow control -> cadence NOT EXERCISED")
+        for probe, expected_runs in (("p1", 9), ("p4", 37)):
+            r, env = run(probe, "later_slow")
+            assert env.acquisition_constructions == len(r["runs"]) == expected_runs
+            assert "early_stop" not in r
+            assert not is_slow(r["runs"][:1]) and is_slow(r["runs"])
+            assert all(
+                result["status"] == "NOT EXERCISED"
+                and result["reason"] == "demo machine in R157 slow state; rerun later"
+                for name, result in r["limbs"].items()
+                if name.startswith("cadence/")
+            )
+            assert all(
+                result["status"] == "PASS"
+                for name, result in r["limbs"].items()
+                if name.startswith("restore/")
+            )
+        print(
+            "ok control: P1/P4 healthy first control, slow later control -> full 9/37 acquisitions; cadence NOT EXERCISED; restoration PASS"
+        )
         r, _ = run("p4", "post_slow")
         post = r["runs"][-1]
         assert post["name"] == "10ms-control-post" and post["guard_only"]
