@@ -55,6 +55,7 @@ INDEX_CHUNK_BYTES = 64 * 1024
 JAVA_INDEX_PREALLOCATED_BYTES = 26214400
 WORKER_BATCH = 4
 MACHINE_STATE_BOUND_S = 5.0
+CPU_MACHINE_STATE_BOUND_S = 15.0
 MACHINE_STATE_FIELDS = ("timer_resolution", "power_plan", "micro_manager", "cpu")
 NOTIFICATION_CONTRACT = (
     "acq_events_finished means event execution finished, not data sink drained; "
@@ -103,14 +104,16 @@ def snapshot_header(label):
     )
 
 
-def unavailable_machine_state(label, reason):
+def unavailable_machine_state(label, reason, port):
     return dict(
         snapshot_header(label),
+        bridge_port=port,
+        field_elapsed_s={field: 0.0 for field in MACHINE_STATE_FIELDS},
         **{field: {"unavailable": reason} for field in MACHINE_STATE_FIELDS},
     )
 
 
-def machine_command(argv, utf8=False):
+def machine_command(argv, utf8=False, timeout=MACHINE_STATE_BOUND_S):
     result = subprocess.run(
         argv,
         stdin=subprocess.DEVNULL,
@@ -118,7 +121,7 @@ def machine_command(argv, utf8=False):
         text=True,
         encoding="utf8" if utf8 else None,
         errors="replace",
-        timeout=MACHINE_STATE_BOUND_S,
+        timeout=timeout,
     )
     if result.returncode:
         raise RuntimeError(
@@ -127,7 +130,7 @@ def machine_command(argv, utf8=False):
     return result.stdout.strip()
 
 
-def powershell_json(script):
+def powershell_json(script, timeout=MACHINE_STATE_BOUND_S):
     prefix = (
         "$ErrorActionPreference = 'Stop'; "
         "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); "
@@ -142,6 +145,7 @@ def powershell_json(script):
                 prefix + script,
             ],
             utf8=True,
+            timeout=timeout,
         )
     )
 
@@ -168,37 +172,55 @@ def timer_resolution():
     )
 
 
-def micro_manager_windows():
+def micro_manager_windows(port):
+    # The bridge listener identifies the process even when ImageJ owns its window.
+    process = powershell_json(
+        "$bridgePort = "
+        + str(int(port))
+        + r"""
+if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
+    @{ unavailable = 'Get-NetTCPConnection is unavailable' } | ConvertTo-Json -Compress
+    exit
+}
+$queryErrors = @()
+$listeners = @(Get-NetTCPConnection -LocalPort $bridgePort -State Listen -ErrorAction SilentlyContinue -ErrorVariable queryErrors)
+$owners = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+if ($owners.Count -eq 0) {
+    $reason = "no listening bridge process on port $bridgePort"
+    if ($queryErrors.Count -gt 0) { $reason += ": " + ($queryErrors -join '; ') }
+    @{ unavailable = $reason } | ConvertTo-Json -Compress
+    exit
+}
+if ($owners.Count -ne 1) {
+    @{ unavailable = "multiple bridge listener PIDs on port ${bridgePort}: $($owners -join ', ')" } | ConvertTo-Json -Compress
+    exit
+}
+$process = Get-Process -Id $owners[0] -ErrorAction Stop
+try {
+    $utc = $process.StartTime.ToUniversalTime()
+    $started = $utc.ToString('o')
+    $uptime = ([DateTime]::UtcNow - $utc).TotalSeconds
+} catch {
+    $started = @{ unavailable = $_.Exception.Message }
+    $uptime = $started
+}
+[pscustomobject]@{
+    process_name = $process.ProcessName
+    id = $process.Id
+    start_time_utc = $started
+    uptime_s = $uptime
+    listener_port = $bridgePort
+} | ConvertTo-Json -Depth 6 -Compress
+"""
+    )
+    if not isinstance(process, dict):
+        raise ValueError("PowerShell bridge process result was not an object")
+    if "unavailable" in process:
+        return process
+
     import ctypes
     from ctypes import wintypes
 
-    windows = powershell_json(
-        r"""
-$windows = @(Get-Process | Where-Object {
-    $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like '*Micro-Manager*'
-} | ForEach-Object {
-    $process = $_
-    $started = $null
-    $uptime = $null
-    try {
-        $utc = $process.StartTime.ToUniversalTime()
-        $started = $utc.ToString('o')
-        $uptime = ([DateTime]::UtcNow - $utc).TotalSeconds
-    } catch {
-        $started = @{ unavailable = $_.Exception.Message }
-        $uptime = $started
-    }
-    [pscustomobject]@{
-        process_name = $process.ProcessName; id = $process.Id
-        start_time_utc = $started; uptime_s = $uptime
-        window_title = $process.MainWindowTitle; handle = $process.MainWindowHandle.ToInt64()
-    }
-})
-ConvertTo-Json -InputObject $windows -Depth 6 -Compress
-"""
-    )
-    if not isinstance(windows, list):
-        raise ValueError("PowerShell window result was not an array")
     user32 = ctypes.windll.user32
     user32.GetForegroundWindow.argtypes = []
     user32.GetForegroundWindow.restype = wintypes.HWND
@@ -216,22 +238,53 @@ ConvertTo-Json -InputObject $windows -Depth 6 -Compress
     ]
     user32.GetWindowThreadProcessId.restype = wintypes.DWORD
     foreground = user32.GetForegroundWindow()
-    title = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(foreground) + 1)
-    user32.GetWindowTextW(foreground, title, len(title))
-    process_id = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(foreground, ctypes.byref(process_id))
-    for window in windows:
-        handle = window["handle"]
-        window["window_state"] = dict(
-            minimized=bool(user32.IsIconic(handle)),
-            visible=bool(user32.IsWindowVisible(handle)),
-            foreground=handle == foreground,
-        )
-    return dict(
-        windows=windows,
-        status="found" if windows else "no Micro-Manager main window found",
-        foreground_window=dict(title=title.value, process_id=process_id.value),
+
+    def window_title(handle):
+        title = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(handle) + 1)
+        user32.GetWindowTextW(handle, title, len(title))
+        return title.value
+
+    def window_pid(handle):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        return owner.value
+
+    windows = []
+    errors = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @callback_type
+    def visit(handle, unused):
+        try:
+            if window_pid(handle) == process["id"]:
+                minimized = bool(user32.IsIconic(handle))
+                visible = bool(user32.IsWindowVisible(handle))
+                if minimized or visible:
+                    windows.append(
+                        dict(
+                            title=window_title(handle),
+                            handle=handle,
+                            minimized=minimized,
+                            visible=visible,
+                            foreground=handle == foreground,
+                        )
+                    )
+            return True
+        except BaseException as e:
+            # Never propagate a Python exception through a native callback.
+            errors.append(f"{type(e).__name__}: {e}")
+            return False
+
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    if not user32.EnumWindows(visit, 0):
+        raise OSError("EnumWindows failed: " + "; ".join(errors))
+    process["windows"] = windows
+    process["window_status"] = "found" if windows else "no visible or minimized windows"
+    process["foreground_window"] = dict(
+        title=window_title(foreground), process_id=window_pid(foreground)
     )
+    return process
 
 
 def cpu_processes():
@@ -256,29 +309,34 @@ $top = @(Get-Process | ForEach-Object {
     logical_processor_count = [Environment]::ProcessorCount
     sample_seconds = 2; top_processes = $top
 } | ConvertTo-Json -Depth 6 -Compress
-"""
+""",
+        timeout=CPU_MACHINE_STATE_BOUND_S,
     )
 
 
-def machine_state(label, field_readers=None):
+def machine_state(label, port, field_readers=None):
     """R157 evidence only: no result from this function participates in scoring."""
     if field_readers is None:
         if sys.platform != "win32":
             return unavailable_machine_state(
-                label, f"Windows only; host is {sys.platform}"
+                label, f"Windows only; host is {sys.platform}", port
             )
         field_readers = dict(
             timer_resolution=timer_resolution,
             power_plan=lambda: machine_command(["powercfg", "/getactivescheme"]),
-            micro_manager=micro_manager_windows,
+            micro_manager=lambda: micro_manager_windows(port),
             cpu=cpu_processes,
         )
-    result = snapshot_header(label)
+    result = dict(snapshot_header(label), bridge_port=port, field_elapsed_s={})
     for field in MACHINE_STATE_FIELDS:
+        started = now()
+        bound = CPU_MACHINE_STATE_BOUND_S if field == "cpu" else MACHINE_STATE_BOUND_S
         try:
-            result[field] = bounded(field_readers[field], MACHINE_STATE_BOUND_S)
+            result[field] = bounded(field_readers[field], bound)
         except BaseException as e:
             result[field] = {"unavailable": f"{type(e).__name__}: {e}"}
+        finally:
+            result["field_elapsed_s"][field] = now() - started
     return result
 
 
@@ -290,27 +348,22 @@ def machine_state_summary(snapshot):
         else (f'{timer["current_ms"]:.3f} ms (finest {timer["finest_ms"]:.3f})')
     )
     mm = snapshot["micro_manager"]
-    windows = []
-    if "unavailable" not in mm:
+    if "unavailable" in mm:
+        mm_text = "MM unavailable: " + mm["unavailable"]
+    else:
+        windows = []
         for window in mm["windows"]:
-            state = window["window_state"]
-            word = (
-                "minimized"
-                if state["minimized"]
-                else (
-                    "foreground"
-                    if state["foreground"]
-                    else "visible"
-                    if state["visible"]
-                    else "hidden"
-                )
-            )
-            uptime = window["uptime_s"]
-            hours = (
-                "unavailable" if isinstance(uptime, dict) else f"{uptime / 3600:.1f} h"
-            )
-            windows.append(f"MM window {word}, uptime {hours}")
-    mm_text = "; ".join(windows) or (mm.get("status") or "MM window unavailable")
+            state = "minimized" if window["minimized"] else "visible"
+            if window["foreground"]:
+                state += " foreground"
+            windows.append(f"{window['title']!r} {state}")
+        uptime = mm["uptime_s"]
+        hours = "unavailable" if isinstance(uptime, dict) else f"{uptime / 3600:.1f} h"
+        window_text = ", ".join(windows) or mm.get("window_status", "none")
+        mm_text = (
+            f"MM pid {mm['id']} ({mm['process_name']}), uptime {hours}, "
+            f"windows: {window_text}; foreground: {mm['foreground_window']['title']!r}"
+        )
     cpu = snapshot["cpu"]
     cpu_text = (
         "unavailable"
@@ -1453,15 +1506,19 @@ def execute(env, args, out):
         try:
             snapshot = (
                 unavailable_machine_state(
-                    label, "acquisition teardown pending; snapshot not collected"
+                    label,
+                    "acquisition teardown pending; snapshot not collected",
+                    args.port,
                 )
                 if pending
-                else getattr(env, "machine_state", machine_state)(label)
+                else getattr(env, "machine_state", machine_state)(label, args.port)
             )
             if not isinstance(snapshot, dict):
                 raise TypeError("snapshot provider did not return a dict")
         except BaseException as e:
-            snapshot = unavailable_machine_state(label, f"{type(e).__name__}: {e}")
+            snapshot = unavailable_machine_state(
+                label, f"{type(e).__name__}: {e}", args.port
+            )
         report["machine_state"].append(snapshot)
         try:
             print(machine_state_summary(snapshot), flush=True)
@@ -1875,29 +1932,37 @@ class FakeEnvironment:
     universal ordering. Frame generation starts on acquire, as on the Java side.
     """
 
-    def machine_state(self, label):
+    def machine_state(self, label, port):
         self.snapshot_labels.append(label)
+        self.snapshot_ports.append(port)
         if self.acquisitions_in_flight:
             self.in_flight_snapshots += 1
         fixed = dict(
             timer_resolution=dict(coarsest_ms=15.625, finest_ms=0.5, current_ms=1.0),
             power_plan="opaque fake active power scheme",
             micro_manager=dict(
-                status="found",
+                process_name="ImageJ",
+                id=77,
+                listener_port=port,
+                start_time_utc="2026-10-19T08:00:00Z",
+                uptime_s=18720.0,
                 windows=[
                     dict(
-                        process_name="fake-mm",
-                        id=77,
-                        start_time_utc="2026-10-19T08:00:00Z",
-                        uptime_s=18720.0,
-                        window_title="Micro-Manager fake",
+                        title="Micro-Manager 2.0.3",
                         handle=100,
-                        window_state=dict(
-                            minimized=True, visible=True, foreground=False
-                        ),
-                    )
+                        minimized=True,
+                        visible=True,
+                        foreground=False,
+                    ),
+                    dict(
+                        title="ImageJ",
+                        handle=101,
+                        minimized=False,
+                        visible=True,
+                        foreground=False,
+                    ),
                 ],
-                foreground_window=dict(title="Fake desktop", process_id=88),
+                foreground_window=dict(title="Windows PowerShell", process_id=88),
             ),
             cpu=dict(
                 logical_processor_count=8,
@@ -1915,7 +1980,7 @@ class FakeEnvironment:
                 raise RuntimeError("injected snapshot field failure")
 
             readers["power_plan"] = raising_field
-        result = machine_state(label, field_readers=readers)
+        result = machine_state(label, port, field_readers=readers)
         result["perf_counter"] = 123456.0
         result["utc_iso"] = "2026-10-19T13:12:00Z"
         return result
@@ -1939,6 +2004,7 @@ class FakeEnvironment:
         self.acquisition_constructions = 0
         self.acquisitions_in_flight = 0
         self.snapshot_labels = []
+        self.snapshot_ports = []
         self.in_flight_snapshots = 0
         env = self
 
@@ -2244,7 +2310,7 @@ def selftest():
         def run(probe, mutation=None, prop="TestProperty1", replay=None):
             folder = root / (probe + "-" + str(mutation) + "-" + prop)
             folder.mkdir()
-            args = parser().parse_args([probe, "--out", str(folder)])
+            args = parser().parse_args([probe, "--out", str(folder), "--port", "4937"])
             args.fake = True
             args.property = prop
             args.start_bound = 2
@@ -2304,8 +2370,70 @@ def selftest():
                 else ["start", "end"]
             )
             assert env.snapshot_labels == expected_labels
+            assert env.snapshot_ports == [4937] * len(expected_labels)
+            assert all(
+                set(s["field_elapsed_s"]) == set(MACHINE_STATE_FIELDS)
+                and all(elapsed >= 0 for elapsed in s["field_elapsed_s"].values())
+                for s in report["machine_state"]
+            )
         print(
             "ok control: injected snapshots have ordered start/first-control/end labels for P1/P4; P2/P3 start/end"
+        )
+        from unittest.mock import patch
+
+        snapshot = reports["p1"]["machine_state"][0]
+        summary = machine_state_summary(snapshot)
+        assert "MM pid 77 (ImageJ)" in summary
+        assert "'Micro-Manager 2.0.3' minimized" in summary
+        assert "'ImageJ' visible" in summary
+        assert "foreground: 'Windows PowerShell'" in summary
+        assert snapshot["micro_manager"]["listener_port"] == 4937
+        print(
+            "ok control: listener PID on selected port; summary names both minimized Micro-Manager and visible ImageJ windows"
+        )
+
+        for reason in (
+            "no listening bridge process on port 4937",
+            "Get-NetTCPConnection is unavailable",
+        ):
+            with patch.dict(
+                globals(), {"powershell_json": lambda script: {"unavailable": reason}}
+            ):
+                missing = micro_manager_windows(4937)
+            assert missing == {"unavailable": reason}
+            missing_snapshot = copy.deepcopy(snapshot)
+            missing_snapshot["micro_manager"] = missing
+            assert reason in machine_state_summary(missing_snapshot)
+        print(
+            "ok control: missing listener and unavailable Get-NetTCPConnection retain their stated reasons"
+        )
+
+        bounds = []
+
+        def recording_bound(fn, seconds):
+            bounds.append(seconds)
+            return fn()
+
+        readers = {field: lambda: {} for field in MACHINE_STATE_FIELDS}
+        with patch.dict(globals(), {"bounded": recording_bound}):
+            timed = machine_state("bounds-selftest", 4937, field_readers=readers)
+        assert bounds == [5.0, 5.0, 5.0, 15.0]
+        assert all(value >= 0 for value in timed["field_elapsed_s"].values())
+        response = type(
+            "CommandResult", (), {"returncode": 0, "stdout": "{}", "stderr": ""}
+        )()
+        with patch.object(subprocess, "run", return_value=response) as command:
+            cpu_processes()
+            assert command.call_args.kwargs["timeout"] == 15.0
+            powershell_json("@{} | ConvertTo-Json")
+            assert command.call_args.kwargs["timeout"] == 5.0
+            machine_command(["powercfg", "/getactivescheme"])
+            assert command.call_args.kwargs["timeout"] == 5.0
+            for call in command.call_args_list:
+                assert call.kwargs["stdin"] == subprocess.DEVNULL
+                assert call.kwargs["capture_output"] is True
+        print(
+            "ok control: CPU bounded and subprocess timeouts 15 s, other fields 5 s; per-field elapsed times recorded"
         )
         healthy, _ = run("p1", "snapshot_healthy", replay=reports["p1"])
         failed, _ = run("p1", "snapshot_field_error", replay=reports["p1"])
@@ -2321,7 +2449,7 @@ def selftest():
         print("ok control: fake snapshots taken between acquire and teardown return: 0")
         if sys.platform != "win32":
             started = now()
-            real_snapshot = machine_state("non-windows-selftest")
+            real_snapshot = machine_state("non-windows-selftest", 4937)
             assert now() - started < 6
             assert all(
                 "unavailable" in real_snapshot[field] for field in MACHINE_STATE_FIELDS
