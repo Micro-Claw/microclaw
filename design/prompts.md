@@ -11923,3 +11923,29 @@ report NOT EXERCISED.
 - Seven slow attempts before the restart, each stopped at its first control: P1 12:35, 13:03, 13:28; P4 12:55, 12:57, 13:17, 13:30.
 - CI at `68535a1`: Ubuntu and Windows green. No product code changed.
 - Owed: M2 limbs and the M2 activation rig fact (`R159`).
+
+## design/90 — block 90a (interrupted teardown wait, R155 + R158; PR #61)
+
+**Trace the exception before fixing the mechanism a row names.** R155 named
+an `is_alive()` lie after an interrupted join. Reading `_acquire_with_hooks`
+showed the interrupt left through `except Exception` untouched and wrote no
+pending record, so the refusal had nothing to read in the first place. Fixing
+only the named read would have left the defect intact, and a test of the
+`Event` alone would have passed.
+
+**Say who can reach a defect before sizing it.** The terminal REPL does not
+catch `KeyboardInterrupt`, so a Ctrl-C there ends the process. The refusal is
+reached only by a caller that survives the interrupt. The fix is at the tool
+because the contract is caller-independent, and the notebook says so instead
+of claiming a terminal failure.
+
+**Create the worktree, then the branch in it.** `git worktree add` refuses a
+branch checked out in the primary. The coordinator had committed the notebook
+on `block-90a` in the primary, and the worktree add failed. Only the `&&`
+chain kept the venv and checkout steps out of the primary. Return the primary
+to `main` before adding the block's worktree.
+
+**Counts.** Runner: one start turn, no revision, targeted files only
+(362 passed, 9 skipped). The new test was watched failing on `2e5b7e2`'s
+`tools.py` (`AssertionError: {'ok': True}`) and passed 30 of 30 runs. Full
+suite locally: 5964 passed, 107 skipped. CI: run 39276478002 at `7bc7c21` green on both runners (Ubuntu 5964 passed, 107 skipped; Windows 5956 passed, 115 skipped). n=1.

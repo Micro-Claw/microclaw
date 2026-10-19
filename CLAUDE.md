@@ -1114,5 +1114,6 @@ Create and check whatever MM would ask about *before* the call (design/88 E1).
 **Never read `is_alive()` after a `Thread.join` that Ctrl-C can interrupt.** On
 CPython 3.12 an interrupted `join` releases the live thread's state lock and
 marks it stopped. 88a's supervisor returned mid-run because of it. Wait on an
-`Event` the worker sets in its `finally` instead. The pycro-manager teardown
-wait still has the hazard (`R155`).
+`Event` the worker sets in its `finally` instead. Both acquisition
+supervisors now do (design/90 90a): `_wait_acquisition_completion` waits on
+the event and the pending-acquisition record carries it, never the `Thread`.

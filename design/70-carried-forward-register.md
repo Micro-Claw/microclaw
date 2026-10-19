@@ -233,8 +233,8 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R95` | [Does live-mode ownership churn precede a lost terminal notification?](#r95) | MEDIUM | LARGE |  |
 | `R96` | [An unterminated acquisition with every frame accounted is summarised to the user as a success](#r96) | MEDIUM | SMALL |  |
 | `R97` | [The runtime deadline includes Acquisition() construction, and nothing records how much](#r97) | LOW | SMALL |  |
-| `R155` | [Ctrl-C during a pycro-manager teardown wait can make a live waiter look finished](#r155) | MEDIUM | SMALL |  |
-| `R158` | [84a's window test reads the final display once, without a wait](#r158) | LOW | SMALL |  |
+| ~~`R155`~~ | [Ctrl-C during a pycro-manager teardown wait can make a live waiter look finished](#r155) | MEDIUM | SMALL | **90a** |
+| ~~`R158`~~ | [84a's window test reads the final display once, without a wait](#r158) | LOW | SMALL | **90a** |
 
 **Demo machine**
 
@@ -1416,11 +1416,12 @@ This row comes from the register's table "Absorbed into a block above". Verbatim
 
 **On CPython 3.12, a `Thread.join(timeout)` interrupted by `KeyboardInterrupt` releases the live thread's state lock (bpo-45274's cleanup) and marks it stopped, so `is_alive()` returns `False` while the thread still runs.**
 
+- **Status** — **CLOSED 2026-10-19** by `design/90` 90a (PR #61). The defect was wider than this row said: an interrupt in `_acquire_with_hooks`'s wait wrote no pending record at all, so the refusal had nothing to read. The wait is now on an `Event`, the record carries it, and an interrupt hands teardown and reservation closure to the waiter. A real `interrupt_main()` test failed on the pre-fix tree and passed 30 of 30 after. The other sites below were read, not measured, as unreachable by a main-thread Ctrl-C (design/90's table).
 - **What happened** — found by `design/88` 88a's gate selftest, 2026-10-17: `run_mda` returned mid-run with `outcome=None` while its worker kept going, and the next acquisition was not refused. Reproduced with a standalone probe on 3.12.14. 88a fixed `run_mda` by waiting on a completion `Event` instead of joining.
 - **Where else** — `_acquire_with_hooks` waits with `_join_acquisition_waiter` and then reads `waiter.is_alive()`, and `execute_tool`'s pending-acquisition refusal reads the same flag, so a terminal Ctrl-C during a `run_timelapse` teardown wait can make the refusal believe teardown finished. 88a's runner also listed `controller._bridge_call`, `AcquisitionDiagnosticWriter.close` and `skill_supervisor`'s pipe-thread joins; those run on background threads, so a main-thread Ctrl-C reaching them is not established.
 - **What a fix would look like** — the waiter sets an `Event` in its `finally`; foreground waits use `Event.wait`; nothing reads `is_alive()` after an interruptible `join`. Test with a real `_thread.interrupt_main()` delivered inside the wait.
 - **Where** — LOCAL.
-- **Block** — NONE.
+- **Block** — `design/90` block 90a.
 - **Importance** — MEDIUM. Only the terminal path delivers Ctrl-C into that wait; the web UI's Stop does not.
 - **Effort** — SMALL
 - **Provenance** — `design/88` 88a, 2026-10-17.
@@ -3380,11 +3381,12 @@ the model" as the actual blast radius.
 
 **`test_84a_fixture_live_pause_final_drain_and_eof` failed on Windows CI at its last line, `assert displayed(output, 3)`: one read of `display.json`, 0.2 s after the result, where every earlier display check uses a bounded `wait_until`.**
 
+- **Status** — **CLOSED 2026-10-19** by `design/90` 90a (PR #61): the line is now `wait_until(lambda: displayed(output, 3), describe)`. The cause of the one failure is still not identified; the next one will carry its evidence.
 - **What happened** — PR #59, run 39113232886, `windows-latest`, 2026-10-18, at commit `100fd8b`. Since the previous green run (`5d418ec`) only files under `design/` had changed, so no code under test differed. 1 failed, 5954 passed. This is the test `R153` named, but a different line: R153 was the 8 s first-frame wait at `:1750`, which design/86 86a fixed.
 - **Cause** — not identified. Either the worker had not yet drawn frame 3 within 0.2 s on the runner, or the read met the fixture's `display.json` replace (the race 86a found for the first frame). The assertion carries no `describe()` evidence, so the log cannot tell which.
 - **What a fix would look like** — `wait_until(lambda: displayed(output, 3), describe)`, as the earlier checks do, so a failure carries the record, `poll()` and `display.json`.
 - **Where** — LOCAL, then Windows CI.
-- **Block** — NONE.
+- **Block** — `design/90` block 90a.
 - **Importance** — LOW. The test, not the product: the product's result had already been asserted.
 - **Effort** — SMALL
 - **Provenance** — `design/88` 88b's CI, 2026-10-18.

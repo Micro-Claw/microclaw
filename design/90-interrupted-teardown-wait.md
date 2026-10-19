@@ -1,7 +1,7 @@
 # An interrupted teardown wait must not release the next acquisition
 
-**Status: OPEN.** One block, 90a, LOCAL gate plus CI. Closes `R155` and `R158`
-(design/70).
+**Status: CLOSED with PR #61.** One block, 90a, LOCAL gate plus CI. Closes
+`R155` and `R158` (design/70).
 
 ## The problem
 
@@ -87,4 +87,22 @@ Acceptance:
 
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
-| 90a | `block-90a` | `0ffa44a` | in progress |
+| 90a | `block-90a` | `0ffa44a` | PR #61, 2026-10-19; local gate passed, CI green on both runners (run 39276478002); one start turn, no revision |
+
+## What 90a built and measured (2026-10-19)
+
+- **As decided.** One helper, `_wait_acquisition_completion(done, timeout_s)`,
+  serves both supervisors. The pending record carries `done`. An interrupt
+  leaving `_acquire_with_hooks`'s loop writes the record and grants the waiter
+  reservation closure.
+- **Watched failing.** `test_real_interrupt_hands_blocked_teardown_and_reservation_to_waiter`
+  delivers a real `_thread.interrupt_main()` once the foreground is in its
+  wait. On `2e5b7e2`'s `tools.py` the next call was not refused
+  (`AssertionError: {'ok': True}`). Fixed: 30 of 30 passes. The test drives the
+  composite-child shape (`_reservation` passed in), so only the inherited
+  closure can close the reservation.
+- **Not addressed.** A waiter already past `finish_owned_cleanup` but not yet
+  past `done.set()` does not see a late grant of reservation closure. The
+  expiry path has the same window. It was not measured.
+- **Evidence.** Full suite locally (macOS, 3.12): 5964 passed, 107 skipped.
+  CI: run 39276478002 at `7bc7c21` green on both runners (Ubuntu 5964 passed, 107 skipped; Windows 5956 passed, 115 skipped). n=1.
