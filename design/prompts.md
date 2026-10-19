@@ -11881,3 +11881,45 @@ control that separates the machine from the product.**
 - Demo gate run 2: 10/10 (run 1: measure 17/17 runs, session died on the gate's own `ask`).
 - Runner turns: one start, one product revision, one gate build, one gate revision.
 - Coordinator commits: the ledger, the spike and its launcher, the gate's `ask`/retry fix, this reconciliation.
+
+## design/89 — block 89a (feedback probes P1–P4; no product code; PR #60)
+
+**Measure inside the slow process before measuring around it.** `R157` cost
+most of this block. Both symptoms were Micro-Manager's own: the camera thread's
+frame timestamps and the bridge's `setProperty` round trip, each ~5x slower. Yet
+the machine-state snapshots recorded everything except Micro-Manager during a
+burst (timer resolution, power plan, other processes' CPU). They led to a
+LabVIEW program that the operator had already said could not explain earlier
+slow runs, and closing it changed nothing. Restarting only Micro-Manager gave a
+healthy machine for the whole measurement (n=1). The cause is still not
+identified, and R157 now names the in-process measurements.
+
+**One variable at a time, with a check that stops itself.** P1 stops after its
+first control when that control is slow, so each slow attempt cost ~90 s and
+still left a folder of evidence. That made the restart test cheap enough to run
+at once, and when the machine was healthy the same run became the measurement.
+
+**Do not propose a cause the evidence does not support, and never record one.**
+"Time of day" and "battery" were offered with nothing behind them. A process
+`StartTime` was read as a restart and written into R157 twice, against the
+operator's account, then reverted. When an artifact contradicts the operator,
+ask once, plainly, and keep it out of the record until it is settled.
+
+**Write the fake from the code that runs on the target.** P4's index-reader
+fake used ndstorage's Python writer, which appends. AcqEngJ's Java
+`IndexWriter` preallocates 25 MiB of zeros and writes in place, so the first
+demo run counted 0 entries. 89b's F3 reader faces the same file, and design/89
+now says so.
+
+**Size a limb's sample to the run it scores.** `read_growth` compares the
+medians of early and late reads. A 1 ms run lasts 6 s, which gives a 2 Hz
+reader 2–3 reads per window, so two limbs failed on noise. The read size was
+constant at 64 KiB throughout. The FAILs stand as recorded (operator decision);
+a limb whose arithmetic cannot carry a verdict at that run length should
+report NOT EXERCISED.
+
+**Evidence:**
+- Demo machine, 2026-10-19: P3 exit 0 (0/50 applied in the burst, 20/20 spaced). P2 exit 0 (5/5, teardown 0.093–0.141 s after abort). P1 exit 0 (9 runs, p50 11 / p95 12 ms in every arm). P4 exit 1 (every cadence limb PASS; `1ms-2Hz-1` and `1ms-behind-2` `read_growth` FAIL).
+- Seven slow attempts before the restart, each stopped at its first control: P1 12:35, 13:03, 13:28; P4 12:55, 12:57, 13:17, 13:30.
+- CI at `68535a1`: Ubuntu and Windows green. No product code changed.
+- Owed: M2 limbs and the M2 activation rig fact (`R159`).
