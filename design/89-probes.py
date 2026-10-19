@@ -10,7 +10,10 @@ acq_eng_py/internal/engine.py:557-563,741 (additional properties, TODO);
 acq_eng_py/main/acq_notification.py:7-40,78-91,118-125 (milestones);
 ndstorage/ndtiff_index.py:93-115,142-153 (native uint32 entry layout);
 ndstorage/ndtiff_dataset.py:168-224,227-231 (writer and coordinates).
-The fake uses ndstorage's actual writer, not a pretend TIFF format.
+The fake uses ndstorage's actual TIFF writer, with the Java index file behavior
+from the operator's 2026-10-19 javap of NDTiffStorage-2.19.3 IndexWriter:
+constructor setLength(26214400), addEntry one in-place channel write,
+finishedWriting truncates to the channel position.
 CoreLog grammar: design/78-block78a-m5-gate.py:42-49 and its excerpt:1-3.
 Collections: tests/mda_fakes.py:14-18 (size/get, noniterable bridge vectors).
 mmpycorex/core.py:64-86 and pyjavaz/bridge.py:238-265 (Core socket isolation).
@@ -44,6 +47,9 @@ import traceback
 R157_CONTROL_P95_MS = 13.0
 CALL_BOUND_S = 15.0
 TEARDOWN_BOUND_S = 30.0
+INDEX_CHUNK_BYTES = 64 * 1024
+JAVA_INDEX_PREALLOCATED_BYTES = 26214400
+WORKER_BATCH = 4
 NOTIFICATION_CONTRACT = (
     "acq_events_finished means event execution finished, not data sink drained; "
     "dispatcher consumes one queue in arrival order until BOTH events-finished "
@@ -119,54 +125,85 @@ def exit_code(report):
 
 
 class IndexReader:
-    """Read only bytes after offset; retain an incomplete tail for the next read.
+    """Resume at the end of the last complete, valid entry, never at file size.
 
-    Unlike unpack_single_index_entry, validate the whole entry before decoding.
-    Never count a zero-length sentinel or partly written final entry.
+    Java writes into a preallocated zero-filled index; Python appends. Discard
+    read-ahead after each poll so either writer can complete an entry in place.
+    Layout: ndstorage/ndtiff_index.py:97-111, particularly the eight uint32
+    trailer fields at 109-111 (width=1, height=2, metadata length=6).
     """
 
     def __init__(self, path):
         self.path = Path(path)
-        self.offset = 0
-        self.tail = b""
+        self.parsed_offset = 0
         self.count = 0
         self.last = -1
         self.sample_at = None
 
     def read(self):
         started = now()
+        bytes_read = 0
         try:
             with self.path.open("rb") as f:
-                f.seek(self.offset)
-                data = f.read()
+                if os.fstat(f.fileno()).st_size < self.parsed_offset:
+                    self.parsed_offset = 0
+                    self.count = 0
+                    self.last = -1
+                f.seek(self.parsed_offset)
+                buffer = bytearray()
+
+                def ensure(length):
+                    nonlocal bytes_read
+                    while len(buffer) < length:
+                        chunk = f.read(INDEX_CHUNK_BYTES)
+                        bytes_read += len(chunk)
+                        if not chunk:
+                            return False
+                        buffer.extend(chunk)
+                    return True
+
+                while ensure(4):
+                    axes_length = struct.unpack_from("I", buffer)[0]
+                    if axes_length == 0:
+                        break
+                    axes_end = 4 + axes_length
+                    if not ensure(axes_end):
+                        break
+                    try:
+                        axes = json.loads(buffer[4:axes_end].decode("utf8"))
+                    except (UnicodeError, ValueError):
+                        break
+                    if not isinstance(axes, dict) or not ensure(axes_end + 4):
+                        break
+                    filename_length = struct.unpack_from("I", buffer, axes_end)[0]
+                    if filename_length == 0:
+                        break
+                    filename_start = axes_end + 4
+                    filename_end = filename_start + filename_length
+                    end = filename_end + 32
+                    if not ensure(end):
+                        break
+                    try:
+                        buffer[filename_start:filename_end].decode("utf8")
+                    except UnicodeError:
+                        break
+                    trailer = struct.unpack_from("IIIIIIII", buffer, filename_end)
+                    if trailer[1] == 0 or trailer[2] == 0 or trailer[6] == 0:
+                        break
+                    self.count += 1
+                    self.last = axes.get("time", self.count - 1)
+                    self.parsed_offset += end
+                    del buffer[:end]
         except FileNotFoundError:
-            data = b""
-        self.offset += len(data)
-        b = self.tail + data
-        p = 0
-        while len(b) - p >= 4:
-            a = struct.unpack_from("I", b, p)[0]
-            if a == 0:
-                break
-            q = p + 4 + a
-            if len(b) < q + 4:
-                break
-            n = struct.unpack_from("I", b, q)[0]
-            end = q + 4 + n + 32
-            if len(b) < end:
-                break
-            axes = json.loads(b[p + 4 : q].decode("utf8"))
-            self.count += 1
-            self.last = axes.get("time", self.count - 1)
-            p = end
-        self.tail = b[p:]
+            pass
         self.sample_at = now()
         return dict(
             at=self.sample_at,
             duration_s=self.sample_at - started,
             count=self.count,
             last_ordinal=self.last,
-            bytes_read=len(data),
+            bytes_read=bytes_read,
+            parsed_offset=self.parsed_offset,
         )
 
 
@@ -179,11 +216,12 @@ def worker_main(args):
             row = reader.read()
             # Deliberately bounded processing capacity, not fabricated ordinals.
             last = (
-                min(row["last_ordinal"], last + 4)
+                min(row["last_ordinal"], last + WORKER_BATCH)
                 if args.behind
                 else row["last_ordinal"]
             )
             row["worker_last_ordinal"] = last
+            row["batch"] = WORKER_BATCH
             row["used_at"] = now()
             row["count_age_s"] = row["used_at"] - row["at"]
             f.write(json.dumps(row) + "\n")
@@ -1074,6 +1112,8 @@ def score_p3(runs, device, prop):
 
 def growth_score(run):
     rows = run.get("reads", []) or run.get("worker_samples", [])
+    indexed = run.get("dataset", {}).get("indexed", 0)
+    final_count = rows[-1]["count"] if rows else 0
     start = run.get("imaging_started_at", run["submitted_at"])
     end = run["imaging_observation_end_at"]
     span = end - start
@@ -1087,6 +1127,9 @@ def growth_score(run):
             if "used_at" in s
         ]
     numbers = dict(
+        final_count=final_count,
+        indexed_frames=indexed,
+        required_count=math.ceil(indexed * 0.9),
         early_read_duration_s=dist(early),
         late_read_duration_s=dist(late),
         early_count_age_s=dist(
@@ -1096,6 +1139,10 @@ def growth_score(run):
             [s["index_age_s"] for s in ages if s["at"] >= start + 0.8 * span]
         ),
     )
+    if indexed <= 0 or final_count < math.ceil(indexed * 0.9):
+        return limb(
+            "NOT EXERCISED", "reader final count below 90% of indexed frames", **numbers
+        )
     if not early or not late:
         return limb("NOT EXERCISED", "early or late 20% read window empty", **numbers)
     return check(
@@ -1123,6 +1170,28 @@ def behind_score(run):
         any(x["lag"] > 0 for x in comparisons),
         "behind worker visibly behind the index it read",
         observations=len(comparisons),
+    )
+
+
+def worker_score(run):
+    rows = run.get("worker_samples", [])
+    indexed = run.get("dataset", {}).get("indexed", 0)
+    final_count = rows[-1]["count"] if rows else 0
+    lags = [row["last_ordinal"] - row["worker_last_ordinal"] for row in rows]
+    following_ok = run["arm"] != "worker" or all(
+        0 <= lag <= row["batch"] for lag, row in zip(lags, rows)
+    )
+    return check(
+        run.get("worker_returncode") == 0
+        and indexed > 0
+        and final_count >= math.ceil(indexed * 0.9)
+        and following_ok,
+        "worker reached 90% of indexed frames; following worker lag <= batch",
+        final_count=final_count,
+        indexed_frames=indexed,
+        required_count=math.ceil(indexed * 0.9),
+        max_lag=max(lags) if lags else None,
+        batch=WORKER_BATCH,
     )
 
 
@@ -1420,11 +1489,7 @@ def execute(env, args, out):
                             result = behind_score(r)
                             if arm == "behind":
                                 limbs[r["name"] + "/behind_control"] = result
-                            limbs[r["name"] + "/worker"] = check(
-                                r.get("worker_returncode") == 0
-                                and bool(r.get("worker_samples")),
-                                "worker produced index observations and exited successfully",
-                            )
+                            limbs[r["name"] + "/worker"] = worker_score(r)
             if fast is not None:
                 post = add_run(
                     "10ms-control-post", n=160 if args.fake else 3000, exposure=10
@@ -1473,8 +1538,35 @@ class JavaVector:
         raise TypeError("bridge vector is not Python iterable")
 
 
+class FakeJavaIndexWriter:
+    """IndexWriter from the operator's NDTiffStorage-2.19.3 javap, 2026-10-19.
+
+    Real TIFF pixels/metadata still use ndstorage; only the index file's I/O
+    lifecycle is replaced: preallocate, one in-place write per entry, truncate.
+    """
+
+    def __init__(self, path):
+        self.file = Path(path).open("w+b", buffering=0)
+        self.file.truncate(JAVA_INDEX_PREALLOCATED_BYTES)
+        self.file.seek(0)
+
+    def write(self, entry):
+        written = self.file.write(entry)
+        if written != len(entry):
+            raise OSError("fake Java index entry write was incomplete")
+        return written
+
+    def flush(self):
+        self.file.flush()
+
+    def close(self):
+        if not self.file.closed:
+            self.file.truncate(self.file.tell())
+            self.file.close()
+
+
 class FakeEnvironment:
-    """Source-shaped acquisition dispatch with real growing NDTiff storage.
+    """Source-shaped acquisition dispatch, real TIFFs and Java-shaped index I/O.
 
     Deliberately defer saved callbacks and events-finished until backend exit.
     This is a possible schedule of the separate dependency threads, not a claimed
@@ -1483,6 +1575,7 @@ class FakeEnvironment:
 
     def __init__(self, path, mutation=None):
         from ndstorage import NDTiffDataset
+        from ndstorage.ndtiff_file import SingleNDTiffWriter
 
         self.Dataset = NDTiffDataset
         self.path = Path(path)
@@ -1598,6 +1691,13 @@ class FakeEnvironment:
                 self.axes = []
                 self.ds = NDTiffDataset(kw["directory"], name=kw["name"], writable=True)
                 self.ds.initialize({})
+                self.ds.current_writer = SingleNDTiffWriter(
+                    self.ds.path, self.ds.name + "_NDTiffStack.tif", {}
+                )
+                self.ds.file_index = 1
+                self.ds._index_file = FakeJavaIndexWriter(
+                    Path(self.ds.path) / "NDTiff.index"
+                )
                 self.notification_queue = queue.Queue()
                 self.dispatcher_done = threading.Event()
 
@@ -1977,6 +2077,189 @@ def selftest():
         print(
             "ok control: partial final index entry never counted; every split resumes exactly once"
         )
+        print(
+            "ok control: Python append layout remains readable across every partial-entry split"
+        )
+        writer = FakeJavaIndexWriter(path)
+        rd = IndexReader(path)
+        first = rd.read()
+        assert path.stat().st_size == JAVA_INDEX_PREALLOCATED_BYTES
+        assert first["count"] == 0 and first["parsed_offset"] == 0
+        assert first["bytes_read"] == INDEX_CHUNK_BYTES
+        writer.write(entry)
+        row = rd.read()
+        assert row["count"] == 1 and row["parsed_offset"] == len(entry)
+        assert row["bytes_read"] <= len(entry) + INDEX_CHUNK_BYTES
+        writer.close()
+        assert path.stat().st_size == len(entry)
+        assert rd.read()["count"] == 1
+        print(
+            "ok control: Java zero-filled preallocation resumes in place; 64 KiB reads and parsed_offset recorded"
+        )
+        # Leave metadata_length unwritten so the zero-filled trailer is invalid.
+        # Zero compression padding itself cannot distinguish partial from complete.
+        for cut in (3, 8, len(entry) - 8):
+            writer = FakeJavaIndexWriter(path)
+            writer.file.write(entry[:cut])
+            rd = IndexReader(path)
+            row = rd.read()
+            assert row["count"] == row["parsed_offset"] == 0
+            writer.file.write(entry[cut:])
+            assert rd.read()["count"] == 1
+            assert rd.read()["count"] == 1
+            writer.close()
+        print(
+            "ok control: partial entry inside preallocated zeros is re-read and counted exactly once after completion"
+        )
+        axes = json.dumps({"time": 0}).encode("utf8")
+        filename = b"data_NDTiffStack.tif"
+        trailer = [100, 4, 4, 1, 0, 200, 5, 0]
+
+        def index_bytes(axes_bytes, filename_bytes, fields):
+            return (
+                struct.pack("I", len(axes_bytes))
+                + axes_bytes
+                + struct.pack("I", len(filename_bytes))
+                + filename_bytes
+                + struct.pack("IIIIIIII", *fields)
+            )
+
+        invalid = [
+            index_bytes(b"{", filename, trailer),
+            index_bytes(b"[]", filename, trailer),
+            index_bytes(axes, b"", trailer),
+            index_bytes(axes, b"\xff", trailer),
+        ]
+        for field in (1, 2, 6):
+            fields = list(trailer)
+            fields[field] = 0
+            invalid.append(index_bytes(axes, filename, fields))
+        for bad in invalid:
+            writer = FakeJavaIndexWriter(path)
+            writer.write(bad)
+            rd = IndexReader(path)
+            row = rd.read()
+            assert row["count"] == row["parsed_offset"] == 0
+            writer.file.seek(0)
+            writer.write(entry)
+            assert rd.read()["count"] == 1
+            writer.close()
+        print(
+            "ok control: invalid axes/filename/trailer fields do not advance parsed_offset; in-place repair is observed"
+        )
+        large = index_bytes(
+            json.dumps({"time": 1, "channel": "x" * INDEX_CHUNK_BYTES}).encode("utf8"),
+            filename,
+            trailer,
+        )
+        writer = FakeJavaIndexWriter(path)
+        writer.write(large)
+        rd = IndexReader(path)
+        assert rd.read()["count"] == 1 and rd.parsed_offset == len(large)
+        writer.close()
+        path.write_bytes(entry + entry)
+        rd = IndexReader(path)
+        assert rd.read()["count"] == 2
+        path.write_bytes(entry[:8])
+        assert rd.read()["count"] == 0
+        with path.open("ab") as f:
+            f.write(entry[8:])
+        assert rd.read()["count"] == 1
+        print(
+            "ok control: multi-chunk entries and truncated/appended files remain readable"
+        )
+
+        class OldOffsetReader(IndexReader):
+            """The pre-revision reader, intentionally preserving its file-size bug."""
+
+            def __init__(self, path):
+                super().__init__(path)
+                self.offset = 0
+                self.tail = b""
+
+            def read(self):
+                started = now()
+                with self.path.open("rb") as f:
+                    f.seek(self.offset)
+                    data = f.read()
+                self.offset += len(data)
+                buffer = self.tail + data
+                p = 0
+                while len(buffer) - p >= 4:
+                    length = struct.unpack_from("I", buffer, p)[0]
+                    if length == 0:
+                        break
+                    q = p + 4 + length
+                    if len(buffer) < q + 4:
+                        break
+                    filename_length = struct.unpack_from("I", buffer, q)[0]
+                    end = q + 4 + filename_length + 32
+                    if len(buffer) < end:
+                        break
+                    axes = json.loads(buffer[p + 4 : q].decode("utf8"))
+                    self.count += 1
+                    self.last = axes.get("time", self.count - 1)
+                    p = end
+                self.tail = buffer[p:]
+                at = now()
+                return dict(
+                    at=at,
+                    duration_s=at - started,
+                    count=self.count,
+                    last_ordinal=self.last,
+                    bytes_read=len(data),
+                )
+
+        folder = root / "old-offset-java"
+        folder.mkdir()
+        env = FakeEnvironment(folder)
+        acq = env.Acquisition(
+            directory=str(folder),
+            name="data",
+            show_display=False,
+            notification_callback_fn=lambda note: None,
+            image_saved_fn=lambda axes, dataset: None,
+        )
+        index_path = Path(acq.get_dataset().path) / "NDTiff.index"
+        old = OldOffsetReader(index_path)
+        first = old.read()
+        assert (
+            first["bytes_read"] == JAVA_INDEX_PREALLOCATED_BYTES and first["count"] == 0
+        )
+        acq.acquire([dict(axes={"time": k}, exposure=10) for k in range(160)])
+        bounded(lambda: acq.__exit__(None, None, None), 3)
+        last = old.read()
+        assert last["bytes_read"] == last["count"] == 0
+        with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+            dataset = dataset_report(env, index_path.parent, 160)
+        acq.get_dataset().close()
+        mutation = dict(
+            arm="behind",
+            submitted_at=first["at"],
+            imaging_started_at=first["at"],
+            imaging_observation_end_at=last["at"],
+            reads=[first, last],
+            samples=[],
+            dataset=dataset,
+            worker_returncode=0,
+            worker_samples=[
+                dict(row, worker_last_ordinal=row["last_ordinal"], batch=WORKER_BATCH)
+                for row in (first, last)
+            ],
+        )
+        assert growth_score(mutation)["status"] == "NOT EXERCISED"
+        assert worker_score(mutation)["status"] == "FAIL"
+        assert behind_score(mutation)["status"] == "FAIL"
+        print(
+            "ok control: old file-size offset reader on Java preallocation -> read_growth NOT EXERCISED, worker FAIL, behind_control FAIL"
+        )
+        following = copy.deepcopy(
+            next(r for r in reports["p4"]["runs"] if r["arm"] == "worker")
+        )
+        last = following["worker_samples"][-1]
+        last["worker_last_ordinal"] = last["last_ordinal"] - last["batch"] - 1
+        assert worker_score(following)["status"] == "FAIL"
+        print("ok control: following worker max lag exceeds its batch -> worker FAIL")
         r = copy.deepcopy(
             next(r for r in reports["p4"]["runs"] if r["arm"] == "behind")
         )
