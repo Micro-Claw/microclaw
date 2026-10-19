@@ -26,6 +26,7 @@ third-party call cannot be killed safely; its daemon remains disclosed in report
 import argparse
 import contextlib
 import copy
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
 import json
 import math
@@ -53,6 +54,8 @@ TEARDOWN_BOUND_S = 30.0
 INDEX_CHUNK_BYTES = 64 * 1024
 JAVA_INDEX_PREALLOCATED_BYTES = 26214400
 WORKER_BATCH = 4
+MACHINE_STATE_BOUND_S = 5.0
+MACHINE_STATE_FIELDS = ("timer_resolution", "power_plan", "micro_manager", "cpu")
 NOTIFICATION_CONTRACT = (
     "acq_events_finished means event execution finished, not data sink drained; "
     "dispatcher consumes one queue in arrival order until BOTH events-finished "
@@ -90,6 +93,236 @@ def bounded(fn, seconds=CALL_BOUND_S):
     if "error" in box:
         raise box["error"]
     return box.get("value")
+
+
+def snapshot_header(label):
+    return dict(
+        label=label,
+        perf_counter=now(),
+        utc_iso=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def unavailable_machine_state(label, reason):
+    return dict(
+        snapshot_header(label),
+        **{field: {"unavailable": reason} for field in MACHINE_STATE_FIELDS},
+    )
+
+
+def machine_command(argv, utf8=False):
+    result = subprocess.run(
+        argv,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf8" if utf8 else None,
+        errors="replace",
+        timeout=MACHINE_STATE_BOUND_S,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"exit {result.returncode}: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    return result.stdout.strip()
+
+
+def powershell_json(script):
+    prefix = (
+        "$ErrorActionPreference = 'Stop'; "
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); "
+    )
+    return json.loads(
+        machine_command(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                prefix + script,
+            ],
+            utf8=True,
+        )
+    )
+
+
+def timer_resolution():
+    import ctypes
+    from ctypes import wintypes
+
+    query = ctypes.windll.ntdll.NtQueryTimerResolution
+    query.argtypes = [ctypes.POINTER(wintypes.ULONG)] * 3
+    query.restype = wintypes.LONG
+    minimum = wintypes.ULONG()
+    maximum = wintypes.ULONG()
+    current = wintypes.ULONG()
+    status = query(ctypes.byref(minimum), ctypes.byref(maximum), ctypes.byref(current))
+    if status < 0:
+        raise OSError(f"NtQueryTimerResolution NTSTATUS 0x{status & 0xffffffff:08x}")
+    # NT's Minimum is the coarsest resolution; Maximum is the finest.
+    # ULONG values are in 100 ns units, hence 10,000 units per millisecond.
+    return dict(
+        coarsest_ms=minimum.value / 10000,
+        finest_ms=maximum.value / 10000,
+        current_ms=current.value / 10000,
+    )
+
+
+def micro_manager_windows():
+    import ctypes
+    from ctypes import wintypes
+
+    windows = powershell_json(
+        r"""
+$windows = @(Get-Process | Where-Object {
+    $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like '*Micro-Manager*'
+} | ForEach-Object {
+    $process = $_
+    $started = $null
+    $uptime = $null
+    try {
+        $utc = $process.StartTime.ToUniversalTime()
+        $started = $utc.ToString('o')
+        $uptime = ([DateTime]::UtcNow - $utc).TotalSeconds
+    } catch {
+        $started = @{ unavailable = $_.Exception.Message }
+        $uptime = $started
+    }
+    [pscustomobject]@{
+        process_name = $process.ProcessName; id = $process.Id
+        start_time_utc = $started; uptime_s = $uptime
+        window_title = $process.MainWindowTitle; handle = $process.MainWindowHandle.ToInt64()
+    }
+})
+ConvertTo-Json -InputObject $windows -Depth 6 -Compress
+"""
+    )
+    if not isinstance(windows, list):
+        raise ValueError("PowerShell window result was not an array")
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    foreground = user32.GetForegroundWindow()
+    title = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(foreground) + 1)
+    user32.GetWindowTextW(foreground, title, len(title))
+    process_id = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(foreground, ctypes.byref(process_id))
+    for window in windows:
+        handle = window["handle"]
+        window["window_state"] = dict(
+            minimized=bool(user32.IsIconic(handle)),
+            visible=bool(user32.IsWindowVisible(handle)),
+            foreground=handle == foreground,
+        )
+    return dict(
+        windows=windows,
+        status="found" if windows else "no Micro-Manager main window found",
+        foreground_window=dict(title=title.value, process_id=process_id.value),
+    )
+
+
+def cpu_processes():
+    return powershell_json(
+        r"""
+$before = @{}
+Get-Process | ForEach-Object {
+    try { if ($null -ne $_.CPU) { $before[$_.Id] = [double]$_.CPU } } catch {}
+}
+Start-Sleep -Milliseconds 2000
+$top = @(Get-Process | ForEach-Object {
+    try {
+        if ($before.ContainsKey($_.Id) -and $null -ne $_.CPU) {
+            $delta = [double]$_.CPU - $before[$_.Id]
+            if ($delta -ge 0) {
+                [pscustomobject]@{ process_name = $_.ProcessName; id = $_.Id; delta_cpu_s = $delta }
+            }
+        }
+    } catch {}
+} | Sort-Object delta_cpu_s -Descending | Select-Object -First 5)
+[pscustomobject]@{
+    logical_processor_count = [Environment]::ProcessorCount
+    sample_seconds = 2; top_processes = $top
+} | ConvertTo-Json -Depth 6 -Compress
+"""
+    )
+
+
+def machine_state(label, field_readers=None):
+    """R157 evidence only: no result from this function participates in scoring."""
+    if field_readers is None:
+        if sys.platform != "win32":
+            return unavailable_machine_state(
+                label, f"Windows only; host is {sys.platform}"
+            )
+        field_readers = dict(
+            timer_resolution=timer_resolution,
+            power_plan=lambda: machine_command(["powercfg", "/getactivescheme"]),
+            micro_manager=micro_manager_windows,
+            cpu=cpu_processes,
+        )
+    result = snapshot_header(label)
+    for field in MACHINE_STATE_FIELDS:
+        try:
+            result[field] = bounded(field_readers[field], MACHINE_STATE_BOUND_S)
+        except BaseException as e:
+            result[field] = {"unavailable": f"{type(e).__name__}: {e}"}
+    return result
+
+
+def machine_state_summary(snapshot):
+    timer = snapshot["timer_resolution"]
+    timer_text = (
+        "unavailable"
+        if "unavailable" in timer
+        else (f'{timer["current_ms"]:.3f} ms (finest {timer["finest_ms"]:.3f})')
+    )
+    mm = snapshot["micro_manager"]
+    windows = []
+    if "unavailable" not in mm:
+        for window in mm["windows"]:
+            state = window["window_state"]
+            word = (
+                "minimized"
+                if state["minimized"]
+                else (
+                    "foreground"
+                    if state["foreground"]
+                    else "visible"
+                    if state["visible"]
+                    else "hidden"
+                )
+            )
+            uptime = window["uptime_s"]
+            hours = (
+                "unavailable" if isinstance(uptime, dict) else f"{uptime / 3600:.1f} h"
+            )
+            windows.append(f"MM window {word}, uptime {hours}")
+    mm_text = "; ".join(windows) or (mm.get("status") or "MM window unavailable")
+    cpu = snapshot["cpu"]
+    cpu_text = (
+        "unavailable"
+        if "unavailable" in cpu
+        else ", ".join(
+            f'{p["process_name"]}({p["id"]}) {p["delta_cpu_s"]:.3f} s'
+            for p in cpu["top_processes"]
+        )
+    )
+    return " ".join(
+        f'machine state {snapshot["label"]}: timer {timer_text}, {mm_text}, top CPU: {cpu_text}'.split()
+    )
 
 
 def vector(v):
@@ -1203,12 +1436,38 @@ def execute(env, args, out):
         probe=args.probe,
         limbs={},
         runs=[],
+        machine_state=[],
         r157_threshold_ms=R157_CONTROL_P95_MS,
         notification_contract=NOTIFICATION_CONTRACT,
     )
     limbs = report["limbs"]
     core = None
     restores = []
+
+    def record_machine_state(label):
+        # A failed or hung teardown is not a safe point to sample the machine.
+        # Keep an explicit unavailable record without invoking any field reader.
+        pending = report.get("uncontained_dependency_thread") or any(
+            not run.get("teardown_returned") for run in report["runs"]
+        )
+        try:
+            snapshot = (
+                unavailable_machine_state(
+                    label, "acquisition teardown pending; snapshot not collected"
+                )
+                if pending
+                else getattr(env, "machine_state", machine_state)(label)
+            )
+            if not isinstance(snapshot, dict):
+                raise TypeError("snapshot provider did not return a dict")
+        except BaseException as e:
+            snapshot = unavailable_machine_state(label, f"{type(e).__name__}: {e}")
+        report["machine_state"].append(snapshot)
+        try:
+            print(machine_state_summary(snapshot), flush=True)
+        except BaseException as e:
+            # Recording and logging evidence must never change a probe verdict.
+            snapshot["summary_unavailable"] = f"{type(e).__name__}: {e}"
 
     def expect(names):
         for name in names:
@@ -1275,11 +1534,10 @@ def execute(env, args, out):
         return r
 
     def stop_after_first_slow_control(run):
-        if (
-            args.probe not in ("p1", "p4")
-            or len(report["runs"]) != 1
-            or not is_slow([run])
-        ):
+        if args.probe not in ("p1", "p4") or len(report["runs"]) != 1:
+            return False
+        record_machine_state("first-control")
+        if not is_slow([run]):
             return False
         dataset = run["dataset"]
         control = dict(
@@ -1371,6 +1629,7 @@ def execute(env, args, out):
                     lambda: core.set_property(args.device, args.property, original),
                 )
             )
+            record_machine_state("start")
         if args.probe == "p3":
             debug = bounded(core.debug_log_enabled)
             restores.append(("debug_log", lambda: core.enable_debug_log(debug)))
@@ -1476,6 +1735,7 @@ def execute(env, args, out):
                 (e for e in (1, 2, 5) if limits[0] and limits[1] <= e <= limits[2]),
                 None,
             )
+            record_machine_state("start")
             if fast is None:
                 limbs["fast_exposure"] = limb(
                     "NOT EXERCISED",
@@ -1552,6 +1812,9 @@ def execute(env, args, out):
         if isinstance(e, TimeoutError):
             report["uncontained_dependency_thread"] = True
     finally:
+        if not report["machine_state"]:
+            record_machine_state("start")
+        record_machine_state("end")
         for name, fn in reversed(restores):
             try:
                 bounded(fn, args.call_bound)
@@ -1612,6 +1875,51 @@ class FakeEnvironment:
     universal ordering. Frame generation starts on acquire, as on the Java side.
     """
 
+    def machine_state(self, label):
+        self.snapshot_labels.append(label)
+        if self.acquisitions_in_flight:
+            self.in_flight_snapshots += 1
+        fixed = dict(
+            timer_resolution=dict(coarsest_ms=15.625, finest_ms=0.5, current_ms=1.0),
+            power_plan="opaque fake active power scheme",
+            micro_manager=dict(
+                status="found",
+                windows=[
+                    dict(
+                        process_name="fake-mm",
+                        id=77,
+                        start_time_utc="2026-10-19T08:00:00Z",
+                        uptime_s=18720.0,
+                        window_title="Micro-Manager fake",
+                        handle=100,
+                        window_state=dict(
+                            minimized=True, visible=True, foreground=False
+                        ),
+                    )
+                ],
+                foreground_window=dict(title="Fake desktop", process_id=88),
+            ),
+            cpu=dict(
+                logical_processor_count=8,
+                sample_seconds=2,
+                top_processes=[dict(process_name="fake-cpu", id=99, delta_cpu_s=0.5)],
+            ),
+        )
+        readers = {
+            field: lambda value=value: copy.deepcopy(value)
+            for field, value in fixed.items()
+        }
+        if self.mutation == "snapshot_field_error":
+
+            def raising_field():
+                raise RuntimeError("injected snapshot field failure")
+
+            readers["power_plan"] = raising_field
+        result = machine_state(label, field_readers=readers)
+        result["perf_counter"] = 123456.0
+        result["utc_iso"] = "2026-10-19T13:12:00Z"
+        return result
+
     def __init__(self, path, mutation=None):
         from ndstorage import NDTiffDataset
         from ndstorage.ndtiff_file import SingleNDTiffWriter
@@ -1629,6 +1937,9 @@ class FakeEnvironment:
         self.cores = []
         self.dispatched_milestones = []
         self.acquisition_constructions = 0
+        self.acquisitions_in_flight = 0
+        self.snapshot_labels = []
+        self.in_flight_snapshots = 0
         env = self
 
         class Core:
@@ -1727,6 +2038,8 @@ class FakeEnvironment:
                 self.stop = threading.Event()
                 self.done = threading.Event()
                 self.error = None
+                self.imaging_submitted = False
+                self.teardown_completed = False
                 self.axes = []
                 self.ds = NDTiffDataset(kw["directory"], name=kw["name"], writable=True)
                 self.ds.initialize({})
@@ -1767,6 +2080,8 @@ class FakeEnvironment:
                 return self.ds
 
             def acquire(self, events):
+                self.imaging_submitted = True
+                env.acquisitions_in_flight += 1
                 from pycromanager.acquisition.acq_eng_py.main.acq_notification import (
                     AcqNotification as N,
                 )
@@ -1878,6 +2193,14 @@ class FakeEnvironment:
                 self.stop.set()
 
             def __exit__(self, *exc):
+                try:
+                    return self._finish(*exc)
+                finally:
+                    if self.imaging_submitted and not self.teardown_completed:
+                        env.acquisitions_in_flight -= 1
+                    self.teardown_completed = True
+
+            def _finish(self, *exc):
                 from pycromanager.acquisition.acq_eng_py.main.acq_notification import (
                     AcqNotification as N,
                 )
@@ -1918,7 +2241,7 @@ def selftest():
         root = Path(temp)
         reports = {}
 
-        def run(probe, mutation=None, prop="TestProperty1"):
+        def run(probe, mutation=None, prop="TestProperty1", replay=None):
             folder = root / (probe + "-" + str(mutation) + "-" + prop)
             folder.mkdir()
             args = parser().parse_args([probe, "--out", str(folder)])
@@ -1937,7 +2260,18 @@ def selftest():
                 if mutation == "low_disk"
                 else contextlib.nullcontext()
             )
-            with disk_control, open(
+            if replay is not None:
+                replay_runs = iter(replay["runs"])
+
+                def replay_one(env, args, out, name, **kwargs):
+                    saved = copy.deepcopy(next(replay_runs))
+                    assert saved["name"] == name
+                    return saved
+
+                run_control = patch.dict(globals(), {"run_one": replay_one})
+            else:
+                run_control = contextlib.nullcontext()
+            with disk_control, run_control, open(
                 os.devnull, "w"
             ) as sink, contextlib.redirect_stdout(sink):
                 report = execute(env, args, folder)
@@ -1947,6 +2281,8 @@ def selftest():
                 and env.debug is False
                 and env.exposure == 7
             ), "restoration"
+            assert env.in_flight_snapshots == 0
+            assert env.snapshot_labels == [s["label"] for s in report["machine_state"]]
             return report, env
 
         # Cheapest design first, then every entire command including real workers.
@@ -1962,6 +2298,37 @@ def selftest():
             print(f'ok end-to-end: {probe} ({len(report["runs"])} runs)')
             assert report["disk_preflight"]["enough_space"]
             assert report["disk_preflight"]["frame_bytes"] == 4 * 4 * 2
+            expected_labels = (
+                ["start", "first-control", "end"]
+                if probe in ("p1", "p4")
+                else ["start", "end"]
+            )
+            assert env.snapshot_labels == expected_labels
+        print(
+            "ok control: injected snapshots have ordered start/first-control/end labels for P1/P4; P2/P3 start/end"
+        )
+        healthy, _ = run("p1", "snapshot_healthy", replay=reports["p1"])
+        failed, _ = run("p1", "snapshot_field_error", replay=reports["p1"])
+        assert failed["limbs"] == healthy["limbs"]
+        assert exit_code(failed) == exit_code(healthy)
+        assert all("unavailable" in s["power_plan"] for s in failed["machine_state"])
+        assert all(
+            s["timer_resolution"]["current_ms"] == 1.0 for s in failed["machine_state"]
+        )
+        print(
+            "ok control: raising snapshot field -> unavailable; replayed healthy and failing-snapshot limbs are identical"
+        )
+        print("ok control: fake snapshots taken between acquire and teardown return: 0")
+        if sys.platform != "win32":
+            started = now()
+            real_snapshot = machine_state("non-windows-selftest")
+            assert now() - started < 6
+            assert all(
+                "unavailable" in real_snapshot[field] for field in MACHINE_STATE_FIELDS
+            )
+            print(
+                "ok control: real non-Windows machine_state returns every Windows field unavailable in under 6 s"
+            )
         for probe in ("p1", "p2", "p3", "p4"):
             r, env = run(probe, "low_disk")
             assert env.acquisition_constructions == 0 and not r["runs"]
@@ -2065,6 +2432,7 @@ def selftest():
         for probe in ("p1", "p4"):
             r, env = run(probe, "slow")
             assert env.acquisition_constructions == len(r["runs"]) == 1
+            assert env.snapshot_labels == ["start", "first-control", "end"]
             assert set(r["limbs"]) == set(reports[probe]["limbs"])
             first = r["runs"][0]
             assert r["early_stop"]["reason"] == R157_FIRST_CONTROL_REASON
@@ -2084,6 +2452,9 @@ def selftest():
             )
         print(
             "ok control: P1/P4 slow first control -> exactly one acquisition; pending limbs NOT EXERCISED with control numbers; restoration PASS"
+        )
+        print(
+            "ok control: P1/P4 early stop still records start/first-control/end snapshots outside acquisition"
         )
         print("ok control: 21 ms slow control -> cadence NOT EXERCISED")
         for probe, expected_runs in (("p1", 9), ("p4", 37)):
@@ -2554,7 +2925,10 @@ def main():
 
                 report = execute(
                     SimpleNamespace(
-                        Core=Core, Acquisition=Acquisition, Dataset=NDTiffDataset
+                        Core=Core,
+                        Acquisition=Acquisition,
+                        Dataset=NDTiffDataset,
+                        machine_state=machine_state,
                     ),
                     args,
                     args.out,
