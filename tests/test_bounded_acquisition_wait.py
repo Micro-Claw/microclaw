@@ -1386,6 +1386,7 @@ def test_no_hardware_hook_means_no_refresh_or_gui_lag_disclosure(
     ctrl.refresh_gui.assert_not_called()
     assert not any("GUI controls can lag" in item.get("message", "") for item in received)
 
+
 def test_real_interrupt_hands_blocked_teardown_and_reservation_to_waiter(monkeypatch):
     import _thread
     import sys

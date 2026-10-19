@@ -3398,6 +3398,6 @@ the model" as the actual blast radius.
 - **What a fix would look like** — run P1 and P4 on M2 with the activation property as the probed target. `design/89-probes.py` already takes `--device`/`--property`. The `.ps1` launchers do not pass them yet, and the probe's limit check must accept that property. If SMAPpy runs beside them, they can carry `R142`.
 - **Where** — M2.
 - **Block** — NONE; 89b's M2 gate depends on it.
-- **Importance** — MEDIUM. 89b should not be opened without it, if 89b is wanted.
+- **Importance** — MEDIUM. Recommended before 89b, not required: 89b's own M2 gate compares cadence with feedback on and off, so this would only find a problem earlier and more cheaply (operator decision, 2026-10-19).
 - **Effort** — SMALL
 - **Provenance** — `design/89` 89a, 2026-10-19.
