@@ -56,7 +56,7 @@ def install_clock(monkeypatch, manager, step=1000):
         # Synchronize with the fake bridge entry rather than measuring throughput.
         assert manager.entered.wait(5)
         now[0] += step
-    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
+    monkeypatch.setattr(tools, '_wait_acquisition_completion', wait)
 
 
 @pytest.mark.parametrize('block', ['start', 'poll', 'abort'])
@@ -69,8 +69,8 @@ def test_hung_call_keeps_one_worker_and_refuses_without_probe(rig, monkeypatch, 
     result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard, cancel=cancel))
     assert result.get('acquisition') == 'unterminated', result
     assert result['phase'] == {'start': 'starting', 'poll': 'acquiring', 'abort': 'stopping'}[block]
-    waiter = ctrl._microclaw_unterminated_acquisition['waiter']
-    assert waiter.is_alive()
+    done = ctrl._microclaw_unterminated_acquisition['done']
+    assert not done.is_set()
     before = list(manager.calls)
     refused = json.loads(tools.execute_tool('run_timelapse', {}, ctrl, guard))
     assert refused['acquisition'] == 'refused'
@@ -79,8 +79,8 @@ def test_hung_call_keeps_one_worker_and_refuses_without_probe(rig, monkeypatch, 
     assert manager.calls.count('start') == 1
     if block == 'start': assert 'poll' not in manager.calls
     if block == 'poll': assert manager.calls.count('poll') == 1
-    manager.release.set(); waiter.join(5)
-    assert not waiter.is_alive()
+    manager.release.set(); done.wait(5)
+    assert done.is_set()
     if block == 'abort': assert manager.calls.count('abort') == 1
 
 
@@ -97,7 +97,7 @@ def test_cancel_continues_until_completion_once(rig, monkeypatch, interrupt):
             cancel.set()
             raise KeyboardInterrupt
         done.wait(5)
-    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
+    monkeypatch.setattr(tools, '_wait_acquisition_completion', wait)
     # Ensure a poll after the first blocked call, so interrupt reaches worker.
     manager.observations = [(True, 0, False, False)] * 10 + [(False, 2, True, True)]
     result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard,
@@ -147,16 +147,16 @@ def test_frozen_never_flushed_expires_and_reservation_stays_owned(rig, monkeypat
         assert tick.wait(5); tick.clear()
         now[0] += 1000
         # leave worker parked at expiry so pending ownership is observable
-    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
+    monkeypatch.setattr(tools, '_wait_acquisition_completion', wait)
     result = json.loads(tools.execute_tool('run_mda', {'settings': settings}, ctrl, guard))
     assert result.get('acquisition') == 'unterminated', result
     assert result['phase'] == 'writer_finalizing'
     assert result['writer_completion']['state'] == 'not_reached'
     assert result['outcome'] == 'unterminated'
-    waiter = ctrl._microclaw_unterminated_acquisition['waiter']
+    done = ctrl._microclaw_unterminated_acquisition['done']
     assert tools._acquisition_ledger(ctrl).in_flight
-    release.set(); advance.set(); waiter.join(5)
-    assert not waiter.is_alive()
+    release.set(); advance.set(); done.wait(5)
+    assert done.is_set()
     assert not tools._acquisition_ledger(ctrl).in_flight
 
 
@@ -183,7 +183,7 @@ def test_planned_long_startup_and_interval_do_not_false_expire(rig, monkeypatch,
             done.wait(5)
         joins[0] += 1
     monkeypatch.setattr(tools, '_mda_poll_wait', pause)
-    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
+    monkeypatch.setattr(tools, '_wait_acquisition_completion', wait)
     monkeypatch.setattr(tools, '_acquisition_monotonic', lambda: now[0])
     try:
         result = tools.run_mda(ctrl, guard, settings=settings)
@@ -489,7 +489,7 @@ def test_repeated_observation_errors_are_bounded_diagnostics_not_abort(rig, monk
         if now[0] < 1200: advance.set()
     monkeypatch.setattr(tools, '_mda_poll_wait', pause)
     monkeypatch.setattr(tools, '_acquisition_monotonic', lambda: now[0])
-    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
+    monkeypatch.setattr(tools, '_wait_acquisition_completion', wait)
     # Use a short policy seam so all 12 diagnostics are exercised before expiry.
     monkeypatch.setattr(tools, '_stall_quiet_s', lambda *args: (1200, 'test'))
     try:
@@ -505,7 +505,7 @@ def test_repeated_observation_errors_are_bounded_diagnostics_not_abort(rig, monk
         manager.observation = (False, 2, True, True)
         advance.set()
         pending = getattr(ctrl, '_microclaw_unterminated_acquisition', {})
-        if pending: pending['waiter'].join(5)
+        if pending: pending['done'].wait(5)
 
 
 def test_interrupt_from_watchdog_clock_requests_abort_and_keeps_supervising(rig, monkeypatch):
@@ -526,7 +526,7 @@ def test_interrupt_from_watchdog_clock_requests_abort_and_keeps_supervising(rig,
         else:
             manager.release.set(); done.wait(5)
     monkeypatch.setattr(tools, '_acquisition_monotonic', clock)
-    monkeypatch.setattr(tools, '_wait_mda_completion', wait)
+    monkeypatch.setattr(tools, '_wait_acquisition_completion', wait)
     try:
         try:
             result = tools.run_mda(ctrl, guard, settings=settings)
@@ -550,8 +550,7 @@ def test_real_interrupt_inside_wait_preserves_live_worker_and_cancels(rig, monke
     worker = []
     observed = []
     foreground = threading.get_ident()
-    original_wait = getattr(tools, '_wait_mda_completion', lambda event, seconds: event.wait(seconds))
-    original_join = tools._join_acquisition_waiter
+    original_wait = getattr(tools, '_wait_acquisition_completion', lambda event, seconds: event.wait(seconds))
     first = [True]
     def pause(_):
         if not first[0]: return
@@ -581,10 +580,7 @@ def test_real_interrupt_inside_wait_preserves_live_worker_and_cancels(rig, monke
             observed.append(alive)
             assert alive, 'Interrupted Thread.join falsely marked a still-running MDA worker stopped'
             raise
-    # The old join seam is used only when this regression is run against f79ed81.
-    monkeypatch.setattr(tools, '_join_acquisition_waiter',
-        lambda waiter, seconds: interrupted_wait(lambda: original_join(waiter, seconds)))
-    monkeypatch.setattr(tools, '_wait_mda_completion',
+    monkeypatch.setattr(tools, '_wait_acquisition_completion',
         lambda done, seconds: interrupted_wait(lambda: original_wait(done, seconds)), raising=False)
     monkeypatch.setattr(tools, '_mda_poll_wait', pause)
     monkeypatch.setattr(tools, '_ACQUISITION_POLL_S', 0.05)

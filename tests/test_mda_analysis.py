@@ -127,7 +127,7 @@ def test_unterminated_no_writer(rig, observer, monkeypatch):
         monkeypatch.setattr(manager, 'is_acquisition_running', original)
         manager.release.set()
         pending = getattr(rig[0], '_microclaw_unterminated_acquisition', {})
-        if pending: pending['waiter'].join(5)
+        if pending: pending['done'].wait(5)
 
 
 def test_no_analysis_no_observer_work(rig, observer, monkeypatch):
