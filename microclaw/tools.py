@@ -209,8 +209,10 @@ def _acquisition_monotonic() -> float:
     return timing_clock()
 
 
-def _join_acquisition_waiter(waiter: threading.Thread, timeout_s: float) -> None:
-    waiter.join(timeout_s)
+def _wait_acquisition_completion(done, timeout_s):
+    # Event.wait does not touch Thread's state lock. An interrupted join can
+    # falsely mark a live worker stopped on CPython (bpo-45274).
+    return done.wait(timeout_s)
 
 
 def _runtime_ceiling_s(
@@ -4969,47 +4971,51 @@ def _acquire_with_hooks(
             })
         acq.acquire(events)
 
+        done = threading.Event()
         outcome: dict[str, Any] = {}
         def finish() -> None:
-            with _acquisition_diagnostic_context(diagnostic_context):
-                try:
+            try:
+                with _acquisition_diagnostic_context(diagnostic_context):
                     try:
-                        _emit_acquisition_diagnostic({
-                            "type": "acquisition_mark_finished",
-                            "dataset_path": dataset_path,
-                        }, lifecycle=True, publish=False)
-                        acq.__exit__(None, None, None)
-                    except BaseException as exc:
-                        outcome["exc"] = exc
+                        try:
+                            _emit_acquisition_diagnostic({
+                                "type": "acquisition_mark_finished",
+                                "dataset_path": dataset_path,
+                            }, lifecycle=True, publish=False)
+                            acq.__exit__(None, None, None)
+                        except BaseException as exc:
+                            outcome["exc"] = exc
+                        finally:
+                            teardown_timing["acquisition"]["end_s"] = timing_clock()
+                        failures = finish_owned_cleanup()
+                        if failures:
+                            prior = outcome.get("exc")
+                            detail = "; ".join(failures)
+                            if prior is not None:
+                                prior.add_note(detail)
+                            else:
+                                outcome["exc"] = RuntimeError(detail)
+                        flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                        if isinstance(flag, dict) and outcome.get("exc") is not None:
+                            late = outcome["exc"]
+                            _emit_acquisition_diagnostic({
+                                "type": "acquisition_diagnostic",
+                                "message": f"Late teardown/cleanup failure: {type(late).__name__}: {late}",
+                                "dataset_path": dataset_path,
+                            })
                     finally:
-                        teardown_timing["acquisition"]["end_s"] = timing_clock()
-                    failures = finish_owned_cleanup()
-                    if failures:
-                        prior = outcome.get("exc")
-                        detail = "; ".join(failures)
-                        if prior is not None:
-                            prior.add_note(detail)
-                        else:
-                            outcome["exc"] = RuntimeError(detail)
-                    flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
-                    if isinstance(flag, dict) and outcome.get("exc") is not None:
-                        late = outcome["exc"]
+                        flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
+                        if isinstance(flag, dict):
+                            flag["teardown_running"] = False
+                        if analysis_job is not None:
+                            analysis_job.writer_finished()
                         _emit_acquisition_diagnostic({
-                            "type": "acquisition_diagnostic",
-                            "message": f"Late teardown/cleanup failure: {type(late).__name__}: {late}",
+                            "type": "acquisition_teardown_completion",
                             "dataset_path": dataset_path,
-                        })
-                finally:
-                    flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
-                    if isinstance(flag, dict):
-                        flag["teardown_running"] = False
-                    if analysis_job is not None:
-                        analysis_job.writer_finished()
-                    _emit_acquisition_diagnostic({
-                        "type": "acquisition_teardown_completion",
-                        "dataset_path": dataset_path,
-                        "frames_accounted": frame_state["count"],
-                    }, lifecycle=True, publish=False)
+                            "frames_accounted": frame_state["count"],
+                        }, lifecycle=True, publish=False)
+            finally:
+                done.set()
 
         waiter = threading.Thread(target=finish, name="microclaw-acq-teardown", daemon=True)
         waiter_started = True
@@ -5017,89 +5023,99 @@ def _acquire_with_hooks(
         error_deadline = None
         engine_exc = None
         last_metrics_progress = None
-        while waiter.is_alive():
-            tick = _acquisition_monotonic()
-            if analysis_job is not None and (last_metrics_progress is None or tick - last_metrics_progress >= 1):
-                last_metrics_progress = tick
-                handle = analysis_job.handle
-                if handle is not None:
-                    metrics = handle.metrics_snapshot(for_progress=True)
-                    if metrics.get("declared"):
-                        with frame_lock:
-                            count, phase = frame_state["count"], progress_state["phase"]
-                        _emit_acquisition_diagnostic(_analysis_metrics_progress(
-                            analysis_job, metrics, dataset_path, count,
-                            plan.frames if plan is not None else None, phase))
-            # pycro-manager 1.0.2 abort() stores the fatal exception here.
-            # This private API and _dataset_disk_location below must both be
-            # re-verified whenever pycro-manager is upgraded.
-            observed = getattr(acq, "_exception", None)
-            if observed is not None and error_deadline is None:
-                engine_exc = observed
-                error_deadline = _acquisition_monotonic() + ERROR_TEARDOWN_GRACE_S
-                _emit_acquisition_diagnostic({
-                    "type": "acquisition_diagnostic",
-                    "message": f"{type(observed).__name__}: {observed}",
-                    "dataset_path": dataset_path,
-                    "engine_exception": f"{type(observed).__name__}: {observed}",
-                }, lifecycle=True)
-            _join_acquisition_waiter(waiter, _ACQUISITION_POLL_S)
-            now = _acquisition_monotonic()
-            with frame_lock:
-                quiet_window, quiet_term = _stall_quiet_s(
-                    frame_state["largest_gap"], policy,
-                )
-                quiet = now - frame_state["last_saved"] >= quiet_window
-                frames_accounted = frame_state["count"]
-            error_expired = error_deadline is not None and now >= error_deadline
-            runtime_expired = now >= runtime_deadline and quiet
-            if waiter.is_alive() and (error_expired or runtime_expired):
-                # A composite caller normally owns a shared reservation across
-                # positions. Expiry ends that composite immediately, so the
-                # still-live waiter inherits final closure after its callbacks.
+        try:
+            while not done.is_set():
+                tick = _acquisition_monotonic()
+                if analysis_job is not None and (last_metrics_progress is None or tick - last_metrics_progress >= 1):
+                    last_metrics_progress = tick
+                    handle = analysis_job.handle
+                    if handle is not None:
+                        metrics = handle.metrics_snapshot(for_progress=True)
+                        if metrics.get("declared"):
+                            with frame_lock:
+                                count, phase = frame_state["count"], progress_state["phase"]
+                            _emit_acquisition_diagnostic(_analysis_metrics_progress(
+                                analysis_job, metrics, dataset_path, count,
+                                plan.frames if plan is not None else None, phase))
+                # pycro-manager 1.0.2 abort() stores the fatal exception here.
+                # This private API and _dataset_disk_location below must both be
+                # re-verified whenever pycro-manager is upgraded.
+                observed = getattr(acq, "_exception", None)
+                if observed is not None and error_deadline is None:
+                    engine_exc = observed
+                    error_deadline = _acquisition_monotonic() + ERROR_TEARDOWN_GRACE_S
+                    _emit_acquisition_diagnostic({
+                        "type": "acquisition_diagnostic",
+                        "message": f"{type(observed).__name__}: {observed}",
+                        "dataset_path": dataset_path,
+                        "engine_exception": f"{type(observed).__name__}: {observed}",
+                    }, lifecycle=True)
+                _wait_acquisition_completion(done, _ACQUISITION_POLL_S)
+                now = _acquisition_monotonic()
+                with frame_lock:
+                    quiet_window, quiet_term = _stall_quiet_s(
+                        frame_state["largest_gap"], policy,
+                    )
+                    quiet = now - frame_state["last_saved"] >= quiet_window
+                    frames_accounted = frame_state["count"]
+                error_expired = error_deadline is not None and now >= error_deadline
+                runtime_expired = now >= runtime_deadline and quiet
+                if not done.is_set() and (error_expired or runtime_expired):
+                    # A composite caller normally owns a shared reservation across
+                    # positions. Expiry ends that composite immediately, so the
+                    # still-live waiter inherits final closure after its callbacks.
+                    waiter_must_close_reservation = True
+                    expired_bound = "error_grace" if error_expired else policy.bound_name
+                    bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
+                    pending = {
+                        "done": done, "teardown_running": True,
+                        "camera_sequence_running": None, "dataset_path": dataset_path,
+                    }
+                    setattr(ctrl, "_microclaw_unterminated_acquisition", pending)
+                    failure = AcquisitionUnterminated(
+                        dataset_path=dataset_path,
+                        frames_planned=(plan.frames if plan is not None else
+                                        reservation.plan.frames if reservation is not None else None),
+                        frames_accounted=frames_accounted, engine_exception=engine_exc,
+                        camera_sequence_running=None, teardown_running=True,
+                        expired_bound=expired_bound, bound_s=bound_s,
+                        fallback_ceiling=fallback,
+                        phase=("finalizing" if policy.terminal_frames is not None
+                               and frames_accounted >= policy.terminal_frames
+                               else "acquiring_or_notifying"),
+                        cadence=(_gap_summary_payload(cadence_summary)
+                                 if report_cadence else None),
+                    )
+                    camera = _camera_sequence_running(ctrl)
+                    pending["camera_sequence_running"] = camera
+                    failure.camera_sequence_running = camera
+                    failure.diagnostic_persisted = _emit_acquisition_diagnostic({
+                        "type": "acquisition_timeout",
+                        "phase": failure.phase,
+                        "dataset_path": dataset_path,
+                        "frames_planned": (plan.frames if plan is not None else
+                                           reservation.plan.frames if reservation is not None else None),
+                        "frames_accounted": frames_accounted,
+                        "estimated_bytes": plan.estimated_bytes if plan is not None else None,
+                        "active_bound": expired_bound,
+                        "active_bound_s": bound_s,
+                        "active_bound_term": ("error_grace" if error_expired else runtime_term),
+                        "quiet_bound_s": quiet_window,
+                        "quiet_bound_term": quiet_term,
+                        "camera_sequence_running": camera,
+                        "engine_exception": (f"{type(engine_exc).__name__}: {engine_exc}"
+                                             if engine_exc is not None else None),
+                    }, lifecycle=True, acknowledge=True, publish=False)
+                    raise failure
+        except BaseException as exc:
+            if not isinstance(exc, AcquisitionUnterminated) and not done.is_set():
                 waiter_must_close_reservation = True
-                expired_bound = "error_grace" if error_expired else policy.bound_name
-                bound_s = ERROR_TEARDOWN_GRACE_S if error_expired else runtime_bound
-                pending = {
-                    "waiter": waiter, "teardown_running": True,
+                ctrl._microclaw_unterminated_acquisition = {
+                    "done": done, "teardown_running": True,
                     "camera_sequence_running": None, "dataset_path": dataset_path,
                 }
-                setattr(ctrl, "_microclaw_unterminated_acquisition", pending)
-                failure = AcquisitionUnterminated(
-                    dataset_path=dataset_path,
-                    frames_planned=(plan.frames if plan is not None else
-                                    reservation.plan.frames if reservation is not None else None),
-                    frames_accounted=frames_accounted, engine_exception=engine_exc,
-                    camera_sequence_running=None, teardown_running=True,
-                    expired_bound=expired_bound, bound_s=bound_s,
-                    fallback_ceiling=fallback,
-                    phase=("finalizing" if policy.terminal_frames is not None
-                           and frames_accounted >= policy.terminal_frames
-                           else "acquiring_or_notifying"),
-                    cadence=(_gap_summary_payload(cadence_summary)
-                             if report_cadence else None),
-                )
-                camera = _camera_sequence_running(ctrl)
-                pending["camera_sequence_running"] = camera
-                failure.camera_sequence_running = camera
-                failure.diagnostic_persisted = _emit_acquisition_diagnostic({
-                    "type": "acquisition_timeout",
-                    "phase": failure.phase,
-                    "dataset_path": dataset_path,
-                    "frames_planned": (plan.frames if plan is not None else
-                                       reservation.plan.frames if reservation is not None else None),
-                    "frames_accounted": frames_accounted,
-                    "estimated_bytes": plan.estimated_bytes if plan is not None else None,
-                    "active_bound": expired_bound,
-                    "active_bound_s": bound_s,
-                    "active_bound_term": ("error_grace" if error_expired else runtime_term),
-                    "quiet_bound_s": quiet_window,
-                    "quiet_bound_term": quiet_term,
-                    "camera_sequence_running": camera,
-                    "engine_exception": (f"{type(engine_exc).__name__}: {engine_exc}"
-                                         if engine_exc is not None else None),
-                }, lifecycle=True, acknowledge=True, publish=False)
-                raise failure
+            raise
+
         if "exc" in outcome:
             raise outcome["exc"]
         if analysis_job is not None:
@@ -12163,12 +12179,6 @@ def _mda_prepare_save_dir(path):
         raise SafetyViolation(f"MDA save directory is not writable: {path}")
 
 
-def _wait_mda_completion(done, timeout_s):
-    # Event.wait does not touch Thread's state lock. An interrupted join can
-    # falsely mark a live worker stopped on CPython (bpo-45274).
-    return done.wait(timeout_s)
-
-
 def _mda_poll_wait(seconds):
     threading.Event().wait(seconds)
 
@@ -12419,7 +12429,7 @@ def _supervise_mda(manager, start, settings, *, runtime_s, startup_s, interval_s
                         "active_bound_s": runtime_s,
                         **state["supervision"]})
                 if expired is not None:
-                    expired(state, waiter)
+                    expired(state, done)
                 raise RuntimeError("MDA unterminated: " + state["phase"])
         except KeyboardInterrupt:
             request_abort.set()
@@ -12599,9 +12609,9 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
                 acknowledge=event["type"] == "acquisition_timeout",
                 publish=event["type"] != "acquisition_timeout")
     runtime, fallback, term = _runtime_ceiling_s(plan, DEFAULT)
-    def expired(state, waiter):
+    def expired(state, done):
         ctrl._microclaw_unterminated_acquisition = {
-            "waiter": waiter, "teardown_running": True,
+            "done": done, "teardown_running": True,
             "camera_sequence_running": None, "dataset_path": state["dataset_path"],
         }
         failure = AcquisitionUnterminated(
@@ -12619,7 +12629,7 @@ def run_mda(ctrl: MicroscopeController, guard: SafetyGuard,
             manager, start, current, runtime_s=runtime,
             startup_s=plan.exposure_ms_per_frame / 1000.0, interval_s=interval_s,
             quiet_window=lambda gap: _stall_quiet_s(gap, DEFAULT)[0],
-            clock=_acquisition_monotonic, wait=_wait_mda_completion,
+            clock=_acquisition_monotonic, wait=_wait_acquisition_completion,
             poll_s=_ACQUISITION_POLL_S,
             cancel=getattr(_ACQUISITION_EVENT_CONTEXT, "cancel", None),
             account=reservation.commit_frame, close=reservation.close,
@@ -12795,8 +12805,8 @@ def execute_tool(
         if getattr(fn, "_microclaw_acquisition_entry_point", False):
             pending = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
             if isinstance(pending, dict):
-                waiter = pending.get("waiter")
-                teardown = bool(waiter.is_alive()) if waiter is not None else bool(
+                done = pending.get("done")
+                teardown = not done.is_set() if done is not None else bool(
                     pending.get("teardown_running")
                 )
                 # Never queue a bridge probe behind a live, possibly blocked worker.

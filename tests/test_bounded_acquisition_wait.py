@@ -67,11 +67,11 @@ class SimulatedClock:
     def __call__(self):
         return self.now
 
-    def join(self, waiter, _timeout):
+    def wait(self, done, _timeout):
         target = self.now + self.step
         if self.limit is not None and target > self.limit:
             BlockingAcquisition.release.set()
-            waiter.join(1)
+            done.wait(1)
             raise AssertionError("supervisor exceeded test delivery ceiling")
         while self.saved_at and self.saved_at[0] <= target:
             self.now = self.saved_at.pop(0)
@@ -79,12 +79,12 @@ class SimulatedClock:
         self.now = target
         if self.release_at is not None and self.now >= self.release_at:
             BlockingAcquisition.release.set()
-        waiter.join(0.01)
+        done.wait(0.01)
 
 
 def _install_clock(monkeypatch, clock):
     monkeypatch.setattr(tools, "_acquisition_monotonic", clock)
-    monkeypatch.setattr(tools, "_join_acquisition_waiter", clock.join)
+    monkeypatch.setattr(tools, "_wait_acquisition_completion", clock.wait)
 
 
 def test_fatal_engine_error_returns_complete_unterminated_result_and_waiter_owns_cleanup(
@@ -412,7 +412,7 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
         def wait_mda(done, _):
             assert manager.entered.wait(5)
             clock.now += 1000
-        monkeypatch.setattr(tools, "_wait_mda_completion", wait_mda)
+        monkeypatch.setattr(tools, "_wait_acquisition_completion", wait_mda)
 
     if with_analysis:
         inputs[name]['analysis'] = dict(adapter='fixture-lab/package:observe_dataset',
@@ -444,14 +444,14 @@ def test_every_supervised_entry_propagates_unterminated_without_continuing(
     if name == "run_mda":
         assert manager.calls.count("start") == 1
         manager.release.set()
-        ctrl._microclaw_unterminated_acquisition['waiter'].join(5)
+        ctrl._microclaw_unterminated_acquisition['done'].wait(5)
     BlockingAcquisition.release.set()
     if with_analysis:
         assert len(result['analysis']['jobs']) == (2 if looping else 1)
         assert [job['dataset'] for job in result['analysis']['jobs']] == [
             f'/data/run_{i + 1}' for i in range(len(jobs))]
-        ctrl._microclaw_unterminated_acquisition['waiter'].join(5)
-        assert not ctrl._microclaw_unterminated_acquisition['waiter'].is_alive()
+        ctrl._microclaw_unterminated_acquisition['done'].wait(5)
+        assert ctrl._microclaw_unterminated_acquisition['done'].is_set()
         messages = [entry['message'] for entry in jobs[-1].handle.record()['notifications']]
         assert [(message['type'], message.get('outcome'), message.get('writer'), message.get('state'))
                 for message in messages] == [
@@ -630,9 +630,8 @@ def test_measured_camera_state_selects_distinct_recovery_text(camera):
 )
 def test_every_marked_acquisition_entry_point_is_refused_while_teardown_lives(name):
     ctrl = _ctrl(False)
-    waiter = MagicMock()
-    waiter.is_alive.return_value = True
-    ctrl._microclaw_unterminated_acquisition = {"waiter": waiter}
+    done = threading.Event()
+    ctrl._microclaw_unterminated_acquisition = {"done": done}
     result = json.loads(tools.execute_tool(name, {}, ctrl, _guard()))
     assert result["acquisition"] == "refused"
 
@@ -643,9 +642,9 @@ def test_acquisition_refusal_lifts_only_when_camera_and_teardown_are_clear(monke
     def run(ctrl, guard):
         return {"ok": True}
     ctrl = _ctrl(False)
-    waiter = MagicMock()
-    waiter.is_alive.return_value = False
-    ctrl._microclaw_unterminated_acquisition = {"waiter": waiter}
+    done = threading.Event()
+    done.set()
+    ctrl._microclaw_unterminated_acquisition = {"done": done}
     assert json.loads(tools.execute_tool("run", {}, ctrl, _guard(), {"run": run})) == {"ok": True}
     assert not hasattr(ctrl, "_microclaw_unterminated_acquisition")
 
@@ -982,7 +981,7 @@ def test_short_fixed_timeout_survives_missing_notification(monkeypatch, saved):
         BlockingAcquisition.release.set()
         flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
         if isinstance(flag, dict):
-            flag["waiter"].join(1)
+            flag["done"].wait(1)
     confirm.assert_not_called()
     policy = tools.SHORT_FIXED
     expiry = max(plan.estimated_duration_s * 1.5,
@@ -1171,7 +1170,7 @@ def test_short_waiter_completion_owns_cleanup_once_and_refusal_lifetime(monkeypa
     finally:
         BlockingAcquisition.release.set()
         flag = getattr(ctrl, "_microclaw_unterminated_acquisition", None)
-        if isinstance(flag, dict): flag["waiter"].join(1)
+        if isinstance(flag, dict): flag["done"].wait(1)
     reservation.close.assert_called_once()
     assert json.loads(tools.execute_tool("run", {}, ctrl, _guard(), {"run": run})) == {"available": True}
     assert not hasattr(ctrl, "_microclaw_unterminated_acquisition")
@@ -1386,3 +1385,84 @@ def test_no_hardware_hook_means_no_refresh_or_gui_lag_disclosure(
         assert len(frames) == 1
     ctrl.refresh_gui.assert_not_called()
     assert not any("GUI controls can lag" in item.get("message", "") for item in received)
+
+def test_real_interrupt_hands_blocked_teardown_and_reservation_to_waiter(monkeypatch):
+    import _thread
+    import sys
+
+    entered = threading.Event()
+    interrupt_sent = threading.Event()
+    stop = threading.Event()
+    foreground = threading.get_ident()
+
+    class InterruptedAcquisition(BlockingAcquisition):
+        def __exit__(self, *exc):
+            entered.set()
+            super().__exit__(*exc)
+
+    def interrupt_inside_wait():
+        if not entered.wait(5):
+            return
+        for _ in range(10000):
+            if stop.is_set():
+                return
+            frame = sys._current_frames()[foreground]
+            frames = []
+            while frame:
+                frames.append(frame)
+                frame = frame.f_back
+            # Thread.start also waits on an Event. The teardown may have
+            # entered before start returns; interrupt only the supervision wait.
+            if any(f.f_code.co_filename == threading.__file__
+                   and f.f_code.co_name == 'start' for f in frames):
+                stop.wait(0.001)
+                continue
+            if any(f.f_code.co_filename == threading.__file__
+                   and f.f_code.co_name in ('wait', '_wait_for_tstate_lock')
+                   for f in frames):
+                interrupt_sent.set()
+                _thread.interrupt_main()
+                return
+            stop.wait(0.001)
+
+    monkeypatch.setattr(tools, 'Acquisition', InterruptedAcquisition)
+    monkeypatch.setattr(tools, '_ACQUISITION_POLL_S', 0.05)
+    monkeypatch.setattr('microclaw.authorization.authorize_path', lambda *_: None)
+    monkeypatch.setattr(tools, '_build_acquisition_events', lambda **_: [{}])
+    reservation = AcquisitionLedger().reserve(MagicMock(), AcquisitionPlan(1, 1, 1, 1))
+    ctrl = _ctrl(False)
+    guard = _guard()
+
+    @_entry
+    def next_acquisition(ctrl, guard):
+        return {'ok': True}
+
+    registry = {'next_acquisition': next_acquisition}
+    interrupter = threading.Thread(target=interrupt_inside_wait, daemon=True)
+    interrupter.start()
+    pending = None
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            tools.execute_tool('run_timelapse', {
+                'n_frames': 1, 'interval_s': 0, 'save_dir': '/data',
+                '_reservation': reservation,
+            }, ctrl, guard)
+        assert interrupt_sent.is_set()
+        assert not InterruptedAcquisition.release.is_set()
+        refused = json.loads(tools.execute_tool('next_acquisition', {}, ctrl, guard, registry))
+        assert refused.get('acquisition') == 'refused', refused
+        assert refused['teardown_running'] is True
+        pending = ctrl._microclaw_unterminated_acquisition
+        assert reservation.ledger.in_flight
+        ctrl.core.is_sequence_running.assert_not_called()
+        InterruptedAcquisition.release.set()
+        assert pending['done'].wait(5)
+        assert not reservation.ledger.in_flight
+        assert json.loads(tools.execute_tool('next_acquisition', {}, ctrl, guard, registry)) == {'ok': True}
+        ctrl.core.is_sequence_running.assert_called_once_with()
+    finally:
+        stop.set()
+        InterruptedAcquisition.release.set()
+        interrupter.join(5)
+        if pending is not None:
+            assert pending['done'].wait(5)

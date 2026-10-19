@@ -1783,7 +1783,7 @@ def test_84a_fixture_live_pause_final_drain_and_eof(supervisors, tmp_path, monke
         process = sup._windows[h.job_id][1]
         time.sleep(0.2)
         assert process.poll() is None  # stdin EOF after result leaves display alive.
-        assert displayed(output, 3)
+        wait_until(lambda: displayed(output, 3), describe)
     finally:
         writer.close()
 

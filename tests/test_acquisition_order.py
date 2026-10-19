@@ -300,7 +300,7 @@ def test_unterminated_spaced_movie_survives_real_entry_boundary_without_next_acq
         release.set()
         pending=getattr(rig.ctrl,'_microclaw_unterminated_acquisition',None)
         if isinstance(pending,dict):
-            pending['waiter'].join(1)
+            pending['done'].wait(1)
     assert rig.reservations[0]._closed
 
 
