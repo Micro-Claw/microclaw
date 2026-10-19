@@ -661,12 +661,14 @@ non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 
-## The pycro-manager acquisition engine — ten contracts we got wrong
+## The pycro-manager acquisition engine — eleven contracts we got wrong
 
 The first three were found on a rig by block 52a, the fourth by block 56, the
 fifth by design/56, the sixth by design/55, the seventh by an operator's M2
 dSTORM run, the eighth by block 75a's gate, the ninth by block 75b's, and the tenth by
-block 77b's — each after a full green suite.
+block 77b's — each after a full green suite. The eleventh was read from AcqEngJ's
+source by design/89 and confirmed on the demo machine by its probe P3 *before* any
+design relied on the opposite.
 The first five were missed because a test fake encoded our assumption instead of
 the hardware's behaviour; the sixth because every test that could have caught it
 supplied the one argument whose absence was the defect. Check code against these
@@ -727,6 +729,21 @@ input, ask which fixtures produce that shape, and write one that does.
   identity the engine must preserve, because the dataset is indexed by it — and
   never by a value you injected. Do not put a unique-per-event value *in* `axes`
   either: NDTiff readers enumerate the Cartesian product of axis values.
+- **An event's `properties` are silently not applied inside a burst.**
+  `Engine.isSequencable` never reads them, so per-event values that differ do
+  not stop batching. The batch runs as one merged event whose property set is
+  empty, so **no** value is applied, not even the first event's. Nothing
+  refuses and nothing logs. Measured on the demo machine (design/89 P3,
+  2026-10-19, one run per arm): a 50-frame zero-interval burst carrying 50
+  different `Camera`/`TestProperty1` values ran as one camera sequence with
+  **0 of 50** `setProperty` calls in the CoreLog. Every frame's metadata kept
+  the entry value, and so did the final value. The same events spaced so they
+  do not batch applied **20 of 20** values in order. A per-frame value inside
+  a burst exists only as a device-side property sequence on a config preset
+  (design/89 fact 4), and it needs its values before the burst starts. Never
+  carry a per-frame value in event `properties` on a path that can batch.
+  MicroClaw does not do this today. A path that ever does must refuse at plan
+  time, using contract 1's predicate.
 - **A device that is not busy is not a device that arrived.** `wait_for_device`
   returning, or `device_busy` reading false, says nothing about whether an axis
   reached the position you asked for — a stage that has not started moving yet is

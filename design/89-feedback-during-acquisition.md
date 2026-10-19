@@ -1,6 +1,7 @@
 # Feedback during a running acquisition — how fast, and by which route
 
-**Status:** proposal, revised 2026-10-15. No block opened. Owns `R139`. Depends on
+**Status:** 89a (probes) measured on the demo machine 2026-10-19; M2 limbs
+owed. 89b not opened. Owns `R139`. Depends on
 [design/87](87-package-metrics.md) for its input. Its sibling for the
 htSMLM/MDA workflow is [design/88](88-mda-and-micro-manager-plugins.md).
 
@@ -25,8 +26,9 @@ stream.
 
 These are the facts the answers rest on. 1–3 are already engine contracts in
 `CLAUDE.md`. 4 and 5 are new, read on 2026-10-15 with `javap` from
-`AcqEngJ-0.39.4.jar` (Micro-Manager 2.0.3-20260625), and **not yet observed on
-a running engine**.
+`AcqEngJ-0.39.4.jar` (Micro-Manager 2.0.3-20260625). 5 was then observed on the
+demo machine (P3) and is now `CLAUDE.md`'s engine contract 11; 4 has not been
+observed.
 
 1. **A burst has no software between exposures.** When consecutive events are
    sequencable, AcqEngJ hands the whole batch to the hook once and the camera
@@ -55,8 +57,12 @@ a running engine**.
    backend says the same in its own source (`engine.py`, `# TODO check for
    arbitrary additional properties in the acq event`). MicroClaw does not put
    per-frame `properties` in events today. This is the trap a "just put the
-   value in the event" design would walk into. Observe it on the demo machine
-   (P3) before writing it into `CLAUDE.md`.
+   value in the event" design would walk into. **Confirmed by P3** (demo
+   machine, 2026-10-19, one run per arm): a 50-frame zero-interval burst
+   carrying 50 different `Camera`/`TestProperty1` values ran as one camera
+   sequence with 0 of 50 `setProperty` calls in the CoreLog, and every frame
+   and the final value kept the entry value. The same events spaced applied 20
+   of 20 in order.
 
 ## The answers
 
@@ -108,7 +114,9 @@ Two facts narrow the risk:
   not queue writes behind the engine's polling;
 - a mid-sequence activation write is routine on the lab's EMU rigs.
 
-Its effect on cadence on our path is unmeasured, which is P1.
+**P1 measured it on the demo machine** (2026-10-19): writing a property at
+1 Hz or 5 Hz during a 10 ms burst left the frame interval unchanged (results
+below). M2 with the real activation property is still owed.
 
 ### Where feedback speed actually goes
 
@@ -380,6 +388,15 @@ a read costs the same at frame 50,000 as at frame 50. A partly written entry
 at the end is left for the next read and never counted. P4 measures this
 reader, and 89b ships the reader P4 measured.
 
+**The offset is the end of the last valid entry, never the file size.**
+AcqEngJ's Java `IndexWriter` (`NDTiffStorage-2.19.3.jar`, `javap`)
+preallocates `NDTiff.index` to 25 MiB of zeros and writes each entry in place;
+ndstorage's Python writer appends. A reader that resumes at file size reads
+nothing on the Java route. P4's first demo run did exactly that, against a fake
+written from the Python writer. Stop at the first zero length or incomplete
+entry, and re-read from that offset next time
+(`design/89-probes.py` `IndexReader`).
+
 Increases and feedback stops additionally require a recent, successful index
 refresh. Reuse `max_age_s` as the maximum index snapshot age, measured
 conservatively from the read's monotonic start time. Missing, failed, blocked
@@ -599,6 +616,43 @@ bridge-shaped fake first.
 P1 on M2 can carry `R142` if SMAPpy runs beside it. P3 is independent of 87a,
 88 and feedback implementation; run it early if convenient.
 
+### Results — demo machine, 2026-10-19
+
+Scored from the artifacts (`probe89-20261019-*` in the rig evidence archive).
+Gap percentiles come from `ElapsedTime-ms`, which is whole milliseconds on the
+pycro-manager route.
+
+- **P3: fact 5 confirmed.** See fact 5. Exit 0.
+- **P2: 5/5 clean.** Each run was 3,000 frames at 10 ms, aborted 10 s in. Teardown returned
+  0.093–0.141 s after `abort()`. Index count equalled readable frames (631–657).
+  `__exit__` raised nothing, and no write started after revoke. Observed
+  order, n=5, not guaranteed by source: last saved callback <
+  `acq_events_finished` < `data_sink_finished` < teardown return. These runs
+  were in the `R157` slow state (~15.5 ms per frame), which no P2 limb depends
+  on.
+- **P1: PASS, exit 0.** Nine 5,000-frame, 10 ms bursts, three per arm,
+  interleaved. Every run, control, 1 Hz and 5 Hz alike, had gap p50 11 ms and p95
+  12 ms, max 14–19 ms, span 55.6–55.8 s (11.1 ms per frame), and no drops.
+  There were no write failures.
+- **P4: every cadence limb PASS, at every read cadence.** At 10 ms, 19 runs of
+  3,000 frames had p50 11 ms and p95 12 ms. That covers no reads, reads at 2, 5
+  and 10 Hz, a following worker and a worker kept behind. Max 13–28 ms, the 28
+  in one worker run. At 1 ms (2 ms per frame), 18 runs had p50 2 ms and p95
+  2–3 ms. Every read was the same 64 KiB block, so the read cost did not grow
+  with the run. The behind worker was visibly behind in all three runs.
+  **Two `read_growth` limbs FAIL and stand as scored** (`1ms-2Hz-1`,
+  `1ms-behind-2`, exit 1). A 1 ms run lasts 6 s, so each limb compared medians
+  of 2–8 reads whose early spread alone was 8–50 ms. The structural property
+  holds on the constant read size. A 1 ms read-growth verdict would need longer
+  runs (operator decision, 2026-10-19: record, do not rerun or loosen).
+- **The slow state stopped every attempt before the restart.** P1 and P4 met
+  `R157` at every attempt before the measuring one, and each stopped at its
+  slow first control, as designed. The measuring runs followed a Micro-Manager
+  restart with nothing else changed.
+
+**Owed on M2:** P1 and P4 with the real activation property, and the rig fact
+above. No M2 time is booked.
+
 ## Blocks
 
 | block | content | where it is proved |
@@ -621,3 +675,4 @@ reaching Studio's pipeline is design/88's finding.
 | Block | Branch | Start commit | Status |
 |-------|--------|--------------|--------|
 | notebook | — | `2a6f7ee` | drafted and revised 2026-10-15, not opened |
+| 89a | `block-89a` | `860daac` | PR #60. Demo machine measured 2026-10-19: P3 confirmed (contract 11), P2 5/5, P1 PASS, P4 cadence PASS with two `read_growth` FAILs recorded. M2 limbs owed (`R159`) |

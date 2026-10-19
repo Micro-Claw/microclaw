@@ -120,6 +120,7 @@ Rows added since the triage:
 | `R155`–`R156` | `design/88` block 88a's gate selftest, demo gates and spikes, 2026-10-17 |
 | `R157` | `design/88` block 88b's demo gate and spike rerun, scored from artifacts 2026-10-18 |
 | `R158` | `design/88` block 88b's Windows CI run, 2026-10-18 (not 88b's code) |
+| `R159` | `design/89` block 89a's demo run, 2026-10-19 — the M2 limbs it could not run |
 
 
 ## The work queue
@@ -263,6 +264,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 |---|---|---|---|---|
 | `R80` | [Detect cross-plane non-response for sub-band Z steps](#r80) | HIGH | MEDIUM |  |
 | `R142` | [Package analysis cost on a real camera is unmeasured](#r142) | MEDIUM | SMALL |  |
+| `R159` | [design/89's write and index-read cadence probes have not run on M2](#r159) | MEDIUM | SMALL |  |
 
 **M5**
 
@@ -3358,8 +3360,16 @@ the model" as the actual blast radius.
 
 - **What happened** — `design/88` 88b's two demo-gate runs (10:20, 10:34) were slow with or without a package: every run of the second, and all but two of the first (those two imaged in 11.0–11.3 s). The growing-reader spike (`design/88-spike-growing-reader.py`, no MicroClaw) measured 11.25–11.34 s spans and no reader effect at 08:51, and 15.2–16.5 s spans with the same p50 shift at 10:43. So the slow state is the machine's, and the shift is the package's load, not MicroClaw's supervision. 88b's cadence bound passed (1.064 on `duration_s`); the operator accepted it as measured.
 - **Cause** — not identified, for both the slow state and the ~21 ms mode.
+- **Transient, cleared without a reboot (2026-10-18)** — the same spike at 15:55 was healthy again: control spans 11.29–11.38 s, gap p50 11.37–11.50 ms, p95 12.03–12.04 ms, and no reader effect (observed p50 11.07–11.30 ms). The operator confirmed there was no reboot, and nothing was changed on purpose. Gap p95 separates the two states cleanly across all 12 spike runs (08:51, 10:43, 15:55): 12.03–12.05 ms healthy (n=8), 21.56–22.33 ms slow (n=4). The median does not: one slow control had p50 12.71 ms.
+- **Slow again on 2026-10-19, 08:02–08:45, on the pycro-manager route** — design/89 89a's demo run (PR #60): every 10 ms zero-interval burst ran at 14.4–16.8 ms per frame (P1: 5,000 frames in 71.6–75.0 s; P4: 3,000 in 43.7–50.3 s). The healthy rate on that route is about 11.1 ms (87a: 11.14 s per 1,000). Every control had gap p95 21 ms, so the guard below fired on all of P1's and P4's cadence limbs. So the state is not MDA-specific. It has now been seen on two mornings, and was healthy at 08:51 and 15:55 on 10-18. Cause not identified. pycro-manager datasets record `ElapsedTime-ms` in whole milliseconds (MDA's are fractional), so gap percentiles on this route are quantised to 1 ms. The slow state reads 21. This route's healthy p95 has not been measured yet; MDA's 12.03–12.05 suggests about 12, which the 13 ms threshold would still separate.
+- **Slow → healthy → slow within 20 minutes (2026-10-19 afternoon)** — 89a's reruns. The operator confirms nothing on the machine changed between these runs. Micro-Manager was restarted before the probes, not between them. P1 at 12:35 stopped at a slow first control (p95 24 ms), and P1 at 12:37 was healthy throughout (controls p50 11 / p95 12 ms, 11.1 ms per frame; the first healthy numbers on the pycro-manager route). P4 at 12:55 and 12:57 stopped at slow first controls (p95 36–37 ms, worse than the morning). Inside the healthy P1 run, one ~17 s episode spanned the end of `1Hz-1` and the start of `5Hz-1`. Its long gaps were not locked to the property writes (median distance to the nearest write 239 ms at 1 Hz and 48 ms at 5 Hz, against 250 and 50 for random placement), so it reads as the machine. That is n=1. The same state also slows the bridge: a `setProperty` round trip took 0.6–0.7 ms median healthy and 3–4 ms slow. Cause not identified. From `43b67f5` on, the probes record timer resolution, power plan, Micro-Manager's process and windows, and top CPU processes at each run, to attribute it.
+- **First machine-state snapshots (2026-10-19, 13:03–13:18)** — the first machine-state snapshots (`43b67f5`). Both first controls were slow (P1: 17.9 ms/frame, p95 29 ms; P4: 19.7 ms/frame, p95 45 ms). A LabVIEW microscope-control program ("Microscope Control") used one full core in every snapshot, and in P1 it took the foreground during the first control. The operator reports that it runs only sometimes, and that today's slow runs happened while it was running. Whether it was running during the healthy 12:37 run is unknown, because that run had no snapshot. Unreconciled: the snapshots report the bridge process's `StartTime` as 12:36:56 local, which disagrees with the operator's account above; treat that field as unexplained, not as a restart. Timer resolution is not the explanation on its own: slow at both 10 ms and 1 ms. About nine Task Manager processes (a third of a core each), power plan Balanced, 24 logical processors.
+- **Not the LabVIEW program (2026-10-19, 13:28)** — with "Microscope Control" closed and nothing else changed, P1's first control was still slow (16.3 ms/frame, p95 29 ms), and so was P4's (16.3 ms/frame, p95 28 ms). LabVIEW was gone from the CPU samples. The operator also reports slow runs without it on earlier occasions.
+- **Healthy after a Micro-Manager restart (2026-10-19, 14:03–14:41)** — the operator restarted only Micro-Manager. P1 and P4 then ran in full, healthy throughout: 46 runs, about 165,000 frames, gap p95 12 ms at 10 ms in every run, over 38 minutes of that process's uptime. n=1 restart. It does not make uptime the cause: the process that served the healthy 12:37 run was slow by 12:55. The slow runs before the restart were all served by one javaw process started at 12:36:56 by its own record. Cause not identified.
+- **Earlier data point** — `design/83` 83e-4's no-analysis baseline on 2026-09-29 imaged 1000 frames at 10 ms in 15.2–16.4 s (mean gap 14.3–15.3 ms), against ~11.3 s healthy. So slow runs on this machine predate 2026-10-18. Whether that is the same state was not measured.
+- **Guard for cadence probes (operator decision, 2026-10-18)** — design/89 89a's P1 and P4 interleave no-write/no-read control runs with their arms, and report NOT EXERCISED when any control run is in the slow state, judged on 10 ms gap p95 against the healthy reference above. In the slow state a reader's effect was itself different (10:43 against 08:51 and 15:55), so a within-session comparison would partly measure the machine.
 - **Why it matters** — SMLM needs a constant frame interval. A ratio on burst duration can pass while the per-frame interval distribution changes; design/89 and SMAPpy on M2 should look at gap p95 and the ~21 ms mode, not only the median duration.
-- **What a fix would look like** — measure first: rerun the spike after a reboot with the old datasets deleted, and again with Defender's real-time scan excluded for the data folder (also `R156`), to find what brings back 11.3 s. Then decide whether the cadence bound for MDA should be on gap p95 as well as duration.
+- **What a fix would look like** — measure inside Micro-Manager, since both symptoms are its own: the camera thread's frame timestamps and the bridge's `setProperty` round trip were each about 5x slower. Record, before and after every burst, the JVM's heap use and garbage-collection count and time (over the bridge), javaw's CPU seconds per frame, and the CPU clock (`% Processor Performance`). Then a slow run says where the time goes. A Micro-Manager restart has brought one slow state back (n=1). Use it as an intervention to test, not as a fix. Then decide whether the cadence bound for MDA should be on gap p95 as well as duration.
 - **Where** — DEMO MACHINE.
 - **Block** — NONE.
 - **Importance** — MEDIUM.
@@ -3378,3 +3388,16 @@ the model" as the actual blast radius.
 - **Importance** — LOW. The test, not the product: the product's result had already been asserted.
 - **Effort** — SMALL
 - **Provenance** — `design/88` 88b's CI, 2026-10-18.
+
+### R159 — design/89's write and index-read cadence probes have not run on M2
+
+**P1 (a concurrent property write during a burst) and P4 (reading the growing index during a burst) passed on the demo machine's DemoCamera only. design/89's route for 89b needs them on M2, with the real activation property and a real camera.**
+
+- **What happened** — `design/89` 89a, PR #60. Demo machine, 2026-10-19: P1 and P4 showed no cadence change at 10 ms (p50 11 / p95 12 ms in every arm) or at 1 ms (p50 2 / p95 2–3 ms). No M2 time was booked.
+- **Also owed** — the rig-profile answer to "on M2, may the activation be changed while it is emitting?" (design/89 §"Probes"). It is a fact about the rig, not code, and the operator has not answered it yet.
+- **What a fix would look like** — run P1 and P4 on M2 with the activation property as the probed target. `design/89-probes.py` already takes `--device`/`--property`. The `.ps1` launchers do not pass them yet, and the probe's limit check must accept that property. If SMAPpy runs beside them, they can carry `R142`.
+- **Where** — M2.
+- **Block** — NONE; 89b's M2 gate depends on it.
+- **Importance** — MEDIUM. 89b should not be opened without it, if 89b is wanted.
+- **Effort** — SMALL
+- **Provenance** — `design/89` 89a, 2026-10-19.
