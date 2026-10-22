@@ -12012,3 +12012,19 @@ that venv). Measurements now run from a frozen install outside every worktree.
 **Counts.** `cde64fe`: 5559 passed, 108 skipped; `75fe21b` (round-3 fixes):
 5559 passed, 108 skipped. Gate 84 round 3: 9/9.
 
+## design/91 block 91e — the reasoning level within a session (merged to the operator's fork `main`, 2026-10-22)
+
+**Measure the cost a notice states, then word it as what was measured.** The
+specified disclosure said a level change re-processes the whole prompt. Live, the
+first switch did (33,831 tokens) and switching back re-processed 4, because the
+server kept the earlier prompt; the notice became an upper bound before the
+check, and the check then measured 33,949 against a predicted 33,904, then 173
+and 209 on the returns.
+
+**A check that reads only what the session writes needs no operator judgement
+for its core claim.** The per-call `reasoning_effort` field made the 84e check a
+one-command read of the usage file (`84-block84e-check.py`, which reports NOT
+EXERCISED on a pre-84e session); the operator's part was what the page showed
+and how it felt.
+
+**Counts.** `e611762`: 5562 passed, 108 skipped. Check: passed, one round.
