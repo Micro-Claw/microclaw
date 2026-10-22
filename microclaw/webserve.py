@@ -50,7 +50,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, shortcut, tools, updates, extensions, skill_store
+from microclaw import config, credentials, shortcut, tools, updates, extensions, skill_store, agent
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import (
     AcquisitionDiagnosticWriter, AuditLog, prune_transcripts,
@@ -66,6 +66,8 @@ from microclaw.agent import (
     local_context_budget,
     set_llm_api_key,
 )
+
+
 from microclaw.assets import icon_bytes, load_page
 from microclaw.config import ConfigValidationResult, ParsedSafetyConfig
 from microclaw.controller import MicroscopeController
@@ -73,6 +75,16 @@ from microclaw.rig_inventory import enumerate_rig
 from microclaw.setup_tools import (
     SETUP_TOOL_REGISTRY, SETUP_TOOL_SCHEMAS, SetupDraft, SetupWriteCapability,
 )
+
+
+async def _refresh_local_store_budget(session):
+    if llm_base_url() and getattr(session, "store", None) is not None:
+        high, low, vision = await run_in_threadpool(local_context_budget)
+        session.store.high_water_tokens = high
+        session.store.low_water_tokens = low
+        session.store.text_only = not vision
+        session.store.local_fixed_tokens = agent._local_fixed_tokens
+        session.store.local_context_ceiling = agent._local_context_ceiling
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.tools_schema import TOOLS_CACHED
 
@@ -238,6 +250,10 @@ class Key(BaseModel):
 
 class Model(BaseModel):
     model: str
+
+
+class ReasoningEffort(BaseModel):
+    reasoning_effort: str
 
 
 class UpdateDismissal(BaseModel):
@@ -1453,12 +1469,28 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         local_path = bool(llm_base_url())
         model = resolve_model(session.model)
         configured = session.model or os.environ.get("MICROCLAW_MODEL")
+        effort = os.environ.get(agent.LOCAL_REASONING_EFFORT_ENV) or None
+        rate = agent._local_prefill_rate
+        store = getattr(session, "store", None)
+        fixed = getattr(store, "local_fixed_tokens", None)
+        estimate = getattr(store, "last_estimated_tokens", None)
+        history = (round(estimate * (getattr(store, "local_estimate_ratio", None) or 1.0))
+                   if estimate is not None else 0)
+        rebuild_tokens = fixed + history if fixed is not None else None
         return JSONResponse({
             "model": model,
             "unknown": bool(local_path and not configured and not available),
             "default": None if local_path else DEFAULT_MODEL,
             "available": available,
             "editable": session.editable,
+            "reasoning_effort": effort,
+            "reasoning_effort_options": [None, "low", "medium", "high"] if local_path else [],
+            "reasoning_effort_changeable": bool(local_path and session.editable),
+            "reasoning_effort_change_reason": (None if session.editable else
+                "Bound beyond localhost — set MICROCLAW_LLM_REASONING_EFFORT and restart"),
+            "reasoning_rebuild_tokens": rebuild_tokens,
+            "reasoning_rebuild_seconds": (rebuild_tokens / rate
+                if rebuild_tokens is not None and rate else None),
         })
 
     @app.post("/api/model")
@@ -1477,6 +1509,22 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         async with session.lock:
             session.model = name
         return JSONResponse({"model": resolve_model(session.model)})
+
+    @app.post("/api/model/reasoning-effort")
+    async def post_reasoning_effort(value: ReasoningEffort):
+        if not session.editable:
+            raise HTTPException(403, "Bound beyond localhost: set MICROCLAW_LLM_REASONING_EFFORT and restart.")
+        if not llm_base_url():
+            raise HTTPException(400, "Reasoning effort is available only on the local model path.")
+        effort = value.reasoning_effort.strip()
+        if effort not in ("", "low", "medium", "high"):
+            raise HTTPException(400, "Choose server default, low, medium, or high.")
+        if session.lock.locked():
+            raise HTTPException(409, "A turn is in progress.")
+        async with session.lock:
+            agent.set_local_reasoning_effort(effort or None)
+            await _refresh_local_store_budget(session)
+        return await get_model()
 
     @app.get("/api/artifact")
     async def get_artifact(path: str):
@@ -1550,14 +1598,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         credential_kind = "llm" if local_path else "anthropic"
         if local_path: set_llm_api_key(key)
         else: set_api_key(key)
-        if local_path and getattr(session, "store", None) is not None:
-            high, low, vision = await run_in_threadpool(local_context_budget)
-            session.store.high_water_tokens = high
-            session.store.low_water_tokens = low
-            session.store.text_only = not vision
-            from . import agent as agent_module
-            session.store.local_fixed_tokens = agent_module._local_fixed_tokens
-            session.store.local_context_ceiling = agent_module._local_context_ceiling
+        if local_path:
+            await _refresh_local_store_budget(session)
         stored_in = stored_at = None
         stale_store = False
         if k.persist:

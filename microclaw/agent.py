@@ -64,6 +64,14 @@ def set_llm_api_key(key: str) -> None:
     _local_vision.clear()
 
 
+def set_local_reasoning_effort(effort: str | None) -> None:
+    """Set the process-local template effort; None restores the server default."""
+    if effort:
+        os.environ[LOCAL_REASONING_EFFORT_ENV] = effort
+    else:
+        os.environ.pop(LOCAL_REASONING_EFFORT_ENV, None)
+
+
 def _local_get(path: str):
     url = llm_base_url()
     headers = {"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"} if os.environ.get(LLM_API_KEY_ENV) else {}
@@ -1148,7 +1156,8 @@ def _local_error(response, base):
     raise _LocalAPIError(f"Local server {base} returned HTTP {response.status_code}: {detail}")
 
 
-def _read_local_stream(response, base, model, iteration, usage_sink, store=None):
+def _read_local_stream(response, base, model, iteration, usage_sink, store=None,
+                       reasoning_effort=None):
     """Read chat-completion SSE and return the Anthropic-shaped Message."""
     global _local_prefill_rate
     text = []
@@ -1246,6 +1255,7 @@ def _read_local_stream(response, base, model, iteration, usage_sink, store=None)
             "output_tokens": usage.get("completion_tokens"),
             "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
             "reasoning_characters": reasoning_length,
+            "reasoning_effort": reasoning_effort,
         }
         record.update({
             field: timings[field]
@@ -1267,6 +1277,7 @@ def _read_local_stream(response, base, model, iteration, usage_sink, store=None)
 def _stream_local_round(messages, system_blocks, model, tool_schemas,
                         context_provider, iteration, usage_sink):
     base = llm_base_url()
+    reasoning_effort = os.environ.get(LOCAL_REASONING_EFFORT_ENV) or None
     vision = _local_vision_enabled(base)
     store = getattr(context_provider, "__self__", None)
     compactions_before = getattr(store, "compaction_count", 0)
@@ -1308,8 +1319,9 @@ def _stream_local_round(messages, system_blocks, model, tool_schemas,
     ) as response:
         if response.status_code >= 400:
             _local_error(response, base)
-        return (yield from _read_local_stream(response, base, model, iteration,
-                                              usage_sink, store=store))
+        return (yield from _read_local_stream(
+            response, base, model, iteration, usage_sink, store=store,
+            reasoning_effort=reasoning_effort))
 
 
 def run_agent_iter(

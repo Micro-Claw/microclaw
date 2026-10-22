@@ -119,6 +119,10 @@
   <div class="controls">
     <div id="grant-chips"></div>
     <button id="model-btn" class="hidden"></button>
+    <select id="reasoning-effort" class="hidden" aria-label="Reasoning effort">
+      <option value="">Server default</option><option value="low">Low</option>
+      <option value="medium">Medium</option><option value="high">High</option>
+    </select>
     <button id="key-btn" class="hidden"></button>
     <button id="expand" class="hidden">Expand all</button>
     <button id="collapse" class="hidden">Collapse all</button>
@@ -1160,12 +1164,34 @@
     btn.title = state.editable
       ? "Click to change the model for this session"
       : "Bound beyond localhost — set --model or MICROCLAW_MODEL and restart";
+    const effort = $("reasoning-effort");
+    if (state.reasoning_effort_options && state.reasoning_effort_options.length) {
+      effort.classList.remove("hidden");
+      effort.value = state.reasoning_effort || "";
+      effort.disabled = !state.reasoning_effort_changeable;
+      effort.title = state.reasoning_effort_change_reason || "Change reasoning effort for this session";
+    } else effort.classList.add("hidden");
     $("model-input").value = state.model || "";
     if (state.available && state.available.length) {
       $("model-list").innerHTML = state.available
         .map(id => '<option value="' + Transcript.esc(id) + '">').join("");
     }
   }
+
+  $("reasoning-effort").addEventListener("change", async () => {
+    const effort = $("reasoning-effort").value;
+    const res = await apiFetch("/api/model/reasoning-effort", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reasoning_effort: effort }),
+    });
+    if (!res.ok) { toast(await detail(res)); return; }
+    const state = await res.json();
+    showModel(state);
+    const seconds = state.reasoning_rebuild_seconds;
+    toast(seconds == null
+      ? "Reasoning effort changed. The next request re-processes the full prompt; time estimate unknown before a prefill measurement."
+      : `Reasoning effort changed. The next request re-processes about ${Number(state.reasoning_rebuild_tokens).toLocaleString()} tokens (${Number(seconds).toFixed(1)} s) before generation.`, true);
+  });
 
   $("model-btn").addEventListener("click", () => {
     const banner = $("model-banner");

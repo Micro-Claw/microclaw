@@ -1146,6 +1146,13 @@ def test_browser_page_exposes_session_approval_and_persistent_revoke_controls(cl
     assert 'approve: "revoke"' in page
 
 
+def test_browser_page_exposes_local_reasoning_effort_control(client):
+    page = client.get("/").text
+    assert 'id="reasoning-effort"' in page
+    assert '/api/model/reasoning-effort' in page
+    assert 'reasoning_rebuild_seconds' in page
+
+
 def test_auto_approval_audits_acting_operator_and_grant_author_separately(session):
     grant = tools.SESSION_GRANTS.grant(
         "illumination", "enable", "enable 488", identity="grant-author"
@@ -1703,6 +1710,31 @@ def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatc
     assert agent._local_models == ["Qwen3.8-27B-UD-Q4_K_XL.gguf"]
     assert any(path == "/v1/models" and not ok for path, ok in requests)
     assert any(path == "/v1/models" and ok for path, ok in requests)
+
+
+def test_reasoning_effort_route_refreshes_budget_and_has_guards(session, monkeypatch):
+    requests = _install_keyed_llamacpp(monkeypatch)
+    agent.set_llm_api_key("local-test-key")
+    session.store = ConversationStore(AuditLog(None, enabled=False))
+    client = TestClient(build_app(session))
+    before = client.get("/api/model").json()
+    assert before["reasoning_effort"] is None
+    assert before["reasoning_rebuild_seconds"] is None
+    changed = client.post("/api/model/reasoning-effort", json={"reasoning_effort": "medium"})
+    assert changed.status_code == 200
+    assert os.environ[agent.LOCAL_REASONING_EFFORT_ENV] == "medium"
+    assert session.store.local_fixed_tokens == agent._local_fixed_tokens == 8
+    assert session.store.high_water_tokens == 131072 - 8 - agent.MAX_OUTPUT_TOKENS - 4096
+    assert session.store.low_water_tokens == int(session.store.high_water_tokens * .75)
+    session.lock._locked = True
+    assert client.post("/api/model/reasoning-effort", json={"reasoning_effort": "low"}).status_code == 409
+    session.lock._locked = False
+    session.editable = False
+    assert client.post("/api/model/reasoning-effort", json={"reasoning_effort": "low"}).status_code == 403
+    monkeypatch.delenv("MICROCLAW_LLM_BASE_URL")
+    session.editable = True
+    refused = client.post("/api/model/reasoning-effort", json={"reasoning_effort": "low"})
+    assert refused.status_code == 400 and "local model path" in refused.json()["detail"]
 
 
 def test_unauthenticated_local_model_probe_is_not_cached(session, monkeypatch):

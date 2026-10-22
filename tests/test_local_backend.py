@@ -151,6 +151,25 @@ def test_reasoning_effort_is_optional_on_local_request_wire(monkeypatch):
     }
 
 
+def test_session_reasoning_setter_updates_wire_and_usage(monkeypatch):
+    captured = install(monkeypatch, ["stream_text_reply", "stream_text_reply"])
+    seen = []
+    agent.set_local_reasoning_effort("medium")
+    assert agent._local_request_body([], [], [], "m", False)["chat_template_kwargs"] == {
+        "reasoning_effort": "medium",
+    }
+    for _ in agent._stream_one_round([], [], "m", [], usage_sink=seen.append):
+        pass
+    assert seen[-1]["reasoning_effort"] == "medium"
+    agent.set_local_reasoning_effort(None)
+    assert "chat_template_kwargs" not in agent._local_request_body([], [], [], "m", False)
+    for _ in agent._stream_one_round([], [], "m", [], usage_sink=seen.append):
+        pass
+    assert seen[-1]["reasoning_effort"] is None
+    assert [body.get("chat_template_kwargs", {}).get("reasoning_effort")
+            for body in captured[:2]] == ["medium", None]
+
+
 def test_reasoning_effort_budget_probe_uses_same_template_kwargs(monkeypatch, capsys):
     captured = install(monkeypatch, "stream_text_reply")
     monkeypatch.setenv(agent.LOCAL_REASONING_EFFORT_ENV, "medium")
