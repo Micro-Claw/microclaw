@@ -1200,8 +1200,10 @@
     showModel(state);
     const seconds = state.reasoning_rebuild_seconds;
     toast(seconds == null
-      ? "Reasoning effort changed. The next request re-processes the full prompt; time estimate unknown before a prefill measurement."
-      : `Reasoning effort changed. The next request re-processes about ${Number(state.reasoning_rebuild_tokens).toLocaleString()} tokens (${Number(seconds).toFixed(1)} s) before generation.`, true);
+      ? "Reasoning effort changed. The next request may re-process the full prompt; time estimate unknown before a prefill measurement."
+      // An upper bound: measured 2026-10-22, returning to a level already used
+      // this session re-processed 4 tokens, because the server kept that prompt.
+      : `Reasoning effort changed. The next request may re-process up to about ${Number(state.reasoning_rebuild_tokens).toLocaleString()} tokens (${Number(seconds).toFixed(1)} s) before generation; less if the server still holds that level's prompt.`, true);
   });
 
   $("model-btn").addEventListener("click", () => {
