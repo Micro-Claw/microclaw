@@ -173,7 +173,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
 | 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
 | 84d | `design84/84d-calibrate` | `4859ce2` (fork `main` + httpx fix) | **merged** to fork `main`, 2026-10-06 (gate 84 round 3: 9/9) |
-| 84e | `design84/84e-effort` | fork `main` `4a01af9` | reviewed 2026-10-22; check pushed, not run |
+| 84e | `design84/84e-effort` | fork `main` `4a01af9` | **merged** to fork `main`, 2026-10-22 (check passed) |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -487,4 +487,15 @@ its level; switching to `medium` re-processed the whole prompt (33,831 tokens),
 prompt — so the notice's figure is a ceiling. Full suite on `e611762`: **5562
 passed, 108 skipped**. Check: `design/84-block84e-check.md`, with
 `84-block84e-check.py` (NOT EXERCISED on a pre-84e session, verified).
+
+**84e check (workstation, 2026-10-22) — passed.** Session
+`20261022_152509_587336`, 9 calls, levels recorded per call in the order the
+operator switched them: `server default -> medium -> server default -> medium`.
+The notice predicted "up to about 33,904 tokens (39.8 s)"; the first switch to
+`medium` re-processed **33,949** (call 2). Switching back to the default
+re-processed 173 (call 4) and to `medium` again 209 (call 6) — the server kept
+both levels' prompts, the case the notice's "less if…" covers. Operator: ~90 s
+for the first switched reply (rebuild plus generation; the notice covers the
+rebuild only), ~20 s and <15 s for the later ones. E1: the control showed
+Server default.
 
