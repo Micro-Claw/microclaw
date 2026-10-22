@@ -173,7 +173,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
 | 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
 | 84d | `design84/84d-calibrate` | `4859ce2` (fork `main` + httpx fix) | **merged** to fork `main`, 2026-10-06 (gate 84 round 3: 9/9) |
-| 84e | `design84/84e-effort` | fork `main` `4a01af9` | assigned 2026-10-22 (D17) |
+| 84e | `design84/84e-effort` | fork `main` `4a01af9` | reviewed 2026-10-22; check pushed, not run |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -472,4 +472,19 @@ the level (33,864 at the default, 33,826 at `medium`).
 **Recorded.** Every usage record carries the level in force for that call, so a
 session that switches can be analysed per level (the 2026-10-14 comparison had
 to infer it from file names).
+
+**84e review, 2026-10-22.** One runner turn, `e55761a`: a sibling route
+`POST /api/model/reasoning-effort` (the model route's guards — `403` not
+editable, `409` mid-turn — and refused on the Anthropic path), one shared
+`_refresh_local_store_budget` for the key and reasoning routes, `reasoning_effort`
+in every local usage record, a disclosure notice. Coordinator: `9611dc9` (the
+helper had been inserted between two imports; a startup level outside the four
+offered, such as `xhigh`, left the select blank — now listed as the startup
+setting), `e611762` (the notice states an upper bound). Live against the
+workstation: per-level fixed counts 33,864 / 33,826 and each record carrying
+its level; switching to `medium` re-processed the whole prompt (33,831 tokens),
+**switching back re-processed 4**, because this llama.cpp build kept the earlier
+prompt — so the notice's figure is a ceiling. Full suite on `e611762`: **5562
+passed, 108 skipped**. Check: `design/84-block84e-check.md`, with
+`84-block84e-check.py` (NOT EXERCISED on a pre-84e session, verified).
 
