@@ -173,6 +173,7 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 | 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
 | 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
 | 84d | `design84/84d-calibrate` | `4859ce2` (fork `main` + httpx fix) | **merged** to fork `main`, 2026-10-06 (gate 84 round 3: 9/9) |
+| 84e | `design84/84e-effort` | fork `main` `4a01af9` | assigned 2026-10-22 (D17) |
 
 **84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
@@ -447,4 +448,28 @@ unverified, and later opened the three channels with Fiji steps for the overlay
 `MICROCLAW_LLM_REASONING_EFFORT=medium` is the faster option worth using; `low`
 is not recommended for real work on this evidence. Re-test after the `Channel`
 group exists, two or three sessions per level.
+
+## 84e — change the reasoning level within a session
+
+**D17 — a session-only reasoning-level control beside the model picker**
+(operator request, 2026-10-22). On the local path the browser offers *server
+default*, `low`, `medium` and `high` — the OpenAI-style vocabulary, so Microclaw
+does not anchor on one template's spelling (the measured Qwen template maps
+`high` to its `xhigh`). It applies to this session only; `MICROCLAW_LLM_REASONING_EFFORT`
+stays the startup default. Refused while a turn runs (as a model change is) and
+offered only on a loopback bind (as the key and model editors are). Operator
+configuration: there is no tool through which the model changes its own level.
+
+**What a change costs, disclosed, not confirmed.** The template writes the level
+into the system prompt, so a change invalidates the server's prompt cache and
+the next request re-processes the whole prompt — measured ~40 s for the fixed
+prompt cold, plus the history at the session's measured prefill rate (583–826
+tok/s on the workstation). The control shows that estimate as an information
+notice; a "no" would change nothing, so it is not a confirmation (CLAUDE.md).
+The budget is recomputed on change, because the fixed prompt's size depends on
+the level (33,864 at the default, 33,826 at `medium`).
+
+**Recorded.** Every usage record carries the level in force for that call, so a
+session that switches can be analysed per level (the 2026-10-14 comparison had
+to infer it from file names).
 
