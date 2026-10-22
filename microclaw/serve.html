@@ -1167,7 +1167,18 @@
     const effort = $("reasoning-effort");
     if (state.reasoning_effort_options && state.reasoning_effort_options.length) {
       effort.classList.remove("hidden");
-      effort.value = state.reasoning_effort || "";
+      // A startup value outside the four offered (e.g. a template's own
+      // `xhigh`) is still the level in force: show it rather than a blank.
+      const current = state.reasoning_effort || "";
+      effort.querySelectorAll("option[data-startup]").forEach(o => o.remove());
+      if (![...effort.options].some(o => o.value === current)) {
+        const o = document.createElement("option");
+        o.value = current;
+        o.dataset.startup = "1";
+        o.textContent = current + " " + "(startup setting)";
+        effort.appendChild(o);
+      }
+      effort.value = current;
       effort.disabled = !state.reasoning_effort_changeable;
       effort.title = state.reasoning_effort_change_reason || "Change reasoning effort for this session";
     } else effort.classList.add("hidden");

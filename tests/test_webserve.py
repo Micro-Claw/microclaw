@@ -1151,6 +1151,9 @@ def test_browser_page_exposes_local_reasoning_effort_control(client):
     assert 'id="reasoning-effort"' in page
     assert '/api/model/reasoning-effort' in page
     assert 'reasoning_rebuild_seconds' in page
+    # A startup MICROCLAW_LLM_REASONING_EFFORT outside the offered four (e.g.
+    # Qwen's `xhigh`) must still be shown, not leave the select blank.
+    assert '"(startup setting)"' in page
 
 
 def test_auto_approval_audits_acting_operator_and_grant_author_separately(session):

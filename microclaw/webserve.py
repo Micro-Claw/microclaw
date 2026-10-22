@@ -66,8 +66,6 @@ from microclaw.agent import (
     local_context_budget,
     set_llm_api_key,
 )
-
-
 from microclaw.assets import icon_bytes, load_page
 from microclaw.config import ConfigValidationResult, ParsedSafetyConfig
 from microclaw.controller import MicroscopeController
@@ -75,9 +73,17 @@ from microclaw.rig_inventory import enumerate_rig
 from microclaw.setup_tools import (
     SETUP_TOOL_REGISTRY, SETUP_TOOL_SCHEMAS, SetupDraft, SetupWriteCapability,
 )
+from microclaw.safety import SafetyGuard, SafetyViolation
+from microclaw.tools_schema import TOOLS_CACHED
 
 
 async def _refresh_local_store_budget(session):
+    """Re-read the local server's budget into the session's store.
+
+    One place for the two events that change it mid-session: entering the
+    server's key (the probes could not answer before) and changing the
+    reasoning level (the template's instruction changes the fixed prompt).
+    """
     if llm_base_url() and getattr(session, "store", None) is not None:
         high, low, vision = await run_in_threadpool(local_context_budget)
         session.store.high_water_tokens = high
@@ -85,8 +91,6 @@ async def _refresh_local_store_budget(session):
         session.store.text_only = not vision
         session.store.local_fixed_tokens = agent._local_fixed_tokens
         session.store.local_context_ceiling = agent._local_context_ceiling
-from microclaw.safety import SafetyGuard, SafetyViolation
-from microclaw.tools_schema import TOOLS_CACHED
 
 
 class SessionMode(Enum):
