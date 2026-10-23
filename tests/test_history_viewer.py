@@ -133,6 +133,18 @@ def test_serve_inlines_recovery_without_requiring_it_in_history_viewer():
     assert "global.Recovery = { create };" not in history
 
 
+def test_served_compaction_notices_use_persistent_toast_variant():
+    served = load_page("serve.html")
+    # Persistent notices close from their own button, so selecting the text to
+    # copy it does not dismiss them (gate 84 round 3).
+    assert "the model thinks before replying.`, true);" in served
+    assert 'close.className = "toast-close"' in served
+    assert "el.onclick = null;" in served
+    assert "Predicted time covers rebuild only" in served
+    # A persistent notice has no auto-dismiss timer.
+    assert "      toastTimer = null;" in served
+
+
 def test_view_history_output_is_self_contained(tmp_path):
     """It is written to a temp directory, where transcript.css/js are not siblings."""
     src = tmp_path / "h.json"

@@ -75,6 +75,11 @@ def test_audit_redacts_credentials_but_keeps_images_and_scientific_values(tmp_pa
     assert "IMAGEBYTES" in raw
 
 
+def test_llm_api_key_field_is_redacted():
+    from microclaw.conversation import redact_credentials
+    assert redact_credentials({"llm_api_key": "local-secret-value"})["llm_api_key"] == "[REDACTED]"
+
+
 def test_atomic_write_interruption_leaves_previous_file_intact(tmp_path, monkeypatch):
     path = tmp_path / "history.json"
     path.write_text("previous", encoding="utf-8")
@@ -135,7 +140,7 @@ def test_compaction_is_batched_stable_and_keeps_tool_pairs_together(tmp_path):
 def test_long_session_compacts_model_view_without_losing_audit(tmp_path):
     history = []
     store = ConversationStore(
-        AuditLog(tmp_path / "long.jsonl"), high_water_tokens=1000,
+        AuditLog(tmp_path / "long.jsonl"), high_water_tokens=2000,
         low_water_tokens=600,
     )
     for index in range(30):
@@ -164,8 +169,61 @@ def test_compaction_keeps_two_complete_recent_turns_when_budget_is_impossible():
 
     view = store.model_messages(history)
 
-    assert view[1:] == history[-4:]
-    assert estimate_tokens(view) > store.low_water_tokens
+    # The recent-turn floor makes every candidate remain over high-water, so
+    # D9 leaves the complete current view unchanged.
+    assert view == history
+    assert estimate_tokens(view) > store.high_water_tokens
+
+
+def test_gate_shape_waits_until_a_whole_turn_fold_clears_high_water():
+    def tool_turn(index, result_size=20):
+        return [
+            {"role": "user", "content": f"question {index}"},
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": f"call-{index}", "name": "read",
+                "input": {},
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": f"call-{index}",
+                "content": "x" * result_size,
+            }]},
+            {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+        ]
+
+    store = ConversationStore(AuditLog(None, enabled=False),
+                              high_water_tokens=1000, low_water_tokens=750)
+    history = []
+    counts = []
+    declined = []
+    # Calling once after each completed round mirrors run_agent_iter's provider
+    # seam. The huge tool result and then its protected recent turns stay whole.
+    for index, size in ((0, 20), (1, 20), (2, 10000), (3, 20)):
+        history.extend(tool_turn(index, size))
+        store.model_messages(history)
+        counts.append(store.compaction_count)
+        declined.append(store.last_compaction_declined)
+    assert counts == [0, 0, 0, 0]
+    assert any(declined)
+
+    history.extend(tool_turn(4, 20))
+    compacted = store.model_messages(history)
+    assert store.compaction_count == 1
+    assert estimate_tokens(compacted) <= store.high_water_tokens
+    assert compacted[0]["content"][0]["text"].startswith("Conversation checkpoint:")
+
+
+def test_default_text_mode_store_declines_an_unhelpful_fold():
+    history = []
+    for index in range(8):
+        history.extend([
+            {"role": "user", "content": f"turn {index}"},
+            {"role": "assistant", "content": [{"type": "text", "text": "x" * 1200}]},
+        ])
+    store = ConversationStore(AuditLog(None, enabled=False),
+                              high_water_tokens=1500, low_water_tokens=800)
+    view = store.model_messages(history)
+    assert view == history
+    assert store.compaction_count == 0
 
 
 def test_tool_input_heavy_checkpoint_shrinks_history_meaningfully():
@@ -183,12 +241,12 @@ def test_tool_input_heavy_checkpoint_shrinks_history_meaningfully():
             {"role": "assistant", "content": [{"type": "text", "text": "saved"}]},
         ])
     store = ConversationStore(
-        AuditLog(None, enabled=False), high_water_tokens=1000, low_water_tokens=600,
+        AuditLog(None, enabled=False), high_water_tokens=14000, low_water_tokens=10000,
     )
 
     view = store.model_messages(history)
+    assert store.compaction_count == 1
     checkpoint_text = view[0]["content"][0]["text"]
-
     assert "ELIDED" in checkpoint_text
     assert estimate_tokens(view) < estimate_tokens(history) * 0.35
 

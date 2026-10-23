@@ -50,10 +50,10 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from microclaw import config, credentials, shortcut, tools, updates, extensions, skill_store
+from microclaw import config, credentials, shortcut, tools, updates, extensions, skill_store, agent
 from microclaw.authorization import RigAuthorizationError, validate_live_rig
 from microclaw.conversation import (
-    AcquisitionDiagnosticWriter, AuditLog, ConversationStore, prune_transcripts,
+    AcquisitionDiagnosticWriter, AuditLog, prune_transcripts,
 )
 from microclaw.agent import (
     DEFAULT_MODEL,
@@ -61,6 +61,10 @@ from microclaw.agent import (
     resolve_model,
     run_agent_iter,
     set_api_key,
+    llm_base_url,
+    make_conversation_store,
+    local_context_budget,
+    set_llm_api_key,
 )
 from microclaw.assets import icon_bytes, load_page
 from microclaw.config import ConfigValidationResult, ParsedSafetyConfig
@@ -71,6 +75,22 @@ from microclaw.setup_tools import (
 )
 from microclaw.safety import SafetyGuard, SafetyViolation
 from microclaw.tools_schema import TOOLS_CACHED
+
+
+async def _refresh_local_store_budget(session):
+    """Re-read the local server's budget into the session's store.
+
+    One place for the two events that change it mid-session: entering the
+    server's key (the probes could not answer before) and changing the
+    reasoning level (the template's instruction changes the fixed prompt).
+    """
+    if llm_base_url() and getattr(session, "store", None) is not None:
+        high, low, vision = await run_in_threadpool(local_context_budget)
+        session.store.high_water_tokens = high
+        session.store.low_water_tokens = low
+        session.store.text_only = not vision
+        session.store.local_fixed_tokens = agent._local_fixed_tokens
+        session.store.local_context_ceiling = agent._local_context_ceiling
 
 
 class SessionMode(Enum):
@@ -236,6 +256,10 @@ class Model(BaseModel):
     model: str
 
 
+class ReasoningEffort(BaseModel):
+    reasoning_effort: str
+
+
 class UpdateDismissal(BaseModel):
     action: str
     commit: str
@@ -352,7 +376,6 @@ class Session:
         removed = prune_transcripts(".", getattr(args, "history_retention_days", None))
         for path in removed:
             print(f"[microclaw] Pruned transcript: {path}")
-        self.store = ConversationStore(AuditLog(self.history_fn, enabled=self.save))
         # Editing credentials from a browser is offered only on loopback, the
         # same rule design/15 sets for the safety-config editor (v2).
         self.editable = args.host in LOCAL_HOSTS
@@ -383,13 +406,23 @@ class Session:
 
         # env > keyring > file; a key found in a store is pushed into the
         # environment now so the first turn doesn't have to look for it.
-        key, source = credentials.load_api_key()
+        key, source = (credentials.load_api_key("llm") if llm_base_url()
+                       else credentials.load_api_key())
         if key:
             _add_audit_secret(self, key)
-            set_api_key(key)
-            print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
+            if llm_base_url(): set_llm_api_key(key)
+            else: set_api_key(key)
+            print(f"LLM API key: {credentials.mask(key)} (from {source})")
         else:
-            print("No Anthropic API key found — set one from the browser.")
+            if llm_base_url():
+                print("No local LLM API key set; none is needed unless the server was started with --api-key.")
+            else: print("No Anthropic API key found — set one from the browser.")
+        # Built after the key is applied so a keyed local server answers the
+        # budget probe; the key then has to be registered with this audit too,
+        # because _add_audit_secret above found no store to register it with.
+        self.store = make_conversation_store(AuditLog(self.history_fn, enabled=self.save))
+        if key:
+            _add_audit_secret(self, key)
 
 
     def _audit_confirmation(
@@ -1161,7 +1194,7 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         msg = p.message.strip()
         if not msg:
             raise HTTPException(400, "Empty message.")
-        if credentials.load_api_key()[0] is None:
+        if not llm_base_url() and credentials.load_api_key()[0] is None:
             raise HTTPException(400, "No Anthropic API key is set.")
         with update_job_lock:
             refuse_extension_install()
@@ -1201,10 +1234,22 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 if event_type == "text_delta":
                     text_delta_count += 1
                 else:
-                    print(
-                        f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}",
-                        flush=True,
-                    )
+                    detail = ""
+                    if event_type == "compaction":
+                        seconds = event.get("expected_rebuild_seconds")
+                        detail = (f" before={event.get('before_tokens')} after={event.get('after_tokens')}"
+                                  f" rebuild={event.get('rebuild_tokens')}"
+                                  f" predicted_seconds="
+                                  f"{'unknown' if seconds is None else f'{seconds:.1f}'}")
+                    elif event_type == "compaction_declined":
+                        detail = (f" estimate={event.get('estimated_tokens')}"
+                                  f" threshold={event.get('threshold_tokens', event.get('high_water_tokens'))}")
+                    elif event_type == "error":
+                        # Say why in the console too: gate 84 round 3's operator saw
+                        # only "seq 5 error" for a context-exceeded refusal.
+                        detail = ": " + " ".join(str(event.get("message", "")).split())[:300]
+                    print(f"[microclaw turn {session.current_turn_id}] seq {seq} {event_type}{detail}",
+                          flush=True)
 
             try:
                 loop.call_soon_threadsafe(deliver)
@@ -1424,11 +1469,32 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
     async def get_model():
         # known_models() is a blocking HTTP call the first time it is asked, and
         # this endpoint runs on page load — off the event loop.
+        available = await run_in_threadpool(known_models)
+        local_path = bool(llm_base_url())
+        model = resolve_model(session.model)
+        configured = session.model or os.environ.get("MICROCLAW_MODEL")
+        effort = os.environ.get(agent.LOCAL_REASONING_EFFORT_ENV) or None
+        rate = agent._local_prefill_rate
+        store = getattr(session, "store", None)
+        fixed = getattr(store, "local_fixed_tokens", None)
+        estimate = getattr(store, "last_estimated_tokens", None)
+        history = (round(estimate * (getattr(store, "local_estimate_ratio", None) or 1.0))
+                   if estimate is not None else 0)
+        rebuild_tokens = fixed + history if fixed is not None else None
         return JSONResponse({
-            "model": resolve_model(session.model),
-            "default": DEFAULT_MODEL,
-            "available": await run_in_threadpool(known_models),
+            "model": model,
+            "unknown": bool(local_path and not configured and not available),
+            "default": None if local_path else DEFAULT_MODEL,
+            "available": available,
             "editable": session.editable,
+            "reasoning_effort": effort,
+            "reasoning_effort_options": [None, "low", "medium", "high"] if local_path else [],
+            "reasoning_effort_changeable": bool(local_path and session.editable),
+            "reasoning_effort_change_reason": (None if session.editable else
+                "Bound beyond localhost — set MICROCLAW_LLM_REASONING_EFFORT and restart"),
+            "reasoning_rebuild_tokens": rebuild_tokens,
+            "reasoning_rebuild_seconds": (rebuild_tokens / rate
+                if rebuild_tokens is not None and rate else None),
         })
 
     @app.post("/api/model")
@@ -1447,6 +1513,22 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
         async with session.lock:
             session.model = name
         return JSONResponse({"model": resolve_model(session.model)})
+
+    @app.post("/api/model/reasoning-effort")
+    async def post_reasoning_effort(value: ReasoningEffort):
+        if not session.editable:
+            raise HTTPException(403, "Bound beyond localhost: set MICROCLAW_LLM_REASONING_EFFORT and restart.")
+        if not llm_base_url():
+            raise HTTPException(400, "Reasoning effort is available only on the local model path.")
+        effort = value.reasoning_effort.strip()
+        if effort not in ("", "low", "medium", "high"):
+            raise HTTPException(400, "Choose server default, low, medium, or high.")
+        if session.lock.locked():
+            raise HTTPException(409, "A turn is in progress.")
+        async with session.lock:
+            agent.set_local_reasoning_effort(effort or None)
+            await _refresh_local_store_budget(session)
+        return await get_model()
 
     @app.get("/api/artifact")
     async def get_artifact(path: str):
@@ -1490,36 +1572,52 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
 
     @app.get("/api/key")
     async def get_key():
-        key, source = credentials.load_api_key()
+        local_path = bool(llm_base_url())
+        key, source = (credentials.load_api_key("llm") if local_path
+                       else credentials.load_api_key())
         return JSONResponse(
             {
                 "has_key": key is not None,
                 "suffix": credentials.mask(key) if key else None,
                 "source": source,
                 "editable": session.editable,
+                "key_required": not local_path,
+                "key_label": "local model server key" if local_path else "Anthropic API key",
             }
         )
 
     @app.post("/api/key")
     async def post_key(k: Key):
+        local_path = bool(llm_base_url())
         if not session.editable:
+            key_env = "MICROCLAW_LLM_API_KEY" if local_path else "ANTHROPIC_API_KEY"
             raise HTTPException(
-                403, "Bound beyond localhost: set ANTHROPIC_API_KEY and restart."
+                403, f"Bound beyond localhost: set {key_env} and restart."
             )
         key = k.key.strip()
         if not key:
             raise HTTPException(400, "Empty key.")
         # Overwrites whatever was set, so a key can be swapped mid-session.
         _add_audit_secret(session, key)
-        set_api_key(key)
+        credential_kind = "llm" if local_path else "anthropic"
+        if local_path: set_llm_api_key(key)
+        else: set_api_key(key)
+        if local_path:
+            await _refresh_local_store_budget(session)
         stored_in = stored_at = None
         stale_store = False
         if k.persist:
-            stored_in, stored_at = credentials.store_api_key(key)
+            if local_path:
+                stored_in, stored_at = credentials.store_api_key(key, credential_kind)
+            else:
+                stored_in, stored_at = credentials.store_api_key(key)
         else:
             # A key held for this process only doesn't displace an older one in
             # the credential store — that one comes back on the next start.
-            stored, _ = credentials.load_stored_key()
+            if local_path:
+                stored, _ = credentials.load_stored_key(credential_kind)
+            else:
+                stored, _ = credentials.load_stored_key()
             stale_store = stored is not None and stored != key
         # Never echo the key: a suffix is enough to confirm which one is set.
         return JSONResponse(
@@ -1531,6 +1629,8 @@ def build_app(session, *, remote: bool = False, api_token: str | None = None,
                 "stored_in": stored_in,
                 "stored_at": stored_at,
                 "stale_store": stale_store,
+                "key_required": not local_path,
+                "key_label": "local model server key" if local_path else "Anthropic API key",
             }
         )
 

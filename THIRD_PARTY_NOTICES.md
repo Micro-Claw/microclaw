@@ -26,7 +26,7 @@ installed distributions and review notices for the versions they distribute.
 | keyring | optional `serve` | MIT |
 | pytest | test only | MIT |
 | pytest-mock | test only | MIT |
-| HTTPX | test only | BSD 3-Clause |
+| HTTPX | runtime | BSD 3-Clause |
 | setuptools | build only | MIT |
 
 Transitive dependencies are not enumerated because they vary by platform and

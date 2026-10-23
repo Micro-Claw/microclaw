@@ -11949,3 +11949,82 @@ to `main` before adding the block's worktree.
 (362 passed, 9 skipped). The new test was watched failing on `2e5b7e2`'s
 `tools.py` (`AssertionError: {'ok': True}`) and passed 30 of 30 runs. Full
 suite locally: 5964 passed, 107 skipped. CI: run 39276478002 at `7bc7c21` green on both runners (Ubuntu 5964 passed, 107 skipped; Windows 5956 passed, 115 skipped). n=1.
+
+
+## design/91 blocks 91a–91c — a local model behind the same loop (merged to the operator's fork `main`, 2026-10-06)
+
+**Record the dependency before the runner has to imagine it.** The runner
+sandbox has no network, so the coordinator recorded llama.cpp's real responses
+(streams, errors, `/props`, `/tokenize`, `/apply-template`) and committed them as
+fixtures; the parser was written against those bytes. Two defects were still
+outside every recording: a server started with `--api-key` refuses everything
+but `/health` (all fixtures were recorded with the key), and Git for Windows
+rewrote the fixtures to CRLF at checkout (selftest 3 failed / 9 errors on the
+workstation). Record the *unauthenticated* shape too, and give byte-exact
+fixtures a `-text` rule the day they are added.
+
+**A runner's green run can be a weakened test.** 84c's first turn changed three
+tests' watermarks until the behaviour under test never happened — 84a's own
+"checkpoint reaches the wire" regression among them — and a later full run found
+six more outside its targeted files. Read every changed test as a diff of its
+purpose, not its numbers; "resize, never weaken" had to be said twice.
+
+**Mutation-check the translation rows; it found what the suite could not.**
+Breaking each D2 row in turn: 11/14 caught on 84a round 1, 19/19 after.
+
+**A passing gate was the place to look, twice.** Round 1 scored 8/8 while the
+store committed checkpoints above high-water (three rebuilds, 366 s) — the
+scorer's own limb skipped compaction records. Round 2 scored 9/9 while a
+compaction landed 671 tokens under high-water and bought one round. Both were
+found by reading the usage records against each other, and both were confirmed
+off-rig by replaying the real history through old and new `ConversationStore`
+before anyone was asked for another session.
+
+**Runner turns must outlive the session.** One revision turn was killed by
+Claude Code's 2-hour background cap after a network drop; later turns ran under
+`nohup` and survived two more drops.
+
+**Counts.** Baseline `55ccc95`: 5512 passed, 108 skipped (1 wheel-build
+intermittent). 84a `64065e6`: 5532. 84b `a8c4f81`: 5547 (+1 intermittent).
+84c `4c99b81`: 5551, 108 skipped. Merged `24a28b3`: 5551, 108 skipped.
+
+## design/91 block 91d — compaction that buys headroom (merged to the operator's fork `main`, 2026-10-06)
+
+**Replay the real history before asking for another session.** Each of rounds
+2 and 3 was predicted off-rig by replaying the previous gate's recorded history
+through the new `ConversationStore` — calibrated from that session's own usage
+records — and each prediction held: round 3's single compaction (95,316 →
+6,925, 8.6 s) is the shape the replay showed. The replay also caught that 84d's
+first turn had not implemented D12 at all (the local path returned before trying
+a fold whenever the calibrated view fitted).
+
+**A non-editable install of `main` found what no gate could.** Building a
+frozen environment for a measurement exposed that `httpx` was declared only in
+the `test` extra while `agent.py` imports it; every gate installed
+`.[serve,test]`. A coordinator design claim ("already a direct dependency") was
+the source. Install the product the way `install.bat` does at least once per
+dependency change.
+
+**Don't delete an environment a background job is using.** Removing a merged
+block's worktree killed a running measurement mid-call (its CA bundle lived in
+that venv). Measurements now run from a frozen install outside every worktree.
+
+**Counts.** `cde64fe`: 5559 passed, 108 skipped; `75fe21b` (round-3 fixes):
+5559 passed, 108 skipped. Gate 84 round 3: 9/9.
+
+## design/91 block 91e — the reasoning level within a session (merged to the operator's fork `main`, 2026-10-22)
+
+**Measure the cost a notice states, then word it as what was measured.** The
+specified disclosure said a level change re-processes the whole prompt. Live, the
+first switch did (33,831 tokens) and switching back re-processed 4, because the
+server kept the earlier prompt; the notice became an upper bound before the
+check, and the check then measured 33,949 against a predicted 33,904, then 173
+and 209 on the returns.
+
+**A check that reads only what the session writes needs no operator judgement
+for its core claim.** The per-call `reasoning_effort` field made the 84e check a
+one-command read of the usage file (`84-block84e-check.py`, which reports NOT
+EXERCISED on a pre-84e session); the operator's part was what the page showed
+and how it felt.
+
+**Counts.** `e611762`: 5562 passed, 108 skipped. Check: passed, one round.

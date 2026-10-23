@@ -3403,3 +3403,66 @@ the model" as the actual blast radius.
 - **Importance** — MEDIUM. Recommended before 89b, not required: 89b's own M2 gate compares cadence with feedback on and off, so this would only find a problem earlier and more cheaply (operator decision, 2026-10-19).
 - **Effort** — SMALL
 - **Provenance** — `design/89` 89a, 2026-10-19.
+
+
+### R160 — `estimate_tokens` counts a thumbnail's base64 bytes as text
+
+**One 512 px PNG thumbnail of a noisy field estimates at 121,748 tokens — above the Anthropic path's 120k high-water on its own.**
+
+- **What happened** — measured 2026-10-02 (design/91, coordinator): `make_thumbnail` of a 2048² uint16 noise frame is 287,144 base64 bytes, and `estimate_tokens` over one `tool_result` holding it returns 121,748; the same call on a smooth ramp is 6,040 bytes and 2,636. `estimate_tokens` divides the JSON of the whole history by 2.36, image data included. Real camera frames are noise-dominated, so their thumbnails are the large case.
+- **Why it matters** — a single `snap_and_analyze` that keeps its thumbnail can push `ConversationStore` past high-water and fold every older turn into a checkpoint on the next round, rewriting the cached prefix (design/82's cost lever) for an image the API bills at a few hundred tokens. Not observed in a recorded session yet: no artifact has been checked for a thumbnail-triggered compaction.
+- **What a fix would look like** — estimate an image block at its billed size (a per-image constant from the API's image-token rule) rather than its byte length; check an archived design/82 history for a compaction that followed a thumbnail. design/91 91b fixes the local text-only path only, where the image is never sent.
+- **Provenance** — design/91 91b planning, 2026-10-02.
+
+### R161 — One `read_hook_log` result can take a third of a local model's context
+
+**On the local llama.cpp server, `read_hook_log(limit=200)` returned 140,232 characters (~59k tokens): 104 s to process, and once more than the remaining context could hold.**
+
+- **What happened** — design/91 gate 91 round 3, 2026-10-06, `n_ctx` 131,072: record 16 processed 59,262 new tokens in 104.0 s for that one tool result; a later turn asking for the same read made the next request too large and the server refused it (context exceeded, the turn rolled back). design/82 F2/D3 bounded the read by entry count (`limit`), which the model may raise to 200.
+- **Why it matters** — on a local model the cost of a large result is prefill time on every cold path and a hard context limit, not just money; a bound in entries is not a bound in tokens.
+- **What a fix would look like** — bound tool-result size in characters relative to the session's remaining budget (the store knows it), stated in the result as design/82 D3 requires; or have `read_hook_log` cap its returned characters and point at `rank_hook_log`.
+- **Where** — LOCAL, then a workstation session.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — SMALL
+- **Provenance** — design/91 gate 91 round 3, scored from artifacts 2026-10-06.
+
+### R162 — `test_built_wheel_contains_the_source_tree_skill_catalog` fails intermittently
+
+**Failed in 2 of the full-suite runs during design/91 and passed alone each time (38 s).**
+
+- **What happened** — design/91, 2026-10-02: once at the 91a baseline (before any 91 code, during a network drop) and once on 91b's tip; never reproduced in isolation.
+- **Why it matters** — an intermittent in the full suite is read as noise, which is how a real failure in the same test would be missed.
+- **What a fix would look like** — capture its failure output on the next occurrence (the runs here did not keep the traceback) and decide whether it builds a wheel over the network.
+- **Where** — LOCAL.
+- **Block** — NONE.
+- **Importance** — LOW
+- **Effort** — SMALL
+- **Provenance** — design/91 coordinator full-suite runs, 2026-10-02.
+
+### R163 — At `reasoning_effort=low` the local model reported a dataset it never acquired
+
+**Told the operator "Saved to disk: `red_1`, `green_1`, `blue_1` … These are the real, verified acquisitions" when only red and green had been acquired in that turn.**
+
+- **What happened** — design/91, real-microscope session `20261014_141904_322634` (Qwen 3.8 27B, `MICROCLAW_LLM_REASONING_EFFORT=low`), 2026-10-14: the acquisitions record holds two acquisitions for the turn (18:34:34, 18:34:51 UTC); the model switched the turret to DAPI and wrote a composite script referencing a `blue_1` that does not exist. Not seen in the `xhigh` or `medium` sessions of the same script — one session each, so not evidence either way.
+- **Why it matters** — it breaks the system prompt's central reporting rule (every claim from a tool result) in the most consequential place: what is on disk. A local model at low effort is the setting an operator chooses for speed.
+- **What a fix would look like** — first measure: two or three sessions per effort level, scoring every "saved"/"acquired" claim in the replies against the acquisitions record (scriptable from the session files). If it recurs, a tool-side check is stronger than prompt wording: e.g. a turn-end summary of what was actually acquired, from the acquisitions record, that the model must relay.
+- **Where** — WORKSTATION + RIG (the operator's Zeiss).
+- **Block** — NONE.
+- **Importance** — HIGH
+- **Effort** — SMALL to measure
+- **Provenance** — design/91 reasoning-effort sessions, scored from artifacts 2026-10-14.
+
+### R164 — No route to combine saved channels into a colour composite
+
+**Asked to "combine into a 3 colour image and save", the model had no tool for it at any reasoning level.**
+
+- **What happened** — design/91 real-microscope sessions, 2026-10-14: `low` wrote an unrun composite script and later gave Fiji steps; the request is ordinary for a three-channel fluorescence image.
+- **Why it matters** — a routine deliverable with no route invites exactly the hand-written, unexecuted script the system prompt warns about.
+- **What a fix would look like** — an offline adapter on the existing `run_analysis_on_saved_dataset` route (analysis lives in hooks/adapters, CLAUDE.md) that renders a composite from a channel axis or from named single-channel datasets, written as an artifact `open_artifact` can show. Simpler once the rig's `Channel` group gives one multi-channel dataset.
+- **Where** — LOCAL, then the rig.
+- **Block** — NONE.
+- **Importance** — MEDIUM
+- **Effort** — MEDIUM
+- **Provenance** — design/91 reasoning-effort sessions, 2026-10-14.
+

@@ -16,14 +16,23 @@ import time
 import types
 from pathlib import Path
 
+import httpx
 import pytest
 
 from fastapi.testclient import TestClient
 
-from microclaw import config, credentials, tools, updates, webserve
+from microclaw import agent, config, credentials, tools, updates, webserve
 from microclaw.conversation import AuditLog, ConversationStore, load_history
 from microclaw.tools_schema import TOOLS_CACHED
 from microclaw.webserve import build_app, serve
+
+LLAMACPP_FIXTURES = Path(__file__).parent / "fixtures" / "llamacpp"
+
+
+def _llamacpp_recording(name):
+    head, body = (LLAMACPP_FIXTURES / f"{name}.http").read_bytes().split(b"\n\n", 1)
+    status, headers = head.split(b"\n", 1)
+    return httpx.Response(int(status.split()[1]), headers=json.loads(headers), content=body)
 
 
 @pytest.fixture(autouse=True)
@@ -1137,6 +1146,16 @@ def test_browser_page_exposes_session_approval_and_persistent_revoke_controls(cl
     assert 'approve: "revoke"' in page
 
 
+def test_browser_page_exposes_local_reasoning_effort_control(client):
+    page = client.get("/").text
+    assert 'id="reasoning-effort"' in page
+    assert '/api/model/reasoning-effort' in page
+    assert 'reasoning_rebuild_seconds' in page
+    # A startup MICROCLAW_LLM_REASONING_EFFORT outside the offered four (e.g.
+    # Qwen's `xhigh`) must still be shown, not leave the select blank.
+    assert '"(startup setting)"' in page
+
+
 def test_auto_approval_audits_acting_operator_and_grant_author_separately(session):
     grant = tools.SESSION_GRANTS.grant(
         "illumination", "enable", "enable 488", identity="grant-author"
@@ -1362,6 +1381,18 @@ def test_get_model_reports_the_resolved_model_and_suggestions(client, no_model_f
     assert body["editable"] is True
 
 
+def test_local_model_endpoint_reports_unknown_until_server_answers(client, session, monkeypatch):
+    monkeypatch.setattr(agent, "llm_base_url", lambda: "http://local")
+    monkeypatch.setattr(webserve, "llm_base_url", lambda: "http://local")
+    monkeypatch.setattr(webserve, "known_models", lambda: [])
+    monkeypatch.setattr(agent, "known_models", lambda: [])
+    session.model = None
+    body = client.get("/api/model").json()
+    assert body["unknown"] is True
+    assert body["model"] == "default"
+    assert body["default"] is None
+
+
 def test_post_model_sets_it_for_the_session(session, client, no_model_fetch):
     assert client.post("/api/model", json={"model": " my-model "}).json() == {"model": "my-model"}
     assert session.model == "my-model"
@@ -1425,15 +1456,17 @@ def test_store_backed_artifact_survives_compaction_out_of_model_view(
         _history_declaring(str(data))[0],
         {"role": "assistant", "content": [{"type": "text", "text": "made it"}]},
     ]
-    for index in range(5):
+    for index in range(8):
         history.extend([
             {"role": "user", "content": f"later {index}"},
             {"role": "assistant", "content": [
                 {"type": "text", "text": "x" * 1000},
             ]},
         ])
+    # The 3k window clears the checkpoint plus its two retained 1k replies;
+    # the original 1k window made D9 correctly decline this fold.
     stored_session.store = ConversationStore(
-        AuditLog(None, enabled=False), high_water_tokens=1000, low_water_tokens=600,
+        AuditLog(None, enabled=False), high_water_tokens=3000, low_water_tokens=2250,
     )
     stored_session.history = history
     for message in history:
@@ -1553,7 +1586,195 @@ def test_get_key_reports_a_suffix_never_the_key(client):
 def test_get_key_when_unset(client, monkeypatch):
     monkeypatch.setattr(credentials, "load_api_key", lambda: (None, None))
     body = client.get("/api/key").json()
-    assert body == {"has_key": False, "suffix": None, "source": None, "editable": True}
+    assert body == {
+        "has_key": False, "suffix": None, "source": None, "editable": True,
+        "key_required": True, "key_label": "Anthropic API key",
+    }
+
+
+def test_local_get_key_without_key_reports_optional_local_label(client, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    monkeypatch.setattr(credentials, "load_api_key",
+                        lambda kind="anthropic": (None, None))
+    body = client.get("/api/key").json()
+    assert body["has_key"] is False
+    assert body["key_required"] is False
+    assert body["key_label"] == "local model server key"
+
+
+def _install_keyed_llamacpp(monkeypatch, *, vision=False):
+    requests = []
+
+    def handle(request):
+        authorized = request.headers.get("authorization") == "Bearer local-test-key"
+        requests.append((request.url.path, authorized))
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if not authorized:
+            return _llamacpp_recording("error_bad_key")
+        if request.url.path == "/props":
+            response = _llamacpp_recording("get_props")
+            if vision:
+                return httpx.Response(response.status_code, headers=response.headers,
+                                      content=response.content.replace(
+                                          b'"vision":false', b'"vision":true'))
+            return response
+        if request.url.path == "/v1/models":
+            return _llamacpp_recording("get_v1_models")
+        if request.url.path == "/apply-template":
+            return _llamacpp_recording("post_apply_template")
+        if request.url.path == "/tokenize":
+            return _llamacpp_recording("post_tokenize")
+        return httpx.Response(404, json={})
+
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://keyed-llama")
+    monkeypatch.delenv("MICROCLAW_LLM_API_KEY", raising=False)
+    monkeypatch.setattr(agent, "_local_http", httpx.Client(transport=httpx.MockTransport(handle)))
+    agent._local_models = None
+    agent._local_vision.clear()
+    return requests
+
+
+def test_session_loads_local_key_before_computing_context_budget(session, monkeypatch):
+    requests = _install_keyed_llamacpp(monkeypatch)
+    monkeypatch.setattr(credentials, "load_api_key",
+                        lambda kind="anthropic": ("local-test-key", "file")
+                        if kind == "llm" else (None, None))
+    make_store = webserve.make_conversation_store
+
+    def assert_keyed_store(audit):
+        assert os.environ[agent.LLM_API_KEY_ENV] == "local-test-key"
+        return make_store(audit)
+
+    monkeypatch.setattr(webserve, "make_conversation_store", assert_keyed_store)
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    assert session.store.high_water_tokens == 131072 - 8 - agent.MAX_OUTPUT_TOKENS - 4096
+    assert session.store.low_water_tokens == int(session.store.high_water_tokens * .75)
+    assert ("/apply-template", True) in requests
+    assert ("/tokenize", True) in requests
+    assert all(authorized for _path, authorized in requests)
+
+
+def test_a_stored_local_key_is_redacted_from_the_history_audit(session, monkeypatch):
+    # Building the store after loading the key (so the budget probe is
+    # authenticated) must not leave the history audit without that secret:
+    # `_add_audit_secret` skips a store that does not exist yet.
+    _install_keyed_llamacpp(monkeypatch)
+    monkeypatch.setattr(credentials, "load_api_key",
+                        lambda kind="anthropic": ("local-test-key", "file")
+                        if kind == "llm" else (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    assert "local-test-key" in session.store.audit.secrets
+
+
+def test_entered_local_key_refreshes_budget_model_and_vision(session, monkeypatch):
+    requests = _install_keyed_llamacpp(monkeypatch, vision=True)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    monkeypatch.setattr(credentials, "load_stored_key",
+                        lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+
+    base = "http://keyed-llama"
+    history = []
+    # On the unauthenticated provisional 4096-token budget, this leaves the
+    # checkpoint plus two 3k-character replies below high-water while the full
+    # history exceeds it. That makes the pre-refresh compaction useful under D9.
+    for index in range(30):
+        history.extend([
+            {"role": "user", "content": f"question {index}"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "answer " + "y" * 3000}]},
+        ])
+    session.store.model_messages(history)
+    assert session.store.compaction_count > 0
+    checkpoint = session.store._checkpoint
+    cut = session.store._cut
+    previous_props_probes = sum(path == "/props" for path, _ok in requests)
+
+    client = TestClient(build_app(session))
+    before_key = client.get("/api/model").json()
+    assert before_key["unknown"] is True
+    assert before_key["model"] == "default"
+    response = client.post("/api/key", json={"key": "local-test-key", "persist": False})
+    assert response.status_code == 200
+    assert response.json()["key_required"] is False
+    assert response.json()["key_label"] == "local model server key"
+    assert session.store.high_water_tokens == 131072 - 8 - agent.MAX_OUTPUT_TOKENS - 4096
+    assert session.store.low_water_tokens == int(session.store.high_water_tokens * .75)
+    assert session.store._checkpoint is checkpoint
+    assert session.store._cut == cut
+    assert session.store.text_only is False
+    assert sum(path == "/props" for path, _ok in requests) > previous_props_probes
+    assert agent.resolve_model() == "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    after_key = client.get("/api/model").json()
+    assert after_key["unknown"] is False
+    assert after_key["model"] == "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    assert agent._local_vision[base] is True
+    assert agent._local_models == ["Qwen3.8-27B-UD-Q4_K_XL.gguf"]
+    assert any(path == "/v1/models" and not ok for path, ok in requests)
+    assert any(path == "/v1/models" and ok for path, ok in requests)
+
+
+def test_reasoning_effort_route_refreshes_budget_and_has_guards(session, monkeypatch):
+    requests = _install_keyed_llamacpp(monkeypatch)
+    agent.set_llm_api_key("local-test-key")
+    session.store = ConversationStore(AuditLog(None, enabled=False))
+    client = TestClient(build_app(session))
+    before = client.get("/api/model").json()
+    assert before["reasoning_effort"] is None
+    assert before["reasoning_rebuild_seconds"] is None
+    changed = client.post("/api/model/reasoning-effort", json={"reasoning_effort": "medium"})
+    assert changed.status_code == 200
+    assert os.environ[agent.LOCAL_REASONING_EFFORT_ENV] == "medium"
+    assert session.store.local_fixed_tokens == agent._local_fixed_tokens == 8
+    assert session.store.high_water_tokens == 131072 - 8 - agent.MAX_OUTPUT_TOKENS - 4096
+    assert session.store.low_water_tokens == int(session.store.high_water_tokens * .75)
+    session.lock._locked = True
+    assert client.post("/api/model/reasoning-effort", json={"reasoning_effort": "low"}).status_code == 409
+    session.lock._locked = False
+    session.editable = False
+    assert client.post("/api/model/reasoning-effort", json={"reasoning_effort": "low"}).status_code == 403
+    monkeypatch.delenv("MICROCLAW_LLM_BASE_URL")
+    session.editable = True
+    refused = client.post("/api/model/reasoning-effort", json={"reasoning_effort": "low"})
+    assert refused.status_code == 400 and "local model path" in refused.json()["detail"]
+
+
+def test_unauthenticated_local_model_probe_is_not_cached(session, monkeypatch):
+    _install_keyed_llamacpp(monkeypatch, vision=True)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    base = "http://keyed-llama"
+    http = agent._get_local_http()
+    assert http.get(base + "/health").status_code == 200
+    assert http.get(base + "/props").status_code == 401
+    assert http.get(base + "/v1/models").status_code == 401
+    assert http.post(base + "/tokenize", json={"content": "hi"}).status_code == 401
+    assert http.post(base + "/apply-template", json={"messages": []}).status_code == 401
+    assert agent._local_models is None
+    assert agent.known_models() == []
+    assert agent._local_models is None
+
+
+def test_unauthenticated_local_vision_probe_is_not_cached(session, monkeypatch):
+    _install_keyed_llamacpp(monkeypatch, vision=True)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    base = "http://keyed-llama"
+    assert base not in agent._local_vision
+
+
+def test_unprobed_local_budget_reports_useful_floor(session, monkeypatch, capsys):
+    _install_keyed_llamacpp(monkeypatch)
+    monkeypatch.setattr(credentials, "load_api_key", lambda kind="anthropic": (None, None))
+    webserve.Session._initialize(session, _args(host="127.0.0.1"))
+    output = capsys.readouterr().out
+    assert session.store.high_water_tokens == 4096
+    assert session.store.low_water_tokens == 3072
+    assert "provisional 4096-token history floor" in output
+    assert "/props HTTP 401" in output
+    assert "/v1/models HTTP 401" in output
+    assert "/apply-template HTTP 401" in output
 
 
 def test_post_key_sets_and_persists(client, monkeypatch):
@@ -1565,7 +1786,50 @@ def test_post_key_sets_and_persists(client, monkeypatch):
     assert stored["live"] == "sk-ant-xyzXYZW"
     assert body["stored_in"] == "keyring"
     assert body["suffix"] == "…XYZW"
+    assert body["key_required"] is True
+    assert body["key_label"] == "Anthropic API key"
     assert "sk-ant-xyzXYZW" not in json.dumps(body)
+
+
+def test_post_key_uses_local_credential_store_when_local_backend_selected(client, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    state = {}
+    monkeypatch.setattr(webserve, "set_llm_api_key", lambda key: state.update(live=key))
+    monkeypatch.setattr(webserve, "set_api_key", lambda key: pytest.fail("set Anthropic key"))
+    monkeypatch.setattr(
+        credentials, "store_api_key",
+        lambda key, kind="anthropic": ("file", "/tmp/local-config")
+        if kind == "llm" else pytest.fail("stored Anthropic key"),
+    )
+    body = client.post("/api/key", json={"key": "local-secret-xyz", "persist": True}).json()
+    assert state["live"] == "local-secret-xyz"
+    assert body["stored_in"] == "file"
+    assert body["suffix"] == "…-xyz"
+    assert body["key_required"] is False
+    assert body["key_label"] == "local model server key"
+
+
+def test_local_post_key_is_refused_with_local_environment_name(session, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    session.editable = False
+    response = TestClient(build_app(session)).post("/api/key", json={"key": "local-secret"})
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Bound beyond localhost: set MICROCLAW_LLM_API_KEY and restart."
+    )
+
+
+def test_local_session_key_checks_stored_key_without_environment_value(client, monkeypatch):
+    monkeypatch.setenv("MICROCLAW_LLM_BASE_URL", "http://local-server")
+    monkeypatch.setattr(webserve, "set_llm_api_key", lambda key: None)
+    monkeypatch.setattr(webserve, "set_api_key", lambda key: pytest.fail("set Anthropic key"))
+    monkeypatch.setattr(
+        credentials, "load_stored_key",
+        lambda kind="anthropic": ("older-local-key", "file")
+        if kind == "llm" else (None, None),
+    )
+    body = client.post("/api/key", json={"key": "current-local-key", "persist": False}).json()
+    assert body["stale_store"] is True
 
 
 def test_post_key_can_replace_a_key_already_set(client, monkeypatch):
@@ -1614,6 +1878,15 @@ def test_post_key_is_refused_when_bound_beyond_localhost(session, monkeypatch):
     session.editable = False
     res = TestClient(build_app(session)).post("/api/key", json={"key": "sk-ant-1234"})
     assert res.status_code == 403
+    assert res.json()["detail"] == "Bound beyond localhost: set ANTHROPIC_API_KEY and restart."
+
+
+def test_serve_key_controls_come_from_key_endpoint_payload(client):
+    page = client.get("/").text
+    assert "keyRequired = state.key_required !== false" in page
+    assert "keyLabel = state.key_label ||" in page
+    assert "send.disabled = busy || (keyRequired && !hasKey)" in page
+    assert 'btn.classList.toggle("hidden", !hasKey && keyRequired)' in page
 
 
 # ---- binding ----

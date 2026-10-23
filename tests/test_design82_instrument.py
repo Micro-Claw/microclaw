@@ -97,7 +97,9 @@ def test_d8_window_reaches_store(monkeypatch, history, capsys):
         rows.append(result[0])
         return result
     monkeypatch.setattr(instrument, 'replay', capture)
-    for high, low in [(120000, 90000), (5000, 3000)]:
+    # The narrower window still has to clear the compacted checkpoint plus
+    # the two recent turns; 10k/7.5k does so for this fixture under D9.
+    for high, low in [(120000, 90000), (10000, 7500)]:
         monkeypatch.setattr('sys.argv', ['instrument', str(history.parent),
             '--high-water', str(high), '--low-water', str(low)])
         assert instrument.main() == 0
@@ -107,10 +109,12 @@ def test_d8_window_reaches_store(monkeypatch, history, capsys):
 
 @pytest.mark.parametrize('estimator_ratio', [1.0, 2.5])
 def test_r63_real_checkpoint_partition_and_usage(capsys, estimator_ratio):
+    # Usage is generated from this tree's D9 store, so this pins a current-policy
+    # replay partition, not the partition of a pre-84c historical session.
     probe = load_script('82-block82c-r63-probe')
     messages = fixture_messages()
     store = ConversationStore(AuditLog(None, enabled=False),
-                              high_water_tokens=5000, low_water_tokens=3000)
+                              high_water_tokens=10000, low_water_tokens=7500)
     usage = []
     turn = 0
     for index, message in enumerate(messages):
@@ -122,7 +126,7 @@ def test_r63_real_checkpoint_partition_and_usage(capsys, estimator_ratio):
                               estimated_tokens=store.last_estimated_tokens / (
                                   estimator_ratio if store.compaction_count == 0 else 99),
                               turn_id=f'turn-{turn}', timestamp=f'fixture-call-{len(usage)}'))
-    result = probe.score(messages, usage, high_water=5000, low_water=3000)
+    result = probe.score(messages, usage, high_water=10000, low_water=7500)
     assert result['events']
     assert not result['disagreements']
     assert result['estimate_ratios'] == pytest.approx([estimator_ratio] * sum(
@@ -135,6 +139,7 @@ def test_r63_real_checkpoint_partition_and_usage(capsys, estimator_ratio):
     probe.report(result)
     output = capsys.readouterr().out
     assert 'Earlier I used snap_and_analyze.' in output
+    assert 'Replay policy: current ConversationStore (D9 high-water gate).' in output
     assert (f'min {estimator_ratio:.4f}, median {estimator_ratio:.4f}, '
             f'max {estimator_ratio:.4f}') in output
     for record in usage:
@@ -144,7 +149,7 @@ def test_r63_real_checkpoint_partition_and_usage(capsys, estimator_ratio):
     assert unavailable['estimate_ratios'] == []
     probe.report(unavailable)
     assert 'Estimator ratio unavailable' in capsys.readouterr().out
-    offline = probe.score(messages, high_water=5000, low_water=3000)
+    offline = probe.score(messages, high_water=10000, low_water=7500)
     probe.report(offline)
     assert 'usage-pinned timestamps and turn IDs unavailable' in capsys.readouterr().out
     assert offline['mentions'] == [{**m, 'turn_id': None} for m in result['mentions']]
@@ -160,7 +165,7 @@ def test_r63_reports_real_action_cap(capsys):
         name='snap_and_analyze', input={}) for n in range(205)]
     messages[2]['content'] = [dict(type='tool_result', tool_use_id=f'old-{n}',
         content='done') for n in range(205)]
-    result = probe.score(messages, high_water=5000, low_water=3000)
+    result = probe.score(messages, high_water=15000, low_water=11250)
     capped = [e for e in result['events'] if e['actions'] > e['kept']]
     assert capped and all(e['kept'] == 200 for e in capped)
     probe.report(result)

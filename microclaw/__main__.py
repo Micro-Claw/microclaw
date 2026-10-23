@@ -24,7 +24,6 @@ from microclaw.config import (
 from microclaw.conversation import (
     AcquisitionDiagnosticWriter,
     AuditLog,
-    ConversationStore,
     atomic_write_text,
     json_default,
     load_history,
@@ -137,17 +136,26 @@ def run_session(args):
     parsed_safety = load_safety_config_or_exit(args.safety_config)
     guard = SafetyGuard(parsed_safety.constraints)
 
-    key, source = credentials.load_api_key()
-    if key is None:
+    from microclaw.agent import llm_base_url
+    if llm_base_url():
+        key, source = credentials.load_api_key("llm")
+        from microclaw.agent import set_llm_api_key
+        if key: set_llm_api_key(key)
+    else:
+        key, source = credentials.load_api_key()
+    if key is None and not llm_base_url():
         sys.exit(
             "No Anthropic API key found. Looked in the ANTHROPIC_API_KEY "
             "environment variable, the system keyring, and the Microclaw credential file."
         )
     # Keep the agent import lazy for restricted commands, but use the same key
     # injection path as the browser server before any hardware contact.
-    from microclaw.agent import set_api_key
-    set_api_key(key)
-    print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
+    if not llm_base_url():
+        from microclaw.agent import set_api_key
+        set_api_key(key)
+        print(f"Anthropic API key: {credentials.mask(key)} (from {source})")
+    elif key:
+        print(f"Local LLM API key: {credentials.mask(key)} (from {source})")
 
     print("Connecting to Micro-Manager...")
     ctrl = MicroscopeController(port=args.port, guard=guard)
@@ -187,7 +195,8 @@ def run_session(args):
     # run_agent returns a fresh list each turn; _repl mutates this one in place
     # (history[:] = ...) so the finally block always sees the latest turns.
     history = []
-    store = ConversationStore(AuditLog(history_fn_name, enabled=args.save_history))
+    from microclaw.agent import make_conversation_store
+    store = make_conversation_store(AuditLog(history_fn_name, enabled=args.save_history))
     confirmation_fn_name = history_fn_name.replace("_history.jsonl", "_confirmations.jsonl")
     confirmation_audit = AuditLog(confirmation_fn_name, enabled=args.save_history)
     usage_fn_name = history_fn_name.replace("_history.jsonl", "_usage.jsonl")
@@ -448,7 +457,14 @@ def _positive_seconds(value: str) -> float:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Microclaw: AI agent for Micro-Manager")
+    llm_url_option = argparse.ArgumentParser(add_help=False)
+    llm_url_option.add_argument(
+        "--llm-base-url", default=argparse.SUPPRESS,
+        help="OpenAI-compatible local server base URL (also MICROCLAW_LLM_BASE_URL).",
+    )
+    parser = argparse.ArgumentParser(
+        description="Microclaw: AI agent for Micro-Manager", parents=[llm_url_option]
+    )
     # Agent-session options stay on the top-level parser so `microclaw --port ...`
     # (no subcommand) keeps launching a session, as before.
     parser.add_argument(
@@ -509,6 +525,7 @@ def main():
             "Drive Microclaw from a browser. Binds 127.0.0.1 only — this "
             "endpoint moves real hardware."
         ),
+        parents=[llm_url_option],
     )
     sv.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1).")
     sv.add_argument("--web-port", type=int, default=8000, help="HTTP port (default: 8000).")
@@ -591,6 +608,8 @@ def main():
     )
 
     args = parser.parse_args()
+    if getattr(args, "llm_base_url", None):
+        os.environ["MICROCLAW_LLM_BASE_URL"] = args.llm_base_url
 
     if args.setup_write_security_config and args.command != "serve":
         parser.error("--setup-write-security-config is valid only with serve")

@@ -100,7 +100,10 @@
     background: var(--panel); border: 1px solid var(--line); border-left: 3px solid #c0392b;
     border-radius: 10px; box-shadow: var(--shadow);
     padding: 10px 14px; font-size: 13px; max-width: min(600px, 90vw);
+    user-select: text;
   }
+  #toast .toast-close { margin-left: 10px; border: 0; background: none; cursor: pointer;
+    color: var(--ink); font-size: 13px; }
 </style>
 
 <header>
@@ -116,6 +119,10 @@
   <div class="controls">
     <div id="grant-chips"></div>
     <button id="model-btn" class="hidden"></button>
+    <select id="reasoning-effort" class="hidden" aria-label="Reasoning effort">
+      <option value="">Server default</option><option value="low">Low</option>
+      <option value="medium">Medium</option><option value="high">High</option>
+    </select>
     <button id="key-btn" class="hidden"></button>
     <button id="expand" class="hidden">Expand all</button>
     <button id="collapse" class="hidden">Collapse all</button>
@@ -162,7 +169,7 @@
   </div>
 
   <div class="banner hidden" id="key-banner">
-    <h2 id="key-title">No Anthropic API key</h2>
+    <h2 id="key-title">API key</h2>
     <p id="key-help">MicroClaw needs a key before it can run a turn. It is sent to this
       local server only, never echoed back, and never written to
       <code>safety_config.yaml</code>.</p>
@@ -233,7 +240,10 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const tx = $("transcript"), msg = $("msg"), send = $("send");
-  let busy = false, hasKey = false;
+  // keyRequired lives with hasKey because setBusy reads both. A payload without
+  // key_required is treated as required: that is the Anthropic path's rule and
+  // the page's behaviour before the local backend existed.
+  let busy = false, hasKey = false, keyRequired = true;
 
   Transcript.initTheme($("theme"));
 
@@ -574,16 +584,34 @@
 
   // ---- toast ----
   let toastTimer = null;
-  function toast(text) {
+  function toast(text, persistent = false) {
     let el = $("toast");
     if (!el) {
       el = document.createElement("div");
       el.id = "toast";
       document.body.appendChild(el);
     }
-    el.textContent = text;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.remove(), 6000);
+    if (persistent) {
+      // A notice worth reading is worth copying: dismiss with the button only,
+      // so selecting its text does not close it (gate 84 round 3).
+      el.textContent = "";
+      const body = document.createElement("span");
+      body.textContent = text;
+      const close = document.createElement("button");
+      close.className = "toast-close";
+      close.type = "button";
+      close.setAttribute("aria-label", "Dismiss");
+      close.textContent = "\u2715";
+      close.onclick = () => el.remove();
+      el.append(body, close);
+      el.onclick = null;
+      toastTimer = null;
+    } else {
+      el.textContent = text;
+      el.onclick = () => el.remove();
+      toastTimer = setTimeout(() => el.remove(), 6000);
+    }
   }
 
   // ---- rendering ----
@@ -684,7 +712,7 @@
     $("pending").classList.toggle("hidden", !on);
     $("stop").classList.toggle("hidden", !on);
     $("stop").disabled = false;
-    send.disabled = on || !hasKey;
+    send.disabled = on || (keyRequired && !hasKey);
     msg.disabled = on;
     if (!on) msg.focus();
   }
@@ -743,7 +771,17 @@
         live.push({ role: "user", content: [{ type: "tool_result",
           tool_use_id: ev.tool_use_id, content: ev.content, is_error: ev.is_error }] });
         break;
-      case "retry": toast("API overloaded — retrying in " + ev.delay + "s…"); break;
+      case "retry": toast(ev.service + " unavailable — retrying in " + ev.delay + "s…"); break;
+      case "compaction": {
+        const seconds = ev.expected_rebuild_seconds == null
+          ? "time unknown (no measured prefill rate yet)"
+          : `about ${Number(ev.expected_rebuild_seconds).toFixed(1)}s`;
+        toast(`Compacted context: ${Number(ev.before_tokens).toLocaleString()} → ${Number(ev.after_tokens).toLocaleString()} estimated tokens; rebuilding ${Number(ev.rebuild_tokens).toLocaleString()} calibrated tokens, ${seconds}. Predicted time covers rebuild only; the model thinks before replying.`, true);
+        break;
+      }
+      case "compaction_declined":
+        toast(`${ev.message} (${Number(ev.estimated_tokens).toLocaleString()} estimated / ${Number(ev.threshold_tokens ?? ev.high_water_tokens).toLocaleString()} token threshold).`, true);
+        break;
       case "cancelled": toast(ev.reason); break;
       case "error": toast(ev.message); break;
       case "acquisition_progress": {
@@ -947,6 +985,9 @@
   $("confirm-decline").addEventListener("click", () => answerConfirm(false));
 
   async function runTurn(text) {
+    const oldToast = $("toast");
+    if (oldToast) oldToast.remove?.();
+    clearTimeout(toastTimer);
     recoverySettled = false;
     streamSilenceDetected = false;
     lastAppliedSeq = null;
@@ -1027,10 +1068,13 @@
 
   // ---- API key ----
   let editable = true;
+  let keyLabel = "Anthropic API key";
+  let keyEnv = "ANTHROPIC_API_KEY";
 
   function openKeyBanner(replacing) {
     $("key-title").textContent = replacing
-      ? "Replace the Anthropic API key" : "No Anthropic API key";
+      ? "Replace the " + keyLabel
+      : keyRequired ? "No " + keyLabel : "Set the " + keyLabel;
     $("key-cancel").classList.toggle("hidden", !replacing);
     $("key-banner").classList.remove("hidden");
     // Bring it into view before focusing. In setup mode this banner sits below
@@ -1050,31 +1094,41 @@
   function showKey(state) {
     hasKey = !!state.has_key;
     editable = !!state.editable;
-    send.disabled = busy || !hasKey;
+    keyRequired = state.key_required !== false;
+    keyLabel = state.key_label || "Anthropic API key";
+    keyEnv = keyRequired ? "ANTHROPIC_API_KEY" : "MICROCLAW_LLM_API_KEY";
+    send.disabled = busy || (keyRequired && !hasKey);
 
     // The chip doubles as the entry point for swapping a key mid-session:
     // POST /api/key overwrites whatever is set, so no restart is needed.
     const btn = $("key-btn");
-    btn.classList.toggle("hidden", !hasKey);
-    btn.textContent = hasKey ? "key " + state.suffix : "";
+    btn.classList.toggle("hidden", !hasKey && keyRequired);
+    btn.textContent = hasKey ? "key " + state.suffix : "key";
     btn.disabled = !editable;
     btn.title = editable
-      ? "Click to replace the Anthropic API key"
-      : "Bound beyond localhost — set ANTHROPIC_API_KEY and restart";
+      ? hasKey ? "Click to replace the " + keyLabel : "Click to set the " + keyLabel
+      : "Bound beyond localhost — set " + keyEnv + " and restart";
+    $("key-input").placeholder = keyRequired ? "sk-ant-..." : "API key";
 
-    if (hasKey) closeKeyBanner();
+    if (hasKey || !keyRequired) closeKeyBanner();
     else openKeyBanner(false);
 
     if (!hasKey && !editable) {
-      $("key-help").textContent =
-        "MicroClaw needs a key. This server is bound beyond localhost, so the key " +
-        "cannot be set from the browser — set ANTHROPIC_API_KEY and restart.";
+      $("key-help").textContent = keyRequired
+        ? "MicroClaw needs a key. This server is bound beyond localhost, so the key " +
+          "cannot be set from the browser — set ANTHROPIC_API_KEY and restart."
+        : "This local model server may require a key. This server is bound beyond localhost, " +
+          "so set MICROCLAW_LLM_API_KEY and restart if it was started with --api-key.";
       $("key-form").classList.add("hidden");
+    } else if (!keyRequired && editable) {
+      $("key-help").textContent =
+        "This local model server may require a key. Enter one if it was started with --api-key.";
+      $("key-form").classList.remove("hidden");
     }
   }
 
   $("key-btn").addEventListener("click", () => {
-    if ($("key-banner").classList.contains("hidden")) openKeyBanner(true);
+    if ($("key-banner").classList.contains("hidden")) openKeyBanner(hasKey);
     else closeKeyBanner();
   });
   $("key-cancel").addEventListener("click", closeKeyBanner);
@@ -1090,6 +1144,8 @@
     if (!res.ok) { toast(await detail(res)); return; }
     const state = await res.json();
     showKey(state);   // closes the banner and clears the input
+    const modelRes = await apiFetch("/api/model");
+    if (modelRes.ok) showModel(await modelRes.json());
     toast(state.stored_in === "keyring" ? "Key saved to the OS credential store."
         : state.stored_in === "file" ? "Key saved to " + state.stored_at + " (convenience, not protection)."
         : state.stale_store ? "Key set for this session. A different key is still saved "
@@ -1103,17 +1159,52 @@
   function showModel(state) {
     const btn = $("model-btn");
     btn.classList.remove("hidden");
-    btn.textContent = state.model;
+    btn.textContent = state.unknown ? "Model unknown (server has not answered)" : state.model;
     btn.disabled = !state.editable;
     btn.title = state.editable
       ? "Click to change the model for this session"
       : "Bound beyond localhost — set --model or MICROCLAW_MODEL and restart";
-    $("model-input").value = state.model;
+    const effort = $("reasoning-effort");
+    if (state.reasoning_effort_options && state.reasoning_effort_options.length) {
+      effort.classList.remove("hidden");
+      // A startup value outside the four offered (e.g. a template's own
+      // `xhigh`) is still the level in force: show it rather than a blank.
+      const current = state.reasoning_effort || "";
+      effort.querySelectorAll("option[data-startup]").forEach(o => o.remove());
+      if (![...effort.options].some(o => o.value === current)) {
+        const o = document.createElement("option");
+        o.value = current;
+        o.dataset.startup = "1";
+        o.textContent = current + " " + "(startup setting)";
+        effort.appendChild(o);
+      }
+      effort.value = current;
+      effort.disabled = !state.reasoning_effort_changeable;
+      effort.title = state.reasoning_effort_change_reason || "Change reasoning effort for this session";
+    } else effort.classList.add("hidden");
+    $("model-input").value = state.model || "";
     if (state.available && state.available.length) {
       $("model-list").innerHTML = state.available
         .map(id => '<option value="' + Transcript.esc(id) + '">').join("");
     }
   }
+
+  $("reasoning-effort").addEventListener("change", async () => {
+    const effort = $("reasoning-effort").value;
+    const res = await apiFetch("/api/model/reasoning-effort", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reasoning_effort: effort }),
+    });
+    if (!res.ok) { toast(await detail(res)); return; }
+    const state = await res.json();
+    showModel(state);
+    const seconds = state.reasoning_rebuild_seconds;
+    toast(seconds == null
+      ? "Reasoning effort changed. The next request may re-process the full prompt; time estimate unknown before a prefill measurement."
+      // An upper bound: measured 2026-10-22, returning to a level already used
+      // this session re-processed 4 tokens, because the server kept that prompt.
+      : `Reasoning effort changed. The next request may re-process up to about ${Number(state.reasoning_rebuild_tokens).toLocaleString()} tokens (${Number(seconds).toFixed(1)} s) before generation; less if the server still holds that level's prompt.`, true);
+  });
 
   $("model-btn").addEventListener("click", () => {
     const banner = $("model-banner");

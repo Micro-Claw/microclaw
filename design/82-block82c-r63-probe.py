@@ -12,10 +12,14 @@ WHAT IT ASSUMES, ALL OF IT LOAD-BEARING
   turns, just as in the cost reconstruction. Usage turn IDs must follow those
   same boundaries. Missing/misaligned records cannot pin replay partitions.
 * The real ConversationStore.model_messages(history[:i]) reproduces the context
-  under the tree and window being tested. Usage compaction counts are checked
-  on every call; disagreement is reported and partitions remain replay estimates,
-  not a claim about the historical context. A usage log from a tree with a
-  different estimate_tokens pins WHEN compaction fired, not WHERE it cut.
+  under the tree and window being tested. This is always a replay under the
+  current tree's compaction policy. Since 84c, D9 commits only when a fold clears
+  high-water; replaying a pre-84c history can therefore produce a different
+  partition even when its usage log has matching per-call compaction counts.
+  Usage compaction counts are checked on every call; disagreement is reported
+  and partitions remain replay estimates, not a claim about the historical
+  context. Matching counts pin WHEN compaction fired, not WHERE it cut. A usage
+  log from a tree with a different estimate_tokens pins WHEN, not WHERE.
   Compare current/recorded estimated tokens only while both are uncompacted:
   near 1 supports estimator equivalence and replay partition trust; away from 1
   indicates a different estimator and a replay context the model never saw.
@@ -138,12 +142,16 @@ def score(messages, usage=None, *, high_water=DEFAULT_CONTEXT_HIGH_WATER_TOKENS,
     return dict(calls=calls, turns=turn, events=events, mentions=mentions,
                 usage_records=len(usage) if usage is not None else None,
                 usage_events=usage_events, disagreements=disagreements,
-                estimate_ratios=estimate_ratios)
+                estimate_ratios=estimate_ratios,
+                replay_policy='current ConversationStore (D9 high-water gate)')
 
 
 def report(result):
     print(f"{result['calls']} assistant calls, {result['turns']} turns, "
           f"{len(result['events'])} compactions; usage records: {result['usage_records']}")
+    print('Replay policy: current ConversationStore (D9 high-water gate). '
+          'A pre-84c session may have different checkpoint partitions; replay '
+          'partitions are not historical proof.')
     if result['usage_records'] is None:
         print('Replay estimates only: usage-pinned timestamps and turn IDs unavailable.')
     else:

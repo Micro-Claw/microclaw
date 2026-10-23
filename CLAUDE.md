@@ -657,7 +657,10 @@ because a block looks small.
 
 Standing rules that support the above: one worktree per concurrent agent, never
 `git add -A`, never `pip install -e .` while another tree is live. Push uses a
-non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`). Rig-facing
+non-default SSH key (`GIT_SSH_COMMAND="ssh -i ~/.ssh/yonce"`) to `origin` — on
+the machine that has that key. Elsewhere, check `git remote -v` and ask which
+remote a block's branches go to (design/84's go to the operator's fork, `ian`,
+with the default key). Rig-facing
 commands must be PowerShell/cmd-safe. Rig facts belong in gate docs, design
 notes, and rig profiles — never in `microclaw/`.
 

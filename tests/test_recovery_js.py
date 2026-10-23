@@ -388,6 +388,7 @@ def browser_turn_snippets():
     submit_start = html.index('  $("composer").addEventListener("submit"')
     submit_end = html.index('\n\n  $("expand")', submit_start)
     return "\n".join((
+        "  let toastTimer = null;",
         html[html.index("  let extensionPollTimer;"):html.index("  let updateState = null;")],
         html[set_busy_start:set_busy_end],
         html[recovery_start:recovery_end],
@@ -442,7 +443,7 @@ def run_browser_boot(confirm_steps, *, ownership_probe=False, extension_pending=
       }}
       function $(id) {{ return element(id); }}
       const msg = element('msg'), send = element('send');
-      let busy = false, hasKey = true, history = [];
+      let busy = false, hasKey = true, keyRequired = true, history = [];
       const steps = {json.dumps(confirm_steps)};
       async function apiFetch(url) {{
         if (url === '/api/extensions') {{
@@ -625,7 +626,7 @@ def run_browser_turn(*, unrelated_abort=False):
       }}
       function $(id) {{ return element(id); }}
       const msg = element('msg'), send = element('send');
-      let busy = false, hasKey = true, history = [];
+      let busy = false, hasKey = true, keyRequired = true, history = [];
       function toast(value) {{ toasts.push(value); }}
       function autogrow() {{}}
       function paint() {{ paints += 1; }}

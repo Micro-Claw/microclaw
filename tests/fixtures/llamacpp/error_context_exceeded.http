@@ -1,0 +1,4 @@
+HTTP 400
+{"Server": "llama.cpp", "Access-Control-Allow-Origin": "", "Content-Type": "application/json; charset=utf-8", "Content-Length": "203", "Connection": "close"}
+
+{"error":{"code":400,"message":"request (140052 tokens) exceeds the available context size (131072 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":140052,"n_ctx":131072}}

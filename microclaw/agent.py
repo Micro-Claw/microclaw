@@ -2,10 +2,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from typing import Any
 import json
+import math
 import sys
 from datetime import datetime, timezone
 import os
 import time
+import uuid
+import httpx
 
 import anthropic
 
@@ -19,6 +22,7 @@ from microclaw.safety import SafetyGuard
 from microclaw.skills import catalog_text
 from microclaw.tools import TOOL_REGISTRY, execute_tool
 from microclaw.tools_schema import TOOLS_CACHED
+from microclaw.conversation import ConversationStore
 
 # Latest available Opus at time of writing (verified against the Claude API
 # model reference). Override per-run with --model or the MICROCLAW_MODEL env var.
@@ -31,8 +35,168 @@ DEFAULT_MAX_ITERATIONS = 50
 
 _client: anthropic.Anthropic | None = None
 _known_models: list[str] | None = None
+LLM_BASE_URL_ENV = "MICROCLAW_LLM_BASE_URL"
+LLM_API_KEY_ENV = "MICROCLAW_LLM_API_KEY"
+_local_models: list[str] | None = None
+_local_vision: dict[str, bool] = {}
+_local_http: httpx.Client | None = None
+_local_prefill_rate: float | None = None
+_local_fixed_tokens: int | None = None
+_local_context_ceiling: int | None = None
+LOCAL_PREFILL_MEASUREMENT_MIN_TOKENS = 1000
+
+
+def _get_local_http() -> httpx.Client:
+    global _local_http
+    if _local_http is None:
+        _local_http = httpx.Client()
+    return _local_http
+
+
+def llm_base_url() -> str | None:
+    return os.environ.get(LLM_BASE_URL_ENV, "").rstrip("/") or None
+
+
+def set_llm_api_key(key: str) -> None:
+    os.environ[LLM_API_KEY_ENV] = key
+    global _local_models
+    _local_models = None
+    _local_vision.clear()
+
+
+def set_local_reasoning_effort(effort: str | None) -> None:
+    """Set the process-local template effort; None restores the server default."""
+    if effort:
+        os.environ[LOCAL_REASONING_EFFORT_ENV] = effort
+    else:
+        os.environ.pop(LOCAL_REASONING_EFFORT_ENV, None)
+
+
+def _local_get(path: str):
+    url = llm_base_url()
+    headers = {"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"} if os.environ.get(LLM_API_KEY_ENV) else {}
+    return _get_local_http().get(url + path, headers=headers, timeout=30)
+
+
+def _local_vision_enabled(base=None):
+    base = base or llm_base_url()
+    if not base:
+        return False
+    if base not in _local_vision:
+        try:
+            response = _local_get("/props")
+            response.raise_for_status()
+            vision = bool(response.json().get("modalities", {}).get("vision"))
+        except Exception:
+            return False
+        _local_vision[base] = vision
+    return _local_vision[base]
 
 MAX_OUTPUT_TOKENS = 8192
+LOCAL_CONTEXT_DEFAULT = 32768
+# When authentication or reachability prevents budget probes, keep 4,096
+# history tokens available: enough to avoid compacting every round, while the
+# reported provisional budget is replaced as soon as the probes can answer.
+LOCAL_CONTEXT_UNPROBED_HIGH_WATER = 4096
+# 4,096 tokens is a 12% cushion over the measured 33,864-token fixed prompt.
+# It covers turn-to-turn knowledge/rig-interview changes and history-estimate
+# error; the small measured history error was 3 tokens on a 2,716-token sample.
+LOCAL_CONTEXT_MARGIN = 4096
+LOCAL_REASONING_EFFORT_ENV = "MICROCLAW_LLM_REASONING_EFFORT"
+
+
+def local_context_budget():
+    """Read the local server budget and vision support, using a provisional budget on failure."""
+    global _local_fixed_tokens, _local_context_ceiling
+    failures = []
+    n_ctx = None
+    try:
+        response = _local_get("/props")
+        response.raise_for_status()
+        n_ctx = response.json().get("default_generation_settings", {}).get("n_ctx")
+        if not n_ctx:
+            failures.append("/props did not report n_ctx")
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        failures.append(f"/props HTTP {response.status_code}" if response is not None
+                        else f"/props {type(exc).__name__}")
+    if not n_ctx:
+        try:
+            response = _local_get("/v1/models")
+            response.raise_for_status()
+            models = response.json().get("data", [])
+            n_ctx = next((model.get("meta", {}).get("n_ctx") for model in models
+                          if model.get("meta", {}).get("n_ctx")), None)
+            if not n_ctx:
+                failures.append("/v1/models did not report n_ctx")
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            failures.append(f"/v1/models HTTP {response.status_code}" if response is not None
+                            else f"/v1/models {type(exc).__name__}")
+    used_default = not n_ctx
+    n_ctx = int(n_ctx or LOCAL_CONTEXT_DEFAULT)
+    vision = _local_vision_enabled()
+    if llm_base_url() not in _local_vision:
+        failures.append("/props vision probe did not answer")
+    body = _local_request_body(
+        [{"role": "user", "content": "hi"}], _system_blocks(), TOOLS_CACHED,
+        "budget", vision,
+    )
+    probe_path = "/apply-template"
+    try:
+        headers = ({"Authorization": f"Bearer {os.environ[LLM_API_KEY_ENV]}"}
+                   if os.environ.get(LLM_API_KEY_ENV) else {})
+        rendered_response = _get_local_http().post(
+            llm_base_url() + "/apply-template", json=body, timeout=30, headers=headers,
+        )
+        rendered_response.raise_for_status()
+        probe_path = "/tokenize"
+        tokenize_response = _get_local_http().post(
+            llm_base_url() + "/tokenize",
+            json={"content": rendered_response.json()["prompt"]}, timeout=30,
+            headers=headers,
+        )
+        tokenize_response.raise_for_status()
+        fixed = len(tokenize_response.json()["tokens"])
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        failures.append(f"{probe_path} HTTP {response.status_code}" if response is not None
+                        else f"{probe_path} {type(exc).__name__}")
+        # Raw request JSON measured against the 33,864-token rendered prompt;
+        # 2.36 bytes/token is deliberately conservative for this fallback.
+        fixed = math.ceil(len(json.dumps(body, ensure_ascii=False,
+                                        separators=(",", ":")).encode("utf-8")) / 2.36)
+    computed_high = n_ctx - fixed - MAX_OUTPUT_TOKENS - LOCAL_CONTEXT_MARGIN
+    _local_fixed_tokens = fixed
+    # This is the server-token history ceiling after fixed prompt, output
+    # reserve, and margin. With successful probes high-water uses this same
+    # figure in store-estimate units; calibration maps estimates to this ceiling.
+    _local_context_ceiling = computed_high
+    floor_used = bool(failures) and computed_high < LOCAL_CONTEXT_UNPROBED_HIGH_WATER
+    high = (
+        max(LOCAL_CONTEXT_UNPROBED_HIGH_WATER, computed_high)
+        if failures else max(2, computed_high)
+    )
+    low = max(1, int(high * 0.75))
+    print(f"[microclaw] Local context budget: n_ctx={n_ctx}"
+          f"{' (default; server did not report n_ctx)' if used_default else ''}, "
+          f"fixed={fixed}, high={high}, low={low}"
+          f", reasoning_effort={os.environ.get(LOCAL_REASONING_EFFORT_ENV) or 'server default'}"
+          f"{' (provisional 4096-token history floor)' if floor_used else ''}"
+          f"{'; probe failures: ' + ', '.join(failures) if failures else ''}")
+    return high, low, vision
+
+
+def make_conversation_store(audit):
+    """Build the appropriate history budget for the selected backend."""
+    if not llm_base_url():
+        return ConversationStore(audit)
+    high, low, vision = local_context_budget()
+    store = ConversationStore(audit, high_water_tokens=high,
+                              low_water_tokens=low, text_only=not vision)
+    store.local_fixed_tokens = _local_fixed_tokens
+    store.local_context_ceiling = _local_context_ceiling
+    return store
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -59,8 +223,15 @@ def set_api_key(key: str) -> None:
 
 
 def resolve_model(model: str | None = None) -> str:
-    """Pick the model: explicit arg > MICROCLAW_MODEL env > DEFAULT_MODEL."""
-    return model or os.environ.get(MODEL_ENV) or DEFAULT_MODEL
+    """Pick an explicit/configured model, or the backend's first suggestion."""
+    if model or os.environ.get(MODEL_ENV):
+        return model or os.environ.get(MODEL_ENV)
+    if llm_base_url():
+        models = known_models()
+        # "default" is a neutral OpenAI-compatible selector when the server
+        # has not exposed an id yet; the UI separately reports unknown state.
+        return models[0] if models else "default"
+    return DEFAULT_MODEL
 
 
 def known_models() -> list[str]:
@@ -70,7 +241,16 @@ def known_models() -> list[str]:
     populated must still be usable, so callers keep the field free-text. An
     unreachable API is not an error here — it just means no suggestions.
     """
-    global _known_models
+    global _known_models, _local_models
+    if llm_base_url():
+        if _local_models is None:
+            try:
+                response = _local_get("/v1/models")
+                response.raise_for_status()
+                _local_models = [m["id"] for m in response.json().get("data", [])]
+            except Exception:
+                return []
+        return _local_models
     if _known_models is None:
         try:
             _known_models = [m.id for m in _get_client().models.list(limit=100).data]
@@ -619,6 +799,16 @@ class _BadModel(Exception):
     """The API does not know this model id. Internal to this module."""
 
 
+class _LocalAPIError(Exception):
+    """A non-retryable local server response suitable for a user error event."""
+
+
+class _LocalTransient(Exception):
+    def __init__(self, message: str, retry_after: float = 0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def _cancelled(cancel) -> bool:
     return cancel is not None and cancel.is_set()
 
@@ -724,9 +914,13 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
     for attempt, delay in enumerate([0, *_RETRY_DELAYS]):
         delay = max(delay, retry_after)
         if delay:
-            yield {"type": "retry", "delay": delay, "attempt": attempt}
+            yield {"type": "retry", "delay": delay, "attempt": attempt,
+                   "service": "Local server" if llm_base_url() else "API"}
             time.sleep(delay)
         try:
+            if llm_base_url():
+                return (yield from _stream_local_round(messages, system_blocks, model, tool_schemas,
+                                                       context_provider, iteration, usage_sink))
             model_messages = (
                 context_provider(messages) if context_provider is not None else messages
             )
@@ -781,6 +975,23 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
             # A free-text model picker (v4c) can hold an id the API rejects.
             # Without this it escapes run_agent_iter as a 500 on the SSE stream.
             raise _BadModel(str(e)) from None
+        except _LocalTransient as e:
+            if attempt == len(_RETRY_DELAYS):
+                raise _TransientAPIError(str(e)) from e
+            retry_after = e.retry_after
+            if retry_after > MAX_RETRY_AFTER_SECONDS:
+                raise _TransientAPIError(
+                    f"Local server {llm_base_url()} requested a {retry_after:g} second retry delay, "
+                    "which is too long to hold this turn open. Please try again later."
+                ) from e
+        except _LocalAPIError:
+            raise
+        except httpx.TransportError as e:
+            if attempt == len(_RETRY_DELAYS):
+                raise _TransientAPIError(
+                    f"Local server {llm_base_url()} is still unavailable after retrying."
+                ) from e
+            retry_after = 0.0
         except (anthropic.RateLimitError, anthropic.InternalServerError,
                 anthropic._exceptions.OverloadedError,
                 anthropic.APIConnectionError) as e:
@@ -800,6 +1011,317 @@ def _stream_one_round(messages, system_blocks, model, tool_schemas,
                         "to hold this turn open. Please try again later."
                     ) from e
     raise RuntimeError("unexpected loop exit")  # pragma: no cover
+
+
+def _local_request_body(model_messages, system_blocks, tool_schemas, model, vision):
+    """Translate canonical history into one OpenAI-compatible request body."""
+    wire = [{
+        "role": "system",
+        "content": "\n\n".join(
+            block.get("text", "")
+            for block in system_blocks
+            if block.get("type") == "text"
+        ),
+    }]
+    for message in model_messages:
+        role = message["role"]
+        content = message["content"]
+        if isinstance(content, str):
+            wire.append({"role": role, "content": content})
+            continue
+        if role == "assistant":
+            texts = []
+            calls = []
+            for block in content:
+                if isinstance(block, dict):
+                    kind = block.get("type")
+                    get = block.get
+                else:
+                    kind = getattr(block, "type", None)
+                    get = lambda key: getattr(block, key)
+                if kind == "text":
+                    texts.append(get("text"))
+                elif kind == "tool_use":
+                    calls.append({
+                        "id": get("id"),
+                        "type": "function",
+                        "function": {
+                            "name": get("name"),
+                            "arguments": json.dumps(get("input"), separators=(",", ":")),
+                        },
+                    })
+                else:
+                    raise ValueError(f"Cannot translate assistant content block {kind!r}")
+            entry = {"role": "assistant", "content": "".join(texts) or None}
+            if calls:
+                entry["tool_calls"] = calls
+            wire.append(entry)
+        elif role == "user":
+            images = []
+            for block in content:
+                kind = block.get("type")
+                if kind == "text":
+                    wire.append({"role": "user", "content": block.get("text", "")})
+                    continue
+                if kind != "tool_result":
+                    raise ValueError(f"Cannot translate user content block {kind!r} to the local chat API")
+                parts = block.get("content", "")
+                if isinstance(parts, list):
+                    text = "\n".join(
+                        part.get("text", "")
+                        for part in parts
+                        if part.get("type") == "text"
+                    )
+                    for part in parts:
+                        if part.get("type") != "image":
+                            continue
+                        if vision:
+                            source = part["source"]
+                            images.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{source['media_type']};base64,{source['data']}"
+                                },
+                            })
+                    if not vision and any(part.get("type") == "image" for part in parts):
+                        omitted = '{"image_omitted": "this model does not accept images"}'
+                        text += ("\n" if text else "") + omitted
+                else:
+                    text = str(parts)
+                if block.get("is_error"):
+                    text = "Error: " + text
+                wire.append({
+                    "role": "tool",
+                    "tool_call_id": block["tool_use_id"],
+                    "content": text,
+                })
+            if images:
+                wire.append({"role": "user", "content": images})
+        else:
+            raise ValueError(f"Cannot translate message role {role!r} to the local chat API")
+
+    payload = {
+        "model": model,
+        "messages": wire,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    # Empty means unset: PowerShell clears a variable by assigning ''.
+    reasoning_effort = os.environ.get(LOCAL_REASONING_EFFORT_ENV)
+    if reasoning_effort:
+        payload["chat_template_kwargs"] = {"reasoning_effort": reasoning_effort}
+    if tool_schemas:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool["input_schema"],
+                },
+            }
+            for tool in tool_schemas
+        ]
+    return payload
+
+
+def _local_error(response, base):
+    response.read()
+    try:
+        error = response.json().get("error", {})
+    except Exception:
+        error = {}
+    if response.status_code == 404:
+        raise _BadModel(f"Local server {base} does not know the selected model.")
+    if response.status_code in (429, 503):
+        try:
+            retry_after = float(response.headers.get("retry-after", 0))
+        except ValueError:
+            retry_after = 0
+        raise _LocalTransient(
+            f"Local server {base} is still unavailable after retrying.", retry_after
+        )
+    if response.status_code == 400 and error.get("n_ctx"):
+        raise _LocalAPIError(
+            f"Local server {base} context limit is {error['n_ctx']} tokens; "
+            f"request uses {error.get('n_prompt_tokens', 'an unknown number of')} tokens."
+        )
+    if response.status_code == 401:
+        raise _LocalAPIError(
+            f"Local server {base} rejected its API key. Set {LLM_API_KEY_ENV} "
+            "or enter the local key in the browser."
+        )
+    detail = error.get("message", response.content.decode(errors="replace"))
+    raise _LocalAPIError(f"Local server {base} returned HTTP {response.status_code}: {detail}")
+
+
+def _read_local_stream(response, base, model, iteration, usage_sink, store=None,
+                       reasoning_effort=None):
+    """Read chat-completion SSE and return the Anthropic-shaped Message."""
+    global _local_prefill_rate
+    text = []
+    calls = {}
+    finish = None
+    usage = {}
+    timings = {}
+    reasoning_length = 0
+    for line in response.iter_lines():
+        if not line.startswith("data: "):
+            continue
+        data = line[6:]
+        if data == "[DONE]":
+            continue
+        chunk = json.loads(data)
+        if "error" in chunk:
+            message = chunk["error"].get("message", str(chunk["error"]))
+            raise _LocalAPIError(f"Local server {base} returned a stream error: {message}")
+        if not chunk.get("choices"):
+            usage = chunk.get("usage", {})
+            timings = chunk.get("timings", {})
+            continue
+        choice = chunk["choices"][0]
+        delta = choice.get("delta", {})
+        reasoning_length += len(delta.get("reasoning_content") or "")
+        if delta.get("content"):
+            text.append(delta["content"])
+            yield {"type": "text_delta", "text": delta["content"]}
+        for call in delta.get("tool_calls", []):
+            item = calls.setdefault(call["index"], {"id": "", "name": "", "arguments": ""})
+            item["id"] += call.get("id", "")
+            function = call.get("function", {})
+            item["name"] += function.get("name", "")
+            item["arguments"] += function.get("arguments", "")
+        if choice.get("finish_reason"):
+            finish = choice["finish_reason"]
+
+    blocks = [{"type": "text", "text": "".join(text)}] if text else []
+    for item in calls.values():
+        if not item["id"]:
+            item["id"] = "call_" + uuid.uuid4().hex
+        try:
+            tool_input = json.loads(item["arguments"] or "{}")
+        except json.JSONDecodeError as exc:
+            tool_input = {
+                "_microclaw_parse_error": f"Invalid tool arguments JSON: {exc}",
+                "raw": item["arguments"],
+            }
+        blocks.append({
+            "type": "tool_use",
+            "id": item["id"],
+            "name": item["name"],
+            "input": tool_input,
+        })
+
+    stop_reason = {
+        "stop": "end_turn",
+        "tool_calls": "tool_use",
+        "length": "max_tokens",
+    }.get(finish)
+    response = anthropic.types.Message.model_validate({
+        "id": "local",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": blocks,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+        },
+    })
+    fixed = getattr(store, "local_fixed_tokens", None)
+    estimate = getattr(store, "last_estimated_tokens", 0)
+    prompt_tokens = usage.get("prompt_tokens")
+    # A short history magnifies fixed-prompt measurement error. Require at
+    # least 256 estimated history tokens and complete server prompt timings;
+    # reject implausible ratios rather than poisoning future fit decisions.
+    if (store is not None and isinstance(prompt_tokens, (int, float))
+            and fixed is not None and estimate >= 256
+            and timings.get("prompt_n") and timings.get("prompt_ms", 0) > 0):
+        history_tokens = prompt_tokens - fixed
+        ratio = history_tokens / estimate if history_tokens > 0 else None
+        if ratio is not None and 0.1 <= ratio <= 4.0:
+            store.local_estimate_ratio = ratio
+    if usage_sink is not None:
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "model": model,
+            "iteration": iteration,
+            "stop_reason": stop_reason,
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
+            "cache_read_input_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+            "reasoning_characters": reasoning_length,
+            "reasoning_effort": reasoning_effort,
+        }
+        record.update({
+            field: timings[field]
+            for field in ("prompt_n", "cache_n", "prompt_ms", "predicted_n", "predicted_ms")
+            if field in timings
+        })
+        try:
+            usage_sink(record)
+        except Exception as exc:
+            print(f"[microclaw] Could not record usage: {exc}", file=sys.stderr)
+    prompt_n = timings.get("prompt_n")
+    prompt_ms = timings.get("prompt_ms")
+    if (isinstance(prompt_n, (int, float)) and prompt_n >= LOCAL_PREFILL_MEASUREMENT_MIN_TOKENS
+            and isinstance(prompt_ms, (int, float)) and prompt_ms > 0):
+        _local_prefill_rate = prompt_n / (prompt_ms / 1000)
+    return response
+
+
+def _stream_local_round(messages, system_blocks, model, tool_schemas,
+                        context_provider, iteration, usage_sink):
+    base = llm_base_url()
+    reasoning_effort = os.environ.get(LOCAL_REASONING_EFFORT_ENV) or None
+    vision = _local_vision_enabled(base)
+    store = getattr(context_provider, "__self__", None)
+    compactions_before = getattr(store, "compaction_count", 0)
+    model_messages = context_provider(messages) if context_provider else messages
+    if getattr(store, "compaction_count", 0) > compactions_before:
+        before = getattr(store, "last_pre_compaction_estimated_tokens", None)
+        after = getattr(store, "last_estimated_tokens", None)
+        # The system+tools prefix stays cached, so the history after the new
+        # checkpoint is what the server re-processes: that is the store's own
+        # post-compaction estimate, already text-only-aware for images.
+        rebuild_tokens = round(after * (getattr(store, "local_estimate_ratio", None) or 1.0))
+        yield {"type": "compaction", "estimated_tokens": after,
+               "before_tokens": before, "after_tokens": after,
+               "rebuild_tokens": rebuild_tokens,
+               "expected_rebuild_seconds": (rebuild_tokens / _local_prefill_rate
+                                            if _local_prefill_rate else None),
+               "prefill_tokens_per_second": _local_prefill_rate,
+               "message": "Predicted time covers the rebuild only; the model then thinks before replying."}
+    elif getattr(store, "last_compaction_declined", False):
+        yield {"type": "compaction_declined",
+               "estimated_tokens": getattr(store, "last_estimated_tokens", None),
+               "high_water_tokens": getattr(store, "high_water_tokens", None),
+               "threshold_tokens": getattr(store, "local_context_ceiling", None)
+                   or getattr(store, "high_water_tokens", None),
+               "message": "Conversation history is above the compaction threshold; "
+                          "recent turns cannot be folded yet, so this request is being sent as is. "
+                          "Any predicted time covers the rebuild only; the model then thinks before replying."}
+    payload = _local_request_body(
+        model_messages, system_blocks, tool_schemas, model, vision
+    )
+    headers = {}
+    key = os.environ.get(LLM_API_KEY_ENV)
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    timeout = httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0)
+    with _get_local_http().stream(
+        "POST", base + "/v1/chat/completions", json=payload,
+        headers=headers, timeout=timeout,
+    ) as response:
+        if response.status_code >= 400:
+            _local_error(response, base)
+        return (yield from _read_local_stream(
+            response, base, model, iteration, usage_sink, store=store,
+            reasoning_effort=reasoning_effort))
 
 
 def run_agent_iter(
@@ -829,8 +1351,11 @@ def run_agent_iter(
     to say so whether or not anyone was listening.
 
     `context_provider` maps the full history to the bounded view sent to the
-    model; identity is the default. `on_message` runs immediately after each
-    append, allowing a durable audit to flush records as they are produced.
+    model; identity is the default. Local compaction notices detect a changed
+    `ConversationStore.compaction_count` through `context_provider.__self__`, so
+    that provider must be the store's bound `model_messages` method.
+    `on_message` runs immediately after each append, allowing a durable audit
+    to flush records as they are produced.
     `confirmation_records`, when supplied by the browser session, is sampled
     around each dispatch so that tool results report their human decisions.
 
@@ -877,6 +1402,9 @@ def run_agent_iter(
             if isinstance(e, _BadModel):
                 yield {"type": "error",
                        "message": f"The API rejected the model '{model}': {e}"}
+                return
+            if isinstance(e, _LocalAPIError):
+                yield {"type": "error", "message": str(e)}
                 return
             raise
 
@@ -933,6 +1461,14 @@ def run_agent_iter(
                 confirmation_start = (
                     len(confirmation_records) if confirmation_records is not None else 0
                 )
+                if isinstance(block.input, dict) and "_microclaw_parse_error" in block.input:
+                    result_json = json.dumps({"error": block.input["_microclaw_parse_error"]})
+                    result_block = {"type": "tool_result", "tool_use_id": block.id,
+                                    "is_error": True, "content": result_json}
+                    tool_results.append(result_block)
+                    yield {"type": "tool_result", "tool_use_id": block.id,
+                           "content": result_json, "is_error": True}
+                    continue
                 result_json = execute_tool(
                     block.name, block.input, ctrl, guard, tool_registry,
                     setup_mode=setup_mode,
@@ -1033,8 +1569,20 @@ def run_agent(
         elif event["type"] == "cancelled":
             reply = event["reason"]
         elif event["type"] == "retry":
+            service = f"{event.get('service', 'API')}"
             print(
-                f"Anthropic API overloaded — retrying in {event['delay']}s "
+                f"{service} unavailable — retrying in {event['delay']}s "
                 f"(attempt {event['attempt']}/{len(_RETRY_DELAYS)})..."
             )
+        elif event["type"] == "compaction":
+            seconds = event.get("expected_rebuild_seconds")
+            cost = f"about {seconds:.1f}s" if seconds is not None else "time unknown (no measured prefill rate yet)"
+            print(f"[microclaw] Compacted context: {event.get('before_tokens')} → "
+                  f"{event.get('after_tokens')} estimated tokens; rebuilding about "
+                  f"{event.get('rebuild_tokens')} calibrated tokens, {cost}. "
+                  "Predicted time covers the rebuild only; the model then thinks before replying.")
+        elif event["type"] == "compaction_declined":
+            print(f"[microclaw] {event['message']} "
+                  f"({event.get('estimated_tokens')} estimated / "
+                  f"{event.get('threshold_tokens', event.get('high_water_tokens'))} token threshold).")
     return reply, messages

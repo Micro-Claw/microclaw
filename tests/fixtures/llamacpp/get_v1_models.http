@@ -1,0 +1,4 @@
+HTTP 200
+{"Server": "llama.cpp", "Access-Control-Allow-Origin": "", "Content-Type": "application/json; charset=utf-8", "Content-Length": "667", "Keep-Alive": "timeout=5, max=100"}
+
+{"models":[{"name":"Qwen3.8-27B-UD-Q4_K_XL.gguf","model":"Qwen3.8-27B-UD-Q4_K_XL.gguf","modified_at":"","size":"","digest":"","type":"model","description":"","tags":[""],"capabilities":["completion"],"parameters":"","details":{"parent_model":"","format":"gguf","family":"","families":[""],"parameter_size":"","quantization_level":""}}],"object":"list","data":[{"id":"Qwen3.8-27B-UD-Q4_K_XL.gguf","aliases":["Qwen3.8-27B-UD-Q4_K_XL.gguf"],"tags":[],"object":"model","created":1790893916,"owned_by":"llamacpp","meta":{"vocab_type":2,"n_vocab":248320,"n_ctx":131072,"n_ctx_train":262144,"n_embd":5120,"n_params":27320697856,"size":17548181504,"ftype":"Q4_K - Medium"}}]}

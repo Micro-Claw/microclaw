@@ -33,7 +33,7 @@ CHECKPOINT_ELISION = "[...ELIDED {count} CHARS...]"
 _API_KEY_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{12,}\b")
 _BEARER_RE = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{12,}")
 _SECRET_KEYS = {
-    "api_key", "anthropic_api_key", "authorization", "bearer_token",
+    "api_key", "anthropic_api_key", "llm_api_key", "authorization", "bearer_token",
     "remote_token", "pairing_code", "session_token",
 }
 
@@ -391,13 +391,16 @@ def prune_transcripts(directory: str | os.PathLike[str], retention_days: int | N
     return removed
 
 
-def estimate_tokens(messages: list[dict]) -> int:
+def estimate_tokens(messages: list[dict], *, text_only: bool = False) -> int:
     """Return a local deterministic token *estimate*, never an exact count."""
     # 2.36 UTF-8 bytes per token, measured against the API's own accounting on a
     # live session (design/82, block 82a's gate): billed history tokens ran 1.69x
     # the old bytes/4 estimate, stable at 1.67-1.71 over 59 calls.
     # Four was optimistic in the one direction a context guard must not be.
-    payload = json.dumps(jsonable(messages), ensure_ascii=False, separators=(",", ":"))
+    serializable = jsonable(messages)
+    if text_only:
+        serializable = _without_images(serializable)
+    payload = json.dumps(serializable, ensure_ascii=False, separators=(",", ":"))
     return math.ceil(len(payload.encode("utf-8")) / 2.36) + 8 * len(messages)
 
 
@@ -543,24 +546,42 @@ class ConversationStore:
 
     def __init__(self, audit: AuditLog, *,
                  high_water_tokens: int = DEFAULT_CONTEXT_HIGH_WATER_TOKENS,
-                 low_water_tokens: int = DEFAULT_CONTEXT_LOW_WATER_TOKENS):
+                 low_water_tokens: int = DEFAULT_CONTEXT_LOW_WATER_TOKENS,
+                 text_only: bool = False):
         if not 0 < low_water_tokens < high_water_tokens:
             raise ValueError("context low-water must be positive and below high-water")
         self.audit = audit
         self.high_water_tokens = high_water_tokens
         self.low_water_tokens = low_water_tokens
+        self.text_only = text_only
         self._cut = 0
         self._checkpoint: dict | None = None
         self.compaction_count = 0
         self.last_estimated_tokens = 0
+        self.last_pre_compaction_estimated_tokens = None
+        self.last_compaction_declined = False
+        self._declined_stretch = False
+        # Set only for the local OpenAI-compatible backend. The ratio is
+        # server history tokens / the store's estimate of that same view.
+        self.local_context_ceiling = None
+        self.local_fixed_tokens = None
+        self.local_estimate_ratio = None
 
     def append(self, message: dict) -> None:
         self.audit.append(message)
 
     def model_messages(self, full_history: list[dict]) -> list[dict]:
+        self.last_compaction_declined = False
         current = ([self._checkpoint] if self._checkpoint else []) + full_history[self._cut:]
-        self.last_estimated_tokens = estimate_tokens(current)
+        self.last_estimated_tokens = estimate_tokens(current, text_only=self.text_only)
+        self.last_pre_compaction_estimated_tokens = self.last_estimated_tokens
+        local_over_ceiling = (
+            self.local_context_ceiling is not None
+            and self.last_estimated_tokens * (self.local_estimate_ratio or 1.0)
+            > self.local_context_ceiling
+        )
         if self.last_estimated_tokens <= self.high_water_tokens:
+            self._declined_stretch = False
             return current
 
         complete_ends = _complete_turn_ends(full_history)
@@ -574,20 +595,43 @@ class ConversationStore:
         ends = [end for end in complete_ends
                 if self._cut < end <= floor_boundary]
         chosen = self._cut
+        chosen_estimate = self.last_estimated_tokens
+        best_under_high = None
         for end in ends:
             candidate_checkpoint = _checkpoint(full_history[:end], self.audit.secrets)
             candidate = [candidate_checkpoint, *full_history[end:]]
-            chosen = end
-            if estimate_tokens(candidate) <= self.low_water_tokens:
+            candidate_estimate = estimate_tokens(candidate, text_only=self.text_only)
+            if candidate_estimate < chosen_estimate:
+                chosen = end
+                chosen_estimate = candidate_estimate
+            if candidate_estimate <= self.high_water_tokens:
+                best_under_high = (end, candidate_estimate)
+            if candidate_estimate <= self.low_water_tokens:
+                chosen = end
+                chosen_estimate = candidate_estimate
                 break
-        if chosen == self._cut:
-            # The in-flight/recent turn alone is over budget. Splitting it would
-            # break tool integrity, so leave it intact and let the API report its
-            # real context limit.
+        if self.local_context_ceiling is not None:
+            # A low-water fold always wins. Otherwise only the calibrated
+            # server-fit valve may commit a fold, choosing the deepest one
+            # that clears estimate-unit high-water.
+            if chosen_estimate <= self.low_water_tokens and chosen != self._cut:
+                pass  # Commit through the shared block below.
+            elif local_over_ceiling and best_under_high:
+                chosen, chosen_estimate = best_under_high
+            else:
+                self.last_compaction_declined = not self._declined_stretch
+                self._declined_stretch = True
+                return current
+        if chosen == self._cut or chosen_estimate > self.high_water_tokens:
+            # Keep the cached prefix when folding cannot get this view under
+            # high-water; a checkpoint that still triggers next round only
+            # forces the server to prefill the same history again.
+            self.last_compaction_declined = not self._declined_stretch
+            self._declined_stretch = True
             return current
         self._cut = chosen
         self._checkpoint = _checkpoint(full_history[:chosen], self.audit.secrets)
         self.compaction_count += 1
-        compacted = [self._checkpoint, *full_history[chosen:]]
-        self.last_estimated_tokens = estimate_tokens(compacted)
-        return compacted
+        self._declined_stretch = False
+        self.last_estimated_tokens = chosen_estimate
+        return [self._checkpoint, *full_history[chosen:]]
