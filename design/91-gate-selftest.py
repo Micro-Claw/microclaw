@@ -1,6 +1,6 @@
-"""Selftest for design/84-gate.py: every graded limb discriminates.
+"""Selftest for design/91-gate.py: every graded limb discriminates.
 
-    uv run python -m pytest -q design\\84-gate-selftest.py
+    uv run python -m pytest -q design\\91-gate-selftest.py
 
 A session is produced by the real `run_agent_iter`, the real
 `ConversationStore` and the real `AuditLog`, against llama.cpp responses
@@ -28,10 +28,10 @@ from microclaw.image_analysis import make_thumbnail
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "llamacpp"
-BASE = "http://gate84-recorded"
+BASE = "http://gate91-recorded"
 KEY = "testkey"
 
-spec = importlib.util.spec_from_file_location("gate84", Path(__file__).with_name("84-gate.py"))
+spec = importlib.util.spec_from_file_location("gate91", Path(__file__).with_name("91-gate.py"))
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
@@ -144,7 +144,7 @@ GRADED = (LOCAL, ONE, NAMES, FIT, D9, COMPACTED, PREFIX, THUMB)
 def good(tmp_path, monkeypatch):
     install_server(monkeypatch)
     # high 2500 / low 1500, 10 turns: each turn adds ~430 estimated tokens and
-    # a fold must clear high-water to commit (design/84 D9), so the checkpoint
+    # a fold must clear high-water to commit (design/91 D9), so the checkpoint
     # plus the two retained turns has to fit; measured, this commits twice
     # (estimates 1502, 1858). At 1200 / 600 no fold ever clears high-water.
     return drive(tmp_path, turns=10, high=2500, low=1500, text_only=True)
@@ -186,7 +186,7 @@ def test_a_prompt_with_no_room_for_the_reply_fails_the_fit_limb(good, capsys):
 
 
 def test_a_compaction_committed_above_high_water_fails_the_d9_limb(good, capsys):
-    # Gate 84 round 1's shape: the compacting call's estimate is still above the
+    # Gate 91 round 1's shape: the compacting call's estimate is still above the
     # high-water the product derives from the server (84,920 there; here the
     # recorded server's tokenize fixture makes it larger, so use n_ctx itself).
     def above(rows):

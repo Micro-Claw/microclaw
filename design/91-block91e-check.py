@@ -1,6 +1,6 @@
-"""Block 84e check: one line per model call of the newest session in a folder.
+"""Block 91e check: one line per model call of the newest session in a folder.
 
-    .venv\\Scripts\\python.exe design\\84-block84e-check.py --session .
+    .venv\\Scripts\\python.exe design\\91-block91e-check.py --session .
 
 Prints, per call, the reasoning level recorded for it, the tokens the server
 processed and reused, and the hidden-reasoning length, then the distinct levels
@@ -31,7 +31,7 @@ def main() -> int:
     print(f"{path.name}: {len(records)} model calls")
     if records and "reasoning_effort" not in records[0]:
         print("NOT EXERCISED - these records carry no reasoning_effort field: "
-              "the session ran on a tree without block 84e")
+              "the session ran on a tree without block 91e")
         return 1
     print(f"{'call':>4}  {'effort':<16} {'processed':>9} {'reused':>7} {'reasoning':>9}")
     for index, record in enumerate(records):

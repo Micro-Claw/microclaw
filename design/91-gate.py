@@ -1,11 +1,11 @@
-"""Gate 84 — score one driven session against a local llama.cpp server.
+"""Gate 91 — score one driven session against a local llama.cpp server.
 
-design/84 puts a local OpenAI-compatible model behind the same agent loop
-(84a) and sizes the conversation budget from the server (84b). This scores the
+design/91 puts a local OpenAI-compatible model behind the same agent loop
+(91a) and sizes the conversation budget from the server (91b). This scores the
 artifacts of one session driven on the machine that runs the server.
 
-    .venv\\Scripts\\python.exe design\\84-gate.py --session . --base-url http://127.0.0.1:8080 --api-key testkey
-    .venv\\Scripts\\python.exe design\\84-gate.py --session . --progress
+    .venv\\Scripts\\python.exe design\\91-gate.py --session . --base-url http://127.0.0.1:8080 --api-key testkey
+    .venv\\Scripts\\python.exe design\\91-gate.py --session . --progress
 
 `--progress` prints one line about the newest session and exits 0; it is the
 meter the runbook watches between turns. Without it every limb runs.
@@ -128,7 +128,7 @@ def server_budget(base_url: str, api_key: str | None) -> tuple[int, int, int] | 
         os.environ["MICROCLAW_LLM_API_KEY"] = api_key
     try:
         from microclaw.conversation import AuditLog
-        store = agent.make_conversation_store(AuditLog("gate84-unused", enabled=False))
+        store = agent.make_conversation_store(AuditLog("gate91-unused", enabled=False))
     except Exception as exc:  # the limb reports it; it must not stop the others
         return f"make_conversation_store failed: {type(exc).__name__}: {exc}"
     return store.high_water_tokens, store.low_water_tokens, n_ctx
@@ -149,7 +149,7 @@ def score(usage_path: Path | None, history_path: Path | None, base_url: str | No
     if not records:
         return s.exit_code()
 
-    # --- 84a: the calls went to the local server -----------------------------
+    # --- 91a: the calls went to the local server -----------------------------
     # prompt_ms and cache_n exist only on the local path (llama.cpp `timings`);
     # an Anthropic call cannot produce them, so this is the backend's signature.
     models = sorted({str(r.get("model")) for r in records})
@@ -176,12 +176,12 @@ def score(usage_path: Path | None, history_path: Path | None, base_url: str | No
              f"{len(unparsed)} of {len(calls)}"
              + (f": {[b.get('name') for b in unparsed]}" if unparsed else ""))
 
-    # --- 84b: the budget comes from the server -------------------------------
+    # --- 91b: the budget comes from the server -------------------------------
     peak = max(r.get("input_tokens") or 0 for r in records)
     compactions = [i for i in range(1, len(records))
                    if (records[i].get("compaction_count") or 0)
                    > (records[i - 1].get("compaction_count") or 0)]
-    # Three questions, graded separately (gate 84 round 1, F2: one limb that
+    # Three questions, graded separately (gate 91 round 1, F2: one limb that
     # skipped compaction records passed a checkpoint committed above high-water).
     FIT = "every request fit the server's context"
     D9 = "no compaction was committed above high-water"
@@ -204,7 +204,7 @@ def score(usage_path: Path | None, history_path: Path | None, base_url: str | No
                     f"server n_ctx {n_ctx}; peak prompt {peak} + {MAX_OUTPUT_TOKENS} reply "
                     f"reserve = {peak + MAX_OUTPUT_TOKENS}"
                     + (f"; over at (record, prompt) {too_big}" if too_big else ""))
-            # D9 (design/84 84c): a fold that cannot reach high-water is not
+            # D9 (design/91 91c): a fold that cannot reach high-water is not
             # committed. The record of the compacting call carries the estimate
             # of the view it sent, so a committed compaction above high is visible.
             bad = [(i, records[i].get("estimated_tokens")) for i in compactions
@@ -257,7 +257,7 @@ def score(usage_path: Path | None, history_path: Path | None, base_url: str | No
                 f"{len(pairs) - len(missed)}/{len(pairs)} rounds reused all but <= 64 tokens"
                 + (f"; misses (previous prompt, reused): {missed[:5]}" if missed else ""))
 
-    # --- 84a D4: an image the text-only server never sees ---------------------
+    # --- 91a D4: an image the text-only server never sees ---------------------
     # The model call that follows an image result is the one whose estimate would
     # carry the thumbnail. Records align with assistant messages in order, so
     # count assistant messages to find it. Only that call is examined: a hook-log

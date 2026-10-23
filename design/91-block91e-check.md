@@ -1,4 +1,4 @@
-# Block 84e check — change the reasoning level within a session
+# Block 91e check — change the reasoning level within a session
 
 **Machine: the llama.cpp workstation**, Micro-Manager running (demo config or the
 real rig — either works; this check makes no exposures beyond what you ask
@@ -21,7 +21,7 @@ Invoke-RestMethod http://127.0.0.1:8080/health
 ```powershell
 cd C:\code\microclaw
 git fetch origin
-git checkout design84/84e-effort
+git checkout design91/91e-effort
 git pull
 git merge-base --is-ancestor e611762 HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK" } else { "STOP - wrong tree" }
@@ -66,7 +66,7 @@ Press **Ctrl+C** in the `serve` window.
 
 ```powershell
 cd C:\code\microclaw
-.venv\Scripts\python.exe design\84-block84e-check.py --session .
+.venv\Scripts\python.exe design\91-block91e-check.py --session .
 ```
 
 Expect three or more calls, the `effort` column reading `server default`, then

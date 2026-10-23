@@ -113,7 +113,7 @@ operator's chosen `131072`, **≈ 89.3k**, low water ≈ 67k.
 A larger window is not free, and the cost moves rather than vanishing:
 compaction becomes rarer, but the round after it re-prefills the whole
 low-water prompt — ≈ 100k tokens, **≈ 110 s at the measured 900 tok/s**, and
-prefill rate falls with length, so likely more. 84b must measure that round
+prefill rate falls with length, so likely more. 91b must measure that round
 rather than this estimate, and the operator should see it coming: a progress
 event saying the context is being rebuilt, not a silent two-minute pause.
 
@@ -133,18 +133,18 @@ same calls driven through the Anthropic one.
 
 ## Blocks
 
-**84a — the backend.** D1–D5 and D8. Streaming chat-completions client over
+**91a — the backend.** D1–D5 and D8. Streaming chat-completions client over
 `httpx` (already a direct dependency; no new package), translation
 both ways, selection, credentials, startup checks, `usage_sink` mapping.
 Tests: a fake server written from llama.cpp's actual SSE shape (`tool_calls`
 deltas split across chunks, `reasoning_content` deltas, the final `timings`
 object), not from our caller. Watched-fail evidence on each translation row.
 
-**84b — the budget and the prefix.** D6 and D7: watermarks from `n_ctx`, a
+**91b — the budget and the prefix.** D6 and D7: watermarks from `n_ctx`, a
 prefix-stability test (two consecutive rounds serialise an identical leading
 byte range), compaction measured as a cold hit.
 
-**Gate 84 — one driven session against a real llama.cpp server**, from a
+**Gate 91 — one driven session against a real llama.cpp server**, from a
 machine that can reach it. Score from the history and usage JSONL: per-round
 `prompt_ms` and `cache_n` (how many cold rounds, and which events caused each),
 whether compaction fired before overflow, and the reporting rules (numbers only
@@ -169,13 +169,13 @@ Notebook drafted on `Qwen-local-model` from `main` `9e9271a`.
 
 | block | branch | start | state |
 |---|---|---|---|
-| 84a | `design84/84a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | **merged** to fork `main` `24a28b3`, 2026-10-06 |
-| 84b | `design84/84b-budget` (on 84a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 1) |
-| 84c | `design84/84c-compaction` (on 84b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 84 round 2: 9/9; F3 → 84d) |
-| 84d | `design84/84d-calibrate` | `4859ce2` (fork `main` + httpx fix) | **merged** to fork `main`, 2026-10-06 (gate 84 round 3: 9/9) |
-| 84e | `design84/84e-effort` | fork `main` `4a01af9` | **merged** to fork `main`, 2026-10-22 (check passed) |
+| 91a | `design91/91a-backend` | `55ccc95` (fixtures) on `4b2e9cf` | **merged** to fork `main` `24a28b3`, 2026-10-06 |
+| 91b | `design91/91b-budget` (on 91a) | `3b0f1c7` | **merged** `24a28b3`, 2026-10-06 (gate 91 round 1) |
+| 91c | `design91/91c-compaction` (on 91b) | `3e778b5` | **merged** `24a28b3`, 2026-10-06 (gate 91 round 2: 9/9; F3 → 91d) |
+| 91d | `design91/91d-calibrate` | `4859ce2` (fork `main` + httpx fix) | **merged** to fork `main`, 2026-10-06 (gate 91 round 3: 9/9) |
+| 91e | `design91/91e-effort` | fork `main` `4a01af9` | **merged** to fork `main`, 2026-10-22 (check passed) |
 
-**84a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
+**91a review, 2026-10-02.** Baseline at `55ccc95`: 5512 passed, 108 skipped,
 1 failed (`test_built_wheel_contains_the_source_tree_skill_catalog`, passes
 alone; ran during a network drop). Three runner turns: `f6917b3` (incomplete
 by its own report), `ec16e85` (round 1: eleven defects F1–F11, among them the
@@ -194,7 +194,7 @@ redundant `kind` branch in `webserve.py`'s key route.
 when the network dropped mid-turn. Launch long runner turns under `nohup`
 (CLAUDE.md step 2) rather than as session background tasks.
 
-**84b review, 2026-10-02.** Four runner turns: `246a72f` (budget from the
+**91b review, 2026-10-02.** Four runner turns: `246a72f` (budget from the
 server), `1dcb5b1` (H1: fixed prompt counted through `/apply-template` +
 `/tokenize` = **33,864**, equal to the server's own `prompt_tokens`; the
 untemplated count was 30,118), `befe1a7` (K1: the browser locked Send without a
@@ -210,17 +210,17 @@ declared with the page state; an absent `key_required` reads as required),
 a 5-round tool loop: each round reused all but 4–56 tokens of the previous.
 Full suite on `a8c4f81`: **5547 passed, 108 skipped, 1 failed** —
 `test_built_wheel_contains_the_source_tree_skill_catalog`, which passes alone
-and failed the same way at 84a's baseline (2 of 6 full runs this session).
+and failed the same way at 91a's baseline (2 of 6 full runs this session).
 
 **D6 correction.** After compaction the system+tools prefix stays cached, so
 the slow round re-processes the history only: ≈ low-water (63,690) at
-~900 tok/s, about 70 s, not the whole prompt. Gate 84 measures it.
+~900 tok/s, about 70 s, not the whole prompt. Gate 91 measures it.
 
 **For later, not a block yet.** The model's chat template renders "Reasoning
 effort is set to xhigh" by default; a lower per-request effort may cut reply
-latency substantially. Measure against gate 84's baseline before changing it.
+latency substantially. Measure against gate 91's baseline before changing it.
 
-## Gate 84, round 1 (workstation, 2026-10-05) — scored from artifacts
+## Gate 91, round 1 (workstation, 2026-10-05) — scored from artifacts
 
 Session `20261005_153316_502746`: 14 model calls, all local; 8 tool calls, all
 registered, none unparsed; the no-key turn gave the 401 error naming
@@ -250,7 +250,7 @@ records, so it passed with a post-compaction estimate above high-water.
 processing), with 28,209 characters of hidden reasoning. The history estimate
 ran 1.12–1.63× the server's own history count (safe direction).
 
-## 84c — compaction only when it helps, and say so
+## 91c — compaction only when it helps, and say so
 
 **D9 — commit a compaction only if it reaches high-water or below.** Otherwise
 send the current view unchanged: the prefix (and on the Anthropic path the
@@ -266,22 +266,22 @@ threshold and recent turns cannot be folded yet. Information, never a
 confirmation (CLAUDE.md).
 
 **D11 — the context window is operator configuration, measured, not coded.**
-84b already reads `n_ctx`. A larger `-c` makes compaction rarer but each rebuild
+91b already reads `n_ctx`. A larger `-c` makes compaction rarer but each rebuild
 longer, and slower per token (above): at `-c 262144` a low-water near 160k would
 re-prefill ~125k tokens at well under 583 tok/s — several minutes per rebuild.
-Gate 84c measures one larger window rather than assuming it helps.
+Gate 91c measures one larger window rather than assuming it helps.
 
-**Gate 84c.** Re-run gate 84 on the workstation with the fixed scorer (F2: grade
+**Gate 91c.** Re-run gate 91 on the workstation with the fixed scorer (F2: grade
 prompt + reserve ≤ `n_ctx` and report every request sent above high-water; a
 mutant for each), expecting one compaction-cost round where round 1 had three.
 
-**84c review, 2026-10-05.** Three runner turns: `fa61636` (D9/D10; three
-existing tests weakened until they no longer tested their purpose — 84a's F1
+**91c review, 2026-10-05.** Three runner turns: `fa61636` (D9/D10; three
+existing tests weakened until they no longer tested their purpose — 91a's F1
 checkpoint-on-the-wire test among them), `ce3d2fc` (N1–N4: purposes restored at
 watermarks where D9 commits; the gate shape pinned — old store 1, 2, 3 commits;
 rebuild estimate text-only; declined notice once per stretch), `4c99b81` (six
 more fixtures outside the targeted files resized; the design/82 R63 probe now
-says it replays under the current policy, so a pre-84c session's partition is
+says it replays under the current policy, so a pre-91c session's partition is
 not historical proof). Coordinator: `f26df3e` (gate scorer F2 — fit and D9
 graded separately; re-scored on round 1's real artifacts it fails D9 at records
 10 and 11), `c650837` (round-2 runbook). Replay of round 1's real history
@@ -289,7 +289,7 @@ through the final store at the gate's watermarks: old 3 commits at calls 10, 11,
 12; new: declined once at 10, sent as is at 11, **one** commit at 12. Full suite
 on `4c99b81`: **5551 passed, 108 skipped**.
 
-## Gate 84, round 2 (workstation, 2026-10-06) — scored from artifacts
+## Gate 91, round 2 (workstation, 2026-10-06) — scored from artifacts
 
 Session `20261006_090604_910375`, 9/9 graded limbs. Two compactions where round
 1 had three, both committed under high-water; two over-threshold requests sent as
@@ -317,18 +317,18 @@ processing; one round wrote 8,656 reasoning characters before a tool call.
 **F7 — the model button says `claude-opus-4-8` on the local path** until the
 server answers `/v1/models`, which a keyed server does only after the key.
 
-## 84d — compaction that buys headroom, numbers that are true
+## 91d — compaction that buys headroom, numbers that are true
 
 **D12 (F3) — on the local path, commit a fold only when it reaches low-water,
 unless the current view would not fit the server.** Otherwise send as is (D9's
 decline). The safety valve compares the *calibrated* view (D13) with what the
 server can take — `n_ctx − fixed − MAX_OUTPUT_TOKENS − margin`, in server
 tokens — and, when the view would not fit, commits the deepest fold at or below
-high-water as 84c does. The Anthropic path keeps 84c's D9 unchanged: it has no
+high-water as 91c does. The Anthropic path keeps 91c's D9 unchanged: it has no
 server-reported limit to calibrate against.
 
 **D13 (F3, F4) — calibrate the estimate against the server's own count.** Each
-local response reports `prompt_tokens`; with the fixed prompt known (84b), the
+local response reports `prompt_tokens`; with the fixed prompt known (91b), the
 server's history tokens over the store's estimate of the history that was sent
 is a measured ratio (round 1: 1.12–1.63). The valve (D12) and the rebuild
 prediction use the calibrated value; before any response, the raw estimate,
@@ -354,11 +354,11 @@ bead-count planning turn did not reliably fall (80 s `xhigh`, 85–93 s
 at that sample size, which cannot show equivalence. The operator tries it out
 of band.
 
-**84d review, 2026-10-06.** Two runner turns: `0b55c88` (D13–D15 right; D12
+**91d review, 2026-10-06.** Two runner turns: `0b55c88` (D13–D15 right; D12
 not — the local path returned before trying any fold whenever the calibrated
 view fitted, so a low-water fold never committed and no notice fired;
 `resolve_model` sent `"model": null`), `9372a89` (P1–P5: the D12 sequence,
-the ceiling stated, the gate-shape test watched failing on 84c's store, a
+the ceiling stated, the gate-shape test watched failing on 91c's store, a
 neutral `"default"` model string, and D16). Coordinator: `cde64fe` (an empty
 effort means unset). Replays of both real gate sessions through `9372a89`'s
 store, calibrated from each session's own usage: round 1's history **0**
@@ -372,7 +372,7 @@ only in the `test` extra while `agent.py` imports it; `anthropic` now depends on
 `httpx2`, so a fresh `.[serve]` install could not import `microclaw.agent`. The
 gates installed `.[serve,test]` and never saw it.
 
-## Gate 84, round 3 (workstation, 2026-10-06) — scored from artifacts
+## Gate 91, round 3 (workstation, 2026-10-06) — scored from artifacts
 
 Session `20261006_135341_257860`, 9/9 graded limbs, reasoning effort unset.
 **One** compaction (95,316 → 6,925 estimated), its rebuild **8.6 s** (5,823
@@ -386,7 +386,7 @@ Qwen model. Operator: "no appreciable delay" on the compaction round.
 Not compaction: record 16's 104 s was the server processing one 140,232-
 character `read_hook_log(limit=200)` result (59,262 new tokens), and a later turn
 asking for the same read overflowed the context; the server refused with its own
-numbers and the turn rolled back (`R146`). Model time was 200 s of prompt
+numbers and the turn rolled back (`R160`). Model time was 200 s of prompt
 processing against **938 s of generation** — one round wrote 11,781 reasoning
 characters in 187 s — which is what the D16 setting is for.
 
@@ -428,7 +428,7 @@ acquiring blue; its reply said "Saved to disk: `red_1`, `green_1`, `blue_1` …
 These are the real, verified acquisitions." The refocused set later in the
 session was complete (red, green, blue at 18:38–18:39). No such error was found
 in `xhigh` or `medium` — which, at n = 1, is not evidence that they cannot make
-it (`R148`).
+it (`R161`).
 
 **Channel switching.** All three sessions found Micro-Manager's `Channel` config
 group empty (`get_available_channels` → no preset), so every level switched the
@@ -442,14 +442,14 @@ in fewer calls at any level.
 **No route to a colour composite.** Asked to combine the channels, `low` said
 plainly it had no tool for it, wrote a script it flagged as unrun and
 unverified, and later opened the three channels with Fiji steps for the overlay
-(`R149`).
+(`R163`).
 
 **Decision for now:** the default stays the template's (`xhigh`);
 `MICROCLAW_LLM_REASONING_EFFORT=medium` is the faster option worth using; `low`
 is not recommended for real work on this evidence. Re-test after the `Channel`
 group exists, two or three sessions per level.
 
-## 84e — change the reasoning level within a session
+## 91e — change the reasoning level within a session
 
 **D17 — a session-only reasoning-level control beside the model picker**
 (operator request, 2026-10-22). On the local path the browser offers *server
@@ -473,7 +473,7 @@ the level (33,864 at the default, 33,826 at `medium`).
 session that switches can be analysed per level (the 2026-10-14 comparison had
 to infer it from file names).
 
-**84e review, 2026-10-22.** One runner turn, `e55761a`: a sibling route
+**91e review, 2026-10-22.** One runner turn, `e55761a`: a sibling route
 `POST /api/model/reasoning-effort` (the model route's guards — `403` not
 editable, `409` mid-turn — and refused on the Anthropic path), one shared
 `_refresh_local_store_budget` for the key and reasoning routes, `reasoning_effort`
@@ -485,10 +485,10 @@ workstation: per-level fixed counts 33,864 / 33,826 and each record carrying
 its level; switching to `medium` re-processed the whole prompt (33,831 tokens),
 **switching back re-processed 4**, because this llama.cpp build kept the earlier
 prompt — so the notice's figure is a ceiling. Full suite on `e611762`: **5562
-passed, 108 skipped**. Check: `design/84-block84e-check.md`, with
-`84-block84e-check.py` (NOT EXERCISED on a pre-84e session, verified).
+passed, 108 skipped**. Check: `design/91-block91e-check.md`, with
+`91-block91e-check.py` (NOT EXERCISED on a pre-91e session, verified).
 
-**84e check (workstation, 2026-10-22) — passed.** Session
+**91e check (workstation, 2026-10-22) — passed.** Session
 `20261022_152509_587336`, 9 calls, levels recorded per call in the order the
 operator switched them: `server default -> medium -> server default -> medium`.
 The notice predicted "up to about 33,904 tokens (39.8 s)"; the first switch to

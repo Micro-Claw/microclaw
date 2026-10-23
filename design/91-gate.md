@@ -1,23 +1,23 @@
-# Gate 84, round 3 — the same session on block 84d
+# Gate 91, round 3 — the same session on block 91d
 
 **Machine: the llama.cpp workstation** (`IIC-LLS-Wkstn`), with Micro-Manager's
 stock demo configuration — no microscope. **Windows PowerShell 5.1** and
 **Chrome**. Microclaw and the model run on the same machine, so the timings are
 a local deployment's.
 
-What this checks: every model call goes to the local server (84a), the
+What this checks: every model call goes to the local server (91a), the
 conversation budget comes from the server and compaction happens before the
-server's context fills (84b), the server's prompt cache is reused between
+server's context fills (91b), the server's prompt cache is reused between
 rounds, a thumbnail does not count as text, and the browser works with a
 keyless or keyed local server. The scorer reads the session's own history and
 usage files; steps 6 and 7 are the parts only you can judge.
 
-**Round 3 (block 84d).** Round 1 paid three slow rebuilds (366 s); round 2,
-on 84c, paid two (197 s), the first landing 671 tokens under the threshold and
-buying one round. 84d commits a compaction only when it reaches the low-water
+**Round 3 (block 91d).** Round 1 paid three slow rebuilds (366 s); round 2,
+on 91c, paid two (197 s), the first landing 671 tokens under the threshold and
+buying one round. 91d commits a compaction only when it reaches the low-water
 mark, unless the conversation would otherwise not fit the server — judged with
 the estimate calibrated against the server's own token counts. Replaying both
-earlier sessions' real histories through 84d gives **no** compaction for round
+earlier sessions' real histories through 91d gives **no** compaction for round
 1's session and **one**, landing well under low-water, for round 2's; every
 request still fits. Same session, same server settings; steps 1–3 are safe to
 re-run. Leave `MICROCLAW_LLM_REASONING_EFFORT` unset for this round, so it
@@ -49,7 +49,7 @@ Expect `status` `ok`.
 if (-not (Test-Path C:\code\microclaw)) { git clone https://github.com/iandobbie/microclaw.git C:\code\microclaw }
 cd C:\code\microclaw
 git fetch origin
-git checkout design84/84d-calibrate
+git checkout design91/91d-calibrate
 git pull
 git merge-base --is-ancestor cde64fe HEAD
 if ($LASTEXITCODE -eq 0) { "PIN OK - the implementation is in this tree" } else { "STOP - wrong tree, do not run the gate" }
@@ -83,7 +83,7 @@ The last line must print a path under `C:\code\microclaw\microclaw\`. A
 Check the scorer before spending an hour on a session:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q design\84-gate-selftest.py
+.venv\Scripts\python.exe -m pytest -q design\91-gate-selftest.py
 ```
 
 Expect `13 passed`. Each graded limb is run there on a real session built from
@@ -162,7 +162,7 @@ high=84920, low=63690` — **(O3b)** copy that line.
 
 **Turn 3:**
 
-> Run a 200-frame timelapse on the demo camera at 5 ms exposure with the snr_observer hook, saving into a folder called block84-frames, and tell me the hook log path when it finishes.
+> Run a 200-frame timelapse on the demo camera at 5 ms exposure with the snr_observer hook, saving into a folder called block91-frames, and tell me the hook log path when it finishes.
 
 **Turns 4 onward** — send this, unchanged, until the meter below shows
 `compactions 1` or more, then send it **once more**:
@@ -173,7 +173,7 @@ The meter: in the second PowerShell window, after each reply,
 
 ```powershell
 cd C:\code\microclaw
-.venv\Scripts\python.exe design\84-gate.py --session . --progress
+.venv\Scripts\python.exe design\91-gate.py --session . --progress
 ```
 
 Each read adds roughly 19,000 tokens of history; compaction should come within
@@ -211,12 +211,12 @@ is, with the key, because the server answers nothing but `/health` without it.
 
 ```powershell
 cd C:\code\microclaw
-New-Item -ItemType Directory -Force block84d-evidence | Out-Null
-.venv\Scripts\python.exe design\84-gate.py --session . --base-url http://127.0.0.1:8080 --api-key testkey > block84d-evidence\gate.log 2>&1
-Get-Content block84d-evidence\gate.log
-Copy-Item (Get-ChildItem *_microclaw_history.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84d-evidence\
-Copy-Item (Get-ChildItem *_microclaw_usage.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84d-evidence\
-Copy-Item (Get-ChildItem *_microclaw_confirmations.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block84d-evidence\ -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force block91d-evidence | Out-Null
+.venv\Scripts\python.exe design\91-gate.py --session . --base-url http://127.0.0.1:8080 --api-key testkey > block91d-evidence\gate.log 2>&1
+Get-Content block91d-evidence\gate.log
+Copy-Item (Get-ChildItem *_microclaw_history.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block91d-evidence\
+Copy-Item (Get-ChildItem *_microclaw_usage.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block91d-evidence\
+Copy-Item (Get-ChildItem *_microclaw_confirmations.jsonl | Sort-Object LastWriteTime | Select-Object -Last 1) block91d-evidence\ -ErrorAction SilentlyContinue
 ```
 
 The last line of `gate.log` reads `<k>/<n> graded limbs passed`. **NOT
@@ -224,8 +224,8 @@ EXERCISED is never a pass.** REPORT lines are measurements and are not graded.
 
 ## 8 — send
 
-Send the `block84d-evidence` folder, your answers to **O1–O6**, and a copy-paste
+Send the `block91d-evidence` folder, your answers to **O1–O6**, and a copy-paste
 of the `serve` window's output (select all in that window). The datasets in
-`block84-frames` can stay where they are.
+`block91-frames` can stay where they are.
 
 Afterwards, to remove the demo bounds: `Remove-Item "$env:APPDATA\microclaw\safety_config.yaml"`.
